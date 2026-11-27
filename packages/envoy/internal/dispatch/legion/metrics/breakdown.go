@@ -11,9 +11,9 @@ import (
 // The per-issue Legion facts (dispatch://INFRA-2915): one issue's work hours shared out by phase,
 // the work time they come out of, its review rounds, where it stands in its tree, how long it
 // held an admission slot, and when it opened, closed and was worked. factsOf is the one
-// computation of them, which ProjectFactsClosed runs for every issue it answers. A later slice
-// (dispatch://INFRA-5577) stores those answers as rows for every reader of these numbers to read,
-// so no reader keeps a rule of its own and no two views of one issue can answer different numbers.
+// computation of them, which ProjectFactsClosed runs for every row legionfacts stores, and every
+// reader of these numbers reads those rows and keeps no rule of its own, so no two views of one
+// issue can answer different numbers.
 //
 // The hours are shared out part by part, each hour counted once (dispatch://INFRA-979). They are
 // the bars' hours (the work time less the queued time). An hour an ask held is waiting on a
@@ -196,9 +196,9 @@ func (p *Population) factsIssues(wanted map[string]bool) iter.Seq[*Issue] {
 
 // factsOf is one issue's facts at the population's end, counted as the metrics count them: an
 // open issue's hours run to the population's To. It is the one computation of the per-issue
-// facts, which ProjectFactsClosed runs for every issue factsIssues selects, and whose answers the
-// Legion day builders fold. A part with no hours is left out of PhaseHours, which is `{}` for an
-// issue whose work took no measured time.
+// facts, which ProjectFactsClosed runs for every issue factsIssues selects, which legionfacts
+// stores and the Legion evals' day builders fold. A part with no hours is left out of
+// PhaseHours, which is `{}` for an issue whose work took no measured time.
 func (c *computation) factsOf(issue *Issue) IssueFacts {
 	population, key := c.population, issue.Key
 	spent := c.issueParts(issue)
@@ -253,12 +253,12 @@ type IssueFiling struct {
 }
 
 // ProjectFilings is every filing the population read (Population.Filed), each classified by the
-// rule metric 4 classifies it by, one per filed issue, as the filing rows dispatch://INFRA-5577
-// stores hold one per filed issue: a filed issue that somehow carries two `issue.created` events
-// by Legion sessions keeps the first, in the order the population read them, so a second row of
-// one key in one write cannot fail the whole write. The class and the filer's phase read the
-// filer's own issue, so the population must hold that issue's timeline: ReadProject and
-// ReadIssues both read the filers of the filings they read.
+// rule metric 4 classifies it by, one per filed issue: issue_filings holds one row per filed
+// issue, so a filed issue that somehow carries two `issue.created` events by Legion sessions keeps
+// the first, in the order the population read them, and a second row of one key in one write
+// cannot fail the whole write. The class and the filer's phase read the filer's own issue, so the
+// population must hold that issue's timeline: ReadProject and ReadIssues both read the filers of
+// the filings they read.
 func ProjectFilings(population *Population) []IssueFiling {
 	c := newComputation(population)
 	filings := make([]IssueFiling, 0, len(population.Filed))

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -135,7 +136,7 @@ func TestTheLegionFoldsAnswerTheBaseHeadsReports(t *testing.T) {
 	windows := readGoldenReports(t)
 	spec := windows[0].Spec
 	database := storetest.Open(t)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
 	population, err := ReadProject(t.Context(), database.Pool, fixture.Project, spec.Now)
 	if err != nil {
 		t.Fatalf("read %s: %v", fixture.Project, err)

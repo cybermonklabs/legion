@@ -377,7 +377,7 @@ func measureNearCopyGate(
 			ancestor := time.Since(started)
 
 			started = time.Now()
-			picked, err := srv.pickRelatedTerms(ctx, database.Pool, corpus.project, text, title, relatedExclusion{}, priceUnknownTerms)
+			picked, err := srv.pickNearCopyTerms(ctx, database.Pool, corpus.project, text, title)
 			if err != nil {
 				t.Fatalf("pick the terms for %s: %v", name, err)
 			}
@@ -416,7 +416,7 @@ func measureNearCopyGate(
 	}
 
 	title, _, _ := strings.Cut(ordinary, "\n")
-	picked, err := srv.pickRelatedTerms(ctx, database.Pool, corpus.project, ordinary, title, relatedExclusion{}, priceUnknownTerms)
+	picked, err := srv.pickNearCopyTerms(ctx, database.Pool, corpus.project, ordinary, title)
 	if err != nil {
 		t.Fatalf("pick the terms for the plan: %v", err)
 	}

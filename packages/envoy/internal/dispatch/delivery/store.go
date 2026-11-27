@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -502,9 +503,9 @@ func latestShipBefore(repo, jobNames, applyStep, at string) string {
 // ReadLatestShipBefore is latestShipBefore's creation for deployRepo and production, the zero time
 // when no deploy succeeded before at. Every pull request merged before it had shipped by at, so no
 // deploy completing at or after at ships one: it is the earliest merge the shipped set of such a
-// deploy reaches back to (ReadDeploys reads a window's shipped sets from it, and the day rows of
-// cybermonklabs/legion#3976 ask it whether a deploy can have been the first of its repository to
-// complete).
+// deploy reaches back to (ReadDeploys reads a window's shipped sets from it; the day-row refresher
+// asks it whether a deploy can have been the first of its repository to complete, evals'
+// shippedNeighbours).
 func ReadLatestShipBefore(ctx context.Context, q Querier, deployRepo string, production Production, at time.Time) (time.Time, error) {
 	var created time.Time
 	err := q.QueryRow(ctx, latestShipBefore("$1", "$2", "$3", "$4"), deployRepo, production.JobNames, production.ApplyStep, at).Scan(&created)
@@ -704,13 +705,18 @@ func ScanJob(row pgx.Row) (DeliveryRunJob, error) {
 // itself the "it is fetchable after all" signal, the same way a successful UpsertPullRequest
 // clears unfetchable_at/unfetchable_reason.
 //
-// The run's bookkeeping and its job rows commit together, in one transaction: the run row first,
-// then every job in one statement (none for an empty listing). Every other writer of a
-// delivery_runs row is one statement that takes the row's lock and then, in its change trigger,
-// the change log's advisory lock (0100); this transaction takes them in that same order, so a run's
-// own completion written beside its jobs waits for one of them rather than deadlocking with it. The
-// advisory lock is taken by the jobs statement's trigger, or the run statement's when it clears an
-// unfetchable mark, and held from there to the commit: at most the two statements and the commit.
+// The run's bookkeeping and its job rows are written by one statement, the run row's update and
+// every job's upsert (none for an empty listing) in one data-modifying `with`, so they commit
+// together. Every other writer of a delivery_runs row is one statement too, which takes the row's
+// lock and then, in its change trigger, the change log's advisory lock (0100): this one takes its
+// jobs' row locks, then the run row's (the `with`, which runs after the insert), and the change
+// log's lock last, in the triggers that fire at the statement's end (lockChangesStatement), so a
+// run's own completion written beside its jobs waits for one of them rather than deadlocking with
+// it, and the change log's lock is held for that statement's triggers and its commit alone. It
+// takes the job rows in one order, their names' byte order, whatever order the listing gave them
+// in: the jobs are sorted before the statement, and the statement inserts them in that order too.
+// Two listings of one run that named its jobs in opposite orders would otherwise each lock a job
+// the other then waited for.
 func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64, jobs []DeliveryRunJob, complete bool) error {
 	if complete {
 		for _, job := range jobs {
@@ -749,48 +755,39 @@ func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int
 			folded[i] = row
 		}
 	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin jobs write for run %d: %w", runID, err)
+	slices.SortFunc(folded, func(a, b foldedJob) int { return strings.Compare(a.name, b.name) })
+	names := make([]string, len(folded))
+	started := make([]*time.Time, len(folded))
+	completed := make([]*time.Time, len(folded))
+	conclusions := make([]*string, len(folded))
+	steps := make([]*string, len(folded))
+	stepConclusions := make([]*string, len(folded))
+	for i, row := range folded {
+		names[i], started[i], completed[i], conclusions[i], steps[i], stepConclusions[i] =
+			row.name, row.startedAt, row.completedAt, row.conclusion, row.applyStep, row.applyStepConclusion
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
-		update delivery_runs
-		set jobs_unfetchable_at = null, jobs_unfetchable_reason = null, jobs_complete = delivery_runs.jobs_complete or $3
-		where repo = $1 and run_id = $2
-	`, repo, runID, complete); err != nil {
-		return fmt.Errorf("clear jobs-unfetchable mark for run %d: %w", runID, err)
-	}
-	// An empty listing (GitHub has not created a running run's jobs yet) writes the run row alone.
-	if len(folded) > 0 {
-		names := make([]string, len(folded))
-		started := make([]*time.Time, len(folded))
-		completed := make([]*time.Time, len(folded))
-		conclusions := make([]*string, len(folded))
-		steps := make([]*string, len(folded))
-		stepConclusions := make([]*string, len(folded))
-		for i, row := range folded {
-			names[i], started[i], completed[i], conclusions[i], steps[i], stepConclusions[i] =
-				row.name, row.startedAt, row.completedAt, row.conclusion, row.applyStep, row.applyStepConclusion
-		}
-		if _, err := tx.Exec(ctx, `
-			insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
-			select $1, $2, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
-			from unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
-				as job (name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
-			on conflict (repo, run_id, name) do update set
-				started_at = excluded.started_at,
-				completed_at = excluded.completed_at,
-				conclusion = excluded.conclusion,
-				apply_step = excluded.apply_step,
-				apply_step_conclusion = excluded.apply_step_conclusion
-			where delivery_run_jobs.completed_at is null or excluded.completed_at is not null
-		`, repo, runID, names, started, completed, conclusions, steps, stepConclusions); err != nil {
-			return fmt.Errorf("upsert the jobs of run %d: %w", runID, err)
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit jobs write for run %d: %w", runID, err)
+	// An empty listing (GitHub has not created a running run's jobs yet) writes the run row alone:
+	// its arrays are empty, and the jobs' upsert inserts nothing.
+	if _, err := pool.Exec(ctx, `
+		with run as (
+			update delivery_runs
+			set jobs_unfetchable_at = null, jobs_unfetchable_reason = null, jobs_complete = delivery_runs.jobs_complete or $9
+			where repo = $1 and run_id = $2
+		)
+		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
+		select $1, $2, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
+		from unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
+			as job (name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
+		order by job.name collate "C"
+		on conflict (repo, run_id, name) do update set
+			started_at = excluded.started_at,
+			completed_at = excluded.completed_at,
+			conclusion = excluded.conclusion,
+			apply_step = excluded.apply_step,
+			apply_step_conclusion = excluded.apply_step_conclusion
+		where delivery_run_jobs.completed_at is null or excluded.completed_at is not null
+	`, repo, runID, names, started, completed, conclusions, steps, stepConclusions, complete); err != nil {
+		return fmt.Errorf("write the jobs of run %d: %w", runID, err)
 	}
 	return nil
 }
@@ -942,9 +939,15 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 	return jobs, nil
 }
 
-// runJobsNamedForRunsQuery is ListRunJobsForRuns' read. Every one of its three conditions is a
-// key of delivery_run_jobs' primary key (repo, run_id, name), so the read is a descent of that
-// key for each run and name it asks for, and never a run's other jobs.
+// runJobsNamedForRunsQuery is ListRunJobsForRuns' read: an Index Only Scan of
+// delivery_run_jobs_named (repo, name, run_id; migration 20261117100023), whose index condition
+// holds all three of its conditions and which includes every other column of JobColumns. The index
+// holds a repository's jobs of one name together, so the read of a few names over many runs reads a
+// few leaf pages for each name and never a run's other jobs, and it reads no heap page the
+// visibility map marks all-visible. Through the primary key (repo, run_id, name) the read fetched
+// each run's named jobs from a heap page of their own: on the farm at ten times the stated run
+// rate, a cold settings change's 80 such reads read 54,677 blocks from disk in 1,123 ms
+// (dispatch://INFRA-2916, R14).
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
 // runJobsFailedForRunsQuery is listRunJobsFailedForRuns' read: each run's failed jobs not named
@@ -966,10 +969,11 @@ const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_job
 // ListRunJobsForRuns lists the jobs named names of every run in runIDs on repo in one query (not
 // one query per run): a window's apply runs can number hundreds, and this package's other many-id
 // reads pass their whole list as one array parameter for the same reason, as IssueAncestors
-// (below) seeds its walk with `key = any($1)`. A caller that judges a
-// run by some of its jobs reads those alone: the production jobs containment and the measures
-// judge a deploy by (Production.JudgedJobNames) and the Pipeline's deploy cards' jobs. A run of
-// the deploy workflow holds a handful of jobs and a pull-request run dozens, and the read with no
+// (below) seeds its walk with `key = any($1)` and ResolveSessionTitles (agents.go) reads
+// session_titles_pkey for `session_id = any($1)`. A caller that judges a run by some of its
+// jobs reads those alone: the production jobs containment and the measures judge a deploy by
+// (Production.JudgedJobNames) and the Pipeline's deploy cards' jobs. A run of the deploy workflow
+// holds a handful of jobs and a pull-request run dozens, and the read with no
 // name in it cost 660 ms a call at ten times the stated run rate (dispatch://INFRA-2916, R13),
 // where `name = any($3)` keys each run's read to the jobs asked for (runJobsNamedForRunsQuery).
 // No name is no read. listRunJobsFailedForRuns is the read for a caller that needs a run's failed
@@ -1230,6 +1234,32 @@ func listRunsStartedIn(ctx context.Context, q Querier, repo string, kind Deliver
 	return collectRuns(rows)
 }
 
+// deployRunsOnMain is the deploy runs on main of a repository ($1), whatever their event: the
+// measures' deploy population (listRunsStartedIn's ("main", "")) over the whole history, which
+// HistoryRows reads.
+const deployRunsOnMain = `from delivery_runs where repo = $1 and kind = 'deploy' and head_branch = 'main'`
+
+// listDeployRunsOnMain lists every deploy run on main of repo, in listRunsStartedIn's order and
+// with no limit: HistoryRows' runs.
+func listDeployRunsOnMain(ctx context.Context, pool *store.Pool, repo string) ([]DeliveryRun, error) {
+	rows, err := pool.Query(ctx, `select `+RunColumns+` `+deployRunsOnMain+` order by started_at, run_id`, repo)
+	if err != nil {
+		return nil, err
+	}
+	return collectRuns(rows)
+}
+
+// listDeployRunJobsOnMain lists the jobs named names of every deploy run on main of repo, keyed by
+// run id, each run's in ListRunJobs' order: HistoryRows' jobs. It names the runs by the read that
+// lists them rather than by their ids, so it waits on no read of them.
+func listDeployRunJobsOnMain(ctx context.Context, pool *store.Pool, repo string, names []string) (map[int64][]DeliveryRunJob, error) {
+	if len(names) == 0 {
+		return make(map[int64][]DeliveryRunJob), nil
+	}
+	return collectJobsByRun(ctx, pool, 0, `select `+JobColumns+` from delivery_run_jobs
+		where repo = $1 and name = any($2) and run_id in (select run_id `+deployRunsOnMain+`)`, repo, names)
+}
+
 // collectRuns reads rows of RunColumns, in their order, and closes them.
 func collectRuns(rows pgx.Rows) ([]DeliveryRun, error) {
 	defer rows.Close()
@@ -1334,6 +1364,26 @@ func scanPullRequests(rows pgx.Rows, err error) ([]DeliveryPullRequest, error) {
 	if err != nil {
 		return nil, err
 	}
+	return collectPullRequests(rows)
+}
+
+// listPullRequestsMergedBefore lists every population pull request merged before to, in
+// ListPullRequestsInWindow's order and with no limit: HistoryRows' pull requests.
+func listPullRequestsMergedBefore(ctx context.Context, pool *store.Pool, to time.Time) ([]DeliveryPullRequest, error) {
+	rows, err := pool.Query(ctx, `
+		select `+PullRequestColumns+`
+		from delivery_pull_requests
+		where merged_at < $1
+		order by merged_at, (repo || '#' || number) collate "C"
+	`, to)
+	if err != nil {
+		return nil, err
+	}
+	return collectPullRequests(rows)
+}
+
+// collectPullRequests reads rows of PullRequestColumns, in their order, and closes them.
+func collectPullRequests(rows pgx.Rows) ([]DeliveryPullRequest, error) {
 	defer rows.Close()
 	prs := []DeliveryPullRequest{}
 	for rows.Next() {

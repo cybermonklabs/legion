@@ -77,8 +77,8 @@ type Ledger struct {
 	// author capture - still stores its tree.
 	versionTexts []ledgerVersionText
 	// seeds holds, per document this transaction seeded (SeedText), the actor that wrote its
-	// first text and the tree it wrote, which credit records and registers as that actor's ask
-	// blocks once the transaction has committed.
+	// first text, the tree it wrote and whether the seed owes the document no settlement, which
+	// credit records and registers as that actor's ask blocks once the transaction has committed.
 	seeds map[string]ledgerSeed
 	// rebuilds are the documents this transaction rebuilds (RebuildDocument), whose rooms refuse
 	// loads until it ends, committed or not.
@@ -910,10 +910,13 @@ type ledgerVersionText struct {
 // text, and the tree it wrote with that tree's rendering and its blocks' byte ranges. Credit
 // registers the actor against every ask block the tree introduced (registerAskAuthors) once the
 // transaction has committed, and the seed's version cuts its mentions' excerpts from the
-// rendering.
+// rendering. owesNothing marks a seed that owes its document no settlement (SeedText,
+// seedOwesSettlement): its commit records no latest edit source for it and leaves its room no
+// record (recordSettlementCredit, creditRooms), so nothing it commits says a settlement is owed.
 type ledgerSeed struct {
-	actor    model.Actor
-	rendered renderedTree
+	actor       model.Actor
+	rendered    renderedTree
+	owesNothing bool
 }
 
 type ledgerContextKey struct{}
@@ -1438,9 +1441,11 @@ func (l *Ledger) commitWrites(ctx context.Context) error {
 // once the transaction has committed, so a settlement on any process finds it. All of it commits
 // or rolls back with the content, before the request context can be canceled after commit. A
 // transaction whose every write was a server lifecycle write (withLifecycleWrite) credited no
-// one, so it records nothing here. Commit runs it as its write phase's last part (commitWrites,
-// runQueue), so its statements join that batch after every queued write: everything they write
-// is known in memory by then.
+// one, so it records nothing here, and a seed that owes no settlement (ledgerSeed.owesNothing)
+// records no edit source: the row that source goes on is the one its append left unwritten
+// (SeedText), and recording it would write that row. Commit runs it as its write phase's last
+// part (commitWrites, runQueue), so its statements join that batch after every queued write:
+// everything they write is known in memory by then.
 func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 	for _, written := range l.versions {
 		if err := deleteCapturedPendingAuthors(ctx, l.tx, written.artifactID, written.capture); err != nil {
@@ -1451,6 +1456,9 @@ func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 	for artifactID, seed := range l.seeds {
 		if err := recordAskAuthors(ctx, l.tx, artifactID, seededAskAuthors(seed)); err != nil {
 			return err
+		}
+		if seed.owesNothing {
+			continue
 		}
 		if _, listed := released[artifactID][actorKey(seed.actor)]; listed {
 			continue
@@ -1523,9 +1531,15 @@ func (l *Ledger) releasedAuthors() map[string]map[string]struct{} {
 // introduced to its author. The authors themselves, the latest edit sources and the ask blocks'
 // authors are already recorded in the database (recordSettlementCredit), which is where a
 // settlement on any process reads the edit source its events name (settlementAuthors) and, for a
-// block its room did not register, the ask block's author (askBlockSources.author).
+// block its room did not register, the ask block's author (askBlockSources.author). A seed that
+// owes no settlement (ledgerSeed.owesNothing) is left out: it introduced no ask block, and a
+// source recorded for it would mark its room unsettled, a record that only a settlement clears
+// (unusedLocked), so the record would outlast the room for a settlement nothing owes.
 func (l *Ledger) creditRooms() {
 	for artifactID, seed := range l.seeds {
+		if seed.owesNothing {
+			continue
+		}
 		state := l.service.lockState(artifactID)
 		state.creditSeq.Add(1)
 		state.lastActor = new(seed.actor)
@@ -1556,12 +1570,19 @@ func (l *Ledger) creditRooms() {
 
 // seeded records that this transaction seeded artifactID's first text as actor (SeedText), with
 // the rendering of the tree it wrote, whose ask blocks credit registers to actor once the
-// transaction commits.
-func (l *Ledger) seeded(artifactID string, rendered renderedTree, actor model.Actor) {
+// transaction commits, and whether the seed owes the document a settlement.
+func (l *Ledger) seeded(artifactID string, rendered renderedTree, actor model.Actor, owes bool) {
 	if l.seeds == nil {
 		l.seeds = make(map[string]ledgerSeed)
 	}
-	l.seeds[artifactID] = ledgerSeed{actor: actor, rendered: rendered}
+	l.seeds[artifactID] = ledgerSeed{actor: actor, rendered: rendered, owesNothing: !owes}
+}
+
+// seedOwes is whether the seed this transaction wrote of artifactID (SeedText) left the document
+// owing a settlement: every seed does but one recorded as owing nothing, and a document this
+// ledger records no seed of is answered as owing one, as every other write leaves it.
+func (l *Ledger) seedOwes(artifactID string) bool {
+	return !l.seeds[artifactID].owesNothing
 }
 
 // writtenRendering is the rendering of the tree this transaction last wrote to artifactID: the one

@@ -71,17 +71,19 @@ const emptyMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: null, p90_minutes: null, max_minutes: null },
       opened_to_merge: { median_minutes: null, p90_minutes: null, max_minutes: null },
     },
+    // As the server answers it while no failure source exists (`flags_source: "none"`): every
+    // count 0 and every rate null.
     change_failure_rate: {
-      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: 0 },
+      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: null },
       per_deploy: {
         confirmed: 0,
         pending: 0,
         rejected: 0,
         reverts: 0,
         total: 0,
-        rate: 0,
+        rate: null,
         confirmed_or_pending: 0,
-        upper_bound_rate: 0,
+        upper_bound_rate: null,
       },
     },
     time_to_restore: { median_minutes: null },
@@ -92,12 +94,37 @@ const emptyMeasures: DeliveryMeasuresResponse = {
   flags_source: "none",
   unowned_p0: [],
   targets: {
-    deploys_per_day: 20,
-    change_failure_rate: 0.05,
-    merge_to_production_minutes: 45,
-    opened_to_merge_median_minutes: 60,
-    deploy_run_success_rate: 0.9,
-    unowned_p0: 0,
+    deploys_per_day: {
+      value: 20,
+      inclusive: true,
+      direction: "higher_better",
+      judges: ["deploys.per_day"],
+    },
+    change_failure_rate: {
+      value: 0.05,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["per_deploy.rate"],
+    },
+    merge_to_production_minutes: {
+      value: 45,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["minutes.max", "minutes.median"],
+    },
+    opened_to_merge_median_minutes: {
+      value: 60,
+      inclusive: false,
+      direction: "lower_better",
+      judges: ["minutes.median"],
+    },
+    deploy_run_success_rate: {
+      value: 0.9,
+      inclusive: true,
+      direction: "higher_better",
+      judges: ["runs.rate"],
+    },
+    unowned_p0: { value: 0, inclusive: true, direction: "lower_better", judges: ["issues.value"] },
   },
   status: {
     deploys_per_day: false,

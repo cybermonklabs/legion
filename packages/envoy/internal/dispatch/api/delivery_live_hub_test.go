@@ -292,7 +292,7 @@ func (r *hubRig) hubAcquires() int64 { return r.hubStore.Pool.Stat().AcquireCoun
 func (r *hubRig) changeCursor() int64 {
 	r.hub.mu.Lock()
 	defer r.hub.mu.Unlock()
-	return r.hub.generation.changeSeq
+	return r.hub.generation.change.Seq
 }
 
 // settle waits until the hub has acted on everything the test's setup wrote, so none of it counts
@@ -307,10 +307,11 @@ func (r *hubRig) changeCursor() int64 {
 // ends on what it waits for, and its one bound is the test binary's deadline.
 func (r *hubRig) settle(t *testing.T) {
 	t.Helper()
-	latest, err := delivery.LatestChangeSeq(t.Context(), r.database.Pool)
+	head, err := delivery.ChangesHead(t.Context(), r.database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest delivery change: %v", err)
 	}
+	latest := head.Seq
 	testwait.Until(t, fmt.Sprintf("the hub's change cursor to reach %d, the newest delivery change", latest), func() (int64, bool) {
 		seq := r.changeCursor()
 		return seq, seq >= latest
@@ -350,7 +351,7 @@ func (r *hubRig) waitNothingOwed(t *testing.T, latest int64) {
 			}
 		}
 		slices.Sort(busy)
-		return generation.changeSeq, busy
+		return generation.change.Seq, busy
 	}
 	testwait.Until(t, fmt.Sprintf("the hub to owe nothing for the delivery changes through %d (what it still owed)", latest), func() (string, bool) {
 		intake := r.intakeOwes()
@@ -888,14 +889,19 @@ func truncateChanges(t *testing.T, database *store.Store) {
 	}
 }
 
-// latestChange is the newest delivery change's seq.
+// latestChange is the change log's newest seq once its outbox is drained, as the hub drains it
+// before each read (delivery.DrainPending): a test that writes eval or facts rows by SQL, outside
+// the writers that drain after their commit, reads their changes in the log this way.
 func latestChange(t *testing.T, database *store.Store) int64 {
 	t.Helper()
-	seq, err := delivery.LatestChangeSeq(context.Background(), database.Pool)
+	if _, err := delivery.DrainPending(context.Background(), database.Pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	head, err := delivery.ChangesHead(context.Background(), database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest change: %v", err)
 	}
-	return seq
+	return head.Seq
 }
 
 func TestAProductionJobFlipsTheWaitingPullRequestsItShips(t *testing.T) {
@@ -1168,6 +1174,54 @@ func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
 	rig.hub.Subscribe(kept, frame)
 	kept.freshness(t, "the verdict for a resume with nothing to catch up")
 	rig.requireNothingSent(t, kept, "a resume from the change the view's body reflects")
+}
+
+// TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook: a hub that has read nothing of the
+// change log for longer than its retention (a catch-up failing for a day; here no listener wakes
+// it) finds the change its cursor rests on pruned, and with it a merge in its view's window that
+// it never read. It reads the log as lost and recomputes every view, so the merge reaches the
+// view. Read as a change pruned in its time, the cursor would read only the change the prune kept
+// after it, which touches no timeline, and the view would never learn of the merge.
+func TestAHubThatReadNothingForADayCatchesUpWhatThePruneTook(t *testing.T) {
+	t.Parallel()
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		hub.dial = func(context.Context) (*pgx.Conn, error) { return nil, context.DeadlineExceeded }
+	})
+	seedHubSettings(t, rig.database)
+	now := rig.clock.Now()
+	upsertPR(t, rig.database, hubPR(1, now.Add(-2*time.Hour)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
+	conn.snapshot(t, "t")
+	if rig.changeCursor() == 0 {
+		t.Fatal("the hub's cursor rests on no change")
+	}
+	upsertPR(t, rig.database, hubPR(2, now.Add(-time.Hour)))
+	for _, statement := range []string{
+		`update delivery_changes set at = now() - interval '2 days'`,
+		`delete from delivery_changes where at < now() - interval '1 day'`,
+		`insert into delivery_changes (kind, repo, ref) values ('eval_readings', 'NONE', 'NONE/kept')`,
+	} {
+		if _, err := rig.database.Pool.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	// The hub last read the log, and the change at its cursor, a day and an hour ago.
+	rig.hub.mu.Lock()
+	lastRead := now.Add(-25 * time.Hour)
+	rig.hub.generation.change.At, rig.hub.generation.change.ReadAt = &lastRead, lastRead
+	epoch := rig.hub.generation.epoch
+	rig.hub.mu.Unlock()
+	rig.hub.catchUpNow()
+	rig.hub.mu.Lock()
+	resets := rig.hub.generation.epoch - epoch
+	rig.hub.mu.Unlock()
+	if resets != 1 {
+		t.Fatalf("the catch-up after a day with no read counted %d resets of the log, want 1: it read past the merge the prune took as a change pruned in its time", resets)
+	}
+	if got := liveUpsertIDs(t, conn.delta(t, "t"), "prs"); !slices.Contains(got, "acme/widgets#2") {
+		t.Fatalf("after a day with no read the delta upserts %v, want acme/widgets#2, the merge the prune took", got)
+	}
 }
 
 func TestAReconnectCatchesUpWhatTheListenerMissed(t *testing.T) {
@@ -2630,7 +2684,13 @@ func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, "")))
 	snapshot := conn.snapshot(t, "p")
 
-	upsertPR(t, rig.database, hubPR(2, rig.clock.Now().Add(-time.Hour)))
+	// The second pull request was open five hours where the first was open two (hubPR), so the
+	// opened-to-merge spread moves, and the timeline's measures with it: the one delta sets the
+	// measures beside the window. No deploy shipped it, so no deploy or lead-time-to-production
+	// measure moves.
+	second := hubPR(2, rig.clock.Now().Add(-time.Hour))
+	second.CreatedAt = new(second.MergedAt.Add(-5 * time.Hour))
+	upsertPR(t, rig.database, second)
 	delta := conn.delta(t, "p")
 	set, items, mapsChanged, counts := liveSections(delta)
 	if !slices.Equal(items, []string{"prs"}) || !slices.Equal(liveUpsertIDs(t, delta, "prs"), []string{"acme/widgets#2"}) || len(delta.Items["prs"].Remove) != 0 {
@@ -2906,6 +2966,202 @@ func TestOneRecomputeAtATime(t *testing.T) {
 	}
 }
 
+// TestTheHubRecomputesUpToEvalsRecomputesEvalsViewsAtOnce: evalsRecomputes+1 evals views of one
+// project, a timeline and a measures view are open, and a day row of the project marks every evals
+// view at one moment. The reads of the first evalsRecomputes evals views to take their position are
+// held there: evalsRecomputes begin and are held at once, and the one that waits, which the worker
+// has picked, begins no recompute while they hold every slot. All but the first of those held are
+// let go and finish while the first is still held; the one that waited then takes a slot and
+// finishes beside it; and a merge made while the first is held marks the timeline and the
+// measures view, which the worker recomputes itself, one at a time, while the first is still held.
+// No view is computed twice at once, each evals view is recomputed once, and every view is sent its
+// one delta. A hub that recomputes one view at a time begins no second evals view while the first
+// is held, so the wait for the held reads has a bound of its own rather than the test binary's
+// deadline.
+func TestTheHubRecomputesUpToEvalsRecomputesEvalsViewsAtOnce(t *testing.T) {
+	t.Parallel()
+	var (
+		mu        sync.Mutex
+		computing = map[string]int{}
+		// evalsNow and deliveryNow are the recomputes of each kind under way, and mostEvals and
+		// mostDelivery the most of each there were at once; twice names each view a recompute began
+		// on while another was under way.
+		evalsNow, deliveryNow, mostEvals, mostDelivery int
+		twice                                          []string
+		// gates lets go each read held, by its view.
+		gates   = map[string]chan struct{}{}
+		holding atomic.Int32
+		held    = make(chan string, evalsRecomputes)
+	)
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		observe, lifetime := hub.observe, hub.lifetime
+		hub.observe = func(note deliveryHubNote) {
+			observe(note)
+			evals := strings.HasPrefix(note.view, evalsView+"|")
+			switch note.what {
+			case "recompute begin":
+				mu.Lock()
+				if computing[note.view]++; computing[note.view] > 1 {
+					twice = append(twice, note.view)
+				}
+				if evals {
+					evalsNow++
+					mostEvals = max(mostEvals, evalsNow)
+				} else {
+					deliveryNow++
+					mostDelivery = max(mostDelivery, deliveryNow)
+				}
+				mu.Unlock()
+			case "recompute end":
+				mu.Lock()
+				computing[note.view]--
+				if evals {
+					evalsNow--
+				} else {
+					deliveryNow--
+				}
+				mu.Unlock()
+			case "recompute position":
+				if !evals || holding.Add(-1) < 0 {
+					return
+				}
+				gate := make(chan struct{})
+				mu.Lock()
+				gates[note.view] = gate
+				mu.Unlock()
+				held <- note.view
+				// The wait also ends with the hub's lifetime, so a test that fails while a read is
+				// held still stops its hub.
+				select {
+				case <-gate:
+				case <-lifetime.Done():
+				}
+			}
+		}
+	})
+	release := func(key string) {
+		mu.Lock()
+		gate := gates[key]
+		mu.Unlock()
+		close(gate)
+	}
+	seedHubSettings(t, rig.database)
+	createTestProject(t, rig.handler, "ACME")
+	today := rig.clock.Now().UTC().Truncate(24 * time.Hour)
+	keyOf := func(frame DeliveryLiveView) string {
+		spec, refusal := parseDeliveryLiveView(frame)
+		if refusal != nil {
+			t.Fatalf("read the %s view: %+v", frame.Kind, refusal)
+		}
+		return spec.key
+	}
+
+	delivered := newFakeLiveConn()
+	timeline, measures := presetView(deliveryLiveTimeline, 7, ""), presetView(deliveryLiveMeasures, 7, "")
+	rig.hub.Subscribe(delivered, subscribeFrame("t", timeline))
+	rig.hub.Subscribe(delivered, subscribeFrame("m", measures))
+	delivered.firstSnapshots(t, "t", "m")
+	// evalsRecomputes+1 evals views of ACME: one of each preset, then windows of the days to
+	// tomorrow, a day longer each, for the rest.
+	frames := make([]DeliveryLiveView, evalsRecomputes+1)
+	for i := range frames {
+		window := evalsDays(today.AddDate(0, 0, -27-i), today.AddDate(0, 0, 1))
+		if i < len(deliveryLivePresets) {
+			window = DeliveryLiveWindow{Preset: new(deliveryLivePresets[i])}
+		}
+		frames[i] = evalsLiveView("ACME", window, "")
+	}
+	conns, keys := make([]*fakeLiveConn, len(frames)), make([]string, len(frames))
+	for i, frame := range frames {
+		sub := "e" + strconv.Itoa(i)
+		keys[i], conns[i] = keyOf(frame), newFakeLiveConn()
+		rig.hub.Subscribe(conns[i], subscribeFrame(sub, frame))
+		conns[i].snapshot(t, sub)
+		conns[i].freshness(t, "the verdict after the snapshot of "+sub)
+	}
+	rig.settle(t)
+
+	start := rig.mark()
+	holding.Store(evalsRecomputes)
+	if _, err := rig.database.Pool.Exec(t.Context(), `
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, counts, built_by)
+		values ('ACME', 'ACME/deploy-frequency', 'acme/widgets', 'deploys', '', $1, true, 1, 1, '{"with_prs": 1}', 'test')
+	`, today); err != nil {
+		t.Fatalf("write ACME's day row of deploy-frequency: %v", err)
+	}
+	rig.hub.catchUpNow()
+	bound := testwait.Bounded(t, 30*time.Second, time.Second)
+	var reading []string
+	for range evalsRecomputes {
+		select {
+		case key := <-held:
+			reading = append(reading, key)
+		case <-time.After(bound):
+			t.Fatalf("%d evals views' reads were held %s after the day row marked %d, want %d at once (evalsRecomputes)", len(reading), bound, len(frames), evalsRecomputes)
+		}
+	}
+	first, waiting := reading[0], ""
+	for _, key := range keys {
+		if !slices.Contains(reading, key) {
+			waiting = key
+		}
+	}
+	begins := func(key string) int {
+		return rig.count(start, func(note deliveryHubNote) bool { return note.what == "recompute begin" && note.view == key })
+	}
+	ends := func(key string) int {
+		return rig.count(start, func(note deliveryHubNote) bool { return note.what == "recompute end" && note.view == key })
+	}
+	rig.waitNoRecompute(t, 2*viewQuiet)
+	if n := begins(waiting); n != 0 {
+		t.Fatalf("the evals view that waited began %d recomputes while %d held every slot, want none", n, evalsRecomputes)
+	}
+
+	upsertPR(t, rig.database, hubPR(1, rig.clock.Now().Add(-time.Hour)))
+	rig.hub.catchUpNow()
+	for _, key := range reading[1:] {
+		release(key)
+	}
+	finished := append(slices.Clone(reading[1:]), waiting, keyOf(timeline), keyOf(measures))
+	testwait.Until(t, "the evals views let go, the one that waited and both delivery views to finish while the first is held (those left)", func() ([]string, bool) {
+		var left []string
+		for _, key := range finished {
+			if ends(key) == 0 {
+				left = append(left, key)
+			}
+		}
+		return left, len(left) == 0
+	})
+	if n := ends(first); n != 0 {
+		t.Fatalf("the held evals view ended %d recomputes before it was let go", n)
+	}
+	release(first)
+
+	for i, conn := range conns {
+		conn.delta(t, "e"+strconv.Itoa(i))
+	}
+	for range 2 {
+		if _, ok := delivered.next(t, "each delivery view's delta").(DeliveryLiveDelta); !ok {
+			t.Fatal("want a delta for each delivery view")
+		}
+	}
+	rig.settle(t)
+	for _, key := range keys {
+		if n := begins(key); n != 1 {
+			t.Errorf("%s began %d recomputes for the one day row, want 1", key, n)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(twice) > 0 {
+		t.Errorf("recomputes began on %v while another of the same view was under way, want none", twice)
+	}
+	if mostEvals != evalsRecomputes || mostDelivery != 1 {
+		t.Errorf("at most %d evals views and %d delivery views were computed at once, want %d and 1", mostEvals, mostDelivery, evalsRecomputes)
+	}
+	t.Logf("%d evals views computed at once, one waiting; the delivery views one at a time, while the first evals view was held", mostEvals)
+}
+
 func TestAChangeOutsideAWindowRecomputesNothing(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)
@@ -2978,6 +3234,11 @@ func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
 	snapshot := conn.snapshot(t, "b")
 	requireSameBody(t, "the board's first snapshot", snapshot.Body,
 		getBody(t, rig.handler, windowTarget(t, legionBoardView, snapshot.Body, "")))
+	// The listener's connection and the relay's feed each mark the board (dirtyLegionViews,
+	// applyFeed): both are answered before the intake's rows are written, so no recompute reads
+	// them half written.
+	rig.waitFor(t, 0, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
+	rig.settle(t)
 
 	// The intake's next record finds the implementer's child in review, with no role in a turn.
 	held := snapshot.Body
@@ -3069,5 +3330,75 @@ func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
 	}
 	if spec.project != "INFRA" || spec.key != "legion|INFRA|" {
 		t.Fatalf("the spec = %+v, want the project it names and a key of its own", spec)
+	}
+}
+
+// TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce: a delivery read takes each facet any
+// number of times and every other key it reads once, so GET /api/v1/delivery/timeline and
+// /api/v1/delivery/measures with the search named twice, and GET /api/v1/delivery/pipeline with
+// its at named twice, are refused naming it, as one naming from or to twice is
+// (TestADeliveryReadRefusesARepeatedWindowKey), and the timeline answers its facets repeated. A
+// timeline or measures view is read as its GET route reads its query, so it refuses the search
+// named twice too, and takes its facets repeated.
+func TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedMeasuresSettings(t, database)
+	facets := url.Values{"repo": {"acme/one", "acme/two"}, "priority": {"P0", "P1"}, "q": {"fix"}}
+	if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/timeline?"+facets.Encode(), nil, "alice"); response.Code != http.StatusOK {
+		t.Errorf("GET the timeline of %s: status %d, body %.200s; want 200, its facets taken repeated", facets.Encode(), response.Code, response.Body.String())
+	}
+	for _, refused := range []struct {
+		route, key string
+		query      url.Values
+	}{
+		{"/api/v1/delivery/timeline", "q", url.Values{"q": {"fix", "revert"}}},
+		{"/api/v1/delivery/measures", "q", url.Values{"q": {"fix", "revert"}}},
+		{"/api/v1/delivery/pipeline", "at", url.Values{"at": {"2026-11-14T00:00:00Z", "2026-11-07T00:00:00Z"}}},
+	} {
+		target := refused.route + "?" + refused.query.Encode()
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		var refusal evalRefusal
+		if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Error, strconv.Quote(refused.key)) {
+			t.Errorf("GET %s: status %d, body %.200s; want 400 INVALID_QUERY naming %s", target, response.Code, response.Body.String(), refused.key)
+		}
+	}
+	window := DeliveryLiveWindow{Preset: new(7)}
+	for _, kind := range []string{deliveryLiveTimeline, deliveryLiveMeasures} {
+		twice := "q=fix&q=revert"
+		if _, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: kind, Window: &window, Query: &twice}); refusal == nil || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Message, `"q"`) {
+			t.Errorf("a %s view of %s: refusal = %+v, want INVALID_QUERY naming q", kind, twice, refusal)
+		}
+		repeated := facets.Encode()
+		if _, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: kind, Window: &window, Query: &repeated}); refusal != nil {
+			t.Errorf("a %s view of %s: refusal = %+v, want its facets taken repeated", kind, repeated, refusal)
+		}
+	}
+}
+
+// TestAPipelineViewWhoseShownDaysStartBeforeYearOneIsRefused: the live hub's pipeline view reads
+// its at as GET /api/v1/delivery/pipeline reads it, so an at whose seven shown days start before
+// the year 1 is refused INVALID_QUERY when it is subscribed, naming the first shown day and its
+// year, as the route refuses it (TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused, R18),
+// rather than held as a view whose every answer shows days of the year 0. The first at whose days
+// all lie in the year 1 is held.
+func TestAPipelineViewWhoseShownDaysStartBeforeYearOneIsRefused(t *testing.T) {
+	t.Parallel()
+	for _, refused := range []struct{ at, first string }{
+		{"0001-01-01T12:00:00Z", "0000-12-26"},
+		{"0001-01-06T23:59:59Z", "0000-12-31"},
+	} {
+		_, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: deliveryLivePipeline, At: &refused.at})
+		if refusal == nil || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Message, refused.first) || !strings.Contains(refusal.Message, "year 0") {
+			t.Errorf("a pipeline view at %s: refusal = %+v, want INVALID_QUERY naming its first shown day %s and the year 0", refused.at, refusal, refused.first)
+		}
+	}
+	at := "0001-01-07T00:00:00Z"
+	spec, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: deliveryLivePipeline, At: &at})
+	if refusal != nil {
+		t.Fatalf("a pipeline view at %s: refusal = %+v, want it held: its shown days are 0001-01-01 to 0001-01-07", at, refusal)
+	}
+	if want := time.Date(1, time.January, 7, 0, 0, 0, 0, time.UTC); spec.at == nil || !spec.at.Equal(want) {
+		t.Errorf("the pipeline view at %s holds at %v, want %s", at, spec.at, want.Format(time.RFC3339))
 	}
 }

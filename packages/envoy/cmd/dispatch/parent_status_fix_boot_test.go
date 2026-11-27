@@ -128,8 +128,8 @@ func TestTheServerAnswersOnlyAfterTheParentStatusFix(t *testing.T) {
 					answer.path, recorded.Sub(answer.at), answer.status, answer.body)
 			}
 		}
-		// The boot also writes its dashboard assets, its registry row and its loops' duty_passes
-		// rows, so the record compares the issues alone.
+		// The boot also writes its dashboard assets, its registry row, its loops' duty_passes rows
+		// and the eval registry's seed of the project, so the record compares the issues alone.
 		if after := fixBootIssueRecord(t, database); after != before {
 			t.Errorf("the boot changed the issues, their comments or their events while another process held the lease of the fix:\nbefore %s\nafter  %s", before, after)
 		}
@@ -252,7 +252,10 @@ func fixBootRecords(t *testing.T, database *store.Store) string {
 }
 
 // fixBootIssueRecord is what a boot that runs no fix leaves as it found it, as JSON text: each
-// issue's status, parent and last sequence, and every comment and every event.
+// issue's status, parent and last sequence, every comment, and the issues' own events, the events
+// whose issue_key is set. A project's events, which carry artifact_id (a project document's) or
+// project_key instead, are left out: the server's own writes to a project at boot, such as the
+// eval registry's seed of the project's evals-md document, are no change of the issues.
 func fixBootIssueRecord(t *testing.T, database *store.Store) string {
 	t.Helper()
 	var record string
@@ -260,7 +263,7 @@ func fixBootIssueRecord(t *testing.T, database *store.Store) string {
 		select jsonb_build_object(
 			'issues', (select coalesce(jsonb_agg(jsonb_build_array(key, status, parent_key, last_seq) order by key), '[]') from issues),
 			'comments', (select coalesce(jsonb_agg(to_jsonb(c) order by c.id), '[]') from comments c),
-			'events', (select coalesce(jsonb_agg(to_jsonb(e) order by e.id), '[]') from events e)
+			'events', (select coalesce(jsonb_agg(to_jsonb(e) order by e.id), '[]') from events e where e.issue_key is not null)
 		)::text
 	`).Scan(&record); err != nil {
 		t.Fatalf("read the issues, their comments and their events: %v", err)

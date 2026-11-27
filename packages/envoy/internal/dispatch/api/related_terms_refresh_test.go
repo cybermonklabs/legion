@@ -463,9 +463,9 @@ func relatedTermDF(t *testing.T, database *store.Store, project, text, excludeIs
 	found := map[string]int{}
 	for rows.Next() {
 		var lexeme, quoted, surface string
-		var tf int
+		var tf, ownItems int
 		var df, items *int
-		if err := rows.Scan(&lexeme, &tf, &quoted, &df, &surface, &items); err != nil {
+		if err := rows.Scan(&lexeme, &tf, &quoted, &df, &surface, &items, &ownItems); err != nil {
 			t.Fatalf("scan the related terms of %s: %v", project, err)
 		}
 		if df != nil {

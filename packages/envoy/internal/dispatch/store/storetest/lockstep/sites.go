@@ -38,14 +38,20 @@ var storeWriteCallSites = map[string]string{
 	// The block index's cause: each site that appends what a version's index pass stated under
 	// the event that recorded the version, through QueueCaused (refs'
 	// TestCausedTakesTheStoreLockOrder proves the step on its own): an upload, a version write's
-	// event, an issue's spec, the block-index tick and the seed's documents. A settlement's
-	// version states it right after its event (appendEvents, above).
+	// event, an issue's spec, the eval registry's write of a project's evals-md, the block-index
+	// tick and the seed's documents. A settlement's version states it right after its event
+	// (appendEvents, above). The API's test drives the registry's write through a register write,
+	// the route that reaches it with one connection the test can watch, on both of its branches:
+	// an edit of the evals-md a project's create seeded, and the create of one, holding the eval's
+	// section, in a project made by SQL, which holds none (QueueNewArtifact), the branch every
+	// project's create runs.
 	"api/artifacts.go#commitArtifactVersionEvent":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/artifacts.go#storeArtifact":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/artifacts.go#queueNewArtifact":             "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"docs/new_document.go#QueueNewArtifact":         "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
+	"evals/document.go#queueDocumentEvent":          "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The comment path, which the comment route and the comment an issue write leaves share: the
 	// comment's node before the comments row that names it (queueCommentRow, through
 	// graphstore.QueueNodes), then its tuples and its cause under the event appended after both,
@@ -62,7 +68,7 @@ var storeWriteCallSites = map[string]string{
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to: written before its row, and caused by the event the
-	// create appends after it. createIssue, storeArtifact with queueNewArtifact, and createAskFor
+	// create appends after it. createIssue, storeArtifact with docs' QueueNewArtifact, and createAskFor
 	// are listed above for their block index and follow, and their drivers hold the node step too;
 	// these are the others. Their order - the owner lock their path already takes, the node before
 	// the row, the event before the tuples - is the order of the write they share (QueueNodes, then

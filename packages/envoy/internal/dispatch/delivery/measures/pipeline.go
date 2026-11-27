@@ -24,10 +24,9 @@ import (
 // Each card is a day builder and a fold (parts.go): PRChecks, DeployJobs and LeadTimes put their
 // rows on the shown UTC days, build each day's parts (PRChecksDay, DeployJobsDay and the lead-time
 // builders of measures.go), and fold each day's parts alone and the shown days' together
-// (FoldTiming, FoldSlowestJobs, FoldLeadTime), the folds a later slice of
-// cybermonklabs/legion#3976 reads the stored parts of the CI and delivery evals with. The
-// failing-jobs table is no day part: FailingJobs reads the run jobs of the FailingWindow before
-// the end its caller names.
+// (FoldTiming, FoldSlowestJobs, FoldLeadTime), the folds the CI and delivery evals read stored
+// parts with. The failing-jobs table is no day part: FailingJobs reads the run jobs of the
+// FailingWindow before the end its caller names.
 
 // ShownDayCount is how many UTC days the Pipeline page shows, ending today (pipeline.py:19).
 const ShownDayCount = 7
@@ -36,9 +35,11 @@ const ShownDayCount = 7
 // of FoldSlowestJobs' ranking.
 const SlowestJobs = 5
 
-// SlowestMinResults is how many timed results a job needs in the shown days to be ranked, so a
-// one-task matrix entry with a handful of results is not (pipeline.py:27-29): the fewest the
-// Pipeline route passes PRChecks.
+// SlowestMinResults is how many timed results a job needs in the shown days to be ranked where no
+// eval states another, so a one-task matrix entry with a handful of results is not
+// (pipeline.py:27-29): the min_n the catalogue seeds pr-ci's job series with, which a person may
+// change, and the one the deployment-wide Pipeline ranks by where its deploy repository's project
+// holds no pr-ci eval to read one from (evals.PipelineMinN).
 const SlowestMinResults = 50
 
 // FailingWindow is how far back the failing-jobs table looks from the moment it is read at, its
@@ -447,7 +448,7 @@ func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Del
 }
 
 // DeployJobCardID identifies one Pipeline deploy card: the key DeployJobsDay answers a card's
-// parts under.
+// parts under, and the card a deploy card's eval is of (evals.CardOf).
 type DeployJobCardID string
 
 // DeployJobCard is one Pipeline card, identified by CardID. Its embedded production rule gives every
@@ -469,8 +470,9 @@ const (
 
 // DeployCards is the deploy cards under settings, in the order DeployJobsDay gives a name two cards
 // follow to the first: the production deploy, by the settings' production rule, and the staging
-// end-to-end and staging deploy jobs where the settings name them. The Pipeline route builds its
-// cards here, and reads the deploy runs with the jobs these cards follow.
+// end-to-end and staging deploy jobs where the settings name them. The Pipeline route and the CI
+// evals' day rows both build their cards here, and read the deploy runs with the jobs these
+// cards follow.
 func DeployCards(settings delivery.DeliverySettings) []DeployJobCard {
 	cards := []DeployJobCard{{CardID: CardProductionApply, Production: settings.Production()}}
 	for _, optional := range []struct {

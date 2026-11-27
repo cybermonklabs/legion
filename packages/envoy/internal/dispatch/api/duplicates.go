@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -468,9 +469,8 @@ func (s *server) readDuplicateCandidates(
 	if _, err := tx.Exec(ctx, fmt.Sprintf("set local statement_timeout = '%dms'", bound.Milliseconds())); err != nil {
 		return nil, err
 	}
-	// The new issue does not exist yet, so nothing of it is left out of the word statistics.
 	stage = nearCopyStageTerms
-	picked, err := s.pickRelatedTerms(ctx, tx, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
+	picked, err := s.pickNearCopyTerms(ctx, tx, project, duplicateGateText(title, spec), title)
 	if err != nil {
 		return nil, err
 	}
@@ -505,6 +505,43 @@ func (s *server) readDuplicateCandidates(
 		return nil, err
 	}
 	return scanDuplicateCandidates(rows)
+}
+
+// nearCopyUncountedDocumentQuery reads the id of project $1's `evals-md` ($2, evals.DocumentSlug),
+// the document the server writes into every project (dispatch://INFRA-2916, R5), and no row where
+// the project holds none or its artifact of that slug is no document. Its predicate is that of
+// artifacts_project_documents (migration 0091), so it reads the project's few unlinked documents.
+const nearCopyUncountedDocumentQuery = `
+select id::text from artifacts
+ where project_key = $1 and issue_key is null and session_id is null and slug = $2 and kind = 'doc'`
+
+// pickNearCopyTerms picks the gate's terms from text, the new issue's title and spec
+// (duplicateGateText), whose title is title: its rarest words by the project's term statistics,
+// each word those statistics do not price taken at the rarest they do (priceUnknownTerms). The
+// project's `evals-md` is left out of those statistics, its words out of df and the document out
+// of N (relatedExclusion.outOfN). The new issue does not exist yet, so nothing of it is left out.
+//
+// The server writes that document into every project as the project is created, so in a new
+// project it is one of the few items the statistics count, and its prose holds the common words
+// of a spec. In a project of the document and one issue whose spec said the service "ships",
+// "ship" had df 3 (the document, that issue and its spec) where every other word of the next
+// spec had df 1, so it weighed 0.13 where they weighed 0.98: the next issue about shipping,
+// sharing ten of its thirteen words with an open issue of the same template, scored 0.82 against
+// that issue and was refused. Without the document every one of its words weighs alike and it
+// scores 10/13, 0.77, as it did before projects were seeded
+// (TestANewProjectsFirstIssuesMeetTheNearCopyGateWithoutItsEvalsDocument). The two bars were
+// calibrated on statistics that held no such document (duplicateRefuseScore). The document is
+// no candidate either way: the gate scores open issues alone.
+//
+// The replay that times the gate picks its terms here too, so what it times is the gate's pick.
+func (s *server) pickNearCopyTerms(ctx context.Context, q queryer, project, text, title string) (relatedTerms, error) {
+	var seeded relatedExclusion
+	err := q.QueryRow(ctx, nearCopyUncountedDocumentQuery, project, evals.DocumentSlug).Scan(&seeded.artifactID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return relatedTerms{}, err
+	}
+	seeded.outOfN = seeded.artifactID != ""
+	return s.pickRelatedTerms(ctx, q, project, text, title, seeded, priceUnknownTerms)
 }
 
 // scanDuplicateCandidates reads the near-copy check's rows, (key, title, status, shared, score,

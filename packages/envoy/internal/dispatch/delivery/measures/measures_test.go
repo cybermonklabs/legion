@@ -204,14 +204,14 @@ func TestComputeMatchesThePrototypeOnItsFixture(t *testing.T) {
 	if perPR.Confirmed != 2 || perPR.Pending != 1 || perPR.Rejected != 1 || perPR.Reverts != 1 || perPR.Total != 14 {
 		t.Errorf("per_pr = %+v, want {confirmed 2, pending 1, rejected 1, reverts 1, total 14}", perPR)
 	}
-	assertFloat(t, "per_pr.rate", perPR.Rate, 2.0/14)
+	assertOptional(t, "per_pr.rate", perPR.Rate, new(2.0/14))
 	perDeploy := result.ChangeFailureRate.PerDeploy
 	if perDeploy.Confirmed != 2 || perDeploy.Pending != 0 || perDeploy.Rejected != 1 || perDeploy.Reverts != 1 ||
 		perDeploy.Total != 5 || perDeploy.ConfirmedOrPending != 2 {
 		t.Errorf("per_deploy = %+v, want {confirmed 2, pending 0, rejected 1, reverts 1, total 5, confirmed_or_pending 2}", perDeploy)
 	}
-	assertFloat(t, "per_deploy.rate", perDeploy.Rate, 0.4)
-	assertFloat(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, 0.4)
+	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.4))
+	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.4))
 
 	assertOptional(t, "time_to_restore.median_minutes", result.TimeToRestore.MedianMinutes, new(750.0))
 	assertFloat(t, "rework_share", result.ReworkShare, 4.0/14)
@@ -268,18 +268,57 @@ func TestComputeOnStoredContainment(t *testing.T) {
 	}
 }
 
-func TestComputeWithNoFlagsReportsZeroFailuresAndNoRestoreTime(t *testing.T) {
+// TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime: with no failure source (nil
+// flags) the change failure rate is still the object a page of an earlier build reads, every
+// count 0 and every rate nil, which no target can judge, and time to restore holds no median;
+// with a source that holds no flag (an empty list) the rate is a measured 0 over the window's pull
+// requests and deploys, while a rate over none, a denominator of 0, reads no value: a window with
+// no deploy measured no per-deploy rate, and a 0 there would be judged met.
+func TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime(t *testing.T) {
 	prs, runs, window := loadFixture(t)
 	result := Compute(prs, runs, nil, window)
-
-	if got, want := result.ChangeFailureRate.PerPR, (FlagCounts{Total: 14}); got != want {
-		t.Errorf("per_pr = %+v, want %+v", got, want)
+	if result.ChangeFailureRate != (ChangeFailureRate{}) {
+		t.Errorf("change_failure_rate = %+v with no failure source, want every count 0 and every rate nil", result.ChangeFailureRate)
 	}
-	if got, want := result.ChangeFailureRate.PerDeploy, (DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}); got != want {
-		t.Errorf("per_deploy = %+v, want %+v", got, want)
+	encoded, err := json.Marshal(result.ChangeFailureRate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const unmeasured = `{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
+		`"per_deploy":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null,"confirmed_or_pending":0,"upper_bound_rate":null}}`
+	if string(encoded) != unmeasured {
+		t.Errorf("change_failure_rate encodes %s with no failure source, want %s", encoded, unmeasured)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
 		t.Errorf("time_to_restore.median_minutes = %v, want nil", *result.TimeToRestore.MedianMinutes)
+	}
+
+	for _, measured := range []struct {
+		name                         string
+		got                          ChangeFailureRate
+		wantCounts                   ChangeFailureRate
+		perPR, perDeploy, upperBound *float64
+	}{
+		{"a source with no flag", Compute(prs, runs, []Flag{}, window).ChangeFailureRate,
+			ChangeFailureRate{PerPR: FlagCounts{Total: 14}, PerDeploy: DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}},
+			new(0.0), new(0.0), new(0.0)},
+		// Pull requests and no run: the per-PR rate is a measured 0, and the two over the deploys,
+		// of which there is none, read no value.
+		{"a source with no flag or run", Compute(prs, nil, []Flag{}, window).ChangeFailureRate,
+			ChangeFailureRate{PerPR: FlagCounts{Total: 14}}, new(0.0), nil, nil},
+		// Neither a pull request nor a run: every day's parts hold a zero denominator, so no rate
+		// was measured.
+		{"a source with no flag, pull request or run", Compute(nil, nil, []Flag{}, window).ChangeFailureRate,
+			ChangeFailureRate{}, nil, nil, nil},
+	} {
+		counts := measured.got
+		counts.PerPR.Rate, counts.PerDeploy.Rate, counts.PerDeploy.UpperBoundRate = nil, nil, nil
+		if counts != measured.wantCounts {
+			t.Errorf("%s: counts = %+v, want %+v", measured.name, counts, measured.wantCounts)
+		}
+		assertOptional(t, measured.name+": per_pr.rate", measured.got.PerPR.Rate, measured.perPR)
+		assertOptional(t, measured.name+": per_deploy.rate", measured.got.PerDeploy.Rate, measured.perDeploy)
+		assertOptional(t, measured.name+": per_deploy.upper_bound_rate", measured.got.PerDeploy.UpperBoundRate, measured.upperBound)
 	}
 }
 
@@ -293,11 +332,11 @@ func TestUpperBoundCountsEachDeployOnce(t *testing.T) {
 		Flag{Broken: "acme/widgets#105", Fix: "acme/widgets#107", Kind: "fix", State: "pending"},
 	)
 	perDeploy := Compute(prs, runs, flags, window).ChangeFailureRate.PerDeploy
-	assertFloat(t, "per_deploy.rate", perDeploy.Rate, 0.4)
+	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.4))
 	if perDeploy.Pending != 2 || perDeploy.ConfirmedOrPending != 3 {
 		t.Errorf("per_deploy = {pending %d, confirmed_or_pending %d}, want {2, 3}", perDeploy.Pending, perDeploy.ConfirmedOrPending)
 	}
-	assertFloat(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, 0.6)
+	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.6))
 }
 
 // TestACancelledRunWhoseProductionJobSucceededIsADeployButNotARunSuccess is dora.test.ts:122-137.
@@ -399,119 +438,6 @@ func TestQuantileIsLinearBetweenRanks(t *testing.T) {
 	assertFloat(t, "Quantile(0.9)", Quantile(values, 0.9), 52)
 	assertFloat(t, "Quantile(0.5)", Quantile(values, 0.5), 30)
 	assertFloat(t, "Quantile of one", Quantile([]float64{7}, 0.9), 7)
-}
-
-func optionalBool(b *bool) any {
-	if b == nil {
-		return "nil"
-	}
-	return *b
-}
-
-func assertStatus(t *testing.T, got, want Status) {
-	t.Helper()
-	pairs := []struct {
-		name      string
-		got, want *bool
-	}{
-		{"change_failure_rate", got.ChangeFailureRate, want.ChangeFailureRate},
-		{"change_failure_rate_upper_bound", got.ChangeFailureRateUpperBound, want.ChangeFailureRateUpperBound},
-		{"merge_to_production_median", got.MergeToProductionMedian, want.MergeToProductionMedian},
-		{"merge_to_production", got.MergeToProduction, want.MergeToProduction},
-		{"opened_to_merge", got.OpenedToMerge, want.OpenedToMerge},
-		{"deploy_run_success", got.DeployRunSuccess, want.DeployRunSuccess},
-	}
-	for _, pair := range pairs {
-		if (pair.got == nil) != (pair.want == nil) || (pair.got != nil && *pair.got != *pair.want) {
-			t.Errorf("%s = %v, want %v", pair.name, optionalBool(pair.got), optionalBool(pair.want))
-		}
-	}
-	if got.DeploysPerDay != want.DeploysPerDay {
-		t.Errorf("deploys_per_day = %t, want %t", got.DeploysPerDay, want.DeploysPerDay)
-	}
-	if got.UnownedP0 != want.UnownedP0 {
-		t.Errorf("unowned_p0 = %t, want %t", got.UnownedP0, want.UnownedP0)
-	}
-}
-
-// atTargets is the fixture's result with every KPI set exactly to its target value
-// (dora.test.ts:193-219).
-func atTargets(base Result) Result {
-	result := base
-	result.DeployFrequency.PerDay = DefaultTargets.DeploysPerDay
-	result.ChangeFailureRate.PerDeploy.Total = 100
-	result.ChangeFailureRate.PerDeploy.Rate = DefaultTargets.ChangeFailureRate
-	result.ChangeFailureRate.PerDeploy.UpperBoundRate = DefaultTargets.ChangeFailureRate
-	merge := DefaultTargets.MergeToProductionMinutes
-	result.LeadTime.MergeToProduction = Spread{MedianMinutes: &merge, P90Minutes: &merge, MaxMinutes: &merge}
-	opened := DefaultTargets.OpenedToMergeMedianMinutes
-	result.LeadTime.OpenedToMerge = Spread{MedianMinutes: &opened, P90Minutes: &opened, MaxMinutes: &opened}
-	result.DeployRunSuccess = DeployRunSuccess{Concluded: 10, ReachedProduction: 9, Rate: new(DefaultTargets.DeployRunSuccessRate)}
-	return result
-}
-
-// TestKPIStatus is dora.test.ts:190-290.
-func TestKPIStatus(t *testing.T) {
-	prs, runs, window := loadFixture(t)
-	base := Compute(prs, runs, fixtureFlags, window)
-
-	t.Run("the fixture misses every target", func(t *testing.T) {
-		assertStatus(t, KPIStatus(base, 1, DefaultTargets), Status{
-			DeploysPerDay:               false,
-			ChangeFailureRate:           new(false),
-			ChangeFailureRateUpperBound: new(false),
-			MergeToProductionMedian:     new(false),
-			MergeToProduction:           new(false),
-			OpenedToMerge:               new(false),
-			DeployRunSuccess:            new(false),
-			UnownedP0:                   false,
-		})
-	})
-
-	t.Run("'at least' targets are met at the target; 'under' targets are missed at it", func(t *testing.T) {
-		assertStatus(t, KPIStatus(atTargets(base), 0, DefaultTargets), Status{
-			DeploysPerDay:               true,
-			ChangeFailureRate:           new(false),
-			ChangeFailureRateUpperBound: new(false),
-			MergeToProductionMedian:     new(false),
-			MergeToProduction:           new(false),
-			OpenedToMerge:               new(false),
-			DeployRunSuccess:            new(true),
-			UnownedP0:                   true,
-		})
-	})
-
-	t.Run("just under an 'under' target is met, and the maximum decides merge to production", func(t *testing.T) {
-		result := atTargets(base)
-		result.ChangeFailureRate.PerDeploy.Rate = 0.0499
-		result.ChangeFailureRate.PerDeploy.UpperBoundRate = 0.08
-		result.LeadTime.MergeToProduction = Spread{MedianMinutes: new(20.0), P90Minutes: new(40.0), MaxMinutes: new(44.9)}
-		result.LeadTime.OpenedToMerge = Spread{MedianMinutes: new(59.9), P90Minutes: new(59.9), MaxMinutes: new(59.9)}
-		assertStatus(t, KPIStatus(result, 0, DefaultTargets), Status{
-			DeploysPerDay:               true,
-			ChangeFailureRate:           new(true),
-			ChangeFailureRateUpperBound: new(false),
-			MergeToProductionMedian:     new(true),
-			MergeToProduction:           new(true),
-			OpenedToMerge:               new(true),
-			DeployRunSuccess:            new(true),
-			UnownedP0:                   true,
-		})
-	})
-
-	t.Run("a window with nothing to measure reports no status rather than met", func(t *testing.T) {
-		result := atTargets(base)
-		result.ChangeFailureRate.PerDeploy.Total = 0
-		result.ChangeFailureRate.PerDeploy.Rate = 0
-		result.ChangeFailureRate.PerDeploy.UpperBoundRate = 0
-		result.LeadTime.MergeToProduction = Spread{}
-		result.LeadTime.OpenedToMerge = Spread{}
-		result.DeployRunSuccess = DeployRunSuccess{Cancelled: 3}
-		assertStatus(t, KPIStatus(result, 0, DefaultTargets), Status{
-			DeploysPerDay: true,
-			UnownedP0:     true,
-		})
-	})
 }
 
 // TestQuantileRoundsEachStepOnEveryArchitecture: Quantile rounds its rank and the step it adds

@@ -1,0 +1,37 @@
+kind: Added
+body: |-
+  Dispatch computes each issue's Legion facts once and stores them as rows: its work hours by
+  board column, the work time they come out of, its review rounds, its root and depth in the
+  tree, the hours it held an admission slot, why it waits, and the first and last moment of its
+  work. One computation answers them all, so no two views of one issue can disagree.
+  A leased consumer keeps the rows true to their inputs. It wakes on the issue's own events, on
+  the daemon's observations and on the delivery change feed, recomputes the issue whose inputs
+  moved with its ancestors, and recomputes the subtree of an issue that moved to another tree, by
+  its parent link or by the tree its daemon reports, with the tree it left, and it rewrites no
+  row on a timer. An open issue's row holds its facts as of the newest input they read and how
+  fast each grows after it, so a row whose inputs did not move is never rewritten, and every
+  read gives each fact at the read's own clock. Each build reads a project whole once, as does a
+  project whose rows have gone and a cursor whose rows the feed has pruned; during a roll the
+  older build deletes no row or filing and the newer build computes again every row and filing
+  the older one writes, so once the older process has stopped every row and filing is the
+  running build's. A pass answers a pruned cursor on its first page, which is the page that
+  reads every project whole. A later page that meets the loss holds its cursor where it stood and
+  has the page after it answer the loss.
+  The board at `GET /api/v1/projects/{key}/legion/board` gains `issues`, a map keyed by issue key
+  of the stored rows of every open issue with Legion phase work and of every issue the board
+  shows: each card's issue and every issue of a tree a card stands in. A closed issue the board
+  does not show is served by the eval items route alone, by its close day, so every issue has one
+  source and the body follows the open work and what the daemon runs rather than the project's
+  history. The rows are read by key, by tree root and as the project's open rows, each through an
+  index, and the read computes nothing but each open fact's growth to the moment of the read; the
+  live push carries the same map, entry by entry. Its header says the oldest `updated_at` of the
+  rows it served and the age of the consumer's cursor.
+  Each card now says what the slot it holds is used for (`working`, `between_turns`,
+  `held_children`, `held_person` or `held_idle`), why it waits (`ready`, `slot`, `blocked` or
+  `person`) with the time since and the issues a blocker link holds it on, its place in the
+  daemon's waiting line, when it took its slot and its tree's slot. Both rules live beside the
+  phases rather than in the route, because the stored rows answer them too.
+  A facts write logs itself on the `delivery_changes` feed under the new kind `issue_facts`,
+  carrying the project, the issue and the issue's close before and after the write, so every
+  view built on the facts is woken and the per-day rows rewrite the close days that count the
+  issue, which the change names, and no other day; a change of an open issue names no day.

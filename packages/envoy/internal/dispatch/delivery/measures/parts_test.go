@@ -80,9 +80,9 @@ func TestAShareFoldsTheSummedNumeratorOverTheSummedDenominator(t *testing.T) {
 	if perPR.Confirmed != 2 || perPR.Total != 10 || perPR.Pending != 4 || perPR.Reverts != 1 {
 		t.Errorf("per_pr = %+v, want 2 confirmed of 10 pull requests, 4 pending, 1 revert", perPR)
 	}
-	assertFloat(t, "per_deploy.rate", perDeploy.Rate, 0.2)
-	assertFloat(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, 0.2)
-	assertFloat(t, "per_pr.rate", perPR.Rate, 0.2)
+	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.2))
+	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.2))
+	assertOptional(t, "per_pr.rate", perPR.Rate, new(0.2))
 	t.Logf("summed share %v; the mean of the two daily shares would read %v", *success.Rate, meanOfDailyShares)
 }
 
@@ -100,10 +100,9 @@ func TestACountFoldsTheSumOfTheDays(t *testing.T) {
 }
 
 // TestNoPartsReadNoValueAndAZeroPartReadsZero: a fold of no part of its series reads no value,
-// never 0, whether the set is empty or holds only another series' parts; a zero part, a day built
-// with no rows, reads zero counts, and a share over its zero denominator still reads no value. The
-// change failure rate is the exception: it reads every count and every rate 0 for no part and for
-// a zero part alike, as the Delivery page has always read it with no failure source.
+// never 0, whether the set is empty or holds only another series' parts (the change failure rate:
+// every count 0 and every rate nil); a zero part, a day built with no rows, reads zero counts, and
+// a share over its zero denominator still reads no value.
 func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 	window := Window{From: foldDays[0], To: foldDays[0].Add(day)}
 	other := []DayPart{CountPart(foldDays[0], "elsewhere", 4, nil), RatioPart(foldDays[0], "elsewhere", 1, 2, nil)}
@@ -118,7 +117,7 @@ func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 			t.Errorf("%s: FoldReworkShare = %v, want nil", name, *got)
 		}
 		if got := FoldChangeFailureRate(parts); got != (ChangeFailureRate{}) {
-			t.Errorf("%s: FoldChangeFailureRate = %+v, want every count and every rate 0", name, got)
+			t.Errorf("%s: FoldChangeFailureRate = %+v, want every count 0 and every rate nil", name, got)
 		}
 		assertLeadTimeCell(t, name+": FoldLeadTime", FoldLeadTime(parts), 0, nil, nil, nil)
 		assertOptional(t, name+": FoldTimeToRestore.median_minutes", FoldTimeToRestore(parts).MedianMinutes, nil)
@@ -139,6 +138,6 @@ func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 	}
 	assertLeadTimeCell(t, "FoldLeadTime of a zero part", FoldLeadTime(MergeToProductionDay(foldDays[0], nil)), 0, nil, nil, nil)
 	if got := FoldChangeFailureRate(ChangeFailureRateDay(foldDays[0], nil, nil, nil)); got != (ChangeFailureRate{}) {
-		t.Errorf("FoldChangeFailureRate of a zero part = %+v, want every count and every rate 0", got)
+		t.Errorf("FoldChangeFailureRate of a zero part = %+v, want every count 0 and every rate nil", got)
 	}
 }

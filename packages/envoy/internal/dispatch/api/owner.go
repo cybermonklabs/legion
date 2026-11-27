@@ -100,8 +100,11 @@ func (s *server) loadProject(ctx context.Context, q queryer, key string) (model.
 // errProjectNotFound is the 404 PROJECT_NOT_FOUND of a project key that no project holds, which
 // the project routes answer (loadProject). The going POST answers it too, to a caller whose
 // credential names one project, for a private project that the credential does not name
-// (createGoingRequest), so the two answers are one.
-func errProjectNotFound() error {
+// (createGoingRequest), so the two answers are one. It is an *apiError, so a caller that answers
+// it otherwise than a route does (the live hub tells a Legion board's or an evals view's
+// subscribers once and keeps the view open) finds it with errors.As (viewReads.refusal) and
+// reads its code and message from it rather than spelling them again.
+func errProjectNotFound() *apiError {
 	return errorf(http.StatusNotFound, "PROJECT_NOT_FOUND", "project not found")
 }
 

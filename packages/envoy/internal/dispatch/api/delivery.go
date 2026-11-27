@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -61,13 +62,20 @@ var deliveryPrioritySelection = regexp.MustCompile(`^[pP]?([0-3])$`)
 
 // parseDeliveryWindow reads from/to (RFC3339) from query, defaulting to the last 7 days when
 // either is absent, and refuses a malformed value, an inverted window, or one wider than
-// maxDeliveryWindow.
+// maxDeliveryWindow. A from the query leaves out is to less defaultDeliveryWindow, held to the UTC
+// years 1 to 9999 as a named one is (parseOptionalRFC3339, R18): a to in the first seven days of
+// the year 1 would otherwise start the window in the year 0. Its refusal names the from it derived
+// and where it came from, since the query that earns it names no from.
 func parseDeliveryWindow(query url.Values) (from, to time.Time, err error) {
 	if to, err = parseOptionalRFC3339(query, "to", time.Now().UTC()); err != nil {
 		return time.Time{}, time.Time{}, err
 	}
 	if from, err = parseOptionalRFC3339(query, "from", to.Add(-defaultDeliveryWindow)); err != nil {
 		return time.Time{}, time.Time{}, err
+	}
+	if year := from.UTC().Year(); !query.Has("from") && year < 1 {
+		return time.Time{}, time.Time{}, fmt.Errorf("from is not named, so it is to less the default %d days, %s, a moment of the year %d: from must be a moment of the UTC years 1 to 9999",
+			defaultDeliveryWindow/(24*time.Hour), from.UTC().Format(time.RFC3339Nano), year)
 	}
 	if !from.Before(to) {
 		return time.Time{}, time.Time{}, errors.New("from must be before to")
@@ -78,8 +86,28 @@ func parseDeliveryWindow(query url.Values) (from, to time.Time, err error) {
 	return from, to, nil
 }
 
-// parseOptionalRFC3339 is query's name parameter as an RFC3339 time, or fallback when the query
-// has no such parameter, refusing a value that does not parse with an error naming the parameter.
+// The query keys each delivery read takes one value of, in the order its shape declares them,
+// which a query names once at most (repeatedQueryKey): the fields of its route shape's query
+// struct (routeShape.Params, in the route's file) that hold one value (oneValueQueryKeys), read
+// once when the package starts. Every facet the timeline and the measures filter by
+// (deliveryFacets) is a list field there, and so stays repeatable.
+var (
+	deliveryWindowOneValueKeys   = oneValueQueryKeys(deliveryWindowQuery{})
+	deliveryPipelineOneValueKeys = oneValueQueryKeys(deliveryPipelineQuery{})
+)
+
+// parseDeliveryWindowQuery reads the window of GET /api/v1/delivery/timeline's or
+// GET /api/v1/delivery/measures's query (parseDeliveryWindow), refusing first a query that names
+// one of the keys those routes read one value of, from, to or q, more than once.
+func parseDeliveryWindowQuery(query url.Values) (from, to time.Time, err error) {
+	if err := repeatedQueryKey(query, deliveryWindowOneValueKeys); err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	return parseDeliveryWindow(query)
+}
+
+// parseOptionalRFC3339 is query's name parameter as an RFC3339 time of the UTC years 1 to 9999
+// (parseRFC3339), or fallback when the query has no such parameter.
 func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (time.Time, error) {
 	if !query.Has(name) {
 		return fallback, nil
@@ -87,12 +115,19 @@ func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (ti
 	return parseRFC3339(name, query.Get(name))
 }
 
-// parseRFC3339 is text, given for the query parameter name, as an RFC3339 time; its error is the
-// text of the route's 400 INVALID_QUERY, naming the parameter.
+// parseRFC3339 is text, given for the query parameter name, as an RFC3339 time, refusing a value
+// that does not parse, or one whose UTC year is outside 1 to 9999 (R18); its error is the text of
+// the route's 400 INVALID_QUERY, naming the parameter. RFC 3339 writes the years 0000 to 9999 with
+// any offset, so 9999-12-31T23:00:00-14:00 parses and is a moment of the year 10000, which no JSON
+// answer can write: a route that echoed it answered an empty body.
 func parseRFC3339(name, text string) (time.Time, error) {
-	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(text))
+	value := strings.TrimSpace(text)
+	parsed, err := time.Parse(time.RFC3339, value)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%s must be an RFC3339 timestamp", name)
+	}
+	if year := parsed.UTC().Year(); year < 1 || year > 9999 {
+		return time.Time{}, fmt.Errorf("%s must be a moment of the UTC years 1 to 9999, and %s is one of the year %d", name, value, year)
 	}
 	return parsed, nil
 }
@@ -142,10 +177,11 @@ func (bound windowBound) parsed() (*time.Time, error) {
 	return &parsed, nil
 }
 
-// deliverySettings reads the timeline's configuration record, answering 404
+// deliverySettings reads the delivery settings the timeline, the measures, the Pipeline and a
+// deploy run's drill-down answer under (recordedDeliverySettings), answering 404
 // DELIVERY_NOT_CONFIGURED (or the store's error) and false when it cannot.
 func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (delivery.DeliverySettings, bool) {
-	settings, err := delivery.GetSettings(r.Context(), s.deps.Store.Pool)
+	settings, err := recordedDeliverySettings(r.Context(), s.deps.Store.Pool)
 	if err != nil {
 		if errors.Is(err, delivery.ErrNoSettings) {
 			writeError(w, deliveryNotConfiguredCode, http.StatusNotFound, deliveryNotConfiguredMessage)
@@ -155,6 +191,24 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 		return delivery.DeliverySettings{}, false
 	}
 	return settings, true
+}
+
+// recordedDeliverySettings reads, in q, the delivery settings the delivery routes and the live
+// hub's timeline, measures and pipeline views answer under: the settings the stored day rows
+// stand built under (evals.BuiltSettingsIn), the saved settings with the production rule, the
+// deploy cards' jobs and the deploy repository as the refresher recorded them with the rows. The
+// Evals tab reads the same, so between a save of the settings and the refresher's commit that
+// brings the rows to it every page answers the old settings, and from that commit on the new
+// ones: one page shows one state. delivery.ErrNoSettings where the deployment has set none.
+func recordedDeliverySettings(ctx context.Context, q delivery.Querier) (delivery.DeliverySettings, error) {
+	settings, err := evals.BuiltSettingsIn(ctx, q)
+	if err != nil {
+		return delivery.DeliverySettings{}, err
+	}
+	if settings == nil {
+		return delivery.DeliverySettings{}, delivery.ErrNoSettings
+	}
+	return *settings, nil
 }
 
 // getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
@@ -171,7 +225,7 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	from, to, err := parseDeliveryWindow(query)
+	from, to, err := parseDeliveryWindowQuery(query)
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
@@ -302,7 +356,11 @@ type deliveryPopulation struct {
 	windowJobs    map[int64][]delivery.DeliveryRunJob
 	windowShipped map[int64]int
 	unownedP0     []delivery.UnownedIssue
-	groups        []delivery.SessionGroup
+	// targetEvals is the evals whose targets the measures judge them by (evals.DeliveryTargetSlugs),
+	// as the deploy repository's project holds them (evals.Store.DeployRepoEvals),
+	// read with the window's rows, so a narrowed population judges by the targets it was read with.
+	targetEvals map[string]evals.Entry
+	groups      []delivery.SessionGroup
 	// titles, issues and components are the session titles, the facts of the issues the pull
 	// requests name and the components of those issues' projects, read where the population is
 	// labeled and nil elsewhere.
@@ -359,8 +417,9 @@ type deliveryWaitingRow struct {
 
 // readDeliveryPopulation is every read the timeline's and the measures' answers for one window and
 // query make (the population pull requests, the deploy runs on main GitHub created at or after
-// `from` with their jobs, the measures' runs started in the window with their jobs, and the
-// unowned P0 list); nothing that computes from it reads again. With withWaiting it also reads the
+// `from` with their jobs, the measures' runs started in the window with their jobs, the unowned
+// P0 list and the evals whose targets judge the measures); nothing that computes from it reads
+// again. With withWaiting it also reads the
 // deploy repository's pull requests still waiting at `from` (ListPullRequestsWaitingAt), resolved
 // through the same issue and session lookups so the timeline's waiting line filters them alike;
 // the measures read none. withWaiting is the timeline's read, the one that lists the deploy runs,
@@ -372,32 +431,34 @@ func (s *server) readDeliveryPopulation(ctx context.Context, settings delivery.D
 }
 
 // readDeliveryRows is readDeliveryPopulation, and with withMeasures false leaves out the measures'
-// runs and unowned P0 list, which the Pipeline page's lead times do not read.
+// runs, unowned P0 list and target evals, which the Pipeline page's lead times do not read.
 func (s *server) readDeliveryRows(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
 	pool := s.deps.Store.Pool
 	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}}
 
 	// Independent reads, side by side. They never shared a transaction (each is its own
-	// statement on the pool, so each already read its own snapshot), so running them at once
-	// loses no consistency they had. Each takes one connection under a hold mark of its own
-	// (store.ForConcurrentRead): on the request's shared mark one read's open cursor would refuse
-	// the rest. The run jobs depend on the runs, so they follow the runs within the runs' own read.
+	// statement on the pool, or, the target evals' read, a read-only snapshot of its own,
+	// evals.Store.DeployRepoEvals), so running them at once loses no consistency they had. Each
+	// takes one connection under a hold mark of its own (store.ForConcurrentRead): on the
+	// request's shared mark one read's open cursor would refuse the rest. The run jobs depend on
+	// the runs, so they follow the runs within the runs' own read.
 	//
-	// A timeline request therefore holds up to seven of the shared pool's connections
+	// A timeline request therefore holds up to eight of the shared pool's connections
 	// (store.sharedPoolSize) for the length of its longest read, where it held one at a time (the
 	// window's pull requests beside its runs, and its runs' two reads of jobs, run side by side
-	// within their own read). That is fine because none of them holds a lock or opens a
-	// transaction, so none waits on another caller or makes another caller wait on it: the
-	// deadlock the pool's guard exists to prevent needs a caller already holding a connection,
-	// which ForConcurrentRead refuses. A read past the pool's free connections waits for one, as
-	// any request does.
+	// within their own read). That is fine because none of them takes a lock past the one any
+	// read takes of the tables it reads, the read-only snapshot no more than a statement does, so
+	// none waits on another caller or makes another caller wait on it: the deadlock the pool's
+	// guard exists to prevent needs a caller already holding a connection, which
+	// ForConcurrentRead refuses. A read past the pool's free connections waits for one, as any
+	// request does.
 	var deploys delivery.Deploys
 	independent := []func(ctx context.Context) error{
 		// The pull requests merged in the window, every deploy run on main GitHub created from
 		// `from` up to the bound past which no run ships a pull request merged before `to` first
 		// (delivery.MergedRows says why not cut at `to`; no bound for a window ending at the
 		// present) and, for the measures, the window's deploys with the rows before the window
-		// their shipped sets read.
+		// their shipped sets read, read by the rules the eval registry's day rows read by.
 		// Containment and the measures judge a run by its production jobs alone
 		// (delivery.Production.JudgedJobNames says why that judges every run as its every job
 		// would); the timeline lists each deploy run it shows with its failed jobs and the job
@@ -420,11 +481,16 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		},
 	}
 	if withMeasures {
-		// Every project's: the delivery measures follow no project.
-		independent = append(independent, func(ctx context.Context) (err error) {
-			pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, "")
-			return err
-		})
+		independent = append(independent,
+			// Every project's: the delivery measures follow no project.
+			func(ctx context.Context) (err error) {
+				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, "")
+				return err
+			},
+			func(ctx context.Context) (err error) {
+				pop.targetEvals, err = s.registry().DeployRepoEvals(ctx, settings.DeployRepo, evals.DeliveryTargetSlugs)
+				return err
+			})
 	}
 	if withWaiting {
 		// The deploy repository's pull requests still waiting at `from`, so the waiting line

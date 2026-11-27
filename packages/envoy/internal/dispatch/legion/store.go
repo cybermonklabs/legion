@@ -63,6 +63,52 @@ func NotifyRead(ctx context.Context, db Execer, project string) error {
 	return nil
 }
 
+// ObservationsLockKey is the first key of the observations' lock, the transaction advisory lock
+// (ObservationsLockKey, 0) that every insert into legion_observations takes immediately before it
+// draws its ids, and holds to its commit (QueueLockObservations): a whole read's
+// (recordObservations), a batch of state events' (recordEvents), a seeded history's
+// (legionseed's seeding.write) and the eval fixture's cases (evalfixture's observedCases). It is
+// the change log's lock in shape (delivery's lockChangesStatement, (6900, 0)) under the next key,
+// which no other lock of the module takes. An id is therefore drawn only once every row below it
+// has committed or rolled back, so a reader that pages the table by id, the Legion facts
+// consumer's cursor (legionfacts' readObservationPage), never meets a row below one it has read.
+// Without it the intake's runners, one per project, insert at once, and a row of one project could
+// commit after a higher id of another project that a reader had already passed.
+//
+// After it a writer locks only what no transaction waiting for it holds, so the lock closes no
+// cycle: its project's legion_current rows (the insert's trigger), which nothing but an insert into
+// legion_observations writes, and so nothing before this lock; its project's cursor row and held
+// parts, which an intake writer locked as its transaction began (lockPosition), and which no
+// transaction writes without that cursor row, so two writers of one project take turns on it before
+// either reaches this lock; FOR KEY SHARE on its projects row (its inserts' foreign keys), which
+// waits only for FOR UPDATE, a delete or a change of the key, none of which a writer takes; and the
+// notification queue's lock, which a transaction takes only as it commits.
+const ObservationsLockKey int32 = 6901
+
+// QueueLockObservations queues the observations' lock (ObservationsLockKey) into batch, so the
+// insert queued after it runs under it in the batch's one round trip and holds it to the commit of
+// the transaction the batch is sent in.
+func QueueLockObservations(batch *pgx.Batch) {
+	store.QueueExec(batch, "take the Legion observations' lock", `select pg_advisory_xact_lock($1, 0)`, ObservationsLockKey)
+}
+
+// insertObservations runs insert, a statement that inserts into legion_observations, in tx under
+// the observations' lock (QueueLockObservations), the two in one round trip, and answers how many
+// rows it inserted.
+func insertObservations(ctx context.Context, tx pgx.Tx, insert string, args ...any) (int64, error) {
+	batch := &pgx.Batch{}
+	QueueLockObservations(batch)
+	var inserted int64
+	batch.Queue(insert, args...).Exec(func(tag pgconn.CommandTag) error {
+		inserted = tag.RowsAffected()
+		return nil
+	})
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return 0, err
+	}
+	return inserted, nil
+}
+
 // scanSettings decodes one settingsColumns row.
 func scanSettings(row pgx.Row) (Settings, error) {
 	var settings Settings
@@ -344,14 +390,14 @@ func PruneReads(ctx context.Context, pool *store.Pool) (int64, error) {
 // same; the events follow the same rule the other way round, field by field, so whichever of the
 // two Dispatch writes last is the newest. The read's own legion_reads row keeps the read's time.
 //
-// One statement, so a read of some hundreds of fields is one round trip, and Postgres's own jsonb
-// comparison decides what changed: a Go encoding that ordered an object's keys differently from
-// jsonb would otherwise write a row at every read for a value that never moved. A row another
-// process already wrote is therefore not written twice, even where two holders of the intake's
-// durable overlapped.
+// One statement, run under the observations' lock in the same round trip (insertObservations), so a
+// read of some hundreds of fields is one round trip, and Postgres's own jsonb comparison decides
+// what changed: a Go encoding that ordered an object's keys differently from jsonb would otherwise
+// write a row at every read for a value that never moved. A row another process already wrote is
+// therefore not written twice, even where two holders of the intake's durable overlapped.
 func recordObservations(ctx context.Context, tx pgx.Tx, project string, at time.Time, observations []Observation) (int64, error) {
 	issueKeys, fields, values := observationColumns(observations)
-	tag, err := tx.Exec(ctx, `
+	written, err := insertObservations(ctx, tx, `
 		with found as (
 			select observed.issue_key, observed.field, observed.value::jsonb as value
 			from unnest($2::text[], $3::text[], $4::text[]) as observed(issue_key, field, value)
@@ -375,7 +421,7 @@ func recordObservations(ctx context.Context, tx pgx.Tx, project string, at time.
 	if err != nil {
 		return 0, fmt.Errorf("store the Legion observations of %s: %w", project, err)
 	}
-	return tag.RowsAffected(), nil
+	return written, nil
 }
 
 // observationColumns is observations as the three arrays recordObservations and recordEvents

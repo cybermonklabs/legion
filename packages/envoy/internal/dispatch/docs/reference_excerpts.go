@@ -549,9 +549,10 @@ const (
 
 // excerptSchedule is the reconciliation's pace. minGap is the least time from one pass's start to
 // the next one's, whatever woke it (duty.WokenLoop.MinGap), and also how long a pass waits when
-// another process holds the lease; retryBase is how long a document whose read or record failed
-// waits before its first retry, doubling with each failure after (refs.DeferExcerpts), and how
-// long a pass whose own read failed waits before the next. A test runs the loop faster.
+// another process holds the lease (duty.WokenLoop.Retry); retryBase is how long a document whose
+// read or record failed waits before its first retry, doubling with each failure after
+// (refs.DeferExcerpts), and how long a pass whose own read failed waits before the next. A test
+// runs the loop faster.
 type excerptSchedule struct {
 	minGap    time.Duration
 	retryBase time.Duration
@@ -603,6 +604,7 @@ func (s *Service) runReferenceExcerptReconciliation(ctx context.Context, leases 
 		Leases: leases,
 		Wake:   wake,
 		MinGap: schedule.minGap,
+		Retry:  schedule.minGap,
 		Pass: func(ctx context.Context) time.Time {
 			if !marked {
 				marked = s.markStaleExcerpts(ctx)

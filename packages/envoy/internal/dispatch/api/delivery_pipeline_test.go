@@ -4,13 +4,19 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"net/url"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -316,8 +322,13 @@ func TestGetDeliveryPipelineComputesTheFixture(t *testing.T) {
 	if opened := body.OpenedToMerge.Total; opened.N != 2 || opened.MedianMinutes == nil || math.Abs(*opened.MedianMinutes-35) > 1e-9 {
 		t.Errorf("opened_to_merge.total = %+v, want n 2, median 35", opened)
 	}
-	if body.Targets.MergeToProductionMinutes != 45 || body.Targets.OpenedToMergeMedianMinutes != 60 {
-		t.Errorf("targets = %+v, want the measures' DefaultTargets", body.Targets)
+	if want := catalogueTargets(); !reflect.DeepEqual(body.Targets, want) {
+		t.Errorf("targets = %s, want the catalogue's %s", showTargets(body.Targets), showTargets(want))
+	}
+	// The catalogue seeds main's targets: 45 minutes from merge to production, and a 60-minute
+	// median from open to merge.
+	if merge, opened := body.Targets.MergeToProductionMinutes, body.Targets.OpenedToMergeMedianMinutes; merge == nil || merge.Value != 45 || opened == nil || opened.Value != 60 {
+		t.Errorf("targets = %s, want merge_to_production_minutes 45 and opened_to_merge_median_minutes 60, main's", showTargets(body.Targets))
 	}
 	if _, ok := raw["freshness"]; !ok {
 		t.Error("no freshness")
@@ -355,4 +366,88 @@ func TestGetDeliveryPipelineAnswersEmptyListsAsArrays(t *testing.T) {
 			t.Errorf("body lacks %s: %s", want, text)
 		}
 	}
+}
+
+// TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject: the deployment-wide Pipeline
+// ranks its slowest jobs by the min_n of pr-ci's job series in the deploy repository's project,
+// the one whose published default repository it is (eval_days_defaults, which the evals
+// refresher's page commit moves and the test writes as it does, publishDefaultRepos), states it in
+// slowest_min_results, and ranks by measures.SlowestMinResults (50) where no project's default is
+// the repository, or more than one project's is, or its project holds no pr-ci eval yet, whatever
+// min_n another project's pr-ci holds. Over a deliverytest history whose deploy repository is
+// DELIV's default, a register write setting DELIV's job min_n to the timed results of the busiest
+// job the Pipeline ranks at 50 moves its table, so the table can tell the two apart; with that
+// min_n cleared (null, no minimum) it ranks every job with a timed result and states 1, the one
+// result a job needs to have a median to rank by (measures.FoldSlowestJobs); with DELIV's default
+// cleared the Pipeline answers its table at 50 again; with the repository the default of a
+// project made by SQL, which holds no eval, too; and with it the default of both, too.
+func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx := t.Context()
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2916, OneProject: true, Days: 14})
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, fixture.Project); err != nil {
+		t.Fatalf("seed the evals of %s: %v", fixture.Project, err)
+	}
+	publishDefaultRepos(t, database.Pool)
+	// The seven days ending on the history's eleventh day: the Pipeline reads at alone.
+	query := url.Values{"at": {fixture.From.AddDate(0, 0, 11).Add(-time.Second).Format(time.RFC3339)}}.Encode()
+	read := func() (names []string, busiest, minN int) {
+		t.Helper()
+		checks := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?"+query).PRChecks
+		for _, job := range checks.SlowestJobs {
+			names, busiest = append(names, job.Name), max(busiest, job.Total.N)
+		}
+		return names, busiest, checks.SlowestMinResults
+	}
+	at50, busiest, minN := read()
+	if minN != measures.SlowestMinResults || len(at50) < 2 {
+		t.Fatalf("with %s's pr-ci seeded the Pipeline ranks %v by %d, want two jobs or more by %d", fixture.Project, at50, minN, measures.SlowestMinResults)
+	}
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals", map[string]any{
+		"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": busiest}},
+	}, "pr-ci-min-n")
+	if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
+		t.Fatalf("set %s's pr-ci min_n to %d: status %d, body %s", fixture.Project, busiest, registered.Code, registered.Body.String())
+	}
+	if moved, _, minN := read(); minN != busiest || slices.Equal(moved, at50) {
+		t.Fatalf("with %s's pr-ci min_n at %d the Pipeline ranks %v by %d, at 50 %v: want its table moved and ranked by %d",
+			fixture.Project, busiest, moved, minN, at50, busiest)
+	}
+	cleared := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals", map[string]any{
+		"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": nil}},
+	}, "pr-ci-min-n-null")
+	if cleared.Code != http.StatusCreated && cleared.Code != http.StatusOK {
+		t.Fatalf("clear %s's pr-ci min_n: status %d, body %s", fixture.Project, cleared.Code, cleared.Body.String())
+	}
+	if every, _, minN := read(); minN != 1 || len(every) < len(at50) {
+		t.Fatalf("with %s's pr-ci min_n null the Pipeline ranks %v by %d, want every job with a timed result, at least the %d at 50, by 1",
+			fixture.Project, every, minN, len(at50))
+	}
+
+	setDefault := func(project string, repo *string) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `update projects set default_repo = $2 where key = $1`, project, repo); err != nil {
+			t.Fatalf("set %s's default repository to %v: %v", project, repo, err)
+		}
+		publishDefaultRepos(t, database.Pool)
+	}
+	setDefault(fixture.Project, nil)
+	if unmapped, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(unmapped, at50) {
+		t.Errorf("with %s no project's default the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, unmapped, minN, at50, measures.SlowestMinResults)
+	}
+
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, default_repo) values ('BARE', 'Made by SQL', 'alice', $1)`, fixture.DeployRepo); err != nil {
+		t.Fatalf("make a project by SQL: %v", err)
+	}
+	publishDefaultRepos(t, database.Pool)
+	if bare, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(bare, at50) {
+		t.Errorf("with %s BARE's default, which holds no pr-ci eval, the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, bare, minN, at50, measures.SlowestMinResults)
+	}
+	setDefault(fixture.Project, &fixture.DeployRepo)
+	if both, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(both, at50) {
+		t.Errorf("with %s the default of %s and BARE the Pipeline ranks %v by %d, want %v by %d: two projects name no one project", fixture.DeployRepo, fixture.Project, both, minN, at50, measures.SlowestMinResults)
+	}
+	t.Logf("at 50 the Pipeline ranks %v; at %s's min_n of %d another table; with the repository no project's default, a project's with no pr-ci eval, and two projects', %v again",
+		at50, fixture.Project, busiest, at50)
 }

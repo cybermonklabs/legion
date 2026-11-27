@@ -9,7 +9,10 @@
 package api
 
 import (
+	"net/http"
 	"sort"
+
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 )
 
 // routeAnswer is one answer a route can give: a status and a zero value of the Go type its body
@@ -76,7 +79,9 @@ type routeShape struct {
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
 	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
-	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
+	// Refusals are this route's refusal answers whose body is richer than the errorBody every
+	// route can give, each with its status. A refusal with the plain body is in none, whatever its
+	// status: the default answer covers it, the 405 of a reading's change included.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
 	// its bytes rather than modelling them; empty for every other route.
@@ -92,13 +97,23 @@ type routeShape struct {
 // --- the query-parameter structs -------------------------------------------------------------
 //
 // One struct per route, or per set of routes reading the same keys, each field carrying the key
-// it is read from. They are declarations: the handlers keep their own reads. Two keys of the API
-// are named by no struct here. `session` is read by actingPerson (server.go) on every route that
-// resolves a person, so it belongs to the whole API rather than to any one operation and the
-// emitter adds it everywhere; the delivery facet of the same name is left out with it. `cursor`
-// on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY, issue_page.go), and naming
-// it would offer a client a parameter that cannot work. No struct here is ever a request body,
-// and the emitter reads only each field's `query` and `enum` tags and the Go type it carries.
+// it is read from. The handlers keep their own reads of the values; the eval routes read their
+// struct's tags alone, the keys it declares (queryKeysOf, evals.go), to refuse any other key. Two
+// keys of the API are named by no struct here. `session` is read by actingPerson (server.go) on
+// every route that resolves a person, so it belongs to the whole API rather than to any one
+// operation and the emitter adds it everywhere; the delivery facet of the same name is left out
+// with it. `cursor` on GET /api/v1/issues is read only to refuse it (400 INVALID_QUERY,
+// issue_page.go), and naming it would offer a client a parameter that cannot work. No struct here
+// is ever a request body, and the emitter reads only each field's `query` and `enum` tags and the
+// Go type it carries.
+
+// evalRefusals are the eval writes' refusals that carry the registry's own body (evals.Error,
+// writeEvalError): 400, 404 PROJECT_NOT_FOUND and 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
+var evalRefusals = []routeAnswer{
+	{Status: http.StatusBadRequest, Body: evals.Error{}},
+	{Status: http.StatusNotFound, Body: evals.Error{}},
+	{Status: http.StatusConflict, Body: evals.Error{}},
+}
 
 // projectArtifactsQuery is GET /api/v1/projects/{key}/artifacts's query.
 type projectArtifactsQuery struct {
@@ -179,6 +194,104 @@ type deliveryPipelineQuery struct {
 	// At fixes the day the seven-day Pipeline window ends on, RFC3339; absent it is now.
 	// A malformed value is 400 INVALID_QUERY.
 	At string `query:"at"`
+}
+
+// evalListQuery is GET /api/v1/projects/{key}/evals's query: the window and the compare range,
+// which kind of eval, which repositories' day rows, and the page (parseEvalListQuery).
+type evalListQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To. The window is the
+	// UTC days [from, to) covers.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now. The window spans at most 84
+	// days.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive; the range spans at most 84 days
+	// and need not be as long as the window.
+	CompareTo string `query:"compare_to"`
+	// Kind keeps the evals of one kind.
+	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
+	// Repo, repeatable, folds these repositories' day rows in place of the project's own.
+	Repo []string `query:"repo"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// evalsQuery is GET /api/v1/evals's query: the projects read, and every key the project read
+// takes.
+type evalsQuery struct {
+	// Project, repeatable, names the projects read, in the order named; absent, every project is
+	// read, by key. A key no project holds is 404 PROJECT_NOT_FOUND.
+	Project []string `query:"project"`
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Kind keeps the evals of one kind.
+	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
+	// Repo, repeatable, folds these repositories' day rows in place of each project's own.
+	Repo []string `query:"repo"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts, counted across the projects.
+	Offset int `query:"offset"`
+}
+
+// evalDetailQuery is GET /api/v1/projects/{key}/evals/{slug}'s query: the list read's window,
+// compare range and repositories, which the newest version's values are folded over, and the
+// page of versions.
+type evalDetailQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Repo, repeatable, folds these repositories' day rows in place of the project's own.
+	Repo []string `query:"repo"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// evalItemsQuery is GET /api/v1/projects/{key}/evals/{slug}/items's query: the window and the
+// compare range, the filters, the order of pr-ci's jobs and the page (parseEvalItemsQuery).
+type evalItemsQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Series narrows the rows to one series: a reading's or a day row's series, a Legion
+	// series' cut (`:roots`, `:children`) or `filed:<class>`, or one job's `job:<name>`.
+	Series string `query:"series"`
+	// RowKind narrows the rows to one row kind.
+	RowKind string `query:"row_kind"`
+	// Row narrows the rows to one row key.
+	Row string `query:"row"`
+	// Repo, repeatable, narrows the rows to these repositories'.
+	Repo []string `query:"repo"`
+	// Sort answers pr-ci's job rows alone: median, the jobs with their series' min_n timed
+	// results, slowest first; failures, the jobs that failed in the 24 hours before the range's
+	// end, most failures first.
+	Sort string `query:"sort" enum:"median,failures"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
 }
 
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.

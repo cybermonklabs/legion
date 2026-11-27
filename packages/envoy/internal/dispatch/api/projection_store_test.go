@@ -541,11 +541,14 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/daemon/internal/store/kept_decisions.go#store.releaseKeptDecisions: update table":   {},
 	// The repository rename pass (store.RewriteRenamedRepositories): it writes a renamed repository's
 	// name or URL into the issues, projects, check, delivery, pull request head, branch commit,
-	// architecture source and CI reconcile tables, and deletes the rows the new name would
-	// collide with in them, none of which is projected.
-	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.nameWrite: update table":       {},
-	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.urlWrite: update table":        {},
-	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.collisions: delete from table": {},
+	// architecture source and CI reconcile tables, and into the owner keys of the eval day rows,
+	// their members and their owed days, and deletes the rows the new name would collide with in
+	// them, none of which is projected.
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.nameWrite: update table":            {},
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.urlWrite: update table":             {},
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.collisions: delete from table":      {},
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.ownerWrite: update table":           {},
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.ownerCollisions: delete from table": {},
 	// A migration runner's version table, which its caller names: schema_migrations for
 	// Dispatch's store (store.versionTable) and the broker's own for the broker. pgmigrate records
 	// each migration it applies and fills the identity of a row an earlier runner wrote; its test

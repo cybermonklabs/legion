@@ -60,9 +60,13 @@ func ListUnownedP0(ctx context.Context, q Querier, project string) ([]UnownedIss
 
 // CountUnownedP0 is how many issues ListUnownedP0 lists for project, which names one project,
 // counted by the statement rather than read. An empty project counts no issue and answers 0,
-// unlike ListUnownedP0's empty project, which lists every project's. Nothing in this tree calls it
-// yet: it is here because issues_open_p0's migration (20261117100010) and the plan test of this
-// package name its statement.
+// unlike ListUnownedP0's empty project, which lists every project's. The day-row refresher calls
+// it (evals' readRefresherEvents): an event that moves an issue's repository or parent moves the
+// repository each unowned P0 issue below it is counted under, so the refresher writes unowned-p0's
+// rows of today again for that issue's project only where the project holds such an issue now,
+// which needs the count alone; a project that holds none has every repository's count at 0
+// already. The plan test of this package holds its statement to the index issues_open_p0
+// (migration 20261117100010).
 func CountUnownedP0(ctx context.Context, q Querier, project string) (int, error) {
 	var count int
 	err := q.QueryRow(ctx, projectUnownedP0CountQuery, project).Scan(&count)

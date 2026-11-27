@@ -12,6 +12,9 @@ import type { ServerWebSocket } from "bun";
 import after from "../../../contracts/fixtures/live/after.json";
 import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
+import evalsAfter from "../../../contracts/fixtures/live/evals_after.json";
+import evalsDelta from "../../../contracts/fixtures/live/evals_delta.json";
+import evalsSnapshot from "../../../contracts/fixtures/live/evals_snapshot.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
 import { REQUEST_DEADLINE_MS } from "../../web/src/api/client";
@@ -21,6 +24,7 @@ import type {
   DeliveryLiveSnapshot,
   DeliveryLiveView,
   DeliveryTimelineWithMeasures,
+  EvalListResponse,
   LiveClientFrame,
 } from "../../web/src/api/types";
 import {
@@ -47,7 +51,8 @@ import {
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
 // timeline snapshot, the delta of a deploy, a merge and two pull requests leaving the window, a
-// heartbeat, an error, and the snapshot a page subscribing after the delta gets.
+// heartbeat, an error, and the snapshot a page subscribing after the delta gets; and an evals
+// view's snapshot, delta and later snapshot.
 
 const held = snapshot as unknown as DeliveryLiveSnapshot;
 const change = delta as unknown as DeliveryLiveDelta;
@@ -134,7 +139,7 @@ async function readLines(
   if (pending !== "") onLine(pending);
 }
 
-/** The probe as the seven rows that drive it start it: a process of its own, which the row reads
+/** The probe as the nine rows that drive it start it: a process of its own, which the row reads
  *  line by line and signals itself, so it is no bounded child, since a bound would kill a process
  *  the row still uses. Each of those rows waits for the line it needs through `lineBy` and for the
  *  probe's exit through `exitAfter`, and each of those waits ends at the short bound, failing with
@@ -241,7 +246,8 @@ const WATCH_MINUTES = "60";
 function args(
   dispatch: { readonly url: string },
   token = TOKEN,
-  minutes = WATCH_MINUTES
+  minutes = WATCH_MINUTES,
+  shown: DeliveryLiveView = view
 ): string[] {
   const tokenFile = join(scratch(), "token");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
@@ -251,7 +257,7 @@ function args(
     "--token-file",
     tokenFile,
     "--view",
-    JSON.stringify(view),
+    JSON.stringify(shown),
     "--minutes",
     minutes,
   ];
@@ -273,6 +279,7 @@ const closes = (lines: readonly ProbeLine[]) =>
 const nothing = {
   changed_at: null,
   counts: null,
+  items: null,
   maps: null,
   prs: null,
   runs: null,
@@ -466,6 +473,162 @@ test(
         runs: { equal: false, extra: [], missing: ["99"] },
       },
       { equal: true, measures: { differ: [], equal: true }, prs: null, runs: null },
+    ]);
+  },
+  // The wait for the delta line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
+);
+
+test(
+  "an evals view's frames are written eval by eval, and --compare reads its project's list route",
+  async () => {
+    // The frames Dispatch's own diff writes for an evals view: a reading moved pr-size's numbers
+    // and lead-time was registered, and the rows' new age moved the freshness.
+    const evalsHeld = evalsSnapshot as unknown as DeliveryLiveSnapshot;
+    const evalsChange = evalsDelta as unknown as DeliveryLiveDelta;
+    const evalsNext = evalsAfter as unknown as DeliveryLiveSnapshot;
+    const nextList = evalsNext.body as EvalListResponse;
+    const evalsView: DeliveryLiveView = {
+      kind: "evals",
+      project: "ACME",
+      query: "kind=experiment",
+      window: { from: nextList.window.from, to: nextList.window.to },
+    };
+    const sent: string[] = [];
+    const dispatch = probeDispatch({
+      onSubscribe(socket, sub) {
+        for (const text of [forSub(evalsHeld, sub), forSub(evalsChange, sub)]) {
+          sent.push(text);
+          socket.send(text);
+        }
+      },
+      // The route measures the refresher's age at its own read, which the comparison leaves out.
+      routes: {
+        "/api/v1/projects/ACME/evals": {
+          ...nextList,
+          freshness: { ...nextList.freshness, refresher_age_seconds: 600 },
+        },
+      },
+    });
+    const bodyFile = join(scratch(), "body.json");
+    const run = runProbe([
+      ...args(dispatch, TOKEN, WATCH_MINUTES, evalsView),
+      "--compare",
+      "--body-file",
+      bodyFile,
+    ]);
+    await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
+    expect(await exitAfter(run, "SIGINT")).toBe(0);
+
+    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view: evalsView }]);
+    const bytes = sent.map((text) => Buffer.byteLength(text));
+    expect(
+      run.lines.filter((line) => line.type !== "compare").map(({ at: _at, ...line }) => line)
+    ).toEqual([
+      { resume: null, type: "open" },
+      {
+        ...nothing,
+        bytes: bytes[0],
+        changed_at: evalsHeld.changed_at,
+        items: ((evalsHeld.body as EvalListResponse).items ?? []).length,
+        seq: evalsHeld.seq,
+        type: "snapshot",
+      },
+      {
+        ...nothing,
+        bytes: bytes[1],
+        changed_at: evalsChange.changed_at,
+        counts: {},
+        items: { remove: [], upsert: ["ACME/lead-time", "ACME/pr-size"] },
+        maps: {},
+        seq: evalsChange.seq,
+        set: ["freshness", "total"],
+        type: "delta",
+      },
+    ]);
+
+    // What the probe holds is the snapshot a page subscribing afterwards gets, every field.
+    const applied = (await Bun.file(bodyFile).json()) as ProbeHeld;
+    expect(applied.body).toEqual(evalsNext.body);
+    expect(applied.revs).toEqual(evalsNext.revs);
+
+    // --compare reads the project's list route over the view's own window, here the days the
+    // body folded, with the view's own query, and finds every eval and every field equal.
+    expect(
+      dispatch.reads.map((url) => [
+        url.pathname,
+        url.searchParams.get("from"),
+        url.searchParams.get("to"),
+        url.searchParams.get("kind"),
+      ])
+    ).toEqual([
+      ["/api/v1/projects/ACME/evals", nextList.window.from, nextList.window.to, "experiment"],
+    ]);
+    expect(comparisons(run.lines).map(({ at: _at, route: _route, ...line }) => line)).toEqual([
+      {
+        equal: true,
+        measures: { differ: [], equal: true },
+        prs: null,
+        runs: null,
+        status: 200,
+        type: "compare",
+      },
+    ]);
+  },
+  // The wait for the delta line, then the wait for the exit after SIGINT.
+  rowLimit("short", "short")
+);
+
+// The list read answers the whole UTC days a window touches as its `window`, so a view of the 84
+// days before a present inside a day holds the 85 days those touch, more than the route takes
+// (`maxDeliveryWindow`). --compare reads the route over the view's own window as Dispatch read
+// it, the preset's days ending now, which the route folds into the same days.
+test(
+  "--compare reads an evals view of a preset over the preset's own days, never the wider days its body folded",
+  async () => {
+    // The 85 UTC days the 84 days before a present inside 2026-10-28 touch.
+    const folded = { days: 85, from: "2026-08-05T00:00:00Z", to: "2026-10-29T00:00:00Z" };
+    const evalsHeld = evalsSnapshot as unknown as DeliveryLiveSnapshot;
+    const heldFolded = {
+      ...evalsHeld,
+      body: { ...(evalsHeld.body as EvalListResponse), window: folded },
+    };
+    const nextList = evalsAfter.body as unknown as EvalListResponse;
+    const presetView: DeliveryLiveView = {
+      kind: "evals",
+      project: "ACME",
+      query: "kind=experiment",
+      window: { preset: 84 },
+    };
+    const dispatch = probeDispatch({
+      onSubscribe(socket, sub) {
+        socket.send(forSub(heldFolded, sub));
+        socket.send(forSub(evalsDelta, sub));
+      },
+      routes: {
+        "/api/v1/projects/ACME/evals": {
+          ...nextList,
+          freshness: { ...nextList.freshness, refresher_age_seconds: 600 },
+          window: folded,
+        },
+      },
+    });
+    const startedAt = Date.now();
+    const run = runProbe([...args(dispatch, TOKEN, WATCH_MINUTES, presetView), "--compare"]);
+    await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
+    expect(await exitAfter(run, "SIGINT")).toBe(0);
+    const endedAt = Date.now();
+
+    expect(dispatch.reads.map((url) => [url.pathname, url.searchParams.get("kind")])).toEqual([
+      ["/api/v1/projects/ACME/evals", "experiment"],
+    ]);
+    const from = Date.parse(dispatch.reads[0]?.searchParams.get("from") ?? "");
+    const to = Date.parse(dispatch.reads[0]?.searchParams.get("to") ?? "");
+    expect(to - from).toBe(84 * 24 * 60 * 60 * 1000);
+    expect(to).toBeGreaterThanOrEqual(startedAt);
+    expect(to).toBeLessThanOrEqual(endedAt);
+    expect(comparisons(run.lines).map(({ equal, measures }) => ({ equal, measures }))).toEqual([
+      { equal: true, measures: { differ: [], equal: true } },
     ]);
   },
   // The wait for the delta line, then the wait for the exit after SIGINT.

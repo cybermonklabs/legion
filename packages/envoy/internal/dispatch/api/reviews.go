@@ -491,9 +491,10 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 // A second document's row is read here, in the read phase. This transaction does write artifacts:
 // an event on a document no issue holds is owned by that document (docs.documentAskEvent), and the
 // append moves the row's last_seq (events/broker.go). What makes the read safe is that no write
-// this transaction queues changes a column artifactMetadata returns - artifactColumns, the row's
-// id, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, role, created_by
-// and created_at - so the stored row is the one a read after the write phase would return.
+// this transaction queues changes a column artifactMetadata returns - docs.ArtifactColumns, the
+// row's id, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, role,
+// created_by and created_at - so the stored row is the one a read after the write phase would
+// return.
 func (s *server) queueApprovalReviews(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1106,7 +1107,7 @@ func approvalQuestion(documents []model.AskApprovalDocument, summary string) (st
 // artifactMetadata reads one document's row as QueueReview takes it, without its versions or its
 // derived approval: the reader of a second document an approval request names.
 func artifactMetadata(ctx context.Context, q queryer, id string) (model.Artifact, error) {
-	artifact, err := scanArtifact(q.QueryRow(ctx, `select `+artifactColumns+` from artifacts where id = $1`, id))
+	artifact, err := docs.ScanArtifact(q.QueryRow(ctx, `select `+docs.ArtifactColumns+` from artifacts where id = $1`, id))
 	if err != nil {
 		return model.Artifact{}, fmt.Errorf("read the document an approval request names: %w", err)
 	}

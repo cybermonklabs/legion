@@ -24,8 +24,11 @@ import { asUser } from "./users";
 // What this spec reads is the explicit path - the person types, the bar offers, the person
 // accepts - which is the same "nothing is written until the person accepts".
 
-/** Words no seeded item holds, which is what makes the bar offer them as a new issue. */
-const words = "the sextant rota is nowhere written down";
+/** Words no seeded item holds, which is what makes the bar offer them as a new issue. Every
+ *  project holds its `evals-md` document from its creation, and a query that matches nothing
+ *  whole is searched again for any one of its rarest words, so none of these words is one that
+ *  document holds. */
+const words = "the sextant rota is nowhere pinned up";
 
 /** The label and the session this Dispatch files such words under. A deployment sets them in
  *  its environment (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION) and the server starts

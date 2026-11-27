@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -35,7 +36,7 @@ const closingTolerance = 0.1
 // Each is written at or before the history's end, and the history writes nothing after them.
 type closingHistory struct {
 	database *store.Store
-	fixture  legiontest.Fixture
+	fixture  legionseed.Fixture
 	now      time.Time
 	// cases names the open issue of each running part, by what runs.
 	cases map[string]string
@@ -45,7 +46,7 @@ func seedClosingHistory(t *testing.T) closingHistory {
 	t.Helper()
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{
+	fixture := legiontest.Seed(t, database.Pool, legionseed.Spec{
 		Project: "LEGION", Trees: 6, Now: now, Queued: true, InBacklogOrIcebox: true, Merged: true, AwaitingChildren: true,
 	})
 	seeded := closingHistory{database: database, fixture: fixture, now: now, cases: map[string]string{}}
@@ -90,7 +91,7 @@ func seedClosingHistory(t *testing.T) closingHistory {
 	seeded.cases["that child, at work"] = child
 
 	asked := fixture.Open[1]
-	event(asked, "ask.opened", legiontest.SessionActor("implementer", asked), `{"id":"closing-open-ask"}`, now.Add(-2*time.Hour))
+	event(asked, "ask.opened", legionseed.SessionActor("implementer", asked), `{"id":"closing-open-ask"}`, now.Add(-2*time.Hour))
 	seeded.cases["an ask nobody answered"] = asked
 
 	waiting := fixture.Open[2]
@@ -170,9 +171,9 @@ func (c *computedAt) at(moment time.Time) map[string]IssueFacts {
 // closing moment and a minute on either side of a UTC midnight, with no input in between:
 //
 //	(a) the facts ProjectFactsClosed answers, grown to the moment by the one computation a
-//	    reader of a stored row makes (IssueFacts.Grown, which the reader of the rows
-//	    dispatch://INFRA-5577 stores calls), are the computation run at that moment over the
-//	    same inputs (factsOf), field for field, to a tenth of an hour and exactly for counts;
+//	    reader of a stored row makes (IssueFacts.Grown, which legionfacts' Row.At calls), are
+//	    the computation run at that moment over the same inputs (factsOf), field for field, to a
+//	    tenth of an hour and exactly for counts;
 //	(b) each fact the computation answers at the moment is its value at the closing moment plus
 //	    its rate times the time elapsed, read with this test's own arithmetic rather than with
 //	    Grown. It fails the day a rule of the computation comes to depend on elapsed time, and

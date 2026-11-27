@@ -15,7 +15,8 @@
 //
 // It takes the scope and the window as arguments and answers both beside the facts it reads
 // (Reading), so a caller can print what it read: the check's test logs them beside the scope and
-// window of the computation it compares with.
+// window of the computation it compares with, and cmd prints the reading's report as JSON
+// (Report), with every count beside the scope and the window, which is what a tester re-runs.
 package independent
 
 import (
@@ -72,14 +73,14 @@ type Facts struct {
 	// PhaseHours is the hours by phase, by the board's column id, with a column the issue spent
 	// no time in left out. An issue whose work took no measured time holds none at all, and
 	// keeps its entry: a result means Legion worked the issue.
-	PhaseHours map[string]float64
+	PhaseHours map[string]float64 `json:"phase_hours"`
 	// WorkHours is the work time those hours are shared out of, in hours.
-	WorkHours float64
+	WorkHours float64 `json:"work_hours"`
 	// ReviewRounds is how many times the issue entered reviewing.
-	ReviewRounds int
+	ReviewRounds int `json:"review_rounds"`
 	// Root is whether the issue is the root of its own tree, and Tree is the tree it is in.
-	Root bool
-	Tree string
+	Root bool   `json:"root"`
+	Tree string `json:"tree"`
 }
 
 // ZeroHours is whether the issue's hours are all zero: no work time and no phase holding any of
@@ -127,4 +128,37 @@ func Read(ctx context.Context, db Querier, scope Scope, window Window) (Reading,
 		issues[key] = measured.factsOf(key)
 	}
 	return Reading{Scope: scope, Window: window, Issues: issues}, nil
+}
+
+// Report is the reading as a reader compares it: the scope, the window, the counts, and one
+// entry per issue with each fact. The scope and the window stand beside the counts, so a report
+// read on its own says what it covered.
+type Report struct {
+	Scope      string           `json:"scope"`
+	WindowFrom string           `json:"window_from"`
+	WindowTo   string           `json:"window_to"`
+	Issues     int              `json:"issues"`
+	ZeroHours  int              `json:"zero_hour_issues"`
+	Facts      map[string]Facts `json:"facts"`
+}
+
+// Report is the report of this reading.
+func (r Reading) Report() Report {
+	from := ""
+	if !r.Window.From.IsZero() {
+		from = r.Window.From.UTC().Format(time.RFC3339)
+	}
+	report := Report{
+		Scope:      r.Scope.String(),
+		WindowFrom: from,
+		WindowTo:   r.Window.To.UTC().Format(time.RFC3339),
+		Issues:     len(r.Issues),
+		Facts:      r.Issues,
+	}
+	for _, facts := range r.Issues {
+		if facts.ZeroHours() {
+			report.ZeroHours++
+		}
+	}
+	return report
 }

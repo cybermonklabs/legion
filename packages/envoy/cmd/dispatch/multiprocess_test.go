@@ -64,6 +64,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -221,20 +222,6 @@ func authenticateEditor(t *testing.T, editor *docstest.Peer) string {
 		t.Fatalf("authenticate the editor: %v", err)
 	}
 	return scope
-}
-
-// residentRooms lists the documents the process holds a room of now
-// (GET /api/v1/artifacts/_test/rooms).
-func (p *dispatchProcess) residentRooms(t *testing.T) []string {
-	t.Helper()
-	answer := p.call(t, http.MethodGet, "/api/v1/artifacts/_test/rooms", "", http.StatusOK)
-	var listed struct {
-		Rooms []string `json:"rooms"`
-	}
-	if err := json.Unmarshal(answer, &listed); err != nil {
-		t.Fatalf("decode the resident rooms: %v: %s", err, answer)
-	}
-	return listed.Rooms
 }
 
 // roomCounters is what the process did with the document's rooms and owed settlement since it
@@ -4127,7 +4114,7 @@ const (
 // waitOutABucketBoundary sees to. reference-excerpts is a woken loop
 // (docs.RunReferenceExcerptReconciliation) that runs a pass at start and again on the
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
-// two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
+// two seconds, its Retry) until it runs a pass of its own, because the other's pass may have
 // read before whatever woke it, so after the release each process runs at least one pass and no
 // count is held to one. The other ten are not observable, and this row says so rather than
 // pretending: refs-forms is a timer loop whose passes, on a database owing nothing, are one read
@@ -8858,11 +8845,36 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	}
 	kept := keywordRowsThrough(t, database, left)
 
+	booted := databaseClock(t, database)
 	second := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
 	secondHolder := keywordFillHolder(t, second, patience())
+	// The server writes an event of its own as it boots: the eval registry's seed of a project
+	// creates the project's evals-md document, an artifact.created that starts no keyword version,
+	// so the fill's cursor ends past the last comment. The wait reads the newest event once the eval
+	// refresher's events cursor is stamped after the second boot: the second process's first pass,
+	// which seeds every project, has committed by then, and the first process is dead, its
+	// uncommitted transactions gone with it, so every event either boot writes is in the log. It
+	// then asks for the fill's cursor at the newest event exactly, which a fill that skipped past
+	// the end of the log would not satisfy.
+	testwait.UntilPolling(t, 200*time.Millisecond, "the new process's first eval refresher pass, which seeds every project, to commit", func() (bool, bool) {
+		passed := refresherPassedSince(t, database, booted)
+		return passed, passed
+	})
+	var newest int64
+	if err := database.Pool.QueryRow(context.Background(), `select max(id) from events`).Scan(&newest); err != nil {
+		t.Fatalf("read the newest event: %v", err)
+	}
+	booting := eventsAfter(t, database, last)
+	for _, event := range booting {
+		if !event.seedOf(textversionstest.Project) {
+			t.Fatalf("the events after the last comment %d are %v; want each the artifact.created of %s's %s, the seed's",
+				last, booting, textversionstest.Project, evals.DocumentSlug)
+		}
+	}
+	t.Logf("the last comment is event %d and the newest event %d; the events after the last comment: %v", last, newest, booting)
 	testwait.UntilPolling(t, 200*time.Millisecond, "the new process to write every event's rows", func() (int64, bool) {
 		cursor := textversionstest.Cursor(t, database)
-		return cursor, cursor == last
+		return cursor, cursor == newest
 	})
 
 	recorded := writes()
@@ -8881,6 +8893,8 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 		t.Errorf("the rows of the events through the cursor %d were %s when the first process was killed and are %s now: the new process wrote them again",
 			left, kept, got)
 	}
+	// Every comment has its one row, written once, and no other event has any: the seed's
+	// artifact.created, which the cursor passed, started none.
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
 }
 

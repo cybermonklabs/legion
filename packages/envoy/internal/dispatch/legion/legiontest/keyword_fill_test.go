@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
@@ -24,7 +25,7 @@ import (
 func TestTheKeywordFillReadsEveryEventOfTheSeededHistory(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Trees: 4, Now: now, Unobserved: 2, Queued: true,
+	fixture := Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Trees: 4, Now: now, Unobserved: 2, Queued: true,
 		InBacklogOrIcebox: true, Merged: true, Filings: true})
 
 	if err := textversions.FillToHorizon(t.Context(), database, events.NewHorizon(database.Pool)); err != nil {
@@ -96,7 +97,7 @@ func TestTheKeywordFillReadsEveryEventOfTheSeededHistory(t *testing.T) {
 	t.Logf("the fill decided all %d events: %d issues with their titles, %d comments and %d asks", newest, read, comments, asks)
 }
 
-// TestASeedLeavesNoStoredKeywordReachAboveItsEvents: a command loads this history through Write
+// TestASeedLeavesNoStoredKeywordReachAboveItsEvents: a kit loads this history through evalfixture
 // into a database that a server serves, and that server's keyword fill has stored a reach. The
 // reach says that every event created at or before it has its keyword rows. The history's events
 // are dated in the past, below that reach, so the fill would write each of them as a breach of it.
@@ -110,7 +111,7 @@ func TestASeedLeavesNoStoredKeywordReachAboveItsEvents(t *testing.T) {
 		t.Fatalf("store a reach over the empty log, as a serving fill does: %v", err)
 	}
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Trees: 2, Now: now})
+	fixture := Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Trees: 2, Now: now})
 
 	var reach *time.Time
 	if err := database.Pool.QueryRow(t.Context(), `select reach from search_text_versions_fill where id = 1`).Scan(&reach); err != nil {
