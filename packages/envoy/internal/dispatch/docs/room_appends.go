@@ -68,7 +68,7 @@ import (
 //     them (UpdateCredit.landed does nothing the second time).
 //   - A suppression slot forces the lone position. A published live write's update and a repair's
 //     are already durable, and the room's persistence knows each by the suppression slot queued for
-//     it, which it matches, in order, against the update it is handed
+//     it, which the update it is handed takes wherever that slot stands in the queue
 //     (consumeSuppressedPersistence); their classes are queued stored, so no flush takes them. A
 //     call that finds a slot of the room queued runs its batch through its own update's position
 //     alone.

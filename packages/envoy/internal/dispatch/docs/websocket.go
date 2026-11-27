@@ -303,8 +303,9 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	}
 	defer class.instance.unlistUnstored(class)
 	defer class.credit.landed()
-	// The update's suppression slot is consumed whatever its class says, since slots are taken in
-	// order. The class decides when the observer recorded one: a published write's and a
+	// The update's suppression slot is consumed whatever its class says: each update takes the
+	// slot its own writer queued, wherever it stands (consumeSuppressedPersistence). The class
+	// decides when the observer recorded one: a published write's and a
 	// repair's are queued stored, and a browser update whose bytes match a repair's - a deletion
 	// leaves an update that carries no struct, only its own deletes, so a browser's deletion of
 	// the items a repair deleted leaves the repair's bytes - takes that repair's slot while its own

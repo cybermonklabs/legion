@@ -798,6 +798,25 @@ func (s *Service) discardSuppressedSlot(room string, slot *suppressSlot) {
 	}
 }
 
+// consumeSuppressedPersistence takes the suppression slot update is the writer's own, and reports
+// whether the room's persistence leaves update to that writer. Slots are queued in the order
+// their writers prepare them, and updates reach the room's worker in the order the room commits
+// them, and the two need not agree: a published write and a settlement's repair each prepare a
+// slot before their transaction, and the one prepared second can commit first. So an update takes
+// its own slot wherever it stands in the queue: the one a repair's commit recorded it on
+// (recordSuppressedCommit), or the one a published write or a catch-up finished with it
+// (finishSuppressedPersistence), both set before ygo hands the update on. It waits for that
+// slot's writer to finish. Paired with the first slot instead, a repair's update that met another
+// writer's slot there went by as no slot's: the worker dropped the repair's queued class while
+// the repair's writer had still to store it (storeRepair, errUnclassifiedRepair), and the
+// repair's own slot stayed queued, so the next repair's update met it first and lost its class
+// the same way.
+//
+// An update that is no slot's - a browser's - waits on the first slot, so an update the room
+// committed after a writer's is stored after it. A browser update whose bytes match a repair's -
+// a deletion leaves an update that carries no struct, only its own deletes, so a browser's
+// deletion of the items a repair deleted leaves the repair's bytes - takes that repair's slot,
+// and is stored all the same, its own class not being stored (StoreUpdateContext).
 func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool {
 	for {
 		s.suppressMu.Lock()
@@ -807,26 +826,36 @@ func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool 
 			return false
 		}
 		slot := slots[0]
+		for _, candidate := range slots {
+			if bytes.Equal(candidate.committed, update) || bytes.Equal(candidate.update, update) {
+				slot = candidate
+				break
+			}
+		}
 		ready := slot.ready
 		s.suppressMu.Unlock()
 
 		<-ready
 
 		s.suppressMu.Lock()
-		slots = s.suppressed[room]
-		if len(slots) == 0 || slots[0] != slot {
+		at := -1
+		for index, queued := range s.suppressed[room] {
+			if queued == slot {
+				at = index
+				break
+			}
+		}
+		if at < 0 {
 			s.suppressMu.Unlock()
 			continue
 		}
 		if slot.canceled {
-			// A discarded repair's slot is consumed by that repair's own update alone. ygo runs the
-			// observers of two transactions in either order (renderedReplica), so another writer's
-			// update can reach the worker ahead of the repair's, and it is stored as any other.
+			// A discarded repair's slot is consumed by that repair's own update alone.
 			if !bytes.Equal(slot.committed, update) {
 				s.suppressMu.Unlock()
 				return false
 			}
-			s.consumeHeadSlotLocked(room)
+			s.consumeSlotLocked(room, at)
 			discarded := slot.discarded
 			s.suppressMu.Unlock()
 			return discarded
@@ -835,22 +864,22 @@ func (s *Service) consumeSuppressedPersistence(room string, update []byte) bool 
 			s.suppressMu.Unlock()
 			return false
 		}
-		s.consumeHeadSlotLocked(room)
+		s.consumeSlotLocked(room, at)
 		s.suppressMu.Unlock()
 		return true
 	}
 }
 
-// consumeHeadSlotLocked marks room's first suppression slot consumed and removes it. The caller
-// holds suppressMu.
-func (s *Service) consumeHeadSlotLocked(room string) {
+// consumeSlotLocked marks room's suppression slot at index at consumed and takes it out of the
+// queue. The caller holds suppressMu.
+func (s *Service) consumeSlotLocked(room string, at int) {
 	slots := s.suppressed[room]
-	slots[0].consumed = true
+	slots[at].consumed = true
 	if len(slots) == 1 {
 		delete(s.suppressed, room)
 		return
 	}
-	s.suppressed[room] = slots[1:]
+	s.suppressed[room] = append(slots[:at:at], slots[at+1:]...)
 }
 
 func (s *Service) cancelSuppressedPersistence(room string, slot *suppressSlot) {
