@@ -42,10 +42,9 @@ type receiveTerm struct {
 	leaseTerm      uint64
 	markReadFailed bool
 	// settleAsked is closed once a lease that joined took this term over as one that must settle
-	// (askSettle, durableReceiver.adopt), and askedHold, written before the close, is the longest
-	// that hold lasts: the handler holds what the term receives from its next message on.
+	// (askSettle, durableReceiver.adopt): the handler holds what the term receives from its next
+	// message on, for the receiver's settleCap at most.
 	settleAsked chan struct{}
-	askedHold   time.Duration
 
 	mu sync.Mutex
 	// closed is set once the term takes no more messages (close).
@@ -289,7 +288,7 @@ func (t *receiveTerm) handle(r *durableReceiver) {
 		case <-asked:
 			asked = nil
 			t.holdBack(m)
-			if !t.settle(r, t.askedHold) {
+			if !t.settle(r, r.timing.settleCap) {
 				return
 			}
 			continue
@@ -302,12 +301,11 @@ func (t *receiveTerm) handle(r *durableReceiver) {
 	}
 }
 
-// askSettle has the handler hold what the term receives from its next message on, for hold at
-// most, as a term that must settle holds from its subscribe (settle): the term a lease that joined
-// took over as it stood, when that lease's term must settle (durableReceiver.adopt). It is called
-// once, after the term's leaseTerm is set.
-func (t *receiveTerm) askSettle(hold time.Duration) {
-	t.askedHold = hold
+// askSettle has the handler hold what the term receives from its next message on, for the
+// receiver's settleCap at most, as a term that must settle holds from its subscribe (settle): the
+// term a lease that joined took over as it stood, when that lease's term must settle
+// (durableReceiver.adopt). It is called once, after the term's leaseTerm is set.
+func (t *receiveTerm) askSettle() {
 	close(t.settleAsked)
 }
 
@@ -318,7 +316,7 @@ func (t *receiveTerm) holdBack(m *nats.Msg) {
 		return
 	}
 	t.mu.Lock()
-	t.held = append([]*nats.Msg{m}, t.held...)
+	t.held = slices.Insert(t.held, 0, m)
 	t.mu.Unlock()
 }
 

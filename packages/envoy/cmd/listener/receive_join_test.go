@@ -198,6 +198,17 @@ func joinAsMain(rig *receiverRig, conn *natsgo.Conn, machineID string) <-chan *l
 	return tried
 }
 
+// joinRigLease hands the rig's receiver the rig's own lease through its join
+// (durableReceiver.startJoin), as main's join does once joinDeliveryLease has opened the bucket:
+// the lease's first rounds, then its loop (lease.Contend, lease.Start).
+func joinRigLease(rig *receiverRig) {
+	rig.receiver.startJoin(func(ctx context.Context) *lease {
+		rig.lease.Contend(ctx)
+		rig.lease.Start(context.Background())
+		return rig.lease
+	})
+}
+
 // joinRefusedStopBound is how long the stop of a pod whose lease join waits between two tries of
 // the bucket its grant refuses may take: the join returns at the stop, and a pod receiving without
 // a lease and holding no message stops receiving well inside it.
@@ -339,11 +350,7 @@ func TestAShutdownThatComesAsTheLeaseJoinsEndsTheTermItReceivedOn(t *testing.T) 
 				t.Fatal("the pod never received the durable without a lease")
 			}
 
-			rig.receiver.startJoin(func(ctx context.Context) *lease {
-				rig.lease.Contend(ctx)
-				rig.lease.Start(context.Background())
-				return rig.lease
-			})
+			joinRigLease(rig)
 			select {
 			case <-rig.receiver.joinCtx.Done():
 			case <-time.After(5 * time.Second):
@@ -420,11 +427,7 @@ func TestAShutdownRightAfterTheLeaseTookTheTermOverHandsTheTermBack(t *testing.T
 		options.logger = logging.NewWithWriter("box-join-taken", held)
 	})
 	rig.awaitState(t, receiveActive, 10*time.Second)
-	rig.receiver.startJoin(func(ctx context.Context) *lease {
-		rig.lease.Contend(ctx)
-		rig.lease.Start(context.Background())
-		return rig.lease
-	})
+	joinRigLease(rig)
 	select {
 	case <-held.at:
 	case <-time.After(5 * time.Second):
@@ -576,11 +579,7 @@ func TestALateLeaseJoinTakesADeadHoldersRecordAndKeepsItsSubscription(t *testing
 				dropAtTheBucketsAge(t, rig)
 			}
 			take := holdTake(t, rig)
-			rig.receiver.startJoin(func(ctx context.Context) *lease {
-				rig.lease.Contend(ctx)
-				rig.lease.Start(context.Background())
-				return rig.lease
-			})
+			joinRigLease(rig)
 			testwait.Receive(t, "the lease's take of the record", take.reached)
 			if strings.Contains(rig.logs.String(), leaseJoinedStandbyLine) {
 				t.Fatalf("the join logged %q before its lease took the record: it stood down on the dead holder's record", leaseJoinedStandbyLine)
@@ -657,11 +656,7 @@ func TestALateLeaseJoinTakesADeadHoldersRecordAndKeepsItsSubscription(t *testing
 
 		rig := startJoiningReceiverRig(t, uri, machineID, nil)
 		rig.awaitState(t, receiveActive, 10*time.Second)
-		rig.receiver.startJoin(func(ctx context.Context) *lease {
-			rig.lease.Contend(ctx)
-			rig.lease.Start(context.Background())
-			return rig.lease
-		})
+		joinRigLease(rig)
 		if standby := rig.logRecord(t, leaseJoinedStandbyLine, 5*time.Second); standby["active_instance"] != "pod-b" {
 			t.Fatalf("the join stood by for %v, want pod-b, which renews the record: %v", standby["active_instance"], standby)
 		}
@@ -721,11 +716,7 @@ func TestALateLeaseJoinOverAHolderThatTookMessagesDeliversThoseFirst(t *testing.
 	})
 
 	putLeaseRecord(t, uri, machineID, deadHolderRecord)
-	rig.receiver.startJoin(func(ctx context.Context) *lease {
-		rig.lease.Contend(ctx)
-		rig.lease.Start(context.Background())
-		return rig.lease
-	})
+	joinRigLease(rig)
 	if joined := rig.logRecord(t, leaseJoinedHolderLine, 5*time.Second); joined["lease"] != leaseTakenExpired.String() {
 		t.Fatalf("the join took the lease from a record it reads %v, want the holder's, expired: %v", joined["lease"], joined)
 	}

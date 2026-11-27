@@ -966,7 +966,7 @@ func (r *durableReceiver) adopt(ctx, termCtx context.Context, status leaseStatus
 		r.logger.Info(settleHoldLine,
 			slog.String("consumer", r.consumer), slog.String("lease", status.How.String()), slog.String("cap", r.timing.settleCap.String()),
 			slog.Bool("hand_back", status.HandBack), slog.Bool("adopted", true))
-		term.askSettle(r.timing.settleCap)
+		term.askSettle()
 	}
 	r.relays.setOwned(&relayTerm{ctx: termCtx, untilLoss: func() time.Duration { return l.UntilLoss(status.Term) }})
 	return r.receive(ctx, termCtx)
