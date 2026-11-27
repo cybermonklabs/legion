@@ -659,14 +659,16 @@ func (r *docsWriterRig) askOpenedAndCaused(ctx context.Context, document, sessio
 const drainVerification = ":::check{#c1}\nThe first check holds.\n:::\n"
 
 // queryDrain is the drain of the queries a recorded result left owed (drainMark), run as the
-// block-index tick and a request's drain run it. It takes the issue's owner lock and then the lock
-// of its room, reads the mark and what each query version is decided on, and in one batch writes
-// the version's row, its node, the artifact.version event that records it, the clear of the mark,
-// the tuples caused by the mark's cause - the mark holds none, so the sentinel, as a result's
-// recorded with no event of its own leaves it - and the head rows. The owner lock and the room's
-// lock are advisory and held by their key; the version's row and node, the event, the tuple append
-// and the head rows are new, and are held as their tables; the mark is there, and is held as its
-// row, which the delete that clears it waits for.
+// result route's own drain runs it (requestDrain), with no bound on its lock waits (wait 0), so a
+// step held here is waited at for as long as it is held; the block-index tick's drain (tickDrain)
+// takes the same steps and differs only in the writer it names. It takes the issue's owner lock
+// and then the lock of its room, reads the mark and what each query version is decided on, and in
+// one batch writes the version's row, its node, the artifact.version event that records it, the
+// clear of the mark, the tuples caused by the mark's cause - the mark holds none, so the sentinel,
+// as a result's recorded with no event of its own leaves it - and the head rows. The owner lock
+// and the room's lock are advisory and held by their key; the version's row and node, the event,
+// the tuple append and the head rows are new, and are held as their tables; the mark is there, and
+// is held as its row, which the delete that clears it waits for.
 //
 // Each run is an issue of its own (createIssueRoom), so a run's drain finds the one mark its run
 // left and owes the one version, of the Verification document its peer settled. A query document
@@ -750,7 +752,7 @@ func (r *docsWriterRig) queryDrain(serverURL string) docsWriter {
 			leaveResultOwed(t, r.database, room)
 			versions := r.versionCount(t, room.verification)
 			return docsRun{document: room.verification, issue: room.issue, tree: room.tree, write: func() error {
-				if _, found, err := r.service.drainMark(ctx, room.issue, 0); err != nil || !found {
+				if _, found, err := r.service.drainMark(ctx, room.issue, requestDrain, 0); err != nil || !found {
 					return fmt.Errorf("the drain of %s found its mark: %v, %v", room.issue, found, err)
 				}
 				if now, err := r.versionsOf(ctx, room.verification); err != nil || now != versions+1 {
