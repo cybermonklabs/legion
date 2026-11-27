@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The comment page of `order=activity` (`GET /api/v1/issues/{key}/comments?order=activity`) takes
+  `node_anchor=true`: each comment of the page, first comment or reply, whose anchor names a node
+  or a block then carries `node_anchor` (its node with the node's state, the quote, the occurrence
+  and the orphaned mark), and the page holds the same threads in the same order with the same
+  `remaining` as without the parameter. Before, a read with `node_anchor=true` answered the bare
+  list whatever its page parameters. `person=in` now keeps a comment thread whose first comment is
+  on a node's text (a node anchor, which stores no `anchor`), an agent's included, as a thread on
+  text. The list and the page read with `node_anchor=true` now answer under an ETag and are kept
+  like the reads without it: the ETag hashes the parameter and the node each of the issue's
+  comments is anchored on with that node's state, so a write of a node's state, which writes no
+  comment and appends no event, answers a reader holding the ETag before it the new state and not
+  `304`, and a reader holding the ETag of the read without the parameter is answered the page with
+  `node_anchor`, never `304`.
+time: 2026-11-27T10:54:03Z
+custom:
+    Issue: INFRA-1253

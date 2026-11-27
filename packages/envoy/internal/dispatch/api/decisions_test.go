@@ -620,6 +620,143 @@ func TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions(t *testing.T) 
 	}
 }
 
+// An ask row of the spec whose stored options are valid JSON and no list of options - a list of
+// strings written by hand, which asks_options_array admits - is left out of every read of the
+// decisions and of the issue's tree, as one whose author is no actor is
+// (TestASpecAskWhoseRowDoesNotDecodeIsLeftOutOfTheOpenQuestions), and fails none of them (R4). The
+// Decisions read answers 200 with the other open question and logs a warning naming the ask, its
+// issue and its options, and its entries hold the other ask and not this one. The tree read, with
+// no view, with each view and with each kind filter of twoCutsForms, answers 200, the other ask
+// once in each read that takes the issue's asks, and nothing of this one in any read: no node of
+// it, none of its parts, no tuple at either, and no node of its thread. A person replied in each
+// ask's thread and replied to that reply before the row was written: every read leaves this ask's
+// two replies out with it, where the walk would otherwise hang them under the issue, as it hangs
+// an item whose parent is no node of the conversation, and the reads that take comments answer the
+// other ask's two replies, the first under that ask and the second under the first. The loader
+// every read of the graph reaches an ask through (refs' loadAskNodes) is what leaves it out, and
+// it logs a warning naming the ask, its issue and its options.
+func TestASpecAskWhoseOptionsDoNotDecodeIsLeftOutOfEveryTreeRead(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
+	handler, database, _ := newTestServer(t, testServerOptions{settle: 20 * time.Millisecond})
+	logs := captureLogs(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", ":::ask{#fine}\nWhich store?\n:::\n\n:::ask{#broken}\nWhich name?\n:::\n")
+	waitForOpenQuestions(t, handler, issue.Key, 2)
+	fine, broken := blockAskID(t, handler, issue.Key, "fine"), blockAskID(t, handler, issue.Key, "broken")
+	// thread is alice's reply in the thread of ask and her reply to that reply.
+	thread := func(ask string) (string, string) {
+		t.Helper()
+		first := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Why ask?", "ask_id": ask}, "alice")
+		again := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Because it is open.", "reply_to": first.ID}, "alice")
+		return first.ID, again.ID
+	}
+	fineReply, fineAgain := thread(fine)
+	brokenReply, brokenAgain := thread(broken)
+	if tag, err := database.Pool.Exec(context.Background(), `update asks set options = '["Postgres"]'::jsonb where id = $1::uuid`, broken); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("write options that are no list of options on the row of ask %s: %v", broken, err)
+	}
+	// requireWarned fails unless the log holds a line holding message, each such line a WARN that
+	// names the ask whose options do not decode, its issue and value, and not the other ask.
+	requireWarned := func(what, message, value string) {
+		t.Helper()
+		warned := logs.Lines(message)
+		if warned == "" {
+			t.Errorf("%s logged no warning %q naming the ask %s", what, message, broken)
+			return
+		}
+		for line := range strings.Lines(warned) {
+			if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "ask="+broken) || !strings.Contains(line, "issue="+issue.Key) ||
+				!strings.Contains(line, value) || strings.Contains(line, fine) {
+				t.Errorf("%s logged %q, want a WARN naming the ask %s of %s and %q, and not the ask %s", what, line, broken, issue.Key, value, fine)
+			}
+		}
+	}
+
+	view := readIssueDecisions(t, handler, issue.Key)
+	ids := []string{}
+	for _, question := range view.OpenQuestions {
+		ids = append(ids, question.ID)
+	}
+	if !slices.Equal(ids, []string{fine}) {
+		t.Errorf("open_questions = %v, want the one ask whose row decodes, %s", ids, fine)
+	}
+	requireWarned("the Decisions read", "an ask whose stored value does not decode is left out of the issue's open questions", "decode its options")
+	entries := entriesByNode(view.Entries)
+	if _, held := entries[graphstore.KindAsk+":"+fine]; !held {
+		t.Errorf("the entries hold no entry for the ask %s whose row decodes: %s", fine, entryJSON(t, view.Entries))
+	}
+	if _, held := entries[graphstore.KindAsk+":"+broken]; held {
+		t.Errorf("the entries hold an entry for the ask %s, whose options are no list of options", broken)
+	}
+
+	// ofBroken is whether id names the ask whose options do not decode, one of its parts, one of
+	// the two replies in its thread or a block of one.
+	ofBroken := func(id string) bool {
+		for _, item := range []string{"ask/" + broken, "comment/" + brokenReply, "comment/" + brokenAgain} {
+			if strings.HasPrefix(id, item+"#") {
+				return true
+			}
+		}
+		return id == broken || id == brokenReply || id == brokenAgain
+	}
+	conversation := kindFilterQuery(kindFilterConversation...)
+	for _, form := range []struct {
+		name, query string
+		// asks is whether the read takes the issue's asks, and replies whether it takes the
+		// replies in their threads.
+		asks, replies bool
+	}{
+		{"the read with no view", "", true, true},
+		{"?view=spec", "?view=" + graphstore.QuerySpec, false, false},
+		{"?view=verification", "?view=" + graphstore.QueryVerification, false, false},
+		{"?view=plan", "?view=" + graphstore.QueryPlan, false, false},
+		{"?view=decisions", "?view=" + graphstore.QueryDecisions, true, false},
+		{"the read with the conversation's kinds", conversation, true, true},
+		{"kind=check&kind=result", kindFilterQuery(graphstore.BlockTypeCheck, graphstore.KindResult), false, false},
+	} {
+		response := treeResponse(t, handler, issue.Key, form.query, "alice", false)
+		if response.Code != http.StatusOK {
+			t.Errorf("%s of %s answers status=%d body=%s, want 200 with the ask %s left out; the server logged %s",
+				form.name, issue.Key, response.Code, response.Body.String(), broken, logs.Lines("level=ERROR"))
+			continue
+		}
+		tree := treeAnswer{IssueTreeRead: decodeBody[model.IssueTreeRead](t, response), body: response.Body.String()}
+		if held := tree.nodesNamed(graphstore.KindAsk, fine); form.asks && len(held) != 1 {
+			t.Errorf("%s answers the ask %s, whose row decodes, %d times, want once; it answers %v", form.name, fine, len(held), tree.addresses())
+		}
+		for _, node := range tree.Nodes {
+			if ofBroken(node.ID) || (node.Parent != nil && ofBroken(node.Parent.ID)) {
+				t.Errorf("%s answers %s, a node of the ask %s, whose options are no list of options, or of its thread, or one under such a node",
+					form.name, entryJSON(t, node), broken)
+			}
+		}
+		for _, tuple := range tree.Tuples {
+			if ofBroken(tuple.From.ID) || ofBroken(tuple.To.ID) {
+				t.Errorf("%s answers the tuple %s at the ask %s, whose options are no list of options, or at its thread", form.name, entryJSON(t, tuple), broken)
+			}
+		}
+		for _, reply := range []string{brokenReply, brokenAgain} {
+			if strings.Contains(tree.body, reply) {
+				t.Errorf("%s names %s, a reply in the thread of the ask %s, whose options are no list of options; it answers %v", form.name, reply, broken, tree.addresses())
+			}
+		}
+		if !form.replies {
+			continue
+		}
+		for _, reply := range []struct{ id, parentKind, parent string }{
+			{fineReply, graphstore.KindAsk, fine},
+			{fineAgain, graphstore.KindComment, fineReply},
+		} {
+			held := tree.nodesNamed(graphstore.KindComment, reply.id)
+			if len(held) != 1 || held[0].Parent == nil || held[0].Parent.Kind != reply.parentKind || held[0].Parent.ID != reply.parent {
+				t.Errorf("%s answers the reply %s in the thread of the ask %s as %s, want it once under %s:%s",
+					form.name, reply.id, fine, entryJSON(t, held), reply.parentKind, reply.parent)
+			}
+		}
+	}
+	requireWarned("the reads of the graph", "dispatch: an ask whose stored value does not parse is left out of the read", "decode the options of ask "+broken)
+}
+
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
 // spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
 // deadline (testwait.UntilPolling), and its failure prints the questions it last read.

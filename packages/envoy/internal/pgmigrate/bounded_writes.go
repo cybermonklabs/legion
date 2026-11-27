@@ -205,7 +205,7 @@ type reviewedTrigger struct {
 // replaced it.
 //
 // graph_tuples, graph_nodes and document_blocks each hold the head projection's trigger (migration
-// 20261123180100_issue_tree_head, function issue_head_marks_drop), which a type migration's bounded
+// 20261127120803_issue_tree_head, function issue_head_marks_drop), which a type migration's bounded
 // insert of its supertag and attribute nodes fires, since no migration sets dispatch.head_rows. On
 // document_blocks it runs for an insert, a delete and an update of the columns a head row reads. The
 // same migration gives comments, comment_blocks and comment_block_texts triggers of the same form

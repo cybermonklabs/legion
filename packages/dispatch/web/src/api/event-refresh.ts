@@ -396,9 +396,10 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
   rank: MOVED_BY_NO_WRITE,
   state: MOVED_BY_NO_WRITE,
   visibility: MOVED_BY_NO_WRITE,
-  // A block's, an ask's, a decision's, a result's and a check's members, which no issue's node
-  // carries.
+  // A block's, an ask's (with the block its anchor names), a decision's, a result's and a check's
+  // members, which no issue's node carries.
   ask: MOVED_BY_NO_WRITE,
+  block_anchor: MOVED_BY_NO_WRITE,
   block_id: MOVED_BY_NO_WRITE,
   check: MOVED_BY_NO_WRITE,
   decision: MOVED_BY_NO_WRITE,

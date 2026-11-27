@@ -208,7 +208,7 @@ func (r *seedRun) carriesNodeMarker(ctx context.Context, table string) (bool, er
 
 // readNoHeadRows reads whether the database holds none of the head projection this build writes
 // (graphstore.QueueHeads), whose head write reads comments.answers (20261105014808) and writes
-// issue_head_nodes with its item_answers (20261123180100, 20261125120200) and node_search
+// issue_head_nodes with its item_answers (20261127120803, 20261127120804) and node_search
 // (20261125160000). The measurement protocol seeds a database migrated from the release before
 // this one with --no-migrate, which holds no head projection, and a server of that release writes
 // no head row; so the seed writes none there either, and the backfill this release runs over the

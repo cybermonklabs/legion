@@ -668,7 +668,7 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 
 	// The comment page of order=activity answers the node anchor where the build holds that page
 	// (R31's merge-order rule). A build without the page ignores order and answers the comment
-	// list, a JSON list, and the child that adds the page then carries its node anchor.
+	// list, a JSON list, and INFRA-5703, which adds the page, then carries its node anchor.
 	activity := func(query, etag string) *httptest.ResponseRecorder {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/issues/"+key+"/comments?order=activity"+query, nil)
@@ -685,7 +685,7 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 		t.Fatalf("GET /api/v1/issues/%s/comments?order=activity: status=%d body=%s", key, probe.Code, probe.Body.String())
 	}
 	if strings.HasPrefix(strings.TrimSpace(probe.Body.String()), "[") {
-		t.Logf("c-node-anchor: the base holds no order=activity comment page, so the child that adds that page carries the node-anchored page")
+		t.Logf("c-node-anchor: the base holds no order=activity comment page, so INFRA-5703 carries the node-anchored page")
 	} else {
 		// One page holds every thread of the issue, so each read answers all five.
 		const pageQuery = "&limit=100"

@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The tree read (`GET /api/v1/issues/{key}/tree`) answers `block_anchor`, `{artifact_id, block_id}`,
+  on an ask whose anchor names a block of a document: that document and that block, the two
+  `GET /api/v1/artifacts/{id}/blocks` counts the ask by in the block's `references.asks`. A page
+  that reads the tree now counts the asks anchored to a block as the document's editor counts
+  them, with no read of the document's blocks. An ask anchored nowhere or across two top-level
+  blocks answers no `block_anchor`, and a server of the release before answers none on any ask.
+time: 2026-11-27T10:29:42Z
+custom:
+    Issue: INFRA-1253

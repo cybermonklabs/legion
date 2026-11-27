@@ -270,20 +270,28 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 // A settlement stamps a block id on every block that lacks one, in one update it broadcasts to the
 // room's peers and appends to the store. The stamp of a block the document already holds leans on
 // that block, so the update decoded alone parks one item per stamp, more than ygo's default queue
-// of 100,000 here. The store's check of it reads the item count its header declares rather than
-// decoding it (refuseUpdateItemCap), and ygo's check of the broadcast takes no pending queue
-// (reearth/ygo#268, in the pinned fork); a decode of it at ygo's default queue refuses it, which
-// fails the room on every reload, and the document is never stamped.
+// of 100,000 here, which the test holds by decoding the stamp alone. The store's check of it reads
+// the item count its header declares rather than decoding it (refuseUpdateItemCap), and ygo's
+// check of the broadcast takes no pending queue (reearth/ygo#268, in the pinned fork); a decode of
+// it at ygo's default queue refuses it, which fails the room on every reload, and the document is
+// never stamped.
 func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
-	// Not parallel: under the race detector this test grows the binary by about 2.7 GB
-	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
-	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
+	// Not parallel: under the race detector the settlement below is the largest growth of the
+	// package's binary, most of it the block index's plan of the settled version's blocks
+	// (refs.PlanBlocks). At 150,000 blocks it took the binary from 1,144,912 kB to 8,760,892 kB in
+	// envoy-go-race-docs job 140472711245, past the step's RACE_MEM_LIMIT_KB while every other test
+	// of its leg was paused; run alone it took the binary to a VmHWM of 8,415,168 kB, past that limit
+	// by itself. So the document holds the queue's 100,000 blocks and a tenth, past the queue with
+	// room, which the decode of the stamp below holds, and no further: run alone, 110,000 blocks
+	// took the binary to 5,908,088 kB.
 	service, artifactID := newTestService(t)
 	// The settlement runs below, once, on the test's own goroutine.
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
-	const blocks = 150_000
+	const blocks = 110_000
+	// The room's state before the settlement, so the stamp is what the stored history holds past it.
+	var unstamped crdt.StateVector
 	if err := service.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 		fragment := doc.GetXmlFragment(fragmentName)
 		transact(func(txn *crdt.Transaction) {
@@ -291,6 +299,7 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 				fragment.InsertElement(txn, 0, crdt.NewYXmlElement("paragraph"))
 			}
 		})
+		unstamped = doc.StateVector()
 	}); err != nil {
 		t.Fatalf("write %d paragraphs without block ids: %v", blocks, err)
 	}
@@ -327,6 +336,11 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 	}
 	if repairs := pmdoc.BlockIDRepairCount(tree); repairs != 0 {
 		t.Fatalf("the stored document still needs %d block-id repairs", repairs)
+	}
+	// The stamp is what the stored history holds past the room's state before the settlement:
+	// decoded alone at ygo's default queue it parks one item per block it stamps, and is refused.
+	if err := crdt.ApplyUpdateV1(crdt.New(), crdt.EncodeStateAsUpdateV1(durable, unstamped), nil); err == nil {
+		t.Fatal("ygo's default pending queue took the settlement's stamp; this test no longer reaches the queue")
 	}
 }
 

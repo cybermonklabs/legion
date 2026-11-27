@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The coverage read (`GET /api/v1/issues/{key}/coverage`, and the gaps an approval request's answer
+  carries) now answers a requirement `closed`, with no gap, wherever the tree read draws it inside
+  the subtree of an overtaken node, whatever that node's kind: a comment, a message, a block of
+  either, a lens, a block of a document, or the issue's own node. A child's requirement whose parent
+  attribute names a comment or a message of an issue above is closed too where that node, or a node
+  above it in that issue's tree up to that issue's own node, is overtaken: a comment on the text of
+  an overtaken requirement, a reply to such a comment, or any node of an overtaken issue. A node the
+  reader may not see closes nothing for that reader. Before, the read took the state of the blocks
+  and the asks above a requirement alone, so such a requirement still listed a gap while the tree
+  read drew it closed.
+time: 2026-11-27T06:25:25Z
+custom:
+    Issue: INFRA-1253

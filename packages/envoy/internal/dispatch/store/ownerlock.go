@@ -30,7 +30,7 @@ const OwnerLockNamespace int32 = 0x4F574E52
 // These takers take it and nothing else does: the fill of an issue's head rows (graphcensus'
 // FillIssueHeads), in exclusive mode right after the issue's owner lock and before it reads the
 // issue's rows, holding it until it commits the issue's mark; and the head-mark triggers of
-// migration 20261123180100_issue_tree_head - issue_head_marks_drop on graph_tuples, graph_nodes and
+// migration 20261127120803_issue_tree_head - issue_head_marks_drop on graph_tuples, graph_nodes and
 // document_blocks, and issue_head_items_drop on comments, comment_blocks and comment_block_texts -
 // in share mode, for a write of a build that keeps no head rows, before it deletes the issue's
 // mark. So such a write that holds no owner lock of the issue - an issue's create - waits for a

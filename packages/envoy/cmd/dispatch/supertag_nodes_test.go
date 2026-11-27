@@ -288,13 +288,14 @@ func runTheBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 
 // backfillMigrations are the store's migrations numbered above backfillVersion that create what
 // this build's backfill reads or writes, by their file stems, in the order the runner applies them:
+// the source of a carried review, which the pass over carried reviews reads and writes
+// (20261125120000_issue_tree_review_carries); a comment's node anchor, which the anchor pass reads
+// (20261125140000_issue_tree_comment_node_anchor); the search row of a block node, which the
+// search pass reads and the head write of a block writes (20261125160000_issue_tree_node_search);
 // the head projection's tables and their triggers, which the head write of each pass that writes
-// the store, and the head fill, write (20261123180100_issue_tree_head); the source of a carried
-// review, which the pass over carried reviews reads and writes (20261125120000_issue_tree_review_carries);
-// the comment a reply answers, a column of the head rows every head write writes
-// (20261125120200_issue_tree_reply_parent); a comment's node anchor, which the anchor pass reads
-// (20261125140000_issue_tree_comment_node_anchor); and the search row of a block node, which the
-// search pass reads and the head write of a block writes (20261125160000_issue_tree_node_search).
+// the store, and the head fill, write (20261127120803_issue_tree_head); and the comment a reply
+// answers, a column of the head rows every head write writes
+// (20261127120804_issue_tree_reply_parent).
 // Each creates new tables with their indexes, functions and triggers, adds a nullable column to
 // comments, or trades a column of a table this list creates for another, and writes no row of
 // graph_nodes or graph_tuples; its down file drops what its up file added. No other migration
@@ -303,16 +304,16 @@ func runTheBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 // of it reads the columns 20261125163550_asks_node adds to asks and ask_followers, which the
 // runner applies after it.
 var backfillMigrations = []string{
-	"20261123180100_issue_tree_head",
 	"20261125120000_issue_tree_review_carries",
-	"20261125120200_issue_tree_reply_parent",
 	"20261125140000_issue_tree_comment_node_anchor",
 	"20261125160000_issue_tree_node_search",
+	"20261127120803_issue_tree_head",
+	"20261127120804_issue_tree_reply_parent",
 }
 
 // execBackfillMigrations runs the .up.sql of each of backfillMigrations in their order, or for
 // "down" the .down.sql of each in the reverse order, as the rollback scripts are run, so
-// 20261125120200's puts back the column it dropped before 20261123180100's drops the table. Each
+// 20261127120804's puts back the column it dropped before 20261127120803's drops the table. Each
 // file is read from disk (storeMigrationsDir) and run whole over pool, as the runner would run it.
 func execBackfillMigrations(t *testing.T, ctx context.Context, pool *store.Pool, direction string) {
 	t.Helper()

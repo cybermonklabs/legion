@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The head projection (migration 20261123180100_issue_tree_head): issue_head_nodes holds one row
+// The head projection (migration 20261127120803_issue_tree_head): issue_head_nodes holds one row
 // per node of an issue's tree as the store holds it (graphstore.HeadRowsSQL), and issue_head_marks
 // names each issue the head read may read the rows of. Every writer of this build writes the rows of
 // the nodes it writes (graphstore.QueueHeads); a write of a build that keeps none takes the marks of

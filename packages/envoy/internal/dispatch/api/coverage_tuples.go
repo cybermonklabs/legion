@@ -45,10 +45,11 @@ type tupleCheck struct {
 // check of which holds a passing result against the words the check holds now is unproven - a
 // check holding no result, holding only a fail, or holding a pass recorded against a text sum it no
 // longer holds - and a retracted result counts as none; one a check proves is proved. A requirement
-// whose node or a node above it is overtaken - a question by its ask node's state, its `:::ask`
-// block's included (readTreeRequirements) - is closed with its subtree: it lists no gap and no
-// proof row, and it still counts the checks and the plan tasks that serve it, since the count is a
-// fact and closed means only that no gap is listed (INFRA-1253's architect,
+// whose node or a node above it in the walk is overtaken, whatever that node's kind - a block, an
+// ask, a comment, a message, a lens, the issue's own node, a question by its ask node's state, its
+// `:::ask` block's included (readTreeRequirements) - is closed with its subtree: it lists no gap
+// and no proof row, and it still counts the checks and the plan tasks that serve it, since the
+// count is a fact and closed means only that no gap is listed (INFRA-1253's architect,
 // dispatch://INFRA-1253/comment/cb7311d9-ca4b-4c63-b083-d8f49a9a7efa). A proposed requirement is
 // a question still open and raises no gap.
 //
@@ -145,9 +146,11 @@ func (s *server) issueCoverageOverTuplesAndOwedGaps(ctx context.Context, q query
 
 // treeRequirements is what the coverage read over the tuples reads of the requirement nodes of one
 // issue's tree: the tree's cut; each requirement node the reader may see, in the tree's own order,
-// with its id; the walk's parent of each node; the node of each block of the tree as the reader may
-// see it (refs.Nodes) and of each ask of its conversation; and the ask whose node holds the
-// question's state of each `:::ask` block above a requirement (questions). These tell whether a
+// with its id; the walk's parent of each node; the node of each requirement and of each node the
+// walk names above one, as the reader may see it, and of each ask a question above one names; the
+// ask whose node holds the question's state of each `:::ask` block above a requirement
+// (questions); and each node of an issue above that a node of the walk's second part stands under
+// that is closed in the tree of its own issue (above, closedAbove). These tell whether a
 // requirement is closed.
 type treeRequirements struct {
 	cut       refs.TreeCut
@@ -156,25 +159,36 @@ type treeRequirements struct {
 	parents   map[refs.Target]refs.Target
 	nodes     map[refs.Target]model.GraphNode
 	questions map[refs.Target]refs.Target
+	above     map[refs.Target]bool
 }
 
-// readTreeRequirements is the treeRequirements of tree for who. A question's state is its ask
-// node's alone, never its `:::ask` block's (R2 and R3 of INFRA-1150; askHoldsState refuses a
-// write on the block). The ask nodes come from the walk's own read of the conversation
-// (IssueTree.Conversation), which holds every ask of the issue as its loader answers it and leaves
-// none out for any reader, since no ask is reserved for its author: they cost no read. An
-// `:::ask` block above a requirement is read to its ask (questionAsks), in one statement sent only
-// where a requirement stands under such a block.
+// readTreeRequirements is the treeRequirements of tree for who. A requirement is closed by the
+// state of each node the walk names on the climb from it, whatever its kind (closed): a block of a
+// document; an ask, a comment or a message of the issue, or a block of one; a lens, a finding, a
+// risk, a constraint or a document's node; and the issue's own node. Each ask, comment and message
+// of the issue and each block of one comes from the walk's own read of the conversation
+// (IssueTree.Conversation), which holds each as its loader answers it, its state among it, and
+// leaves none out for any reader, since the store takes none of them reserved for its author
+// (graphstore.AdmitAuthorOnly): they cost no read. Every other node of the walk on a climb, each
+// requirement among them, is read for who (refs.Nodes), in one statement per kind, and a node who
+// may not see is absent, as the tree read answers its child under the nearest node above that the
+// reader may see. A question's state is its ask node's alone, never its `:::ask` block's (R2 and
+// R3 of INFRA-1150; askHoldsState refuses a write on the block): an `:::ask` block above a
+// requirement is read to its ask (questionAsks), in one statement sent only where a requirement
+// stands under such a block, and that ask's node is the conversation's.
+//
+// A climb that leaves the walk ends at the node of an issue above that a node of the walk's second
+// part stands under, which the walk does not take. That node and each node above it in the tree of
+// its own issue, up to that issue's node, are read in one more statement, sent only where a
+// requirement stands under such a node (closedAbove).
 func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree docs.IssueTree) (treeRequirements, error) {
 	read := treeRequirements{cut: tree.Cut, parents: make(map[refs.Target]refs.Target, len(tree.Nodes))}
-	var chain []refs.Target
 	var requirements []refs.Target
 	askBlocks := map[refs.Target]bool{}
 	for _, node := range tree.Nodes {
 		target := refs.Target{Kind: node.Kind, ID: node.ID}
 		read.parents[target] = node.Parent
 		if node.Kind == refs.BlockNodeKind {
-			chain = append(chain, target)
 			switch node.Type {
 			case requirementBlockType:
 				requirements = append(requirements, target)
@@ -186,16 +200,37 @@ func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree 
 	if len(requirements) == 0 {
 		return read, nil
 	}
-	nodes, err := refs.Nodes(ctx, q, who, chain)
+	// Each node from a requirement up is climbed once: a climb stops at a node an earlier one
+	// took, whose nodes above it that climb took too. forWho is each climbed node of the walk the
+	// walk's conversation does not hold, and outside each climbed node the walk does not take.
+	climbed := map[refs.Target]bool{}
+	var forWho, outside []refs.Target
+	for _, requirement := range requirements {
+		for at := requirement; at != (refs.Target{}) && !climbed[at]; at = read.parents[at] {
+			climbed[at] = true
+			_, walked := read.parents[at]
+			_, conversation := tree.Conversation[at]
+			switch {
+			case !walked:
+				outside = append(outside, at)
+			case !conversation:
+				forWho = append(forWho, at)
+			}
+		}
+	}
+	nodes, err := refs.Nodes(ctx, q, who, forWho)
 	if err != nil {
 		return treeRequirements{}, err
 	}
-	for target, excerpted := range tree.Conversation {
-		if target.Kind == graphstore.KindAsk {
-			nodes[target] = excerpted.Node
+	for target := range climbed {
+		if held, conversation := tree.Conversation[target]; conversation {
+			nodes[target] = held.Node
 		}
 	}
 	read.nodes = nodes
+	if read.above, err = closedAbove(ctx, q, who, outside, read.cut); err != nil {
+		return treeRequirements{}, err
+	}
 	// Each `:::ask` block leaves askBlocks once its id is queued, so questions names it once, and
 	// a climb stops once no block is left to find.
 	var questions []string
@@ -218,6 +253,11 @@ func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree 
 	}
 	if read.questions, err = questionAsks(ctx, q, questions, read.cut); err != nil {
 		return treeRequirements{}, err
+	}
+	for _, ask := range read.questions {
+		if held, conversation := tree.Conversation[ask]; conversation {
+			nodes[ask] = held.Node
+		}
 	}
 	return read, nil
 }
@@ -279,10 +319,144 @@ func questionAsks(ctx context.Context, q queryer, blocks []string, cut refs.Tree
 	return questions, rows.Err()
 }
 
+// aboveClimbDepth bounds the climb up the tree of an issue above (closedAboveStatement), as the
+// block index bounds the climb up a block's chain (refs' authoredChainDepth): a tree is a few
+// levels deep, and a chain a move closed into a loop ends there.
+const aboveClimbDepth = 64
+
+// closedAboveStatement is, of each start node $1 and $2 name, kind by kind and id by id - a node
+// of an issue above that a node of a walk's second part stands under - whether it, or a node above
+// it in the tree of its own issue, up to and with that issue's node, is overtaken as the reader
+// whose credential $3 binds may see it (refs.VisibleNodeOfRow): a start it answers is closed. It
+// climbs in one recursive statement, at most $4 nodes up, and a climb ends at the first node it
+// finds overtaken, at an issue's node, and at a node with no parent.
+//
+// Each step takes the parent the walk of that node's own issue hangs it under (docs.WalkIssueTree),
+// which is a part_of tuple for some kinds and a column of the node's own row for others:
+//   - a block of an ask, a comment or a message, which the store holds no row of: its item, which
+//     its id names (`<kind>/<uuid>#<block id>`, refs.ParseItemBlockNode), as the walk's read of
+//     the conversation places it;
+//   - a comment: what it answers, by its loader (refs' commentReplyParent): coalesce(answers,
+//     reply_to), a comment, else ask_id, an ask; for a comment that answers nothing, the node its
+//     anchor's part_of names (R31), resolved as the walk resolves it (docs' anchorParent: the
+//     moved_to tuples and the room, refs.NamedBlockSQL); else its issue. A reply holds no part_of;
+//   - a message: in_reply_to, a message, by its loader; else its issue. It holds no part_of;
+//   - an ask: its issue, under which the walk hangs every ask, though its part_of names the
+//     document that holds its block;
+//   - every other node, a block of a document, a lens, a finding, a risk, a constraint, a result,
+//     a document: the far end of its current part_of, the one tuple a move writes (R7), as the
+//     walk takes each such node as a part_of child of its parent.
+//
+// Tuples are read at or below the seq bound $5, the walk's cut; a state, as the walk's loaders and
+// refs.Nodes read it, as it stands.
+func closedAboveStatement() string {
+	itemBlocks := `'` + refs.ItemAsk.BlockKind() + `', '` + refs.ItemComment.BlockKind() + `', '` + refs.ItemMessage.BlockKind() + `'`
+	overtaken := func(kind, id string) string {
+		return `coalesce((select held.state = '` + graphstore.StateOvertaken + `' and ` + refs.VisibleNodeOfRow(kind, id, "held", "$3") + `
+			from graph_nodes held where held.kind = ` + kind + ` and held.id = ` + id + `), false)`
+	}
+	placed := func(kind, id string) string {
+		return `select newest.to_kind, newest.to_id from (
+				` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.seq, t.asserted`,
+			`t.from_kind = `+kind+` and t.from_id = `+id+` and t.kind = '`+graphstore.TuplePartOf+`'
+					and t.to_kind <> '`+graphstore.KindValue+`' and t.seq <= $5`) + `
+			) newest
+			where newest.asserted
+			order by newest.seq desc
+			limit 1`
+	}
+	return `
+	with recursive climb (start_kind, start_id, kind, id, depth, closed) as (
+		select start.kind, start.id, start.kind, start.id, 0, ` + overtaken(`start.kind`, `start.id`) + `
+		from unnest($1::text[], $2::text[]) as start (kind, id)
+		union all
+		select climb.start_kind, climb.start_id, up.kind, up.id, climb.depth + 1, ` + overtaken(`up.kind`, `up.id`) + `
+		from climb
+		cross join lateral (
+			select split_part(climb.id, '/', 1) as kind, split_part(split_part(climb.id, '#', 1), '/', 2) as id
+			where climb.kind in (` + itemBlocks + `)
+			union all
+			select answered.kind, answered.id
+			from comments c
+			cross join lateral (
+				select 1 as precedence, '` + graphstore.KindComment + `'::text as kind, coalesce(c.answers, c.reply_to)::text as id
+				where coalesce(c.answers, c.reply_to) is not null
+				union all
+				select 2, '` + graphstore.KindAsk + `', c.ask_id::text where c.ask_id is not null
+				union all
+				select 3, anchored.to_kind,
+				       case when anchored.to_kind = '` + refs.BlockNodeKind + `' then ` + refs.NamedBlockSQL(`anchored.to_id`) + ` else anchored.to_id end
+				from (` + placed(`'`+graphstore.KindComment+`'`, `c.id::text`) + `) anchored
+				union all
+				select 4, '` + graphstore.KindIssue + `', c.issue_key where c.issue_key is not null
+				order by precedence
+				limit 1
+			) answered
+			where climb.kind = '` + graphstore.KindComment + `' and c.id = case when climb.kind = '` + graphstore.KindComment + `' then climb.id::uuid end
+			union all
+			select case when m.in_reply_to is null then '` + graphstore.KindIssue + `' else '` + graphstore.KindMessage + `' end,
+			       coalesce(m.in_reply_to::text, m.issue_key)
+			from messages m
+			where climb.kind = '` + graphstore.KindMessage + `' and m.id = case when climb.kind = '` + graphstore.KindMessage + `' then climb.id::uuid end
+			  and coalesce(m.in_reply_to::text, m.issue_key) is not null
+			union all
+			select '` + graphstore.KindIssue + `', k.issue_key
+			from asks k
+			where climb.kind = '` + graphstore.KindAsk + `' and k.id = case when climb.kind = '` + graphstore.KindAsk + `' then climb.id::uuid end
+			  and k.issue_key is not null
+			union all
+			select placed.to_kind, placed.to_id
+			from (` + placed(`climb.kind`, `climb.id`) + `) placed
+			where climb.kind not in ('` + graphstore.KindComment + `', '` + graphstore.KindMessage + `', '` + graphstore.KindAsk + `', ` + itemBlocks + `)
+		) up
+		where not climb.closed and climb.kind <> '` + graphstore.KindIssue + `' and climb.depth < $4
+	)
+	select distinct climb.start_kind, climb.start_id from climb where climb.closed`
+}
+
+// closedAbove is each of starts, nodes of an issue above that a node of a walk's second part stands
+// under, that is closed in the tree of its own issue, for who, at cut (closedAboveStatement): it,
+// or a node above it in that tree up to that issue's node, is overtaken as who may see it. That
+// issue's tree read draws the requirement of the walk's issue under such a node, marked with its
+// issue, inside the overtaken node's subtree, which R7 closes with it (INFRA-1253's architect,
+// the issue's comment 53c8e843 of 2026-11-27). The climb ends at that issue's node: no tree read
+// draws the requirement under an issue above that one, since the walk of an issue does not enter
+// an issue under it. It sends nothing where starts is empty, as on every issue whose tree holds no
+// node of the walk's second part under a requirement.
+func closedAbove(ctx context.Context, q queryer, who model.Actor, starts []refs.Target, cut refs.TreeCut) (map[refs.Target]bool, error) {
+	if len(starts) == 0 {
+		return nil, nil
+	}
+	kinds, ids := make([]string, len(starts)), make([]string, len(starts))
+	for index, start := range starts {
+		kinds[index], ids[index] = start.Kind, start.ID
+	}
+	seq, _ := treeCutBounds(cut)
+	rows, err := q.Query(ctx, closedAboveStatement(), kinds, ids, refs.VisibilityArg(who), aboveClimbDepth, seq)
+	if err != nil {
+		return nil, fmt.Errorf("climb the trees above %d nodes: %w", len(starts), err)
+	}
+	defer rows.Close()
+	closed := make(map[refs.Target]bool, len(starts))
+	for rows.Next() {
+		var start refs.Target
+		if err := rows.Scan(&start.Kind, &start.ID); err != nil {
+			return nil, fmt.Errorf("read a node closed above: %w", err)
+		}
+		closed[start] = true
+	}
+	return closed, rows.Err()
+}
+
 // closed says whether the node target, or a node above it in the walk, is overtaken: by its own
-// node's state, or, for an `:::ask` block, by its ask node's (questions).
+// node's state, or, for an `:::ask` block, by its ask node's (questions); and, where the climb
+// leaves the walk at a node of an issue above, whether that node is closed in its own issue's tree
+// (above).
 func (read treeRequirements) closed(target refs.Target) bool {
 	for at, steps := target, 0; at != (refs.Target{}) && steps <= len(read.parents); steps++ {
+		if read.above[at] {
+			return true
+		}
 		state := read.nodes[at].State
 		if ask, held := read.questions[at]; held {
 			state = read.nodes[ask].State
