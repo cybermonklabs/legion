@@ -39,6 +39,9 @@ function answerThePageReads(): void {
     ),
     http.get("/api/v1/issues/:key/comments", () => Response.json([])),
     http.get("/api/v1/issues/:key/messages", () => Response.json([])),
+    // The issue's head, which the end of the outline reads to mark the issue read
+    // (`IssueReadMark.tsx`).
+    http.get("/api/v1/issues/:key/events", () => Response.json([])),
     http.get("/api/v1/reference-targets", () =>
       Response.json({ targets: [] } satisfies ReferenceTargets)
     ),
