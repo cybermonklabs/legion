@@ -6,7 +6,7 @@ It is the body of the boot's read of an issue's links (step 8 of the plan of dis
 
 It is real: the answer of one GET, read on 2026-11-27 with the deployment's Dispatch token, <KEY> being the issue's key in that deployment:
 
-    curl -fsS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<KEY>"
+    curl -fsS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<KEY>"
 
 This repository is public, so the answer went through this filter and rewrite before it was kept:
 

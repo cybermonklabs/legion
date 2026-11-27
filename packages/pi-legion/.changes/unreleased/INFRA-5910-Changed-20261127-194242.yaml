@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    The Legion skills say that a fix in another repository can be a second pull request of the
+    same issue, linked on it by its URL, that the work of an issue ends when no pull request of the
+    issue is open, and that at its last merge Legion closes the other open pull requests of its
+    tasks. The architect's wake routing answers `pr-closed-others-open`, `pr-holds-close` and
+    `pr-link-refused`, the controller's admission reference names the held word `pull_requests`,
+    and the daily report reads an issue's pull requests from its links and from the line
+    `Dispatch: <KEY>` in their bodies, since Dispatch links no pull request by itself.
+time: 2026-11-27T19:42:42Z
+custom:
+    Issue: INFRA-5910

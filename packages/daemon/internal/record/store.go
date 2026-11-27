@@ -907,11 +907,13 @@ const pullRequestColumns = `issue, ` + pullRequestPlan + `, ` + pullRequestLinke
 // pullRequestPlan is the issue of a pull_requests row as one JSON object: its repository, as
 // GitHub spells it and as the record keeps it, and the tasks of its plan at its generation, each
 // as its id, its branch, its state and its place, in task id order: the facts
-// StoredPlan.TaskOfBranch reads a row's task from. An issue with no plan rows there reads no tasks.
+// StoredPlan.TaskOfBranch reads a row's task from. An issue with no plan rows there reads tasks
+// null, which json_agg gives for no row, so a read tells no plan from a plan by its presence and
+// never by its count of tasks (scanPullRequest).
 const pullRequestPlan = `(select json_build_object('githubRepo', i.github_repo, 'repo', i.repo, 'tasks',
-	coalesce((select json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state,
+	(select json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state,
 	'place', json_build_object('kind', t.running_kind, 'position', t.position)) order by t.task)
-	from plan_tasks t where t.issue = i.key and t.generation = i.generation), '[]'))
+	from plan_tasks t where t.issue = i.key and t.generation = i.generation))
 	from issues i where i.key = pull_requests.issue)`
 
 // pullRequestLinked is whether a pull_requests row's issue links it, a link the daemon took
@@ -2379,7 +2381,9 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 // scanPullRequest reads one row of pullRequestColumns, its task derived from the plan of its
 // issue, its branch and its repository (StoredPlan.TaskOfBranch), and beside the record whether a
 // task of the plan holds its branch in its issue's repository and whether it is of that repository
-// (pullRequestRow).
+// (pullRequestRow). An issue with no plan rows at its generation reads tasks null
+// (pullRequestPlan), which decodes to no plan at all: its rows read the task "" and the rule of
+// the issue's own branch (StoredPlan.HoldsBranch of a nil plan).
 func scanPullRequest(row scanner) (*pullRequestRow, error) {
 	var scanned pullRequestRow
 	pr := &scanned.PullRequest
@@ -2394,17 +2398,17 @@ func scanPullRequest(row scanner) (*pullRequestRow, error) {
 		return nil, err
 	}
 	var of struct {
-		GitHubRepo string     `json:"githubRepo"`
-		Repo       string     `json:"repo"`
-		Tasks      []PlanTask `json:"tasks"`
+		GitHubRepo string      `json:"githubRepo"`
+		Repo       string      `json:"repo"`
+		Tasks      *[]PlanTask `json:"tasks"`
 	}
 	if err := json.Unmarshal(plan, &of); err != nil {
 		return nil, fmt.Errorf("decode the plan of %s: %w", pr.Issue, err)
 	}
 	issue := Issue{Key: pr.Issue, Repo: of.Repo, GitHubRepo: of.GitHubRepo}
 	var stored *StoredPlan
-	if len(of.Tasks) > 0 {
-		stored = &StoredPlan{Tasks: of.Tasks}
+	if of.Tasks != nil {
+		stored = &StoredPlan{Tasks: *of.Tasks}
 		pr.Task, _ = stored.TaskOfBranch(issue, pr.Repo, pr.Branch)
 	}
 	scanned.held = stored.HoldsBranch(issue, pr.Repo, pr.Branch)

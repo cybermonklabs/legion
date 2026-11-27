@@ -31,7 +31,8 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
 A day with nothing finished says so in one sentence; when the lists do not fit, give each list's count and name its priority 0 and 1 issues in board rank order.
 
 - **Finished.**
-  `dispatch issues --project <PROJECT> --status done --updated-since <the previous report's time, or 24 hours ago> --all`, keeping the issues `read_state` records whose `issue.closed` is after the previous report, each with the pull request under its `External links:`.
+  `dispatch issues --project <PROJECT> --status done --updated-since <the previous report's time, or 24 hours ago> --all`, keeping the issues `read_state` records whose `issue.closed` is after the previous report, each with its pull requests.
+  Dispatch links no pull request by itself, so take each one under its `External links:` and each one that carries the line `Dispatch: <KEY>` in its body, which the implementer opens every pull request with: `gh pr list --repo <its repository> --state merged --search '"Dispatch: <KEY>" in:body' --json url`.
 
 - **Closed without a change.**
   Those with no pull request, each with the reason its closing message gave (the `message.created` before `issue.closed`, with only the close's own settlement and withdrawal lines between them).

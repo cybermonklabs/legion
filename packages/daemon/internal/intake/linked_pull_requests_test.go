@@ -27,7 +27,7 @@ import (
 // read on 2026-11-27 from the issue's event log with the deployment's Dispatch token, <KEY> being
 // the issue's key in that deployment and N being 3 and then 4:
 //
-//	curl -fsS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<KEY>/events" |
+//	curl -fsS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<KEY>/events" |
 //	  jq -c '.[] | select(.seq == N) | del(.actor.origin, .actor.owner, .payload.assignee)'
 //
 // Each event became the string payload of the Envoy envelope testdata/dispatch/issue-updated.json

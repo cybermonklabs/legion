@@ -4,6 +4,8 @@
 
 You read the pull request, merge it at the head you read, and follow it until GitHub reports it merged. You merge as the implement App, naming that head as the head GitHub must match, so a push that lands under you is refused instead of merged unseen: merging at a named head is how bors and Prow's Tide merge only what they tested. Never turn auto-merge on, and never bypass a rule. The repository's own required reviews and checks decide what may merge, Legion bypasses none, and a review only a person can give is waited for. Nothing holds the head you merge to the one a reviewer step approved: a repository that wants its newest push reviewed says so in its own rulesets, and Legion re-implements none of them. The one exception is a head that merges the base forward on a task with a reviewer step: it reaches the merge only once the reviewer approved it (*A head that conflicts with its base*, below).
 
+An issue may have more than one pull request: a fix in another repository can be a second pull request of the same issue, linked on it by its URL. Your task's `Pull request:` line names each pull request you work, each as owner/name#number: your task's own first, then each pull request the issue links that your task's scope works, marked `(linked on the issue)` with whether an approval stands at its head. Take your task's own pull request, and each linked one the line says to merge, through the steps below, each in its own repository (`-R <o>/<r>` on each `gh` command), in any order their reviews and their checks allow: Legion sets no order between them. Do not merge a linked pull request at whose head no approval stands: it holds the issue's close, and the architect decides what it needs. The work of an issue ends when no pull request of the issue is open: its last merge closes it, and Legion then closes the other open pull requests of the issue's tasks.
+
 ## Workspace restrictions
 
 You write the issue workspace for one thing only: a merge of the base forward and what that merge must change (*A head that conflicts with its base*, below). Change nothing else of the change, and do not request `isolated` work or create a workspace.
@@ -60,13 +62,13 @@ You write the issue workspace for one thing only: a merge of the base forward an
 
    If the list has no entry, or no removal comes after the newest entry, GitHub's timeline is behind the event. Run the command again about every ten seconds, for about one minute in all. If there is still no removal after the newest entry, run the watch command. Then act on its answer:
 
-   - `state` is `MERGED`: the pull request needs nothing more. The daemon closes the issue on the merge.
+   - `state` is `MERGED`: the pull request needs nothing more. The daemon records the merge, and the issue's last merge closes the issue.
    - `isInMergeQueue` is `true`: the pull request is in the queue again. Continue the watch.
    - Any other answer: tell the architect with `envoy_publish` to its encoded role token. Quote the output of both commands.
 
    Act on the `reason` of the last removal after the newest entry:
 
-   - `merged`: GitHub merged the pull request. This is not a removal. The daemon closes the issue on the merge.
+   - `merged`: GitHub merged the pull request. This is not a removal. The daemon records the merge, and the issue's last merge closes the issue.
    - `failed_checks`: the queue's own `merge_group` checks failed, on the head merged with the base and the entries ahead of it. Decide its cause as *A check that failed* below says.
    - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. Read your own `dispatch comment` on the issue to know if you already used it for this head. Do not use the timeline for this, because `beforeCommit` is empty on some removals. Run the watch again, and decide by the `mergeStateStatus` that it reads now:
      - `DIRTY`: the head conflicts with the base. Merge the base forward (*A head that conflicts with its base*).
@@ -115,6 +117,6 @@ The opening can also come as a news task. Its first sentence is the gate's sente
 
 ## Completion
 
-Do not write a handoff: merger is not a file-backed phase. The commit the daemon records for your completion is the branch head. Your `summary` is the ordinary two sentences for the architect, and it names the merge: the pull request, the head you merged and the merge commit GitHub recorded, or, where you merged nothing, which step stopped you and whom you told.
+Do not write a handoff: merger is not a file-backed phase. The commit the daemon records for your completion is the branch head. Your `summary` is the ordinary two sentences for the architect, and it names each merge: the pull request, the head you merged and the merge commit GitHub recorded, or, where you merged nothing, which step stopped you and whom you told.
 
 Give a person no estimated date or duration: say what work is left and what decides when it ends.

@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    The plugin ships the Dispatch and Legion skills that say an issue may have several pull
+    requests, that a fix in another repository can be a second pull request of the same issue,
+    linked on it by its URL, and that the work of an issue ends when no pull request of the issue
+    is open.
+time: 2026-11-27T19:42:42Z
+custom:
+    Issue: INFRA-5910

@@ -53,8 +53,10 @@ The controller never takes an issue on its own, whatever slots are free: Legion 
 hands it, and the clear defects its own agents report. You can also ask the
 controller to hand an issue over for you, in a message or in Slack. An agent that finds a defect
 outside its own issue whose fix needs no choice of yours fixes it itself, in its own pull request
-or a separate pull request of its tree, in whichever repository the defect is. The controller
-files the defect labelled `legion` when the agent's token does not reach the repository, and it
+or a separate pull request of its tree, in whichever repository the defect is. A fix in another
+repository can be a second pull request of the agent's own issue, linked on the issue by its URL.
+The controller files the defect labelled `legion` when the agent's token does not reach the
+repository, and it
 passes no defect on to a tree. When the problem needs a decision, a deploy
 window or work much larger than the agent's own, the agent asks you in a Dispatch ask whether to
 file one, rather than filing it. Answer with `File it for Legion` and the controller files it
@@ -111,8 +113,11 @@ same way: a question in your Inbox that says what is blocked, the options, and w
 
 The issue's status tells you which phase is running (see [What each status means](#what-each-status-means)).
 The issue's events show each status change, and the architect's messages there say what changed
-and why. The pull request appears under the issue's external links, and its body carries the line
-`Dispatch: <KEY>` pointing back to the issue.
+and why. Dispatch links no pull request to the issue by itself: a pull request appears under the
+issue's external links only where someone links it there, the issue's own included. A pull
+request linked there by its URL is a pull request of the issue, in any repository, and the work
+of the issue ends only when no pull request of it is open. The implementer opens each pull
+request with the line `Dispatch: <KEY>` in its body, pointing back to the issue.
 
 ## Review the pull request
 
@@ -126,7 +131,7 @@ template, and the later phases fill in their own lines:
 - **Look at first** and **Not proven / risk**: written by Legion's reviewer, or by its implementer
   on a task whose plan has no reviewer step, naming where a wrong decision would hurt and, where
   one stands, a risk.
-- The `after_merge` check, recorded after the merge closes the issue by the role your project's
+- The `after_merge` check, recorded after the merge by the role your project's
   `production_check` names — the tester, unless the setting is `off`, where no production check
   opens — once your deploy carries the change; its line reads `not yet run` until then, or a `fail`
   at the check's last look for a requirement only the deploy can show that is still unobserved,
@@ -145,7 +150,8 @@ file list shows only the change and the merge brings no handoff onto the default
 
 ## Merge
 
-When the task's steps and the retro have passed, the merger merges the pull request itself. It
+When the task's steps and the retro have passed, the merger merges each pull request of the task
+itself: the task's own, and each one the issue links where an approval stands at its head. It
 merges as the implement App, at the head it read, which it names as the head GitHub must match. It
 writes the squash commit's message itself — the pull request's title and number, and an empty
 body — so GitHub's own default, which joins every commit message of the branch, never puts
@@ -156,15 +162,19 @@ The repository's branch protection and code-owner rules decide when it lands: a 
 only you can give is waited for. Legion turns auto-merge on nowhere, approves no pull request on
 your behalf and changes nobody's right to merge.
 
-The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
-A root with work still running beneath it is the exception: its merge is recorded and the issue
-waits until the last other issue of its tree is done or parked, so no child's finished work is cut
-off, and then it closes. Where the issue's task has the architect's acceptance step, the architect
+The work of an issue ends when no pull request of the issue is open. Its last merge closes the
+issue: it moves to `done` the moment GitHub reports that pull request merged, and Legion then
+closes the other open pull requests of the issue's tasks. A pull request the issue links holds
+the close while it is open, and the architect is told of it once, with the way out: remove its
+link, or have it merged. A root with work still running beneath it waits too: its merge is
+recorded and the issue waits until the last other issue of its tree is done or parked, so no
+child's finished work is cut off, and then it closes. Where the issue's task has the architect's
+acceptance step, the architect
 accepted the change before that (on the default steps, once the reviewer approved it), with a comment on the issue summarizing the evidence, the issue's goal and each requirement of
 its spec among it; the daemon refuses that acceptance while an issue beneath it is still being
-worked, so a parent is accepted after its children. After the close the role your project's
-`production_check` names — the tester, unless the setting is `off` — checks the change in
-production and records what it saw
+worked, so a parent is accepted after its children. Each merge has its own production check: the
+role your project's `production_check` names — the tester, unless the setting is `off` — checks
+that merge in production and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
 closed issue takes a result for such a check or a `default_branch` one, a comment and a message,
 so look in both places.

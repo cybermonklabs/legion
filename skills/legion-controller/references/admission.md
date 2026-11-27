@@ -2,7 +2,7 @@
 
 Read this when you need to know where an issue stands in admission, what an `admission.held` word means, or which trees are live, and before you move an issue to `todo`.
 An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
-The `read_state` summary prints `admission.active`, `admission.waiting`, `admission.blocked` and `admission.trees` as its `active`, `waiting`, `blocked` and `trees` lines, and each entry of `admission.held` as a `held` line.
+The `read_state` summary prints each `admission.<list>` as its `<list>` line (`active`, `waiting`, `blocked`, `trees`), and each entry of `admission.held` as a `held` line.
 The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
 
 ## The lists
@@ -51,7 +51,6 @@ Holding no slot is no fault by itself.
 
 Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it.
 The `tick` wake carries it as `held`, and a held issue's record (`read_state` with `issue`) gives its word's sentence in `why`.
-Each waits for what ends it, in the table's last column.
 Name them in the day's report and take nothing for them.
 
 | Word | Meaning | What ends it |
@@ -67,7 +66,7 @@ Name them in the day's report and take nothing for them.
 | `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
 | `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
 | `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step, and an issue whose experiment's group runs the project's default steps takes no later version |
-| `pull_requests` | Its close waits for a pull request of its set: a linked one still open, one whose read is still owed, or one in a repository Legion does not serve or cannot read; no merge is in hand, and `heldBy` is absent | That pull request merges, or a person takes its link off; then the issue closes |
+| `pull_requests` | With no merge in hand, its close waits for a pull request it links | It merges, closes or loses its link |
 | `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |
 | `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
 

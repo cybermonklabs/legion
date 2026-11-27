@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+    `legionIssue` takes `pullRequests`, each pull request of the issue's set, the pull request of
+    each task of its plan and each pull request the issue links, in any repository
+    (`legionSetPullRequestView`: the pull request view with `task` and `linked`), the hold reason
+    `pull-requests` and the held-list word `pull_requests`. `pullRequest` is the newest open pull
+    request of the set, and its `repo` can name any repository for a linked pull request. The
+    daemon API fixtures hold the entry 20261127183022 pull-requests
+    (`contracts/20261127183022_pull-requests.json`).
+time: 2026-11-27T19:42:42Z
+custom:
+    Issue: INFRA-5910

@@ -89,6 +89,10 @@ Release a child that builds on another repository's change only after that pull 
 for a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
 Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
+A fix in another repository can also be a second pull request of the same issue, opened from a branch of that repository and linked on the issue by its URL (`dispatch issue-update --issue <KEY> --external-link <url>`).
+The reviewer and the merger of the issue's first task that merges and is not done review and merge a linked pull request that no task's branch holds.
+The work of an issue ends when no pull request of the issue is open: its last merge closes it, and Legion then closes the other open pull requests of the issue's tasks.
+
 ## Recording a wait on other work
 
 When an issue must wait on a sibling, set its `blocked_by` list as `skill://dispatch`, "Choosing what to work on", says.
