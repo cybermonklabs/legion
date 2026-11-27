@@ -23,7 +23,8 @@ export interface RoleTopics {
 const NONE: readonly string[] = [];
 const NOTHING: RoleTopics = { topicsFor: () => NONE, names: () => false };
 
-/** The longest subject the listener takes (`internal/bus/stored.go`, `checkSubject`), in bytes. */
+/** The longest subject the listener takes, in bytes (`internal/bus/nats.go`, `maxSubjectBytes`,
+ *  which `checkSubject` holds every subject to). */
 const MAX_SUBJECT_BYTES = 4_032;
 
 /** A topic a role's holder may follow: one the notification stream stores, and no subject private
@@ -138,7 +139,9 @@ export function readRoleTopics(value: string | undefined): RoleTopics {
  * role's while the role is held.
  *
  * - `open(role)` claims every subject the role's topics expand to, following each the session did
- *   not follow yet; one it followed already is its own as well as the role's.
+ *   not follow yet; one it followed already is its own as well as the role's. Opened for another
+ *   role than the one it holds claims for, it drops that role's claims first and answers the
+ *   subjects only that role wanted, which the caller closes as it closes `close()`'s.
  * - `close()` drops every claim and answers the subjects only the role wanted, for the caller to
  *   stop following, each exactly, and to take out of the listener's registry.
  * - `claimOwn` and `releaseOwn` move a subject between the two when the session subscribes to,
@@ -147,7 +150,7 @@ export function readRoleTopics(value: string | undefined): RoleTopics {
  *   again until the role ends.
  */
 export interface RoleTopicFollows {
-  readonly open: (role: string) => void;
+  readonly open: (role: string) => readonly string[];
   readonly close: () => readonly string[];
   readonly refuse: (subjects: readonly string[]) => void;
   /** The session wants `subject` itself too; answers whether only the role wanted it before. */
@@ -183,8 +186,20 @@ export function createRoleTopicFollows(deps: RoleTopicFollowsDeps): RoleTopicFol
   const refused = new Set<string>();
   let openedFor: string | undefined;
   let owed = false;
+  const close = (): readonly string[] => {
+    const closed = [...onlyRole];
+    wanted.clear();
+    onlyRole.clear();
+    refused.clear();
+    openedFor = undefined;
+    owed = false;
+    return closed;
+  };
   return {
     open: (role) => {
+      // Another role's claims never outlive the role it holds them for: they are dropped here,
+      // and the subjects only that role wanted are the caller's to close.
+      const dropped = openedFor !== undefined && openedFor !== role ? close() : [];
       openedFor = role;
       for (const topic of deps.roleTopics.topicsFor(role)) {
         const subjects = expandSubscriptionTopics([topic]);
@@ -198,16 +213,9 @@ export function createRoleTopicFollows(deps: RoleTopicFollowsDeps): RoleTopicFol
           wanted.add(subject);
         }
       }
+      return dropped;
     },
-    close: () => {
-      const closed = [...onlyRole];
-      wanted.clear();
-      onlyRole.clear();
-      refused.clear();
-      openedFor = undefined;
-      owed = false;
-      return closed;
-    },
+    close,
     refuse: (subjects) => {
       for (const subject of subjects) {
         if (!wanted.delete(subject)) continue;

@@ -135,13 +135,14 @@ const (
 // step here and does not restate it:
 //
 //  1. The files do not hold C's current approved text: unknown, not_built. That text names no
-//     failing example, a text with no letter and no digit by the rule that Validate reads it with
-//     (hasWord): unknown, no_failing_example, whatever C's results (R9: "No setting makes the
-//     failing example optional"; "a check whose current text has no failing example that failed
-//     when it should" reads unknown). Validate refuses such a text in the files, and the pilot
-//     builds the approved spec from the store, with no reader. A problem that Validate finds in
-//     the files and that refuses C (refusals): unknown, refused, Detail its rule, since the
-//     derivation gives no clean state for a tree that the rules refuse.
+//     failing example, a text with no letter and no digit (hasWord): unknown, no_failing_example,
+//     whatever C's results (R9: "No setting makes the failing example optional"; "a check whose
+//     current text has no failing example that failed when it should" reads unknown). The tree
+//     rules refuse such a text in the files, the schema an empty one and Validate one of no letter
+//     and no digit (missing), so the derivation and tree never read one text two ways; and the
+//     pilot builds the approved spec from the store, with no reader. A problem that the schema or
+//     Validate finds in the files and that refuses C (refusals): unknown, refused, Detail its rule,
+//     since the derivation gives no clean state for a tree that the rules refuse.
 //  2. CI refused C at S.Commit (R48: "At that commit, such a check reads unknown, and no earlier
 //     result of it counts"): unknown, uncited, Detail the rule, whatever else holds there: C's
 //     results at S.Commit before or after the refusal, a result carried from another commit, or
@@ -265,7 +266,7 @@ func deriveChecks(in Input) (*checkJudge, []CheckState, error) {
 func newCheckJudge(in Input) (*checkJudge, error) {
 	// Current leaves out a node that the approved spec removed, and Input.check refuses each other
 	// node that it would leave out: one under another key than its id, one with no version, and one
-	// whose block is not its one block.
+	// whose document is not its one document.
 	current, _ := in.Approved.Current()
 	if err := in.check(current); err != nil {
 		return nil, err
@@ -314,17 +315,18 @@ type checkJudge struct {
 	historyErr error                   // the first error of History.Changed; states then gives no state
 }
 
-// refusals is the first rule, in Validate's order, that refuses each check and statement of files
-// (the derivation gives no clean state for a tree that the rules refuse, since the pilot calls it
-// with no reader). A problem that names a check or a statement refuses that node. Any other
-// problem, of a component, an interface, a term or no node, refuses each check and statement of
-// files: a file is no relation of The Spec, so the split of the tree into files changes no state.
-// Validate runs with no Options, as the scenario reader runs it: the files may still hold a node
-// that the approved spec removed (Compare). Each problem is read once, by sets of the ids, and none
-// after each check and statement is refused, so the time grows with the tree and not with its
-// square.
+// refusals is the first rule, in the order of SortProblems, that refuses each check and statement
+// of files (the derivation gives no clean state for a tree that the rules refuse, since the pilot
+// calls it with no reader): the schema's rules over the data of each node (schemaProblems), then
+// Validate's. A problem that names a check or a statement refuses that node. Any other problem, of
+// a component, an interface, a term or no node, refuses each check and statement of files: a file
+// is no relation of The Spec, so the split of the tree into files changes no state. Validate runs
+// with no Options, as the scenario reader runs it: the files may still hold a node that the
+// approved spec removed (Compare). Each problem is read once, by sets of the ids, and none after
+// each check and statement is refused, so the time grows with the tree and not with its square.
 func refusals(files Tree) map[string]string {
-	problems := Validate(files, Options{})
+	problems := append(schemaProblems(files), Validate(files, Options{})...)
+	SortProblems(problems)
 	if len(problems) == 0 {
 		return nil
 	}

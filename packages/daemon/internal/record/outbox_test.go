@@ -68,6 +68,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		DesignNewsReconcile{},
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks,
+			WakeDetail: "head1 failed build"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100",
@@ -131,6 +133,16 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+		// The state rows' values are raw JSON, which the jsonb column hands back in its own
+		// spacing and key order; a string, a number, null and the empty object come back as
+		// written, so the comparison below holds them byte for byte.
+		StateChange{Project: "LEGION", Run: stateRun, Issue: "LEGION-208", Changes: []StateFieldChange{
+			{Field: StateFieldPhase, Old: json.RawMessage(`null`), New: json.RawMessage(`"planning"`)},
+			{Field: StateFieldSlot, Old: json.RawMessage(`null`), New: json.RawMessage(`3`)},
+			{Field: StateFieldClaim, Role: claim.RoleImplementer, Old: json.RawMessage(`"launching"`), New: json.RawMessage(`"working"`)},
+		}},
+		StateAdmission{Project: "LEGION", Run: stateRun, Admission: json.RawMessage(`{}`)},
+		StateBoot{Project: "LEGION", Run: stateRun, Settings: json.RawMessage(`{}`), SchemaVersion: 20261126163320},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -306,8 +318,9 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
-		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
-	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
+		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord,
+		OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage, LaneState}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
 	}
@@ -406,6 +419,12 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// supervise start the pause holds (op start above), so the pause lets the reconcile run,
 		// and at the resume each held start carries what it recorded.
 		OutboxKindDesignChanges: "",
+		// The state events tell Dispatch what the daemon observes (dispatch://INFRA-3931) and
+		// start no turn. A pause's own claim moves are state changes Dispatch must see, so the
+		// pause holds none of them, and a paused project's state lane keeps publishing.
+		OutboxKindStateChange:    "",
+		OutboxKindStateAdmission: "",
+		OutboxKindStateBoot:      "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
@@ -525,6 +544,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "a start naming a wake detail and no wake kind", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
+		{name: "a suspend naming a wake detail", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
 		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
 		{name: "an intake-gave-up notice naming none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1}, reason: "names between 1 and 1 of them, not 0"},
 		{name: "an intake-gave-up notice naming 101", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 150, GiveUps: noticeGiveUps(101)}, reason: "names between 1 and 100 of them, not 101"},
@@ -609,13 +630,73 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward ask naming a head that landed", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
+		{name: "a merge-forward hold naming the launch an ask was sent at", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen, SentLaunch: 2}, reason: "only a merge-forward ask sent again at a launch"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
+		{name: "a state change of no project", payload: stateChange("", "run", phaseMoved), reason: `the project "", which is no bare Dispatch project key`},
+		{name: "a state change keyed by an issue rather than its project", payload: stateChange("LEGION-208", "run", phaseMoved), reason: `the project "LEGION-208", which is no bare Dispatch project key`},
+		// Keys the contract's PROJECT_KEY_PATTERN refuses: one letter alone, and eleven characters.
+		{name: "a state change of a one-letter project", payload: stateChange("L", "run", phaseMoved), reason: `the project "L", which is no bare Dispatch project key`},
+		{name: "a state change of a project past ten characters", payload: stateChange("LEGIONLEGIO", "run", phaseMoved), reason: `the project "LEGIONLEGIO", which is no bare Dispatch project key`},
+		{name: "a state change of no run", payload: stateChange("LEGION", "", phaseMoved), reason: "names no run"},
+		{name: "a state change of no issue", payload: StateChange{Project: "LEGION", Run: "run", Changes: []StateFieldChange{phaseMoved}}, reason: `the issue "", which is no issue key`},
+		{name: "a state change naming no field", payload: stateChange("LEGION", "run"), reason: "names no field the write moved"},
+		{name: "a state change of a field Dispatch does not observe", payload: stateChange("LEGION", "run", StateFieldChange{Field: "status", Old: json.RawMessage(`null`), New: json.RawMessage(`"todo"`)}), reason: `the field "status", which is none of`},
+		{name: "a claim change naming no role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "", which is none of a claim's six`},
+		{name: "a claim change of the controller", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Role: claim.RoleController, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "controller", which is none of a claim's six`},
+		{name: "a phase change naming a role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldPhase, Role: claim.RoleTester, Old: json.RawMessage(`null`), New: json.RawMessage(`"testing"`)}), reason: "only a claim change names one"},
+		{name: "a change with no old value", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldTree, New: json.RawMessage(`"LEGION-200"`)}), reason: "write null as null"},
+		{name: "a change whose new value is no JSON", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldTree, Old: json.RawMessage(`null`), New: json.RawMessage(`LEGION-200`)}), reason: "write null as null"},
+		{name: "a state admission of no project", payload: StateAdmission{Run: "run", Admission: json.RawMessage(`{}`)}, reason: "which is no bare Dispatch project key"},
+		{name: "a state admission with no block", payload: StateAdmission{Project: "LEGION", Run: "run"}, reason: "carries no admission block"},
+		{name: "a state admission whose block is null", payload: StateAdmission{Project: "LEGION", Run: "run", Admission: json.RawMessage(`null`)}, reason: "carries no admission block"},
+		{name: "a state boot of no run", payload: StateBoot{Project: "LEGION", Settings: json.RawMessage(`{}`)}, reason: "names no run"},
+		{name: "a state boot with no settings", payload: StateBoot{Project: "LEGION", Run: "run"}, reason: "carries no settings"},
+		{name: "a state boot with a negative schema version", payload: StateBoot{Project: "LEGION", Run: "run", Settings: json.RawMessage(`{}`), SchemaVersion: -1}, reason: "which no store records"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewOutboxRow("LEGION-208", tc.payload, now)
 			if err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
+			}
+		})
+	}
+}
+
+// phaseMoved is a change a state change in the refusal table carries where the case is about
+// something else of the row.
+var phaseMoved = StateFieldChange{Field: StateFieldPhase, Old: json.RawMessage(`"planning"`), New: json.RawMessage(`"implementing"`)}
+
+// stateChange is a state change of LEGION-208 in project, written by run, naming changes.
+func stateChange(project, run string, changes ...StateFieldChange) StateChange {
+	return StateChange{Project: project, Run: run, Issue: "LEGION-208", Changes: changes}
+}
+
+// A wake's start carries the wake's detail beside its kind (SuperviseRequest.WakeDetail), so a
+// cancel or a release's record can render its task again. A start that an earlier daemon queued
+// carries no `wakeDetail` key, and the outbox still decodes it, with the detail empty: the
+// decoder refuses an unknown key (DisallowUnknownFields), never a missing one. Both payloads are
+// spelled as the table holds them.
+func TestAWakeStartDecodesWithItsDetailAndWithout(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		want          SuperviseRequest
+	}{
+		{name: "this daemon's start, with the detail",
+			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","wakeKind":"checks","wakeDetail":"head1 failed build"}`,
+			want: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake",
+				WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build"}},
+		{name: "an earlier daemon's start, with no detail",
+			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","wakeKind":"checks"}`,
+			want:    SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeOutboxPayload(OutboxRow{ID: 7, Kind: OutboxKindSupervise, Issue: "LEGION-208", Payload: []byte(tc.payload)})
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload(%s) = %v, want it decoded", tc.payload, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("DecodeOutboxPayload(%s) = %#v, want %#v", tc.payload, got, tc.want)
 			}
 		})
 	}

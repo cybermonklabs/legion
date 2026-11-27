@@ -104,7 +104,7 @@ describe("readRoleTopics", () => {
     expect(read.topicsFor("ops-owner")).toEqual([]);
   });
 
-  test("says which subjects it names, for the resume rule that leaves them to the role's claim", () => {
+  test("says which subjects it names, for the resume rule that tells a role's topic from the session's own", () => {
     const read = readRoleTopics(JSON.stringify({ "ops-owner": ["notifications.team.alerts.>"] }));
     expect(read.error).toBeUndefined();
     // A `>` topic names its own base and itself, as a subscription expands it.
@@ -114,8 +114,9 @@ describe("readRoleTopics", () => {
   });
 });
 
-// What the session follows of a role's topics: only what the role's own opens added, so a topic
-// the session already followed itself stays its own and the role's end does not take it away.
+// Who wants each subject the session follows for a role: the role claims every subject its topics
+// name, and a subject the session already followed itself is its own as well, so the role's end
+// closes only what the role alone wanted.
 describe("createRoleTopicFollows", () => {
   const BUILDS = "notifications.slack.*.C0BUILDS.message";
   const roleTopics = readRoleTopics(
@@ -203,6 +204,19 @@ describe("createRoleTopicFollows", () => {
     expect(open.role()).toBe("ops-owner");
     open.close();
     expect(open.role()).toBeUndefined();
+  });
+
+  test("opened for another role, it drops the first role's claims and answers what only that role wanted", () => {
+    const open = follows(BUILDS);
+    expect(open.open("ops-owner")).toEqual([]);
+    // The reviewer role names BUILDS alone, which the session follows itself: switching to it
+    // drops ops-owner's claims, and ALERTS, which only ops-owner wanted, is the caller's to close.
+    expect(open.open("reviewer")).toEqual([ALERTS]);
+    expect(open.role()).toBe("reviewer");
+    expect(open.subjects()).toEqual([BUILDS]);
+    expect(open.has(ALERTS)).toBe(false);
+    // Opened for the role it holds already, it drops nothing.
+    expect(open.open("reviewer")).toEqual([]);
   });
 
   test("owes a registration until one carries every subject it followed", () => {

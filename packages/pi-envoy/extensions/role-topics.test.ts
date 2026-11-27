@@ -20,7 +20,7 @@ import {
 } from "@legion/envoy-client/test/envoy-stack";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { settled, until } from "@legion/test-fixtures/wait";
+import { settled, span, until } from "@legion/test-fixtures/wait";
 import { z } from "zod";
 
 const stackDirectory = useEnvoyStackDirectory();
@@ -488,18 +488,20 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
     await bystanderShownNoAlert(second);
   }, 240_000);
 
-  test("a session that resumes without the role follows none of its topics", async () => {
+  test("a session that resumes while another session holds its role is shown none of the role's backlog", async () => {
     const live = requireStack();
     const holder = `ses_rt_left_${RUN}`;
     const taker = `ses_rt_taker_${RUN}`;
     const env = { ENVOY_ROLE_TOPICS: ROLE_TOPICS };
 
     // A session takes the role, follows its topic, and its process is killed: nothing closes the
-    // topic, so the listener's row for that session still holds it.
+    // topic, so the listener's row for that session still holds it, and the transcript holds its
+    // follow stamp and the claim record.
     const held = await start("left-1", env);
     await held.send({ op: "start", session: holder });
     await held.send({ op: "tool", name: "envoy_role_set", args: { role: CONTROLLER_ROLE } });
     expect(await registeredTopics(live, holder)).toContain(ALERTS_TOPIC);
+    const transcript = await held.branch();
     await held.kill();
 
     // Another session takes the role, so the resumed one cannot have it back.
@@ -512,11 +514,17 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
         await other.send({ op: "tool", name: "envoy_role_set", args: { role: CONTROLLER_ROLE } });
       }
     );
+    // The role's backlog, stored after the killed process's stamp and before the resume: its
+    // holder's to read, which a resumed session opening the role's topics on its restored stamp
+    // would be shown before its claim was refused.
+    const backlog = await post("left-backlog");
+    await waitFor("the role's holder to show the backlog", () => other.shown(backlog));
 
-    // The killed session's id resumes. It does not get the role, so it follows none of its
-    // topics, and the pass takes the left-over out of its row.
+    // The killed session's id resumes from its whole transcript. The listener names another
+    // holder, so it opens none of the role's topics, and the pass takes the left-over out of its
+    // row.
     const resumed = await start("left-2", env);
-    await resumed.send({ op: "start", session: holder, roles: [CONTROLLER_ROLE] });
+    await resumed.send({ op: "start", session: holder, branch: transcript });
     await waitFor(
       "the resumed session's row to lose the role's topic",
       async () => !(await registeredTopics(live, holder)).includes(ALERTS_TOPIC),
@@ -526,8 +534,8 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
     );
     expect((await roleHolder(live, CONTROLLER_ROLE))?.holder).toBe(taker);
 
-    // The resumed session follows none of the role's topics, so after the alert it was shown none;
-    // the taker, the role's holder, is shown it.
+    // It was shown neither the backlog nor a post after it resumed; the role's holder is shown
+    // both.
     const afterResume = await post("after-resume");
     await waitFor("the role's holder to show the alert", () => other.shown(afterResume));
     await shownNoAlert(resumed, holder, other);
@@ -560,8 +568,11 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
     // The pod is down for longer than the follow clock's allowance, as an evicted pod is: a
     // follow the resumed process stamped only at its claim would answer done a post the stream
     // stored this much earlier, so the post below reaches the session only through the stamp the
-    // transcript restored. A span the product measures, not a wait for a fact.
-    await Bun.sleep(FOLLOW_CLOCK_ALLOWANCE_MS + 1_000);
+    // transcript restored.
+    await span(
+      FOLLOW_CLOCK_ALLOWANCE_MS + 1_000,
+      "the pod down for longer than the follow clock's allowance"
+    );
 
     const second = await start("transcript-2", launch);
     await second.send({ op: "start", session: owner, branch: transcript });
@@ -573,6 +584,56 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
       }
     );
     expect(await registeredTopics(live, owner)).toContain(ALERTS_TOPIC);
+
+    await bystanderShownNoAlert(second);
+  }, 240_000);
+
+  test("a post sent after the relaunch, while the killed process's claim still stands, reaches the session once its claim lands", async () => {
+    const live = requireStack();
+    const owner = `ses_rt_standing_${RUN}`;
+    const env = { ENVOY_ROLE_TOPICS: ROLE_TOPICS };
+
+    // The role comes from the model's `envoy_role_set`, so the resumed process claims it softly
+    // from the transcript's record, and the listener refuses it naming this same session id for
+    // as long as the killed process's claim stands (the live window).
+    const first = await start("standing-1", env);
+    await first.send({ op: "start", session: owner });
+    await first.send({ op: "tool", name: "envoy_role_set", args: { role: CONTROLLER_ROLE } });
+    expect(await registeredTopics(live, owner)).toContain(ALERTS_TOPIC);
+    const transcript = await first.branch();
+    const killedClaim = await first.claimRecordedFor(CONTROLLER_ROLE);
+    await first.kill();
+
+    const second = await start("standing-2", env);
+    await second.send({ op: "start", session: owner, branch: transcript });
+    // Posted at once, while the killed process's claim still stands under this id: a resumed
+    // process that closed the role's topics at that refusal would drop it.
+    const meanwhile = await post("standing-meanwhile");
+    // The precondition the post depends on: the listener still names the killed process's claim.
+    const standing = await roleHolder(live, CONTROLLER_ROLE);
+    expect(standing?.holder).toBe(owner);
+    expect(standing?.client_instance_id).toBe(killedClaim);
+
+    // The killed process's claim lapses, and a pass's claim lands for this process.
+    await waitFor(
+      "the resumed process to hold the controller role",
+      async () => {
+        const recorded = await second.claimRecordedFor(CONTROLLER_ROLE);
+        const held = await roleHolder(live, CONTROLLER_ROLE);
+        return (
+          recorded !== undefined &&
+          recorded !== killedClaim &&
+          held?.holder === owner &&
+          held.client_instance_id === recorded
+        );
+      },
+      async () => {
+        await second.send({ op: "heartbeat" });
+      }
+    );
+    await waitFor("the resumed process to show the post sent while the claim stood", () =>
+      second.shown(meanwhile)
+    );
 
     await bystanderShownNoAlert(second);
   }, 240_000);

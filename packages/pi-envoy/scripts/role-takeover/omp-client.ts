@@ -5,7 +5,7 @@
  *
  * It loads the real `extensions/envoy.ts` from this checkout and hands it the stand-in host the
  * package's own suite is driven against (`createStandInHost` in `test/stand-in-host.ts`, which
- * `extensions/envoy.test.ts` wraps as `createPi`): one session manager whose id and branch the
+ * `test/extension-harness.ts` wraps as `createPi`): one session manager whose id and branch the
  * driver moves, `pi.appendEntry` writing into that branch, and
  * `context.setInterval` keeping the heartbeat callback rather than arming a timer on it, so a
  * pass runs when the smoke asks for one (`{"op":"heartbeat"}`) and no tick of its own interleaves
@@ -59,7 +59,7 @@ interface Command {
   readonly session?: string;
   readonly reason?: string;
   readonly roles?: readonly (string | null)[];
-  readonly branch?: readonly unknown[];
+  readonly branch?: readonly BranchEntry[];
   readonly name?: string;
   readonly args?: Record<string, unknown>;
 }
@@ -137,11 +137,20 @@ host.sendMessage = (message, options) => {
 // host supplies, and the cast is that same narrowing.
 await envoyExtension(pi as unknown as PiApi);
 
-/** Replaces the branch with the transcript a resumed, forked or fresh session carries. */
-function setBranch(roles: readonly (string | null)[] | undefined): void {
-  if (roles === undefined) return;
+/** Replaces the branch with the transcript a resumed, forked or fresh session carries: `branch`'s
+ *  entries as they are when the caller restores a whole transcript, else one role claim entry for
+ *  each of `roles`. Neither given, the branch carries on as it is. */
+function setBranch(
+  roles: readonly (string | null)[] | undefined,
+  branch?: readonly BranchEntry[]
+): void {
+  if (roles === undefined && branch === undefined) return;
   entries.length = 0;
-  for (const role of roles) {
+  if (branch !== undefined) {
+    entries.push(...branch);
+    return;
+  }
+  for (const role of roles ?? []) {
     entries.push({ type: "custom", customType: ROLE_CLAIM_ENTRY, data: { role } });
   }
 }
@@ -156,13 +165,7 @@ async function run(command: Command): Promise<Record<string, unknown>> {
   switch (command.op) {
     case "start": {
       sessionID = command.session ?? "";
-      if (command.branch !== undefined) {
-        entries.length = 0;
-        // As the killed process's `entries` answered them: the host's own entry shape.
-        entries.push(...(command.branch as readonly BranchEntry[]));
-      } else {
-        setBranch(command.roles ?? []);
-      }
+      setBranch(command.roles ?? [], command.branch);
       await handlerFor("session_start")({}, context);
       return { session: sessionID };
     }

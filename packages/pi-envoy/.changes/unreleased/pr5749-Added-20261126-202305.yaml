@@ -10,9 +10,12 @@ body: |-
   subject makes it the session's own too. So a relaunched session follows them again when it takes
   the role, and a session holding any other role follows none, though every pod carries the same
   variable. A session resumed from its transcript opens the topics of the role it wants before its
-  first registration, so a post the stream kept while it was down is shown, and drops them if the
-  claim does not land; once after a resume the pass takes out of the row every role topic nothing
-  follows. A topic an edge listener refuses leaves the role's until the role ends. A value that is
+  first registration, where the listener names it or nobody as the role's holder, so a post the
+  stream kept while it was down, or sent while another process's claim under its id still stood,
+  is shown; a claim refused naming another holder closes them. Once after a resume the pass takes
+  out of the row every role topic nothing follows. A topic an edge listener refuses leaves the
+  role's until the role ends. Opened for another role, the role's claims drop the first role's.
+  A value that is
   not such an object, two keys the listener reads as one role, or a topic the stream does not
   store, that is too long, or whose wildcard is misplaced, refuses the whole variable, which the
   plugin logs and each session start says.
