@@ -41,7 +41,7 @@ func (r *correctionRig) childStatusWrite(seq int64, status, resolved string) {
 	parent := correctionKey
 	written := dispatch.Issue{Key: rerunChildKey, Project: correctionProject, Title: rerunChildTitle, Status: status, Parent: &parent,
 		Rank: rerunChildRank, LastSeq: seq, ResolvedRepo: resolved}
-	event := intake.OwnStatusWrite(written)
+	event := intake.OwnStatusWrite(written, claim.RoleArchitect, "")
 	fact := r.prepared(intake.ObservedIssue(written))
 	fact.Delivered = &event
 	applyFact(r.t, r.pool, "api", fmt.Sprintf("status/own-write-%d", seq), fact, r.engine, r.admission)

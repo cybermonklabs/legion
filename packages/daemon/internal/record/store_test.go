@@ -3487,7 +3487,10 @@ func TestAClearKeepsTheMergeOfARowItDeletes(t *testing.T) {
 	}
 	t.Run("a cleared row that did not merge", func(t *testing.T) {
 		st := seed(t, PullRequestClosed)
-		inTx(t, st, func(tx pgx.Tx) { must(t, records.ClearGeneration(ctx, tx, "ACME-1", at)) })
+		inTx(t, st, func(tx pgx.Tx) {
+			_, err := records.ClearGeneration(ctx, tx, issueFixture("ACME-1"), forgetNothing)
+			must(t, err)
+		})
 		merge, class := read(t, st)
 		if merge.Merged() {
 			t.Fatalf("the snapshot after the clear of a closed row = %+v, want none", merge)
