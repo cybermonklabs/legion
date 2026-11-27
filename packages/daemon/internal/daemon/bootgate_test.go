@@ -785,25 +785,29 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 // own beat past the run's return, not a record missing by some time. A run whose budget passed
 // while the leader still ran, before the child had set its traps, is not judged.
 //
-// Only the budget's own stop leaves a run unjudged, so a run is not judged only where the probe ran
-// its first act, the start mark it writes (testexec.MarkStart), and the gate reported that budget's
-// kill and nothing else, no sooner than the budget after the call. A gate that never started the
-// probe, or did not start it until its budget had passed, or answered anything else, fails as
-// main's form failed it; the one machine hold that counts against the gate is a probe whose shell
-// the machine kept from its first line for the whole budget, which main's form failed too.
+// Only the budget's own stop leaves a run unjudged, and only a machine that held the probe explains
+// it, so a run is not judged only where the probe ran its first act, its start mark
+// (testkernel.Leader), the gate reported that budget's kill and nothing else, no sooner than the
+// budget after the call, and a stop that found the probe before its answer was written found it held
+// by the machine: from its start mark to its SIGTERM trap it forks nothing and writes only to the
+// pipe the gate reads, so a sleep there of testkernel.HeldBound or more is the gate's hold of the
+// probe it started, such as that pipe left full and unread, and a loaded machine holds it only as
+// run-queue wait. A gate that never started the probe, or did not start it until its budget had
+// passed, held it, or answered anything else, fails as main's form failed it; the one machine hold
+// that counts against the gate is a probe whose shell the machine kept from its first line for the
+// whole budget, which main's form failed too. A stop that found the probe past its answer, starting
+// its child and waiting for it, finds it where it sleeps on its own, and the hold there is not read.
 func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt(t *testing.T) {
 	t.Parallel()
 	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
-	// The probe's $4 is where it writes its start mark, its first act; $1 to $3 are its child's.
-	probe := testkernel.ChildCommand(testexec.MarkStart(`"$4"`) + "; echo answered >&2")
 	within := testwait.Bounded(t, answerBudget, cutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
-		child := testkernel.NewChild(t)
-		mark := filepath.Join(t.TempDir(), "started")
+		child, leader := testkernel.NewChild(t), testkernel.NewLeader(t)
+		probe := testkernel.ChildCommand(leader.Begin() + "; echo answered >&2; " + leader.Wrote())
 
 		called := time.Now()
-		r, err := gate.run(context.Background(), probe, append(child.Args(), mark)...)
+		r, err := gate.run(context.Background(), probe, child.Args()...)
 		elapsed := time.Since(called)
 		returned := testexec.SinceBoot(t)
 
@@ -819,7 +823,7 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPi
 				t.Fatalf("no run of %d over %s was judged: in the last, %s (run = %v, exit %d, timed out %t, stderr %q after %s)",
 					runs, within, seen.Unjudged, err, r.exit, r.timedOut, r.stderr, r.elapsed)
 			}
-			if _, markErr := testexec.ReadStartMark(mark); markErr != nil {
+			if _, markErr := testexec.ReadStartMark(leader.Mark()); markErr != nil {
 				t.Fatalf("run %d: the probe never ran its first act (its start mark: %v): the gate did not start it, or not before its %s budget had passed, or the machine kept its shell from its first line for that whole budget, which main's form failed too; so the run shows no budget's stop of a probe that ran (%s; run = %v, exit %d, timed out %t, after %s)",
 					runs, markErr, gate.timeout, seen.Unjudged, err, r.exit, r.timedOut, elapsed)
 			}
@@ -827,7 +831,15 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPi
 				t.Fatalf("run %d = %v, exit %d, timed out %t, after %s; want the budget's kill and no error, no sooner than its %s budget after the call: %s, and only that budget's stop explains it",
 					runs, err, r.exit, r.timedOut, elapsed, gate.timeout, seen.Unjudged)
 			}
-			t.Logf("run %d is not judged: %s (run = %v, exit %d, timed out %t, after %s)", runs, seen.Unjudged, err, r.exit, r.timedOut, r.elapsed)
+			why := seen.Unjudged
+			if hold, ok := leader.HeldBeforeItWrote(t); ok {
+				if hold.Held() {
+					t.Fatalf("run %d: the budget's stop found the probe before it had written its answer, and %s, with nothing of its own to wait on: the gate held the probe it started, as a gate does that leaves its output pipe full and unread, which a loaded machine does only as run-queue wait (%s; run = %v, exit %d, timed out %t, after %s)",
+						runs, hold, seen.Unjudged, err, r.exit, r.timedOut, elapsed)
+				}
+				why += "; the stop found the probe before it had written its answer, and " + hold.String()
+			}
+			t.Logf("run %d is not judged: %s (run = %v, exit %d, timed out %t, after %s)", runs, why, err, r.exit, r.timedOut, r.elapsed)
 			continue
 		}
 

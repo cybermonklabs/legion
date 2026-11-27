@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testkernel"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -82,15 +83,14 @@ func TestCheckOverlaysRefusesOnlyANonZeroExit(t *testing.T) {
 // the refused file's Oh My Pi:
 //   - its trap recorded a SIGTERM: the timeout's stop reached a live Oh My Pi. Either a loaded
 //     machine slowed its own run past its 300 ms, or the check held it there, as a check does that
-//     leaves its output pipe unread until the timeout. The kernel tells the two apart. The refused
-//     file's Oh My Pi reads its own /proc/<pid>/schedstat line just before its first act and again
-//     first thing in its trap, each beside a mark of the time since boot (firstActToTrap), and it
-//     forks nothing between the two. Over that span it ran, waited for a CPU (the line's run_delay),
-//     or slept, and it has nothing of its own to sleep on there: it writes a few bytes to files and
-//     to a pipe the check reads. A loaded machine leaves its hold as run-queue wait, and such a call
-//     is not judged. A span in which it slept asleepBound or more past what the two marks can be off
-//     by (clockSlack) was the check's hold, and the row fails it. A kernel that keeps no schedstat
-//     (gVisor) cannot tell the two apart, and such a call is not judged either.
+//     leaves its output pipe unread until the timeout. The kernel tells the two apart
+//     (testkernel.Hold): the refused file's Oh My Pi records its own /proc/<pid>/schedstat line just
+//     before its first act and again first thing in its trap, each beside the time since boot, and
+//     it forks nothing between the two and writes only to files and to a pipe the check reads. A
+//     loaded machine leaves its hold as run-queue wait, and such a call is not judged. A span in
+//     which it slept testkernel.HeldBound or more past what the two moments can be off by was the
+//     check's hold, and the row fails it. A kernel that keeps no schedstat (gVisor) cannot tell the
+//     two apart, and such a call is not judged either.
 //   - it recorded none: Oh My Pi exited on its own, a refusal. A correct check reads that as its own
 //     exit, with one exception: kill succeeds on a zombie, so a refusal whose reap os/exec took only
 //     after the timeout passed is stopped "as a timeout" with no SIGTERM delivered, which looks exactly
@@ -114,24 +114,21 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 	was := commandTimeout
 	commandTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { commandTimeout = was })
-	const stopBound, reapBound, asleepBound = 5 * time.Second, 200 * time.Millisecond, 100 * time.Millisecond
+	const stopBound, reapBound = 5 * time.Second, 200 * time.Millisecond
 	// Each time since boot the row reads, its own and a stand-in's mark, is off by less than a tick.
 	const clockSlack = 2 * testexec.ClockTick
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	// Each call's files are in the directory LEGION_TEST_RUN names. The slow file's run waits until
 	// the row releases it or this test process is gone, never on a timer of its own. The refused
-	// file's run alone reads its schedstat line before its first mark's time and after its trap's,
-	// so the span between the two counts no more sleep than there was (firstActToTrap).
+	// file's run alone records its Hold's two ends, bad.first and bad.trapped.
 	alone := "[ \"$PI_CONFIG_FILES\" = \"$LEGION_TEST_BAD\" ]"
-	schedstat := `ss=; [ -r /proc/self/schedstat ] && read -r ss </proc/self/schedstat`
 	script := "#!/bin/sh\n" +
 		"onslowterm() { " + testexec.MarkNow(`"$LEGION_TEST_RUN/slow.termed"`) + "; exit 143; }\n" +
-		"onbadterm() { if " + alone + "; then " + testexec.MarkNow(`"$LEGION_TEST_RUN/bad.trapped"`) + "; " + schedstat + "; printf '%s\\n' \"$ss\" >\"$LEGION_TEST_RUN/bad.trapped.waits\"; fi; " +
-		"echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.termed\"; exit 143; }\n" +
+		"onbadterm() { if " + alone + "; then " + testkernel.HoldTrap(`"$LEGION_TEST_RUN/bad.trapped"`) + "; fi; echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.termed\"; exit 143; }\n" +
 		"case \"$PI_CONFIG_FILES\" in\n" +
 		"*slow.yml) trap onslowterm TERM; : >\"$LEGION_TEST_RUN/slow.started\"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.05; done ;;\n" +
-		"*bad.yml) trap onbadterm TERM; if " + alone + "; then " + schedstat + "; printf '%s\\n' \"$ss\" >\"$LEGION_TEST_RUN/bad.first.waits\"; " + testexec.MarkNow(`"$LEGION_TEST_RUN/bad.first"`) + "; fi; " +
+		"*bad.yml) trap onbadterm TERM; if " + alone + "; then " + testkernel.HoldStart(`"$LEGION_TEST_RUN/bad.first"`) + "; fi; " +
 		"echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.ran\"; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; " +
 		"if " + alone + "; then " + testexec.MarkNow(`"$LEGION_TEST_RUN/bad.exiting"`) + "; fi; exit 1 ;;\n" +
 		"esac\necho '{\"value\": false}'\n"
@@ -197,11 +194,11 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 			slowTermed, slowErr := testexec.ReadNowMark(filepath.Join(run, "slow.termed"))
 			var why string
 			if badTermed {
-				span := readFirstActToTrap(t, run)
-				if span.known && span.asleep() >= clockSlack+asleepBound {
-					t.Fatalf("call %d: the refused file's run read as timed out, and its Oh My Pi recorded the timeout's SIGTERM, but over the %s from just before its first act to that SIGTERM it ran %s and waited %s for a CPU, so it slept %s with nothing of its own to wait on: the check held it past its %s timeout, which a loaded machine does only as run-queue wait (CheckOverlays = %q, %v)", calls, span.span, span.ran, span.waited, span.asleep(), commandTimeout, got, err)
+				hold := testkernel.ReadHold(t, filepath.Join(run, "bad.first"), filepath.Join(run, "bad.trapped"))
+				if hold.Held() {
+					t.Fatalf("call %d: the refused file's run read as timed out, and its Oh My Pi recorded the timeout's SIGTERM, but %s, with nothing of its own to wait on: the check held it past its %s timeout, which a loaded machine does only as run-queue wait (CheckOverlays = %q, %v)", calls, hold, commandTimeout, got, err)
 				}
-				why = span.String()
+				why = "its Oh My Pi recorded the timeout's SIGTERM, and " + hold.String()
 			} else {
 				exited, exitErr := testexec.ReadNowMark(filepath.Join(run, "bad.exiting"))
 				if slowErr != nil || exitErr != nil {
@@ -233,64 +230,4 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 		}
 		return
 	}
-}
-
-// firstActToTrap is what the refused file's Oh My Pi recorded of itself from just before its first
-// act to first thing in its SIGTERM trap: the span between the two moments it marked, and the CPU
-// time it ran and the time the kernel kept it waiting for a CPU over that span, the differences of
-// the first two fields of the /proc/<pid>/schedstat lines it read at the two (the kernel's
-// Documentation/scheduler/sched-stats.rst: time on the CPU, then run_delay, in nanoseconds). known
-// is false where this kernel keeps no such line, as gVisor's.
-type firstActToTrap struct {
-	span, ran, waited time.Duration
-	known             bool
-}
-
-// asleep is the span less what the refused Oh My Pi ran and waited for a CPU over it: the time it
-// slept, give or take what the two marks can be off by. It reads its first line before its first
-// moment and its second after its trap's, so a wait or a run just outside the span is counted in it,
-// which makes asleep less, never more, than the sleep in the span.
-func (s firstActToTrap) asleep() time.Duration { return s.span - s.ran - s.waited }
-
-// String says what the span shows of the hold that kept the refused Oh My Pi past its timeout.
-func (s firstActToTrap) String() string {
-	if !s.known {
-		return "its Oh My Pi recorded the timeout's SIGTERM, and this kernel keeps no /proc/<pid>/schedstat to tell a loaded machine's hold of it from the check's"
-	}
-	return fmt.Sprintf("its Oh My Pi recorded the timeout's SIGTERM, and over the %s from just before its first act to it the kernel kept it waiting %s for a CPU and it ran %s, so it slept only %s: a loaded machine held its own run past its timeout", s.span, s.waited, s.ran, s.asleep())
-}
-
-// readFirstActToTrap reads, from the call's directory run, what the refused file's Oh My Pi
-// recorded just before its first act (bad.first) and first thing in its trap (bad.trapped): each
-// moment, and beside it (.waits) the schedstat line it read there, empty where it had none. It
-// fails the row on a record it cannot read: the stand-in writes both before the lines that tell
-// the row it passed its first act and took a SIGTERM.
-func readFirstActToTrap(t *testing.T, run string) firstActToTrap {
-	t.Helper()
-	read := func(name string) (time.Duration, []string) {
-		at, err := testexec.ReadNowMark(filepath.Join(run, name))
-		if err != nil {
-			t.Fatalf("read the moment the refused file's Oh My Pi recorded at %s: %v", name, err)
-		}
-		raw, err := os.ReadFile(filepath.Join(run, name+".waits"))
-		if err != nil {
-			t.Fatalf("read the schedstat line the refused file's Oh My Pi recorded at %s: %v", name, err)
-		}
-		return at, strings.Fields(string(raw))
-	}
-	first, before := read("bad.first")
-	trapped, after := read("bad.trapped")
-	s := firstActToTrap{span: trapped - first}
-	if len(before) < 2 || len(after) < 2 {
-		return s
-	}
-	field := func(fields []string, i int) time.Duration {
-		ns, err := strconv.ParseInt(fields[i], 10, 64)
-		if err != nil || ns < 0 {
-			t.Fatalf("field %d of the refused file's Oh My Pi's schedstat line %q: %v", i+1, strings.Join(fields, " "), err)
-		}
-		return time.Duration(ns)
-	}
-	s.ran, s.waited, s.known = field(after, 0)-field(before, 0), field(after, 1)-field(before, 1), true
-	return s
 }

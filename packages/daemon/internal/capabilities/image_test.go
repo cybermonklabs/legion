@@ -858,28 +858,32 @@ func TestRunReportsTheCommandsOwnExitWhenItsBudgetPassesWhileAChildOutsideItsGro
 // after the run, and the row fails. One whose write went through was os/exec's inside Wait, and so
 // was one whose child the grace's SIGKILL ended before its trap wrote, or one that came before the
 // child had set its traps: such a run is not judged, and the row runs the command again, within
-// its minute. Only the budget's own stop leaves such a run, so it is not judged only where the
-// command ran its first act, the start mark it writes (testexec.MarkStart), and runWithin reported
-// that budget's timeout and nothing else, no sooner than the budget after the call. A runWithin that
-// never started the command, or did not start it until its budget had passed, or answered anything
-// else, fails as main's row failed it; the one machine hold that counts against it is a command
-// whose shell the machine kept from its first line for the whole budget, which main's row failed
-// too. A run in which no SIGTERM reached the child by the run's return, which the child's own beat
-// past that return shows, is judged as main judged it.
+// its minute. Only the budget's own stop leaves such a run, and only a machine that held the
+// command explains it, so it is not judged only where the command ran its first act, its start mark
+// (testkernel.Leader), runWithin reported that budget's timeout and nothing else, no sooner than
+// the budget after the call, and a stop that found the command before its answer was written found
+// it held by the machine: from its start mark to its SIGTERM trap it forks nothing and writes only
+// to the pipe runWithin reads, so a sleep there of testkernel.HeldBound or more is runWithin's hold
+// of the command it started, such as that pipe left full and unread, and a loaded machine holds it
+// only as run-queue wait. A runWithin that never started the command, or did not start it until
+// its budget had passed, held it, or answered anything else, fails as main's row failed it; the one
+// machine hold that counts against it is a command whose shell the machine kept from its first
+// line for the whole budget, which main's row failed too. A stop that found the command past its
+// answer, starting its child and waiting for it, finds it where it sleeps on its own, and the hold
+// there is not read. A run in which no SIGTERM reached the child by the run's return, which the
+// child's own beat past that return shows, is judged as main judged it.
 func TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsItsOutput(t *testing.T) {
 	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, budget+procgroup.StopGrace+procgroup.WaitDelay+time.Second)
 	until := time.Now().Add(within)
-	// The command's $4 is where it writes its start mark, its first act; $1 to $3 are its child's.
-	command := testkernel.ChildCommand(testexec.MarkStart(`"$4"`) + "; echo 1.2.3")
 	timedOut := "timed out after " + budget.String()
 	for runs := 1; ; runs++ {
-		child := testkernel.NewChild(t)
-		mark := filepath.Join(t.TempDir(), "started")
+		child, leader := testkernel.NewChild(t), testkernel.NewLeader(t)
+		command := testkernel.ChildCommand(leader.Begin() + "; echo 1.2.3; " + leader.Wrote())
 		img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
 
 		started := time.Now()
-		r := img.runWithin(context.Background(), budget, "sh", append(append([]string{"-c", command, "sh"}, child.Args()...), mark)...)
+		r := img.runWithin(context.Background(), budget, "sh", append([]string{"-c", command, "sh"}, child.Args()...)...)
 		elapsed := time.Since(started)
 		returned := testexec.SinceBoot(t)
 		seen := child.After(t, returned, until)
@@ -893,13 +897,20 @@ func TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsIt
 			if !time.Now().Before(until) {
 				t.Fatalf("no run of %d over %s was judged: in the last, %s (run = exit %d, error %v, stdout %q after %s)", runs, within, seen.Unjudged, r.exit, r.err, r.stdout, elapsed)
 			}
-			if _, err := testexec.ReadStartMark(mark); err != nil {
+			if _, err := testexec.ReadStartMark(leader.Mark()); err != nil {
 				t.Fatalf("run %d: the command never ran its first act (its start mark: %v): runWithin did not start it, or not before its %s budget had passed, or the machine kept its shell from its first line for that whole budget, which main's row failed too; so the run shows no budget's stop of a command that ran (%s; run = exit %d, error %v after %s)", runs, err, budget, seen.Unjudged, r.exit, r.err, elapsed)
 			}
 			if r.err == nil || r.err.Error() != timedOut || elapsed < budget {
 				t.Fatalf("run %d = exit %d, error %v after %s; want the error %q, no sooner than its %s budget after the call: %s, and only that budget's stop explains it", runs, r.exit, r.err, elapsed, timedOut, budget, seen.Unjudged)
 			}
-			t.Logf("run %d is not judged: %s (run = exit %d, error %v)", runs, seen.Unjudged, r.exit, r.err)
+			why := seen.Unjudged
+			if hold, ok := leader.HeldBeforeItWrote(t); ok {
+				if hold.Held() {
+					t.Fatalf("run %d: the budget's stop found the command before it had written its answer, and %s, with nothing of its own to wait on: runWithin held the command it started, as a runWithin does that leaves its output pipe full and unread, which a loaded machine does only as run-queue wait (%s; run = exit %d, error %v after %s)", runs, hold, seen.Unjudged, r.exit, r.err, elapsed)
+				}
+				why += "; the stop found the command before it had written its answer, and " + hold.String()
+			}
+			t.Logf("run %d is not judged: %s (run = exit %d, error %v)", runs, why, r.exit, r.err)
 			continue
 		}
 		if elapsed < budget {

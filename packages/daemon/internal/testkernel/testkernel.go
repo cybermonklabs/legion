@@ -11,6 +11,8 @@
 // It also holds what a row reads from a process's own run where /proc's signal masks cannot say
 // it, as on gVisor: Child, a child a command leaves in its process group, which tells whether a
 // stop of that group reached it by the run's return, and ProcessEnded, whether a process is gone.
+// And it holds what tells a loaded machine's hold of a stand-in from the code's: Hold, the time a
+// stand-in slept from its first act to its SIGTERM trap, and Leader, a command's records of it.
 package testkernel
 
 import (

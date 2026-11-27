@@ -92,19 +92,21 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 // (judgeable). A stop that found the pipe open once the Timeout could have passed was the
 // Timeout's own, inside Wait. That run, a child the grace's SIGKILL ended before its trap wrote,
 // and a git stopped before its child was ready are not judged, and the row runs the git again
-// until a run is judged, within a minute; but only where the git ran its first act and Run
-// reported its Timeout's stop, no sooner than the Timeout after the call, since only that stop
-// leaves such a run. A Run that never started the git, or reported anything else, fails as main's
-// form failed it (judgeable).
+// until a run is judged, within a minute; but only where the git ran its first act, Run reported
+// its Timeout's stop no sooner than the Timeout after the call, and a stop that found the git
+// before it had written its answer found it held by the machine, not slept by Run's own hold
+// (testkernel.Leader), since only the machine leaves such a run. A Run that never started the git,
+// held it, or reported anything else, fails as main's form failed it (judgeable).
 func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildInItsGroupHoldsItsOutputPastTheDeadline(t *testing.T) {
 	const timeout = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
-		fakeGit, mark, exited := filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-		child := testkernel.NewChild(t)
-		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho 'fatal: unable to access' >&2\n" + child.Start() + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
+		fakeGit, exited := filepath.Join(dir, "git"), filepath.Join(dir, "exited")
+		child, leader := testkernel.NewChild(t), testkernel.NewLeader(t)
+		mark := leader.Mark()
+		script := "#!/bin/sh\n" + leader.Begin() + "\necho 'fatal: unable to access' >&2\n" + leader.Wrote() + "\n" + child.Start() + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
 		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
@@ -120,7 +122,7 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildInItsGroupHoldsItsO
 		// The run is read: its child is released, and killed in case the release does not reach it.
 		child.Release(t)
 		answer := fmt.Sprintf("Run = exit %d, TimedOut %t, error %v", result.ExitCode, result.TimedOut, err)
-		if !judgeable(t, runs, seen, called, returned, timeout, within, until, "Run", answer, mark, err == nil && result.TimedOut, elapsed) {
+		if !judgeable(t, aRun{runs: runs, seen: seen, called: called, returned: returned, elapsed: elapsed, budget: timeout, runner: "Run", answer: answer, leader: leader, stopped: err == nil && result.TimedOut}, within, until) {
 			continue
 		}
 		if err != nil {
@@ -361,22 +363,24 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 // (TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt) cannot see the second.
 // A run is judged, or not, by what the child in the group saw of a stop by the run's return, as in
 // TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildInItsGroupHoldsItsOutputPastTheDeadline,
-// and only where the command ran its first act and RunCommand reported its budget's stop; the row
-// makes the budget's deadline itself, before RunCommand starts the command.
+// and only where the command ran its first act, RunCommand reported its budget's stop, and the
+// command was not held by RunCommand before its last write (judgeable); the row makes the budget's
+// deadline itself, before RunCommand starts the command.
 func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipesPastIt(t *testing.T) {
 	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
-		mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-		child := testkernel.NewChild(t)
-		script := testexec.MarkStart(`"$1"`) + "\necho answered; echo refused >&2\n" + child.Start() + "\n" + testexec.MarkNow(`"$2"`) + "\nexit 3"
+		exited := filepath.Join(dir, "exited")
+		child, leader := testkernel.NewChild(t), testkernel.NewLeader(t)
+		mark := leader.Mark()
+		script := leader.Begin() + "\necho answered; echo refused >&2\n" + leader.Wrote() + "\n" + child.Start() + "\n" + testexec.MarkNow(`"$1"`) + "\nexit 3"
 
 		called := testexec.SinceBoot(t)
 		started := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", mark, exited})
+		out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", exited})
 		elapsed := time.Since(started)
 		returned := testexec.SinceBoot(t)
 		cancel()
@@ -386,7 +390,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipesPas
 		child.Release(t)
 		answer := fmt.Sprintf("RunCommand = %q, %v", out, err)
 		stopped := err != nil && strings.HasPrefix(err.Error(), "Command timed out after ")
-		if !judgeable(t, runs, seen, called, returned, budget, within, until, "RunCommand", answer, mark, stopped, elapsed) {
+		if !judgeable(t, aRun{runs: runs, seen: seen, called: called, returned: returned, elapsed: elapsed, budget: budget, runner: "RunCommand", answer: answer, leader: leader, stopped: stopped}, within, until) {
 			continue
 		}
 		began, exit := testexec.StartedAfter(t, mark, called), exitMark(t, exited)-called
@@ -612,49 +616,80 @@ func heldChild(t *testing.T, escaped bool) string {
 	return start + "\nwhile [ ! -s " + shellprefix.Literal(pidFile) + " ]; do sleep 0.01; done"
 }
 
-// judgeable fails the row on a stop that no budget made, which the child the command of run runs
-// left in its group saw (seen, testkernel.Child.After): one sent after the run, or one inside Wait
-// whose trap ran before the budget could pass, the run having been called at called and returned
-// at returned (times since boot) under budget, which the runner sets after the call. It reports
+// aRun is what an in-group crossed-budget row read of one run of its command (judgeable): the
+// run's number; what the child the command left in its group saw of a stop (seen,
+// testkernel.Child.After); the moments the run was called and returned, as times since boot
+// (testexec.SinceBoot), and the span between, from just before the call to its return on the
+// monotonic clock (elapsed); the budget, which the runner sets after the call; what ran the
+// command (runner) and what it answered (answer); the command's own records (leader); and whether
+// the runner reported its budget's stop as its own and nothing else (stopped).
+type aRun struct {
+	runs                      int
+	seen                      testkernel.Stop
+	called, returned, elapsed time.Duration
+	budget                    time.Duration
+	runner, answer            string
+	leader                    *testkernel.Leader
+	stopped                   bool
+}
+
+// judgeable fails the row on a stop that no budget made, which the child of r's command saw: one
+// sent after the run, or one inside Wait whose trap ran before the budget could pass. It reports
 // whether the run is judged: true where no stop reached the child by the run's return, and false,
 // logged, for a run that is not judged while until, the end of the row's bound within, has not
-// passed, so the row runs again. Once until has passed, such a run fails the row. runner names
-// what ran the command, and answer what it answered.
+// passed, so the row runs again. Once until has passed, such a run fails the row.
 //
 // Every run the child cannot judge is one the budget's own stop reached: inside Wait, or by the
 // grace's SIGKILL, or before the child had set its traps, which the command waits for before it
 // exits, so nothing but a stop ends the command then. Main's form failed each of them, and a run is
-// not judged only where that stop explains it: the command ran its first act, the start mark it
-// writes at mark (testexec.MarkStart), and the runner reported its budget's stop as its own and
-// nothing else (stopped), no sooner than budget after the call (elapsed, from just before the call
-// to its return, on the monotonic clock). A runner that never started the command, or did not
-// start it until its budget had passed, leaves no start mark; one that answered with an error, an
-// exit, or a timeout before its budget could pass did not report that stop. Either fails the row,
-// as it failed main's. The one machine hold this counts against the runner is a command whose
-// shell the machine kept from its first line for the whole budget, which main's form failed too.
-func judgeable(t *testing.T, runs int, seen testkernel.Stop, called, returned, budget, within time.Duration, until time.Time, runner, answer, mark string, stopped bool, elapsed time.Duration) bool {
+// not judged only where the machine, not the runner, explains it:
+//   - the command ran its first act, its start mark (testkernel.Leader.Mark). A runner that never
+//     started the command, or not until its budget had passed, leaves none; so does a machine that
+//     kept the command's shell from its first line for the whole budget, which main's form failed
+//     too.
+//   - the runner reported its budget's stop as its own and nothing else, no sooner than the budget
+//     after the call. One that answered with an error, an exit, or a timeout before its budget
+//     could pass did not report that stop.
+//   - where the stop found the command before its last write to its output pipes, the command did
+//     not sleep testkernel.HeldBound or more from its start mark to its SIGTERM trap
+//     (testkernel.Leader.HeldBeforeItWrote): it forks nothing there and writes only to pipes the
+//     runner reads, so such a sleep is the runner's hold of the command it started, an output pipe
+//     it left full and unread or a stop of its own, and a loaded machine holds it only as run-queue
+//     wait. A stop that found the command past its last write, starting its child and waiting for
+//     it, finds it where it sleeps on its own, and the hold there is not read.
+//
+// Anything else fails the row, as it failed main's.
+func judgeable(t *testing.T, r aRun, within time.Duration, until time.Time) bool {
 	t.Helper()
 	switch {
-	case seen.AfterRun:
+	case r.seen.AfterRun:
 		t.Fatalf("run %d: %s stopped the command's process group after its run: the child the command left in its group took a SIGTERM (its trap ran %s from the run's return), and its write to the command's output pipe answered EPIPE: os/exec had already closed the pipe, which it does once WaitDelay runs out, and the budget's own stop comes only before that (%s)",
-			runs, runner, seen.At-returned, answer)
-	case seen.InWait && seen.At < called+budget-2*testexec.ClockTick:
+			r.runs, r.runner, r.seen.At-r.returned, r.answer)
+	case r.seen.InWait && r.seen.At < r.called+r.budget-2*testexec.ClockTick:
 		t.Fatalf("run %d: %s stopped the command's process group before its %s budget could pass: the child the command left in its group took a SIGTERM whose trap ran %s after the call (%s)",
-			runs, runner, budget, seen.At-called, answer)
-	case seen.None:
+			r.runs, r.runner, r.budget, r.seen.At-r.called, r.answer)
+	case r.seen.None:
 		return true
 	case !time.Now().Before(until):
-		t.Fatalf("no run of %d over %s was judged: in the last, %s (%s after %s)", runs, within, seen.Unjudged, answer, returned-called)
+		t.Fatalf("no run of %d over %s was judged: in the last, %s (%s after %s)", r.runs, within, r.seen.Unjudged, r.answer, r.returned-r.called)
 	}
-	if _, err := testexec.ReadStartMark(mark); err != nil {
+	if _, err := testexec.ReadStartMark(r.leader.Mark()); err != nil {
 		t.Fatalf("run %d: the command never ran its first act (its start mark: %v): %s did not start it, or not before its %s budget had passed, or the machine kept its shell from its first line for that whole budget, which main's form failed too; so the run shows no budget's stop of a command that ran (%s; %s; after %s)",
-			runs, err, runner, budget, seen.Unjudged, answer, elapsed)
+			r.runs, err, r.runner, r.budget, r.seen.Unjudged, r.answer, r.elapsed)
 	}
-	if !stopped || elapsed < budget {
+	if !r.stopped || r.elapsed < r.budget {
 		t.Fatalf("run %d: %s after %s; want %s's budget's stop, reported as its own and nothing else, no sooner than its %s budget after the call: %s, and only that stop explains it",
-			runs, answer, elapsed, runner, budget, seen.Unjudged)
+			r.runs, r.answer, r.elapsed, r.runner, r.budget, r.seen.Unjudged)
 	}
-	t.Logf("run %d is not judged: %s (%s after %s)", runs, seen.Unjudged, answer, returned-called)
+	why := r.seen.Unjudged
+	if hold, ok := r.leader.HeldBeforeItWrote(t); ok {
+		if hold.Held() {
+			t.Fatalf("run %d: the budget's stop found the command before its last write to its output pipes, and %s, with nothing of its own to wait on: %s held the command it started, as a runner does that leaves its output pipe full and unread, which a loaded machine does only as run-queue wait (%s; %s)",
+				r.runs, hold, r.runner, r.seen.Unjudged, r.answer)
+		}
+		why += "; the stop found the command before its last write, and " + hold.String()
+	}
+	t.Logf("run %d is not judged: %s (%s after %s)", r.runs, why, r.answer, r.returned-r.called)
 	return false
 }
 
