@@ -119,7 +119,7 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessEachEntryIsOne(t *testing.T) {
 		{"an unspecified address", "dispatch.test=http://0.0.0.0:8766", "", "an unspecified or multicast address"},
 		{"Google's IPv6 metadata server", "dispatch.test=http://[fd20:ce::254]", "", "a cloud metadata server's address"},
 		{"Amazon's IPv6 metadata server", "dispatch.test=http://[fd00:ec2::254]", "", "a cloud metadata server's address"},
-		{"the NAT64 form of the metadata server", "dispatch.test=http://[64:ff9b::a9fe:a9fe]", "", "the NAT64 form (64:ff9b::/96) of 169.254.169.254"},
+		{"the NAT64 form of the metadata server", "dispatch.test=http://[64:ff9b::a9fe:a9fe]", "", "an IPv6 address that carries an IPv4 address"},
 		{"a loopback address the dial allow names on another port", "dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8767", "a loopback or link-local address"},
 		{"a second entry at loopback", "dispatch.test=http://10.0.0.5:8766 results.test=http://127.0.0.1:8766", "", "a loopback or link-local address"},
 	} {

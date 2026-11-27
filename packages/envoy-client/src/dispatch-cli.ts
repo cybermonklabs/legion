@@ -26,6 +26,7 @@ import {
   unhostedDispatch,
 } from "./dispatch-commands/host-session";
 import { printsJson } from "./dispatch-commands/issues";
+import { isJobResult, jobResultCommand, type ResultBound } from "./dispatch-commands/job-result";
 import { loginCommand } from "./dispatch-commands/login";
 import {
   documentBytesRefusal,
@@ -64,6 +65,7 @@ import { followedAsk, followNoticeText } from "./dispatch-subscribe";
 import type { SectionOff } from "./envoy-config";
 import { messageFor } from "./errors";
 import { nearestAncestorNamed } from "./process-ancestry";
+import { printable } from "./runner-log";
 import { sessionDispatchSettings, sessionEnvoySettings } from "./session-settings";
 import { ToolInputError } from "./tool-input-errors";
 import { createEnvoyClient, EnvoyApiError } from "./transport";
@@ -84,6 +86,9 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** The one bound of a CI job's `dispatch result --project` (`ResultBound`, its default in
+   *  dispatch-commands/job-result.ts), which a test shortens to run it on the real clock. */
+  readonly resultBound?: ResultBound;
   /** How long a dry run waits on Dispatch for its step's answer (`DRY_RUN_DEADLINE_MS` unless
    *  set); a test sets a shorter one. */
   readonly dryRunDeadlineMs?: number;
@@ -238,6 +243,9 @@ export function fitOutput(
  * Code's rule. Recomputing the file from a shell's other variables would follow ones a launcher or
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
+ *
+ * The one call that runs as no session is a CI job's `dispatch result --project`
+ * (`jobResultCommand`, dispatch-commands/job-result.ts), which reads none of the above.
  */
 /**
  * The host this command runs under. `DISPATCH_HOST` names it, else Claude Code's
@@ -437,24 +445,26 @@ export async function runDispatchCli(
     return await runProxyCommand(argv.slice(1), env, rawEnv, io, ledgerHost);
   }
 
+  // A CI job's call prints into its runner's log, a refusal of its argv included: a problem can
+  // repeat a word of the argv, such as an unknown flag or a file it could not read, so each is
+  // printed as `printable` text (`jobResultCommand`).
+  const job = isJobResult(argv);
   let parsed: ParsedCommand;
   try {
     parsed = parseCommand(argv, io);
   } catch (error) {
-    return refuse(`dispatch: ${messageFor(error)}`, USAGE);
+    return refuse(`dispatch: ${job ? printable(messageFor(error)) : messageFor(error)}`, USAGE);
   }
   if (parsed.kind === "help") {
     print(parsed.tool === undefined ? commandsHelp() : commandHelp(parsed.tool));
     return OK;
   }
   if (parsed.kind === "refused") {
+    const problems = job ? parsed.problems.map(printable) : parsed.problems;
     return parsed.tool === undefined
-      ? refuse(
-          [`dispatch: ${parsed.problems.join("\n")}`, "Run dispatch --help."].join("\n"),
-          USAGE
-        )
+      ? refuse([`dispatch: ${problems.join("\n")}`, "Run dispatch --help."].join("\n"), USAGE)
       : refuse(
-          new ToolInputError(parsed.tool, parsed.problems, defined("aboutAFlag", parsed.aboutAFlag))
+          new ToolInputError(parsed.tool, problems, defined("aboutAFlag", parsed.aboutAFlag))
             .message,
           USAGE,
           parsed.tool
@@ -516,6 +526,8 @@ export async function runDispatchCli(
     if (read.kind === "refused") return refuse(messageFor(read.refusal), REFUSED, parsed.tool);
     if (read.kind === "passed") pathBytes = read.bytes;
   }
+
+  if (job) return await jobResultCommand(parsed, env, io, print, refuse);
 
   // `dispatch api` also runs where no host is found (`commandHost`), as in a GitHub Actions job,
   // like `dispatch login`: it reads Dispatch from the environment alone (`unhostedDispatch`),
@@ -913,7 +925,10 @@ export async function runDispatchCli(
       // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
       // Everything else here exits 1. That is Dispatch's own refusal or failure, a Dispatch the
       // command cannot reach, a trade at the secrets broker that fails, and a call that writes
-      // nothing whose answer Dispatch kept no copy of.
+      // nothing whose answer Dispatch kept no copy of. No argument of the command reaches the
+      // client's refusal of a path value that names nothing (`DispatchEmptyPathError`): each flag
+      // whose value goes into a URL path is a `path` field of IDENTIFIER_FIELDS
+      // (`dispatch-command.ts`), which the parse refuses first, naming the flag.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }

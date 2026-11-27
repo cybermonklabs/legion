@@ -1130,11 +1130,15 @@ provider_keys:
   does.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
-- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
-  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
-  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
-  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
-  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+- **An arm's `plan`** says how the issues drawn into it are done, `owner` or `default`.
+  An issue of `owner` takes the plan its owner gives with `register_plan`.
+  An issue of `default` runs the project's `default_steps`.
+  Legion takes from its owner only a version that changes nothing but the text of its running
+  task `default`.
+  Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its
+  owner are answered `409 PLAN_NOT_TAKEN`.
+  A plan its owner gave before is passed over at its first step and told in a `plan-not-taken`
+  notice.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
   whatever the file says later.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at

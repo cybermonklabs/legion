@@ -463,14 +463,14 @@ is not blank, given inline, in `--content-file` or on stdin, is refused, and the
 send it again. Blank text given any of those ways, and a Markdown `--path` file, go up unchecked.
 When an attempt may have
 landed, the command settles only on a 2xx Dispatch wrote, read whole (not an empty, untyped or
-non-JSON one; a bodiless 204 or 205 is one; not one without exactly its request key once an
-earlier answer to the same write carried it), or on a final refusal: `Idempotency-Replayed: ?1`
-(also a recovery replay), `422 KEY_REUSED` that echoes exactly its request key (every attempt of
-one command sends the same bytes, so a key held for another request was never claimed by this
-one), or a fresh answer that echoes exactly its request key, has a stored 4xx other than 401, 408
-or 429, and is none of `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. This holds once every
-Dispatch replica runs `b1c42d1d7d`. Every other answer says the write may or may not have taken
-effect: read it back before you run the command again, since a new command is a new key. Reads,
+non-JSON one; a bodiless 204 or 205 is one; not one without exactly its request key, which
+Dispatch names back on every answer to a write), or on a final refusal that echoes exactly its
+request key: `Idempotency-Replayed: ?1` (also a recovery replay), `422 KEY_REUSED` (every attempt
+of one command sends the same bytes, so a key held for another request was never claimed by this
+one), or a fresh answer that has a stored 4xx other than 401, 408 or 429, and is none of
+`KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. This holds once every Dispatch replica runs
+`b1c42d1d7d`. Every other answer says the write may or may not have taken effect: read it back
+before you run the command again, since a new command is a new key. Reads,
 the `PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, and the `DELETE` of
 `dispatch delete-comment` and `dispatch delete-message`, carry no key. Each goes once, and again
 only where Dispatch did nothing with it: once more after Dispatch calls the token it presented

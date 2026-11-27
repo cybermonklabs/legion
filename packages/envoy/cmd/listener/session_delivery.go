@@ -359,7 +359,7 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 // (sessionDelivery.stream); no consumer filter is judged on it (sessionConsumerFilter). options
 // are the connection's own beside its name: in edge mode, the listener's inbox prefix
 // (edgeGrant.connectOptions), and, from main's start, the start's credential wait
-// (startSessionDelivery, natsStart.option).
+// (startSessionDelivery, natsStart.options).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane. main
@@ -1306,10 +1306,14 @@ func (l *sessionLocks) releaser(sessionID string, held *sessionLock) func() {
 // build's subjects capture, which this build stores on the session's row while the two builds
 // run, is in the filter too, and a topic an earlier build's row left that no subject captures
 // enters it and matches nothing stored. A Legion controller's notice lane
-// (notifications.legion.<project>.controller) is one of the row's topics while the session holds
-// that project's controller role, and this filter is the whole of how it reaches the controller,
-// so a notice published while the controller was away is delivered from the stream when it
-// returns. SessionConsumers reduces the list to filters that do not overlap.
+// (notifications.legion.<project>.controller, where a Legion daemon of an earlier release
+// publishes) is one of the row's topics only while the session holds that project's controller
+// role. A session whose role claim was freed while it was away registers again without the lane,
+// and gets the lane back only once it claims the role again, at the consumer's position then, so
+// a notice stored on the lane while it was away is not delivered to it (the loss of 2026-11-23).
+// A current daemon publishes controller notices to the controller's role topic instead, which
+// reaches the role's live holder as a forward on its agent subject. SessionConsumers reduces the
+// list to filters that do not overlap.
 //
 // These kinds of topic are left out, though the row may store them:
 //

@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -222,11 +221,11 @@ func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queue
 // R2). The relay asks when it writes the controller's row, and the publish asks again
 // (controllerNotice), of the decision the row carries: the version, Dispatch's mark of the review
 // and the document reviewed, which the relay copied from the request's own notice. The row's
-// first attempt finds no session holding the controller's claim, and waits; the person's approval
-// of the version reviewed lands; the holder returns and the next attempt runs. The review and the
-// approval reach the engine as Dispatch's artifact events do, and a gate's move to another
-// document as register_gate's registration does, on a running tree whose architect's claim
-// failed, so every row is one the workflow and the relay write.
+// first attempt finds no session holding the controller's role, and waits; the person's approval
+// of the version reviewed lands; the registered controller session takes the role and the next
+// attempt runs. The review and the approval reach the engine as Dispatch's artifact events do,
+// and a gate's move to another document as register_gate's registration does, on a running tree
+// whose architect's claim failed, so every row is one the workflow and the relay write.
 //
 // Where the approval followed the request, the request's row finishes with nothing published and
 // one line naming the row, the issue, the root, the ref and both versions, and the approval's own
@@ -307,13 +306,14 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaim(t, sup, "LEGION-1", supervise.StateFailed)
+			registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 			publisher := &holderPublisher{}
-			publisher.setAbsent(architectTopic(t, "LEGION-1"), notify.ControllerTopic("legion"))
+			publisher.setAbsent(architectTopic(t, "LEGION-1"), controllerRoleTopic)
 			var logged bytes.Buffer
 			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
 				notices: publisher, supervisor: sup, project: "legion", gatedSteps: steps, now: now}
 			// The first run relays each decision, whose notice finds its architect's claim failed;
-			// the second is each relay's first attempt, which waits for the controller's claim.
+			// the second is each relay's first attempt, which waits for the controller's role.
 			for run := range 2 {
 				if err := runner.RunOnce(ctx); err != nil {
 					t.Fatalf("run %d before the wait: %v", run, err)
@@ -344,6 +344,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 				}
 			}
 			publisher.setAbsent(architectTopic(t, "LEGION-1"))
+			publisher.holds(legionController, "ses_controller")
 			left := func() int {
 				return outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindNotice) + outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindControllerNotice)
 			}
@@ -387,7 +388,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 // (dispatch://INFRA-3136/spec R2): the clear deletes the issue's gates, the only record of that
 // approval, so the request's next attempt, asked of no gate, would read as the person's word
 // again. The request waits for its tree's architect, whose role no session holds, or, relayed
-// because that architect's claim failed, for the controller, whose claim no session holds; the
+// because that architect's claim failed, for the controller, whose role no session holds; the
 // person's approval of the version reviewed lands; the generation is cleared, of the tree as a
 // re-admission clears it (workflow.Engine.ClearTreeGeneration) or of the issue alone
 // (workflow.Engine.ClearGeneration); the holder returns and the next attempts run. The request
@@ -460,8 +461,9 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 				architect = supervise.StateFailed
 			}
 			architectClaim(t, sup, "LEGION-1", architect)
+			registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 			publisher := &holderPublisher{}
-			publisher.setAbsent(architectTopic(t, "LEGION-1"), notify.ControllerTopic("legion"))
+			publisher.setAbsent(architectTopic(t, "LEGION-1"), controllerRoleTopic)
 			var logged bytes.Buffer
 			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool,
 				dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
@@ -517,6 +519,7 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 				}
 			}
 
+			publisher.holds(legionController, "ses_controller")
 			if tc.relayed {
 				publisher.setAbsent(architectTopic(t, "LEGION-1"))
 			} else {
@@ -579,14 +582,14 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 // (record.ParkedDecision.Artifact, record.Notice.Artifact), so the approval of a document the
 // step's gate has moved to answers no review of the one it left, for either. The request is on
 // artifact-1 at version 3, and the architect's claim failed, so the outbox relays it and the relay
-// waits for the controller's claim. The gate moves to artifact-2, which the person approved at
+// waits for the controller's role. The gate moves to artifact-2, which the person approved at
 // version 3 after the request (movedGate), and the generation is cleared, of the tree or of the
 // issue alone, which asks the kept row and the queued relay before it deletes the gates
 // (workflow.Engine.ClearGeneration). The request stands for both: it is still kept, under the
-// document reviewed, its relay is still queued, and once a session holds the controller's claim
-// the controller is told it before the approval. The negative control is a kept row asked of its
-// step alone, which the approval of artifact-2 answers: the clear forgets it while the relay
-// stands.
+// document reviewed, its relay is still queued, and once the registered controller session holds
+// the controller's role the controller is told it before the approval. The negative control is a
+// kept row asked of its step alone, which the approval of artifact-2 answers: the clear forgets it
+// while the relay stands.
 func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(t *testing.T) {
 	t.Parallel()
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
@@ -628,14 +631,15 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaim(t, sup, "LEGION-1", supervise.StateFailed)
+			registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 			publisher := &holderPublisher{}
-			publisher.setAbsent(architectTopic(t, "LEGION-1"), notify.ControllerTopic("legion"))
+			publisher.setAbsent(architectTopic(t, "LEGION-1"), controllerRoleTopic)
 			var logged bytes.Buffer
 			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool,
 				dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup,
 				project: "legion", gatedSteps: steps, now: now}
 			// The first run relays the request, whose notice finds its architect's claim failed;
-			// the second is the relay's first attempt, which waits for the controller's claim.
+			// the second is the relay's first attempt, which waits for the controller's role.
 			for run := range 2 {
 				if err := runner.RunOnce(ctx); err != nil {
 					t.Fatalf("run %d before the clear: %v", run, err)
@@ -674,6 +678,7 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 			}
 
 			publisher.setAbsent(architectTopic(t, "LEGION-1"))
+			publisher.holds(legionController, "ses_controller")
 			left := func() int {
 				return outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindNotice) +
 					outboxRowsOfKind(t, pool, "LEGION-1", record.OutboxKindControllerNotice)
@@ -723,13 +728,13 @@ func relayRow(t *testing.T, pool *store.Pool, decision record.DecisionKind) (int
 	return relays[0].id, relays[0].attempts
 }
 
-// controllerDecisions is the decision of every parked-decision notice published on the project's
-// controller topic, in order.
+// controllerDecisions is the decision of every parked-decision notice published on the
+// controller's role topic, in order.
 func controllerDecisions(publisher *holderPublisher) []record.DecisionKind {
 	_, delivered := publisher.snapshot()
 	var told []record.DecisionKind
 	for _, published := range delivered {
-		if notice, ok := published.payload.(record.Notice); ok && published.topic == notify.ControllerTopic("legion") && notice.Kind == record.ParkedDecisionNotice {
+		if notice, ok := published.payload.(record.Notice); ok && published.topic == controllerRoleTopic && notice.Kind == record.ParkedDecisionNotice {
 			told = append(told, notice.Decision)
 		}
 	}

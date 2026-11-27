@@ -7,6 +7,7 @@ import {
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { decode } from "@toon-format/toon";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import {
   type DispatchDelivery,
@@ -391,10 +392,10 @@ describe("renderInbound dispatch events", () => {
     const replies: Array<{ readonly path: string; readonly body: unknown }> = [];
     const server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({ path: new URL(request.url).pathname, body: await request.json() });
         return Response.json({});
-      },
+      }),
     });
     const { created_at: _createdAt, ...malformedPayload } = targetedComment;
 
@@ -441,10 +442,10 @@ describe("renderInbound dispatch events", () => {
     const paths: string[] = [];
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         paths.push(new URL(request.url).pathname);
         return Response.json({});
-      },
+      }),
     });
     const message = JSON.parse(targetedDispatchPayload) as {
       event: { payload: { id: string } };
@@ -484,10 +485,10 @@ describe("renderInbound dispatch events", () => {
     const paths: string[] = [];
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         paths.push(new URL(request.url).pathname);
         return Response.json({});
-      },
+      }),
     });
     const deliveries: DispatchDelivery[] = [
       {
@@ -540,24 +541,25 @@ describe("renderInbound dispatch events", () => {
   test("posts a delivery reply as one keyed write, asked again under its key", async () => {
     const keys: Array<string | null> = [];
     let answers = 0;
+    // The stand-in names the key back on every answer, its refusals too, as Dispatch's keyed layer
+    // does. The client asks again under the same key whatever the answer carries, and reads the
+    // echo only to settle: a 2xx or a refusal that names no key back settles nothing.
     const server = Bun.serve({
       port: 0,
-      fetch: (request) => {
-        const key = request.headers.get("Idempotency-Key");
-        keys.push(key);
-        answers += 1;
-        // The stand-in sends the key back as Dispatch's keyed layer does. The client asks again
-        // under the same key whatever the answer carries, and reads the echo only to settle a
-        // fresh 4xx refusal that echoes exactly its key.
-        const headers: Record<string, string> = key === null ? {} : { "Idempotency-Key": key };
-        if (answers === 1)
-          return Response.json({ code: "UNAVAILABLE", error: "down" }, { status: 503, headers });
-        if (answers === 2) return Response.json({ reply: { id: "reply-1" } }, { headers });
-        return Response.json(
-          { code: "ATTEMPT_ANSWERED", error: "already answered" },
-          { status: 409, headers }
-        );
-      },
+      fetch: keyedLayer(
+        (request: Request) => {
+          keys.push(request.headers.get("Idempotency-Key"));
+          answers += 1;
+          if (answers === 1)
+            return Response.json({ code: "UNAVAILABLE", error: "down" }, { status: 503 });
+          if (answers === 2) return Response.json({ reply: { id: "reply-1" } });
+          return Response.json(
+            { code: "ATTEMPT_ANSWERED", error: "already answered" },
+            { status: 409 }
+          );
+        },
+        { judged: () => true }
+      ),
     });
     const delivery: DispatchDelivery = {
       resource: "message",

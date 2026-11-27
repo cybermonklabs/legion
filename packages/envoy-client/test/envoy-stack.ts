@@ -37,17 +37,18 @@ export interface EnvoyStack {
  * Two calls reserve two directories, which is what a file that starts two stacks needs.
  *
  * The call cannot live in this module's body: `temporaryDirectory` registers the `beforeAll`
- * that makes the directory and the `afterAll` that removes it where it is called, and Bun
- * evaluates an imported module once per process, so a hook here would take the scope of
- * whichever test file imported this one first.
+ * that makes the directory where it is called, and Bun evaluates an imported module once per
+ * process, so a hook here would take the scope of whichever test file imported this one first.
  *
- * Module scope rather than the `describe` body that starts the stack, because Bun runs a
- * scope's `afterAll` hooks in the order they were registered: a directory reserved beside the
- * stack would be removed before the `afterAll` that stops the processes writing into it, where
- * a file's own `afterAll` runs after every `describe` of the file has finished.
+ * The `afterAll` hands the directory to a removal in a process of its own and does not wait for it
+ * (`removeInBackground`): the directory holds the stack's built binaries, and on a slow disk their
+ * removal can outlast Bun's default hook limit of 5 s, which Bun reports as a hook that timed out
+ * and a failed file. So no removal of it runs under a time limit of the runner. The hook is
+ * registered at module scope so that it runs after every `describe` of the file has stopped the
+ * processes writing into the directory.
  */
 export function useEnvoyStackDirectory(): string {
-  return temporaryDirectory("envoy-stack");
+  return temporaryDirectory("envoy-stack", { removeInBackground: true });
 }
 
 /**
@@ -67,8 +68,8 @@ export type PortChosen = (server: StackServer, port: number) => Promise<void>;
 export interface EnvoyStackOptions {
   /**
    * The directory the stack works in, which the caller reserved with
-   * {@link useEnvoyStackDirectory} and the fixture removes again. It exists and is empty when
-   * `startEnvoyStack` is called, and one stack has it to itself.
+   * {@link useEnvoyStackDirectory}, whose `afterAll` hands it to a removal of its own. It exists
+   * and is empty when `startEnvoyStack` is called, and one stack has it to itself.
    */
   readonly work: string;
   /**
@@ -290,7 +291,7 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
  * shortens the session windows the session states are judged by.
  *
  * The stack works in `options.work`, which the caller reserved with
- * {@link useEnvoyStackDirectory}: `stop` leaves it, and the fixture removes it when the file
+ * {@link useEnvoyStackDirectory}: `stop` leaves it, and the fixture removes it once the file
  * that reserved it is done, whether or not the stack ever reached `stop`.
  *
  * No port is free between its choice and its server's bind. natsd takes no socket, so it binds

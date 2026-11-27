@@ -172,9 +172,11 @@ projects:
   #                                    # an experiment that sets how each issue is done: an arm's
   #                                    # plan is owner, whose issues take the plan their owner
   #                                    # gives with register_plan, or default, whose issues run
-  #                                    # this project's default_steps and take no plan from their
-  #                                    # owner: once the daemon records such an issue, its owner's
-  #                                    # register_plan and stop_task are answered 409
+  #                                    # this project's default_steps. Legion takes from their
+  #                                    # owner only a version that changes nothing but the text
+  #                                    # of the running task default. Once the daemon records
+  #                                    # such an issue, every other register_plan and every
+  #                                    # stop_task of its owner are answered 409
   #                                    # PLAN_NOT_TAKEN. Every arm of it names plan, it is unit:
   #                                    # issue, and no other experiment of the project sets plan;
   #                                    # owner-alone is refused, since this release does not carry
