@@ -4,9 +4,7 @@ package cipherclient
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -57,7 +55,8 @@ func (g *GitHubActionsIdentity) Describe() string {
 // Token asks GitHub for a new OIDC token for Audience and answers it. No error names the request
 // URL, the request token or any text of GitHub's answer: a refusal is its status alone, a request
 // that got no answer its class (redact.Class), and an answer that holds no token says so in fixed
-// text, since it can hold a token.
+// text, since it can hold a token. The answer is read through redact.ReadAnswer, at most a MiB of
+// it, and decoded through Answer.Decode: a longer one is refused, never cut and read.
 func (g *GitHubActionsIdentity) Token(ctx context.Context) (string, string, error) {
 	asking := "ask GitHub for this run's OIDC token at the URL " + ActionsIDTokenRequestURLVar + " names"
 	endpoint, err := url.Parse(g.RequestURL)
@@ -87,14 +86,14 @@ func (g *GitHubActionsIdentity) Token(ctx context.Context) (string, string, erro
 	if resp.StatusCode/100 != 2 {
 		return "", "", fmt.Errorf("%s: the server answered HTTP %d", asking, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	read, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
 		return "", "", fmt.Errorf("%s: %w", asking, redact.Class(err))
 	}
 	var answer struct {
 		Value string `json:"value"`
 	}
-	if json.Unmarshal(body, &answer) != nil {
+	if read.Decode(&answer) != nil {
 		return "", "", fmt.Errorf("%s: the answer is not the JSON this call reads", asking)
 	}
 	if answer.Value == "" {
