@@ -11,6 +11,7 @@ import { node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { readComment } from "../outline-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { useTreeKeymap } from "../useTreeKeymap";
+import { TEXT_THREADS_ATTRIBUTE } from "./attributes";
 import {
   answerSeededReads,
   clearSelection,
@@ -25,7 +26,7 @@ import {
   selectWords,
   type TextThreadSeed,
 } from "./margin-fixtures";
-import { NodeThreads, TEXT_THREADS_ATTRIBUTE } from "./NodeThreads";
+import { NodeThreads } from "./NodeThreads";
 import { SelectionComment } from "./SelectionComment";
 import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
 

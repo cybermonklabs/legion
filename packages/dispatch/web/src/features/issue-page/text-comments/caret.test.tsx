@@ -306,14 +306,13 @@ test("caret, a printable key, Backspace, Delete, Enter, a paste, a drop or an IM
       "insertParagraph",
       "insertFromPaste",
       "insertFromDrop",
-      "insertCompositionText",
     ]) {
       const accepted = words.dispatchEvent(
         new InputEvent("beforeinput", { bubbles: true, cancelable: true, data: "x", inputType })
       );
       if (accepted) typed.push(inputType);
     }
-    for (const type of ["paste", "drop", "cut", "compositionstart"]) {
+    for (const type of ["paste", "drop", "cut"]) {
       const accepted = words.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
       if (accepted) typed.push(type);
     }
@@ -324,6 +323,25 @@ test("caret, a printable key, Backspace, Delete, Enter, a paste, a drop or an IM
     expect(words.textContent, "an input changed the text").toBe(before);
     expect(hasCaret(words), "a key took the caret away").toBe(true);
     expect(reportOf(row), "a key in the caret said something at the row").toBeUndefined();
+    // An IME composition: an IME may go on after a cancelled `compositionstart` (UI Events), and
+    // the `beforeinput` of its text cannot be cancelled (Input Events Level 2), so its start takes
+    // the caret away and gives the focus to the row, as Escape does, before any of its text comes.
+    // `fireEvent` sends it inside `act`, since the row's focus tells the tree.
+    expect(fireEvent.compositionStart(words), "the composition's start was not cancelled").toBe(
+      false
+    );
+    expect(lacksCaret(words), "a composition's start left the caret in the words").toBe(true);
+    expect(document.activeElement, "a composition's start left the focus off the row").toBe(row);
+    words.dispatchEvent(
+      new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: false,
+        data: "é",
+        inputType: "insertCompositionText",
+      })
+    );
+    expect(words.isContentEditable, "the words still take the composition's text").toBe(false);
+    expect(words.textContent, "the composition changed the text").toBe(before);
   } finally {
     view.unmount();
   }

@@ -18,7 +18,7 @@ import type { SentRequest } from "../../conversation/send-request";
 import { ofKind, writesOf } from "../../writes/write-store";
 import { MARGIN_ANSWERS } from "../page-words";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
-import { quotedBlock } from "./on-text";
+import type { QuotedReplyBlock, ReplyBlock } from "./on-text";
 import { quoteLine } from "./quote-line";
 import { revealAfterPlacement } from "./reveal";
 import {
@@ -98,7 +98,7 @@ function wordsGone(error: unknown): boolean {
  *  the block it answers (`reply_block`). */
 interface WrittenPost {
   readonly id: string;
-  readonly reply_block?: Parameters<typeof quotedBlock>[0] | null;
+  readonly reply_block?: ReplyBlock | null;
 }
 
 function writtenPost(answer: unknown): answer is WrittenPost {
@@ -113,8 +113,9 @@ function writtenPost(answer: unknown): answer is WrittenPost {
 
 /** Whether a reply's answered block kept the quote the send carried (`reply_block.quote`, G4). */
 function quoteKept(block: WrittenPost["reply_block"]): boolean {
-  const quote = block === null || block === undefined ? undefined : quotedBlock(block).quote;
-  return typeof quote === "string" && quote !== "";
+  if (block === null || block === undefined) return false;
+  const quoted: QuotedReplyBlock = block;
+  return typeof quoted.quote === "string" && quoted.quote !== "";
 }
 
 /** What a send that landed leaves the page to do, from Dispatch's answer `answer` to `sent`: the

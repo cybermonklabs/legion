@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { IssueDetails } from "../../../api/types";
 import { borderDefault, surfaceBg, textPrimaryOnSurface } from "../../../theme/classes";
@@ -12,16 +12,17 @@ import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThread
 
 /**
  * The control that comments on selected words (R5): while a selection lies inside the words of
- * one row it draws a button beside the selection's end (`position: fixed`, `left` and `top` in
- * px from the last client rectangle of the range), and `$mod+Alt+m` (matched by
- * `event.code === "KeyM"`, so macOS's Alt+M, which types "µ", still takes it) does what the button
- * does. A press, or the chord with a quote, opens the composer (`useTextComposer`), which closes
- * Details first; the chord with no quote does nothing. It draws no control on an author-only
- * node, a child issue's row, or a kind whose gate is off, nor where the read gives the node's
- * write nothing to name (`sendTargetOf`). It takes no property: it reads the view the stage draws
- * from the reads the page holds (`useStageIssue`, `useTextThreads`). The page's root mounts it
- * once, beside the stage and the column (`IssueOutlinePage.tsx`), and it serves the column and
- * each node's sheet alike.
+ * one row it draws a button beside the selection's end, or under its last line where it does not
+ * fit beside it inside the window (`position: fixed`, `left` and `top` in px from the last client
+ * rectangle of the range, read again as the page scrolls and the window resizes), and
+ * `$mod+Alt+m` (matched by `event.code === "KeyM"`, so macOS's Alt+M, which types "µ", still
+ * takes it) does what the button does. A press, or the chord with a quote, opens the composer
+ * (`useTextComposer`), which closes Details first; the chord with no quote does nothing. It draws
+ * no control on an author-only node, a child issue's row, or a kind whose gate is off, nor where
+ * the read gives the node's write nothing to name (`sendTargetOf`). It takes no property: it
+ * reads the view the stage draws from the reads the page holds (`useStageIssue`,
+ * `useTextThreads`). The page's root mounts it once, beside the stage and the column
+ * (`IssueOutlinePage.tsx`), and it serves the column and each node's sheet alike.
  *
  * The chord is a `keydown` listener of the document's, not a binding of the page's keymap: the
  * keymap matches a key by the character it types and by its place only on a Mac (`keymap.ts`),
@@ -35,16 +36,41 @@ export function SelectionComment(): ReactNode {
 }
 
 /** The mark of the control's box, which a press on the control is told apart by. */
-const CONTROL_ATTRIBUTE = "data-selection-comment";
+export const CONTROL_ATTRIBUTE = "data-selection-comment";
 
-/** How far right of the selection's end the control stands, in px. */
+/** How far from the selection's end the control stands, right of it or under its line, in px. */
 const GAP = 4;
 
-/** The words a selection quotes and where the control stands for them. */
+/** How far inside the window's left and right edges the control stands, in px. */
+const EDGE = 4;
+
+/** The words a selection quotes and where its range ends, as the window stood when it was read. */
 interface Selected {
-  readonly left: number;
-  readonly top: number;
+  /** The last client rectangle of the range, in px from the window's top left corner. */
+  readonly end: DOMRectReadOnly;
+  /** The window's width, in px (`innerWidth`). */
+  readonly windowWidth: number;
   readonly words: SelectedWords;
+}
+
+/**
+ * Where the control, `width` px wide as drawn, stands for `selected`: right of the range's end,
+ * at its top, where it fits there inside the window; else under the end's line, its right edge at
+ * the end's and inside the window, so it covers none of the line's selected words. A fixed
+ * element cannot be scrolled to, and a phone has no chord to stand in for the control: at 390 px,
+ * words selected to the end of a line would put most of it past the window's right edge.
+ */
+function placeFor(
+  selected: Selected,
+  width: number
+): { readonly left: number; readonly top: number } {
+  const { end, windowWidth } = selected;
+  const beside = end.right + GAP;
+  if (beside + width + EDGE <= windowWidth) return { left: beside, top: end.top };
+  return {
+    left: Math.max(EDGE, Math.min(end.right, windowWidth - EDGE) - width),
+    top: end.bottom + GAP,
+  };
 }
 
 /** The mark every row carries, which names its node; a row whose `data-node-id` is not its
@@ -79,7 +105,7 @@ function inOneTextBlock(range: Range, runs: TextRuns): boolean {
  * `view`, or null: no single range, a collapsed one, no row the view draws a node of, a node no
  * write is offered on (`writeFor`), a selection that is not inside that row's own words
  * (`quoteOf`), one across two of their text blocks (`inOneTextBlock`), or words no send is offered
- * on (`sendTargetOf`). The control stands right of the last rectangle of the range, at its top.
+ * on (`sendTargetOf`). The control stands by the last rectangle of the range (`placeFor`).
  * The node's write is asked first, so a selection in a row that takes none reads none of the
  * row's words in each frame it is read in.
  */
@@ -113,7 +139,7 @@ function selectedIn(
   if (sendTargetOf(view, node, issue, selected) === null) return null;
   const rects = range.getClientRects();
   const end = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
-  return { left: end.right + GAP, top: end.top, words: selected };
+  return { end, windowWidth: window.innerWidth, words: selected };
 }
 
 /** Whether `event` is `$mod+Alt+m` by the key's place: Meta or Control, as the page's keymap
@@ -129,6 +155,16 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
   const composer = useTextComposer();
   const placed = useComposerPlace();
   const [selected, setSelected] = useState<Selected | null>(null);
+  // The control's box and its width as drawn, which hold it inside the window (`placeFor`): read
+  // in the commit that draws the box, before the browser paints it, so it is never painted past
+  // the window's edge. The width is the same for every selection, so it is read once each time
+  // the control appears.
+  const controlBox = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  const shown = selected !== null;
+  useLayoutEffect(() => {
+    if (shown) setWidth(controlBox.current?.offsetWidth ?? 0);
+  }, [shown]);
   // The listeners read the view, the issue, the composer and where it has a place as they stand,
   // so they are not bound again whenever a read answers.
   const now = useRef({ composer, issue, placed, view });
@@ -169,12 +205,19 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
     };
     reread.current = changed;
     document.addEventListener("selectionchange", changed);
+    // A scroll and a resize move the selected words with no `selectionchange`, so the control
+    // follows them: a scroll of any box around the words reaches the document only in its
+    // capture phase, since a scroll event does not bubble.
+    document.addEventListener("scroll", changed, { capture: true, passive: true });
+    window.addEventListener("resize", changed, { passive: true });
     document.addEventListener("pointerdown", press, true);
     document.addEventListener("pointerup", release, true);
     document.addEventListener("pointercancel", release, true);
     return () => {
       reread.current = undefined;
       document.removeEventListener("selectionchange", changed);
+      document.removeEventListener("scroll", changed, true);
+      window.removeEventListener("resize", changed);
       document.removeEventListener("pointerdown", press, true);
       document.removeEventListener("pointerup", release, true);
       document.removeEventListener("pointercancel", release, true);
@@ -215,7 +258,8 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
       {selected === null ? null : (
         <div
           className="fixed z-30"
-          style={{ left: selected.left, top: selected.top }}
+          ref={controlBox}
+          style={placeFor(selected, width)}
           {...{ [CONTROL_ATTRIBUTE]: "" }}
         >
           <button

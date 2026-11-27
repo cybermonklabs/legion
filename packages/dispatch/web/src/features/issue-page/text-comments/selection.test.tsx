@@ -8,6 +8,7 @@ import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { SPEC_DOCUMENT, specRef } from "../decisions-filter/decisions-fixtures";
 import { readComment } from "../outline-fixtures";
 import { blockNodeId } from "../tree-drafts";
+import { TEXT_THREADS_ATTRIBUTE } from "./attributes";
 import { GATES } from "./gates";
 import {
   answerSeededReads,
@@ -33,8 +34,7 @@ import {
   selectWords,
   setSelection,
 } from "./margin-fixtures";
-import { TEXT_THREADS_ATTRIBUTE } from "./NodeThreads";
-import { SelectionComment } from "./SelectionComment";
+import { CONTROL_ATTRIBUTE, SelectionComment } from "./SelectionComment";
 import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
 
 /**
@@ -123,6 +123,36 @@ async function controlGone(view: RenderResult, said: string): Promise<void> {
 function placeOf(control: HTMLElement): { readonly left: number; readonly top: number } {
   const box = control.closest<HTMLElement>('[style*="left"]') ?? control;
   return { left: Number.parseFloat(box.style.left), top: Number.parseFloat(box.style.top) };
+}
+
+/** Makes the window `width` px wide for what reads `innerWidth`, until the stub is restored. */
+function windowWidthOf(width: number): { mockRestore(): void } {
+  const own = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  return {
+    mockRestore: () => {
+      if (own === undefined) Reflect.deleteProperty(window, "innerWidth");
+      else Object.defineProperty(window, "innerWidth", own);
+    },
+  };
+}
+
+/** Gives the control's box `width` px as its drawn width (`offsetWidth`), which happy-dom, laying
+ *  nothing out, answers 0 for; every other element keeps its own. The getter is happy-dom's on
+ *  `HTMLElement.prototype`, so it is replaced there and put back as it was. */
+function controlWidthOf(width: number): { mockRestore(): void } {
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.hasAttribute(CONTROL_ATTRIBUTE) ? width : (own?.get?.call(this) ?? 0);
+    },
+  });
+  return {
+    mockRestore: () => {
+      if (own !== undefined) Object.defineProperty(HTMLElement.prototype, "offsetWidth", own);
+    },
+  };
 }
 
 /** Presses the chord `$mod+Alt+m`, matched by `event.code === "KeyM"`. */
@@ -285,6 +315,72 @@ test("control shown, the selection changes inside the same words: the control mo
         first.top
       );
       expect(moved.left, "the control did not move to the new end").toBeGreaterThan(first.left);
+    });
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+test("control shown, the page scrolls, a box around the words scrolls, or the window resizes: the control moves beside the selection's end where it is now", async () => {
+  const { client, row, view } = await drawn({ threads: [] });
+  try {
+    rangeEndsAt(rectOf(100, 200, 80, 20));
+    selectWords(row, "page");
+    await controlDrawn(view, "a selection draws no control");
+    // Each moves the selected words and sends no `selectionchange`: a scroll of the page is sent
+    // to the document, a scroll of a box around the words does not bubble, and a resize is sent to
+    // the window.
+    for (const [how, end, move] of [
+      [
+        "the page scrolls",
+        rectOf(100, 120, 80, 20),
+        () => document.dispatchEvent(new Event("scroll")),
+      ],
+      ["a box scrolls", rectOf(100, 40, 80, 20), () => row.dispatchEvent(new Event("scroll"))],
+      [
+        "the window resizes",
+        rectOf(300, 260, 80, 20),
+        () => window.dispatchEvent(new Event("resize")),
+      ],
+    ] as const) {
+      rangeEndsAt(end);
+      await act(async () => {
+        move();
+      });
+      await waitFor(() => {
+        const control = controlOf(view);
+        expect(control, `the control went (${how})`).not.toBeNull();
+        const { left, top } = placeOf(control as HTMLElement);
+        expect(left, `the control is not right of the words' end (${how})`).toBeGreaterThanOrEqual(
+          end.right
+        );
+        expect(top, `the control is not at the words' last line (${how})`).toBe(end.top);
+      });
+    }
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+test("no selection, words selected to the end of a line at the window's right edge: the control stands inside the window, under the line", async () => {
+  const { client, row, view } = await drawn({ threads: [] });
+  // A window 390 px wide, as a phone's, which the control reads (`innerWidth`), and the control's
+  // box 80 px wide, as a browser draws it.
+  stubs.push(windowWidthOf(390), controlWidthOf(80));
+  try {
+    const end = rectOf(305, 200, 80, 20);
+    rangeEndsAt(end);
+    selectWords(row, "page");
+    await controlDrawn(view, "a selection at the window's edge draws no control");
+    await waitFor(() => {
+      const { left, top } = placeOf(controlOf(view) as HTMLElement);
+      expect(left, "the control stands past the window's left edge").toBeGreaterThanOrEqual(0);
+      expect(left + 80, "the control stands past the window's right edge").toBeLessThanOrEqual(390);
+      expect(top, "the control covers the selected words of the line").toBeGreaterThanOrEqual(
+        end.bottom
+      );
     });
   } finally {
     view.finish();

@@ -140,13 +140,9 @@ function DetailsFill({ holdPanel }: { holdPanel: RefCallback<HTMLElement> }): nu
   const fill = useCallback(
     (conversation: ReactNode) => (
       <IssueMarginCards
-        conversation={documentUp ? conversation : undefined}
         // The editor's own cards stand in the column of comments on text wherever the page draws
-        // one (`EditorCards`), as every comment on text does. The override is optional, as the
-        // prop is, so it stands after the attribute above and takes nothing while no editor is up.
-        {...((documentUp ? { conversation: <EditorCards>{conversation}</EditorCards> } : {}) as {
-          readonly conversation?: ReactNode;
-        })}
+        // one (`EditorCards`), as every comment on text does.
+        conversation={documentUp ? <EditorCards>{conversation}</EditorCards> : undefined}
         panelHost={holdPanel}
       />
     ),

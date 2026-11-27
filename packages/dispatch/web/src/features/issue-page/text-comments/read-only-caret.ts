@@ -7,9 +7,9 @@ import { ITEM_PLACE_KINDS } from "./text-comment-write";
  * `inputmode="none"` and `aria-readonly="true"` on the row's words element (`rowTextOf`), places
  * a collapsed selection at the start of its text, cancels `beforeinput`, `paste`, `drop`, `cut`
  * and `compositionstart`, lets a press on a link in the text follow the link, and removes all of
- * it on Escape (the focus goes back to the row), on blur, and when a re-read replaces or removes
- * the element. Answers the function that takes it away, or null where the row has no words
- * element or draws none of its node's text.
+ * it on Escape and when a composition starts (the focus goes back to the row), on blur, and when
+ * a re-read replaces or removes the element. Answers the function that takes it away, or null
+ * where the row has no words element or draws none of its node's text.
  *
  * Enter on the focused row of a read-only node puts it in (`caretOnEnter`, which the tree's
  * `useNodeEditing` calls before it reports that a row has no text to put the caret in). A press
@@ -91,6 +91,12 @@ function caretIn(row: Element): (() => void) | null {
     words.removeAttribute("aria-readonly");
   };
 
+  /** Takes the caret away and gives the focus back to the row. */
+  const leave = (): void => {
+    remove();
+    if (row instanceof HTMLElement) row.focus({ preventScroll: true });
+  };
+
   active.set(words, remove);
 
   const cancel = (event: Event): void => {
@@ -99,14 +105,19 @@ function caretIn(row: Element): (() => void) | null {
   for (const type of BLOCKED_INPUT) {
     words.addEventListener(type, cancel, { signal: listening.signal });
   }
+  // A composition leaves the caret before it writes: an IME may go on after its cancelled
+  // `compositionstart` (UI Events, "Some IMEs do not support cancelling an in-progress
+  // composition session"), and the `beforeinput` of its text (`insertCompositionText`) cannot be
+  // cancelled (Input Events Level 2), so a CJK IME or a macOS dead key would write into the text
+  // React draws. With the words no longer editable and the focus on the row, it writes nowhere.
+  words.addEventListener("compositionstart", leave, { signal: listening.signal });
 
   words.addEventListener(
     "keydown",
     (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
       event.preventDefault();
-      remove();
-      if (row instanceof HTMLElement) row.focus({ preventScroll: true });
+      leave();
     },
     { signal: listening.signal }
   );

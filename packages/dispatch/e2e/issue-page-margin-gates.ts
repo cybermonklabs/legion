@@ -1,22 +1,9 @@
-// Mirrors web/src/features/issue-page/text-comments/gates.ts. The two tables move together.
-export const GATES = {
-  ANCHOR_OCCURRENCE: false,
-  COMPOSER: true,
-  DASHBOARD: false,
-  NODE_ANCHOR: true,
-  OTHER_ISSUE_COMMENTS: false,
-  PART_J: true,
-  PART_M: false,
-  PART_N: false,
-  PART_U: false,
-  PART_X: false,
-  PART_Y: false,
-  REPLY_QUOTE: false,
-  THREADS: false,
-  TREE_ARTIFACT_ANCHOR: false,
-};
+import type { GateName } from "../web/src/features/issue-page/text-comments/gates";
+
+// The browser rows read the one gate table the unit tests read.
+export { GATES } from "../web/src/features/issue-page/text-comments/gates";
 
 export interface SkippedMarginItem {
   item: string;
-  gate: keyof typeof GATES;
+  gate: GateName;
 }

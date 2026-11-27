@@ -122,6 +122,7 @@ import { KEY, node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures
 import { presetPath } from "../issue-address";
 import { MARGIN_WORDS } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
+import { TEXT_THREADS_ATTRIBUTE } from "./attributes";
 import {
   answerSeededReads,
   type DrawnPage,
@@ -134,7 +135,7 @@ import {
   TEXT_THREADS,
   type TextThreadSeed,
 } from "./margin-fixtures";
-import { NodeThreads, TEXT_THREADS_ATTRIBUTE } from "./NodeThreads";
+import { NodeThreads } from "./NodeThreads";
 import { type SelectedWords, wordsKeyOf } from "./SelectionComposer";
 import { TEXT_COMPOSER_ATTRIBUTE, useTextComposer } from "./TextMargin";
 

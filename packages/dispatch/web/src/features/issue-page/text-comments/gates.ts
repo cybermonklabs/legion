@@ -3,8 +3,8 @@
  * wait for (INFRA-5706's plan, "The gates"). A line is `false` until the commit that merges its
  * gate is on the branch's base; that commit flips the line and adds the rows it owes. A case or a
  * reading owed on a gate is written `test.skipIf(!GATES.NAME)`, and no code probes a capability
- * at run time. The browser suite's own table (`e2e/issue-page-margin-gates.ts`) moves with this
- * one.
+ * at run time. The browser suite reads this same table (`e2e/issue-page-margin-gates.ts` exports
+ * it).
  */
 
 /** One name for each gate that a part or a server capability needs, in the order of the table. */

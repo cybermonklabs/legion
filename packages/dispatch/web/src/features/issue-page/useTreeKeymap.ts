@@ -9,6 +9,7 @@ import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
+import { TEXT_THREADS_ATTRIBUTE } from "./text-comments/attributes";
 import { type DrawnRow, type PageRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
 
@@ -241,7 +242,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       event !== null &&
       event.eventPhase !== Event.NONE &&
       event.target instanceof Element &&
-      event.target.closest("[data-text-threads]") !== null
+      event.target.closest(`[${TEXT_THREADS_ATTRIBUTE}]`) !== null
     ) {
       return true;
     }

@@ -9,6 +9,7 @@ import { NoTooltips } from "../NoTooltips";
 import { authorText } from "../page-structure";
 import { MARGIN_WORDS, type Preset } from "../page-words";
 import { moveToRow } from "../useTreeKeymap";
+import { TEXT_THREADS_ATTRIBUTE } from "./attributes";
 import { SelectionComposer, wordsKeyOf } from "./SelectionComposer";
 import {
   cardIn,
@@ -22,9 +23,6 @@ import {
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
 import type { TextThread } from "./text-threads";
 import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThreads";
-
-/** The attribute of the sheet that holds one node's threads below 1024 px. */
-export const TEXT_THREADS_ATTRIBUTE = "data-text-threads";
 
 /** What `f` steps through in a row besides its chips (`useTreeKeymap.ts`' `rowStops`): its links,
  *  then each button out of the tab order. */

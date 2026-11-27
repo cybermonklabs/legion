@@ -3,11 +3,12 @@ import { type RenderResult, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import type { Actor, Comment } from "../../../api/types";
-import { producingMessages, withThreadEntries } from "../contents-entries";
+import { producingMessages } from "../contents-entries";
 import { KEY, node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { type ContentsEntry, contentsOf } from "../IssueContents";
 import type { TreeNode } from "../issue-tree";
 import { readComment } from "../outline-fixtures";
+import { withThreadEntries } from "./contents-threads";
 import {
   answerSeededReads,
   columnOf,

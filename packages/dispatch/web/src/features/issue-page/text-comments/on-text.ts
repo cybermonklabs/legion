@@ -32,7 +32,7 @@ export type ReadComment = NonNullable<IssueTreeReads["comments"]>[number];
 export type ReadMessage = MessageRead["message"];
 
 /** A block of an item that a reply answers, as the comments and messages reads answer it. */
-type ReplyBlock = NonNullable<ReadComment["reply_block"] | ReadMessage["reply_block"]>;
+export type ReplyBlock = NonNullable<ReadComment["reply_block"] | ReadMessage["reply_block"]>;
 
 /** The anchor the tree read answers on a comment's node (`IssueTreeAnchor`): a document anchor's
  *  members, which a node anchor leaves out, or the node a node anchor names (`node`, G2,
@@ -45,7 +45,8 @@ export type TreeAnchor = NonNullable<TreeAnswerNode["anchor"]>;
 export type OnTextItem = Pick<TreeAnswerNode, "id" | "supertag">;
 
 /** A reply's block as INFRA-5703 answers it (G4): with the words the reply quotes and their match,
- *  which `quotedBlock` reads before the generated contract declares them. */
+ *  which the generated contract of this base does not declare, so a reader that reads them widens
+ *  a `ReplyBlock` to this type with an annotation (`quotedPlace`). */
 export type QuotedReplyBlock = ReplyBlock & {
   readonly occurrence?: number;
   readonly quote?: string;
@@ -281,7 +282,7 @@ function quotedPlace(
       ? reads.comments.get(item.id)?.reply_block
       : reads.messages.get(item.id)?.reply_block;
   if (block == null) return undefined;
-  const quoted = quotedBlock(block);
+  const quoted: QuotedReplyBlock = block;
   return quoted.quote === undefined || quoted.quote === ""
     ? undefined
     : {
@@ -291,12 +292,6 @@ function quotedPlace(
         occurrence: quoted.occurrence ?? 0,
         quote: quoted.quote,
       };
-}
-
-/** A reply's block with the quote INFRA-5703 answers beside it (G4), which the generated contract
- *  of this base does not declare: read as an optional member. */
-export function quotedBlock(block: ReplyBlock): QuotedReplyBlock {
-  return block;
 }
 
 /**
