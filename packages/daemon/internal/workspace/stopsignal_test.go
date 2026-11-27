@@ -2,10 +2,12 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -34,12 +36,12 @@ func inFlight[T any](f func() T) <-chan T {
 //
 // It gives up after a minute, which no row here reaches: each row's stop comes once its command has
 // reported that it is running — RunCommand's budget passes then (budgetPassedOnceExists), and
-// execRunner's git has a Timeout of its own that passes only after a git started on time and on its
-// way on time has reported it (stopTimeout) — so the stop under test is what ends each of these
-// commands. It is what a run whose stop never came leaves behind — a command that ignores SIGTERM
-// stays until something kills it, and a failing row has nothing left to kill it with. Every row
-// reads a timeout, which a command that gave up on its own never reports, so no row passes by that
-// end.
+// execRunner's git has a Timeout of its own that passes only after a git has reported it whose
+// runner kept to main's second and which the machine held for less than a second more
+// (stopTimeout) — so the stop under test is what ends each of these commands. It is what a run
+// whose stop never came leaves behind — a command that ignores SIGTERM stays until something kills
+// it, and a failing row has nothing left to kill it with. Every row reads a timeout, which a
+// command that gave up on its own never reports, so no row passes by that end.
 const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done`
 
 // RunCommand's jj and git are stopped the way execRunner's are: the budget's end sends SIGTERM to
@@ -59,16 +61,18 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 // as the budget. execRunner's row hands its git a caller's context that never ends, so the git's
 // own Timeout is the only thing that can stop it, as in main's row (stopTimeout).
 //
-// Each row holds the command to the second main gave it from just before the call to the mark it
-// writes once it is running, split at a fact of the run: the kernel's own record of when it made the
-// command's process (testexec.MarkStart). The runner starts the command within a second of the call
-// (startBound), and the command writes that mark within a second of its start (readyBound), on the
-// same clock (testexec.MarkNow). A runner that brings the command to its first line late inside the
-// command's own process — a shell that sleeps and then execs it — leaves the kernel's start where it
-// was and fails the second. What the split gives up is a run whose two spans each keep their second
-// and together pass it, which main's budget failed: a loaded machine's own delay in bringing a
-// started shell to its mark is in the second span, and main's one second counted it against the
-// runner.
+// Each row holds the runner to the second main gave it, from just before the call to the moment
+// the command reports that it is running (ownBound, ownSpan), whatever the runner spent that
+// second on: before it starts the command, or inside the command's own process before the
+// command's first line, such as a prefix that sleeps and then execs it. Of that span the row takes
+// off only what the kernel records of the machine: how long it kept the command's processes
+// waiting for a CPU on the way (their run-queue wait, markWaited), which a loaded machine
+// lengthens and which no runner spends on its own work. A runner that sleeps or works, and a
+// command it stops or holds blocked on anything but a CPU, waits for no CPU, so that time stays
+// in the span. Of the wait it takes off, the row counts back against the runner as much CPU as
+// this test process used over the call, since the command could have waited behind it: a runner
+// that keeps the CPUs busy while its command starts is slow, not loaded. A kernel that keeps no
+// run-queue wait, as gVisor's, has nothing taken off, and the row is main's.
 func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	environment := []string{"PATH=" + os.Getenv("PATH")}
 
@@ -80,26 +84,26 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + testexec.MarkNow(`"$4"`) + `; : >"$2"; ` + commandLives
+		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
-		called := testexec.SinceBoot(t)
+		call := calling(t)
 		started := time.Now()
 		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark, readyAt})
 		returned := time.Now()
+		cpu := processCPU(t)
 		elapsed := returned.Sub(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
 			t.Fatalf("the command never reported that it was running (%v): its budget never passed, so this run proves nothing (RunCommand = %v)", statErr, err)
 		}
-		began := testexec.StartedAfter(t, mark, called)
-		if began > startBound {
-			t.Errorf("RunCommand started its command %s after the call, past the %s it has to start it in (RunCommand = %v)", began, startBound, err)
+		began := testexec.StartedAfter(t, mark, call.at)
+		reached, waits := readWaited(t, readyAt, 1)
+		waited, known := runQueueWait(t, waits[0])
+		span := ownSince(call, reached, waited, known, cpu)
+		if span.own > ownBound {
+			t.Errorf("RunCommand spent %s of its own before its command reported that it was running, past main's %s: %s (RunCommand = %v)", span.own, ownBound, span, err)
 		}
-		reached := readyAfterStart(t, mark, readyAt)
-		if reached > readyBound {
-			t.Errorf("the command reported that it was running %s after the kernel started it, past the %s it has to report it in: main gave it one second from the call, and the kernel's start of its process is where this row counts it from (RunCommand = %v)", reached, readyBound, err)
-		}
-		t.Logf("RunCommand started its command %s after the call, and the command reported that it was running %s after its start", began, reached)
+		t.Logf("RunCommand started its command %s after the call, and spent %s of its own before the command reported that it was running: %s", began, span.own, span)
 		passed, ok := ctx.Deadline()
 		if !ok {
 			t.Fatalf("the command reported that it was running, but its budget had not passed when the run returned after %s (RunCommand = %v)", elapsed, err)
@@ -118,8 +122,11 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	t.Run("a helper the command forked is stopped with it", func(t *testing.T) {
 		dir := t.TempDir()
 		ready, marker := filepath.Join(dir, "ready"), filepath.Join(dir, "deaf-helper-of-this-row")
-		trapped, mark := filepath.Join(dir, "helper-trapped"), filepath.Join(dir, "started")
+		trapped, helperWaited, mark := filepath.Join(dir, "helper-trapped"), filepath.Join(dir, "helper-waited"), filepath.Join(dir, "started")
 		readyAt := filepath.Join(dir, "ready-at")
+		if err := syscall.Mkfifo(trapped, 0o600); err != nil {
+			t.Fatalf("make the pipe the helper gives its word on: %v", err)
+		}
 		budget := time.Second
 		ctx := budgetPassedOnceExists(t, ready)
 		// Both ignore SIGTERM, so the group's SIGKILL after the grace is what ends them, and the
@@ -132,25 +139,28 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// says, and this row would prove nothing about the helper's own disposition.
 		//
 		// The fork returns as soon as the helper exists, which is before that helper's own shell
-		// has reached its trap line, so the helper writes a marker of its own once the ignore is
-		// installed and the leader waits for it before it reports that it is running: the budget
-		// passes once the ready file is there, so its SIGTERM finds the helper under the
-		// disposition its script asks for. A stop that raced that line would end the helper with
-		// the group's SIGTERM rather than leave it to the SIGKILL, and this row — which reads only
-		// that the helper is gone — would pass on the opposite of what it claims.
+		// has reached its trap line, so the helper gives its word once the ignore is installed, by
+		// opening the named pipe trapped, and the leader, which opens the other end, waits there
+		// before it ignores SIGTERM itself and reports that it is running: the budget passes once
+		// the ready file is there, so its SIGTERM finds the helper under the disposition its
+		// script asks for. A stop that raced that line would end the helper with the group's
+		// SIGTERM rather than leave it to the SIGKILL, and this row — which reads only that the
+		// helper is gone — would pass on the opposite of what it claims. The wait is one open of a
+		// pipe, not a loop of sleeps: a sleep is a process of its own, whose run-queue wait no
+		// record of the leader's or the helper's holds (waitedPastHelper).
 		//
 		// The helper holds the command's pipes until this row's directory is gone, which the
 		// test's cleanup removes, or until this test process is gone: never for a span of its own,
 		// so a helper nothing stopped is still there however long the row waits for it, and a run
 		// that waits on its pipes for ever fails the wait below rather than ending with the helper.
-		helper := `trap '' TERM; : >"$2"; while [ -d '` + dir + `' ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done`
-		script := testexec.MarkStart(`"$5"`) + `; sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; ` + testexec.MarkNow(`"$6"`) + `; : >"$1"; ` + commandLives
+		helper := `trap '' TERM; ` + waitInto("waited", "self") + `; printf '%s\n' "$waited" >"$3"; : >"$2"; while [ -d '` + dir + `' ] && kill -0 ` + strconv.Itoa(os.Getpid()) + ` 2>/dev/null; do sleep 0.05; done`
+		script := testexec.MarkStart(`"$6"`) + `; ` + waitInto("forked", "self") + `; sh -c "$2" sh "$3" "$4" "$5" & read -r word <"$4"; ` + waitInto("heard", "self") + `; trap '' TERM; ` + markWaited("self", `"$7"`, `"$forked"`, `"$heard"`) + `; : >"$1"; ` + commandLives
 
 		returned := make(chan error, 1)
-		called := testexec.SinceBoot(t)
+		call := calling(t)
 		started := time.Now()
 		go func() {
-			_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped, mark, readyAt})
+			_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped, helperWaited, mark, readyAt})
 			returned <- err
 		}()
 		var err error
@@ -159,20 +169,24 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		case <-time.After(testwait.Bounded(t, time.Minute, cutRunMargin)):
 			t.Fatalf("RunCommand had not returned %s after it started: nothing stopped the helper the command forked, which still holds the command's pipes (%v)", time.Since(started), gitProcessesUnder(t, marker))
 		}
+		cpu := processCPU(t)
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
 			t.Fatalf("the command never reported that it was running (%v): its budget never passed, so this run proves nothing (RunCommand = %v)", statErr, err)
 		}
-		began := testexec.StartedAfter(t, mark, called)
-		if began > startBound {
-			t.Errorf("RunCommand started its command %s after the call, past the %s it has to start it in (RunCommand = %v)", began, startBound, err)
+		began := testexec.StartedAfter(t, mark, call.at)
+		reached, waits := readWaited(t, readyAt, 3)
+		helperWait, readErr := os.ReadFile(helperWaited)
+		if readErr != nil {
+			t.Fatalf("read the run-queue wait the helper recorded before it gave its word: %v", readErr)
 		}
-		reached := readyAfterStart(t, mark, readyAt)
-		if reached > readyBound {
-			t.Errorf("the command reported that it was running, its helper ready, %s after the kernel started it, past the %s it has to report it in: main gave it one second from the call, and the kernel's start of its process is where this row counts it from (RunCommand = %v)", reached, readyBound, err)
+		waited, known := waitedPastHelper(t, waits[0], waits[1], waits[2], strings.TrimSuffix(string(helperWait), "\n"))
+		span := ownSince(call, reached, waited, known, cpu)
+		if span.own > ownBound {
+			t.Errorf("RunCommand spent %s of its own before its command reported that it was running, its helper ready, past main's %s: %s (RunCommand = %v)", span.own, ownBound, span, err)
 		}
-		t.Logf("RunCommand started its command %s after the call, and the command reported that it was running, its helper ready, %s after its start", began, reached)
+		t.Logf("RunCommand started its command %s after the call, and spent %s of its own before the command reported that it was running, its helper ready: %s", began, span.own, span)
 		if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 			t.Errorf("RunCommand = %v after %s, want \"Command timed out after 1 s …\": the budget's stop ended a command that ignores SIGTERM", err, elapsed)
 		}
@@ -190,36 +204,36 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
 		readyAt := filepath.Join(dir, "ready-at")
 		fakeGit := filepath.Join(dir, "git")
-		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + testexec.MarkNow(`"`+readyAt+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
+		script := "#!/bin/sh\n" + testexec.MarkStart(`"`+mark+`"`) + "\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n" + markWaited("self", `"`+readyAt+`"`) + "\n: >\"" + ready + "\"\n" + commandLives + "\n"
 		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		// The git's own Timeout is the only thing that can stop it: the caller's context never
 		// ends, so a Run that bounds the git by its caller's context alone runs it until it gives
 		// up on its own (commandLives), exit 0 and not timed out. The Timeout is stopTimeout, so a
-		// git that execRunner.Run started within startBound of the call and that reported that it
-		// was running within readyBound of its start has its trap installed when it passes.
+		// git whose runner kept to main's second, and which the machine held for less than a
+		// second more, has its trap installed when it passes.
 		run := NewRunner(stopTimeout, map[string]string{"git": fakeGit})
 
-		called := testexec.SinceBoot(t)
+		call := calling(t)
 		started := time.Now()
 		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: stopTimeout})
+		cpu := processCPU(t)
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
 			startMark, markErr := testexec.ReadStartMark(mark)
-			t.Fatalf("the git never reported that it was running (%v) before its own %s Timeout stopped it, so this run proves nothing; a git started within %s of the call that reports within %s of its start is running by then (its start mark %+v, %v; Run = %v, exit %d, timed out %t after %s)",
-				statErr, stopTimeout, startBound, readyBound, startMark, markErr, err, result.ExitCode, result.TimedOut, elapsed)
+			t.Fatalf("the git never reported that it was running (%v) before its own %s Timeout stopped it, so this run proves nothing; a git whose runner keeps to main's %s, and which the machine holds for less than %s more, is running by then (its start mark %+v, %v; Run = %v, exit %d, timed out %t after %s)",
+				statErr, stopTimeout, ownBound, stopTimeout-ownBound, startMark, markErr, err, result.ExitCode, result.TimedOut, elapsed)
 		}
-		began := testexec.StartedAfter(t, mark, called)
-		if began > startBound {
-			t.Errorf("execRunner.Run started its git %s after the call, past the %s it has to start it in (Run = %v)", began, startBound, err)
+		began := testexec.StartedAfter(t, mark, call.at)
+		reached, waits := readWaited(t, readyAt, 1)
+		waited, known := runQueueWait(t, waits[0])
+		span := ownSince(call, reached, waited, known, cpu)
+		if span.own > ownBound {
+			t.Errorf("execRunner.Run spent %s of its own before its git reported that it was running, past main's %s: %s (Run = %v)", span.own, ownBound, span, err)
 		}
-		reached := readyAfterStart(t, mark, readyAt)
-		if reached > readyBound {
-			t.Errorf("execRunner.Run's git reported that it was running %s after the kernel started it, past the %s it has to report it in: main gave it one second from the call, and the kernel's start of its process is where this row counts it from (Run = %v)", reached, readyBound, err)
-		}
-		t.Logf("execRunner.Run started its git %s after the call, and the git reported that it was running %s after its start", began, reached)
+		t.Logf("execRunner.Run started its git %s after the call, and spent %s of its own before the git reported that it was running: %s", began, span.own, span)
 		// exec reports a command whose Cancel succeeded and which then exited cleanly as the
 		// context's error, so a Run that propagated that error before reading its own kill would
 		// report this git as one it could not run, and transientCloneFailure would read the next
@@ -266,33 +280,153 @@ func budgetPassedOnceExists(t *testing.T, path string) context.Context {
 	return ctx
 }
 
-// startBound is how soon after the call RunCommand, and execRunner.Run, start the command: main's
-// rows gave each command one second from just before the call to report that it was running, and
-// this is that second's first span, to the kernel's start of the command's process.
-const startBound = time.Second
+// ownBound is main's second: how much of its own time (ownSpan) these rows give the runner from
+// just before the call to the moment its command reports that it is running, or, for the real git
+// of TestARealGitStoppedAtItsBudgetLeavesNoLock, holds .git/index.lock.
+const ownBound = time.Second
 
-// readyBound is how soon after the kernel started the command it reports that it is running: the
-// second span of main's one second, counted from that start, so the time the runner and the
-// machine took to make the command's process is startBound's and not this span's.
-const readyBound = time.Second
+// stopTimeout is the Timeout execRunner's rows give their git, the only thing that can stop it:
+// main's second of the runner's own time (ownBound), and a second more for what the rows take off
+// that time, the time the machine kept the git waiting for a CPU. A git that reports it is
+// running, or holds its lock, within its runner's second, on a machine that held it for less than
+// a second more, has done so when the Timeout passes; one that has not fails its row by name.
+const stopTimeout = 2 * ownBound
 
-// stopTimeout is the Timeout execRunner's row gives its git, the only thing that can stop it: the
-// two spans of main's second, so a git started within startBound of the call that reports that it
-// is running within readyBound of its start has done so before the Timeout passes.
-const stopTimeout = startBound + readyBound
+// aCall is the moment a row called its runner, as a time since boot (testexec.SinceBoot), and the
+// CPU time this test process had used by then (processCPU).
+type aCall struct{ at, cpu time.Duration }
 
-// readyAfterStart is how long after the kernel started the process that wrote the start mark at mark
-// (testexec.MarkStart) that process wrote the mark at ready (testexec.MarkNow). Both count from boot
-// on one clock, which the two read to within a tick (testexec.ClockTick).
-func readyAfterStart(t *testing.T, mark, ready string) time.Duration {
+// calling reads the moment of a call a row is about to make.
+func calling(t *testing.T) aCall {
 	t.Helper()
-	start, err := testexec.ReadStartMark(mark)
-	if err != nil {
-		t.Fatalf("read the command's start mark: %v", err)
+	return aCall{at: testexec.SinceBoot(t), cpu: processCPU(t)}
+}
+
+// ownSpan is the runner's own time from a call to a moment of its command's run (own): the span
+// between the two, less held, the part of the command's run-queue wait on the way (waited) that
+// the CPU this test process used over the call (cpu) does not cover. A kernel that keeps no
+// run-queue wait (known false) has nothing taken off.
+type ownSpan struct {
+	own, span, waited, cpu, held time.Duration
+	known                        bool
+}
+
+// ownSince is the runner's own time from call to reached, a moment of the command's run as a time
+// since boot, where the kernel kept the command waiting for a CPU for waited on the way there, or
+// keeps no such record (known false). cpuAfter is this test process's CPU time once the call had
+// returned (processCPU), which covers every moment of the call's in which the command could have
+// waited behind this process.
+func ownSince(call aCall, reached, waited time.Duration, known bool, cpuAfter time.Duration) ownSpan {
+	s := ownSpan{span: reached - call.at, cpu: cpuAfter - call.cpu, known: known}
+	if known {
+		s.waited = waited
+		s.held = max(0, waited-s.cpu)
 	}
-	at, err := testexec.ReadNowMark(ready)
-	if err != nil {
-		t.Fatalf("read the mark the command wrote once it was running: %v", err)
+	s.own = s.span - s.held
+	return s
+}
+
+// String is what a row's message says of the span: what it counts, and what it takes off.
+func (s ownSpan) String() string {
+	if !s.known {
+		return fmt.Sprintf("%s from the call, with nothing taken off: this kernel keeps no run-queue wait (/proc/<pid>/schedstat)", s.span)
 	}
-	return at - start.Started
+	return fmt.Sprintf("%s from the call, less %s the kernel kept the command waiting for a CPU (its run-queue wait, %s, less the %s of CPU this test process used over the call)", s.span, s.held, s.waited, s.cpu)
+}
+
+// processCPU is the CPU time this test process has used so far, user and system, every thread of
+// it (getrusage(2), RUSAGE_SELF).
+func processCPU(t *testing.T) time.Duration {
+	t.Helper()
+	var usage syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
+		t.Fatalf("read the CPU time this test process has used: %v", err)
+	}
+	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
+}
+
+// waitInto is shell that reads, into the shell variable name, the /proc/<pid>/schedstat line of
+// the process proc names (self, the shell's own, or a shell word such as $PPID): its run-queue
+// wait so far (runQueueWait). It leaves the variable empty where this kernel keeps no such file,
+// as gVisor's. The shell reads it itself (`read` and `[` are builtins), so self is its own
+// process.
+func waitInto(name, proc string) string {
+	return name + `=; [ -r /proc/` + proc + `/schedstat ] && read -r ` + name + ` </proc/` + proc + `/schedstat`
+}
+
+// markWaited is shell that records, at the file the shell word at names, a moment of a stand-in's
+// run, as testexec.MarkNow does, and, at the file named the same with .waits added, the
+// /proc/<pid>/schedstat line of the process proc names (waitInto), then the shell words more, one
+// a line (readWaited). The line is read before the moment, so the wait it counts all comes before
+// it.
+func markWaited(proc, at string, more ...string) string {
+	words := `"$waited"`
+	for _, word := range more {
+		words += " " + word
+	}
+	return waitInto("waited", proc) + `; read -r up </proc/uptime; printf '%s\n' "$up" >` + at +
+		`; printf '` + strings.Repeat(`%s\n`, 1+len(more)) + `' ` + words + ` >` + at + `.waits`
+}
+
+// readWaited reads what markWaited recorded at path: the moment, as a time since boot, and the
+// lines of path.waits, lines of them, which the row fails without.
+func readWaited(t *testing.T, path string, lines int) (time.Duration, []string) {
+	t.Helper()
+	at, err := testexec.ReadNowMark(path)
+	if err != nil {
+		t.Fatalf("read the moment the command recorded: %v", err)
+	}
+	raw, err := os.ReadFile(path + ".waits")
+	if err != nil {
+		t.Fatalf("read the run-queue waits the command recorded: %v", err)
+	}
+	waits := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+	if len(waits) != lines {
+		t.Fatalf("the command recorded %d lines of run-queue waits at %s, want %d: %q", len(waits), path+".waits", lines, raw)
+	}
+	return at, waits
+}
+
+// runQueueWait is how long the kernel had kept a process waiting for a CPU by the moment the
+// process's /proc/<pid>/schedstat line was read: the line's second field, run_delay, in
+// nanoseconds (the kernel's Documentation/scheduler/sched-stats.rst). That is time the process
+// was ready to run and the machine ran something else, and nothing else: time it ran, slept, was
+// blocked or was stopped is not in it. It answers false for an empty line, which waitInto leaves
+// where this kernel keeps no such file.
+func runQueueWait(t *testing.T, line string) (time.Duration, bool) {
+	t.Helper()
+	if line == "" {
+		return 0, false
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		t.Fatalf("a /proc/<pid>/schedstat line with no run_delay: %q", line)
+	}
+	ns, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || ns < 0 {
+		t.Fatalf("the run_delay of the /proc/<pid>/schedstat line %q: %v", line, err)
+	}
+	return time.Duration(ns), true
+}
+
+// waitedPastHelper is how long the machine kept a leader waiting for a CPU on its way to its ready
+// mark, where on that way it forked a helper and waited for the helper's word, from the
+// /proc/<pid>/schedstat lines each read of itself (runQueueWait): the leader's at its mark
+// (atMark), just before the fork (forked) and just after the word came (heard), and the helper's
+// just before it gave the word (helper). Before the fork and after the word, the leader's own
+// waits are the machine's hold of the way. Between the two, the way ran through whichever of the
+// leader and the helper came to the word later, and the machine held it there for at least the
+// less of the leader's waits over that stretch and the helper's: the helper's all fall before its
+// word, so no wait is counted twice, and the less of the two counts none that was off the way. It
+// answers false where this kernel keeps no run-queue wait.
+func waitedPastHelper(t *testing.T, atMark, forked, heard, helper string) (time.Duration, bool) {
+	t.Helper()
+	mark, markKnown := runQueueWait(t, atMark)
+	before, beforeKnown := runQueueWait(t, forked)
+	after, afterKnown := runQueueWait(t, heard)
+	helped, helperKnown := runQueueWait(t, helper)
+	if !markKnown || !beforeKnown || !afterKnown || !helperKnown {
+		return 0, false
+	}
+	return before + (mark - after) + min(after-before, helped), true
 }
