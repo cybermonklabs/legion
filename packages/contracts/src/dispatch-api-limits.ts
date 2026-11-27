@@ -340,7 +340,7 @@ export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 /**
  * The code of the `403` for a request by an approve-only token - the token the secrets broker
  * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
- * `approve` alone - to a route Dispatch's approve list (`approveScopeRoutes`) does not name, and
+ * `approve` alone - to a route whose declaration does not state `ApproveOnly`, and
  * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
  * recorded. No sign-in and no other scope makes the request possible for that token.
  */

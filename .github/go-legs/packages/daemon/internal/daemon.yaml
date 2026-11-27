@@ -480,6 +480,7 @@
   - TestTheVolumeTrimReachesTheSandboxRuntime  # 0.1 s
   - TestTheWorkflowsBootQueuesTheRolePublicationOfALiveClaim  # 0.4 s
   - TestTheWorkspaceLostMessageSaysWhyItNamesItsRoles  # 0.3 s
+  - TestThisTestBinaryLinksNoTestcontainers
   - TestTwoBasesOfOneInstallationShareItsHold  # 1.2 s
   - TestTwoEventsThatFailInOneWindowStopTheCursorBelowTheFirst  # 0.2 s
   - TestTwoLaunchesThatFindOneWorkspaceMissingProvisionItOnce  # 0.1 s

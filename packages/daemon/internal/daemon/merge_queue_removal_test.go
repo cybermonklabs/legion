@@ -71,7 +71,7 @@ const dequeueRetry = 20 * time.Millisecond
 // woken session holds the merger's role. Nothing else tells a merger of the removal: its pull
 // request would wait out of the queue with nobody to enqueue it again or send the issue back.
 //
-// The daemon is the whole daemon (run, through startDaemonWithin) on a database of its own and on
+// The daemon is the whole daemon (run, through startDaemonLogging) on a database of its own and on
 // the NATS server testnats names (LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL, in a pod
 // with no Docker). The event enters as production's does: an Envoy envelope of GitHub's
 // pull_request action `dequeued` on notifications.github.acme.widgets.pr.<number>, with the keys
@@ -717,7 +717,7 @@ func dequeueHead(number int) string {
 // daemon's log, which is where a row that never finished says why.
 func (r *dequeueRig) boot(t *testing.T) {
 	t.Helper()
-	r.d = startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(r.logs, nil)), dequeueWait)
+	r.d = startDaemonLogging(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(r.logs, nil)))
 	t.Cleanup(func() {
 		if t.Failed() {
 			log := r.logs.String()
