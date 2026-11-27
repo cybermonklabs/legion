@@ -2411,17 +2411,26 @@ async function verifyGapDetection(
   const newest = comments.at(-1);
   if (newest === undefined) throw new Error("the seed made no comment");
   const events = await getIssueEvents(issue.key, { limit: 200 });
-  const dayOld = new Set(comments.slice(0, 10).map((comment) => comment.id));
-  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+  const dayOld = comments.slice(0, 10);
+  // Each back-dated comment its own second after the issue's creation, in the order they were
+  // written: entries at one instant are placed by id, so a shared instant would put the oldest
+  // comment past the history's first 20 entries on some runs and not on others.
+  const yesterdayMs = Date.now() - 24 * 60 * 60 * 1_000;
+  const yesterday = new Date(yesterdayMs).toISOString();
+  const backDatedAt = new Map(
+    dayOld.map((comment, index) => [
+      comment.id,
+      new Date(yesterdayMs + (index + 1) * 1_000).toISOString(),
+    ])
+  );
   await Promise.all([
-    ...[...dayOld].map((id) => setCreatedAt("comments", id, yesterday)),
+    ...[...backDatedAt].map(([id, at]) => setCreatedAt("comments", id, at)),
     ...events
-      .filter(
-        (event) =>
-          event.type === "issue.created" ||
-          (event.type === "comment.created" && dayOld.has(event.payload.id))
-      )
+      .filter((event) => event.type === "issue.created")
       .map((event) => setEventCreatedAt(event.id, yesterday)),
+    ...events
+      .filter((event) => event.type === "comment.created" && backDatedAt.has(event.payload.id))
+      .map((event) => setEventCreatedAt(event.id, backDatedAt.get(event.payload.id) ?? yesterday)),
   ]);
   // Far beyond the issue's head, so nothing is unread and the history draws no line yet.
   await putIssueState(issue.key, { last_read_seq: 10_000 }, { login: "alice" });
