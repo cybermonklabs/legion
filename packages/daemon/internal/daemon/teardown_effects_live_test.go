@@ -1300,10 +1300,12 @@ func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffe
 // (applyPush); a GitHub change is the trace's own `change`, or the one gh-standin keeps of the
 // request the action records (teardownEffectsTraceChange), its commits mapped and what it leaves to
 // the state filled from the replay's own (teardownEffectsScratch.resolve), made by the rule a run's
-// change is made by (teardownEffectsScratch.change); a Dispatch write is made by the role's session
-// as the run replay makes one (teardownEffectsTraceWrite, applyDispatch), but a request-approval,
-// which the role's session makes through the real dispatch CLI as a refused write
-// (requestApproval). It answers that write's refusal, and nil for every change it made.
+// change is made by (teardownEffectsScratch.change); a review's Legion footer names the replay's
+// session and commit (teardownEffectsReviewFooter), since every action of a trace is its role's own;
+// a Dispatch write is made by the role's session as the run replay makes one
+// (teardownEffectsTraceWrite, applyDispatch), but a request-approval, which the role's session makes
+// through the real dispatch CLI as a refused write (requestApproval). It answers that write's
+// refusal, and nil for every change it made.
 func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) (*teardownEffectsRefusal, error) {
 	r.clock.advance(a.At)
 	switch a.Kind {
@@ -1327,6 +1329,9 @@ func (r *teardownEffectsRun) applyTraceAction(a teardownEffectsTraceAction) (*te
 		}
 		p := *change
 		p.SHA, p.Commit = r.sha(p.SHA), r.sha(p.Commit)
+		if p.Action == "review" {
+			p.Body = teardownEffectsReviewFooter(p.Body, func(string) bool { return true }, r.session, r.sha)
+		}
 		g := r.github
 		g.mu.Lock()
 		defer g.mu.Unlock()
@@ -1511,7 +1516,7 @@ func (r *teardownEffectsRun) applyChange(c teardownEffectsChange, own, runDir st
 	case c.push != nil:
 		return r.applyPush(*c.push, runDir)
 	case c.pull != nil:
-		return r.applyGitHub(*c.pull)
+		return r.applyGitHub(*c.pull, own)
 	case c.event != nil:
 		return r.applyDispatch(*c.event, own, readback)
 	case c.workspace != "":
@@ -1617,8 +1622,13 @@ func (r *teardownEffectsRun) applyPush(p teardownEffectsPush, runDir string) err
 // applyGitHub makes a GitHub change again from the change gh-standin kept of the call (calls.jsonl's
 // `pull`), and from nothing else of it, by the rule each change has (teardownEffectsScratch.change):
 // a pull request it opened must stand at the head the replay's remote holds on its branch, and a
-// change the scratch GitHub cannot hold is refused by name.
-func (r *teardownEffectsRun) applyGitHub(p teardownEffectsPullMutation) error {
+// change the scratch GitHub cannot hold is refused by name. A review whose Legion footer names the
+// run's own session (own) names the replay's pane's in its place (teardownEffectsReviewFooter), as
+// applyDispatch writes that session's records; the run's commits are the replay's already.
+func (r *teardownEffectsRun) applyGitHub(p teardownEffectsPullMutation, own string) error {
+	if p.Action == "review" {
+		p.Body = teardownEffectsReviewFooter(p.Body, func(named string) bool { return named == own }, r.session, func(commit string) string { return commit })
+	}
 	g := r.github
 	g.mu.Lock()
 	defer g.mu.Unlock()

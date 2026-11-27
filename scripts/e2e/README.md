@@ -5313,7 +5313,12 @@ A Dispatch write of another actor than the role takes its place from `outcome.js
 
 - `edit`: the body of each pull request that `numbers` names, and the title and the base that the edit sets;
 
-- `review`: the review, by `legion-review[bot]`;
+- `review`: the review, by `legion-review[bot]`.
+  The daemon reads the last Legion footer of the review's body, and takes the review as the reviewer's own only where that footer names the reviewer claim's session.
+  The replay's role runs as its own claim's session, so the replay puts that session in place of the role's own in that footer: always in a trace, whose every action is the role's, and in a run only where the footer names the run's session.
+  A footer that names another session stays as it is.
+  The footer of a trace also names the replay's commit in place of the head it names, as the trace's commits are mapped.
+  Every other byte of the body stays as the role wrote it;
 
 - `merge`: the pull request is merged, and the head of its base on the remote is its merge commit;
 

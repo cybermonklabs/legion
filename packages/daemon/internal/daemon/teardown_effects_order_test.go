@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/intake"
 )
 
 // Lane D's replay order (plan T4, lane D step 1): the run starts from the case's starting state, and
@@ -808,6 +810,79 @@ func teardownEffectsGitHubAction(row teardownEffectsGitHubRow) (string, error) {
 
 // teardownEffectsReviewer is the author gh-standin.ts gives each review it adds.
 const teardownEffectsReviewer = "legion-review[bot]"
+
+// teardownEffectsFooterMarker opens the Legion footer that a role ends a pull request review's body
+// with (intake's legionFooterMarker).
+const teardownEffectsFooterMarker = "<!-- legion:"
+
+// teardownEffectsReviewFooter is body, the body of a review the role submitted, as the replay
+// submits it. The daemon reads one Legion footer of a review, the last: the JSON object between the
+// last `<!-- legion:` and the first `-->` after it, decoded into the fields it reads (intake's
+// lastLegionFooter). The review decides the round only where that footer's session is the reviewer
+// claim's (workflow's byReviewer) and its head is the pull request's (refusesRound). The role wrote
+// the session it ran as, and the replay's role runs as another session, its own claim's. So where
+// mine says the footer's session is the role's own, the footer names session in its place, and
+// sha's commit in place of its head. A footer that names another session is left as it is, so a
+// review the role signed as another session is replayed as one; an empty session or head stays
+// empty. Only those two values change: the footer's other keys and spacing, an earlier footer and
+// the rest of the body keep every byte the role wrote. So does a body the daemon reads no footer
+// from: one with no footer, with no `-->` after the last one, or with JSON the daemon cannot decode.
+func teardownEffectsReviewFooter(body string, mine func(session string) bool, session string, sha func(commit string) string) string {
+	at := strings.LastIndex(body, teardownEffectsFooterMarker)
+	if at < 0 {
+		return body
+	}
+	from := at + len(teardownEffectsFooterMarker)
+	end := strings.Index(body[from:], "-->")
+	if end < 0 {
+		return body
+	}
+	object := body[from : from+end]
+	var read struct {
+		Session string `json:"session"`
+		Head    string `json:"head"`
+	}
+	if json.Unmarshal([]byte(object), &read) != nil || !mine(read.Session) {
+		return body
+	}
+	type rename struct{ from, to string }
+	renames := map[string]rename{"session": {read.Session, session}, "head": {read.Head, sha(read.Head)}}
+	// encoding/json sets a field from each member in turn whose name is the field's, case folded,
+	// and a null sets nothing, so the value the daemon read is the last such member that holds a
+	// string.
+	type value struct {
+		start, stop int
+		to          string
+	}
+	last := map[string]value{}
+	members := json.NewDecoder(strings.NewReader(object))
+	if open, err := members.Token(); err != nil || open != json.Delim('{') {
+		return body
+	}
+	for members.More() {
+		name, err := members.Token()
+		var raw json.RawMessage
+		if err == nil {
+			err = members.Decode(&raw)
+		}
+		if err != nil {
+			return body
+		}
+		key, _ := name.(string)
+		stop := int(members.InputOffset())
+		for field, r := range renames {
+			if strings.EqualFold(key, field) && raw[0] == '"' && r.from != "" && r.to != r.from {
+				last[field] = value{start: stop - len(raw), stop: stop, to: r.to}
+			}
+		}
+	}
+	// The later value is written first, so the earlier one's place in object stays where it was.
+	for _, v := range slices.SortedFunc(maps.Values(last), func(a, b value) int { return b.start - a.start }) {
+		quoted, _ := json.Marshal(v.to)
+		object = object[:v.start] + string(quoted) + object[v.stop:]
+	}
+	return body[:from] + object + body[from+end:]
+}
 
 // teardownEffectsScratch is the replay's scratch GitHub as a pull request change reads and makes it:
 // its pull requests by number, the issue's branch (`legion/<issue>`), the repository's default
@@ -2094,5 +2169,79 @@ func TestTeardownEffectsTraceChange(t *testing.T) {
 	}
 	if _, err := s.resolve(*merge, at); err == nil || !strings.Contains(err.Error(), `no pull requests found for branch "legion/ACME-12"`) {
 		t.Fatalf("resolved a merge of the issue branch's pull request where it has none, with error %v", err)
+	}
+}
+
+// A review the role submitted ends with its Legion footer. Before the review may decide the round,
+// the daemon holds the footer's session to the reviewer claim's (workflow's byReviewer) and its head
+// to the pull request's (refusesRound). The replay's role runs as its own claim's session, so the
+// replay submits the review with its last footer, the one the daemon reads, naming that session. A
+// trace's footer always names it, since every action of a trace is its role's. A run's names it
+// where the footer named the run's own session, and a footer naming another session is replayed as
+// it is. A trace's head names the replay's commit, as the trace's commits do. Every other byte is
+// the role's: the footer's other keys and spacing, an earlier footer, and a body that the daemon
+// reads no footer from. The first body is rev-double-write's known-good review, as the locked cases
+// hold it.
+func TestTeardownEffectsReviewFooterNamesTheReplaysSession(t *testing.T) {
+	t.Parallel()
+	const (
+		replay = "01b7c2d4-5e6f-4a8b-9c0d-1e2f3a4b5c6d"
+		run    = "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
+		head   = "17ce09f6fa69fce39aaf7b56e7c81d2abe3ef0dd"
+		mapped = "567aff47ddca30e9e9847574796288439ef204e3"
+		said   = "I read the change at the head: t1 is delivered as its block asks, and check k1 passes at the head.\n\nFast-follow: none\n\n"
+		locked = said + `<!-- legion: {"session":"ses-acme-53-reviewer","phase":"review","head":"17ce09f6fa69fce39aaf7b56e7c81d2abe3ef0dd","entry":"1"} -->`
+	)
+	footer := func(session, head string) string {
+		return `<!-- legion: {"session":"` + session + `","phase":"review","head":"` + head + `","entry":"1"} -->`
+	}
+	trace := func(string) bool { return true }
+	ownRun := func(named string) bool { return named == run }
+	same := func(commit string) string { return commit }
+	sha := func(commit string) string {
+		if commit == head {
+			return mapped
+		}
+		return commit
+	}
+	spaced := func(session string) string {
+		return said + "<!-- legion:{ \"phase\" : \"review\",\n \"session\" :\t\"" + session + "\" , \"head\":\"" + head + "\"}-->"
+	}
+	twice := func(session string) string {
+		return said + `<!-- legion: {"session":"ses-controller","Session":"` + session + `","head":"` + head + `"} -->`
+	}
+	quoted := footer("ses-acme-53-reviewer", head) + "\n\nedit: read again at the head.\n\n"
+	for _, row := range []struct {
+		name, body string
+		mine       func(string) bool
+		sha        func(string) string
+		want       string
+		// session and head are what the daemon reads from the body the replay submits.
+		session, head string
+	}{
+		{"a trace's review, rev-double-write's", locked, trace, same, said + footer(replay, head), replay, head},
+		{"a trace's review of a commit the replay gave another id", locked, trace, sha, said + footer(replay, mapped), replay, mapped},
+		{"a footer quoted above the last", quoted + footer("ses-acme-53-reviewer", head), trace, same, quoted + footer(replay, head), replay, head},
+		{"no footer", said, trace, sha, said, "", ""},
+		{"a footer that no --> closes", said + `<!-- legion: {"session":"ses-acme-53-reviewer","head":"` + head + `"}`, trace, sha, said + `<!-- legion: {"session":"ses-acme-53-reviewer","head":"` + head + `"}`, "", ""},
+		{"a footer whose JSON does not decode", said + `<!-- legion: {"session":"ses-acme-53-reviewer",} -->`, trace, sha, said + `<!-- legion: {"session":"ses-acme-53-reviewer",} -->`, "", ""},
+		{"a trace's footer that names no session", said + `<!-- legion: {"session":"","phase":"review"} -->`, trace, same, said + `<!-- legion: {"session":"","phase":"review"} -->`, "", ""},
+		{"a run's review in the run's own session", said + footer(run, head), ownRun, same, said + footer(replay, head), replay, head},
+		{"a run's review naming another session", said + footer("ses-controller", head), ownRun, same, said + footer("ses-controller", head), "ses-controller", head},
+		{"a run's review whose last footer names another session", footer(run, head) + "\n\n" + footer("ses-controller", head), ownRun, same, footer(run, head) + "\n\n" + footer("ses-controller", head), "ses-controller", head},
+		{"a footer spaced and ordered its own way", spaced(run), ownRun, same, spaced(replay), replay, head},
+		{"a session named twice, the last one read", twice(run), ownRun, same, twice(replay), replay, head},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			got := teardownEffectsReviewFooter(row.body, row.mine, replay, row.sha)
+			if got != row.want {
+				t.Fatalf("the replay submits\n%q\nwant\n%q", got, row.want)
+			}
+			read := intake.PullRequestReview{Body: got}
+			if read.LegionSession() != row.session || read.LegionHead() != row.head {
+				t.Fatalf("the daemon reads the session %q and the head %q, want %q and %q", read.LegionSession(), read.LegionHead(), row.session, row.head)
+			}
+		})
 	}
 }
