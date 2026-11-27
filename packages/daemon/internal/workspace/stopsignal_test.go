@@ -82,14 +82,14 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
 		readyAt := filepath.Join(dir, "ready-at")
 		budget := time.Second
-		ctx := budgetPassedOnceExists(t, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
 		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
 		// CONTROL (never merged): the machine holds the command on CPU 0's run queue, at nice 19
-		// behind 16 busy loops, until it reports that it is running.
-		holdOnCPU0(t, 16, ready)
+		// behind 16 busy loops, until it reports that it is running. The budget passes once the
+		// hold is over, every busy loop reaped, so the stop this row bounds is not held by them.
+		ctx := budgetPassedOnceExists(t, holdOnCPU0(t, 16, ready))
 		call := calling(t)
 		started := time.Now()
 		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"nice", "-n", "19", "taskset", "-c", "0", "sh", "-c", script, "sh", lock, ready, mark, readyAt})
