@@ -10955,13 +10955,14 @@ each issue's pod (every role of it alike) and the image probe's.
   The probe reads the ConfigMap as it is at boot, and a pod reads it when it starts;
   a file mounted by `sub_path` is never refreshed in a running pod, so a changed file reaches a role once its pod is replaced.
 
-- **Rolling it out:** a pod created before the operator added the overlay's volume and mount (or moved or dropped a mount around it, or changed that volume's ConfigMap, Secret or `items`) cannot run a role whose `PI_CONFIG_FILES` names the file, so the whole pod is replaced, as for a change of the secrets broker's enrollment.
+- **Rolling it out:** a pod created before the operator added the overlay's volume and mount (or moved or dropped a mount around it, or changed that volume's ConfigMap, Secret or `items`) cannot run a role whose `PI_CONFIG_FILES` names the file, so the whole pod must be replaced, as for a change of the secrets broker's enrollment.
   For an issue pod this is drift, not a moved address (`driftedInPod`, `internal/runtime/sandbox/addresses.go`): the boot's re-adoption reports no role of the pod stale, and every role in it runs on, whether or not `role_config_files` names it.
-  The sweep reads the drift (`PodDrift`, `drift.go`), its detail `role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name> items [...]`, and opens an update round on the pod, which asks the issue's roles to push their work and replaces the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened.
-  The replacement takes the pod's disk with whatever its roles did not push ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), and a turn, a subagent or a background job still running at the bound ends with the pod.
-  Until the round replaces it, a launch into the pod keeps it and starts the role with the overlays the pod holds (`heldRoleOverlays`), and a launch after the round is over makes the round's replacement.
+  The sweep reads the drift (`PodDrift`, `drift.go`), its detail `role_config_files.<role> <file> (unset), now volume <name> from ConfigMap <name> items [...]`, and opens an update round on the pod, which asks the issue's roles to push their work and ends once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened.
+  The round replaces the pod only over a clean read of the issue's workspace: where the read finds work that no branch or tag on origin holds, or fails, the round keeps the pod and ends with no replacement, since the roles can keep working under this drift (`roundKeeps`, `internal/daemon/podkeep.go`; [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  Where the round replaces the pod at its bound, a turn, a subagent or a background job still running then ends with the pod ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+  Until a round replaces it, a launch into the pod keeps it and starts the role with the overlays the pod holds (`heldRoleOverlays`), and a launch after the round is over makes the round's replacement over the same read of the workspace (`roundPodEndsAtLaunch`).
   The controller's pod, which no round covers (`roundCovers`), holds a moved mount of one of its own `role_config_files` as a moved address instead (`movedInPod`): the boot's re-adoption reports the controller `StaleAddress`, and its relaunch replaces the pod ([A pod whose address moved](#a-pod-whose-address-moved)).
-  So add the mount and the key when every role of an affected issue can push and answer its round before the round's bound.
+  So add the mount and the key when every role of an affected issue can push and answer its round before the round's bound, since a pod its round keeps runs its roles without the file.
   **Who can read the files:** only loading is per role.
   Every role of a pod mounts every operator volume, so each role can read every role's overlay file;
   never put a secret in one (a credential travels in `provider_keys` or a mounted Secret the operator means every role to hold).
@@ -11019,13 +11020,13 @@ each issue's pod (every role of it alike) and the image probe's.
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.memory.config_files`), the image probe's per-role value (they are passed for every workflow role and never for the controller, and a file the probe cannot read refuses the boot), the pod drift, and what a kept pod's role is told.
 
 - **Turning it on:** a pod created before the operator added the memory overlay's volume and mount is handled as it is for an overlay of `role_config_files` ("Rolling it out" above), with two differences.
-  The drift is reported `memory.config_files <file>`, and it replaces every issue pod of the deployment rather than the memory-group trees' pods alone, since any tree may be drawn into the group;
+  The drift is reported `memory.config_files <file>`, and it opens an update round on every issue pod of the deployment rather than the memory-group trees' pods alone, since any tree may be drawn into the group;
   the file itself does not replace the controller's pod, since the controller names these files in no list.
   A `pod.volumes` or `pod.volume_mounts` entry that the operator adds or changes, for that file or for any other reason, is part of the shape of every pod, the controller's pod too (`podShape`, `internal/runtime/sandbox/drift.go`).
   No update round covers the controller's pod (`roundCovers`), so under `controller: daemon` the controller's next launch that installs nothing replaces that pod.
   A daemon boot keeps the pod, and a launch that installs a stale-plugin pair keeps it unless its image moved ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
   An entry that moves the mount of a file the controller's own `role_config_files` names is the exception: the boot's re-adoption reports that pod stale and its relaunch replaces it, as any launch into it does (`movedInPod`, `internal/runtime/sandbox/addresses.go`).
-  A role of a memory-group tree started into a pod the launch keeps is told only the memory overlays that pod holds, as it is told only the role's own files that it holds, so it starts, pushes its work, lets its subagents and background jobs finish or stops them, pushes what they made and answers the update round that replaces the pod.
+  A role of a memory-group tree started into a pod the launch keeps is told only the memory overlays that pod holds, as it is told only the role's own files that it holds, so it starts, pushes its work, lets its subagents and background jobs finish or stops them, pushes what they made and answers the update round over the pod.
 
 - **What is refused, and where the group shows.**
   The loader refuses a `mode` that is no word of the three, a mode other than `off` that names no `config_files`, a block that names `config_files` while `worker_backends` puts an issue role on Claude Code (which reads no `PI_CONFIG_FILES`) whatever the mode, and an overlay under no `pod.volume_mounts` mount, also whatever the mode;
@@ -11114,7 +11115,7 @@ each issue's pod (every role of it alike) and the image probe's.
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files`), the image probe's per-role value, the pod drift, and what a kept pod's role is told.
 
 - **The pod-replacement cost of a newly declared overlay file.**
-  An overlay file causes pod drift, so the day a project declares an experiment whose arm names `config_files`, every live issue pod of the deployment has drifted and is replaced.
+  An overlay file causes pod drift, so the day a project declares an experiment whose arm names `config_files`, every live issue pod of the deployment has drifted, and an update round opens over each.
   Nothing can avoid it:
   a pod's volumes and mounts are fixed when the pod is created, and a role cannot read a file its pod does not mount.
   It is every issue pod, and not the drawn units' pods alone, because any unit may be drawn into any arm;
@@ -11124,11 +11125,13 @@ each issue's pod (every role of it alike) and the image probe's.
   A daemon boot keeps the pod, and a launch that installs a stale-plugin pair keeps it unless its image moved ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
   An entry that moves the mount of a file the controller's own `role_config_files` names is the exception: the boot's re-adoption reports that pod stale and its relaunch replaces it, as any launch into it does (`movedInPod`, `internal/runtime/sandbox/addresses.go`).
   The drift is reported `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files <file>`, naming the key the operator wrote, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
-  the daemon opens an update round on each drifted pod, which asks the issue's roles, each on its own Envoy topic, to push their work, let their subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and replaces the pod once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered, so a turn, a subagent or a background job still running at the bound ends with the pod.
+  the daemon opens an update round on each drifted pod, which asks the issue's roles, each on its own Envoy topic, to push their work, let their subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`, and ends once every role it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered.
+  The round replaces the pod only over a clean read of the issue's workspace: where the read finds work that no branch or tag on origin holds, or fails, it keeps the pod and ends with no replacement (`roundKeeps`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), and the pod's roles run on without the arm's file.
+  Where the round replaces the pod at its bound, a turn, a subagent or a background job still running then ends with the pod.
   Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-  The boot's re-adoption reports no role of a drifted issue pod stale for the file, so each role runs on in its pod until the round replaces the pod.
+  The boot's re-adoption reports no role of a drifted issue pod stale for the file, so each role runs on in its pod until a round replaces the pod.
   So turn an experiment on knowing the cost:
-  every live issue pod is replaced once, and a turn, a subagent or a background job still running at its round's bound is lost.
+  every live issue pod opens an update round, which replaces each pod whose workspace reads clean, and a turn, a subagent or a background job still running when that round replaces its pod at the bound is lost.
   An arm that names no file costs nothing, since nothing new is mounted for it — which is a second reason the control arm names none.
 
 - **The kept-pod degrade: a unit in neither arm.**
