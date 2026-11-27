@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
 
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -33,7 +34,7 @@ func stubRoom(t *testing.T, act func(*gws.Conn)) string {
 		}
 		act(connection)
 	}))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	return "ws" + strings.TrimPrefix(server.URL, "http")
 }
 
