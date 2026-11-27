@@ -9,9 +9,9 @@ body: |-
   call, it is made only while `Bounds.Time` is left, its cache marks fall where the cut call's
   did, and `Check` reads its reply. The cut call stays in `Result.Steps`, marked `Dropped` so a
   caller that writes the steps back into a conversation leaves it out, and its usage stays in
-  `Result.Usage`. A second cut, or one with no model call or no time left, ends the run with
-  `FaultLength` as before. A zero `CallAgainWhenCut` sends exactly what a run sent before the
-  field existed.
+  `Result.Usage`. A cut past `CallAgainWhenCut`, or one with no model call or no time left, ends
+  the run with `FaultLength` as before. A zero `CallAgainWhenCut` sends exactly what a run sent
+  before the field existed.
 time: 2026-11-19T06:22:01.000000000Z
 custom:
     Issue: pr2230

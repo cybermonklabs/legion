@@ -251,10 +251,10 @@
 // into a conversation leaves it out, and its usage stays in Result.Usage. A cut past
 // CallAgainWhenCut, or a cut with no model call or no time left, ends the run with
 // FaultLength. A prompt past the model's context window, which Anthropic also ends as length,
-// is the same prompt on the call again, so that run ends with FaultLength one call later. A
-// request with a zero CallAgainWhenCut sends exactly what it sent before the field existed. A
-// reply out of form on a call that carried no schema is dropped the same way, and is no cut
-// CallAgainWhenCut counts ("The structured reply").
+// is the same prompt on each call again, so that run ends with FaultLength once its calls again
+// are spent. A request with a zero CallAgainWhenCut sends exactly what it sent before the field
+// existed. A reply out of form on a call that carried no schema is dropped the same way, and is
+// no cut CallAgainWhenCut counts ("The structured reply").
 //
 // # Bounds
 //
