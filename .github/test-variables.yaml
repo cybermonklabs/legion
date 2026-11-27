@@ -22,9 +22,10 @@
 #                 the tool line, `legion: tool - …`: a tool reads what the person running it hands
 #                 it, and no job runs it.
 #   opt-out       a person's opt-out on a machine that lacks what the test needs, a variable
-#                 whose gate skips where it is set. The search does not read which way the gate
-#                 skips; it checks that some job ci-ok needs runs the test, and that none of them
-#                 sets the variable in the step that runs it.
+#                 whose gate skips where it is set, or a person's dial that narrows or widens what
+#                 a test covers, which the jobs run at its default. The search does not read which
+#                 way the gate skips; it checks that some job ci-ok needs runs the test, and that
+#                 none of them sets the variable in the step that runs it.
 #
 # A gate in a tool holds under any row, since the tool reads what its runner hands it, and so does
 # a gate that never skips on GitHub Actions (it fails there, or its condition cannot hold there);
@@ -62,6 +63,9 @@ variables:
     class: set
     jobs: [dispatch-two-builds]
     why: The older build the twobuild suite runs beside this tree's, which dispatch-two-builds builds.
+  DISPATCH_READ_DRIVE_ROWS:
+    class: opt-out
+    why: A person sets it to run some rows of the API's read drive and not all of them; no job sets it, and envoy-go-race-api runs every row.
   DISPATCH_TEST_DATABASE_URL:
     class: set
     jobs: [dispatch-memory, dispatch-multiprocess, dispatch-two-builds, envoy-go, envoy-go-claim-model, envoy-go-race, envoy-go-race-api, envoy-go-race-docs]
@@ -91,6 +95,12 @@ variables:
     class: selector
     jobs: [envoy-session-stall]
     why: Selects the envoy-client tests that build and start natsd and the listener, which envoy-session-stall runs.
+  LEGION_READ_RULE_SEED:
+    class: opt-out
+    why: A person sets it to run the read rule's model on one seed in place of its default rows; no job sets it, and envoy-go runs the default rows.
+  LEGION_READ_RULE_SEEDS:
+    class: opt-out
+    why: A person sets it to run the read rule's model on a range of seeds in place of its default rows; no job sets it, and envoy-go runs the default rows.
   LEGION_TEST_CLAUDE:
     class: set
     jobs: [claude-envoy]
@@ -113,3 +123,6 @@ variables:
   PLAYWRIGHT_BASE_URL:
     class: opt-out
     why: A run against a deployed https Dispatch sets it, and the plain-HTTP rows skip there; no job sets it, and dispatch-browser runs those rows.
+  SPEC_CHECK_PRINT_SEEDS:
+    class: opt-out
+    why: A person sets it to run the spec printer's invariant on more seeds than its default 460; no job sets it, and envoy-go-build runs the default.
