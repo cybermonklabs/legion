@@ -4328,7 +4328,12 @@ test("the last priority removed while the read of the priorities is out says why
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
   getIssue.mockResolvedValue(advancingEvals(4));
   const removed: IssueDetails = { ...advancesOnly, advances_revision: 5 };
-  patchIssue.mockImplementationOnce(async (_key, input) => patchAnswer(removed, input));
+  // The removal's answer, held until the row gives it, so the hold it starts runs in `act`.
+  const answered = Promise.withResolvers<void>();
+  patchIssue.mockImplementationOnce(async (_key, input) => {
+    await answered.promise;
+    return patchAnswer(removed, input);
+  });
   const reread = Promise.withResolvers<Priorities>();
   const why = `${ANSWER_LINES.priorities_unreadable} Dispatch did not answer within 30 seconds.`;
   const view = renderDetails();
@@ -4345,6 +4350,7 @@ test("the last priority removed while the read of the priorities is out says why
     jest.useFakeTimers();
     await userOnFakeClock().keyboard("{Escape}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await act(async () => answered.resolve());
     await waitFor(() =>
       expect(
         screen.queryByText(PROPERTY_LABELS.advances, {

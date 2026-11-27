@@ -5,7 +5,8 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { holdNotifications } from "../../__tests__/commits";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { heldAnswers } from "../../__tests__/held-answers";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -616,6 +617,52 @@ test("inside NoTooltips, a landed write whose reads have not answered by the req
     view.unmountAll();
     view.queryClient.clear();
     stopFocusFixup();
+    realClock();
+  }
+});
+
+// Inside `NoTooltips` the request deadline ends the line's hold and draws why in one change of
+// the hold's store, and the write, which `onSettled` keeps pending through that hold, stops
+// pending as it ends. The trigger lets go in that same task, so an Enter pressed once the line
+// says why opens the picker (the tester's row of `issue-page-h.e2e.ts`). A browser tells
+// TanStack's observers of the write's end a timer later (`holdNotifications`), so the row holds
+// those notifications back. The reads start as the write lands, before the clock moves, so one
+// jump of the deadline lands on the bound's own timer, and only microtasks run after it.
+test("inside NoTooltips, the picker's trigger is let go in the task the line says why at the request deadline, and Enter there opens the picker", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], false, body, { page: true });
+  const answer = Promise.withResolvers<never>();
+  view.patchIssue.mockImplementation(() => answer.promise);
+  const reread = Promise.withResolvers<Priorities>();
+  const name = "Edit priorities";
+  const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
+  try {
+    const trigger = view.trigger() as HTMLButtonElement;
+    await closeAndHold(view, name);
+    view.listPriorities.mockImplementation(() => reread.promise);
+    await act(async () => answer.resolve({} as never));
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
+    expect(heldNotDisabled(trigger, name)).toBe(true);
+
+    const notifications = holdNotifications();
+    try {
+      await act(async () => {
+        jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+        await settle();
+      });
+      expect(view.q.getByRole("alert").textContent).toBe(why);
+      expect(heldNotDisabled(trigger, name), "the line said why while its trigger was held").toBe(
+        false
+      );
+      await userOnFakeClock().keyboard("{Enter}");
+      expect(screen.queryByRole("listbox", { name: "Priorities options" })).not.toBeNull();
+    } finally {
+      notifications.tell();
+    }
+  } finally {
+    reread.resolve(body);
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
     realClock();
   }
 });

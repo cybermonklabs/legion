@@ -14,8 +14,9 @@ import { firstUsable } from "./usable-control";
 type AdvancesSave = KeyedPress<Pick<UpdateIssueInput, "advances" | "advances_revision">>;
 
 /** The set of priorities `press` sent, where it is a priority line's write (`AdvancesSave`), else
- *  `undefined`. That write carries no mutation key, so it is told from every other write by the
- *  revision only it sends. */
+ *  `undefined`. That write is told from every other write by the revision only it sends, whichever
+ *  issue's line made it: its key (`["issue-advances", <KEY>]`) is the line's own, for its held
+ *  state (`usePriorityLineWrite`). */
 function advancesSent(press: unknown): readonly string[] | undefined {
   const save = press as Partial<AdvancesSave> | undefined;
   return typeof save?.variables?.advances_revision === "number"

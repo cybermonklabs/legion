@@ -26,7 +26,12 @@ import {
 import { useDetailsRefusal } from "../issue/HeaderDetails";
 import { propertyControl } from "../issue/property-control";
 import { stoppedWriteNote } from "../writes/keyed-write";
-import { endedStopped, type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  endedStopped,
+  type KeyedWriteResult,
+  useKeyedWrite,
+  usePendingKeyedPress,
+} from "../writes/useKeyedWrite";
 import { PriorityChip } from "./PriorityChip";
 import { priorityName } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
@@ -111,6 +116,12 @@ export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
   // the line says is not read, as the issue's line whose write made it (`useListReadBound`): a
   // line drawn again while it is on finds it, and no other issue's line says why for it.
   const [unsettledOf, holdThrough, holdingOf] = useListReadBound(prioritiesQuery().queryKey);
+  // The line's press, read from TanStack's mutation cache, which tells its listeners at once
+  // (`usePendingKeyedPress`). The observer `useMutation` reads is told a timer later, a task after
+  // the bound that ends the write's hold has drawn why the reads have not settled, so a trigger
+  // held by that observer would refuse a key pressed once the line says why.
+  const mutationKey = ["issue-advances", issueKey];
+  const writeOut = usePendingKeyedPress(mutationKey);
   const write = useKeyedWrite({
     // The line says why a write was refused, beside its trigger.
     inline: true,
@@ -118,6 +129,7 @@ export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
     // One write to the issue, in press order with every other (`issue:<KEY>`).
     target: () => `issue:${issueKey}`,
     readsLate: true,
+    mutationKey,
     // The set and the revision of the read it was drawn from, both taken when the picker
     // opened: a retry sends the same pair, never a revision read after the set was chosen.
     request: (input: AdvancesWrite) => issuePatchRequest(issueKey, input),
@@ -153,9 +165,10 @@ export function usePriorityLineWrite(issueKey: string): PriorityLineWrite {
   });
   // Held while a write is out within its deadline: the trigger keeps the focus and sends nothing
   // more until the write lands (`MultiSelect`'s `ariaDisabled`). Past the deadline (`late`) it is
-  // let go. A line drawn again while the write's hold is on holds by that hold.
+  // let go. A line drawn again while the write or its hold is out holds by it, by the write's key
+  // (`mutationKey`) and by the hold's row (`holdingOf`).
   return {
-    held: (write.isPending && !write.late) || holdingOf(issueKey),
+    held: (writeOut.isPending && !writeOut.late) || holdingOf(issueKey),
     unsettled: unsettledOf(issueKey),
     write,
   };

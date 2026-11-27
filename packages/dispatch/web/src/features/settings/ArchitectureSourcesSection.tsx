@@ -34,6 +34,7 @@ import {
   refusedNote,
   stoppedNote,
   useKeyedWrite,
+  usePendingKeyedPress,
   useRefusalOfSubject,
 } from "../writes/useKeyedWrite";
 import {
@@ -102,7 +103,15 @@ export function ArchitectureSourcesSection(): ReactNode {
       setBranch("main");
     },
   });
+  // The removal goes under a name of its own, and the section reads its press from TanStack's
+  // mutation cache, which tells its listeners at once (`usePendingKeyedPress`). The observer
+  // `useMutation` reads is told a timer later, a task after the bound that ends the removal's
+  // hold has drawn why the list is not read, so a Delete held by that observer would refuse a
+  // press made once the line says why.
+  const deleteKey = ["architecture-source-remove"];
+  const deleteOut = usePendingKeyedPress(deleteKey);
   const deleteSource = useKeyedWrite({
+    mutationKey: deleteKey,
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
     // A removal made again after one that landed finds no source (`404 SOURCE_NOT_FOUND`), which
     // is the removal done (`removedEvenIfGone`).
@@ -132,7 +141,7 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   // The form and row actions are held only until the deadline of the write holding them.
   const saveHeld = saveSource.isPending && !saveSource.late;
-  const deleteHeld = deleteSource.isPending && !deleteSource.late;
+  const deleteHeld = deleteOut.isPending && !deleteOut.late;
   const refreshHeld = refreshSource.isPending && !refreshSource.late;
   const formHeld = saveHeld || deleteHeld;
   useLayoutEffect(() => {

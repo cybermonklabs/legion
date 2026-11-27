@@ -4,7 +4,8 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { holdNotifications } from "../../__tests__/commits";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldAnswers } from "../../__tests__/held-answers";
 import { pressHeld } from "../../__tests__/held-press";
@@ -701,6 +702,61 @@ test("the line a save's read the bound ended draws goes as the next save lands, 
     expect(save).not.toHaveAttribute("aria-disabled");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
+    cleanup();
+    queryClient.clear();
+    realClock();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// The request deadline ends a save's hold and draws the line under the form in one change of the
+// hold's store, and the save, which `onSuccess` keeps pending through that hold, stops pending as
+// it ends. Save lets go in that same task, so a press of it once the form says why saves again. A
+// browser tells TanStack's observers of the save's end a timer later (`holdNotifications`), so
+// the row holds those notifications back. The record's read starts as the save lands, before the
+// clock moves, so one jump of the deadline lands on the bound's own timer, and only microtasks run
+// after it.
+test("Save is let go in the task the form says why at the request deadline, and a press there saves again", async () => {
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  // Each save's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: saves, next } = heldAnswers<DeliverySettings>();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockImplementation(next);
+  const queryClient = renderForm({
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  const stored = { ...record, updated_at: "2026-10-08T09:00:00Z" };
+  const reread = Promise.withResolvers<DeliverySettings>();
+  try {
+    await screen.findByDisplayValue("acme/widgets");
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    getDeliverySettings.mockReturnValueOnce(reread.promise);
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(save);
+    await tick(0);
+    await act(async () => saves[0]?.(stored));
+    expect(getDeliverySettings).toHaveBeenCalledTimes(2);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+
+    const notifications = holdNotifications();
+    try {
+      await act(async () => {
+        jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+        await settle();
+      });
+      expect(screen.getByRole("alert").textContent).toBe(
+        "Couldn't load the delivery settings. Dispatch did not answer within 30 seconds."
+      );
+      expect(save, "the form said why while Save was held").not.toHaveAttribute("aria-disabled");
+      await user.click(save);
+    } finally {
+      notifications.tell();
+    }
+    await tick(0);
+    expect(putDeliverySettings).toHaveBeenCalledTimes(2);
+  } finally {
+    reread.resolve(stored);
     cleanup();
     queryClient.clear();
     realClock();

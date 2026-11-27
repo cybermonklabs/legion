@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { holdNotifications } from "../../__tests__/commits";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldAnswers } from "../../__tests__/held-answers";
 import { pressHeld } from "../../__tests__/held-press";
@@ -623,6 +624,71 @@ test("the line a removal's list read the bound ended draws goes as the next Dele
     expect(section.queryByRole("button", { name })).toBeNull();
     expect(section.queryByText(note)).toBeNull();
   } finally {
+    cleanup();
+    queryClient.clear();
+    realClock();
+    deleteArchitectureSource.mockRestore();
+    listProjects.mockRestore();
+    listArchitectureSources.mockRestore();
+  }
+});
+
+// The request deadline ends a removal's hold and draws the line under the table in one change of
+// the hold's store, and the removal, which `onSuccess` keeps pending through that hold, stops
+// pending as it ends. Delete lets go in that same task, so a press of it once the line says why
+// sends the next removal. A browser tells TanStack's observers of the removal's end a timer later
+// (`holdNotifications`), so the row holds those notifications back. The list's read starts as
+// the removal lands, before the clock moves, so one jump of the deadline lands on the bound's own
+// timer, and only microtasks run after it.
+test("Delete is let go in the task the line under the table says why at the request deadline, and a press there removes again", async () => {
+  const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  // Each removal's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers: removals, next } = heldAnswers<void>();
+  const deleteArchitectureSource = spyOn(api, "deleteArchitectureSource").mockImplementation(next);
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const reread = Promise.withResolvers<ArchitectureSource[]>();
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArchitectureSourcesSection />
+    </QueryClientProvider>
+  );
+  try {
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    const remove = await section.findByRole("button", {
+      name: "Delete architecture source legion/arch for CORE",
+    });
+    listArchitectureSources.mockReturnValueOnce(reread.promise);
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(remove);
+    await tick(0);
+    await act(async () => removals[0]?.());
+    expect(listArchitectureSources).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+
+    const notifications = holdNotifications();
+    try {
+      await act(async () => {
+        jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+        await settle();
+      });
+      expect(section.getByText(/^Couldn't load architecture sources\./).textContent).toBe(
+        "Couldn't load architecture sources. Dispatch did not answer within 30 seconds."
+      );
+      expect(remove, "the line said why while Delete was held").not.toHaveAttribute(
+        "aria-disabled"
+      );
+      await user.click(remove);
+    } finally {
+      notifications.tell();
+    }
+    await tick(0);
+    expect(deleteArchitectureSource).toHaveBeenCalledTimes(2);
+  } finally {
+    reread.resolve([]);
     cleanup();
     queryClient.clear();
     realClock();

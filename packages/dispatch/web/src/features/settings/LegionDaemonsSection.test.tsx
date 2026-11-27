@@ -4,6 +4,7 @@ import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { holdNotifications } from "../../__tests__/commits";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -429,6 +430,87 @@ test.each(savesAndRemovals)(
       queryClient.clear();
       onlineManager.setOnline(online);
       stopFocusFixup();
+      realClock();
+    }
+  }
+);
+
+// The request deadline ends a write's hold and draws the section's line in one change of the
+// hold's store, and the write, which `onSuccess` keeps pending through that hold, stops pending as
+// it ends. Save and every Remove let go in that same task, so a press made once the section says
+// why is not refused. A browser tells TanStack's observers of the write's end a timer later
+// (`holdNotifications`), so the row holds those notifications back. The project's read starts as
+// the write lands, before the clock moves, so one jump of the deadline lands on the bound's own
+// timer, and only microtasks run after it. A Remove takes its row away at the press, so its hold
+// is read on the other row's Remove.
+test.each(savesAndRemovals)(
+  "$label is let go in the task the section says why at the request deadline",
+  async ({ label, start }) => {
+    const server = legionServer([
+      setting,
+      { ...setting, project: "CORE", state_url: "https://daemon.example" },
+    ]);
+    // The read of ACME the write asks for once it lands, held until the row ends.
+    const reread = Promise.withResolvers<void>();
+    let holding = false;
+    const saved = Promise.withResolvers<LegionSetting>();
+    const removed = Promise.withResolvers<void>();
+    answerDaemonSaves().mockImplementation(() => saved.promise);
+    answerDaemonRemovals().mockImplementation(() => removed.promise);
+    const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const section = await renderSection(
+      {
+        ...server,
+        get: async (project) => {
+          if (holding && project === "ACME") {
+            holding = false;
+            await reread.promise;
+          }
+          return server.get(project);
+        },
+      },
+      true,
+      queryClient
+    );
+    await section.findByRole("cell", { name: "CORE" });
+    // The form is filled on the real clock, so every read the section makes has answered before
+    // the clock is held for the write.
+    if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+    const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+    jest.useFakeTimers();
+    try {
+      const user = userOnFakeClock();
+      await user.click(
+        start === undefined ? pressed : section.getByRole("button", { name: start })
+      );
+      await tick(0);
+      holding = true;
+      await act(async () => {
+        saved.resolve({ ...setting, state_url: "http://127.0.0.1:9731" });
+        removed.resolve();
+      });
+      expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
+        "fetching"
+      );
+      expect(heldNotDisabled(pressed, label)).toBe(true);
+
+      const notifications = holdNotifications();
+      try {
+        await act(async () => {
+          jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+          await settle();
+        });
+        expect(section.getByRole("alert").textContent).toBe(
+          "Couldn't load the Legion daemons. Dispatch did not answer within 30 seconds."
+        );
+        expect(heldNotDisabled(pressed, label), "the section said why while it held").toBe(false);
+      } finally {
+        notifications.tell();
+      }
+    } finally {
+      reread.resolve();
+      cleanup();
+      queryClient.clear();
       realClock();
     }
   }

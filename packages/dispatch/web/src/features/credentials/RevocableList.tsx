@@ -29,7 +29,12 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import {
+  refusedNote,
+  useKeyedWrite,
+  usePendingKeyedPress,
+  useRefusalOfSubject,
+} from "../writes/useKeyedWrite";
 
 /** One column of a `RevocableList`: its header, and what a row shows under it. The first column
  *  names the row. */
@@ -109,6 +114,13 @@ export function RevocableList<Row>({
   // What the list says of a read that failed, and of the read a landed revoke made that has not
   // settled.
   const notLoaded = `Couldn't load ${noun}.`;
+  // The list's revoke goes under a name of its own, the read it revokes a row of, and Revoke reads
+  // its press from TanStack's mutation cache, which tells its listeners at once
+  // (`usePendingKeyedPress`). The observer `useMutation` reads is told a timer later, a task after
+  // the bound that ends the revoke's hold has drawn why the list is not read, so a Revoke held by
+  // that observer would refuse a press made once the line says why.
+  const mutationKey = ["revoke", ...readKey];
+  const revokeOut = usePendingKeyedPress(mutationKey);
   // The list shows a refused revoke itself, under the table.
   const mutation = useKeyedWrite({
     inline: true,
@@ -117,6 +129,7 @@ export function RevocableList<Row>({
     // Pending, and every Revoke held, through the read that takes the revoked row away.
     onSuccess: () => holdThrough(onRevoked()),
     method: "POST",
+    mutationKey,
     readsLate: true,
     write: revoke,
   });
@@ -197,7 +210,7 @@ export function RevocableList<Row>({
                     ) : (
                       <button
                         className={`min-h-11 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap refused:cursor-not-allowed refused:opacity-50 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText} ${hoverToDangerText}`}
-                        {...heldPress(mutation.isPending && !mutation.late, () => press(row))}
+                        {...heldPress(revokeOut.isPending && !revokeOut.late, () => press(row))}
                         type="button"
                       >
                         Revoke

@@ -45,7 +45,7 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress } from "../writes/useKeyedWrite";
 import { settingsFieldLabel, settingsMonoInput, settingsSubmitButton } from "./classes";
 import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 import { useLegionDaemons } from "./useLegionDaemons";
@@ -143,7 +143,17 @@ export function LegionDaemonsSection(): ReactNode {
   // project is read again. Both go on one line per daemon (`target`), in press order: a Save or a
   // Remove pressed while an earlier one of the same daemon is late waits its turn behind it, so
   // the daemon ends as the later press left it, however each one's tries wait out the network.
+  // Each goes under a name of its own, and the section reads their presses from TanStack's
+  // mutation cache, which tells its listeners at once (`usePendingKeyedPress`). The observer
+  // `useMutation` reads is told a timer later, a task after the bound that ends a write's hold has
+  // drawn why the daemons are not read, so a form held by that observer would refuse a press made
+  // once the section says why.
+  const saveKey = ["legion-daemon-save"];
+  const removeKey = ["legion-daemon-remove"];
+  const saveOut = usePendingKeyedPress(saveKey);
+  const removeOut = usePendingKeyedPress(removeKey);
   const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
+    mutationKey: saveKey,
     target: ({ project: named }) => daemonTarget(named),
     request: ({ project: named, state_url: url }) => legionDaemonRequest(named, url),
     inline: true,
@@ -197,6 +207,7 @@ export function LegionDaemonsSection(): ReactNode {
     },
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
+    mutationKey: removeKey,
     target: daemonTarget,
     request: (named) => legionDaemonRemovalRequest(named),
     inline: true,
@@ -253,8 +264,7 @@ export function LegionDaemonsSection(): ReactNode {
   // still tried under its key, and the shell's indicator offers to stop it, but one that never
   // answers - the browser offline - would otherwise hold the form for good. Nor does a press made
   // then hold them, which waits its turn behind that write (`late` as well) until it is decided.
-  const writing =
-    (saveDaemon.isPending && !saveDaemon.late) || (removeDaemon.isPending && !removeDaemon.late);
+  const writing = (saveOut.isPending && !saveOut.late) || (removeOut.isPending && !removeOut.late);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (writing) return;

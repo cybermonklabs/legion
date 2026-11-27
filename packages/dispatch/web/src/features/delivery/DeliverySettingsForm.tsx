@@ -18,7 +18,7 @@ import {
   settingsSubmitButton,
 } from "../settings/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
+import { useKeyedWrite, usePendingKeyedPress, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
 /** The characters that separate the entries of a list field, as a character class's body: line
@@ -207,8 +207,16 @@ function DeliverySettingsFields({
   const [pressedOver, setPressedOver] = useState(version);
   const [drawing, holdUntilDrawn] = useHoldUntilDrawn(version);
   const [unsettled, holdThrough] = useReadBound(deliverySettingsQuery().queryKey);
+  // The save goes under a name of its own, and the form reads its press from TanStack's mutation
+  // cache, which tells its listeners at once (`usePendingKeyedPress`). The observer `useMutation`
+  // reads is told a timer later, a task after the bound that ends the save's hold has drawn why
+  // the record is not read, so a form held by that observer would refuse a press made once the
+  // form says why.
+  const mutationKey = ["delivery-settings-save"];
+  const saveOut = usePendingKeyedPress(mutationKey);
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
+    mutationKey,
     method: "PUT",
     write: (input: DeliverySettingsInput, bounds) => api.putDeliverySettings(input, bounds),
     inline: true,
@@ -237,7 +245,7 @@ function DeliverySettingsFields({
   // and a submit then sends nothing (`submitGuard` covers only the save's own round trip). A save
   // past its deadline (`KeyedWriteResult.late`) holds them no longer, and the guard lets go there
   // too, so a submit then sends the fields as a save of its own rather than nothing.
-  const held = (save.isPending && !save.late) || drawing;
+  const held = (saveOut.isPending && !saveOut.late) || drawing;
   useReleaseWhenLate(submitGuard, save.late);
   const edit = (next: Draft) => {
     if (!held) setDraft(next);
