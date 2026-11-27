@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -48,8 +47,8 @@ func (w *workflowRuntime) readQueueTimeline(ctx context.Context, repoName string
 // merged event (intake.IsQueueMove), in the order of the timeline, which is the order of events
 // of one second, each read as intake.ParseQueueTimelineEvent reads it: with GitHub's own id and
 // created_at and the repository its url names. An event of another kind, or of no kind, is left
-// out whatever it holds; a queue event with no id, no time (or the zero time) or no repository is
-// an error rather than an event with a time the daemon made up.
+// out whatever it holds; a queue event the parser refuses (no id, no time or the zero time, no
+// repository) is an error rather than an event with a time the daemon made up.
 func parseQueueTimeline(number int, items []json.RawMessage) ([]signals.QueueEvent, error) {
 	events := []signals.QueueEvent{}
 	for _, raw := range items {
@@ -65,9 +64,6 @@ func parseQueueTimeline(number int, items []json.RawMessage) ([]signals.QueueEve
 		event, err := intake.ParseQueueTimelineEvent(number, raw)
 		if err != nil {
 			return nil, err
-		}
-		if event.At.IsZero() {
-			return nil, fmt.Errorf("the %s event %d of the timeline of #%d names the zero time", event.Event, event.ID, number)
 		}
 		events = append(events, event.Signal())
 	}
@@ -94,11 +90,19 @@ func queueTimelineGone(err error) bool {
 // GitHub's Retry-After when that is longer (readAgainAfter), for as long as it fails: a move
 // dropped here leaves an exit unkept, and the pull request would read as the longest wait of the
 // queue until the next boot. The one exception is GitHub answering that the timeline is not there
-// (queueTimelineGone), which no read repairs and is logged. A read GitHub answers whose timeline
+// (queueTimelineGone), which no read repairs: it is logged, and the events kept of the pull
+// request are forgotten (intake.QueueTimeline's Gone), as the boot's read forgets them
+// (readQueueOnce), so no entry of it is left open for good. A read GitHub answers whose timeline
 // holds fewer moves in the notified direction than the row needs (MinCount), since the timeline is
 // behind the notification, is read again up to mergeStateLadderReads attempts in all, as the
 // merge-queue read reads a state GitHub has not computed yet; the last attempt keeps what the
-// timeline holds, which is every event GitHub shows and no event the daemon made up.
+// timeline holds, which is every event GitHub shows and no event the daemon made up. A row of a
+// pull request the store had kept no move of (Unkept) needs instead that the timeline's newest
+// move is of the notified direction, an entry after the last exit or an exit after the last entry:
+// its count needs 1, which the moves before the store kept any meet. A pull request that left the
+// queue before its entry's read ran shows an exit last, so that read is read again to the end of
+// the ladder and then keeps what it shows, the entry and the exit, which its exit's own read, whose
+// newest move is that exit, keeps as well; neither waits longer than the ladder.
 func (r *outbox) queueTimelineRead(ctx context.Context, row record.OutboxRow, payload record.QueueTimelineRead) error {
 	if r.readQueueTimeline == nil || r.mergeStateWait == nil {
 		return errors.New("queue timeline read executor has no read of a pull request's timeline from GitHub")
@@ -109,9 +113,13 @@ func (r *outbox) queueTimelineRead(ctx context.Context, row record.OutboxRow, pa
 	cancel()
 	readAt := r.now().UTC()
 	attributes := []any{"row", row.ID, "issue", row.Issue, "repo", payload.Repo, "pullRequest", payload.Number, "move", payload.Move, "attempt", attempt}
+	eventID := fmt.Sprintf("queue-timeline:%s:%d", row.Issue, row.ID)
 	if failed != nil {
 		if queueTimelineGone(failed) {
-			r.log.Error("outbox queue-timeline read: GitHub has no timeline of the pull request; the read is dropped", append(attributes, "error", failed)...)
+			r.log.Error("outbox queue-timeline read: GitHub has no timeline of the pull request; the events kept of it are forgotten", append(attributes, "error", failed)...)
+			if _, err := intake.ApplyFact(ctx, r.pool, "outbox", eventID, intake.QueueTimeline{Repo: payload.Repo, Number: payload.Number, Gone: true}, r.handlers...); err != nil {
+				return fmt.Errorf("forget the queue events of %s#%d: %w", payload.Repo, payload.Number, err)
+			}
 			return nil
 		}
 		delay := r.readAgainAfter(failed)
@@ -119,27 +127,37 @@ func (r *outbox) queueTimelineRead(ctx context.Context, row record.OutboxRow, pa
 		return wait.Until(readAt.Add(delay), fmt.Sprintf("the queue timeline read of %s#%d reads GitHub again in %s, after attempt %d failed: %v",
 			payload.Repo, payload.Number, delay, attempt, failed))
 	}
+	enters := payload.Move == record.QueueEnqueued
 	shown := 0
 	for _, e := range events {
-		if e.Enters == (payload.Move == record.QueueEnqueued) {
+		if e.Enters == enters {
 			shown++
 		}
 	}
-	if shown < payload.MinCount {
+	current := shown >= payload.MinCount
+	if payload.Unkept {
+		current = len(events) > 0 && events[len(events)-1].Enters == enters
+	}
+	if !current {
+		attributes = append(attributes, "shown", shown, "want", payload.MinCount, "unkept", payload.Unkept, "attempts", mergeStateLadderReads)
 		if attempt < mergeStateLadderReads {
 			delay := r.mergeStateWait()
-			r.log.Info("outbox queue-timeline read: GitHub's timeline does not show the notified move yet; it reads again",
-				append(attributes, "shown", shown, "want", payload.MinCount, "attempts", mergeStateLadderReads, "wait", delay)...)
-			return wait.Until(readAt.Add(delay), fmt.Sprintf("the timeline of %s#%d shows %d of the %d %s moves it should, after attempt %d of %d",
-				payload.Repo, payload.Number, shown, payload.MinCount, payload.Move, attempt, mergeStateLadderReads))
+			r.log.Info("outbox queue-timeline read: GitHub's timeline does not show the notified move yet; it reads again", append(attributes, "wait", delay)...)
+			var behind string
+			if payload.Unkept {
+				behind = fmt.Sprintf("ends in no move of the %s notification's direction, and the store had kept no move of it", payload.Move)
+			} else {
+				behind = fmt.Sprintf("shows %d of the %d %s moves it should", shown, payload.MinCount, payload.Move)
+			}
+			return wait.Until(readAt.Add(delay), fmt.Sprintf("the timeline of %s#%d %s, after attempt %d of %d",
+				payload.Repo, payload.Number, behind, attempt, mergeStateLadderReads))
 		}
-		r.log.Warn("outbox queue-timeline read: GitHub's timeline still does not show the notified move; the events it shows are kept",
-			append(attributes, "shown", shown, "want", payload.MinCount, "attempts", mergeStateLadderReads)...)
+		r.log.Warn("outbox queue-timeline read: GitHub's timeline still does not show the notified move; the events it shows are kept", attributes...)
 	}
 	if len(events) == 0 {
 		return nil
 	}
-	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("queue-timeline:%s:%d", row.Issue, row.ID),
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", eventID,
 		intake.QueueTimeline{Repo: payload.Repo, Number: payload.Number, Events: events}, r.handlers...); err != nil {
 		return fmt.Errorf("apply the queue timeline of %s#%d: %w", payload.Repo, payload.Number, err)
 	}
@@ -294,56 +312,33 @@ func (w *workflowRuntime) queueTargets(ctx context.Context) ([]queueBranch, []re
 	return targets, open, nil
 }
 
-// retryQueueBootRead reads GitHub's merge queue (readQueueOnce) until a read succeeds or ctx ends
-// (retryBootRead), so the queue the boot could not read is not left unread until the next boot:
-// the queue signal reads as not recorded, with the reason of the last failed read, until one
-// succeeds (intake.QueueBootStatus).
-func (w *workflowRuntime) retryQueueBootRead(ctx context.Context, bootID int64, first, most time.Duration) {
-	retryBootRead(ctx, bootID, first, most, w.readQueueOnce)
-}
-
-// retryBootRead makes read, one boot read of a signal's source that says whether it succeeded and
-// logs its own failure, until a read succeeds or ctx ends, waiting first, then twice as long up to
-// most, between reads (retryUntilApplied). Each read is named by the boot and its attempt, so no
-// read's facts are taken for another's as already applied.
-func retryBootRead(ctx context.Context, bootID int64, first, most time.Duration, read func(ctx context.Context, id string) bool) {
-	if ctx.Err() != nil {
-		return
-	}
-	retryUntilApplied(ctx, first, most, func(ctx context.Context, attempt int) error {
-		if !read(ctx, fmt.Sprintf("%d.%d", bootID, attempt)) {
-			return errBootReadFailed
-		}
-		return nil
-	}, nil)
-}
-
-// errBootReadFailed is a boot read that did not succeed, which the read has logged itself.
-var errBootReadFailed = errors.New("the boot's read did not succeed")
-
 // readQueueOnce is one read of GitHub's merge queue as it stands, which id names (the boot and its
 // read, so no read's facts are taken for another's as already applied): the live queue of each
 // repository and target branch that serves the project's pull requests (queueTargets), paged, finds
 // the pull requests of the project that are queued (intake.ProjectBranchIssue); the timeline of each
 // of those, and of each pull request the store holds an open wait of that the queue no longer
 // shows, is read (readQueueTimeline) and applied as the same fact a webhook's row applies
-// (intake.QueueTimeline). It says whether every read succeeded, and applies intake.QueueBootStatus
-// either way: a failed read records its reason, which keeps the queue unrecorded, and is never
-// taken for a queue with no entry, and a read that succeeded clears it.
-func (w *workflowRuntime) readQueueOnce(ctx context.Context, id string) bool {
+// (intake.QueueTimeline). A timeline GitHub answers is not there (queueTimelineGone) is logged, the
+// events kept of its pull request are forgotten (intake.QueueTimeline's Gone), as the outbox's read
+// forgets them, and the read goes on to the next pull request: no later read answers otherwise, so
+// an open wait of it would fail every boot's read for good. It answers nil where every read
+// succeeded and the first failure otherwise, which it has logged, and applies
+// intake.QueueBootStatus either way: a failed read records its reason, which keeps the queue
+// unrecorded, and is never taken for a queue with no entry, and a read that succeeded clears it.
+// The boot makes it until it succeeds (runBooted).
+func (w *workflowRuntime) readQueueOnce(ctx context.Context, id string) error {
 	status := func(readError string) {
 		fact := intake.QueueBootStatus{ReadError: readError}
 		if _, err := intake.ApplyFact(ctx, w.pool, "daemon", fmt.Sprintf("boot-queue-status:%s:%s", w.dispatchProject, id), fact, w.handlers...); err != nil && ctx.Err() == nil {
 			w.log.Warn("legion daemon could not record the outcome of its read of the merge queue", "read", id, "readError", readError, "error", err)
 		}
 	}
-	failed := func(why string, err error) bool {
-		if ctx.Err() != nil {
-			return false
+	failed := func(why string, err error) error {
+		if ctx.Err() == nil {
+			w.log.Warn("legion daemon could not read the merge queue; the queue signal is not recorded until it can", "read", id, "why", why, "error", err)
+			status(fmt.Sprintf("%s: %v", why, err))
 		}
-		w.log.Warn("legion daemon could not read the merge queue; the queue signal is not recorded until it can", "read", id, "why", why, "error", err)
-		status(fmt.Sprintf("%s: %v", why, err))
-		return false
+		return fmt.Errorf("%s: %w", why, err)
 	}
 	targets, open, err := w.queueTargets(ctx)
 	if err != nil {
@@ -372,6 +367,15 @@ func (w *workflowRuntime) readQueueOnce(ctx context.Context, id string) bool {
 		bounded, cancel := context.WithTimeout(ctx, issueRead)
 		events, err := w.readQueueTimeline(bounded, pull.Repo, pull.Number)
 		cancel()
+		eventID := fmt.Sprintf("boot-queue-timeline:%s:%s:%s", w.dispatchProject, id, key)
+		if queueTimelineGone(err) {
+			w.log.Error("legion daemon's read of the merge queue: GitHub has no timeline of the pull request; the events kept of it are forgotten",
+				"read", id, "repo", pull.Repo, "pullRequest", pull.Number, "error", err)
+			if _, err := intake.ApplyFact(ctx, w.pool, "daemon", eventID, intake.QueueTimeline{Repo: pull.Repo, Number: pull.Number, Gone: true}, w.handlers...); err != nil {
+				return failed(fmt.Sprintf("forget the queue events of %s#%d", pull.Repo, pull.Number), err)
+			}
+			continue
+		}
 		if err != nil {
 			return failed(fmt.Sprintf("read the timeline of %s#%d", pull.Repo, pull.Number), err)
 		}
@@ -379,10 +383,10 @@ func (w *workflowRuntime) readQueueOnce(ctx context.Context, id string) bool {
 			continue
 		}
 		fact := intake.QueueTimeline{Repo: pull.Repo, Number: pull.Number, Events: events}
-		if _, err := intake.ApplyFact(ctx, w.pool, "daemon", fmt.Sprintf("boot-queue-timeline:%s:%s:%s", w.dispatchProject, id, key), fact, w.handlers...); err != nil {
+		if _, err := intake.ApplyFact(ctx, w.pool, "daemon", eventID, fact, w.handlers...); err != nil {
 			return failed(fmt.Sprintf("keep the timeline of %s#%d", pull.Repo, pull.Number), err)
 		}
 	}
 	status("")
-	return ctx.Err() == nil
+	return ctx.Err()
 }

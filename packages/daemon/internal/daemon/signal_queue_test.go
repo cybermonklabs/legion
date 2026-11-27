@@ -124,6 +124,102 @@ func (r *queueTimelineRig) drainTimelineRows() int {
 	}
 }
 
+// settleTimelineRows runs the queue timeline rows until none is left, the clock moved a minute on
+// past each read's wait between rounds: a read whose timeline does not show its move yet is read
+// again up to mergeStateLadderReads attempts in all, and the last keeps what the timeline shows, so
+// no row is left after that many rounds.
+func (r *queueTimelineRig) settleTimelineRows() {
+	r.t.Helper()
+	for range mergeStateLadderReads {
+		r.drainTimelineRows()
+		r.now = r.now.Add(time.Minute)
+	}
+	if left := outboxRowsOfKindAnywhere(r.t, r.pool, record.OutboxKindQueueTimelineRead); left != 0 {
+		r.t.Fatalf("after %d rounds %d queue timeline rows are left, want none", mergeStateLadderReads, left)
+	}
+}
+
+// timelineMove is a merge-queue event of a timeline of cybermonklabs/legion as GitHub's REST
+// timeline API serves it: its id, its kind and its created_at.
+func timelineMove(id int64, event, at string) string {
+	return fmt.Sprintf(`{"id":%d,"event":%q,"created_at":%q,"url":"https://api.github.com/repos/cybermonklabs/legion/issues/events/%d"}`, id, event, at, id)
+}
+
+// timelineOf is a page of a timeline that holds moves, in GitHub's order.
+func timelineOf(moves ...string) string { return "[" + strings.Join(moves, ",") + "]" }
+
+// scriptedTimeline serves the timeline of cybermonklabs/legion#5150: each read takes the first of
+// the answers last given to answer, and the last of them answers every read after it. It counts
+// the reads.
+func scriptedTimeline(t *testing.T) (string, func(bodies ...string), *atomic.Int32) {
+	t.Helper()
+	var mu sync.Mutex
+	var answers []string
+	reads := &atomic.Int32{}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/cybermonklabs/legion/issues/5150/timeline" {
+			http.NotFound(w, r)
+			return
+		}
+		reads.Add(1)
+		mu.Lock()
+		body := answers[0]
+		if len(answers) > 1 {
+			answers = answers[1:]
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(api.Close)
+	answer := func(bodies ...string) {
+		mu.Lock()
+		answers = bodies
+		mu.Unlock()
+	}
+	return api.URL, answer, reads
+}
+
+// queueWait is the wait of a pull request that entered the queue at added, RFC 3339, and left it
+// at left, or stands in it where left is "".
+func queueWait(t *testing.T, added, left string) signals.Wait {
+	t.Helper()
+	at := func(s string) time.Time {
+		parsed, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed.UTC()
+	}
+	wait := signals.Wait{Added: at(added)}
+	if left != "" {
+		wait.Left = at(left)
+	}
+	return wait
+}
+
+// readAgainThenKept runs the one queue timeline row of LEGION-5150, queued for the notified move,
+// whose first read GitHub answers with a timeline that does not show the move yet: that read is
+// read again, and the next one, the clock a minute on, keeps what the timeline shows by then,
+// which leaves the waits want.
+func (r *queueTimelineRig) readAgainThenKept(notified string, want []signals.Wait) {
+	r.t.Helper()
+	if ran := r.drainTimelineRows(); ran != 1 {
+		r.t.Errorf("the %s's read ran %d rows, want 1", notified, ran)
+	}
+	if remaining := outboxRowsOfKind(r.t, r.pool, "LEGION-5150", record.OutboxKindQueueTimelineRead); remaining != 1 {
+		r.t.Errorf("after a read whose timeline shows only the moves before the %s, %d queue timeline rows remain, want the one read again", notified, remaining)
+	}
+	r.now = r.now.Add(time.Minute)
+	r.drainTimelineRows()
+	if remaining := outboxRowsOfKind(r.t, r.pool, "LEGION-5150", record.OutboxKindQueueTimelineRead); remaining != 0 {
+		r.t.Errorf("after GitHub's timeline showed the %s, %d queue timeline rows remain, want 0", notified, remaining)
+	}
+	if got := r.waitsAt(r.now); !reflect.DeepEqual(got, want) {
+		r.t.Errorf("after the %s the waits = %+v, want %+v", notified, got, want)
+	}
+}
+
 func (r *queueTimelineRig) waitsAt(at time.Time) []signals.Wait {
 	r.t.Helper()
 	var events []signals.QueueEvent
@@ -229,7 +325,9 @@ func TestSignalQueueTimeline(t *testing.T) {
 		rig := newQueueTimelineRig(t, api.URL, at, ghrepo.Renames{})
 		rig.seedIssuePR("LEGION-4910", queueProject, "cybermonklabs/legion", 4910, "legion/LEGION-4910")
 		rig.apply("github.enq-4910", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 4910, Branch: "legion/LEGION-4910"})
-		rig.drainTimelineRows()
+		// The store has kept no move of #4910, and its timeline ends in an exit, so the entry's read
+		// is read through the ladder and then keeps what the timeline shows.
+		rig.settleTimelineRows()
 		want := []signals.Wait{
 			{Added: mustTime("2026-11-22T19:51:26Z"), Left: mustTime("2026-11-23T01:39:21Z")},
 			{Added: mustTime("2026-11-23T01:39:23Z"), Left: mustTime("2026-11-23T02:46:55Z")},
@@ -283,7 +381,9 @@ func TestSignalQueueTimeline(t *testing.T) {
 		rig := newQueueTimelineRig(t, api.URL, at, renames)
 		rig.seedIssuePR("LEGION-5150", queueProject, "sjawhar/legion", 5150, "legion/LEGION-5150")
 		rig.apply("github.enq-oldname", intake.PullRequestEnqueued{Repo: "sjawhar/legion", Number: 5150, Branch: "legion/LEGION-5150"})
-		rig.drainTimelineRows()
+		// The store has kept no move of #5150, and its timeline ends in an exit, so the entry's read
+		// is read through the ladder and then keeps what the timeline shows.
+		rig.settleTimelineRows()
 		events := rig.keptEvents()
 		if len(events) != 3 {
 			t.Fatalf("kept %d events, want 3", len(events))
@@ -517,6 +617,146 @@ func TestSignalQueueTimeline(t *testing.T) {
 			t.Fatalf("waits = %+v, want the entry GitHub's timeline showed, kept with no exit invented", got)
 		}
 	})
+
+	// The store forgets a pull request's events 6 hours after its last exit, and keeps how many
+	// entries and exits of it it has kept (record.Store.KeepQueueEvents). A re-entry after that,
+	// and the exit after the re-entry, are each checked against those counts: a read whose timeline
+	// still shows only the moves before the notified one is read again rather than taken as
+	// current, and the move is kept once GitHub's timeline shows it.
+	t.Run("a re-entry and its exit more than six hours after the last exit wait for the timeline to show them", func(t *testing.T) {
+		t.Parallel()
+		add1 := timelineMove(101, "added_to_merge_queue", "2026-11-23T02:00:00Z")
+		remove1 := timelineMove(102, "removed_from_merge_queue", "2026-11-23T03:00:00Z")
+		add2 := timelineMove(103, "added_to_merge_queue", "2026-11-23T10:00:00Z")
+		remove2 := timelineMove(104, "removed_from_merge_queue", "2026-11-23T11:00:00Z")
+		url, answer, _ := scriptedTimeline(t)
+		rig := newQueueTimelineRig(t, url, mustTime("2026-11-23T03:00:05Z"), ghrepo.Renames{})
+		rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
+		answer(timelineOf(add1, remove1))
+		rig.apply("github.deq-first", intake.PullRequestDequeued{Repo: "cybermonklabs/legion", Number: 5150, HeadSHA: "h1"})
+		rig.drainTimelineRows()
+		if got := rig.keptEvents(); len(got) != 2 {
+			t.Fatalf("after the first exit the store keeps %+v, want the entry and the exit", got)
+		}
+		// Seven hours on, another pull request's timeline is kept, and the store forgets #5150's
+		// events, whose newest is an exit more than 6 hours old; that pull request's are forgotten as
+		// they are kept.
+		rig.now = mustTime("2026-11-23T10:00:05Z")
+		rig.apply("github.other-timeline", intake.QueueTimeline{Repo: "cybermonklabs/legion", Number: 6001, Events: []signals.QueueEvent{
+			{ID: 201, Repo: "cybermonklabs/legion", PullRequest: 6001, At: mustTime("2026-11-23T01:00:00Z"), Enters: true},
+			{ID: 202, Repo: "cybermonklabs/legion", PullRequest: 6001, At: mustTime("2026-11-23T02:00:00Z"), Enters: false},
+		}})
+		if got := rig.keptEvents(); len(got) != 0 {
+			t.Fatalf("7 hours after #5150's exit the store keeps %+v, want its events forgotten", got)
+		}
+
+		answer(timelineOf(add1, remove1), timelineOf(add1, remove1, add2))
+		rig.apply("github.enq-again", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"})
+		rig.readAgainThenKept("re-entry", []signals.Wait{
+			queueWait(t, "2026-11-23T02:00:00Z", "2026-11-23T03:00:00Z"), queueWait(t, "2026-11-23T10:00:00Z", "")})
+
+		rig.now = mustTime("2026-11-23T11:00:05Z")
+		answer(timelineOf(add1, remove1, add2), timelineOf(add1, remove1, add2, remove2))
+		rig.apply("github.deq-again", intake.PullRequestDequeued{Repo: "cybermonklabs/legion", Number: 5150, HeadSHA: "h2"})
+		rig.readAgainThenKept("exit", []signals.Wait{
+			queueWait(t, "2026-11-23T02:00:00Z", "2026-11-23T03:00:00Z"), queueWait(t, "2026-11-23T10:00:00Z", "2026-11-23T11:00:00Z")})
+	})
+
+	// A pull request whose earlier moves the store never kept, such as moves before the first boot
+	// of the release that keeps them, has no count a notified move needs one more than: its read
+	// is current only where the timeline's newest move is of the notified direction
+	// (record.QueueTimelineRead.Unkept). An entry long after an exit the store never kept, read
+	// while the timeline still ends in that exit, is read again; so is an exit read while the
+	// timeline still ends in an entry the store never kept. Each timeline's last move is the one
+	// notified, which the first read does not show yet.
+	add1 := timelineMove(101, "added_to_merge_queue", "2026-11-23T02:00:00Z")
+	remove1 := timelineMove(102, "removed_from_merge_queue", "2026-11-23T03:00:00Z")
+	add2 := timelineMove(103, "added_to_merge_queue", "2026-11-23T10:00:00Z")
+	for _, tc := range []struct {
+		move     string
+		notified intake.Fact
+		at       string
+		moves    []string
+		want     []signals.Wait
+	}{
+		{move: "entry", notified: intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"},
+			at: "2026-11-23T10:00:05Z", moves: []string{add1, remove1, add2},
+			want: []signals.Wait{queueWait(t, "2026-11-23T02:00:00Z", "2026-11-23T03:00:00Z"), queueWait(t, "2026-11-23T10:00:00Z", "")}},
+		{move: "exit", notified: intake.PullRequestDequeued{Repo: "cybermonklabs/legion", Number: 5150, HeadSHA: "h2"},
+			at: "2026-11-23T11:00:05Z", moves: []string{add1, remove1, add2, timelineMove(104, "removed_from_merge_queue", "2026-11-23T11:00:00Z")},
+			want: []signals.Wait{queueWait(t, "2026-11-23T02:00:00Z", "2026-11-23T03:00:00Z"), queueWait(t, "2026-11-23T10:00:00Z", "2026-11-23T11:00:00Z")}},
+	} {
+		t.Run("a first "+tc.move+" of a pull request whose earlier moves the store never kept waits for the timeline to show it", func(t *testing.T) {
+			t.Parallel()
+			url, answer, _ := scriptedTimeline(t)
+			rig := newQueueTimelineRig(t, url, mustTime(tc.at), ghrepo.Renames{})
+			rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
+			answer(timelineOf(tc.moves[:len(tc.moves)-1]...), timelineOf(tc.moves...))
+			rig.apply("github.first-"+tc.move, tc.notified)
+			rig.readAgainThenKept(tc.move, tc.want)
+		})
+	}
+
+	// A pull request the store has kept no move of that leaves the queue before its entry's read
+	// runs shows an exit last. The entry's read is read again to the end of the ladder, and then
+	// keeps what the timeline shows; the exit's own read, whose newest move is that exit, keeps the
+	// entry and the exit at once, so the queue reads the wait right, and no read waits for longer
+	// than the ladder.
+	t.Run("a pull request that leaves the queue before its entry's read keeps its wait, and no read waits for ever", func(t *testing.T) {
+		t.Parallel()
+		url, answer, reads := scriptedTimeline(t)
+		answer(timelineOf(timelineMove(101, "added_to_merge_queue", "2026-11-23T10:00:00Z"),
+			timelineMove(102, "removed_from_merge_queue", "2026-11-23T10:00:20Z")))
+		rig := newQueueTimelineRig(t, url, mustTime("2026-11-23T10:00:30Z"), ghrepo.Renames{})
+		rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
+		rig.apply("github.enq-quick", intake.PullRequestEnqueued{Repo: "cybermonklabs/legion", Number: 5150, Branch: "legion/LEGION-5150"})
+		rig.apply("github.deq-quick", intake.PullRequestDequeued{Repo: "cybermonklabs/legion", Number: 5150, HeadSHA: "h1"})
+		if ran := rig.drainTimelineRows(); ran != 2 {
+			t.Fatalf("the first drain ran %d rows, want the entry's and the exit's", ran)
+		}
+		want := []signals.Wait{queueWait(t, "2026-11-23T10:00:00Z", "2026-11-23T10:00:20Z")}
+		if got := rig.waitsAt(rig.now); !reflect.DeepEqual(got, want) {
+			t.Fatalf("after the exit's read the waits = %+v, want %+v", got, want)
+		}
+		if remaining := outboxRowsOfKind(t, rig.pool, "LEGION-5150", record.OutboxKindQueueTimelineRead); remaining != 1 {
+			t.Fatalf("after the first reads %d queue timeline rows remain, want the entry's, read again", remaining)
+		}
+		rig.settleTimelineRows()
+		if got := reads.Load(); got != mergeStateLadderReads+1 {
+			t.Fatalf("GitHub was read %d times, want the entry's ladder of %d and the exit's one read", got, mergeStateLadderReads)
+		}
+		if got := rig.waitsAt(rig.now); !reflect.DeepEqual(got, want) {
+			t.Fatalf("after the entry's ladder the waits = %+v, want %+v", got, want)
+		}
+	})
+
+	// GitHub answering that a pull request's timeline is not there (404) is an answer no later read
+	// changes: the row's read forgets the events kept of the pull request, as the boot's read does,
+	// rather than leave its entry open for good.
+	t.Run("a timeline GitHub answers is gone forgets the pull request's kept events", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		}))
+		defer api.Close()
+		rig := newQueueTimelineRig(t, api.URL, mustTime("2026-11-23T19:00:00Z"), ghrepo.Renames{})
+		rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
+		rig.apply("github.kept-entry", intake.QueueTimeline{Repo: "cybermonklabs/legion", Number: 5150, Events: []signals.QueueEvent{
+			{ID: 36963393320, Repo: "cybermonklabs/legion", PullRequest: 5150, At: mustTime("2026-11-23T02:27:46Z"), Enters: true},
+		}})
+		rig.apply("github.deq-gone", intake.PullRequestDequeued{Repo: "cybermonklabs/legion", Number: 5150, HeadSHA: "h1"})
+		if ran := rig.drainTimelineRows(); ran != 1 || calls.Load() != 1 {
+			t.Fatalf("ran %d rows that read GitHub %d times, want the one row read once", ran, calls.Load())
+		}
+		if remaining := outboxRowsOfKind(t, rig.pool, "LEGION-5150", record.OutboxKindQueueTimelineRead); remaining != 0 {
+			t.Fatalf("after GitHub answered the timeline is gone, %d queue timeline rows remain, want 0", remaining)
+		}
+		if got := rig.keptEvents(); len(got) != 0 {
+			t.Fatalf("after GitHub answered the timeline is gone the store keeps %+v, want the pull request's events forgotten", got)
+		}
+	})
 }
 
 // TestSignalBootReconciles verifies the boot merge-queue reconciliation: reading the paged GraphQL
@@ -606,7 +846,7 @@ func TestSignalBootReconciles(t *testing.T) {
 		if _, err := intake.ApplyFact(ctx, rig.pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, rig.w.handlers...); err != nil {
 			t.Fatalf("apply boot 1: %v", err)
 		}
-		if rig.w.readQueueOnce(ctx, "1.1") {
+		if rig.w.readQueueOnce(ctx, "1.1") == nil {
 			t.Fatal("the read of the merge queue succeeded while GitHub refused the query, want it failed")
 		}
 		var since time.Time
@@ -635,8 +875,8 @@ func TestSignalBootReconciles(t *testing.T) {
 		if _, err := intake.ApplyFact(ctx, rig.pool, "daemon", "boot:LEGION:2", intake.DaemonBooted{Boot: 2}, rig.w.handlers...); err != nil {
 			t.Fatalf("apply boot 2: %v", err)
 		}
-		if !rig.w.readQueueOnce(ctx, "2.1") {
-			t.Fatal("the read of the merge queue failed, want it to succeed once GitHub answers")
+		if err := rig.w.readQueueOnce(ctx, "2.1"); err != nil {
+			t.Fatalf("the read of the merge queue failed, want it to succeed once GitHub answers: %v", err)
 		}
 		if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
@@ -669,8 +909,8 @@ func TestSignalBootReconciles(t *testing.T) {
 		if _, err := intake.ApplyFact(ctx, rig.pool, "daemon", "boot:LEGION:3", intake.DaemonBooted{Boot: 3}, rig.w.handlers...); err != nil {
 			t.Fatalf("apply boot 3: %v", err)
 		}
-		if !rig.w.readQueueOnce(ctx, "3.1") {
-			t.Fatal("the read of the merge queue after a restart failed, want it to succeed")
+		if err := rig.w.readQueueOnce(ctx, "3.1"); err != nil {
+			t.Fatalf("the read of the merge queue after a restart failed, want it to succeed: %v", err)
 		}
 		if got := rig.waitsAt(rig.now); !reflect.DeepEqual(got, wantWaits) {
 			t.Fatalf("waits after restart (boot 3) = %+v, want %+v", got, wantWaits)
@@ -723,7 +963,9 @@ func TestSignalBootReconciles(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			rig.w.retryQueueBootRead(ctx, 1, 10*time.Millisecond, 20*time.Millisecond)
+			retryUntilApplied(ctx, 10*time.Millisecond, 20*time.Millisecond, func(ctx context.Context, attempt int) error {
+				return rig.w.readQueueOnce(ctx, fmt.Sprintf("1.%d", attempt))
+			}, nil)
 		}()
 		select {
 		case <-done:
@@ -765,7 +1007,7 @@ func TestSignalBootReconciles(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed the open wait: %v", err)
 		}
-		if rig.w.readQueueOnce(ctx, "1.1") {
+		if rig.w.readQueueOnce(ctx, "1.1") == nil {
 			t.Fatal("the read succeeded though GitHub answered no repository, want it failed")
 		}
 		var readError string
@@ -782,6 +1024,81 @@ func TestSignalBootReconciles(t *testing.T) {
 		want := []signals.Wait{{Added: mustTime("2026-11-23T02:27:46Z")}}
 		if got := rig.waitsAt(bootAt); !reflect.DeepEqual(got, want) {
 			t.Fatalf("waits after the failed read = %+v, want the open wait as it stood", got)
+		}
+	})
+
+	// A timeline GitHub answers is not there (404) at the boot's read is an answer no later read
+	// changes: the read forgets the events kept of that pull request and goes on to the next one, so
+	// the queue is recorded, and the next boot does not read that timeline again.
+	t.Run("queue-gone-open-wait", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		var mu sync.Mutex
+		var timelineReads []string
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/graphql" {
+				_, _ = io.WriteString(w, `{"data":{"repository":{"mergeQueue":{"entries":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[`+
+					`{"enqueuedAt":"2026-11-23T18:00:00Z","pullRequest":{"number":6001,"headRefName":"legion/LEGION-6001"}}]}}}}}`)
+				return
+			}
+			mu.Lock()
+			timelineReads = append(timelineReads, r.URL.Path)
+			mu.Unlock()
+			if r.URL.Path == "/repos/cybermonklabs/legion/issues/6001/timeline" {
+				_, _ = io.WriteString(w, `[{"id":990001,"event":"added_to_merge_queue","created_at":"2026-11-23T18:00:00Z","url":"https://api.github.com/repos/cybermonklabs/legion/issues/events/990001"}]`)
+				return
+			}
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		}))
+		defer api.Close()
+		bootAt := mustTime("2026-11-23T19:00:00Z")
+		rig := newQueueTimelineRig(t, api.URL, bootAt, ghrepo.Renames{})
+		rig.seedIssuePR("LEGION-5150", queueProject, "cybermonklabs/legion", 5150, "legion/LEGION-5150")
+		if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			return rig.records.KeepQueueEvents(ctx, tx, queueProject, []signals.QueueEvent{
+				{ID: 36963393320, Repo: "cybermonklabs/legion", PullRequest: 5150, At: mustTime("2026-11-23T02:27:46Z"), Enters: true},
+			}, bootAt)
+		}); err != nil {
+			t.Fatalf("seed the open wait: %v", err)
+		}
+		readError := func() string {
+			var readError string
+			if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+				var err error
+				_, _, readError, err = rig.records.SignalInputStatus(ctx, tx, queueProject, signals.Queue)
+				return err
+			}); err != nil {
+				t.Fatalf("read the status of the queue input: %v", err)
+			}
+			return readError
+		}
+		for boot := 1; boot <= 2; boot++ {
+			mu.Lock()
+			timelineReads = nil
+			mu.Unlock()
+			if _, err := intake.ApplyFact(ctx, rig.pool, "daemon", fmt.Sprintf("boot:LEGION:%d", boot), intake.DaemonBooted{Boot: int64(boot)}, rig.w.handlers...); err != nil {
+				t.Fatalf("apply boot %d: %v", boot, err)
+			}
+			if err := rig.w.readQueueOnce(ctx, fmt.Sprintf("%d.1", boot)); err != nil {
+				t.Fatalf("boot %d: the read of the merge queue failed, want it to succeed past the timeline GitHub answers is gone: %v", boot, err)
+			}
+			if got := readError(); got != "" {
+				t.Fatalf("after boot %d the queue input holds the reason %q, want the queue recorded", boot, got)
+			}
+			if got, want := rig.waitsAt(bootAt), []signals.Wait{{Added: mustTime("2026-11-23T18:00:00Z")}}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("after boot %d the waits = %+v, want #6001's alone, #5150's forgotten", boot, got)
+			}
+			mu.Lock()
+			reads := append([]string(nil), timelineReads...)
+			mu.Unlock()
+			wantReads := []string{"/repos/cybermonklabs/legion/issues/6001/timeline"}
+			if boot == 1 {
+				wantReads = append([]string{"/repos/cybermonklabs/legion/issues/5150/timeline"}, wantReads...)
+			}
+			if !reflect.DeepEqual(reads, wantReads) {
+				t.Fatalf("boot %d read the timelines %v, want %v", boot, reads, wantReads)
+			}
 		}
 	})
 

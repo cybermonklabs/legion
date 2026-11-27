@@ -1075,9 +1075,10 @@ func (e QueueTimelineEvent) Signal() signals.QueueEvent {
 // ParseQueueTimelineEvent reads item, an event of pull request number's timeline as GitHub's REST
 // timeline API serves it (GET /repos/<owner>/<name>/issues/<n>/timeline): the one reading of a
 // merge-queue event, the daemon's read of a timeline and the replay's read of a window's queue
-// file alike. It refuses an item that is no merge-queue event or that has no created_at, one with
-// no event id, and one whose url names no repository (queueEventURL), each refusal saying which,
-// rather than an event with a time or a repository made up.
+// file alike. It refuses an item that is no merge-queue event or that has no created_at, one whose
+// created_at is the zero time, one with no event id, and one whose url names no repository
+// (queueEventURL), each refusal saying which, rather than an event with a time or a repository
+// made up.
 func ParseQueueTimelineEvent(number int, item []byte) (QueueTimelineEvent, error) {
 	var event struct {
 		ID        *int64     `json:"id"`
@@ -1090,6 +1091,9 @@ func ParseQueueTimelineEvent(number int, item []byte) (QueueTimelineEvent, error
 	}
 	if event.Event == nil || !IsQueueMove(*event.Event) || event.CreatedAt == nil {
 		return QueueTimelineEvent{}, fmt.Errorf("the timeline event of #%d is no merge queue event with its created_at", number)
+	}
+	if event.CreatedAt.IsZero() {
+		return QueueTimelineEvent{}, fmt.Errorf("the %s event of #%d names the zero time as its created_at", *event.Event, number)
 	}
 	if event.ID == nil || *event.ID <= 0 {
 		return QueueTimelineEvent{}, fmt.Errorf("the %s event of #%d holds no event id", *event.Event, number)

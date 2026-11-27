@@ -2230,12 +2230,19 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // after an enqueued, dequeued or merged notification, and applies intake.QueueTimeline with
 // GitHub's own timestamps. Repo and Number name the pull request, Move names the notification
 // (QueueMove) and MinCount is the minimum count of events in that move's direction the timeline
-// must hold before the notified move is considered visible on GitHub.
+// must hold before the notified move is considered visible on GitHub (QueueProgress.Needs).
+//
+// Unkept is a pull request the store has kept no move of (QueueProgress.Kept), such as one whose
+// moves came before the first boot of the release that keeps them: MinCount, counted from what the
+// store kept, is 1 for it, which a timeline that still shows only the moves before the notified one
+// meets. Its notified move is visible only where the timeline's newest move is of the move's
+// direction, an entry after its last exit or an exit after its last entry.
 type QueueTimelineRead struct {
 	Repo     string    `json:"repo"`
 	Number   int       `json:"number"`
 	Move     QueueMove `json:"move"`
 	MinCount int       `json:"minCount"`
+	Unkept   bool      `json:"unkept,omitempty"`
 }
 
 func (QueueTimelineRead) OutboxKind() OutboxKind { return OutboxKindQueueTimelineRead }

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestDecodeSignalInputs covers the GitHub pull_request notifications that feed the merge queue
@@ -118,4 +120,33 @@ func TestDecodeSignalInputs(t *testing.T) {
 	t.Run("issue-assignee", testIssueAssignee)
 	t.Run("project-default-assignee", testProjectDefaultAssignee)
 	t.Run("ask-lifecycle", testAskLifecycle)
+}
+
+// A merge-queue event of a pull request's timeline is read with GitHub's own created_at, so an
+// event that names the zero time is refused as one with no created_at is, by the one reading of a
+// queue event (ParseQueueTimelineEvent) that the daemon's read of a timeline and the replay's read
+// of a window's queue file both make: neither keeps a move at a time GitHub never gave it. The
+// same event at a real time is read.
+func TestParseQueueTimelineEventRefusesTheZeroTime(t *testing.T) {
+	t.Parallel()
+	item := func(createdAt string) []byte {
+		return []byte(`{"id":36963393320,"event":"added_to_merge_queue","created_at":` + createdAt +
+			`,"url":"https://api.github.com/repos/cybermonklabs/legion/issues/events/36963393320"}`)
+	}
+	got, err := ParseQueueTimelineEvent(5150, item(`"2026-11-23T02:27:46Z"`))
+	want := QueueTimelineEvent{PullRequest: 5150, Event: QueueAdded, ID: 36963393320, Repo: "cybermonklabs/legion",
+		At: time.Date(2026, 11, 23, 2, 27, 46, 0, time.UTC)}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("the event at a real time reads as %+v, %v; want %+v", got, err, want)
+	}
+	for _, tc := range []struct {
+		name, createdAt, refusal string
+	}{
+		{"the zero time", `"0001-01-01T00:00:00Z"`, "names the zero time"},
+		{"no time", `null`, "with its created_at"},
+	} {
+		if got, err := ParseQueueTimelineEvent(5150, item(tc.createdAt)); err == nil || !strings.Contains(err.Error(), tc.refusal) {
+			t.Errorf("an event of %s reads as %+v, %v; want a refusal that says it %s", tc.name, got, err, tc.refusal)
+		}
+	}
 }

@@ -232,7 +232,7 @@ func (r *approvalsRig) bootFact(n int) {
 func (r *approvalsRig) boot(n int) bool {
 	r.t.Helper()
 	r.bootFact(n)
-	return r.w.readApprovalsOnce(context.Background(), fmt.Sprintf("%d.1", n))
+	return r.w.readApprovalsOnce(context.Background(), fmt.Sprintf("%d.1", n)) == nil
 }
 
 func (r *approvalsRig) signal() record.Approvals {
@@ -315,8 +315,8 @@ func testSignalBootReconcilesAsks(t *testing.T) {
 		if !recorded || readError != record.ApprovalsNotRead || !began.Equal(rig.now) {
 			t.Fatalf("after the boot fact the approvals input = (since %s, recorded %t, error %q), want it kept from %s with the reason %q", began, recorded, readError, rig.now, record.ApprovalsNotRead)
 		}
-		if !rig.w.readApprovalsOnce(context.Background(), "1.1") {
-			t.Fatal("the boot's read of Dispatch failed, want it to succeed")
+		if err := rig.w.readApprovalsOnce(context.Background(), "1.1"); err != nil {
+			t.Fatalf("the boot's read of Dispatch failed, want it to succeed: %v", err)
 		}
 		want := []string{"ask-b", "ask-c"}
 		if got := rig.waiting(); !slices.Equal(got, want) {
@@ -405,8 +405,8 @@ func testSignalBootReconcilesAsks(t *testing.T) {
 		if got := rig.signal(); got.Unrecorded == "" || got.Value().Recorded {
 			t.Fatalf("before the first boot's read the signal = %+v (value %+v), want it not recorded with the reason, and never a number", got, got.Value())
 		}
-		if !rig.w.readApprovalsOnce(context.Background(), "1.1") {
-			t.Fatal("the boot's read of Dispatch failed, want it to succeed")
+		if err := rig.w.readApprovalsOnce(context.Background(), "1.1"); err != nil {
+			t.Fatalf("the boot's read of Dispatch failed, want it to succeed: %v", err)
 		}
 		if got, want := rig.waiting(), []string{"ask-b", "ask-c", "ask-h"}; !slices.Equal(got, want) {
 			t.Fatalf("after the first boot's read the asks that wait on dana = %v, want %v", got, want)
@@ -469,15 +469,15 @@ func testSignalBootReconcilesAsks(t *testing.T) {
 			t.Fatalf("a failed read kept %d asks (%v), want none", kept, err)
 		}
 		board.refuse = "/api/v1/asks/open"
-		if rig.w.readApprovalsOnce(context.Background(), "1.2") {
+		if rig.w.readApprovalsOnce(context.Background(), "1.2") == nil {
 			t.Fatal("the read succeeded while Dispatch refused the project's open asks")
 		}
 		if got := rig.signal(); !strings.Contains(got.Unrecorded, "read the open asks of LEGION: ") {
 			t.Fatalf("after a second failed read the signal = %+v, want the reason of that read", got)
 		}
 		board.refuse = ""
-		if !rig.w.readApprovalsOnce(context.Background(), "1.3") {
-			t.Fatal("the read failed once Dispatch answered")
+		if err := rig.w.readApprovalsOnce(context.Background(), "1.3"); err != nil {
+			t.Fatalf("the read failed once Dispatch answered: %v", err)
 		}
 		if _, _, readError := rig.status(); readError != "" {
 			t.Fatalf("after a read succeeded the approvals input holds the reason %q, want none", readError)

@@ -2143,13 +2143,22 @@ func (w *workflowRuntime) runBooted(ctx context.Context, bootID int64) {
 			w.log.Error("legion daemon could not apply its boot; retrying", "attempt", attempt, "retryIn", wait, "error", err)
 		})
 	// The boot's reads of GitHub's merge queue and of Dispatch's open asks follow the boot fact,
-	// each on the same backoff: the fact records that the queue and the approvals are kept from now
-	// on, and each read says what stood in them. They run beside each other, so a source that does
-	// not answer leaves the other's signal no less recorded, and each takes a hold mark of its own
+	// each on the same backoff, until a read succeeds or the daemon stops: the fact records that
+	// the queue and the approvals are kept from now on, and each read says what stood in them, so
+	// a source the boot could not read is not left unread until the next boot, and its signal reads
+	// as not recorded, with the reason of the last failed read, until one succeeds. Each read logs
+	// its own failure, and is named by the boot and its attempt, so no read's facts are taken for
+	// another's as already applied. They run beside each other, so a source that does not answer
+	// leaves the other's signal no less recorded, and each takes a hold mark of its own
 	// (store.ForConcurrentWorker), as the daemon's loops do.
 	var reads sync.WaitGroup
-	reads.Go(func() { w.retryQueueBootRead(store.ForConcurrentWorker(ctx), bootID, bootRetryFirst, bootRetryMax) })
-	reads.Go(func() { w.retryApprovalsBootRead(store.ForConcurrentWorker(ctx), bootID, bootRetryFirst, bootRetryMax) })
+	for _, read := range []func(ctx context.Context, id string) error{w.readQueueOnce, w.readApprovalsOnce} {
+		reads.Go(func() {
+			retryUntilApplied(store.ForConcurrentWorker(ctx), bootRetryFirst, bootRetryMax, func(ctx context.Context, attempt int) error {
+				return read(ctx, fmt.Sprintf("%d.%d", bootID, attempt))
+			}, nil)
+		})
+	}
 	reads.Wait()
 }
 

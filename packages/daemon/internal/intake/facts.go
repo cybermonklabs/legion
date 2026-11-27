@@ -1282,10 +1282,15 @@ func (PullRequestEnqueued) namedIssue() (string, bool) { return "", false }
 // canonical repository (from the event url) and created_at. Never decoded from an event: applied by
 // the outbox executor (record.QueueTimelineRead) and by boot reconciliation. Admission keeps each
 // event once in queue_events before the admission pass (admit's keepSignalFacts).
+//
+// Gone, with no events, is GitHub answering that the timeline is not there to read (404 or 410),
+// which no later read answers otherwise: admission forgets the events it keeps of the pull request
+// (record.Store.ForgetQueuePull), so no entry of it is left open for good.
 type QueueTimeline struct {
 	Repo   string
 	Number int
 	Events []signals.QueueEvent
+	Gone   bool
 }
 
 func (QueueTimeline) namedIssue() (string, bool) { return "", false }

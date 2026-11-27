@@ -29,12 +29,21 @@ type OpenQueuePull struct {
 // so after a rename between two reads every event of the pull request is under the new name, and
 // an entry read under the old one is not left open beside an exit read under the new one.
 //
+// It then counts the entries and the exits that each of those pull requests holds kept, and keeps
+// for each count the greater of it and the one queue_progress holds already, so the counts hold
+// every move the store has kept of the pull request, those whose events the delete below removed
+// among them: a notified move is checked against them (QueueProgress.Needs), and a timeline read
+// that still shows only the moves before it is read again. A timeline read is the whole of GitHub's
+// timeline, so a read after the delete keeps the old moves anew, and they are never counted twice.
+//
 // It then deletes every pull request of project whose newest event is an exit at or before now
 // less signals.QueueExitSpan: the queue signal of a moment counts the exits of the 6 hours before
 // it (signals.QueueWait), and no read is of a moment before now, so no read counts those again.
 // The rows a read meets are so bounded by the pull requests that left in the 6 hours and by those
 // still in the queue, and never by the project's whole history. A pull request with no exit stays
 // however old its entry is. A timeline older than that, read late, is so deleted as it is kept.
+// The counts of queue_progress stay, one row of each pull request, which only QueueProgressOf
+// reads, by its key.
 func (s *Postgres) KeepQueueEvents(ctx context.Context, tx pgx.Tx, project string, events []signals.QueueEvent, now time.Time) error {
 	batch := &pgx.Batch{}
 	for i, e := range events {
@@ -59,6 +68,21 @@ func (s *Postgres) KeepQueueEvents(ctx context.Context, tx pgx.Tx, project strin
 		}
 		if err := results.Close(); err != nil {
 			return fmt.Errorf("keep the queue events of %s: %w", project, err)
+		}
+		repos, pulls := make([]string, len(events)), make([]int, len(events))
+		for i, e := range events {
+			repos[i], pulls[i] = e.Repo, e.PullRequest
+		}
+		if _, err := tx.Exec(ctx, `insert into queue_progress (project, repo, pull_request, entered, exited)
+			select $1, repo, pull_request, count(*) filter (where enters), count(*) filter (where not enters)
+			from queue_events
+			where project = $1 and (repo, pull_request) in (select * from unnest($2::text[], $3::integer[]))
+			group by repo, pull_request
+			on conflict (project, pull_request, repo) do update
+			set entered = greatest(queue_progress.entered, excluded.entered), exited = greatest(queue_progress.exited, excluded.exited)
+			where queue_progress.entered < excluded.entered or queue_progress.exited < excluded.exited`,
+			project, repos, pulls); err != nil {
+			return fmt.Errorf("count the queue moves %s keeps: %w", project, err)
 		}
 	}
 	if _, err := tx.Exec(ctx, `delete from queue_events
@@ -137,10 +161,15 @@ func (s *Postgres) OpenQueuePulls(ctx context.Context, tx pgx.Tx, project string
 	return pulls, nil
 }
 
-// QueueProgress is what the store holds of one pull request's merge-queue moves: how many entries
-// and how many exits, and whether the newest of them is an entry, which is a pull request standing
-// in the queue.
+// QueueProgress is what the store holds of one pull request's merge-queue moves: whether it has
+// kept any (Kept, a row of queue_progress), how many entries and how many exits it has kept, the
+// moves whose events the 6-hour delete removed among them (KeepQueueEvents), and whether the newest
+// kept event is an entry, which is a pull request standing in the queue. A pull request the store
+// has kept no move of may still have moves on GitHub's timeline, such as those before the first
+// boot of the release that keeps them, which its counts of 0 cannot tell from a move just notified
+// (QueueTimelineRead.Unkept).
 type QueueProgress struct {
+	Kept            bool
 	Entered, Exited int
 	Open            bool
 }
@@ -162,25 +191,51 @@ func (p QueueProgress) Needs(enters bool) int {
 	return kept + 1
 }
 
-// QueueProgressOf is the progress of pull request number of project, over the events kept under
-// any of repos (compared without case): a notification names the repository as the record spells
-// it, and a kept event names the one GitHub's event url does, which differ after a transfer.
+// QueueProgressOf is the progress of pull request number of project, over the counts and the
+// events kept under any of repos (compared without case): a notification names the repository as
+// the record spells it, and a kept event names the one GitHub's event url does, which differ after
+// a transfer. The counts are queue_progress's, the greatest kept under any of the names, and Kept
+// is whether it holds a row under one of them, so a pull request whose events the 6-hour delete
+// removed still counts the moves they were; it has no event left only where its newest one was an
+// exit, or where GitHub has no timeline of it (ForgetQueuePull), and reads as out of the queue.
 func (s *Postgres) QueueProgressOf(ctx context.Context, tx pgx.Tx, project string, repos []string, number int) (QueueProgress, error) {
-	lowered := make([]string, len(repos))
-	for i, repo := range repos {
-		lowered[i] = strings.ToLower(repo)
-	}
 	var progress QueueProgress
 	var newest *bool
-	if err := tx.QueryRow(ctx, `select count(*) filter (where enters), count(*) filter (where not enters),
-			(array_agg(enters order by at desc, position desc, event_id desc))[1]
-		from queue_events
-		where project = $1 and lower(repo) = any($2::text[]) and pull_request = $3`,
-		project, lowered, number).Scan(&progress.Entered, &progress.Exited, &newest); err != nil {
+	if err := tx.QueryRow(ctx, `select count(*) > 0, coalesce(max(entered), 0), coalesce(max(exited), 0),
+			(select enters from queue_events
+				where project = $1 and lower(repo) = any($2::text[]) and pull_request = $3
+				order by at desc, position desc, event_id desc limit 1)
+		from queue_progress
+		where project = $1 and pull_request = $3 and lower(repo) = any($2::text[])`,
+		project, lowerRepos(repos), number).Scan(&progress.Kept, &progress.Entered, &progress.Exited, &newest); err != nil {
 		return QueueProgress{}, fmt.Errorf("read the queue moves of %v#%d of %s: %w", repos, number, project, err)
 	}
 	progress.Open = newest != nil && *newest
 	return progress, nil
+}
+
+// ForgetQueuePull deletes every kept event of pull request number of project under any of repos
+// (compared without case, as QueueProgressOf reads them): GitHub answered that its timeline is not
+// there (404 or 410), which no later read answers otherwise, so an entry kept with no exit would
+// read as the longest wait of the queue for good, and the boot would read the timeline again at
+// each start. Its counts of queue_progress stay, which the events it deletes are part of.
+func (s *Postgres) ForgetQueuePull(ctx context.Context, tx pgx.Tx, project string, repos []string, number int) error {
+	tag, err := tx.Exec(ctx, `delete from queue_events where project = $1 and lower(repo) = any($2::text[]) and pull_request = $3`,
+		project, lowerRepos(repos), number)
+	if err != nil {
+		return fmt.Errorf("forget the queue events of %v#%d of %s: %w", repos, number, project, err)
+	}
+	noteRowsWritten(ctx, tag)
+	return nil
+}
+
+// lowerRepos is each of repos in lower case, as the queue's reads under several names compare them.
+func lowerRepos(repos []string) []string {
+	lowered := make([]string, len(repos))
+	for i, repo := range repos {
+		lowered[i] = strings.ToLower(repo)
+	}
+	return lowered
 }
 
 // SetSignalInputReadError records readError as why the boot's read of input for project failed, or

@@ -36,7 +36,9 @@ import (
 //     that names no issue queues none (queueTimelineOf).
 //   - intake.QueueTimeline: GitHub's merge-queue events of one pull request, kept once each by
 //     GitHub's event id (record.Store.KeepQueueEvents), so a timeline read by a webhook's row and
-//     one read by the boot are kept once.
+//     one read by the boot are kept once. A timeline GitHub answered is gone (Gone) forgets the
+//     events kept of the pull request under its repository or the name a configured rename pairs
+//     with it (record.Store.ForgetQueuePull).
 //   - intake.QueueBootStatus: why the boot's read of GitHub's merge queue failed, or that it
 //     succeeded (record.Store.SetSignalInputReadError), so the queue signal reads as not recorded
 //     with that reason where a read failed, and never as an empty queue.
@@ -88,6 +90,9 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 	case intake.PullRequestMerged:
 		return a.queueTimelineOf(ctx, tx, fact.Repo, fact.Number, record.QueueMerged)
 	case intake.QueueTimeline:
+		if fact.Gone {
+			return a.store.ForgetQueuePull(ctx, tx, a.project, a.queueRepos(fact.Repo), fact.Number)
+		}
 		return a.store.KeepQueueEvents(ctx, tx, a.project, fact.Events, a.now())
 	case intake.QueueBootStatus:
 		return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Queue, fact.ReadError, a.now())
@@ -186,27 +191,38 @@ func (a *Admission) queueTimelineOf(ctx context.Context, tx pgx.Tx, repo string,
 // issue so the project's daemon alone runs it. MinCount is how many events of the move's direction
 // GitHub's timeline must hold before the read accepts that it shows the move
 // (record.QueueProgress.Needs), which is what makes a read made before GitHub's timeline caught up
-// a read made again.
+// a read made again. It counts the moves the store has kept, those whose events the 6-hour delete
+// removed among them (record.Store.QueueProgressOf), so a re-entry long after the pull request's
+// last exit, and the exit after it, each need one more than the timeline showed before. A pull
+// request the store has kept no move of, such as one whose moves came before the first boot of the
+// release that keeps them, has no count to need one more than, so its read is Unkept: it accepts
+// only a timeline whose newest move is of the notified direction.
 func (a *Admission) queueTimelineRead(ctx context.Context, tx pgx.Tx, repo string, number int, branch string, move record.QueueMove) error {
 	issue, ok := intake.ProjectBranchIssue(branch, a.project)
 	if !ok || repo == "" || number < 1 {
 		return nil
 	}
-	names := []string{repo}
-	if partner, paired := a.renames().Partner(repo); paired {
-		names = append(names, partner.String())
-	}
-	progress, err := a.store.QueueProgressOf(ctx, tx, a.project, names, number)
+	progress, err := a.store.QueueProgressOf(ctx, tx, a.project, a.queueRepos(repo), number)
 	if err != nil {
 		return err
 	}
 	row, err := record.NewOutboxRow(issue, record.QueueTimelineRead{
-		Repo: repo, Number: number, Move: move, MinCount: progress.Needs(move == record.QueueEnqueued),
+		Repo: repo, Number: number, Move: move, MinCount: progress.Needs(move == record.QueueEnqueued), Unkept: !progress.Kept,
 	}, a.now())
 	if err != nil {
 		return err
 	}
 	return a.store.Enqueue(ctx, tx, row)
+}
+
+// queueRepos is repo and the name a configured rename pairs with it, the names the store's queue
+// events and counts of a pull request are read under: a notification and a read name the
+// repository as the record spells it, and a kept event names the one GitHub's event url does.
+func (a *Admission) queueRepos(repo string) []string {
+	if partner, paired := a.renames().Partner(repo); paired {
+		return []string{repo, partner.String()}
+	}
+	return []string{repo}
 }
 
 // renames is the deployment's repository equivalence, which the engine holds; none where an

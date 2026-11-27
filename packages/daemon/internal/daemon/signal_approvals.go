@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -16,14 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
-
-// retryApprovalsBootRead reads Dispatch for the approvals signal (readApprovalsOnce) until a read
-// succeeds or ctx ends (retryBootRead), so the asks the boot could not read are not left unread
-// until the next boot: the approvals signal reads as not recorded, with the reason of the last
-// failed read, until one succeeds (intake.ApprovalsBootRead).
-func (w *workflowRuntime) retryApprovalsBootRead(ctx context.Context, bootID int64, first, most time.Duration) {
-	retryBootRead(ctx, bootID, first, most, w.readApprovalsOnce)
-}
 
 // readApprovalsOnce is one read of what the approvals signal needs as it stands in Dispatch, which
 // id names (the boot and its read), outside the fact lock, applied as one intake.ApprovalsBootRead:
@@ -48,21 +39,21 @@ func (w *workflowRuntime) retryApprovalsBootRead(ctx context.Context, bootID int
 // being read first; a Dispatch that answers none leaves the one kept, or none, which keeps the
 // signal unrecorded.
 //
-// It says whether every read succeeded. A failed one applies its reason alone, which keeps the
-// approvals signal unrecorded rather than reading a count from a partial read; a read that
-// succeeded clears it.
-func (w *workflowRuntime) readApprovalsOnce(ctx context.Context, id string) bool {
+// It answers nil where every read succeeded and the first failure otherwise, which it has logged.
+// A failed one applies its reason alone, which keeps the approvals signal unrecorded rather than
+// reading a count from a partial read; a read that succeeded clears it. The boot makes it until it
+// succeeds (runBooted).
+func (w *workflowRuntime) readApprovalsOnce(ctx context.Context, id string) error {
 	eventID := fmt.Sprintf("boot-approvals:%s:%s", w.dispatchProject, id)
-	failed := func(why string, err error) bool {
-		if ctx.Err() != nil {
-			return false
+	failed := func(why string, err error) error {
+		if ctx.Err() == nil {
+			w.log.Warn("legion daemon could not read Dispatch's open asks; the approvals signal is not recorded until it can", "read", id, "why", why, "error", err)
+			fact := intake.ApprovalsBootRead{ReadError: fmt.Sprintf("%s: %v", why, err)}
+			if _, err := intake.ApplyFact(ctx, w.pool, "daemon", eventID, fact, w.handlers...); err != nil && ctx.Err() == nil {
+				w.log.Warn("legion daemon could not record the outcome of its read of Dispatch's open asks", "read", id, "error", err)
+			}
 		}
-		w.log.Warn("legion daemon could not read Dispatch's open asks; the approvals signal is not recorded until it can", "read", id, "why", why, "error", err)
-		fact := intake.ApprovalsBootRead{ReadError: fmt.Sprintf("%s: %v", why, err)}
-		if _, err := intake.ApplyFact(ctx, w.pool, "daemon", eventID, fact, w.handlers...); err != nil && ctx.Err() == nil {
-			w.log.Warn("legion daemon could not record the outcome of its read of Dispatch's open asks", "read", id, "error", err)
-		}
-		return false
+		return fmt.Errorf("%s: %w", why, err)
 	}
 	var kept []record.ApprovalAsk
 	var defaultSeq int64
@@ -122,7 +113,7 @@ func (w *workflowRuntime) readApprovalsOnce(ctx context.Context, id string) bool
 	if _, err := intake.ApplyFact(ctx, w.pool, "daemon", eventID, intake.ApprovalsBootRead{Read: read}, w.handlers...); err != nil {
 		return failed("keep what the read of Dispatch's open asks gave", err)
 	}
-	return ctx.Err() == nil
+	return ctx.Err()
 }
 
 // readIssueAsks reads the open asks of issue key and answers them as the asks the approvals signal

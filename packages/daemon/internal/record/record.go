@@ -3093,10 +3093,11 @@ type Store interface {
 	// signal, for project, where none is recorded yet; a later call leaves the first moment.
 	BeginSignalInput(ctx context.Context, tx pgx.Tx, project, input string, at time.Time) error
 	// KeepQueueEvents keeps the merge-queue timeline events of one pull request of project once
-	// each by GitHub's event id, in GitHub's order among events of one second, and deletes the
-	// pull requests of project that left the queue 6 hours or more before now, which no read
-	// counts again. Admission calls it in the fact's own transaction, before that fact's pass
-	// (admit's keepSignalFacts).
+	// each by GitHub's event id, in GitHub's order among events of one second, keeps how many
+	// entries and exits of it the store has kept, and deletes the events of the pull requests of
+	// project that left the queue 6 hours or more before now, which no read counts again, and
+	// never their counts. Admission calls it in the fact's own transaction, before that fact's
+	// pass (admit's keepSignalFacts).
 	KeepQueueEvents(ctx context.Context, tx pgx.Tx, project string, events []signals.QueueEvent, now time.Time) error
 	// QueueEventsAt is every kept merge-queue event of each pull request of project that stands in
 	// the queue or left it in the 6 hours before at, ordered for signals.WaitsOf: what the queue
@@ -3106,8 +3107,12 @@ type Store interface {
 	// the queue (an open wait), which the boot reads the timeline of.
 	OpenQueuePulls(ctx context.Context, tx pgx.Tx, project string) ([]OpenQueuePull, error)
 	// QueueProgressOf is what the store holds of one pull request's merge-queue moves, over the
-	// events kept under any of the repository names given.
+	// counts and the events kept under any of the repository names given; the counts hold the
+	// moves whose events the 6-hour delete removed.
 	QueueProgressOf(ctx context.Context, tx pgx.Tx, project string, repos []string, number int) (QueueProgress, error)
+	// ForgetQueuePull deletes the kept merge-queue events of one pull request under any of the
+	// repository names given, whose timeline GitHub answers is not there, and keeps its counts.
+	ForgetQueuePull(ctx context.Context, tx pgx.Tx, project string, repos []string, number int) error
 	// SetSignalInputReadError records why the boot's read of input for project failed, or clears
 	// it with "" once a read succeeds.
 	SetSignalInputReadError(ctx context.Context, tx pgx.Tx, project, input, readError string, at time.Time) error
