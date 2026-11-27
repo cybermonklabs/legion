@@ -2558,3 +2558,83 @@ test.each([
     laidOut();
   }
 });
+
+/** One row drawn in a list's place as a view of its own, as the Inbox draws the row it opens below
+ *  1280 px (`features/inbox/ReadingView.tsx`): a `<div>` around the row's mark, which carries the
+ *  row marker only where `marker` says so, and the bar over it with one action. The view is drawn
+ *  for `open`, the one row the list holds, and is given to the hand-off as that row (`MarkedList`'s
+ *  `row`) only where `gives` says so. CORE-1 is the row marked last. */
+function OpenRowView({
+  count,
+  gives,
+  leaving = [],
+  marker,
+  open,
+}: {
+  count: number;
+  gives: boolean;
+  leaving?: readonly string[];
+  marker: boolean;
+  open: string;
+}): ReactNode {
+  const view = useRef<HTMLDivElement>(null);
+  const viewOf = (key: string) => (key === open ? view.current : null);
+  const landAtPlace = useLastMarkedPlace({
+    control: (key) => viewOf(key)?.querySelector<HTMLElement>("input") ?? null,
+    lastMarked: () => "CORE-1",
+    leaving: (key) => leaving.includes(key),
+    list: () => view.current,
+    order: () => [open],
+    row: gives ? viewOf : undefined,
+    shown: count > 0,
+  });
+  return (
+    <>
+      <div key={open} ref={view} {...(marker ? ROW_MARKER : {})}>
+        <input aria-label={`Select ${open}`} type="checkbox" />
+      </div>
+      <SelectionBar
+        count={count}
+        label="Selected rows"
+        returnFocus={() => (landAtPlace.land() ? null : focusListStop(view.current))}
+      >
+        <button type="button">Dismiss</button>
+      </SelectionBar>
+    </>
+  );
+}
+
+// A row a list draws as an element no row marker names counts as a row only where the list gives
+// that element (`MarkedList`'s `row`). The press parks the focus on the mark of the row it is
+// taking away, and a wheel of the reader's there is read once answered: in a row the press names
+// as leaving, the landing stays owed and is made on the next row's mark once the row has gone. A
+// list that gives no `row` reads the row around the mark (`ROW_SELECTOR`): the same element with
+// no marker is in no row, so the wheel's end stands and the focus falls to the body with the view;
+// with the marker on it, it is the row, and the landing is made.
+test.each([
+  ["an element the list gives as the row", "Select CORE-2", true, false],
+  ["an element the list does not give, with no row marker", "the body", false, false],
+  ["an element the list does not give, with the row marker", "Select CORE-2", false, true],
+] as const)("a wheel on the parked mark of a leaving row drawn as %s ends on %s once the row goes", async (_drawn, ends, gives, marker) => {
+  const view = render(<OpenRowView count={1} gives={gives} marker={marker} open="CORE-1" />);
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <OpenRowView count={0} gives={gives} leaving={["CORE-1"]} marker={marker} open="CORE-1" />
+    );
+    expect(focusLanding()).toBe("Select CORE-1");
+    document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    // Read once the act's own handlers have run.
+    await act(afterTask);
+    expect(focusLanding()).toBe("Select CORE-1");
+    // CORE-1 has gone, and the view is drawn for CORE-2, the next row.
+    view.rerender(<OpenRowView count={0} gives={gives} marker={marker} open="CORE-2" />);
+    expect(focusLanding()).toBe(ends);
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+  }
+});

@@ -84,6 +84,13 @@ export interface MarkedList {
   /** The control that takes the focus in row `id`, its mark, while the page draws that row; else
    *  null. */
   readonly control: (id: string) => HTMLElement | null;
+  /** The element that counts as row `id` where the hand-off reads where the focus stands, in a
+   *  row the list names as leaving or in any row of it, while the page draws that row; else null.
+   *  A focus anywhere inside it is a focus in that row. A list whose rows are each the row around
+   *  their mark (`ROW_SELECTOR`) leaves this out, and that row is read. The Inbox gives its reading
+   *  view for the row it shows: the view is no row by its markup, and a row marker on it would make
+   *  it one for `components/focus-place.ts`'s row hand-offs inside it too. */
+  readonly row?: (id: string) => Element | null;
   /** Draws row `id`, which the list holds (`order`) and its window has not drawn (`control` is
    *  null), and lands on its mark once drawn, calling `onLand` with that mark in the task that
    *  lands it so the hand-off can run the foot's pass and fit the box against the scroll that
@@ -550,7 +557,8 @@ function leavingRowOf(list: MarkedList, target: EventTarget | null): Element | n
 }
 
 /** The element of the first drawn row of the list, in its order, that contains `target`, limited
- *  to rows `matches` accepts if given, else null. */
+ *  to rows `matches` accepts if given, else null: the element the list gives as that row
+ *  (`MarkedList`'s `row`), else the row around the row's mark. */
 function listRowOf(
   list: MarkedList,
   target: EventTarget | null,
@@ -559,7 +567,8 @@ function listRowOf(
   if (!(target instanceof Node)) return null;
   for (const row of list.order()) {
     if (matches !== undefined && !matches(row)) continue;
-    const element = list.control(row)?.closest(ROW_SELECTOR);
+    const element =
+      list.row === undefined ? list.control(row)?.closest(ROW_SELECTOR) : list.row(row);
     if (element?.contains(target) === true) return element;
   }
   return null;

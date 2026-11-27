@@ -2167,31 +2167,40 @@ function InboxBody({
   });
   // Below 1280 px with a row open, the page draws that row's reading view in the list's place and
   // hides the list (`page`'s `readingView`), and a focus put in the hidden list falls to the
-  // page's body. So there the hand-off reads the view: the view's row is the one row drawn, the
-  // view's own checkbox is that row's mark, and the view's scroller is the list's own stop.
-  /** The open row's reading view while it stands in the list's place, else null. */
-  const barReadingView = (): HTMLElement | null => (mode === "reading" ? paneRef.current : null);
-  /** The list's own stop for the bar's hand-off: the reading view's scroller while the view
-   *  stands in the list's place, else the list column. */
+  // page's body. So there the hand-off reads the open row alone, as the pane selection names it
+  // rather than as the page draws it: the commit that takes the open row off the list draws the
+  // list for that one commit, before the selection is handed on to the next row, whose view hides
+  // the list again in the commit after it. The open row is the one row; its mark is the view's
+  // own checkbox while the view is drawn for it; the view itself is that row for where the focus
+  // stands (`MarkedList`'s `row`), since it carries no row marker; and the view's scroller is the
+  // list's own stop. The open row is named as leaving only where a press of the reader's names it,
+  // as every row is (`leavingNow`), so a landing the bar's press owes waits for the next row's view
+  // and lands on its mark, or on its scroller where no mark is in sight.
+  /** The row open in the reading view, by id, while the view stands in the list's place (`mode`
+   *  is `reading`), else undefined. */
+  const barOpenRow = mode === "reading" ? paneSelection.id : undefined;
+  /** The reading view while it is drawn for the open row `id`, else null. */
+  const barReadingView = (id: string): HTMLElement | null => {
+    const view = paneRef.current;
+    return id === barOpenRow && view?.dataset.inboxReadingRow === id ? view : null;
+  };
+  /** The list's own stop for the bar's hand-off: the reading view's scroller while a row is open
+   *  in it, else the list column. */
   const barStop = (): HTMLElement | null =>
-    barReadingView() === null ? listScroller.current : paneScroller();
+    barOpenRow === undefined ? listScroller.current : paneScroller();
   const landAtPlace = useLastMarkedPlace({
     control: (id) => {
-      const view = barReadingView();
       // The view's own mark is the first checkbox in it: its first line, Back and Mark, comes
       // before the row's body (`ReadingView`).
-      const row = view === null ? originRow(id) : view.dataset.inboxReadingRow === id ? view : null;
+      const row = barOpenRow === undefined ? originRow(id) : barReadingView(id);
       return row?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null;
     },
     lastMarked,
     leaving: leavingNow,
     list: barStop,
-    order: () => {
-      const view = barReadingView();
-      return view === null
-        ? rows().map((row) => row.dataset.inboxRow ?? "")
-        : [view.dataset.inboxReadingRow ?? ""];
-    },
+    order: () =>
+      barOpenRow === undefined ? rows().map((row) => row.dataset.inboxRow ?? "") : [barOpenRow],
+    row: barOpenRow === undefined ? undefined : barReadingView,
     shown: bulkBarShown,
   });
 
