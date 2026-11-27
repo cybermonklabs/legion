@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -576,6 +577,32 @@ func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
 		if got, want := stalledRoots(t, pool), []string{root}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the controller was told of %v, want %v: %s has stopped in implementing beneath the merged root, and the root's wait silences the root alone",
 				got, want, child)
+		}
+	})
+
+	// A root in verifying whose close waits on an open Dispatch child the daemon has not released
+	// waits on the tree's own work: releasing that child is its architect's act, as a
+	// children-first wait on such a child is (lineHolds.waitsOnWorkOutsideItsTree). Nothing ends
+	// that wait by itself, so the phase silences the root no longer and the tree is told. Without
+	// this the controller never heard of a merged root that waited forever on a child nobody had
+	// released.
+	t.Run("unreleased-child", func(t *testing.T) {
+		pool, admission := loneTree(t, phase.Verifying, record.PullRequestMerged, "")
+		const unreleased = "LEGION-950"
+		wait, err := json.Marshal(record.StoredWait{Entered: fixedNow.Add(-72 * time.Hour),
+			OpenChildren: []record.WaitIssue{{Key: unreleased, Status: "todo", Since: fixedNow.Add(-72 * time.Hour)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(t.Context(), `update issues set close_wait = $2 where key = $1`, root, wait); err != nil {
+			t.Fatalf("store %s's wait on %s: %v", root, unreleased, err)
+		}
+
+		tick(t, pool, admission, "unreleased-child")
+
+		if got, want := stalledRoots(t, pool), []string{root}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the controller was told of %v, want %v: %s's close waits on %s, which nobody has released",
+				got, want, root, unreleased)
 		}
 	})
 }
