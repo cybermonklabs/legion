@@ -335,6 +335,10 @@ func (b *bridge) end(ctx context.Context, claude *os.Process, inputEnded, exited
 		b.log.Printf("%s: sending SIGTERM to Claude Code", why)
 		_ = claude.Signal(syscall.SIGTERM)
 		killAt = b.cfg.clock().After(Grace)
+		// CONTROL ONLY: LEGION_TEST_CONTROL_REGRESSION=killnow kills Claude Code with its SIGTERM.
+		if os.Getenv("LEGION_TEST_CONTROL_REGRESSION") == "killnow" {
+			killAt = b.cfg.clock().After(0)
+		}
 	}
 	done := ctx.Done()
 	for {

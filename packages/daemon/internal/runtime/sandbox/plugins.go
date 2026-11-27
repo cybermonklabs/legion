@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -216,6 +217,16 @@ func installBlock(stateHome string, generation uint64, plugins *runtime.PluginIn
 	legionSpec := bunSpec(runtime.PiLegionPackage, plugins.PiLegion)
 	envoySpec := bunSpec(runtime.PiEnvoyPackage, plugins.PiEnvoy)
 	failMsg := fmt.Sprintf("legion plugins: installing %s and %s failed", legionSpec, envoySpec)
+	// CONTROL ONLY: LEGION_TEST_CONTROL_REGRESSION plants a lock that serialises nothing.
+	lock := fmt.Sprintf(`/usr/bin/flock -w %d -- "$cache" `, lockWait)
+	switch os.Getenv("LEGION_TEST_CONTROL_REGRESSION") {
+	case "nb":
+		lock = `/usr/bin/flock -n -- "$cache" `
+	case "lockpath":
+		lock = `/usr/bin/flock -w 600 -- "$cache.$$" `
+	case "nolock":
+		lock = ""
+	}
 	return fmt.Sprintf(`(
   rm -rf -- %s/g*
   mkdir -p -- %s && cd -- %s
@@ -223,7 +234,7 @@ func installBlock(stateHome string, generation uint64, plugins *runtime.PluginIn
   legion_install() {
     [ -d "$cache" ] || rm -f -- "$cache"
     mkdir -p -- "$cache"
-    /usr/bin/flock -w %d -- "$cache" /usr/local/bin/bun add --backend=copyfile --exact %s %s
+    %s/usr/local/bin/bun add --backend=copyfile --exact %s %s
   }
   legion_install || legion_install \
     || { echo %s; exit 1; }
@@ -232,7 +243,7 @@ func installBlock(stateHome string, generation uint64, plugins *runtime.PluginIn
 `,
 		shellprefix.Literal(root),
 		shellprefix.Literal(genDir), shellprefix.Literal(genDir),
-		lockWait,
+		lock,
 		shellprefix.Literal(legionSpec), shellprefix.Literal(envoySpec),
 		shellprefix.Literal(failMsg),
 		shellprefix.Literal(pluginCheckScript),

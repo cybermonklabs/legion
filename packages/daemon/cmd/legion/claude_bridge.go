@@ -71,6 +71,10 @@ func runClaudeBridge(ctx context.Context, cmd *cobra.Command, args []string, std
 // removes its inbox. release never closes stdout itself.
 func ownDescriptor(stdout io.Writer) (frames io.Writer, release func(), err error) {
 	file, ok := stdout.(*os.File)
+	// CONTROL ONLY: LEGION_TEST_CONTROL_REGRESSION=fd1 writes the frames to descriptor 1 itself.
+	if os.Getenv("LEGION_TEST_CONTROL_REGRESSION") == "fd1" {
+		ok = false
+	}
 	if !ok {
 		return stdout, func() {}, nil
 	}

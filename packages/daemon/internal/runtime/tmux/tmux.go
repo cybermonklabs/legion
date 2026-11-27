@@ -783,7 +783,8 @@ func (r *Runtime) stop(ctx context.Context, loc runtime.Locator) error {
 	if !v.verified() {
 		return r.settleUnverified(loc, pane, inc, v)
 	}
-	if conn, ok := r.conns.Conn(loc.Claim); ok {
+	// CONTROL ONLY: LEGION_TEST_CONTROL_REGRESSION=noshutdown kills the pane with no shutdown frame.
+	if conn, ok := r.conns.Conn(loc.Claim); ok && os.Getenv("LEGION_TEST_CONTROL_REGRESSION") != "noshutdown" {
 		if err := conn.Shutdown(ctx); err != nil {
 			r.log.Warn("tmux runtime: shutdown frame not sent; killing the pane", "claim", loc.Claim, "pane", pane, "err", err)
 		} else {
