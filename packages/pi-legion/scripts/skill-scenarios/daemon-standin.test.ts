@@ -1705,7 +1705,7 @@ function caseDispatch(
     },
   });
   started.push({ stop: () => server.stop(true) });
-  return { url: `http://127.0.0.1:${server.port}`, token: "dispatch-token", writes };
+  return { url: `http://127.0.0.1:${server.port}`, token: fixtureSecret("dispatch"), writes };
 }
 
 test("a case's typed daemon parts answer read_record and read_state, and an issue no part records is 404", async () => {
