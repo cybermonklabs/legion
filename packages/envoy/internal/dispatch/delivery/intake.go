@@ -31,6 +31,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -42,6 +43,11 @@ import (
 // ompSessionTrailer matches a commit message's `Omp-Session: <id>` trailer line (the same shape
 // LEGION-294's own collector reads).
 var ompSessionTrailer = regexp.MustCompile(`(?m)^Omp-Session:\s*(\S+)\s*$`)
+
+// intakeCaller is the caller kind of every call to GitHub the two intakes make for a webhook
+// event (githubrate.WithCaller), which the rate reading counts the process's own calls by: the
+// GitHub intake's handler (Intake.deliver) and the job intake's reads (JobIntake.Run).
+const intakeCaller = "webhook_intake"
 
 // Intake wires the NATS consumer to the database, the GitHub App client, the event broker the
 // issue.deployed events go through (RecordDeployedEvents) and the importer a push of a branch is
@@ -69,7 +75,7 @@ type Intake struct {
 // holding its durable and taking it over under a hold and a lease it takes on leases, routing by
 // settings, and attributing each pull request by attributor, timed by tuning (intakeTuning):
 // production's values, which StartIntakes passes, or a test's.
-func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
 	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor}
 	in.heldDurable = newHeldDurable(tuning, natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	return in
@@ -147,8 +153,9 @@ func (in *Intake) Run(ctx context.Context) {
 // handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, a push to
 // handlePushEnvelope, any other kind nowhere. It is the whole filter: the durable is handed every
 // GitHub notification on the bus (githubIntakeSubject), CI settlements and comments among them,
-// and an envelope with no payload that a caller of the listener's publish route can still put
-// there. The payload is decoded once, into its fields. An empty payload, or one of a kind route
+// and an envelope with no payload, which a NATS user granted the lane can still put there (the
+// listener's publish route refuses GitHub's lane by name). The payload is decoded once, into its
+// fields. An empty payload, or one of a kind route
 // does not handle, is discarded before any GitHub call or write, whatever its other fields hold (a
 // CI settlement's hold arrays, cistore.Summary); only a pull request's, a workflow run's or a
 // push's string fields are read, as the flat string map its handler takes (flatPayload), and every
@@ -602,7 +609,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			d.handBackOwn(log, msg, in.tuning.redeliverAfter)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(handling, in.tuning.messageTimeout)
+	ctx, cancel := context.WithTimeout(githubrate.WithCaller(handling, intakeCaller), in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/repocache/fakegcs"
 )
 
@@ -38,15 +39,15 @@ const testPacksPrefix = "acme/widgets/objects/pack/"
 // its place. Each pack and index of the clone is in a Cloud Storage double (fakegcs), served on a
 // loopback address of its own, whose clock runs skew ahead of the test's, and the manifest names
 // each with a V4 address that double signed, as the cache's /packs does. As /tar is asked it records
-// every file the feed's staging repository holds then under objects/pack or refs, and its
-// packed-refs: git init leaves none of them, so any is one the bucket's attempt left.
+// every file the git directories gitDirs names (a glob) hold then under objects/pack or refs, and
+// their packed-refs: git init leaves none of them, so any is one the bucket's attempt left.
 type packsCache struct {
-	tar    *fakeCache
-	clone  string
-	double *fakegcs.Server
-	host   string
-	skew   atomic.Int64
-	feed   string
+	tar     *fakeCache
+	clone   string
+	double  *fakegcs.Server
+	host    string
+	skew    atomic.Int64
+	gitDirs string
 
 	mu           sync.Mutex
 	manifest     PackManifest
@@ -75,7 +76,7 @@ func newPacksCache(t *testing.T, clone string, notReady int) *packsCache {
 
 // publish uploads each pack and index of the clone to the double, with its SHA-256 as the cache
 // writes it, and answers the manifest the cache's /packs would: the bucket, every other file of the
-// clone a feed takes (FeedEntry) with its exact bytes, and each pack before its index, each with
+// clone a fill takes (CacheEntry) with its exact bytes, and each pack before its index, each with
 // its size, SHA-256 and an address the double signed now.
 func (c *packsCache) publish(t *testing.T) PackManifest {
 	t.Helper()
@@ -89,7 +90,7 @@ func (c *packsCache) publish(t *testing.T) PackManifest {
 			return err
 		}
 		name := filepath.ToSlash(relative)
-		if !FeedEntry(name, entry.IsDir()) {
+		if !CacheEntry(name, entry.IsDir()) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -231,14 +232,14 @@ func (c *packsCache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// staged is every file the feed's staging repositories hold under objects/pack or refs, and each
+// staged is every file the watched git directories hold under objects/pack or refs, and each
 // packed-refs, by path.
 func (c *packsCache) staged() []string {
 	var found []string
-	stagings, _ := filepath.Glob(filepath.Join(c.feed, "acme", "widgets.git"+cloneSuffix+"*"))
-	for _, staging := range stagings {
+	gitDirs, _ := filepath.Glob(c.gitDirs)
+	for _, gitDir := range gitDirs {
 		for _, part := range []string{"objects/pack", "refs", "packed-refs"} {
-			_ = filepath.WalkDir(filepath.Join(staging, part), func(path string, entry os.DirEntry, err error) error {
+			_ = filepath.WalkDir(filepath.Join(gitDir, part), func(path string, entry os.DirEntry, err error) error {
 				if err == nil && entry.Type().IsRegular() {
 					found = append(found, path)
 				}
@@ -249,13 +250,14 @@ func (c *packsCache) staged() []string {
 	return found
 }
 
-// serve starts the stand-in for req's feed and points req at it, with the cache's token.
-func (c *packsCache) serve(t *testing.T, req *FetchRequest) {
+// serve starts the stand-in, watching the git directories gitDirs names (a glob) at each /tar, and
+// answers its address.
+func (c *packsCache) serve(t *testing.T, gitDirs string) string {
 	t.Helper()
 	server := httptest.NewServer(c)
 	t.Cleanup(server.Close)
-	c.feed = req.Feed
-	req.CacheURL, req.CacheToken = server.URL, testCacheToken
+	c.gitDirs = gitDirs
+	return server.URL
 }
 
 // edit changes the manifest /packs answers.
@@ -313,14 +315,14 @@ func moved(t *testing.T, address, host string) string {
 	return u.String()
 }
 
-// A fresh feed comes from the cache's bucket only when every part of it holds, and from the
-// cache's /tar otherwise. The control row fills the feed from the bucket, its downloads carrying
-// no Authorization, and asks no /tar. Each other row breaks one part, and the fetch then asks /tar
-// afresh with the cache's token, on a staging repository holding nothing the bucket's attempt
-// wrote, says why in its report's TarReason, and ends with the /tar's feed: a
+// A fresh clone comes from the cache's bucket only when every part of it holds, and from the
+// cache's /tar otherwise. The control row fills the clone's .git from the bucket, its downloads
+// carrying no Authorization, and asks no /tar. Each other row breaks one part, and the fill then
+// asks /tar afresh with the cache's token, on a .git holding nothing the bucket's attempt wrote,
+// says why in its report's TarReason, and ends with the /tar's history: a
 // cache of an earlier release or with no bucket (a 404 naming no repository); a 503; an answer that
 // is no manifest; a manifest listing no ref, no object, or neither, which no whole set is, a pack
-// without its index, a pack and its index twice, a ref a feed does not take, an object of another
+// without its index, a pack and its index twice, a ref a clone does not take, an object of another
 // repository, or an address at another host, each refused before any download; an object of
 // another size; a pack and an index whose bytes the bucket changed; a download the bucket refuses
 // for want of the object, one cut off mid-body, one whose signature the bucket refuses, one past
@@ -331,8 +333,9 @@ func moved(t *testing.T, address, host string) string {
 // answer naming another repository and one that refuses the pod's token are refusals, as /tar's
 // are, outside the issue's volume, and nothing asks /tar. A /tar the cache then refuses, or whose
 // history does not verify, keeps the failure and its classification it has without the bucket, and
-// the report still says why /tar was asked.
-func TestFetchFallsBackFromPacksToTar(t *testing.T) {
+// the report still says why /tar was asked. The .git is a work tree's, as the provision's `git
+// init` makes it, and either source leaves it with the cache's main and a whole history.
+func TestStreamCacheFallsBackFromPacksToTar(t *testing.T) {
 	notFound := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) }
 	unavailable := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set(CacheRepositoryHeader, "acme/widgets")
@@ -342,11 +345,11 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 		name string
 		// edit makes the row's fault once the stand-in is built, before the fetch.
 		edit func(t *testing.T, run *recordingRunner, c *packsCache)
-		// took, when set, is the clock time each step bucketFirst(cacheFetchStep) names takes on a
+		// took, when set, is the clock time each step bucketFirst(fillStep) names takes on a
 		// test clock (slowSteps), and the fetch runs on that clock; otherwise it runs on the local
 		// runner and the wall clock.
 		took map[string]time.Duration
-		// source is where the report says the feed's history came from; reason is how its
+		// source is where the report says the clone's history came from; reason is how its
 		// TarReason begins, and says what else it holds.
 		source, reason, says string
 		// fails is what the fetch's failure holds, "" for none, and outside whether it is outside
@@ -354,7 +357,7 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 		fails   string
 		outside bool
 	}{
-		{name: "a bucket whose every part holds fills the feed", source: SourceBucket},
+		{name: "a bucket whose every part holds fills the clone", source: SourceBucket},
 		{name: "a cache of an earlier release answers a bare 404", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) { c.answer(notFound) },
 			source: SourceTar, reason: reasonNotServed},
 		{name: "a cache with no bucket answers the mux's plain 404", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) { c.answer(http.NotFound) },
@@ -384,7 +387,7 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 		{name: "a pack and its index listed twice", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
 			c.edit(func(m *PackManifest) { m.Objects = append(m.Objects, m.Objects...) })
 		}, source: SourceTar, reason: reasonInvalid, says: "twice"},
-		{name: "a ref a feed does not take", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
+		{name: "a ref a clone does not take", edit: func(_ *testing.T, _ *recordingRunner, c *packsCache) {
 			c.edit(func(m *PackManifest) {
 				m.Refs = append(m.Refs, PackRef{Path: "config", Bytes: []byte("[core]\n\tfsmonitor = true\n")})
 			})
@@ -516,24 +519,27 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 			run := newLocalRunner(t)
 			pushRemoteBranch(t, run.remote, "main", "history.txt")
 			c := newPacksCache(t, cacheOf(t, run.remote), 0)
-			req := fetchRequest(t)
-			c.serve(t, &req)
+			work := t.TempDir()
+			runSetup(t, work, "git", "init", "--quiet", work)
+			gitDir := filepath.Join(work, ".git")
+			address := c.serve(t, gitDir)
 			if tc.edit != nil {
 				tc.edit(t, run, c)
 			}
 			var runner Runner = run
+			var streamClock Clock = clock.Real()
 			if tc.took != nil {
-				clock := newTestClock()
-				req.Clock = clock
-				runner = &slowSteps{recordingRunner: run, clock: clock, step: bucketFirst(cacheFetchStep), took: tc.took, timeouts: map[string][]time.Duration{}}
+				test := newTestClock()
+				streamClock = test
+				runner = &slowSteps{recordingRunner: run, clock: test, step: bucketFirst(fillStep), took: tc.took, timeouts: map[string][]time.Duration{}}
 			}
-			report, err := Fetch(context.Background(), runner, req)
-			t.Logf("the feed's source: %q, because %q; the fetch's failure: %v", report.Source, report.TarReason, err)
+			report, err := StreamCache(context.Background(), runner, cacheStream(address, streamClock, func(string) {}), gitDir)
+			t.Logf("the clone's source: %q, because %q; the fill's failure: %v", report.Source, report.TarReason, err)
 			if tc.fails == "" && err != nil {
-				t.Fatalf("Fetch = %+v, %v", report, err)
+				t.Fatalf("StreamCache = %+v, %v", report, err)
 			}
 			if tc.fails != "" && (err == nil || !strings.Contains(err.Error(), tc.fails) || errors.Is(err, ErrOutsideVolume) != tc.outside) {
-				t.Fatalf("Fetch = %+v, %v; want it failed naming %q, outside the volume %t", report, err, tc.fails, tc.outside)
+				t.Fatalf("StreamCache = %+v, %v; want it failed naming %q, outside the volume %t", report, err, tc.fails, tc.outside)
 			}
 			if report.Source != tc.source || !strings.HasPrefix(report.TarReason, tc.reason) || !strings.Contains(report.TarReason, tc.says) ||
 				tc.reason == reasonNotServed && report.TarReason != reasonNotServed {
@@ -555,23 +561,23 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 				t.Errorf("%d of the bucket's %d downloads carried an Authorization header", downloads.WithAuthorization, downloads.Requests)
 			}
 			if tc.reason == reasonInvalid && downloads.Requests != 0 {
-				t.Errorf("the fetch refused the manifest as invalid after it asked the bucket for %d downloads, not before any", downloads.Requests)
+				t.Errorf("the fill refused the manifest as invalid after it asked the bucket for %d downloads, not before any", downloads.Requests)
 			}
 			if c.packsAsked != 1 || c.packsBearers[0] != "Bearer "+testCacheToken {
 				t.Errorf("/packs was asked %d times, presenting %q, want once with the cache's token", c.packsAsked, c.packsBearers)
 			}
 			if len(c.leftAtTar) != 0 {
-				t.Errorf("/tar was asked while the staging repository held %q, which the bucket's attempt left", c.leftAtTar)
+				t.Errorf("/tar was asked while the clone's .git held %q, which the bucket's attempt left", c.leftAtTar)
 			}
 			wantTars := 0
 			if tc.source == SourceTar {
 				wantTars = 1
 			}
 			if c.tar.tarAsked != wantTars {
-				t.Errorf("Fetch asked /tar %d times, want %d", c.tar.tarAsked, wantTars)
+				t.Errorf("StreamCache asked /tar %d times, want %d", c.tar.tarAsked, wantTars)
 			}
+			assertNoGitHubTransfer(t, run)
 			if tc.fails != "" {
-				assertNothingFilledTheFeed(t, run, req)
 				return
 			}
 			switch tc.source {
@@ -582,25 +588,28 @@ func TestFetchFallsBackFromPacksToTar(t *testing.T) {
 					want = append(want, BucketObject{Name: object.Name, Size: object.Size, SHA256: object.SHA256})
 					size += object.Size
 				}
-				if !slices.Equal(report.Objects, want) || report.BucketBytes != size || report.CacheBytes != 0 || report.TarReason != "" {
-					t.Errorf("Fetch reported %+v, want the bucket's objects %+v, %d bytes and nothing from /tar", report, want, size)
+				if !slices.Equal(report.Objects, want) || report.BucketBytes != size || report.Bytes != 0 || report.TarReason != "" {
+					t.Errorf("StreamCache reported %+v, want the bucket's objects %+v, %d bytes and nothing from /tar", report, want, size)
 				}
 				if downloads := c.double.Count(fakegcs.RouteDownload).Requests; downloads != len(want) {
 					t.Errorf("the double served %d downloads, want one for each of the %d objects", downloads, len(want))
 				}
 				for _, call := range run.Calls() {
 					if slices.Contains(call.Argv, "index-pack") {
-						t.Errorf("Fetch indexed a pack the bucket gave its index with: %q", call.Argv)
+						t.Errorf("StreamCache indexed a pack the bucket gave its index with: %q", call.Argv)
 					}
 				}
 			case SourceTar:
-				if report.CacheBytes != int64(len(c.tar.body)) || len(report.Objects) != 0 || report.BucketBytes != 0 {
-					t.Errorf("Fetch reported %+v, want the tar's %d bytes and nothing from the bucket", report, len(c.tar.body))
+				if report.Bytes != int64(len(c.tar.body)) || len(report.Objects) != 0 || report.BucketBytes != 0 {
+					t.Errorf("StreamCache reported %+v, want the tar's %d bytes and nothing from the bucket", report, len(c.tar.body))
 				}
 			}
-			runSetup(t, report.Feed, "git", "--git-dir="+report.Feed, "fsck", "--connectivity-only")
-			if got, want := strings.TrimSpace(runSetup(t, report.Feed, "git", "--git-dir="+report.Feed, "rev-parse", "refs/heads/main")), strings.TrimSpace(runSetup(t, report.Feed, "git", "--git-dir="+run.remote, "rev-parse", "main")); got != want {
-				t.Errorf("the feed's main is %s, want the remote's %s", got, want)
+			runSetup(t, work, "git", "--git-dir="+gitDir, "fsck", "--connectivity-only")
+			if got, want := strings.TrimSpace(runSetup(t, work, "git", "--git-dir="+gitDir, "rev-parse", "refs/heads/main")), strings.TrimSpace(runSetup(t, work, "git", "--git-dir="+run.remote, "rev-parse", "main")); got != want {
+				t.Errorf("the clone's main is %s, want the remote's %s", got, want)
+			}
+			if bare := strings.TrimSpace(runSetup(t, work, "git", "-C", work, "rev-parse", "--is-bare-repository")); bare != "false" {
+				t.Errorf("the clone's .git reads as bare %q after the fill, want the work tree's .git it was", bare)
 			}
 		})
 	}

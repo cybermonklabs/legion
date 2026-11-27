@@ -149,8 +149,8 @@ type Pod struct {
 	ControllerServiceAccount string
 }
 
-// ProvisionTokens mints the installation token a pod's workspace-fetch container clones the
-// repository with, for the repository it clones, which the token names and reaches alone.
+// ProvisionTokens mints the installation token workspace-init clones the repository with, for the
+// repository it clones, which the token names and reaches.
 // The daemon's is appauth; a harness's may be a token file read on every call.
 type ProvisionTokens interface {
 	Token(ctx context.Context, repo ghrepo.Repository) (string, error)
@@ -199,9 +199,9 @@ type Options struct {
 	// Sandbox is the sandbox each issue pod and the controller's pod runs in, and where a microVM
 	// pod runs (SandboxConfig). Every pod runs in gVisor under the zero value.
 	Sandbox SandboxConfig
-	// Resources are the two pods' requirements: every issue pod's one container and its two init
-	// containers carry Issue, the controller's pod's one container Controller. The daemon hands
-	// both (config.DefaultResources fills what its file leaves out). At
+	// Resources are the two pods' requirements: every issue pod's one container and its init
+	// container, workspace-init, carry Issue, the controller's pod's one container Controller. The
+	// daemon hands both (config.DefaultResources fills what its file leaves out). At
 	// the defaults each cpu and memory request equals its limit, so every pod is Guaranteed; a pod
 	// the deployment gives a lower request is Burstable. The image probe carries its own
 	// (ImageProbe.Resources). New refuses either when it is not a reservation: cpu and memory each a
@@ -395,8 +395,8 @@ type Options struct {
 	// creation (manifest's volumes), so an owner directory this answers that the pod's volume
 	// does not name is a pod whose gh lacks it (movedGhDirs); the `<owner>/<repo>` directories
 	// are no address a pod is replaced for, and movedGhDirs compares the owner directories of
-	// this set alone. repo is the pod's own, read from its workspace fetch (fetchRepository), and
-	// the zero Repository for a pod that fetches none, the controller's; roles are the Apps that
+	// this set alone. repo is the pod's own, read from its workspace-init (fetchRepository), and
+	// the zero Repository for a pod that runs none, the controller's; roles are the Apps that
 	// pod's own roles run as (podAppRoles), both of them for an issue pod and the review App
 	// alone for the project controller's, so what a mint of an App the pod does not run found
 	// leaves its answer untouched. It is read on every

@@ -26,14 +26,16 @@ import (
 func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	t.Parallel()
 	rig := newRelayRig(t)
-	clock := time.Now()
-	known := openKnownSessionsOn(t, rig.harness.client.Conn, func() time.Time { return clock })
+	// The store's own goroutines read its clock too (knownSessionRig's clock says which), so the
+	// test moves it under listenerClock's lock.
+	clock := &listenerClock{now: time.Now()}
+	known := openKnownSessionsOn(t, rig.harness.client.Conn, clock.Now)
 	rig.deps.known = known
 	const sessionID = "ses_stop_and_resume"
 	started := time.Now()
 
 	first := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	rig.register(t, sessionID, map[string]any{"delivery": map[string]any{"consumer": true, "epoch": "epoch-1"}})
+	rig.register(t, sessionID, deliveryModes(map[string]any{"delivery": map[string]any{"consumer": true, "epoch": "epoch-1"}}))
 
 	connected := sendThroughRoutes(t, rig.mux, sessionID, map[string]any{"message": "while you are here"})
 	if connected.status != http.StatusOK || connected.State != sessionStateConnected || connected.RecipientState != string(session.Live) {
@@ -57,7 +59,7 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 
 	// The session shuts down cleanly: its plugin deregisters and its process, and with it the
 	// connection holding its relay subject, goes away.
-	clock = clock.Add(time.Minute)
+	clock.Advance(time.Minute)
 	stopSession(t, rig.mux, sessionID, "")
 	first.close()
 	if _, err := rig.harness.sessions.Get(sessionID); err == nil {

@@ -44,14 +44,25 @@ const (
 // inboxes matches every reply inbox nats.go makes.
 const inboxes = nats.InboxPrefix + ">"
 
+// resumeLane is the listener's resume lane (bus.SessionResumeSubjectPrefix): each session's resume
+// record, the floor its consumer starts again at. Only bus.SessionConsumers writes one, when it
+// deletes a session consumer or drops a restart's pending start, so only a listener that holds the
+// session consumers' calls writes it. Dispatch holds none of them, so no Dispatch path publishes
+// the lane, and that set denies it. A user that could publish there could write a whole record, a
+// floor and the stream's id, which STREAM.INFO reads. A session that comes back would then start
+// past the messages stored while it was away. The listener sets keep the lane, since their
+// listener writes the record itself, and so does Host.
+const resumeLane = bus.SessionResumeSubjectPrefix + ">"
+
 // listenerGrant is the grant every user that runs envoy-listener holds as machine machineID, built
 // from Envoy's own names: Listener adds the session consumers' calls to it (sessionConsumerCalls),
 // ListenerHost those and the subscribe to every notification topic, Dispatch what Dispatch itself
 // needs, and Host the session's entries. Publish, in this order:
-//   - every notification topic (bus.NotificationTopicPrefix): the stream's subjects, the role
-//     lanes, every exception lane, the session relay subjects (bus.DeliverSubjectPrefix), and any
-//     other topic the listener publishes over core NATS, a role lane's forward among them
-//     (/v1/messages/publish refuses by name a notifications. topic no stream subject captures);
+//   - every notification topic (bus.NotificationTopicPrefix) but the two lanes the deny below
+//     names: the stream's subjects, the role lanes, every exception lane, the session relay
+//     subjects (bus.DeliverSubjectPrefix), and any other topic the listener publishes over core
+//     NATS, a role lane's forward among them (/v1/messages/publish refuses by name a
+//     notifications. topic no stream subject captures);
 //   - the stream's info, create and update, its stored-message get, its durable's
 //     (bus.ListenerDurable) info and create, the durable's acknowledgements, and JetStream's
 //     account info. The stored-message get reads one stored message at a time and can create,
@@ -66,6 +77,11 @@ const inboxes = nats.InboxPrefix + ">"
 //     purge by stream alone (the subject a purge filters to is in its request), so each reaches
 //     the whole bucket; a user that holds the bucket's writes can already delete or roll up every
 //     key of it, so neither removes a record that user could not.
+//
+// The publish deny names Dispatch's lane and GitHub's lane (dispatchLane, githubLane), on which
+// one user alone publishes directly each; the comment on dispatchLane says what the deny does not
+// stop. Each call builds the deny afresh, so a grant that takes one lane off (publishing) changes
+// no other call's.
 //
 // Subscribe: reply inboxes, then the role lanes in the machine's queue group (bus.ListenerQueue),
 // which a listener of an earlier release subscribes in, and in the queue group every listener
@@ -100,6 +116,7 @@ func listenerGrant(machineID string) Permissions {
 			contracts.RoleTopicPrefix + "> " + bus.ListenerQueue(machineID),
 			contracts.RoleTopicPrefix + "> " + bus.RoleLaneQueue,
 		},
+		PublishDeny: []string{dispatchLane, githubLane},
 	}
 }
 
@@ -133,7 +150,8 @@ func sessionConsumerCalls() []string {
 // and ListenerHost hold. A hub that renders this set for its own listener gives that listener
 // consumer delivery; a listener connecting as a host or Dispatch user does not have it, and has no
 // session of its own registered at all: every registration it cannot give a consumer is refused by
-// name and writes nothing.
+// name and writes nothing. It keeps the listener grant's deny of Dispatch's lane and GitHub's lane:
+// the listener that receives GitHub's webhook takes WebhookListener instead.
 func Listener(machineID string) Permissions {
 	grant := listenerGrant(machineID)
 	grant.Publish = append(grant.Publish, sessionConsumerCalls()...)
@@ -150,8 +168,9 @@ func Listener(machineID string) Permissions {
 // change to a set rewrites every hub's rendered authorization: it replaces a VM hub's instance and
 // reaches a clustered hub only as a live reload, which is left to later work. The set holds none
 // of the session's publish entries, so a process connecting as this user can neither publish a
-// session's agent stream frames nor subscribe to a session's control subject. Host stays the set
-// of a user a host's sessions share.
+// session's agent stream frames nor subscribe to a session's control subject. It keeps the listener
+// grant's deny of Dispatch's lane and GitHub's lane; the listener that receives GitHub's webhook
+// takes WebhookListenerHost instead. Host stays the set of a user a host's sessions share.
 func ListenerHost(machineID string) Permissions {
 	grant := Listener(machineID)
 	grant.Subscribe = append(grant.Subscribe, bus.NotificationTopicPrefix+">")
@@ -162,40 +181,48 @@ func ListenerHost(machineID string) Permissions {
 const edgeInboxPrefix = "_INBOX_envoy_edge_"
 
 // EdgeInboxPrefix is the inbox prefix of every connection the edge listener of machine machineID
-// makes (cmd/listener in edge mode, nats.CustomInboxPrefix): _INBOX_envoy_edge_<machine id>. So
-// its request replies and its push consumers' deliveries arrive under a prefix of its own, which
-// Edge subscribes in place of every reply inbox, and one edge machine is delivered no other
-// machine's replies. Edge refuses a machine id that is not one subject token, so no machine's
-// prefix covers another's.
+// makes (cmd/listener in edge mode, nats.CustomInboxPrefix): _INBOX_envoy_edge_<machine id>, the
+// machine id in the listener's spelling (bus.ListenerSpelling), as its durable spells it. So its
+// request replies and its push consumers' deliveries arrive under a prefix of its own, which Edge
+// subscribes in place of every reply inbox, and one edge machine is delivered no other machine's
+// replies. The spelling writes each dot as %2E, so a dotted id, such as a fully qualified host
+// name, is one subject token, and an id with no dot, '/' or '\' stays as it is. Edge refuses an id
+// that holds '%' or a space, whose spelling another id can share, so no machine's prefix covers or
+// equals another's.
 func EdgeInboxPrefix(machineID string) string {
-	return edgeInboxPrefix + machineID
+	return edgeInboxPrefix + bus.ListenerSpelling(machineID)
 }
 
 // EdgeRelayReplyPrefix is the receipt family of the edge listener of machine machineID:
-// bus.RelayReplyPrefix followed by the machine id, under which its session relay names a relay
-// frame's receipt subject (that family, then a nuid, the session id and a token). Edge subscribes
-// only its own machine's family, so no edge machine subscribes another machine's receipts, and
-// since it can
-// change no stream's subjects, no stream it reads captures them. It publishes every edge
-// machine's (bus.RelayReplyPrefix): the listener serving a session's relay socket may be another
-// edge machine than the one holding the session's consumer, and it publishes the receipt on the
-// owner's family. So one edge machine can forge a receipt for another machine's frame, which adds
-// nothing past the reach Edge already leaves it: it can update or delete any consumer of the
-// stream. Edge refuses a machine id that is not one subject token, so no machine's family covers
+// bus.RelayReplyPrefix followed by the machine id in the listener's spelling (bus.ListenerSpelling),
+// under which its session relay names a relay frame's receipt subject (that family, then a nuid,
+// the session id and a token). Edge subscribes only its own machine's family, so no edge machine
+// subscribes another machine's receipts, and since it can change no stream's subjects, no stream
+// it reads captures them. It publishes every edge machine's (bus.RelayReplyPrefix): the listener
+// serving a session's relay socket may be another edge machine than the one holding the session's
+// consumer, and it publishes the receipt on the owner's family. So one edge machine can forge a
+// receipt for another machine's frame, which adds nothing past the reach Edge already leaves it:
+// it can update or delete any consumer of the stream. The spelling makes a dotted id one subject
+// token, and Edge refuses the ids EdgeInboxPrefix names, so no machine's family covers or equals
 // another's.
 func EdgeRelayReplyPrefix(machineID string) string {
-	return bus.RelayReplyPrefix + machineID
+	return bus.RelayReplyPrefix + bus.ListenerSpelling(machineID)
 }
 
 // Edge is the grant of an edge listener's own NATS user as machine machineID, serving projects:
 // the listener that serves an outside person's sessions, which no session and no other listener
-// shares. It is Listener's set with these changes and no other. machineID must be one subject
-// token (SessionToken), and projects a non-empty list oauthwire.ValidProjects takes, as
+// shares. It is Listener's set with these changes and no other. machineID must be an id
+// MachineIDToken and bus.CheckListenerMachineID take, as a BROKER_NATS_SERVICES entry's machine id
+// is read: a dotted id among them, which the grant's names spell as one token
+// (bus.ListenerSpelling). projects must be a non-empty list oauthwire.ValidProjects takes, as
 // ENVOY_EDGE_PROJECTS and an edge-listener entry of BROKER_NATS_SERVICES are read: project keys,
-// sorted, each once. Anything else is refused naming why before any subject is built: a key or a
-// machine id that is no one subject token would widen the subjects it names to other projects' or
-// other machines', and an empty list would render a grant of the whole consumer and key-value
-// reach serving no project.
+// sorted, each once. Anything else is refused naming why before any subject is built. A key that
+// is no one subject token would widen the subjects it names to other projects'. A machine id
+// holding '%' could spell another machine's inbox prefix or receipt family (a%2Eb spells as a.b
+// does), and so could a space, which the spelling writes as a hyphen, although a shared listener's
+// ENVOY_MACHINE_ID may hold one. A wildcard or a control character is refused as a
+// BROKER_NATS_SERVICES entry refuses it. An empty list would render a grant of the whole consumer
+// and key-value reach serving no project.
 //
 // Publish, in place of every notification topic, this list and no other notification topic:
 //   - the agent subjects (contracts.AgentTopicPrefix): a send;
@@ -208,7 +235,9 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     (relay_socket.go) publishes the receipt its client sends there;
 //   - the resume lane (bus.SessionResumeSubjectPrefix): where a deleted session consumer stopped;
 //   - the exception lanes (bus.ExceptionTopicPrefix) of the agent subjects and of each project's
-//     role subjects: a failed delivery's report, and an unheld role's refusal.
+//     role subjects. At this head only a role subject's exception goes there: a failed delivery's
+//     report, or an unheld role's refusal. No listener publishes an exception for an agent
+//     subject (cmd/listener's isControlTopic covers the role subjects alone).
 //
 // So a direct publish of the edge's reaches no Dispatch, GitHub, Slack, team or Legion event, no
 // other project's role lane and no role lane in the form that names no project, nothing on the
@@ -251,6 +280,11 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // stream's create, its update and its direct get, the purges of the interest bucket and of the
 // known-session bucket (the edge's known-session store runs the chunk-marker pass too), and the
 // session consumers' calls.
+//
+// Its publish deny is Listener's: Dispatch's lane and GitHub's lane (dispatchLane, githubLane).
+// An edge listener publishes neither lane, and only Dispatch's user and the webhook listener's
+// take a lane off. Its publish list names neither lane, so the deny refuses nothing that list
+// admits today. It keeps both lanes refused if the list grows.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
@@ -314,8 +348,11 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //   - Its KV calls write every record of the seven buckets of bus.ListenerBuckets: interests,
 //     roles, sessions, known sessions, Legion agents, CI state and DPoP proofs.
 func Edge(machineID string, projects []string) (Permissions, error) {
-	if !SessionToken(machineID) {
-		return Permissions{}, fmt.Errorf("natsgrant: the edge's machine id %q is not one subject token", machineID)
+	if !MachineIDToken(machineID) {
+		return Permissions{}, fmt.Errorf("natsgrant: the edge's machine id %q is empty or holds a wildcard, a space or a control character", machineID)
+	}
+	if err := bus.CheckListenerMachineID(machineID); err != nil {
+		return Permissions{}, fmt.Errorf("natsgrant: the edge's machine id %q %w", machineID, err)
 	}
 	if len(projects) == 0 {
 		return Permissions{}, errors.New("natsgrant: the edge serves no project")
@@ -344,14 +381,16 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 	for _, project := range projects {
 		publish = append(publish, bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+project+".>")
 	}
-	for _, entry := range Listener(machineID).Publish {
+	listener := Listener(machineID)
+	for _, entry := range listener.Publish {
 		if !slices.Contains(removed, entry) {
 			publish = append(publish, entry)
 		}
 	}
 	return Permissions{
-		Publish:   publish,
-		Subscribe: []string{EdgeInboxPrefix(machineID) + ".>", bus.DeliverSubjectPrefix + "*", EdgeRelayReplyPrefix(machineID) + ".>"},
+		Publish:     publish,
+		Subscribe:   []string{EdgeInboxPrefix(machineID) + ".>", bus.DeliverSubjectPrefix + "*", EdgeRelayReplyPrefix(machineID) + ".>"},
+		PublishDeny: listener.PublishDeny,
 	}, nil
 }
 
@@ -394,10 +433,10 @@ func KVRead(bucket string) []string {
 }
 
 // DispatchDurables are the fixed durable consumers of the stream that Dispatch's grant lets it
-// bind, beside the listener durable of its machine id. Two users holding Dispatch would bind the
-// same ones.
+// bind, beside the listener durable of its machine id: the two delivery intakes' and the Legion
+// state intake's. Two users holding Dispatch would bind the same ones.
 func DispatchDurables() []string {
-	return []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable}
+	return []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable, bus.DispatchLegionStateDurable}
 }
 
 // Dispatch is the grant of Dispatch's one NATS user, which envoy-dispatch and the envoy-listener
@@ -415,8 +454,25 @@ func DispatchDurables() []string {
 // acknowledgements of each durable Dispatch binds, the KV calls for its webhook-redelivery bucket,
 // and every session's agent stream control subject. Subscribe: every session's agent stream
 // frames.
+//
+// Its publish deny is the listener grant's with Dispatch's lane (dispatchLane) taken off, so this
+// set still allows that lane: envoy-dispatch's outbox publishes every event there as this user. It
+// still denies GitHub's lane, which Dispatch never publishes: its redelivery sweep asks GitHub to
+// send a missed delivery to the webhook listener again. It also denies the listener's resume lane
+// (resumeLane).
+//
+// It keeps the rest of the listener's own lanes, the kept lane (bus.KeptTopicPrefix) and the
+// takeover lane (bus.TakeoverSubjectPrefix), and the wake topic (bus.LegionWakeTopic), since this
+// user publishes them. The outbox keeps a role route's copy on the kept lane
+// (internal/dispatch/outbox/role.go). The listener beside envoy-dispatch keeps a role message with
+// no holder there and moves the kept lane's drain cursors (cmd/listener/role_keep.go). Its sweep
+// also runs the passes of the takeover records, and a pass writes its record again on the takeover
+// lane (cmd/listener/role_takeover.go). It also reports role and agent wakes and its
+// listener_ready on the wake topic (cmd/listener/wake.go). It keeps every session's agent subject
+// too (contracts.LegacyAgentSubject): Dispatch queues a person's targeted message there for a
+// session no store of the listener's holds (internal/dispatch/api/message_queue_publish.go).
 func Dispatch(machineID string) Permissions {
-	listener := listenerGrant(machineID)
+	listener := publishing(listenerGrant(machineID), dispatchLane)
 	publish := listener.Publish
 	for _, durable := range DispatchDurables() {
 		publish = append(publish,
@@ -429,8 +485,9 @@ func Dispatch(machineID string) Permissions {
 	publish = append(publish, KVWrite(bus.WebhookRedeliveryBucket)...)
 	publish = append(publish, contracts.AgentStreamControlSubject("*"))
 	return Permissions{
-		Publish:   publish,
-		Subscribe: append(listener.Subscribe, contracts.AgentStreamFramesSubject("*")),
+		Publish:     publish,
+		Subscribe:   append(listener.Subscribe, contracts.AgentStreamFramesSubject("*")),
+		PublishDeny: append(listener.PublishDeny, resumeLane),
 	}
 }
 
@@ -501,6 +558,18 @@ func SessionToken(id string) bool {
 	})
 }
 
+// MachineIDToken is SessionToken's rule with the dot allowed: whether id can name the machine a
+// grant is built for. A machine id may hold dots, since every name a grant builds from it spells
+// each dot out (bus.ListenerSpelling: bus.ListenerDurable, bus.ListenerQueue, EdgeInboxPrefix and
+// EdgeRelayReplyPrefix), so each name stays one token. A wildcard, a space or a control character
+// is still refused, as SessionToken refuses them. The auth service reads a BROKER_NATS_SERVICES
+// entry's machine id by it (internal/cipher/config), and Edge holds its own machine id to it.
+func MachineIDToken(id string) bool {
+	return id != "" && !strings.ContainsFunc(id, func(r rune) bool {
+		return r == '*' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r)
+	})
+}
+
 // Daemon is the NATS grant of one Legion daemon. Its three durable consumers inspect and create
 // consumers in Envoy's notification stream, fetch their messages, and acknowledge them; the
 // consumer subjects end in `>`, so the grant reaches every consumer of the stream, not only those
@@ -533,7 +602,12 @@ func Daemon() Permissions {
 // holds no session-consumer call (sessionConsumerCalls), so a listener connecting as a host user
 // keeps its own durable alone and can give no session a consumer. A listener whose user no session
 // shares takes ListenerHost instead, which holds those calls beside the same notifications.>
-// subscribe.
+// subscribe. The publish direction keeps the listener grant's deny too, joined with the session's
+// as the allows are, so no session on a host and no listener connecting as a host user may publish
+// directly on Dispatch's lane or GitHub's. A session on a host can still have a message stored
+// under either lane: this set keeps the stream's update, and a stream update that adds a subject
+// transform stores its publish there. The comment on dispatchLane says which grants hold that
+// update and what closes the gap.
 //
 // That subscribe is this set's own, not one it takes from the session's: SessionPattern holds it
 // no longer. It is the reach the sessions sharing a host user already have - one user is one
@@ -554,8 +628,9 @@ func Host(machineID string) Permissions {
 		return strings.HasPrefix(entry, bus.NotificationTopicPrefix)
 	})
 	return Permissions{
-		Publish:   union(listener.Publish, agent.Publish),
-		Subscribe: union(subscribe, outside),
+		Publish:     union(listener.Publish, agent.Publish),
+		Subscribe:   union(subscribe, outside),
+		PublishDeny: union(listener.PublishDeny, agent.PublishDeny),
 	}
 }
 
@@ -608,9 +683,11 @@ func Measure() Permissions {
 // response mapping. The operator's prefix (OperatorInbox) and the measurement job's moved one
 // (MeasureInbox) are under it. The listener, Dispatch and the Legion daemon still use nats.go's
 // _INBOX. (Listener, ListenerHost, Host, Dispatch and Daemon subscribe _INBOX.>), and the edge
-// listener its own machine's prefix, _INBOX_envoy_edge_<machine id> (EdgeInboxPrefix, #4807); until
-// each moves under the root, such a render exports those prefixes as well: _INBOX.> once, and
-// _INBOX_envoy_edge_<machine id>.> once per edge machine, since that prefix shares the root's
+// listener its own machine's prefix, _INBOX_envoy_edge_<machine id> (EdgeInboxPrefix, #4807), the
+// machine id in the listener's spelling (bus.ListenerSpelling): a dotted id is one token, each dot
+// as %2E. Until each moves under the root, such a render exports those prefixes as well: _INBOX.>
+// once, and EdgeInboxPrefix's prefix and .> once per edge machine, so
+// _INBOX_envoy_edge_host%2Eexample.> for the machine host.example. That prefix shares the root's
 // characters but not its token, so the root's export does not reach it, and a wildcard matches
 // whole tokens, so no one export reaches every edge machine's prefix. The measurement job's prefix
 // before its move (legacyMeasureInbox) is outside the root too, and goes once no job sets it.

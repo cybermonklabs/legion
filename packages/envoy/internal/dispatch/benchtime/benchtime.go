@@ -24,27 +24,40 @@
 // equality oracle and reads from there rather than copying it again. For every pair of api and
 // docs and for refs' two backlink counts, it is the text the release before migration
 // 20261101182419 ran, except that api's readings named "over main's document arm" take this
-// release's statement with that release's document arm in its place.
+// release's statement with that release's document arm in its place, and that the newest event
+// under each priority (api) and the agents' answers read (sessionanswers) take the text main sent
+// at the commit each oracle names.
 //
 // Report is that same two-sided reading with no bound, for a statement whose gain is real but
 // smaller than the run-to-run spread of the parts it shares a statement with: the gate then
 // belongs on the piece whose text differs, and the pair over that piece is what fails.
+//
+// PairBuffers is a pair's other gate, for a statement whose claim is fewer buffer reads: it reads
+// each side's shared buffers at its top plan node, under the plan made for its values and under
+// the generic plan a prepared statement settles on (topBuffers), logs every count with its plan,
+// and fails where the after text does not read fewer under each plan. ReportBuffers is the same
+// reading with no bound, for a candidate text beside a before side already read, and
+// AfterBuffers reads and logs one statement's alone. ReportCachedPlans runs each side as a
+// prepared statement seven times under the session's own plan_cache_mode and logs which plan each
+// execution ran, with its buffers, and its whole plan from the sixth on, when Postgres may run
+// its cached generic plan; it bounds nothing.
 //
 // A statement whose gain needs a table a migration of this release adds has no such pair: no
 // one schema holds both sides of it. Before and After measure one side of such a statement
 // alone, each line naming the side it read, the after side on this release's schema and the
 // before side on a database migrated from the release before it, which holds none of this
 // release's migrations, 20261101182419 to 20261101182522; that is protocol 2. A statement whose
-// gain needs an index of this release has a pair all the same: its before side's Setup puts the
-// release before's index back in the measuring transaction, which explain rolls back, so one
-// database holds both sides and the two differ by that setup rather than by their text alone.
+// gain needs an index of this release has a pair all the same: its before side's Setup drops that
+// index, or puts back the release before's index it replaced, in the measuring transaction, which
+// explain rolls back, so one database holds both sides and the two differ by that setup rather
+// than by their text alone.
 // AfterSeries measures a series alone and bounds nothing, as After does, for a read's new work
 // that no before text did and so has nothing to be measured against.
 //
-// It is an ordinary package rather than a _test.go file because all three statement-owning
-// packages (api, refs, docs) run it and Go cannot share test-only code across packages, which is
-// why store/storetest is one too. CI never runs a measurement: every entry point skips while
-// DISPATCH_BENCH_DATABASE_URL is unset, the gate api/search_bench_test.go and
+// It is an ordinary package rather than a _test.go file because all four statement-owning
+// packages (api, refs, docs and sessionanswers) run it and Go cannot share test-only code across
+// packages, which is why store/storetest is one too. CI never runs a measurement: every entry
+// point skips while DISPATCH_BENCH_DATABASE_URL is unset, the gate api/search_bench_test.go and
 // api/related_recall_test.go already use.
 package benchtime
 
@@ -95,8 +108,8 @@ type Statement struct {
 	// `set local` settings, or a change of an index for the one read. The related-item check's
 	// meaning query raises hnsw.ef_search to 400 for its own transaction, and a measurement under
 	// pgvector's default 40 would be of a statement production never runs; the before side of a
-	// read whose gain needs an index of this release puts back the index the release before read
-	// through.
+	// read whose gain needs an index of this release drops that index, or puts back the one the
+	// release before read through.
 	Setup []string
 }
 
@@ -114,8 +127,8 @@ type Runner struct {
 // a non-test file of internal/dispatch may not read the process environment, which
 // internal/textcheck's TestNoReaderBypassesTheSettingsTable holds, so each _test.go caller passes
 // os.Getenv(benchtime.DatabaseURLEnv) in. The gate itself stays here: an empty URL skips t,
-// which is how CI never runs a measurement, and the three callers share that one sentence
-// rather than each keeping a copy of it.
+// which is how CI never runs a measurement, and the four callers share that one sentence rather
+// than each keeping a copy of it.
 func Open(t *testing.T, databaseURL string) *Runner {
 	t.Helper()
 	if databaseURL == "" {
@@ -148,6 +161,20 @@ func Open(t *testing.T, databaseURL string) *Runner {
 	runner.subjects = bindSubjects(t, conn)
 	t.Logf("measurement subjects: %s", runner.subjects)
 	return runner
+}
+
+// OpenStore opens a pool on the measurement database, for the work the one connection a Runner
+// shares does not serve: a reader that reads through a store, and work that runs transactions of
+// its own. databaseURL is what DatabaseURLEnv names, read by the caller as for Open, and a caller
+// opens the pool after Open, which skips t where the URL is empty. The pool is closed when t ends.
+func OpenStore(t *testing.T, databaseURL string) *store.Store {
+	t.Helper()
+	database, err := store.Open(context.Background(), databaseURL)
+	if err != nil {
+		t.Fatalf("open the measurement database: %v", err)
+	}
+	t.Cleanup(database.Pool.Close)
+	return database
 }
 
 // Subjects are the rows the statements read.
@@ -272,10 +299,10 @@ func (r *Runner) bothSides(t *testing.T, name string, before, after []Statement)
 // Before and After measure one side of a statement whose two sides no one schema holds, because
 // its gain needs a table a migration of this release adds: the after text runs only on this
 // release's schema and the before text only on a database migrated from the release before it.
-// A gain that needs an index alone is a pair, whose before side's Setup puts the release
-// before's index back (Statement.Setup). Neither sets a bound, since the two readings come from
-// two runs and putting them together is the caller's; each names the side it measured, so
-// neither can be read as the other's.
+// A gain that needs an index alone is a pair, whose before side's Setup drops that index, or puts
+// back the one the release before read through (Statement.Setup). Neither sets a bound, since the
+// two readings come from two runs and putting them together is the caller's; each names the side
+// it measured, so neither can be read as the other's.
 func (r *Runner) Before(t *testing.T, name string, before Statement) {
 	t.Helper()
 	r.oneSide(t, name, beforeSide, []Statement{before})

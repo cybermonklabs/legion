@@ -30,10 +30,10 @@ type planPut struct {
 	Plan  dispatch.PlanWrite
 }
 
-// planRecordOf is the default plan of the run 2 of the issue.
+// planRecordOf is the default plan of the run 2 of the issue, whose one task needs none.
 func planRecordOf() record.PlanRecord {
 	return record.PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: ownerStepsDefault}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: ownerStepsDefault, Needs: &[]string{}}}}
 }
 
 // ratingRecordOf is the write that rates the plan on the record of the issue's retro.
@@ -45,11 +45,11 @@ func ratingRecordOf() record.StepRecord {
 
 // A plan record is written once, under the row's issue and the plan's own id, with the run, the
 // source, the owner's document and its version where the plan has them, and every task with its
-// steps in order, and the row is done. The owner's plan carries every field a default plan leaves
-// empty, a version that is not its run, and two tasks out of the order of their ids, so a field the
-// copy to Dispatch drops, or a sort of the tasks, changes what Dispatch receives. The daemon queues
-// no owner's plan yet (the workflow's defaultPlan is its one plan): that case holds the copy to
-// Dispatch of each field such a plan carries, which the record's type already has.
+// steps in order and its needs, and the row is done. The owner's plan carries every field a default
+// plan leaves empty, a version that is not its run, and two tasks out of the order of their ids, one
+// of which needs the other, so a field the copy to Dispatch drops, or a sort of the tasks, changes
+// what Dispatch receives. A row the release before wrote carries no needs, and its write carries
+// none either, which Dispatch reads as needs not recorded.
 func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -58,13 +58,18 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 		want dispatch.PlanWrite
 	}{
 		{name: "the default plan", plan: planRecordOf(), want: dispatch.PlanWrite{Generation: 2, Source: "default",
-			Tasks: []dispatch.PlanTask{{ID: "default", Steps: ownerStepsDefault}}}},
+			Tasks: []dispatch.PlanTask{{ID: "default", Steps: ownerStepsDefault, Needs: &[]string{}}}}},
+		{name: "a row of the release before, with no needs", plan: func() record.PlanRecord {
+			p := planRecordOf()
+			p.Tasks[0].Needs = nil
+			return p
+		}(), want: dispatch.PlanWrite{Generation: 2, Source: "default", Tasks: []dispatch.PlanTask{{ID: "default", Steps: ownerStepsDefault}}}},
 		{
 			name: "an owner's plan of two tasks",
 			plan: record.PlanRecord{ID: planRecordID, Generation: 3, Source: "owner", PlanDocument: &record.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
-				Tasks: []record.PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}},
+				Tasks: []record.PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}, Needs: &[]string{"api"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}, Needs: &[]string{}}}},
 			want: dispatch.PlanWrite{Generation: 3, Source: "owner", PlanDocument: &dispatch.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
-				Tasks: []dispatch.PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}},
+				Tasks: []dispatch.PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}, Needs: &[]string{"api"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}, Needs: &[]string{}}}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Dispatch HTTP API",
-    "description": "Generated from the Go route table (internal/dispatch/api/routes_table.go) and the Go types beside it (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never this document: it is committed so a client's types can be rendered from it, and `envoy-dispatch openapi --check` refuses a tree where it is stale.",
+    "description": "Generated from Dispatch's route declarations (one file per route in internal/dispatch/api) and the Go types they name (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never this document: it is committed so a client's types can be rendered from it, and `envoy-dispatch openapi --check` refuses a tree where it is stale.",
     "version": "1"
   },
   "paths": {
@@ -521,7 +521,7 @@
         ]
       },
       "post": {
-        "description": "Send an issue-less targeted message to a session: {body, delivery, in_reply_to?, connected_only?}, answered once its own delivery attempt has settled, on past a client that gives up. A session the Envoy listener knows and that is not running is a recipient: the listener stores the message and hands it over when that session runs again, and the attempt is recorded queued rather than sent. A session the listener knows nothing about (\"no live session \u003cid\u003e\") is queued too: Dispatch publishes the message on that session's own subject itself, and the attempt fails with \"no live session \u003cid\u003e\" only where Dispatch has no NATS to publish on or the publish fails. connected_only asks for a session that is running now and fails the attempt with \"the session is stopped\", nothing stored; every later attempt of the message asks what its first asked. A model or thinking switch the session would run as its own turn - a person's own Send or Aside, not one an agent wrote for them, whose whole body is one /model or /effort line, which would otherwise apply at an unknown later time - is held to a running session at every send whether or not the request set connected_only. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not.",
+        "description": "Send an issue-less targeted message to a session: {body, delivery, in_reply_to?, in_reply_to_block?, quote?, occurrence?, connected_only?}, answered once its own delivery attempt has settled, on past a client that gives up. A session the Envoy listener knows and that is not running is a recipient: the listener stores the message and hands it over when that session runs again, and the attempt is recorded queued rather than sent. A session the listener knows nothing about (\"no live session \u003cid\u003e\") is queued too: Dispatch publishes the message on that session's own subject itself, and the attempt fails with \"no live session \u003cid\u003e\" only where Dispatch has no NATS to publish on or the publish fails. connected_only asks for a session that is running now and fails the attempt with \"the session is stopped\", nothing stored; every later attempt of the message asks what its first asked. A model or thinking switch the session would run as its own turn - a person's own Send or Aside, not one an agent wrote for them, whose whole body is one /model or /effort line, which would otherwise apply at an unknown later time - is held to a running session at every send whether or not the request set connected_only. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 with the message the key made and its deliveries as they stand, Idempotency-Replayed: ?1, first sending the one attempt it still owes (none yet, or one stranded past its claim) and nothing else; a listener it cannot reach is recorded on the attempt, so a repeat is answered while the listener is down. An attempt a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. Beside in_reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without in_reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_MESSAGE, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS.",
         "operationId": "postApiV1AgentsBySessionIdMessages",
         "parameters": [
           {
@@ -1707,7 +1707,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on a document or one of its quotes. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target.",
+        "description": "Comment on a document or one of its quotes. A reply names the comment it answers in reply_to, and one block of it in reply_to_block. Beside reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_COMMENT, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target.",
         "operationId": "postApiV1ArtifactsByIdComments",
         "parameters": [
           {
@@ -3883,7 +3883,7 @@
     },
     "/api/v1/comments/{id}/reply": {
       "post": {
-        "description": "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal.",
+        "description": "The mentioned session's reply to a delivery; the session names itself in actor. For a mention of a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; for a mention of a session (session:\u003cid\u003e), so may a session the listener names as having replaced the attempt's session, which it handed that session's unread messages. A listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the mention is 500, never a refusal. A reply names one block of comment {id} in reply_to_block. Beside reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_COMMENT, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS.",
         "operationId": "postApiV1CommentsByIdReply",
         "parameters": [
           {
@@ -6554,7 +6554,7 @@
     },
     "/api/v1/issues/{key}/asks": {
       "get": {
-        "description": "List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder).",
+        "description": "List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. An ask's thread is the ask, each comment whose ask_id names it, and the answer and the resolution the ask holds now (a person's decline among them), each written by its actor at its own at; an answer or a resolution a later one replaced is no entry. Its row is the list's row with last_activity_at, and ?state= and ?thread=1 filter and shape the page as they filter and shape the list. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, \u003clast_activity_at\u003e,\u003cid\u003e, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. The route takes no ?person=. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice.",
         "operationId": "getApiV1IssuesByKeyAsks",
         "parameters": [
           {
@@ -6583,6 +6583,37 @@
             }
           },
           {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "activity"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -6607,10 +6638,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/IssueAskRow"
-                  },
-                  "type": "array"
+                  "oneOf": [
+                    {
+                      "items": {
+                        "$ref": "#/components/schemas/IssueAskRow"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AskThreadPage"
+                    }
+                  ]
                 }
               }
             }
@@ -6884,7 +6922,7 @@
     },
     "/api/v1/issues/{key}/comments": {
       "get": {
-        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
+        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. A comment thread is a comment with no reply_to and no ask_id, and each comment whose reply_to names it; its row is {comment, replies, last_activity_at}, the replies oldest first, each shaped as the list shapes it. A comment with an ask_id is an entry of its ask's thread on GET /api/v1/issues/{key}/asks, and of no comment thread. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, \u003clast_activity_at\u003e,\u003cid\u003e, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. ?person=in keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor, or one of its comments is a reply that stores a quote; the route takes no other person value. With ?order=activity, ?artifact= keeps each thread whose first comment is anchored in that document, with all its replies, and the page's ETag hashes every parameter of the request, If-None-Match answering 304 as for the list. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice.",
         "operationId": "getApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6899,6 +6937,47 @@
             "name": "artifact",
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "activity"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "person",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "in"
+              ],
               "type": "string"
             }
           },
@@ -6927,10 +7006,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/CommentWithTrees"
-                  },
-                  "type": "array"
+                  "oneOf": [
+                    {
+                      "items": {
+                        "$ref": "#/components/schemas/CommentWithTrees"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "$ref": "#/components/schemas/CommentThreadPage"
+                    }
+                  ]
                 }
               }
             }
@@ -6939,7 +7025,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target.",
+        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. Beside reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_COMMENT, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target.",
         "operationId": "postApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -7417,7 +7503,7 @@
     },
     "/api/v1/issues/{key}/legion": {
       "get": {
-        "description": "One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is the daemon's object exactly as stored, or null. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue.",
+        "description": "One issue's Legion state, from what the Legion intake recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is the daemon's object exactly as stored, or null. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run. Each write of a run that stores something new makes it larger, and a write sent again leaves it. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue.",
         "operationId": "getApiV1IssuesByKeyLegion",
         "parameters": [
           {
@@ -7464,7 +7550,7 @@
     },
     "/api/v1/issues/{key}/messages": {
       "get": {
-        "description": "List an issue's message threads: every root message, oldest first, each with its deliveries and its replies.",
+        "description": "List an issue's message threads: every root message, oldest first, each with its deliveries and its replies. ?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. A message thread is a root message and every message under it at any depth, and its row is the list's row with last_activity_at. A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to 100, and 20 without it. before is the position of the page's last thread, \u003clast_activity_at\u003e,\u003cid\u003e, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. ?person=in keeps each thread with an entry a person wrote, and each thread whose root has no target; ?person=none keeps each thread whose root targets an agent, as role:\u003cname\u003e or session:\u003cid\u003e, and that holds no entry a person wrote. Neither value holds a thread whose root the Legion daemon of the issue's project wrote, the session legion-daemon:\u003cPROJECT\u003e (legion-daemon:ACME on an ACME issue), whoever wrote its other entries, so each other thread is on the pages of exactly one of the two. Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to 100, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice.",
         "operationId": "getApiV1IssuesByKeyMessages",
         "parameters": [
           {
@@ -7472,6 +7558,48 @@
             "in": "path",
             "required": true,
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "activity"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "person",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "in",
+                "none"
+              ],
               "type": "string"
             }
           },
@@ -7500,10 +7628,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/MessageRead"
-                  },
-                  "type": "array"
+                  "oneOf": [
+                    {
+                      "items": {
+                        "$ref": "#/components/schemas/MessageRead"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageThreadPage"
+                    }
+                  ]
                 }
               }
             }
@@ -7512,7 +7647,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text.",
+        "description": "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. Beside in_reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without in_reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_MESSAGE, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text.",
         "operationId": "postApiV1IssuesByKeyMessages",
         "parameters": [
           {
@@ -7637,7 +7772,7 @@
     },
     "/api/v1/issues/{key}/plans/{id}": {
       "put": {
-        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose experiment's group takes none from its owner, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "description": "Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps, needs?}]}: the Legion daemon writes it under the uuid it derives for the run's plan, when the run's work starts and again at each later version of the owner's plan that Legion takes. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan or whose experiment's group takes none from its owner, with neither; each task's id is unique in the plan, its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role, and its needs are the ids of the tasks of the plan it needs, [] for none; a task written with no needs, as a daemon of the release before writes it, records them as not recorded, and the answer and the steps read give them as null. A Dispatch of the release before ignores needs, so a plan written to it also records them as not recorded. source, artifact_id, version and tasks are one fact: a write whose version is above the one the plan holds replaces all four, and every other write leaves them, a default plan counting as version 0, so a write that arrives late, twice or out of order changes nothing. The generation is the first write's. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session (403 STEP_WRITER otherwise). A bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form, a need that names no task of the plan among them, is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyPlansById",
         "parameters": [
           {
@@ -7973,7 +8108,7 @@
         "x-auth": "any"
       },
       "put": {
-        "description": "Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. legion-daemon:\u003cproject\u003e is the session the Legion daemon of the issue's project writes as, \u003cproject\u003e the key up to its first -. With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token publishes: a credential that holds legion-status and proves session legion-daemon:\u003cproject\u003e, or one that holds legion-status, proves session legion-daemon:\u003cP\u003e of another project's daemon and names that project P. Every other credential is 403 ROLE_HOLDER_FORBIDDEN, the shared token whose actor names that session included. With it off, the actor must be session legion-daemon:\u003cproject\u003e, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session, and any other actor is 403 ROLE_HOLDER_FORBIDDEN; a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. While the project's proven_sessions is on (PUT /api/v1/projects/{key}/proven-sessions), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 and 404 refusals below. Each stored pair records whether a daemon's own token wrote it, the issue's own daemon's or another project's daemon's, a pair the write keeps unchanged included, and only such a pair names an architect whose write R26 lets through. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window.",
+        "description": "Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. legion-daemon:\u003cproject\u003e is the session the Legion daemon of the issue's project writes as, \u003cproject\u003e the key up to its first -. With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token publishes: a credential that holds legion-status and proves session legion-daemon:\u003cproject\u003e, or one that holds legion-status, proves session legion-daemon:\u003cP\u003e of another project's daemon and names that project P. Every other credential is 403 ROLE_HOLDER_FORBIDDEN, the shared token whose actor names that session included. With it off, the actor must be session legion-daemon:\u003cproject\u003e, or session legion-daemon:\u003cP\u003e of another project's daemon whose broker token names P and proves that session, and any other actor is 403 ROLE_HOLDER_FORBIDDEN; a bearer caller names its own session, so any caller whose credential proves no session can name the session of the issue's project's daemon. While the project's proven_sessions is on (PUT /api/v1/projects/{key}/proven-sessions), the route takes a write only on a credential that proves that session, a broker token of it, and any other is 403 ROLE_HOLDER_NOT_PROVEN, after the 400 and 404 refusals below. Each stored pair records whether a daemon's own token wrote it, the issue's own daemon's or another project's daemon's, a pair the write keeps unchanged included, and only such a pair names an architect whose write R26 lets through. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. A write that changes the set of pairs appends one issue event, issue.role_holders_changed, whose payload is {key, holders, previous_holders}: the set it stored and the set it replaced, each in workflow order, each pair {role, session, recorded_at}, as the write's actor and at the write's time; GET /api/v1/issues/{key}/events serves it, so the log says which session held each role at a past time, from the release that writes the event on. A write that keeps every pair appends nothing. The event is quiet and notifies nobody, and the write takes a closed issue. Each write the route takes marks the issue's project, and from then on a write of the spec or the Verification document of an issue of the project that Legion runs needs a person or an architect of the issue or of an issue above it (403 DOCUMENT_WRITER_NOT_ARCHITECT). Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window.",
         "operationId": "putApiV1IssuesByKeyRoleHolders",
         "parameters": [
           {
@@ -8126,7 +8261,7 @@
     },
     "/api/v1/issues/{key}/steps": {
       "get": {
-        "description": "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
+        "description": "The tasks of the issue's workflow and every run of their steps: {issue, tasks: [{task, needs, planned?, steps}]}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not: needs is the ids of the tasks of that plan the task needs, as the plan's node records them ([] for a task that needs none), and null where the node recorded none: a daemon of the release before wrote that plan, or a Dispatch of the release before took the write and dropped its needs, which no later write at the same version puts back; planned is each step the plan gives it, {step, name, state}: its place from 1, its role or role:key, and where it stands among the records of the plan's own run of the issue (its generation) - not started where none of them is a run of it, running while its newest run there has no end, and that run's result once it has one. Then each other task with a run, in the order of its first run, with null needs and no planned. The read takes the plan node and the runs alone, and reads no document. Each task's runs come in the order they ran, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too, an issue with no plan and no run reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
         "operationId": "getApiV1IssuesByKeySteps",
         "parameters": [
           {
@@ -10210,7 +10345,7 @@
     },
     "/api/v1/messages/{id}/reply": {
       "post": {
-        "description": "The targeted session's reply to a delivery; the session names itself in actor. For an attempt sent for a route to a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; a listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT.",
+        "description": "The targeted session's reply to a delivery; the session names itself in actor. For an attempt sent for a route to a role (role:\u003cname\u003e), the role's live holder may reply too, as the Envoy listener names it; for one sent to a session (session:\u003cid\u003e), so may a session the listener names as having replaced the attempt's session, which it handed that session's unread messages. A listener that does not answer is 503 ENVOY_UNAVAILABLE, and a failed read of the attempt is 500, never a refusal. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT. A reply, never a follow-up, names one block of message {id} in in_reply_to_block. Beside in_reply_to_block, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without in_reply_to_block, an empty quote and an occurrence below 0 are each 400 INVALID_MESSAGE, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS.",
         "operationId": "postApiV1MessagesByIdReply",
         "parameters": [
           {
@@ -12088,7 +12223,7 @@
     },
     "/api/v1/projects/{key}/legion/board": {
       "get": {
-        "description": "The Legion board of the project its path names, from what the sampler recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "The Legion board of the project its path names, from what Dispatch recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "getApiV1ProjectsByKeyLegionBoard",
         "parameters": [
           {
@@ -12135,7 +12270,7 @@
     },
     "/api/v1/projects/{key}/legion/daemon": {
       "get": {
-        "description": "The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "The Legion daemon this project's state is read from, with the actor that first named it and when it was last written; null when the project names none. With NATS, Dispatch records the state events that daemon publishes, and reads its `GET /legion/v1/state` whole only where the events cannot carry the state. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "getApiV1ProjectsByKeyLegionDaemon",
         "parameters": [
           {
@@ -12187,7 +12322,7 @@
         "x-auth": "any"
       },
       "put": {
-        "description": "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. With NATS, a write can have Dispatch read that daemon whole. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "putApiV1ProjectsByKeyLegionDaemon",
         "parameters": [
           {
@@ -12284,7 +12419,7 @@
     },
     "/api/v1/projects/{key}/plans": {
       "get": {
-        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until.",
+        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps, needs}]}, each task's needs null where the write recorded none, and plan null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until.",
         "operationId": "getApiV1ProjectsByKeyPlans",
         "parameters": [
           {
@@ -12592,7 +12727,7 @@
     },
     "/api/v1/reference-targets": {
       "get": {
-        "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A member naming a comment or a message, or a block of one, also carries edited_at where the post's author edited it, and deleted_at and deleted_by where its author deleted it: a deleted post's member is not gone and its name is \"\", and a member naming a block of it is gone, with no name and no text_tree. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
+        "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A member naming a comment or a message, or a block of one, also carries edited_at where the post's author edited it, and deleted_at and deleted_by where its author deleted it: a deleted post's member is not gone and its name is \"\", and a member naming a block of it is gone, with no name and no text_tree. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it, and so is a reference to a party (a person, an agent's session or a role), which the grammar reads but the reference graph holds no node for; any other reference that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
         "operationId": "getApiV1ReferenceTargets",
         "parameters": [
           {
@@ -16512,6 +16647,223 @@
         ],
         "type": "object"
       },
+      "AskThreadPage": {
+        "properties": {
+          "before": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "remaining": {
+            "type": "integer"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/AskThreadRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threads",
+          "before",
+          "remaining"
+        ],
+        "type": "object"
+      },
+      "AskThreadRow": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approval": {
+            "$ref": "#/components/schemas/AskApproval"
+          },
+          "approval_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "block_artifact": {
+            "$ref": "#/components/schemas/AskBlockArtifact"
+          },
+          "block_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "last_reply": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskLastReply"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "opened_event_id": {
+            "type": "integer"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "referenced_by_count": {
+            "type": "integer"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "thread": {
+            "$ref": "#/components/schemas/AskThread"
+          },
+          "urgency": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "block_id",
+          "author",
+          "kind",
+          "question",
+          "options",
+          "multiple",
+          "urgency",
+          "anchor",
+          "state",
+          "answer",
+          "created_at",
+          "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at",
+          "last_reply",
+          "last_activity_at"
+        ],
+        "type": "object"
+      },
       "AskWithTrees": {
         "properties": {
           "anchor": {
@@ -18286,6 +18638,18 @@
               "string"
             ]
           },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "reply_to_block": {
             "type": [
               "null",
@@ -18301,6 +18665,59 @@
         },
         "required": [
           "attempt"
+        ],
+        "type": "object"
+      },
+      "CommentThreadPage": {
+        "properties": {
+          "before": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "remaining": {
+            "type": "integer"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/CommentThreadRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threads",
+          "before",
+          "remaining"
+        ],
+        "type": "object"
+      },
+      "CommentThreadRow": {
+        "properties": {
+          "comment": {
+            "$ref": "#/components/schemas/CommentWithTrees"
+          },
+          "last_activity_at": {
+            "type": "string"
+          },
+          "replies": {
+            "items": {
+              "$ref": "#/components/schemas/CommentWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "comment",
+          "replies",
+          "last_activity_at"
         ],
         "type": "object"
       },
@@ -18701,6 +19118,18 @@
               "null",
               "string"
             ]
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [
@@ -18912,6 +19341,18 @@
             "type": [
               "array",
               "null"
+            ]
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
+            "type": [
+              "null",
+              "string"
             ]
           },
           "reply_to": {
@@ -19179,6 +19620,18 @@
             ]
           },
           "in_reply_to_block": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
             "type": [
               "null",
               "string"
@@ -26184,6 +26637,18 @@
               "null",
               "string"
             ]
+          },
+          "occurrence": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "quote": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [
@@ -26304,6 +26769,62 @@
           "deleted_by",
           "deliveries",
           "reply_block"
+        ],
+        "type": "object"
+      },
+      "MessageThreadPage": {
+        "properties": {
+          "before": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "remaining": {
+            "type": "integer"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/MessageThreadRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threads",
+          "before",
+          "remaining"
+        ],
+        "type": "object"
+      },
+      "MessageThreadRow": {
+        "properties": {
+          "last_activity_at": {
+            "type": "string"
+          },
+          "message": {
+            "$ref": "#/components/schemas/MessageWithTrees"
+          },
+          "replies": {
+            "items": {
+              "$ref": "#/components/schemas/MessageWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "unread": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "message",
+          "replies",
+          "last_activity_at"
         ],
         "type": "object"
       },
@@ -27775,6 +28296,46 @@
           "id": {
             "type": "string"
           },
+          "needs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "steps",
+          "needs"
+        ],
+        "type": "object"
+      },
+      "PlanTaskInput": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "needs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
           "steps": {
             "items": {
               "type": "string"
@@ -27791,24 +28352,29 @@
         ],
         "type": "object"
       },
-      "PlanTaskInput": {
+      "PlannedStep": {
         "properties": {
-          "id": {
+          "name": {
             "type": "string"
           },
-          "steps": {
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
+          "state": {
+            "enum": [
+              "not started",
+              "running",
+              "passed",
+              "failed",
+              "stopped"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
           }
         },
         "required": [
-          "id",
-          "steps"
+          "step",
+          "name",
+          "state"
         ],
         "type": "object"
       },
@@ -29127,6 +29693,12 @@
           "node": {
             "type": "string"
           },
+          "occurrence": {
+            "type": "integer"
+          },
+          "quote": {
+            "type": "string"
+          },
           "ref": {
             "type": "string"
           },
@@ -29162,6 +29734,12 @@
             "type": "string"
           },
           "node": {
+            "type": "string"
+          },
+          "occurrence": {
+            "type": "integer"
+          },
+          "quote": {
             "type": "string"
           },
           "ref": {
@@ -30657,6 +31235,21 @@
       },
       "StepTask": {
         "properties": {
+          "needs": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          },
+          "planned": {
+            "items": {
+              "$ref": "#/components/schemas/PlannedStep"
+            },
+            "type": "array"
+          },
           "steps": {
             "items": {
               "$ref": "#/components/schemas/StepRecord"
@@ -30672,6 +31265,7 @@
         },
         "required": [
           "task",
+          "needs",
           "steps"
         ],
         "type": "object"

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -50,7 +51,7 @@ func seedLegionIssue(t *testing.T, database *store.Store, project string, number
 	return key
 }
 
-// seedLegionObservation writes one observation as the sampler would have recorded it.
+// seedLegionObservation writes one observation as a read of the daemon would have recorded it.
 func seedLegionObservation(t *testing.T, database *store.Store, project, issue, field, value string, at time.Time) {
 	t.Helper()
 	legionExec(t, database, `insert into legion_observations (project, issue_key, field, value, observed_at)
@@ -73,7 +74,7 @@ func seedLegionRead(t *testing.T, database *store.Store, project string, at time
 // waiting on a person, a held issue, an issue that finished, a parent in `awaiting_children` that
 // the daemon lists as blocked on its open child, which its tree has not started, and a parent in
 // `awaiting_children` that no list names, its last child closed and the pass that returns it not
-// yet run. It is the state one read of a daemon would have recorded, written as the sampler
+// yet run. It is the state one whole read of a daemon would have recorded, written as that read
 // records it.
 func seedLegionBoard(t *testing.T, database *store.Store, project string, now time.Time) {
 	t.Helper()
@@ -186,18 +187,34 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if board.Project != "INFRA" {
 		t.Fatalf("the board names project %q, want INFRA", board.Project)
 	}
-	if len(board.Columns) != len(legionBoardColumnOrder) {
-		t.Fatalf("the board has %d columns, want the %d the view draws", len(board.Columns), len(legionBoardColumnOrder))
+	// The twelve columns the board answers, left to right, each with the label the view draws over
+	// it, written out rather than read from legion.Columns and legionBoardColumnLabels, which the
+	// route is built from: a reorder, a lost column or a changed label fails here.
+	wantColumns := []struct{ id, label string }{
+		{"queue", "Queue"},
+		{"design", "Design"},
+		{"planning", "Planning"},
+		{"implementing", "Implementing"},
+		{"testing", "Testing"},
+		{"reviewing", "Reviewing"},
+		{"accepting", "Accepting"},
+		{"retro", "Retro"},
+		{"merging", "Merging"},
+		{"awaiting_children", "Waiting on children"},
+		{"awaiting_person", "Waiting on a person"},
+		{"held", "Held"},
 	}
-	for index, column := range board.Columns {
-		want := legionBoardColumnOrder[index]
-		if column.ID != want.id || column.Label != want.label {
+	if len(board.Columns) != len(wantColumns) {
+		t.Fatalf("the board has %d columns, want the %d the view draws", len(board.Columns), len(wantColumns))
+	}
+	for index, want := range wantColumns {
+		if column := board.Columns[index]; column.ID != want.id || column.Label != want.label {
 			t.Fatalf("column %d is %q/%q, want %q/%q", index, column.ID, column.Label, want.id, want.label)
 		}
 	}
 	// The waiting line's own order, which the view does not re-sort: the answered root first,
 	// though Dispatch's rank would put the queued root there, and the blocked one after both.
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-10", "INFRA-1", "INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-10", "INFRA-1", "INFRA-2"}) {
 		t.Errorf("the queue holds %v, want the waiting line then the blocked issue", got)
 	}
 	// Each parent in `awaiting_children` carries a card, in its own column (the map below). The
@@ -211,17 +228,17 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		t.Errorf("the card of the parent whose last child closed = %+v, want nothing holding it and no child counted", returning)
 	}
 	for id, want := range map[string][]string{
-		legionColumnDesign:           {"INFRA-3"},
-		legionColumnImplementing:     {"INFRA-4"},
-		legionColumnAwaitingPerson:   {"INFRA-5"},
-		legionColumnHeld:             {"INFRA-6"},
-		legionColumnAwaitingChildren: {"INFRA-11", "INFRA-13"},
-		legionColumnPlanning:         {},
-		legionColumnTesting:          {},
-		legionColumnReviewing:        {},
-		legionColumnAccepting:        {},
-		legionColumnRetro:            {},
-		legionColumnMerging:          {},
+		legion.ColumnDesign:           {"INFRA-3"},
+		legion.ColumnImplementing:     {"INFRA-4"},
+		legion.ColumnAwaiting:         {"INFRA-5"},
+		legion.ColumnHeld:             {"INFRA-6"},
+		legion.ColumnAwaitingChildren: {"INFRA-11", "INFRA-13"},
+		legion.ColumnPlanning:         {},
+		legion.ColumnTesting:          {},
+		legion.ColumnReviewing:        {},
+		legion.ColumnAccepting:        {},
+		legion.ColumnRetro:            {},
+		legion.ColumnMerging:          {},
 	} {
 		if got := legionColumnKeys(t, board, id); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v", id, got, want)
@@ -269,7 +286,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		t.Errorf("the header = %+v, want 2 slots of 4 in use and a queue of 3", header)
 	}
 	if !header.ReadOK || header.ReadAt == nil || header.ReadError != nil {
-		t.Errorf("the header's read = %+v, want the successful read the sampler recorded", header)
+		t.Errorf("the header's read = %+v, want the successful read recorded", header)
 	}
 }
 
@@ -293,14 +310,14 @@ func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
 	for index, column := range board.Columns {
 		ids[index] = column.ID
 	}
-	if retro := slices.Index(ids, legionColumnRetro); retro < 1 || retro+1 >= len(ids) ||
-		ids[retro-1] != legionColumnAccepting || ids[retro+1] != legionColumnMerging {
+	if retro := slices.Index(ids, legion.ColumnRetro); retro < 1 || retro+1 >= len(ids) ||
+		ids[retro-1] != legion.ColumnAccepting || ids[retro+1] != legion.ColumnMerging {
 		t.Errorf("the columns are %v, want retro between accepting and merging", ids)
 	}
-	if got := legionColumnKeys(t, board, legionColumnRetro); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnRetro); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the Retro column holds %v, want the issue in retro alone", got)
 	}
-	if got := legionColumnKeys(t, board, legionColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
 		t.Errorf("the Merging column holds %v, want the issues in merging and awaiting_merge", got)
 	}
 }
@@ -324,7 +341,7 @@ func TestTheLegionBoardQueuesByRankUntilADaemonRecordsItsWaitingLine(t *testing.
 	seedLegionRead(t, database, "INFRA", now, "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-2", "INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-2", "INFRA-1"}) {
 		t.Fatalf("the queue holds %v, want the two roots in Dispatch's rank order", got)
 	}
 	if board.Header.SlotCap != nil {
@@ -362,13 +379,14 @@ const newAdmissionShapeState = `{
 
 // TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape: the board is built from what the loose
 // decode records of a daemon that has rolled onto dispatch://INFRA-980, so a child holding a slot
-// is a card of its own on its root's tree and no slot holder is taken for a root.
+// is a card of its own on its root's tree and no slot holder is taken for a root. That daemon
+// serves no daemon.stateSeq, so the whole read is a failed one, and it records the state's
+// observations all the same, since the state is the project's own.
 func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
-	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
-	now := time.Now().UTC()
+	daemon := newFakeLegionDaemon(t, handler, "INFRA")
 	// The root first: its children name it as their parent, which the issues table holds them to.
 	for _, issue := range []struct {
 		number      int
@@ -382,20 +400,13 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	} {
 		seedLegionIssue(t, database, "INFRA", issue.number, issue.title, issue.rank, nil, issue.parent)
 	}
-	var state legion.State
-	if err := json.Unmarshal([]byte(newAdmissionShapeState), &state); err != nil {
-		t.Fatalf("decode the new state shape: %v", err)
-	}
-	if _, err := legion.RecordRead(t.Context(), database.Pool, "INFRA", now.Add(-time.Hour),
-		len(newAdmissionShapeState), state.Observations()); err != nil {
-		t.Fatalf("record the new state shape: %v", err)
-	}
+	daemon.read(t, database, newAdmissionShapeState)
 
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnQueue); !slices.Equal(got, []string{"INFRA-3", "INFRA-4"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnQueue); !slices.Equal(got, []string{"INFRA-3", "INFRA-4"}) {
 		t.Errorf("the queue holds %v, want the waiting root then the blocked child", got)
 	}
-	if got := legionColumnKeys(t, board, legionColumnDesign); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnDesign); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the design column holds %v, want the root holding a slot", got)
 	}
 	child := legionCard(t, board, "INFRA-2")
@@ -454,17 +465,19 @@ func TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure(t *testin
 }
 
 // fakeLegionDaemon is a Legion daemon stand-in serving the state document the test last handed it,
-// so a test drives the sampler's own passes (legion.Sampler) and reads the board they leave.
+// so a test reads it whole through the Legion state intake's own whole read (legion.ReadWhole runs
+// the intake's readWhole once, on the wall clock) and reads the board the read leaves.
 type fakeLegionDaemon struct {
 	*httptest.Server
-	mu   sync.Mutex
-	body string
+	project string
+	mu      sync.Mutex
+	body    string
 }
 
 // newFakeLegionDaemon starts a daemon stand-in and names it project's daemon.
 func newFakeLegionDaemon(t *testing.T, handler http.Handler, project string) *fakeLegionDaemon {
 	t.Helper()
-	daemon := &fakeLegionDaemon{}
+	daemon := &fakeLegionDaemon{project: project}
 	daemon.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != legion.StatePath {
 			http.NotFound(w, r)
@@ -488,25 +501,57 @@ func (d *fakeLegionDaemon) serves(body string) {
 	d.mu.Unlock()
 }
 
-// pass serves body and runs one pass of the sampler over it.
-func (d *fakeLegionDaemon) pass(t *testing.T, database *store.Store, body string) {
+// read serves body and reads it whole for the project the daemon is named for (readLegionWhole).
+func (d *fakeLegionDaemon) read(t *testing.T, database *store.Store, body string) {
 	t.Helper()
 	d.serves(body)
-	legion.NewSampler(database.Pool).Pass(t.Context())
+	readLegionWhole(t, database, d.project)
+}
+
+// readLegionWhole reads project's daemon whole through the setting the settings API stored for
+// project (legion.GetSettings), with the Legion intake's own whole read (legion.ReadWhole), which
+// records what it observes, or the read's failure, as the intake records it.
+func readLegionWhole(t *testing.T, database *store.Store, project string) {
+	t.Helper()
+	setting, err := legion.GetSettings(t.Context(), database.Pool, project)
+	if err != nil {
+		t.Fatalf("read the Legion setting of %s: %v", project, err)
+	}
+	if err := legion.ReadWhole(t.Context(), database.Pool, setting, legion.ReadReasonStart); err != nil {
+		t.Fatalf("read the daemon of %s whole: %v", project, err)
+	}
+}
+
+// legionStateOf is a state document of project's daemon whose issues object holds issues, its
+// members. Its daemon block names the project, the state sequence it reflects and the store that
+// sequence is counted in, and its settings carry a dispatch_url: a whole read of a state without
+// one of these is a failed read, the board's header names the failure, and the observations of one
+// without the project are not recorded.
+func legionStateOf(project, issues string) string {
+	return fmt.Sprintf(`{"daemon":{"project":%q,"stateSeq":1,"stateId":"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"},
+		"settings":{"dispatch_url":"http://dispatch.internal.example"},
+		"issues":{%s}}`, project, issues)
 }
 
 // TestTheLegionBoardHeaderGivesTheDaemonsP0Holders: the header gives the daemon's own number of P0
 // holders beside the slots in use and the cap, so a reader who sees more slots in use than the cap
-// sees why (dispatch://INFRA-5636's C4). Each row's state goes through the sampler's read and
-// record, as a daemon's does, and the header is read from the route's JSON answer rather than the
-// Go struct: the key is never left out, and where the newest recorded admission block gives no
-// number (a daemon before the P0 start sends none) or no read recorded a block, its value is null,
-// never 0.
+// sees why (dispatch://INFRA-5636's C4). Each row's state goes through a whole read and its record,
+// as a daemon's does, and the header is read from the route's JSON answer rather than the Go
+// struct: the key is never left out, and where the newest recorded admission block gives no number
+// (a daemon before the P0 start sends none) or no read recorded a block, its value is null, never
+// 0.
 func TestTheLegionBoardHeaderGivesTheDaemonsP0Holders(t *testing.T) {
 	t.Parallel()
+	// legionStateWith is a state document of ACME's daemon that a whole read takes as a good one
+	// (legionStateOf), with admission as its admission block.
+	legionStateWith := func(admission, issues string) string {
+		return fmt.Sprintf(`{"daemon":{"project":"ACME","stateSeq":1,"stateId":"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47"},
+			"settings":{"dispatch_url":"http://dispatch.internal.example"},
+			"admission":%s,"issues":{%s}}`, admission, issues)
+	}
 	for _, tc := range []struct {
 		name string
-		// state is the document the daemon serves the sampler's one pass; "" is no read at all.
+		// state is the document the daemon serves the one whole read; "" is no read at all.
 		state string
 		// p0Holders, slotsInUse and slotCap are the header's values as the answer's JSON writes
 		// them.
@@ -514,25 +559,25 @@ func TestTheLegionBoardHeaderGivesTheDaemonsP0Holders(t *testing.T) {
 	}{
 		{
 			name: "two P0 holders and more slots in use than the cap",
-			state: `{"admission":{"cap":2,"p0Holders":2,"active":["ACME-1","ACME-2","ACME-3","ACME-4"]},"issues":{
+			state: legionStateWith(`{"cap":2,"p0Holders":2,"active":["ACME-1","ACME-2","ACME-3","ACME-4"]}`, `
 				"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}},
 				"ACME-2":{"key":"ACME-2","phase":"planning","slot":{"index":1}},
 				"ACME-3":{"key":"ACME-3","phase":"testing","slot":{"index":2}},
-				"ACME-4":{"key":"ACME-4","phase":"reviewing","slot":{"index":3}}}}`,
+				"ACME-4":{"key":"ACME-4","phase":"reviewing","slot":{"index":3}}`),
 			p0Holders: "2", slotsInUse: "4", slotCap: "2",
 		},
 		{
 			name: "no P0 holder",
-			state: `{"admission":{"cap":2,"p0Holders":0,"active":["ACME-1","ACME-2"]},"issues":{
+			state: legionStateWith(`{"cap":2,"p0Holders":0,"active":["ACME-1","ACME-2"]}`, `
 				"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}},
-				"ACME-2":{"key":"ACME-2","phase":"planning","slot":{"index":1}}}}`,
+				"ACME-2":{"key":"ACME-2","phase":"planning","slot":{"index":1}}`),
 			p0Holders: "0", slotsInUse: "2", slotCap: "2",
 		},
 		{
 			name: "a block that gives no number",
-			state: `{"admission":{"cap":2,"active":["ACME-1","ACME-2"]},"issues":{
+			state: legionStateWith(`{"cap":2,"active":["ACME-1","ACME-2"]}`, `
 				"ACME-1":{"key":"ACME-1","phase":"implementing","slot":{"index":0}},
-				"ACME-2":{"key":"ACME-2","phase":"planning","slot":{"index":1}}}}`,
+				"ACME-2":{"key":"ACME-2","phase":"planning","slot":{"index":1}}`),
 			p0Holders: "null", slotsInUse: "2", slotCap: "2",
 		},
 		{name: "no read recorded", p0Holders: "null", slotsInUse: "0", slotCap: "null"},
@@ -543,7 +588,7 @@ func TestTheLegionBoardHeaderGivesTheDaemonsP0Holders(t *testing.T) {
 			seedLegionProjects(t, handler, "ACME")
 			daemon := newFakeLegionDaemon(t, handler, "ACME")
 			if tc.state != "" {
-				daemon.pass(t, database, tc.state)
+				daemon.read(t, database, tc.state)
 			}
 
 			response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/ACME/legion/board", nil, "alice")
@@ -556,8 +601,8 @@ func TestTheLegionBoardHeaderGivesTheDaemonsP0Holders(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
 				t.Fatalf("decode the board's answer %s: %v", response.Body.String(), err)
 			}
-			// slot_cap is the control: a read the sampler failed to record leaves it null too, and
-			// a null number of P0 holders beside it would then prove nothing.
+			// slot_cap is the control: a read Dispatch failed to record leaves it null too, and a
+			// null number of P0 holders beside it would then prove nothing.
 			for _, field := range []struct{ key, want string }{
 				{"p0_holders", tc.p0Holders}, {"slots_in_use", tc.slotsInUse}, {"slot_cap", tc.slotCap},
 			} {
@@ -591,13 +636,13 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 	seedLegionIssue(t, database, "INFRA", 2, "The middle issue", "b", nil, "INFRA-1")
 	seedLegionIssue(t, database, "INFRA", 3, "The bottom issue", "c", nil, "INFRA-2")
 
-	daemon.pass(t, database, `{"issues":{
+	daemon.read(t, database, legionStateOf("INFRA", `
 		"INFRA-1":{"key":"INFRA-1","phase":"implementing","slot":{"index":0},"architect":{"state":"working"},
 			"workers":{"implementer":{"claim":{"state":"working"}}}},
 		"INFRA-2":{"key":"INFRA-2","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}},
-		"INFRA-3":{"key":"INFRA-3","phase":"planning","workers":{"planner":{"claim":{"state":"working"}}}}}}`)
+		"INFRA-3":{"key":"INFRA-3","phase":"planning","workers":{"planner":{"claim":{"state":"working"}}}}`))
 	board := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Fatalf("after the first read the testing column holds %v, want INFRA-2", got)
 	}
 	if roles := legionCard(t, board, "INFRA-1").Roles; !slices.Equal(roles, []string{"architect", "implementer"}) {
@@ -607,9 +652,9 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 		t.Fatalf("after the first read INFRA-3 is in tree %q, want INFRA-1, through the middle issue", tree)
 	}
 
-	daemon.pass(t, database, `{"issues":{
+	daemon.read(t, database, legionStateOf("INFRA", `
 		"INFRA-1":{"key":"INFRA-1","phase":"implementing","slot":{"index":0},"architect":{"state":"working"}},
-		"INFRA-3":{"key":"INFRA-3","phase":"planning","workers":{"planner":{"claim":{"state":"working"}}}}}}`)
+		"INFRA-3":{"key":"INFRA-3","phase":"planning","workers":{"planner":{"claim":{"state":"working"}}}}`))
 	board = legionBoardOf(t, handler, "INFRA")
 	if !board.Header.ReadOK {
 		t.Fatalf("the header = %+v, want the second read recorded as a good read", board.Header)
@@ -628,7 +673,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 		t.Errorf("the board puts INFRA-3 in tree %q, want INFRA-1: the middle issue left the daemon's state and is still Legion's", tree)
 	}
 	now := time.Now().UTC()
-	population, err := metrics.Read(t.Context(), database.Pool, nil, deps.Attributor, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -638,8 +683,8 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 }
 
 // TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot: a board answer takes its cards and
-// the daemon's half of its tree walk from one repeatable-read transaction (readSampled), so a
-// sampler commit during the answer moves both or neither. The commit here lands, on another
+// the daemon's half of its tree walk from one repeatable-read transaction (readRecorded), so a
+// whole read's commit during the answer moves both or neither. The commit here lands, on another
 // connection, the moment the board's first statement reading legion_current ends: it moves the
 // child from `planning` in INFRA-1's tree to `testing` in a tree of its own. The answer is the
 // first read's whole and the next answer the second read's whole, where a read outside that
@@ -653,20 +698,20 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")
 	seedLegionIssue(t, database, "INFRA", 1, "The root", "a", nil, "")
 	seedLegionIssue(t, database, "INFRA", 2, "The child", "b", nil, "INFRA-1")
-	daemon.pass(t, database, `{"issues":{
+	daemon.read(t, database, legionStateOf("INFRA", `
 		"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1"},
-		"INFRA-2":{"key":"INFRA-2","phase":"planning","tree":"INFRA-1"}}}`)
+		"INFRA-2":{"key":"INFRA-2","phase":"planning","tree":"INFRA-1"}`))
 
 	commits.Arm(func() {
-		daemon.pass(t, database, `{"issues":{
+		daemon.read(t, database, legionStateOf("INFRA", `
 			"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1"},
-			"INFRA-2":{"key":"INFRA-2","phase":"testing","tree":"INFRA-2"}}}`)
+			"INFRA-2":{"key":"INFRA-2","phase":"testing","tree":"INFRA-2"}`))
 	})
 	board := legionBoardOf(t, handler, "INFRA")
 	if !commits.Fired() {
 		t.Fatal("no statement of the board's answer read legion_current, so no commit landed during it")
 	}
-	if got := legionColumnKeys(t, board, legionColumnPlanning); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Errorf("the answer the commit landed in holds %v in planning, want INFRA-2: its card is the first read's", got)
 	}
 	if tree := legionCard(t, board, "INFRA-2").Tree; tree != "INFRA-1" {
@@ -674,7 +719,7 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 	}
 
 	board = legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-2"}) {
 		t.Errorf("the next answer holds %v in testing, want INFRA-2: the commit's", got)
 	}
 	if tree := legionCard(t, board, "INFRA-2").Tree; tree != "INFRA-2" {
@@ -683,9 +728,9 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 }
 
 // TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot: a board answer takes its header
-// (legion_reads) and its cards (legion_current) from one snapshot, so a sampler commit during the
-// answer moves both or neither. The newest read before the answer failed, which the header names
-// over the cards of the good read before it; the commit, a good read that moves INFRA-1 to
+// (legion_reads) and its cards (legion_current) from one snapshot, so a whole read's commit during
+// the answer moves both or neither. The newest read before the answer failed, which the header
+// names over the cards of the good read before it; the commit, a good read that moves INFRA-1 to
 // `testing`, lands on another connection the moment the board's first statement reading either
 // table ends. The answer is the failed read's header over `planning`, and the next answer the
 // commit's good header over `testing`, where reading the two tables at two moments would have
@@ -698,11 +743,11 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	seedLegionProjects(t, handler, "INFRA")
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")
 	seedLegionIssue(t, database, "INFRA", 1, "The issue", "a", nil, "")
-	daemon.pass(t, database, `{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"planning","tree":"INFRA-1"}}}`)
-	daemon.pass(t, database, `not json`)
+	daemon.read(t, database, legionStateOf("INFRA", `"INFRA-1":{"key":"INFRA-1","phase":"planning","tree":"INFRA-1"}`))
+	daemon.read(t, database, `not json`)
 
 	commits.Arm(func() {
-		daemon.pass(t, database, `{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"testing","tree":"INFRA-1"}}}`)
+		daemon.read(t, database, legionStateOf("INFRA", `"INFRA-1":{"key":"INFRA-1","phase":"testing","tree":"INFRA-1"}`))
 	})
 	board := legionBoardOf(t, handler, "INFRA")
 	if !commits.Fired() {
@@ -711,7 +756,7 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	if board.Header.ReadOK || board.Header.ReadError == nil {
 		t.Errorf("the answer the commit landed in has the header %+v, want the failed read the commit came after", board.Header)
 	}
-	if got := legionColumnKeys(t, board, legionColumnPlanning); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnPlanning); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the answer the commit landed in holds %v in planning, want INFRA-1: the cards under the failed read's header are the good read's before it", got)
 	}
 
@@ -719,7 +764,7 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 	if !board.Header.ReadOK {
 		t.Errorf("the next answer has the header %+v, want the commit's good read", board.Header)
 	}
-	if got := legionColumnKeys(t, board, legionColumnTesting); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, board, legion.ColumnTesting); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("the next answer holds %v in testing, want INFRA-1: the commit's", got)
 	}
 }
@@ -737,16 +782,16 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 	seedLegionIssue(t, database, "INFRA", 1, "The implementer's issue", "a", nil, "")
 	seedLegionIssue(t, database, "INFRA", 2, "The tester's issue", "b", nil, "")
 
-	daemon.pass(t, database, `{"issues":{
+	daemon.read(t, database, legionStateOf("INFRA", `
 		"INFRA-1":{"key":"INFRA-1","phase":"implementing","workers":{"implementer":{"claim":{"state":"working"}}}},
-		"INFRA-2":{"key":"INFRA-2","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}}}}`)
+		"INFRA-2":{"key":"INFRA-2","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}}`))
 	if header := legionBoardOf(t, handler, "INFRA").Header; !header.ReadOK {
 		t.Fatalf("after the first read the header = %+v, want a good read", header)
 	}
 	// The next read moves INFRA-1 on, and puts INFRA-2 in a wait Postgres refuses to store.
-	daemon.pass(t, database, `{"issues":{
+	daemon.read(t, database, legionStateOf("INFRA", `
 		"INFRA-1":{"key":"INFRA-1","phase":"reviewing","workers":{"reviewer":{"claim":{"state":"working"}}}},
-		"INFRA-2":{"key":"INFRA-2","phase":"awaiting_person","waitingOn":{"kind":"ask","detail":"\ud800"}}}}`)
+		"INFRA-2":{"key":"INFRA-2","phase":"awaiting_person","waitingOn":{"kind":"ask","detail":"\ud800"}}`))
 
 	board := legionBoardOf(t, handler, "INFRA")
 	header := board.Header
@@ -755,10 +800,10 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 		t.Errorf("the header = %+v (read_error %v), want the read failed, its error the refusal of its record", header, deref(header.ReadError))
 	}
 	for column, want := range map[string][]string{
-		legionColumnImplementing:   {"INFRA-1"},
-		legionColumnTesting:        {"INFRA-2"},
-		legionColumnReviewing:      {},
-		legionColumnAwaitingPerson: {},
+		legion.ColumnImplementing: {"INFRA-1"},
+		legion.ColumnTesting:      {"INFRA-2"},
+		legion.ColumnReviewing:    {},
+		legion.ColumnAwaiting:     {},
 	} {
 		if got := legionColumnKeys(t, board, column); !slices.Equal(got, want) {
 			t.Errorf("the %s column holds %v, want %v: the last good read's cards", column, got, want)
@@ -786,6 +831,54 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 	}
 	if len(reads) != 2 || reads[0] != "ok=true " || !strings.HasPrefix(reads[1], "ok=false record: ") {
 		t.Errorf("legion_reads = %q, want the good read and then the refused one, and no row saying the refused read succeeded", reads)
+	}
+}
+
+// TestTheBoardHeaderShowsAFailedWholeReadWhileTheReadIsOwed: a whole read that fails owes the read
+// (legion_event_cursors.read_owed), and the intake applies the project's batches of state events
+// meanwhile, each a legion_reads row of kind `events` that says ok. A batch's read_at is the
+// daemon's commit time, which can be past Dispatch's clock or before it, so the header's read is
+// the newest row Dispatch wrote (recorded_at), at that row's read_at. While the read is owed, the
+// header shows the failed whole read's failure over every batch after it. The next good whole read
+// clears the read owed, and a batch after it is a good read too, whatever its read_at.
+func TestTheBoardHeaderShowsAFailedWholeReadWhileTheReadIsOwed(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	daemon := newFakeLegionDaemon(t, handler, "INFRA")
+	seedLegionIssue(t, database, "INFRA", 1, "The issue", "a", nil, "")
+	daemon.read(t, database, legionStateOf("INFRA", `"INFRA-1":{"key":"INFRA-1","phase":"planning","tree":"INFRA-1"}`))
+	daemon.read(t, database, `not json`)
+	failed := legionBoardOf(t, handler, "INFRA").Header
+	if failed.ReadOK || failed.ReadError == nil {
+		t.Fatalf("the header after the failed read = %+v, want its failure", failed)
+	}
+	batch := func(at time.Time) {
+		t.Helper()
+		legionExec(t, database, `insert into legion_reads (project, read_at, ok, bytes, kind) values ('INFRA', $1, true, 512, 'events')`, at)
+	}
+
+	// One batch on a daemon clock an hour ahead of Dispatch's, then one an hour behind it.
+	ahead := time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond)
+	behind := ahead.Add(-2 * time.Hour)
+	batch(ahead)
+	batch(behind)
+	header := legionBoardOf(t, handler, "INFRA").Header
+	if header.ReadOK || header.ReadError == nil || *header.ReadError != *failed.ReadError {
+		t.Errorf("the header after two batches = %+v (read_error %v), want the failed whole read's %q: the read is still owed",
+			header, deref(header.ReadError), *failed.ReadError)
+	}
+	if header.ReadAt == nil || !header.ReadAt.Equal(behind) {
+		t.Errorf("the header's read_at = %v, want the newest batch Dispatch wrote, at its own %s", header.ReadAt, behind.Format(time.RFC3339Nano))
+	}
+
+	daemon.read(t, database, legionStateOf("INFRA", `"INFRA-1":{"key":"INFRA-1","phase":"testing","tree":"INFRA-1"}`))
+	if header := legionBoardOf(t, handler, "INFRA").Header; !header.ReadOK || header.ReadError != nil {
+		t.Errorf("the header after a good whole read = %+v, want a good read", header)
+	}
+	batch(behind.Add(time.Second))
+	header = legionBoardOf(t, handler, "INFRA").Header
+	if !header.ReadOK || header.ReadError != nil || header.ReadAt == nil || !header.ReadAt.Equal(behind.Add(time.Second)) {
+		t.Errorf("the header after a batch that follows the good read = %+v, want a good read at the batch's own time", header)
 	}
 }
 
@@ -841,7 +934,7 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 
 // TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics is the spec's A4, "A test with two
 // projects, each with a fake daemon, answers each project its own board and metrics", read
-// through one pass of the sampler over two daemons. Two facts here cross from LINUX to INFRA, and
+// through a whole read of each of the two daemons. Two facts here cross from LINUX to INFRA, and
 // neither is INFRA's: a LINUX worker files an issue into INFRA, which is a LINUX session's filing,
 // and the LINUX daemon's state names an INFRA issue in review, which is LINUX's record and nothing
 // INFRA's daemon reported. So each board shows its own daemon's read, and each project's metrics
@@ -863,25 +956,24 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 		values ('INFRA-2', 1, 'issue.created', $1::jsonb, '{"status":"triage"}', false, $2)`,
 		`{"kind":"session","id":"s-linux-1","origin":{"session_title":"Legion implementer · LINUX-1"}}`, start.Add(-time.Hour))
 
-	infra.serves(`{"issues":{
-		"INFRA-1":{"key":"INFRA-1","phase":"implementing","workers":{"implementer":{"claim":{"state":"working"}}}}}}`)
-	linux.serves(`{"issues":{
+	infra.read(t, database, legionStateOf("INFRA", `
+		"INFRA-1":{"key":"INFRA-1","phase":"implementing","workers":{"implementer":{"claim":{"state":"working"}}}}`))
+	linux.read(t, database, legionStateOf("LINUX", `
 		"LINUX-1":{"key":"LINUX-1","phase":"testing","workers":{"tester":{"claim":{"state":"working"}}}},
-		"INFRA-1":{"key":"INFRA-1","phase":"reviewing","workers":{"reviewer":{"claim":{"state":"working"}}}}}}`)
-	legion.NewSampler(database.Pool).Pass(t.Context())
+		"INFRA-1":{"key":"INFRA-1","phase":"reviewing","workers":{"reviewer":{"claim":{"state":"working"}}}}`))
 
 	infraBoard := legionBoardOf(t, handler, "INFRA")
-	if got := legionColumnKeys(t, infraBoard, legionColumnImplementing); !slices.Equal(got, []string{"INFRA-1"}) {
+	if got := legionColumnKeys(t, infraBoard, legion.ColumnImplementing); !slices.Equal(got, []string{"INFRA-1"}) {
 		t.Errorf("INFRA's implementing column holds %v, want INFRA-1 as INFRA's daemon reports it", got)
 	}
-	if got := legionColumnKeys(t, infraBoard, legionColumnReviewing); len(got) != 0 {
+	if got := legionColumnKeys(t, infraBoard, legion.ColumnReviewing); len(got) != 0 {
 		t.Errorf("INFRA's reviewing column holds %v, want none: LINUX's daemon put INFRA-1 there, and it is no source of INFRA's board", got)
 	}
 	if roles := legionCard(t, infraBoard, "INFRA-1").Roles; !slices.Equal(roles, []string{"implementer"}) {
 		t.Errorf("INFRA-1's roles on INFRA's board are %v, want INFRA's implementer alone", roles)
 	}
 	linuxBoard := legionBoardOf(t, handler, "LINUX")
-	if got := legionColumnKeys(t, linuxBoard, legionColumnTesting); !slices.Equal(got, []string{"LINUX-1"}) {
+	if got := legionColumnKeys(t, linuxBoard, legion.ColumnTesting); !slices.Equal(got, []string{"LINUX-1"}) {
 		t.Errorf("LINUX's testing column holds %v, want LINUX-1 as LINUX's daemon reports it", got)
 	}
 	if roles := legionCard(t, linuxBoard, "LINUX-1").Roles; !slices.Equal(roles, []string{"tester"}) {
@@ -900,19 +992,28 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 		{"INFRA", "INFRA-1", nil},
 		{"LINUX", "LINUX-1", []string{"INFRA-2 by implementer of LINUX-1, " + metrics.ClassOutOfTree}},
 	} {
-		population, err := metrics.Read(t.Context(), database.Pool, nil, deps.Attributor, one.project, start.Add(-24*time.Hour), now.Add(time.Hour))
+		population, err := metrics.ReadProject(t.Context(), database.Pool, deps.Attributor, one.project, now)
 		if err != nil {
 			t.Fatalf("read %s's metrics population: %v", one.project, err)
 		}
-		report := metrics.Compute(population, metrics.ScopeAll, now)
-		if report.Finished != 1 || len(report.Rework.Issues) != 1 || report.Rework.Issues[0].Key != one.issue {
-			t.Fatalf("%s's report finished %d issues, %+v, want its own %s alone", one.project, report.Finished, report.Rework.Issues, one.issue)
+		facts := map[string]metrics.IssueFacts{}
+		for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+			facts[key] = closed.FactsAt(population.To)
 		}
-		if rounds := report.Rework.Issues[0].ReviewRounds; rounds != 0 {
+		var finished []string
+		for _, key := range slices.Sorted(maps.Keys(facts)) {
+			if facts[key].ClosedAt != nil {
+				finished = append(finished, key)
+			}
+		}
+		if !slices.Equal(finished, []string{one.issue}) {
+			t.Fatalf("%s's facts finished %v, want its own %s alone", one.project, finished, one.issue)
+		}
+		if rounds := facts[one.issue].ReviewRounds; rounds != 0 {
 			t.Errorf("%s's %s has %d review rounds, want none: %s's daemon never reported it in review", one.project, one.issue, rounds, one.project)
 		}
 		var filed []string
-		for _, row := range report.Splitting.Filed {
+		for _, row := range metrics.ProjectFilings(population) {
 			filed = append(filed, fmt.Sprintf("%s by %s of %s, %s", row.Key, row.Filer, row.FilerIssue, row.Class))
 		}
 		if !slices.Equal(filed, one.filed) {
@@ -921,9 +1022,8 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 	}
 }
 
-// closeLegionIssue closes one seeded issue, which is what brings its whole parent chain into the
-// metrics' read scope (legion/metrics/population.go's scopeKeys: the issues that could have
-// finished in the window and their ancestors).
+// closeLegionIssue closes one seeded issue, the child at the bottom of a chain each of these
+// fixtures hangs a finished issue under.
 func closeLegionIssue(t *testing.T, database *store.Store, key string, at time.Time) {
 	t.Helper()
 	legionExec(t, database, `update issues set status = 'done', closed_at = $2 where key = $1`, key, at)

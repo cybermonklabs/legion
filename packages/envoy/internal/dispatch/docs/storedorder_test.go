@@ -796,12 +796,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 	testcleanup.Add(t, func() {
 		close(stopped)
 		done.Wait()
-		client := peer.Doc.ClientID()
-		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
-			room := service.srv.GetDoc(artifactID)
-			return room == nil || room.StateVector().Clock(client) >= sent
-		})
+		awaitPeerApplied(t, service, artifactID, peer)
 		if typing.Add(-1) > 0 {
 			return
 		}
