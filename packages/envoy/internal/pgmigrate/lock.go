@@ -200,15 +200,24 @@ var ProductionRetryPolicy = RetryPolicy{Attempts: LockTimeoutAttempts, Pause: Lo
 // attempts and deciding on each attempt's own measured duration: it gives up when too little of the
 // deadline is left for another attempt (remaining < Pause + the last attempt's duration). A loaded
 // test suite, where the lock is held by a peer runner migrating its own template and not by a stray
-// holder, waits for it instead of failing after the production policy's fixed span. The give-up names
-// the lock — it carries the last *LockTimeoutError, so errors.As finds it — in every case once a lock
-// timeout has occurred, including when the context cuts a later, longer attempt before that attempt
-// could time out: the context error is joined to the last lock timeout (errors.Is still finds the
-// context error too). Only a deadline that cuts the very first attempt, before any lock timeout, gives
-// up with a bare context error, since no lock was contended. Where the context has no deadline (a
-// benchmark), it falls back to LockTimeoutAttempts rather than retrying for ever. A test harness
-// passes it through the context it gives Migrate; production passes no policy, so it uses
-// ProductionRetryPolicy and its behaviour does not move.
+// holder, waits for it instead of failing after the production policy's fixed span.
+//
+// For a migration run through Exec (RetryLockTimeouts), the give-up NAMES THE LOCK AND ITS HOLDERS: it
+// carries a *LockTimeoutError, so errors.As finds it, whether the attempt timed out on its lock_timeout
+// (55P03) or the context cut it while the watch had already read the lock it was queued behind. Where
+// the give-up follows a timeout and the context later cuts a longer attempt, both are kept (two %w);
+// errors.Is still finds the context error. Only a context that cuts an attempt with NOTHING queued
+// behind it gives a bare context error, since no lock was contended.
+//
+// The version-table step (RetryVersionTableLockTimeouts) runs its statements outside Exec, so it has no
+// watch: its lock timeouts name the table but carry no holder (measured end to end: 3 attempts, 19.08 s,
+// the table named, the holder's pid not — the same at the merge base). That is a known limit, tracked as
+// a row of INFRA-3904 with its owner open, not fixed here: wrapping its bare 55P03 in a *LockTimeoutError
+// would make errors.As true while naming nothing, which is worse than an honest unnamed error.
+//
+// Where the context has no deadline (a benchmark), it falls back to LockTimeoutAttempts rather than
+// retrying for ever. A test harness passes it through the context it gives Migrate; production passes no
+// policy, so it uses ProductionRetryPolicy and its behaviour does not move.
 func DeadlineRetryPolicy() RetryPolicy {
 	return RetryPolicy{Attempts: 0, Pause: LockTimeoutRetryPause}
 }
@@ -532,6 +541,14 @@ func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signI
 		}
 		return timedOut
 	}
+	// The context cut the statement while the watch had already read a lock it was queued behind:
+	// name that lock, even though the 55P03 timeout never fired, since diagnosis cannot run on a done
+	// context but the watch has what it would have found. The *LockTimeoutError's Unwrap carries the
+	// context error, so errors.As finds the lock and errors.Is still finds the deadline. A context
+	// error with no wait is not a lock contention and comes back below as the migration's own error.
+	if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && wait != nil {
+		return &LockTimeoutError{Migration: migration.Name, Wait: wait, WatchErr: watchErr, Err: err, NonTransactional: migration.NonTransactional}
+	}
 	return fmt.Errorf("migration %s: %w", migration.Name, err)
 }
 
@@ -678,14 +695,24 @@ func (e *LockTimeoutError) Error() string {
 	if e.NonTransactional {
 		effect = "; a concurrent build may have left an INVALID index of its own name; the next attempt drops that leftover and builds the index again"
 	}
+	// The migration gave up either because its own lock_timeout fired (a 55P03 cancellation) or because
+	// the caller's context deadline or cancellation cut it while it waited. Say which, so a deadline cut
+	// does not claim a lock_timeout that never ran out.
+	reason := fmt.Sprintf("when its lock_timeout ran out (%s unless the migration sets its own)", LockTimeout)
+	switch {
+	case errors.Is(e.Err, context.DeadlineExceeded):
+		reason = "when the caller's deadline passed while it waited"
+	case errors.Is(e.Err, context.Canceled):
+		reason = "when the caller cancelled while it waited"
+	}
 	if e.Wait == nil {
-		fmt.Fprintf(&b, "migration %s gave up waiting for a lock when its lock_timeout ran out (%s unless the migration sets its own)%s; the lock watch did not see which lock", e.Migration, LockTimeout, effect)
+		fmt.Fprintf(&b, "migration %s gave up waiting for a lock %s%s; the lock watch did not see which lock", e.Migration, reason, effect)
 		if e.WatchErr != nil {
 			fmt.Fprintf(&b, " (%v)", e.WatchErr)
 		}
 		fmt.Fprintf(&b, ". Find the transactions open longer than that: select pid, usename, application_name, state, xact_start, query from pg_stat_activity where xact_start < now() - interval '%d milliseconds' order by xact_start", LockTimeout.Milliseconds())
 	} else {
-		fmt.Fprintf(&b, "migration %s gave up waiting for %s on %s when its lock_timeout ran out (%s unless the migration sets its own)%s", e.Migration, e.Wait.Mode, e.Wait.Object, LockTimeout, effect)
+		fmt.Fprintf(&b, "migration %s gave up waiting for %s on %s %s%s", e.Migration, e.Wait.Mode, e.Wait.Object, reason, effect)
 		if len(e.Wait.Holders) > 0 {
 			fmt.Fprintf(&b, "; it was queued behind %s", sessionList(e.Wait.Holders))
 		}
