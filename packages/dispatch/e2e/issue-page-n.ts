@@ -262,26 +262,64 @@ export function showMoreControl(scope: Locator): Locator {
 /** Fails unless the view row's control `preset` is active, whichever shape the row draws at this
  *  width: the toolbar's pressed toggle from 1280 px up, or the one control below it. Unlike
  *  `issue-page-i.ts`'s `expectActivePreset`, this accepts a control that draws no count, such as
- *  Conversation or Documents (part N's R4). */
-export async function expectActiveControl(page: Page, preset: Preset): Promise<void> {
+ *  Conversation or Documents (part N's R4). `timeout`, where given, replaces the project's expect
+ *  timeout for each read, for a copy whose view row draws later than that
+ *  (`INFRA_663_DRAW_TIMEOUT_MS`). */
+export async function expectActiveControl(
+  page: Page,
+  preset: Preset,
+  timeout?: number
+): Promise<void> {
   const name = PRESET_NAMES[preset];
-  // The toolbar is the row of toggles; the one control's own name can be a view's alone, as
-  // Conversation's and Documents' are, so a button by that name does not tell the shapes apart.
-  const shape = await settledState("the view row's shape", [
-    ["toolbar", presetToolbar(page)],
-    ["one control", presetChooser(page)],
-  ]);
+  const wait = timeout === undefined ? undefined : { timeout };
+  const shape = await viewRowShape(page, timeout);
   if (shape === "toolbar") {
     await expect(
       presetToolbar(page).getByRole("button", { exact: true, name }),
       `${name} is not active in the view row`
-    ).toHaveAttribute("aria-pressed", "true");
+    ).toHaveAttribute("aria-pressed", "true", wait);
     return;
   }
   await expect(
     presetChooser(page),
     `${name} is not active in the one control`
-  ).toHaveAccessibleName(new RegExp(`^${name}(?: \\d+\\b|$)`, "u"));
+  ).toHaveAccessibleName(new RegExp(`^${name}(?: \\d+\\b|$)`, "u"), wait);
+}
+
+/** The two shapes the view row draws: the toolbar from 1280 px up, the one control below it. */
+type ViewRowShape = "toolbar" | "one control";
+
+/** The shape the view row draws, read as `settledState` reads a state. `settledState` waits under
+ *  the project's expect timeout and takes no other, so a `timeout` reads the same two states in
+ *  the same poll under that timeout instead. */
+async function viewRowShape(page: Page, timeout: number | undefined): Promise<ViewRowShape> {
+  // The toolbar is the row of toggles; the one control's own name can be a view's alone, as
+  // Conversation's and Documents' are, so a button by that name does not tell the shapes apart.
+  const states: readonly (readonly [ViewRowShape, Locator])[] = [
+    ["toolbar", presetToolbar(page)],
+    ["one control", presetChooser(page)],
+  ];
+  if (timeout === undefined) return await settledState("the view row's shape", states);
+  const failure = "the view row's shape: none of toolbar, one control showed";
+  let shown: ViewRowShape | undefined;
+  await expect
+    .poll(
+      async () => {
+        for (const [shape, locator] of states) {
+          if (await locator.isVisible()) {
+            shown = shape;
+            return true;
+          }
+        }
+        return false;
+      },
+      // Playwright's own web-first retry schedule, so a page that draws early is read early.
+      { intervals: [20, 50, 100, 100, 500], message: failure, timeout }
+    )
+    .toBe(true);
+  // A poll whose row has already ended passes without reading, and leaves no state behind.
+  if (shown === undefined) throw new Error(failure);
+  return shown;
 }
 
 /** INV-4 (part N's R14): the four views whose focused row is part F's focused node, so Details'
@@ -2586,8 +2624,11 @@ async function failOnOwnerSigns(
  * Draw wait for INFRA-663's copy alone (decision 503): while `main`'s outline still renders all
  * 9,272 rows of its comments read at once (until part T's tree read lands), probe Job
  * `e2e-rows-9pkrd` at `37d1efb9` measured `[data-issue-page]` at 5.0–21.5 s and the view row at
- * 18.7–33.0 s at 1440 px, and 17.9 s and 27.7 s at 390 px (all 9,272 rows drawn). Every other
- * copy (`INFRA-3149`, `INFRA-1098`) and every other wait keeps the default 15 s.
+ * 18.7–33.0 s at 1440 px, and 17.9 s and 27.7 s at 390 px (all 9,272 rows drawn). The reads of
+ * the active control (`expectActiveControl`) take it too: in run `46010521078` at `d5afe3d2`,
+ * shard 1, one `isVisible()` probe of the toolbar answered after 15.0 s while `main`'s outline
+ * drew all 9,272 rows (dispatch://INFRA-3940/comment/208a7fd8-bdbe-443b-97eb-73af438c01c0).
+ * Every other copy (`INFRA-3149`, `INFRA-1098`) and every other wait keeps the default 15 s.
  */
 const INFRA_663_DRAW_TIMEOUT_MS = 60_000;
 
@@ -2633,7 +2674,10 @@ async function expectScaleControlDrawn(
     await expectDashboardDrawn(page, where);
     return;
   }
-  await expectActiveControl(page, preset);
+  // Run `46010521078` at `d5afe3d2`, shard 1: one `isVisible()` probe of the toolbar answered
+  // after 15.0 s while `main`'s outline drew all 9,272 rows, so the active control's reads take
+  // the view row's wait (dispatch://INFRA-3940/comment/208a7fd8-bdbe-443b-97eb-73af438c01c0).
+  await expectActiveControl(page, preset, drawTimeoutMs);
   if (preset === "documents") {
     await expect(documentsList(page), `${where} draws no Documents' list`).toBeVisible();
     await expect(documentsRows(page).first(), `${where} draws no row in its list`).toBeVisible();
