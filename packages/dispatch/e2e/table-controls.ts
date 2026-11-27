@@ -1057,6 +1057,15 @@ function barChips(bar: Locator): { line: Locator; more: Locator } {
   };
 }
 
+/** The N a bar's `+N more` names, `<N> more filters` (`MORE_CHIPS`), or 0 where the bar draws
+ *  no `+N more`. */
+async function moreCount(more: Locator): Promise<number> {
+  // Each caller reads this inside an `expect.poll` or after `settledBar` settled the line, so
+  // whether the line draws a `+N more` is the answer polled for or the one it settled on.
+  if ((await more.count()) === 0) return 0;
+  return Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
+}
+
 /** Waits until the chips `bar` draws stand for `count` narrowings: the chips its line draws and
  *  the N its `+N more` names add up to `count`, N alone where the narrow layout of a bar with no
  *  trigger keeps every chip behind `+N more`. Hands back N as the passing reading saw it. */
@@ -1066,10 +1075,7 @@ async function expectChipsStandFor(bar: Locator, count: number, where: string): 
   await expect
     .poll(
       async () => {
-        n =
-          (await more.count()) === 0
-            ? 0
-            : Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10);
+        n = await moreCount(more);
         return (await line.count()) + n;
       },
       {
@@ -1895,8 +1901,7 @@ async function expectLineFits(bar: Locator, at: string): Promise<void> {
   );
   // The line drew its last layout before this read (`settledBar`, above), so whether it draws a
   // `+N more` is settled here too.
-  const drawsMore = (await more.count()) > 0;
-  const n = drawsMore ? Number.parseInt((await more.getAttribute("aria-label")) ?? "0", 10) : 0;
+  const n = await moreCount(more);
   const drawn = chips.map(
     (chip) => `"${chip.name}" at ${Math.round(chip.left)}-${Math.round(chip.right)}px`
   );
