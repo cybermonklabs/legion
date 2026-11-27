@@ -407,6 +407,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"repoBefore": issue.RepoCorrection.Before, "repoCorrectedAt": issue.RepoCorrection.At,
 			"repoChangePending": issue.RepoChange.Pending, "repoChangeReason": issue.RepoChange.Reason,
+			// The record's P1 as the wire spells a Dispatch priority: its number, 0 for P0.
 			"priority": 1,
 			// The priority Dispatch resolves it to and the issue it comes from, beside its own.
 			"resolvedPriority": 0,

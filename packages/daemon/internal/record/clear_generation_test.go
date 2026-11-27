@@ -25,50 +25,39 @@ func TestAClearHandedNoForgetForTheKeptDecisionsIsRefusedAndClearsNothing(t *tes
 	ctx := context.Background()
 	records := NewStore()
 	const task = "Continue the change. Issue: LEGION-288. Phase: implementing."
-	for _, tc := range []struct {
-		name  string
-		clear func(tx pgx.Tx, issue Issue) ([]string, error)
-	}{
-		{name: "the clear of one issue", clear: func(tx pgx.Tx, issue Issue) ([]string, error) {
-			return records.ClearGeneration(ctx, tx, issue, nil)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			st := migratedStore(t)
-			issue := issueFixture("LEGION-288")
-			approved := 2
-			inTx(t, st, func(tx pgx.Tx) {
-				must(t, records.PutIssue(ctx, tx, issue))
-				must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer",
-					HandoffCommit: "head", Rounds: 2, Entry: 3, EntryTask: task}))
-				must(t, records.PutGate(ctx, tx, DesignGate{Issue: issue.Key, ArtifactID: "artifact-288", LatestVersion: 2, ApprovedVersion: &approved}))
-			})
-			inTx(t, st, func(tx pgx.Tx) {
-				emptied, err := tc.clear(tx, issue)
-				if err == nil {
-					t.Fatalf("%s handed no forget for the kept decisions answered nil, want it refused: the clear deletes the gates "+
-						"the forget's rule reads, so a clear that skips it leaves a superseded decision to read as the person's word", tc.name)
-				}
-				if len(emptied) != 0 {
-					t.Fatalf("%s was refused and answers %v emptied, want none: its caller would publish an empty set of gates the issue still holds",
-						tc.name, emptied)
-				}
-			})
-			inTx(t, st, func(tx pgx.Tx) {
-				rows, err := records.Phases(ctx, tx, issue.Key)
-				must(t, err)
-				if len(rows) != 1 || rows[0].HandoffCommit != "head" || rows[0].Rounds != 2 || rows[0].EntryTask != task {
-					t.Fatalf("phases after %s was refused = %#v, want the implementer's row as it was put: handoff head, two rounds, its entry's task",
-						tc.name, rows)
-				}
-				gates, err := records.GatesOf(ctx, tx, issue.Key)
-				must(t, err)
-				if len(gates) != 1 {
-					t.Fatalf("gates after %s was refused = %#v, want the one gate put", tc.name, gates)
-				}
-			})
-		})
-	}
+	st := migratedStore(t)
+	issue := issueFixture("LEGION-288")
+	approved := 2
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer",
+			HandoffCommit: "head", Rounds: 2, Entry: 3, EntryTask: task}))
+		must(t, records.PutGate(ctx, tx, DesignGate{Issue: issue.Key, ArtifactID: "artifact-288", LatestVersion: 2, ApprovedVersion: &approved}))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		emptied, err := records.ClearGeneration(ctx, tx, issue, nil)
+		if err == nil {
+			t.Fatalf("the clear of one issue handed no forget for the kept decisions answered nil, want it refused: the clear deletes the gates " +
+				"the forget's rule reads, so a clear that skips it leaves a superseded decision to read as the person's word")
+		}
+		if len(emptied) != 0 {
+			t.Fatalf("the clear of one issue was refused and answers %v emptied, want none: its caller would publish an empty set of gates the issue still holds",
+				emptied)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := records.Phases(ctx, tx, issue.Key)
+		must(t, err)
+		if len(rows) != 1 || rows[0].HandoffCommit != "head" || rows[0].Rounds != 2 || rows[0].EntryTask != task {
+			t.Fatalf("phases after the clear of one issue was refused = %#v, want the implementer's row as it was put: handoff head, two rounds, its entry's task",
+				rows)
+		}
+		gates, err := records.GatesOf(ctx, tx, issue.Key)
+		must(t, err)
+		if len(gates) != 1 {
+			t.Fatalf("gates after the clear of one issue was refused = %#v, want the one gate put", gates)
+		}
+	})
 }
 
 // A clear runs the forget it is handed once, over the decisions kept on the issue it clears and

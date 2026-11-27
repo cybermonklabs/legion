@@ -357,9 +357,9 @@ type claimWake struct {
 
 // claimWakeOf reads the claim of token from its machine's View and decides whether a wake of it
 // is to be made or is under way: a released claim of a wakeable issue, or a launch the wake pacing
-// parked. A claim of an issue that has left the workflow, or whose tree lingers, is not woken:
-// that pod is a close's to stop. An outbox with no supervisor — a test's, which supervises
-// nothing — reads no claim: there is no machine to read a claim's state from.
+// parked. A claim of an issue that has left the workflow is not woken: that pod is a close's to
+// stop. An outbox with no supervisor — a test's, which supervises nothing — reads no claim: there
+// is no machine to read a claim's state from.
 func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake, error) {
 	if r.supervisor == nil {
 		return claimWake{}, nil
@@ -387,10 +387,9 @@ func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake,
 // over no process; or a launch under a resume of the role that has had no first turn yet
 // (store.Store.OpenPodResume), which a wake opened. The first two are claimWakeOf's, the decision
 // deliveryWake acts on, so the two cannot disagree. A released claim of an issue that has left the
-// workflow, or whose tree lingers, gets no wake, and a launch no wake opened is the role starting
-// as any role starts, so the hour holds for both: without it, a row of an issue moved out of the
-// workflow would be tried about once a minute for as long as the issue stayed out, and its end
-// would never come.
+// workflow gets no wake, and a launch no wake opened is the role starting as any role starts, so
+// the hour holds for both: without it, a row of an issue moved out of the workflow would be tried
+// about once a minute for as long as the issue stayed out, and its end would never come.
 func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (bool, error) {
 	if wake.resume || wake.parked {
 		return true, nil

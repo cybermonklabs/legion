@@ -376,45 +376,48 @@ func upgradeFrom(t *testing.T, release releaseDatabase) {
 	release.check(t, store)
 }
 
-// todaysMainsNewestMigration is the pinned baseline this test upgrades from: main's newest
-// migration at this branch's merge of main f21107b285c7, the sequence of each value of the copy of
-// Dispatch's issues. Main has numbered newer migrations since, and this test does not follow them.
-// It and the other migrations main numbered after this branch's claim_sessions (20261116144907) —
-// the role-holders publication (20261116165926), the reviewer's reviewed commit (20261116234034),
-// the step records' three (20261117000528, 20261117004117, 20261117064152), the plan record's kind
-// list (20261117023932), the pull request statuses (20261117112334), the update ask mark's cutover
-// (20261117200337), the conflict's second read and the merge forward (20261119003157) and the mark
-// of a launch that had Oh My Pi resume a session by its id (20261120042902) — stand above it.
-// A deployment of main applies them first, so this branch's daemon finds a database whose newest
-// recorded version stands above its own new migration.
-const todaysMainsNewestMigration = 20261120055717
+// todaysMainsNewestMigration is the pinned baseline this test upgrades from: the newest migration
+// of main at 9aff682b90, the parent of #4220 (46795520eb), which brought claim_sessions
+// (20261116144907) to main: the update ask mark's cutover (20261117200337). Main has numbered
+// newer migrations since, and this test does not follow them. It and the other migrations main
+// held at that commit numbered after claim_sessions — the role-holders publication
+// (20261116165926), the reviewer's reviewed commit (20261116234034), the step records' three
+// (20261117000528, 20261117004117, 20261117064152) and the pull request statuses (20261117112334) —
+// stand above claim_sessions. A deployment of main applies them first, so this branch's daemon
+// finds a database whose newest recorded version stands above claim_sessions.
+const todaysMainsNewestMigration = 20261117200337
 
-// thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
-const thisBranchsClaimSessions = 20261116144907
-
-// A database main migrated to the pinned baseline, 20261120055717, has recorded every migration
-// up to it but claim_sessions, which is numbered below it, and the three of
-// cybermonklabs/legion#3712's four that are numbered below it too (20261112012123, 20261112215432
-// and 20261118073048), which main took only at da1b3f8258, after that baseline. Store.Migrate
-// applies every migration that database has not recorded, whatever version stands highest (apply
-// asks each migration whether its own version is recorded), so the upgrade applies 20261116144907
-// below that baseline: claim_sessions is created, and its backfill holds the session a claim of
-// main's daemon recorded for that claim. So this branch's migration keeps its number.
+// A database main at 9aff682b90 migrated, to the pinned baseline, has recorded every migration this
+// head embeds numbered up to it but ten, which releaseDatabase's command prints for that commit:
+// claim_sessions (20261116144907), which #4220 brought next; cybermonklabs/legion#3712's
+// repository correction (20261112012123) and held task's resume (20261112215432), which main took
+// only at da1b3f8258; #4065's two (20261115060739 and 20261115121838), which main took at
+// a2ac5fd7; the gate basis (20261114064234), the phase awaiting_children (20261114232555), the
+// project pause (20261115194357), the plan record's kind list (20261117023932) and the plan of an
+// issue (20261117034837). Store.Migrate applies every migration that database has not recorded,
+// whatever version stands highest (apply asks each migration whether its own version is
+// recorded), so the upgrade applies 20261116144907 below that baseline: claim_sessions is
+// created, and its backfill holds the session a claim of main's daemon recorded for that claim.
+// So claim_sessions keeps its number.
 //
 // The database is built from the migrations numbered up to the pinned baseline alone, but those it
 // lacks (review round 13), so a migration added after this test still finds the database that
 // baseline leaves, and the upgrade applies it too, after claim_sessions.
 //
-// The control (the pull request records the run): a loader that skips a migration numbered below
-// the newest version recorded leaves claim_sessions unapplied, and the test fails naming it.
+// The controls: a loader that skips a migration numbered below the newest version recorded leaves
+// claim_sessions unapplied, and the test fails naming it (the pull request records the run); and
+// claim_sessions taken out of the lacks builds a database that holds it before main's claim is
+// written, whose backfill then holds nothing, and the test fails on the session it does not hold.
 func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	const token, session = "legion-legion-legion-901-implementer", "ses_main"
 	upgradeFrom(t, releaseDatabase{
-		name:   "main at the pinned baseline",
+		name:   "main at 9aff682b90",
 		newest: todaysMainsNewestMigration,
-		lacks:  []int{repositoryCorrectionVersion, deliveryResumeVersion, thisBranchsClaimSessions, phaseEntryAwaitingVersion},
+		lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, gateBasisVersion, awaitingChildrenVersion,
+			suspendedByControllerVersion, dropControllerWakesVersion, projectPauseVersion, claimSessionsVersion,
+			planRecordKindVersion, issuePlansVersion},
 		seed: func(t *testing.T, store *Store) {
 			if _, err := store.pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
@@ -564,7 +567,7 @@ const readmittedApprovalArtifactVersion = 20261122212816
 // never compares it with the newest, so each upgrade applies the versions that database lacks,
 // below its newest and above it alike, and leaves every embedded version recorded once.
 //
-// Main's database holds an outbox row of each kind its own kind check admits, read off that check:
+// Main's database holds an outbox row of each kind its own kind check admits (queueMainsKinds):
 // the basis seeds' list rewrites the check, which validates every row the table holds, so a kind
 // main's daemon can queue that the list leaves out fails the upgrade. After it the outbox takes the
 // two basis seeds as well. This branch's database at 10e98a85ef53 and dispatch://INFRA-4730's at
@@ -594,25 +597,39 @@ const readmittedApprovalArtifactVersion = 20261122212816
 func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// queueMainsKinds writes a row of each kind main's kind check admits, and queueBasisSeeds a row
-	// of each basis seed after the upgrade: the seed and the check of a database main migrated.
-	queueMainsKinds := func(t *testing.T, store *Store) {
+	// queueKinds writes a row of each kind the kind check the database stands on admits but those
+	// of skipped: the rows the daemon that migrated it could leave.
+	queueKinds := func(t *testing.T, store *Store, skipped ...string) {
 		var check string
 		if err := store.pool.QueryRow(ctx, `select pg_get_constraintdef(oid) from pg_constraint
 			where conrelid = 'outbox'::regclass and conname = 'outbox_kind_check'`).Scan(&check); err != nil {
-			t.Fatalf("read the kind check main's database stands on: %v", err)
+			t.Fatalf("read the kind check the database stands on: %v", err)
 		}
 		kinds := regexp.MustCompile(`'([a-z_]+)'::`).FindAllStringSubmatch(check, -1)
 		if len(kinds) == 0 {
-			t.Fatalf("the kind check main's database stands on names no kind: %s", check)
+			t.Fatalf("the kind check the database stands on names no kind: %s", check)
 		}
+		queued := 0
 		for _, kind := range kinds {
-			if err := queueRowOfKind(store, kind[1]); err != nil {
-				t.Fatalf("queue the %s row main's kind check admits: %v", kind[1], err)
+			if slices.Contains(skipped, kind[1]) {
+				continue
 			}
+			if err := queueRowOfKind(store, kind[1]); err != nil {
+				t.Fatalf("queue the %s row the database's kind check admits: %v", kind[1], err)
+			}
+			queued++
 		}
-		t.Logf("main's database holds a row of each of the %d kinds its kind check admits", len(kinds))
+		t.Logf("the database holds a row of each of the %d kinds its kind check admits but %v", queued, skipped)
 	}
+	// queueMainsKinds is queueKinds for a database main migrated: a row of each kind main's own
+	// kind check at its commit admits. A database of main at a2ac5fd7 or later stands on the
+	// embedded copy of 20261126110259 or 20261126163320, this branch's merged list, which names
+	// retention_end, and main's own list at each of those commits does not (git show
+	// <commit>:packages/daemon/internal/store/migrations/<file>, as mainsKindCheck is read), so no
+	// row of it is queued. Every older database of main stands on 20261119203047's list, which is
+	// main's own text. queueBasisSeeds writes a row of each basis seed after the upgrade: the seed
+	// and the check of a database main migrated.
+	queueMainsKinds := func(t *testing.T, store *Store) { queueKinds(t, store, "retention_end") }
 	queueBasisSeeds := func(t *testing.T, store *Store) {
 		for _, kind := range []string{"pending_basis_seed", "reparent_seed"} {
 			if err := queueRowOfKind(store, kind); err != nil {
@@ -894,7 +911,8 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			newest: mergeHoldsChangedVersion,
 			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
 				issueReleaseCommittedVersion, readmittedApprovalArtifactVersion, podReleaseGiveUpsVersion},
-			seed: queueMainsKinds,
+			// This branch's daemon queues every kind of its own list, retention_end among them.
+			seed: func(t *testing.T, store *Store) { queueKinds(t, store) },
 			check: func(t *testing.T, store *Store) {
 				var retained int
 				if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = 'retention_end'`).Scan(&retained); err != nil || retained != 1 {

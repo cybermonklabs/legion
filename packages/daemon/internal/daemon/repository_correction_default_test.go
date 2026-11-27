@@ -94,7 +94,7 @@ func (r *defaultChangeRig) recordRoot(key string, index int) {
 		if err := r.records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: index, AdmittedAt: defaultChangeStart}); err != nil {
 			return err
 		}
-		seedCopyRow(r.t, tx, key, "", root.DispatchStatus, root.LastDispatchSeq)
+		seedIssueCopyRow(r.t, tx, root)
 		return openTreeTx(ctx, tx, correctionProject, key)
 	}); err != nil {
 		r.t.Fatalf("record %s: %v", key, err)

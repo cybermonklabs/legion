@@ -240,7 +240,7 @@ so does an issue whose work started before its owner gave it a plan, until the o
 task with `stop_task` and gives a plan whose one task replaces it.
 Set `default_steps` only once every daemon that reads the file runs a release that knows it: an
 earlier daemon refuses the whole file (`Unknown key "projects.<KEY>.default_steps"`).
-An issue that leaves its tree, as an orphan admitted again as a root of its own does, takes no plan
+An issue whose owner changes, as it does when Dispatch moves it under another parent, takes no plan
 its earlier owner gave: at its first step Legion deletes that plan, logs
 `workflow: a plan of an earlier owner is not taken`, and tells the issue's architect once, in a
 `plan-not-taken` notice, which version it did not take and which plan the step runs instead, the

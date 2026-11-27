@@ -435,6 +435,9 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 			want := workflow.ChildStartedNotice(doorChild, doorRoot, phase.Planning, nil)
 			var started, waiting []record.Notice
 			for _, notice := range rig.noticesTo(tc.above) {
+				// The run and the phase entry the row names are its fence (record.Fence), which
+				// TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing reads; this case reads what it says.
+				notice.Generation, notice.Entry = 0, 0
 				if notice.Kind == want.Kind {
 					started = append(started, notice)
 				} else {
@@ -442,7 +445,7 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 				}
 			}
 			if len(started) != 1 || !reflect.DeepEqual(started[0], want) {
-				t.Fatalf("the architect of %s was published %+v of the child-status kind, want the one notice %+v of %s's start", tc.above, started, want, doorChild)
+				t.Fatalf("the architect of %s was published %#v of the child-status kind, want the one notice %#v of %s's start", tc.above, started, want, doorChild)
 			}
 			if len(waiting) != 1 || waiting[0].Kind != workflow.AwaitingChildrenNoticeKind {
 				t.Fatalf("the architect of %s was published %+v beside the child's start, want the one awaiting-children notice of %s", tc.above, waiting, parent)

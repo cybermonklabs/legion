@@ -67,18 +67,14 @@ func (c liveClaim) owesNothing(t *testing.T) {
 func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	ctx := context.Background()
-	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
-		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
-	// The copy of Dispatch's issues holds the issue's row, as the mirror of a running daemon does: the
-	// daemon reads the chain there (R15 of dispatch://INFRA-3320).
+	// LEGION-208 and its row of the copy of Dispatch's issues, as the mirror of a running daemon
+	// holds it: the daemon reads the chain there (R15 of dispatch://INFRA-3320).
+	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		if err := seedCopy(tx, "LEGION-208", "", "in_progress"); err != nil {
-			return err
-		}
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	}); err != nil {
-		t.Fatalf("record the copy's row and the pull request: %v", err)
+		t.Fatalf("record the pull request: %v", err)
 	}
 
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
@@ -442,19 +438,15 @@ func TestClaimOwedNamesTheArchitectThatOwnsTheClaim(t *testing.T) {
 // would read to the reminder as an answer that did not arrive.
 func TestClaimOwedNamesTheIssuesOwnArchitectOnAnUnknownChain(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
+	workingIssue(t, h, phase.Testing)
 	parent := "LEGION-208"
-	h.recordIssue(record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent, Parent: &parent,
-		Project: testProject, Title: "LEGION-209", Phase: phase.Testing, Generation: 1, Status: "in_progress"})
 	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return seedCopy(tx, "LEGION-209", parent, "in_progress")
 	}); err != nil {
 		t.Fatalf("write LEGION-209's row of the copy: %v", err)
 	}
 	tester := newLiveClaimIn(t, h, parent, "LEGION-209", claim.RoleTester)
-	own, err := claim.NewToken(testProject, "LEGION-209", claim.RoleArchitect)
-	if err != nil {
-		t.Fatalf("the architect token of LEGION-209: %v", err)
-	}
+	own := freshSessionToken(t, "LEGION-209", claim.RoleArchitect)
 	if got, want := tester.owed(t), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-209", Architect: own}); got != want {
 		t.Fatalf("the tester on a chain the copy cannot show to its top is told %+v, want %+v", got, want)
 	}

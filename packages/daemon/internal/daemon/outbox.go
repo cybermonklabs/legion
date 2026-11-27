@@ -4717,7 +4717,7 @@ func (r *outbox) issueSandboxName(issue string) string {
 // and the role's resume carries what the role must still read of it (releaseResume). Two kinds of
 // role the release stopped keep their wake's start, whose task becomes the task of the same wake
 // in the words of a release that did not finish (workflow.TakenOverWakeTask), paused or not: a
-// role whose claim a close, a linger or an operator took over, which no cancel resumes, and a role
+// role whose claim a close, a stop or an operator took over, which no cancel resumes, and a role
 // whose stop the release's mark does not record, which that start brings back. A role of that
 // second kind with no start queued, as where no wake of it was taken, is resumed, or recorded
 // stopped by the pause, as a role the mark records is (store.CancelIssueRelease).
@@ -5323,8 +5323,8 @@ func (r *outbox) mergeHold(ctx context.Context, issue record.Issue) (root string
 //     (dispatch://INFRA-2614): an architect behind its row's entry is owed that entry's start,
 //     which carries its summary. It never creates a claim, revives one or resumes an agent such a
 //     suspension holds, and one it may not reach finishes it, since the start that brings that
-//     agent back carries the news. The generation, the phase, the workflow and the linger have
-//     fenced it before this, as they fence any start.
+//     agent back carries the news. The generation, the phase and the workflow have fenced it
+//     before this, as they fence any start.
 //  2. A merger's start waits while its tree's design gate is closed or its news is not recorded
 //     (mergerWaitsForTheDesignGate), after the refusal, so a news-only start that reaches no claim
 //     finishes rather than waits.

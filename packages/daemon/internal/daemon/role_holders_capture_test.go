@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"testing"
 	"time"
@@ -37,21 +36,9 @@ func TestCaptureRoleHoldersForbidden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the publication: %v", err)
 	}
-	request, err := http.NewRequest(http.MethodPut, d.base+"/api/v1/issues/"+url.PathEscape(key)+"/role-holders", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("build the publication of %s: %v", key, err)
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+d.token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: time.Minute}).Do(request)
+	response, raw, err := captureAnswer(d, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/role-holders", body, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("publish the role holders of %s: %v", key, err)
-	}
-	defer response.Body.Close()
-	raw, err := httputil.DumpResponse(response, true)
-	if err != nil {
-		t.Fatalf("dump the answer: %v", err)
 	}
 	if response.StatusCode != http.StatusForbidden || !bytes.Contains(raw, []byte(`"ROLE_HOLDER_FORBIDDEN"`)) {
 		t.Fatalf("the publication of %s answered:\n%s\nwant 403 ROLE_HOLDER_FORBIDDEN", key, raw)
@@ -90,23 +77,10 @@ func TestCaptureStatusScopeRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode the status write: %v", err)
 	}
-	request, err := http.NewRequest(http.MethodPatch, d.base+"/api/v1/issues/"+url.PathEscape(key), bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("build the status write of %s: %v", key, err)
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+d.token)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: time.Minute}).Do(request)
+	response, raw, err := captureAnswer(d, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(key), body, time.Minute, nil)
 	if err != nil {
 		t.Fatalf("write the status of %s: %v", key, err)
 	}
-	defer response.Body.Close()
-	raw, err := httputil.DumpResponse(response, true)
-	if err != nil {
-		t.Fatalf("dump the answer: %v", err)
-	}
-	// DumpResponse leaves the body to read again.
 	var refusal struct {
 		Code string `json:"code"`
 	}

@@ -120,7 +120,7 @@ func recordCorrectionRoot(t *testing.T, pool *store.Pool, records record.Store, 
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: slot, AdmittedAt: correctionMoment}); err != nil {
 			return err
 		}
-		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, root.LastDispatchSeq)
+		seedIssueCopyRow(t, tx, root)
 		// The tree runs, which its open lifecycle is what says (record.TreeLive): without it
 		// admission would take a root at a running status with no tree of it running out of the
 		// workflow, which is not what these tests read.

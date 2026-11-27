@@ -454,7 +454,7 @@ func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T
 //
 // The sequence is the one the lane runs. The release's workspace check and role stop have run, so
 // the implementer is suspended as `released`; the root is parked under the teardown's pod lock, so
-// the linger's own rows — the role suspends and the issue_suspend that deletes the Sandbox —
+// the close's own rows — the role suspends and the issue_suspend that deletes the Sandbox —
 // are queued above the release's; the teardown then reads the issue as no longer the workflow's
 // and cancels. A resume queued for the claim the release suspended would land above the close's
 // rows and supersede them: store.IssueSuspension would read a start newer than its own row,
@@ -473,8 +473,8 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
 
 	// Under the teardown's pod lock, before the store is asked: a person parks the root, which
-	// lingers its tree and queues the close's own rows. The close's SuspendIssue runs through
-	// the same hook, and parks nothing a second time.
+	// queues its close's own rows. The close's SuspendIssue runs through the same hook, and parks
+	// nothing a second time.
 	var parked sync.Once
 	rig.rt.beforeAuthorize = func() {
 		parked.Do(func() {

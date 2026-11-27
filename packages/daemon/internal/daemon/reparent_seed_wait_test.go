@@ -211,15 +211,5 @@ func seedWaitTells(t *testing.T, w *workflowRuntime, client *tickDispatch, pool 
 // seedWaitTold is each reparented notice of CAPTURE-500 the outbox holds, oldest first.
 func seedWaitTold(t *testing.T, pool *store.Pool) []record.Notice {
 	t.Helper()
-	var told []record.Notice
-	for _, row := range rowsOfKind(t, pool, record.OutboxKindNotice) {
-		payload, err := record.DecodeOutboxPayload(row)
-		if err != nil {
-			t.Fatalf("decode notice row %d: %v", row.ID, err)
-		}
-		if notice := payload.(record.Notice); row.Issue == seedWaitIssue && notice.Kind == record.ReparentedNotice {
-			told = append(told, notice)
-		}
-	}
-	return told
+	return noticesOfKind(t, pool, seedWaitIssue, record.ReparentedNotice)
 }

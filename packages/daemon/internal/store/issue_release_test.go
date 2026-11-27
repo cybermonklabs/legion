@@ -1067,7 +1067,7 @@ func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) 
 		{name: "still released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, want: ReleaseActs},
 		{name: "resumed by rule, ready again", state: supervise.StateReady, want: ReleaseCancel, cause: ReleaseCauseOvertaken},
 		{name: "resumed by rule, idle again", state: supervise.StateIdle, want: ReleaseCancel, cause: ReleaseCauseOvertaken},
-		// A close, a linger or an operator that took the claim over re-stamps the source: that
+		// A close, a stop or an operator that took the claim over re-stamps the source: that
 		// suspension is theirs to end, and the release is over either way.
 		{name: "taken over by another path", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon,
 			want: ReleaseCancel, cause: ReleaseCauseOvertaken},

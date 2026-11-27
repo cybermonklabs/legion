@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // clockReads sets engine's clock to at for every fact it applies from here on. The test engine's
@@ -33,12 +34,8 @@ func clockReads(engine *Engine, at time.Time) {
 func clearsTheGeneration(t *testing.T, pool *pgxpool.Pool, engine *Engine, at time.Time) {
 	t.Helper()
 	clockReads(engine, at)
-	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
-		if err != nil {
-			return err
-		}
-		return engine.ClearGeneration(ctx, tx, *issue, at)
+	onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		return engine.ClearGeneration(ctx, tx, issue, at)
 	})
 }
 

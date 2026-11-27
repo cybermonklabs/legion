@@ -102,7 +102,9 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //     version 6 while a person's approval of that version was still asked for, so the step waits
 //     on that open request.
 //   - LEGION-215, a labelled root under LEGION-217, a child of LEGION-208 its architect has not
-//     released and the daemon keeps no record of: its chain reaches LEGION-208's live tree.
+//     released and the daemon keeps no record of. Its chain, read from the copy, reaches
+//     LEGION-208, so the state names LEGION-208 as its tree and holds it as that tree's unreleased
+//     work (`ancestry`); it has never run, so it holds no gated step.
 //   - LEGION-216, a root that has never run, queued behind LEGION-211 and blocked by LEGION-210.
 //   - LEGION-218 and LEGION-219, reviewing roots whose rounds wait on GitHub's merge state: the
 //     first for GitHub's first answer, its architect suspended by the operator; the second held
@@ -183,12 +185,11 @@ func populatedRecord(s *seeding) {
 	// leaves it, with none resolved at all, so the state holds every reading of the field.
 	labelOff.Resolved = record.Resolved{Priority: record.NoPriority, Known: true}
 
-	// LEGION-215: a labelled root under LEGION-217, which Dispatch shows under LEGION-208: admission
-	// records the chain with the parent it starts at (admit's record, admit.go; intake/facts.go's
-	// Ancestry; record.Issue.Ancestry), since LEGION-217 is a child of a live tree its architect has
-	// not released.
+	// LEGION-215: a labelled root under LEGION-217, which Dispatch shows under LEGION-208. Its chain
+	// is read from the copy of Dispatch's issues (record.Chains): LEGION-217, whose copy row is
+	// written below, is a child of LEGION-208's live tree its architect has not released.
 	chained := issue("LEGION-215", "LEGION-215", phase.Admitted, "todo", "sjawhar/legion", 1, 12)
-	chained.Rank, chained.Parent, chained.Ancestry = "00015", new("LEGION-217"), []string{"LEGION-217", "LEGION-208"}
+	chained.Rank, chained.Parent = "00015", new("LEGION-217")
 
 	// LEGION-216: a root that has never run, queued in the line's starting part behind LEGION-211,
 	// which Dispatch says waits on LEGION-210.

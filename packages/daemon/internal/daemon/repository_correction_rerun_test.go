@@ -105,10 +105,7 @@ func TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch(t *testing.T) {
 	// Dispatch echoes the write, that run stands on acme/widgets, the repository it left nothing
 	// of yet.
 	const project = "legion"
-	architect, err := claim.NewToken(project, correctionKey, claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
-	}
+	architect := mustClaimToken(t, correctionKey, claim.RoleArchitect)
 	applyFact(t, r.pool, "api", "rerun-child-4", intake.StatusCall{Op: intake.RerunChildCall, Architect: architect,
 		Issues: []intake.StatusCallIssue{{Key: rerunChildKey, Status: "todo"}}}, r.engine, r.admission)
 	opened := recordOf(t, r.pool, r.records, rerunChildKey)
@@ -155,10 +152,7 @@ func TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch(t *testing.T) {
 		repository: w.issueLaunchRepository,
 		appOwners:  func(claim.Role) []string { return []string{"acme"} },
 	}
-	token, err := claim.NewToken(project, rerunChildKey, claim.RolePlanner)
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := mustClaimToken(t, rerunChildKey, claim.RolePlanner)
 	spec, err := launches.SpawnSpec(ctx, supervise.Claim{Token: token, Issue: rerunChildKey, Tree: correctionKey, Role: claim.RolePlanner})
 	if err != nil {
 		t.Fatalf("the launch of %s: %v", token, err)

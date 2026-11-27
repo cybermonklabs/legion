@@ -173,20 +173,8 @@ type routeAnswer struct {
 // sendStatusChange posts body to the status-change route of key under requestKey, with the
 // headers the client sends, and returns the answer.
 func sendStatusChange(d *scratchDispatch, key, requestKey string, body []byte) routeAnswer {
-	request, err := http.NewRequest(http.MethodPost, d.base+"/api/v1/issues/"+url.PathEscape(key)+"/status-change", bytes.NewReader(body))
-	if err != nil {
-		return routeAnswer{err: err}
-	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+d.token)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", requestKey)
-	response, err := (&http.Client{Timeout: 5 * time.Minute}).Do(request)
-	if err != nil {
-		return routeAnswer{err: err}
-	}
-	defer response.Body.Close()
-	raw, err := httputil.DumpResponse(response, true)
+	response, raw, err := captureAnswer(d, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/status-change", body,
+		5*time.Minute, map[string]string{"Idempotency-Key": requestKey})
 	if err != nil {
 		return routeAnswer{err: err}
 	}
@@ -198,6 +186,33 @@ func sendStatusChange(d *scratchDispatch, key, requestKey string, body []byte) r
 		return routeAnswer{err: fmt.Errorf("decode the answer %d: %w", response.StatusCode, err)}
 	}
 	return routeAnswer{raw: raw, status: response.StatusCode, code: members.Code, changed: members.Changed}
+}
+
+// captureAnswer sends body to path of the scratch Dispatch d by method, under the scratch
+// server's agent token, with the headers the dispatch client sends and header's beside them, and
+// returns the answer and its dump, whole in the form `curl --include` prints. DumpResponse leaves
+// the answer's body to read again.
+func captureAnswer(d *scratchDispatch, method, path string, body []byte, timeout time.Duration, header map[string]string) (*http.Response, []byte, error) {
+	request, err := http.NewRequest(method, d.base+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+d.token)
+	request.Header.Set("Content-Type", "application/json")
+	for name, value := range header {
+		request.Header.Set(name, value)
+	}
+	response, err := (&http.Client{Timeout: timeout}).Do(request)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer response.Body.Close()
+	raw, err := httputil.DumpResponse(response, true)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dump the answer: %w", err)
+	}
+	return response, raw, nil
 }
 
 // saveAnswer writes raw to the dispatch client's saved answers under name.

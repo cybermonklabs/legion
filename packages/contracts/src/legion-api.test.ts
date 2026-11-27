@@ -3580,10 +3580,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   if (!isJsonObject(rest.daemon)) {
     throw new Error("state fixture lacks its daemon block");
   }
-  delete rest.daemon.convertedAt;
-  const daemon = rest.daemon as Record<string, unknown>;
-  expect(Object.keys(daemon)).toEqual(expect.arrayContaining(["stateSeq", "stateId", "stateRun"]));
-  const { stateSeq: _seq, stateId: _id, stateRun: _run, ...daemonBelowStateSeq } = daemon;
+  expect(Object.keys(rest.daemon)).toEqual(
+    expect.arrayContaining(["stateSeq", "stateId", "stateRun"])
+  );
+  const {
+    convertedAt: _convertedAt,
+    stateSeq: _seq,
+    stateId: _id,
+    stateRun: _run,
+    ...daemonBelowStateSeq
+  } = rest.daemon;
   if (!isJsonObject(rest.issues)) {
     throw new Error("state fixture lacks its issues");
   }

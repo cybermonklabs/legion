@@ -543,40 +543,31 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 		})
 		return stands
 	}
-	for _, generation := range []struct {
-		name        string
-		theirs, own string
-		clear       func(tx pgx.Tx, key string) ([]string, error)
-	}{
-		{"ClearGeneration", "OTHERPROJECT-8", "LEGION-8", func(tx pgx.Tx, key string) ([]string, error) {
-			return records.ClearGeneration(ctx, tx, record.Issue{Key: key}, forgetNothing)
-		}},
-	} {
-		t.Run(generation.name, func(t *testing.T) {
-			gated(t, "OTHERPROJECT", generation.theirs)
-			var emptied []string
-			write(t, func(tx pgx.Tx) error {
-				var err error
-				emptied, err = generation.clear(tx, generation.theirs)
-				return err
-			})
-			refused(t, record.OutboxKindDesignGatesPublish, generation.theirs, nil)
-			if len(emptied) != 0 || !gateStands(t, generation.theirs) {
-				t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want nothing emptied and OTHERPROJECT's gate standing",
-					generation.theirs, emptied, gateStands(t, generation.theirs))
-			}
-			gated(t, "LEGION", generation.own)
-			write(t, func(tx pgx.Tx) error {
-				var err error
-				emptied, err = generation.clear(tx, generation.own)
-				return err
-			})
-			if !slices.Equal(emptied, []string{generation.own}) || gateStands(t, generation.own) {
-				t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want its own gate emptied and named",
-					generation.own, emptied, gateStands(t, generation.own))
-			}
+	t.Run("ClearGeneration", func(t *testing.T) {
+		const theirs, own = "OTHERPROJECT-8", "LEGION-8"
+		gated(t, "OTHERPROJECT", theirs)
+		var emptied []string
+		write(t, func(tx pgx.Tx) error {
+			var err error
+			emptied, err = records.ClearGeneration(ctx, tx, record.Issue{Key: theirs}, forgetNothing)
+			return err
 		})
-	}
+		refused(t, record.OutboxKindDesignGatesPublish, theirs, nil)
+		if len(emptied) != 0 || !gateStands(t, theirs) {
+			t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want nothing emptied and OTHERPROJECT's gate standing",
+				theirs, emptied, gateStands(t, theirs))
+		}
+		gated(t, "LEGION", own)
+		write(t, func(tx pgx.Tx) error {
+			var err error
+			emptied, err = records.ClearGeneration(ctx, tx, record.Issue{Key: own}, forgetNothing)
+			return err
+		})
+		if !slices.Equal(emptied, []string{own}) || gateStands(t, own) {
+			t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want its own gate emptied and named",
+				own, emptied, gateStands(t, own))
+		}
+	})
 }
 
 // The boot's sweep closes every issue of the project that awaits a merge GitHub already reported

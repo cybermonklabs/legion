@@ -3,9 +3,6 @@ package workflow
 import (
 	"reflect"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -35,9 +32,7 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 			}
 			seedPhase(t, pool, row)
 			if which == "cleared issue" {
-				seedRecord(t, pool, func(tx pgx.Tx) error {
-					return engine.ClearGeneration(t.Context(), tx, issue, time.Now())
-				})
+				clearIssueGeneration(t, pool, issue)
 				issue.Generation++
 				seedIssue(t, pool, issue)
 				if _, err := pool.Exec(t.Context(), "update claims set serving_generation = $2 where token = $1", string(token), issue.Generation); err != nil {

@@ -185,32 +185,20 @@ func TestClearGenerationClearsTheWaitTheArchitectsEntryKept(t *testing.T) {
 	t.Parallel()
 	raised := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	const resumed = "A person answered your ask ask-1; read it. Continue."
-	for _, tc := range []struct {
-		name  string
-		key   string
-		clear func(tx pgx.Tx, issue record.Issue) error
-	}{
-		{name: "a new run's clear of the issue", key: "LEGION-291", clear: func(tx pgx.Tx, issue record.Issue) error {
-			return testEngine(config.DesignGateRootIssues, nil).ClearGeneration(t.Context(), tx, issue, time.Now().UTC())
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			issue := clearedIssue(tc.key)
-			seedIssue(t, pool, issue)
-			seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleArchitect, Claim: "architect", Entry: 3,
-				EntryTask: resumed, EntryAwaiting: &record.Awaiting{Ask: "ask-1", AnsweredBy: record.AnsweredByAsk}, EntryRaisedAt: raised})
-			seedRecord(t, pool, func(tx pgx.Tx) error { return tc.clear(tx, issue) })
-			got := record.PhaseRowOf(issuePhases(t, pool, issue.Key), claim.RoleArchitect)
-			if got.EntryTask != "" || got.EntryAwaiting != nil {
-				t.Fatalf("the architect's row after %s = task %q, wait %+v; want no task and no wait: both were the generation's that ended",
-					tc.name, got.EntryTask, got.EntryAwaiting)
-			}
-			if got.Entry != 3 || !got.EntryRaisedAt.Equal(raised) {
-				t.Fatalf("the architect's row after %s = entry %d raised at %s, want the entry 3 raised at %s it stood on",
-					tc.name, got.Entry, got.EntryRaisedAt, raised)
-			}
-		})
+	pool := migratedPool(t)
+	issue := clearedIssue("LEGION-291")
+	seedIssue(t, pool, issue)
+	seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleArchitect, Claim: "architect", Entry: 3,
+		EntryTask: resumed, EntryAwaiting: &record.Awaiting{Ask: "ask-1", AnsweredBy: record.AnsweredByAsk}, EntryRaisedAt: raised})
+	clearIssueGeneration(t, pool, issue)
+	got := record.PhaseRowOf(issuePhases(t, pool, issue.Key), claim.RoleArchitect)
+	if got.EntryTask != "" || got.EntryAwaiting != nil {
+		t.Fatalf("the architect's row after a new run's clear of the issue = task %q, wait %+v; want no task and no wait: both were the generation's that ended",
+			got.EntryTask, got.EntryAwaiting)
+	}
+	if got.Entry != 3 || !got.EntryRaisedAt.Equal(raised) {
+		t.Fatalf("the architect's row after a new run's clear of the issue = entry %d raised at %s, want the entry 3 raised at %s it stood on",
+			got.Entry, got.EntryRaisedAt, raised)
 	}
 }
 
@@ -234,7 +222,7 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 	records := record.NewStore()
 	// keptAfter runs path over a fresh record of the tree, its two gates approved and its two
 	// decisions kept, and answers the references the tree keeps after it.
-	keptAfter := func(t *testing.T, path func(ctx context.Context, tx pgx.Tx, tree string) error) []string {
+	keptAfter := func(t *testing.T, path func(ctx context.Context, tx pgx.Tx, root string) error) []string {
 		t.Helper()
 		pool := migratedPool(t)
 		root := seedAdmittedTree(t, pool, 1)
@@ -251,7 +239,7 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 			}
 			return nil
 		})
-		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return path(ctx, tx, root.Tree) })
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return path(ctx, tx, root.Key) })
 		var refs []string
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			kept, err := records.ParkedDecisionsOf(t.Context(), tx, []string{superseded.Issue, stands.Issue})
@@ -264,8 +252,8 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 		return refs
 	}
 
-	start := keptAfter(t, func(ctx context.Context, tx pgx.Tx, tree string) error {
-		root, err := records.Issue(ctx, tx, tree)
+	start := keptAfter(t, func(ctx context.Context, tx pgx.Tx, key string) error {
+		root, err := records.Issue(ctx, tx, key)
 		if err != nil {
 			return err
 		}
@@ -276,29 +264,21 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 		t.Fatalf("the tree keeps %v after the start's read, want %v: the root's changes request came before its gate's approval, "+
 			"and the child's after its own", start, want)
 	}
-	for _, tc := range []struct {
-		name  string
-		clear func(ctx context.Context, tx pgx.Tx, tree string) error
-	}{
-		{name: "the clear of each issue", clear: func(ctx context.Context, tx pgx.Tx, tree string) error {
-			for _, key := range []string{superseded.Issue, stands.Issue} {
-				issue, err := records.Issue(ctx, tx, key)
-				if err != nil {
-					return err
-				}
-				if err := engine.ClearGeneration(ctx, tx, *issue, engine.now()); err != nil {
-					return err
-				}
+	cleared := keptAfter(t, func(ctx context.Context, tx pgx.Tx, _ string) error {
+		for _, key := range []string{superseded.Issue, stands.Issue} {
+			issue, err := records.Issue(ctx, tx, key)
+			if err != nil {
+				return err
 			}
-			return nil
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := keptAfter(t, tc.clear); !slices.Equal(got, start) {
-				t.Fatalf("the tree keeps %v after %s and %v after the start's read of the same decisions, want the same: "+
-					"both run the one forget (ForgetSuperseded)", got, tc.name, start)
+			if err := engine.ClearGeneration(ctx, tx, *issue, engine.now()); err != nil {
+				return err
 			}
-		})
+		}
+		return nil
+	})
+	if !slices.Equal(cleared, start) {
+		t.Fatalf("the tree keeps %v after the clear of each issue and %v after the start's read of the same decisions, want the same: "+
+			"both run the one forget (ForgetSuperseded)", cleared, start)
 	}
 }
 
@@ -335,16 +315,12 @@ func TestANewRunForgetsOnlyTheChangesRequestItsGatesApprovalSuperseded(t *testin
 				LastDispatchSeq: 1})
 			records := record.NewStore()
 			version := 2
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-				if err := records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "artifact-501",
-					LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true}); err != nil {
-					return err
-				}
+			seedGate(t, pool, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "artifact-501",
+				LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true})
+			seedRecord(t, pool, func(tx pgx.Tx) error {
 				return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: key, Ref: ref,
 					Decision: record.DecisionDesignChangesRequested, Actor: "user:alice", At: tc.mark.At, Seq: tc.mark.Seq})
-			}); err != nil {
-				t.Fatalf("keep the person's changes request beside the gate's approval: %v", err)
-			}
+			})
 
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			newRunOf(t, pool, engine, key, "")
@@ -354,13 +330,11 @@ func TestANewRunForgetsOnlyTheChangesRequestItsGatesApprovalSuperseded(t *testin
 			}
 
 			var kept []record.ParkedDecision
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			seedRecord(t, pool, func(tx pgx.Tx) error {
 				var err error
 				kept, err = records.ParkedDecisionsOf(ctx, tx, []string{key})
 				return err
-			}); err != nil {
-				t.Fatalf("read what %s keeps: %v", key, err)
-			}
+			})
 			if !tc.kept {
 				if len(kept) != 0 {
 					t.Fatalf("%s keeps %#v after its new run: the approval at %#v came after the changes request at %#v, so the request is forgotten before the clear deletes the gate that says so",

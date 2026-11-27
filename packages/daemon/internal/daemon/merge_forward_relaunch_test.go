@@ -215,24 +215,13 @@ func TestASecondAskOfTheSameHeadChangesNothingTheDaemonHolds(t *testing.T) {
 	comesUp(t, machine, true)
 	publisher.setAbsent()
 	drainAt(t, runner, 10*time.Minute, "the attempt that delivers the first ask")
-	recorded := func() record.PullRequest {
-		t.Helper()
-		var pr *record.PullRequest
-		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-			pr, err = runner.records.PullRequest(ctx, tx, "LEGION-208")
-			return err
-		}); err != nil || pr == nil {
-			t.Fatalf("read the pull request of LEGION-208: %+v, %v", pr, err)
-		}
-		return *pr
-	}
-	first, rows := recorded(), outboxRows(t, pool)
+	first, rows := recordedPullRequest(t, runner, pool), outboxRows(t, pool)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now()))
 	drainAt(t, runner, 20*time.Minute, "the attempt that delivers the second ask")
 	if _, delivered := publisher.snapshot(); len(delivered) != 2 || delivered[0].message != delivered[1].message {
 		t.Errorf("the implementer was told %d messages (%+v), want the same ask twice", len(delivered), delivered)
 	}
-	if second := recorded(); !reflect.DeepEqual(second.MergeForward, first.MergeForward) {
+	if second := recordedPullRequest(t, runner, pool); !reflect.DeepEqual(second.MergeForward, first.MergeForward) {
 		t.Errorf("after the second ask the record's ask is %+v, want it as the first ask left it, %+v", second.MergeForward, first.MergeForward)
 	}
 	if left := outboxRows(t, pool); left != rows {
@@ -475,22 +464,11 @@ type queuedAsk struct {
 // queuedAsks is every merge-forward row of LEGION-208, oldest first.
 func queuedAsks(t *testing.T, pool *store.Pool) []queuedAsk {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox where issue = 'LEGION-208' and kind = $1 order by id`,
-		string(record.OutboxKindMergeForward))
-	if err != nil {
-		t.Fatalf("read the merge-forward rows: %v", err)
-	}
-	defer rows.Close()
 	var asks []queuedAsk
-	for rows.Next() {
-		var row record.OutboxRow
-		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
-			t.Fatalf("scan a merge-forward row: %v", err)
+	for _, row := range rowsOfKind(t, pool, record.OutboxKindMergeForward) {
+		if row.Issue == "LEGION-208" {
+			asks = append(asks, queuedAsk{id: row.ID, payload: mustDecode(t, row).(record.MergeForwardMessage)})
 		}
-		asks = append(asks, queuedAsk{id: row.ID, payload: mustDecode(t, row).(record.MergeForwardMessage)})
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the merge-forward rows: %v", err)
 	}
 	return asks
 }

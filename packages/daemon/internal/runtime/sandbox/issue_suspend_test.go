@@ -265,18 +265,16 @@ func TestASandboxOfAnotherProjectOrIssueIsRefusedBeforeAuthorize(t *testing.T) {
 				g := newRig(t, nil)
 				loc := g.spawn(childSpec(t))
 				name := SandboxName(childToken)
-				if len(other.labels) > 0 {
-					object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
-					if err != nil {
-						t.Fatal(err)
-					}
-					relabelled := object.(*unstructured.Unstructured).DeepCopy()
-					labels := relabelled.GetLabels()
-					maps.Copy(labels, other.labels)
-					relabelled.SetLabels(labels)
-					if err := g.dyn.Tracker().Update(sandboxGVR, relabelled, testNamespace); err != nil {
-						t.Fatal(err)
-					}
+				object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				relabelled := object.(*unstructured.Unstructured).DeepCopy()
+				labels := relabelled.GetLabels()
+				maps.Copy(labels, other.labels)
+				relabelled.SetLabels(labels)
+				if err := g.dyn.Tracker().Update(sandboxGVR, relabelled, testNamespace); err != nil {
+					t.Fatal(err)
 				}
 				g.clearActions()
 				var asked atomic.Int32
@@ -285,7 +283,7 @@ func TestASandboxOfAnotherProjectOrIssueIsRefusedBeforeAuthorize(t *testing.T) {
 					return true, nil
 				}
 
-				err := end.call(g.r, g.ctx, childIssue, "", authorize)
+				err = end.call(g.r, g.ctx, childIssue, "", authorize)
 				if err == nil || !strings.Contains(err.Error(), "does not belong to this issue") {
 					t.Fatalf("%s = %v, want the refusal of a Sandbox of %s", end.name, err, other.name)
 				}

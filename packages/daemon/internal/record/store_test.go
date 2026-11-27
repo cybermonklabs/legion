@@ -1299,29 +1299,21 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 		}
 	})
 
-	for _, tc := range []struct {
-		name  string
-		key   string
-		clear func(tx pgx.Tx, issue Issue) error
-	}{
-		{name: "a new generation of the issue clears it", key: "LEGION-290", clear: func(tx pgx.Tx, issue Issue) error {
+	t.Run("a new generation of the issue clears it", func(t *testing.T) {
+		st := migratedStore(t)
+		issue := issueFixture("LEGION-290")
+		writeReviewer(t, st, issue)
+		if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != reviewed {
+			t.Fatalf("before the clear the reviewer's row reads the reviewed commit %q, want %q: the clear would prove nothing", got, reviewed)
+		}
+		inTx(t, st, func(tx pgx.Tx) {
 			_, err := NewStore().ClearGeneration(ctx, tx, issue, forgetNothing)
-			return err
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			st := migratedStore(t)
-			issue := issueFixture(tc.key)
-			writeReviewer(t, st, issue)
-			if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != reviewed {
-				t.Fatalf("before the clear the reviewer's row reads the reviewed commit %q, want %q: the clear would prove nothing", got, reviewed)
-			}
-			inTx(t, st, func(tx pgx.Tx) { must(t, tc.clear(tx, issue)) })
-			if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != "" {
-				t.Fatalf("after the clear the reviewer's row reads the reviewed commit %q, want none: it was the generation's that ended", got)
-			}
+			must(t, err)
 		})
-	}
+		if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != "" {
+			t.Fatalf("after the clear the reviewer's row reads the reviewed commit %q, want none: it was the generation's that ended", got)
+		}
+	})
 }
 
 func TestMarkProcessedIsIdempotent(t *testing.T) {

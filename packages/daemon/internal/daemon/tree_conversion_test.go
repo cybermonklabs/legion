@@ -652,9 +652,8 @@ func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T)
 // steps where the run before walked them, and its owner's plan, with the document and the version
 // Legion took, where its owner gave one; each task with the tasks it needs, [] for the one task of
 // either. CAPTURE-80 lingers at generation 2; CAPTURE-81, a member of its tree at its acceptance,
-// was handed over, and the listing shows that the write landed. This is main's
-// TestACarriedRootsNewRunWritesItsPlan (admit's plan_carry_test.go) on the one path of
-// this release that finishes a hand-over, the conversion.
+// was handed over, and the listing shows that the write landed. The conversion is the one path of
+// this release that finishes a hand-over.
 func TestALandedHandOverCarriesItsPlanIntoItsNewRun(t *testing.T) {
 	t.Parallel()
 	const root, member = "CAPTURE-80", "CAPTURE-81"

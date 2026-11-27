@@ -372,11 +372,11 @@ func ReleasedWakeTask(kind, detail, task string) string {
 
 // TakenOverWakeTask is the task of a wake's start that a cancel of an idle release keeps, paused
 // or not, for a role that release stopped and no cancel resumes (store.CancelIssueRelease,
-// store.ReleaseCancelPause.TakenOverWakeTask): a role whose claim a close, a linger or an operator
+// store.ReleaseCancelPause.TakenOverWakeTask): a role whose claim a close, a stop or an operator
 // took over after the wake, and a role whose stop suspended its claim as `released` without the
 // record of that on the release's mark. kind and detail are the wake's, as its start records them,
 // and task is the task the start carries. That start brings the role back: it finishes without
-// acting under a close or a linger, it runs when an operator resumes the claim, and it resumes a
+// acting under a close or a stop, it runs when an operator resumes the claim, and it resumes a
 // claim that is still `released` in the pod that stayed. WakeTask wrote its task for a session an
 // idle release stopped (StoppedByRelease), and it says that the pod was released. The cancel made
 // that false: the release did not finish, and the pod never went away. So the answer is the same

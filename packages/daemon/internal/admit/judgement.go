@@ -31,8 +31,7 @@ type passRead struct {
 // lineJudgement is a pass's read (passRead) and, when judged is set, the judgement of the line the
 // pass made over it (blockers.JudgeLine): its mirror rows, its facts as the judgement filled them,
 // its line and the rows the line left behind. The read's slots are every project's; the line was
-// judged over the project's own among them (record.OwnSlots). It is not named passJudgement, the
-// tests' helper that judges a pass's line from outside it (chain_admission_test.go).
+// judged over the project's own among them (record.OwnSlots).
 type lineJudgement struct {
 	passRead
 	judged      bool

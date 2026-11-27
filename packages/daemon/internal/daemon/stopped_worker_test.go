@@ -278,7 +278,7 @@ func workingPane(token claim.Token) *runtime.Locator {
 }
 
 // seedWaitingMember records member as a tree member holding no admission slot, with its row of the
-// daemon's copy of Dispatch (seedMemberCopyRow), the claim of its role and the start its
+// daemon's copy of Dispatch (seedIssueCopyRow), the claim of its role and the start its
 // transition owes that role. A phase worker's start is one row, which carries the task and waits
 // for the issue's slot (record.SuperviseRequest.NeedsSlot), and that row has never run against
 // this claim: a row held for a slot its issue does not hold is not claimable at all (record's
@@ -300,7 +300,7 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 		if err := records.PutIssue(ctx, tx, member); err != nil {
 			return err
 		}
-		seedMemberCopyRow(t, tx, member)
+		seedIssueCopyRow(t, tx, member)
 		row, err := record.NewOutboxRow(member.Key, owed, time.Now().UTC())
 		if err != nil {
 			return err
@@ -315,18 +315,18 @@ func seedWaitingMember(t *testing.T, dsn string, member record.Issue, worker sup
 	}
 }
 
-// seedMemberCopyRow writes member's row of the daemon's copy of Dispatch in tx (seedCopyRow), as
-// seedWorkflowTreeIn writes a root's: under the parent its record names, at the status Dispatch
-// last showed it in (DispatchStatus, else Status). The daemon's boot fills the copy of every issue
-// it records before its first decision (R16 of dispatch://INFRA-3320), so a recorded member with
-// no row is a state production never reaches, whose chain reads unknown.
-func seedMemberCopyRow(t *testing.T, tx pgx.Tx, member record.Issue) {
+// seedIssueCopyRow writes issue's row of the daemon's copy of Dispatch in tx (seedCopyRow): under
+// the parent its record names, at the status Dispatch last showed it in (DispatchStatus, else
+// Status), at sequence 1. The daemon's boot fills the copy of every issue it records before its
+// first decision (R16 of dispatch://INFRA-3320), so a recorded issue with no row is a state
+// production never reaches, whose chain reads unknown.
+func seedIssueCopyRow(t *testing.T, tx pgx.Tx, issue record.Issue) {
 	t.Helper()
 	var parent string
-	if member.Parent != nil {
-		parent = *member.Parent
+	if issue.Parent != nil {
+		parent = *issue.Parent
 	}
-	seedCopyRow(t, tx, member.Key, parent, cmp.Or(member.DispatchStatus, member.Status), 1)
+	seedCopyRow(t, tx, issue.Key, parent, cmp.Or(issue.DispatchStatus, issue.Status), 1)
 }
 
 // seedCappedRoots records a running tree for each of roots, its root at work in implementing and
@@ -346,7 +346,7 @@ func seedCappedRoots(t *testing.T, cfg config.Config, project string, roots ...s
 // pass leaves a started root that an open Dispatch child holds (R9 of dispatch://INFRA-3320,
 // admit's childrenWaits): in awaiting_children, holding the start of implementing it stopped,
 // with children the open children that hold it, and no admission slot, since the phase keeps none
-// (record.KeepsSlot). Each member's copy row names root as its parent (seedMemberCopyRow), so a
+// (record.KeepsSlot). Each member's copy row names root as its parent (seedIssueCopyRow), so a
 // root seeded at work in implementing would move there at the daemon's first pass and give its
 // slot to a member.
 func seedWaitingParent(t *testing.T, cfg config.Config, project, root string, children ...string) {

@@ -670,12 +670,8 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 	t.Run("a promotion's start after the clear", func(t *testing.T) {
 		pool, engine, _ := reviewedChild(t)
 		before := reviewerRow(t, pool)
-		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
-			if err != nil {
-				return err
-			}
-			return engine.ClearGeneration(ctx, tx, *issue, time.Now().UTC())
+		onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			return engine.ClearGeneration(ctx, tx, issue, time.Now().UTC())
 		})
 		member := issueRecord(t, pool, "LEGION-208")
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {

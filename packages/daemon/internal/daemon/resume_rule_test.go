@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -329,11 +328,7 @@ func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root reco
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
-		var parent string
-		if root.Parent != nil {
-			parent = *root.Parent
-		}
-		seedCopyRow(t, tx, root.Key, parent, cmp.Or(root.DispatchStatus, root.Status), 1)
+		seedIssueCopyRow(t, tx, root)
 		if !record.KeepsSlot(root) {
 			return nil
 		}

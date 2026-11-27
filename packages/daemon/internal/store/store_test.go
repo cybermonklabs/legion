@@ -1146,13 +1146,11 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // order. Migrations from 0039 on ship only in binaries that carry 0030, and Migrate applies in
 // ascending order, so none can run before it: 0043 sets the list after every kind it names. On a
 // fresh database the rewrite with the highest version is the last word, so a kind that only a
-// lower one names is refused there: design_changes would be, had its 20261119203047 stood below
-// the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
-// it out, and the three state kinds would be, had the state events' 20261126163320 stood below the
-// merge holds' 20261126110259, whose list leaves them out. step_record, plan_record,
+// lower one names is refused there. That rewrite is the merge's union of the kind lists
+// (20261127104032), which runs after each list that names step_record, plan_record,
 // conflict_confirm, merge_forward, design_changes, the two basis seeds, merge_holds_changed,
-// retention_end and the three state kinds are refused too, unless the list of the merge's union
-// of the kind lists (20261127104032), which runs after each list that names them, names them too.
+// retention_end or the three state kinds, so each of them is refused unless that list names it
+// too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()
