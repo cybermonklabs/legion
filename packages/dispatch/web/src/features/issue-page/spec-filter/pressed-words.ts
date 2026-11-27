@@ -1,5 +1,5 @@
 import type { CaretAt } from "../node-caret";
-import { FOCUSABLE } from "../RowText";
+import { FOCUSABLE, ROW_WRITTEN } from "../RowText";
 
 /** The item containing the focus, if it belongs to this tree. */
 export function focusedTreeItem(tree: HTMLElement): HTMLElement | null {
@@ -17,43 +17,40 @@ export function statementWordsAt(target: EventTarget): HTMLElement | null {
   return words !== null && !words.contains(control) ? words : null;
 }
 
-/** The mark of a reference's link in a node's drawn words, which holds the reference as its text
- *  wrote it: a copy of `row-references.ts`'s private `ROW_WRITTEN`, which goes once that file
- *  exports it. */
-const REFERENCE_WRITTEN = "data-row-written";
-
 /**
- * What a statement's drawn words draw in place of text the statement's editor holds otherwise,
- * each counted as the editor holds it: its `REFERENCE_WRITTEN` text where it carries one, and
- * nothing where it does not. A statement holds paragraphs alone (the `requirement` block's
- * content), so these are the inline kinds whose drawing the two differ in:
+ * What a statement's drawn words draw in place of the text its editor holds otherwise, each
+ * marked by the words' renderer with the editor's text for it (`RowText.tsx`'s `markDrawnAtoms`)
+ * and counted as that text. So the count reads one mark and no list of shapes, and a kind the
+ * words draw in a new way needs only its mark. A statement holds paragraphs alone (the
+ * `requirement` block's content), so these are the inline kinds the two draw differently:
  *
  * - A reference, and a mention of a document, a block or a post: the view's link pass
  *   (`row-references.ts`'s `linkRowReferences`) draws it as a link by its target's name - an
  *   issue's key and title, a chip's words - marked with the words it was written as; the editor
  *   holds those words as text, hidden under a title it draws as a widget the caret cannot enter
  *   (`@legion/proof-editor`'s `reference-decorations.ts`).
- * - Inline HTML (`<name>`) and a footnote's reference: both draw them by the schema's own
- *   `toDOM` (Milkdown's `span[data-type="html"]` holding its value, and `sup` holding its
- *   label), and the editor holds each as an atom ProseMirror draws `contenteditable="false"`.
+ * - Inline HTML (`<name>`): the view draws it by the schema's own `toDOM`, Milkdown's
+ *   `span[data-type="html"]` holding its value; a footnote's reference the view draws as the text
+ *   its author wrote (`[^label]`), since the statement's own words define no note, and as the
+ *   schema's `sup` where a note is defined in them. The editor holds each as an atom ProseMirror
+ *   draws `contenteditable="false"`, marked with no text.
  * - A picture of an artifact: the view draws it as a link (`markdown-serializer.ts`'s
  *   `pictureSerializer`) holding the picture, or its caption's link until it loads or where it
  *   fails (`DispatchPicture`); the editor holds it as an atom (`doc/picture-view.ts`), its
- *   picture or its fallback link with no text the caret can enter.
+ *   picture or its fallback link with no text the caret can enter, marked with no text.
  *
  * Every other text counts as drawn: a hard break is a `br` in both, holding no text, and what
  * the editor draws as a widget - a reference's title, a collaborator's cursor - stands outside
- * its editable text and is not drawn by the view. Any other inline shape the view draws
- * differently from the editor's text with no mark in `HELD_OTHERWISE` - a new inline node kind,
- * or prose whose drawn characters differ from the editor's - is the pressed word's to find
- * (`CaretAt`).
+ * its editable text and is not drawn by the view. A mark with no text is an atom: a press inside
+ * it counts as at its start, and a press past it goes after it.
  */
-const HELD_OTHERWISE = [
-  `[${REFERENCE_WRITTEN}]`,
-  '[data-type="html"]',
-  '[data-type="footnote_reference"]',
-  "[data-dispatch-picture]",
-].join(", ");
+const HELD_OTHERWISE = `[${ROW_WRITTEN}]`;
+
+/** Whether `element`, one of `HELD_OTHERWISE`, stands for an atom of the editor's: its mark holds
+ *  no text of the editor's. */
+function isAtom(element: Element): boolean {
+  return element.getAttribute(ROW_WRITTEN) === "";
+}
 
 /**
  * Reads the press before the editor replaces the words, as the count of the editor's text
@@ -68,12 +65,12 @@ const HELD_OTHERWISE = [
  * says so (`CaretAt`'s `next`), and the editor puts the caret in that text, where the press was:
  * on the line after the break, or after the atom. A press past an atom that no text follows says
  * so too, and the editor puts the caret after that atom, where its block ends; a press inside the
- * atom still counts as at its start. The browser can answer a point past the end of an atom's
- * line with a place inside the atom - Chromium answers the end of its text - so a place inside
- * an atom the editor holds no text of reads as right after it where the point stands past the end
- * of the atom's last line (`pastAtomEnd`). An atom drawn with no text - a picture once it has
- * loaded - counts as one too, so the walk reads each element drawn in place of the editor's text
- * before its own texts.
+ * atom still counts as at its start. The browser can answer a point past the end of the line a
+ * marked element ends with a place inside it - Chromium answers the end of its text - so a place
+ * inside one reads as right after it where the point stands past the end of its last line
+ * (`pastAtomEnd`): after an atom, and after a reference's words as the editor holds them. An atom
+ * drawn with no text - a picture once it has loaded - counts as one too, so the walk reads each
+ * element drawn in place of the editor's text before its own texts.
  */
 export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt {
   const doc = words.ownerDocument;
@@ -84,9 +81,7 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
   const end = doc.createRange();
   end.setStart(node, position?.offset ?? range?.startOffset ?? 0);
   const atom = (node instanceof Element ? node : node.parentElement)?.closest(HELD_OTHERWISE);
-  if (atom != null && !atom.hasAttribute(REFERENCE_WRITTEN) && pastAtomEnd(atom, x, y)) {
-    end.setStartAfter(atom);
-  }
+  if (atom != null && pastAtomEnd(atom, x, y)) end.setStartAfter(atom);
   const walker = doc.createTreeWalker(words, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
   // The words as the editor holds them, and the press's place in them once it is passed.
   let held = "";
@@ -111,11 +106,11 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
       } else if (drawn === end.startContainer) offset = held.length + end.startOffset;
     }
     counted = other;
-    held += (other === null ? drawn.textContent : other.getAttribute(REFERENCE_WRITTEN)) ?? "";
+    held += (other === null ? drawn.textContent : other.getAttribute(ROW_WRITTEN)) ?? "";
   }
   // A press past everything counted, after an atom - an element drawn in place of no text of the
   // editor's, as a reference is not - goes after that atom.
-  if (offset === undefined && counted?.hasAttribute(REFERENCE_WRITTEN) === false) next = true;
+  if (offset === undefined && counted !== null && isAtom(counted)) next = true;
   const at = offset ?? held.length;
   return { x, y, offset: at, word: pressedWord(held, at), next: next || undefined };
 }

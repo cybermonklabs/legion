@@ -78,7 +78,7 @@ const AROUND_PRESS = new DOMRect(-10, -8, 60, 20);
 
 const AFTER = " first, then the rest.";
 /** Inline html the view draws as an atom: the editor holds no text of it. */
-const HTML_ATOM = '<span data-type="html">&lt;name&gt;</span>';
+const HTML_ATOM = '<span data-row-written="" data-type="html">&lt;name&gt;</span>';
 /** Words with inline html in them, and words with a hard break in them. */
 const KEPT = `<p>Kept by ${HTML_ATOM}${AFTER}</p>`;
 const BROKEN = "<p>Line one.<br>Line two, then the rest.</p>";
@@ -115,7 +115,7 @@ test("a press after inline html counts the html as nothing", () => {
 });
 
 test("a press after a footnote's reference counts the reference as nothing", () => {
-  const html = `<p>Read the note<sup data-type="footnote_reference">1</sup>${AFTER}</p>`;
+  const html = `<p>Read the note<sup data-row-written="" data-type="footnote_reference">1</sup>${AFTER}</p>`;
   expect(pressIn(html, AFTER, 3)).toEqual({
     x: 1,
     y: 2,
@@ -124,8 +124,29 @@ test("a press after a footnote's reference counts the reference as nothing", () 
   });
 });
 
+// A footnote's reference whose note the statement's own words do not define is drawn as the text
+// its author wrote, `[^n1]`, which the renderer marks with no text of the editor's, which holds it
+// as an atom (`RowText.tsx`'s `markDrawnAtoms`). So it counts as nothing: a press after it counts
+// the text before it, and a press past it, where it ends the words, goes after it.
+test("a press after a footnote's reference drawn as its written text counts it as nothing", () => {
+  const note = '<span data-row-written="">[^n1]</span>';
+  expect(pressIn(`<p>Read the note${note}${AFTER}</p>`, AFTER, 3)).toEqual({
+    x: 1,
+    y: 2,
+    offset: "Read the note".length + 3,
+    word: ["note ", "first,", " then", 2],
+  });
+  expect(pressAt(`<p>Read the note${note}</p>`, paragraphEnd)).toEqual({
+    x: 1,
+    y: 2,
+    offset: "Read the note".length,
+    word: ["the ", "note", "", 4],
+    next: true,
+  });
+});
+
 test("a press after a picture counts the picture as nothing", () => {
-  const html = `<p>See <a data-dispatch-picture="dispatch://CORE-1/artifact/shot-png" data-picture-caption="shot.png" href="/CORE-1/artifact/shot-png"><span>shot.png</span></a>${AFTER}</p>`;
+  const html = `<p>See <a data-row-written="" data-dispatch-picture="dispatch://CORE-1/artifact/shot-png" data-picture-caption="shot.png" href="/CORE-1/artifact/shot-png"><span>shot.png</span></a>${AFTER}</p>`;
   expect(pressIn(html, AFTER, 3)).toEqual({
     x: 1,
     y: 2,
@@ -180,9 +201,15 @@ const ATOMS: readonly (readonly [
   inside: (atom: Element) => readonly [Node, number],
 ])[] = [
   [HTML_ATOM, (atom) => [atom.firstChild ?? atom, 2]],
-  ['<sup data-type="footnote_reference">1</sup>', (atom) => [atom.firstChild ?? atom, 0]],
-  [`<a ${PICTURE}><span>shot.png</span></a>`, (atom) => [atom.firstChild?.firstChild ?? atom, 3]],
-  [`<a ${PICTURE}><img alt="shot.png"></a>`, (atom) => [atom, 1]],
+  [
+    '<sup data-row-written="" data-type="footnote_reference">1</sup>',
+    (atom) => [atom.firstChild ?? atom, 0],
+  ],
+  [
+    `<a data-row-written="" ${PICTURE}><span>shot.png</span></a>`,
+    (atom) => [atom.firstChild?.firstChild ?? atom, 3],
+  ],
+  [`<a data-row-written="" ${PICTURE}><img alt="shot.png"></a>`, (atom) => [atom, 1]],
 ];
 const NOTE = "Read the note";
 /** The press at the end of `NOTE`, before an atom after it. */
@@ -302,26 +329,27 @@ test("a press the browser answers inside an atom, past the end of its last line,
       expect(at.next, name).toBeUndefined();
     }
     earlier = undefined;
-    // A point past the end of the line, which a place in a reference or in the text after an atom
-    // reads nothing of.
+    // A point past the end of the line a reference ends, which the browser answers inside the
+    // reference's link, goes after the reference's words as the editor holds them; a place in the
+    // text after an atom reads no line of the atom.
     line = new DOMRect(-60, -8, 60, 20);
-    lines.mockClear();
     const cited = "dispatch://CORE-2";
     const title = " The other issue";
     const reference = `<a data-row-reference="${cited}" data-row-written="${cited}" href="/CORE-2"><span>CORE-2</span>${title}</a>`;
     expect(pressIn(`<p>Read ${reference}</p>`, title, title.length)).toEqual({
       x: 1,
       y: 2,
-      offset: "Read ".length,
-      word: ["Read ", cited, "", 0],
+      offset: "Read ".length + cited.length,
+      word: ["Read ", cited, "", cited.length],
     });
+    lines.mockClear();
     expect(pressIn(KEPT, AFTER, 3)).toEqual({
       x: 1,
       y: 2,
       offset: "Kept by ".length + 3,
       word: ["by  ", "first,", " then", 2],
     });
-    expect(lines, "a press off an uncounted atom laid the atom out").not.toHaveBeenCalled();
+    expect(lines, "a press off an atom laid the atom out").not.toHaveBeenCalled();
   } finally {
     lines.mockRestore();
   }
@@ -333,33 +361,56 @@ function noteEnd(x: number, y: number, next?: true): CaretAt {
   return next === undefined ? { ...AT_NOTE_END, x, y } : { ...AT_NOTE_END, next, x, y };
 }
 
-/** The boxes a padded atom drew over two lines whose boxes overlap (the last rows below). */
-const OVERLAPPING = [new DOMRect(149.75, 791, 99.8, 25), new DOMRect(20, 815, 74.42, 25)];
+/** A press at `at` that the browser answers in the last marked element `paragraph` draws, at
+ *  `offset` into its last text: a place inside an atom, or inside a reference's link. */
+function pressInLastMark(
+  paragraph: string,
+  offset: number,
+  at: readonly [number, number]
+): CaretAt {
+  return pressAt(
+    paragraph,
+    (words) => {
+      const marks = words.querySelectorAll("[data-row-written]");
+      const mark = marks[marks.length - 1] ?? words;
+      const walker = document.createTreeWalker(mark, NodeFilter.SHOW_TEXT);
+      let text: Node | null = null;
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) text = node;
+      return [text ?? mark, offset];
+    },
+    at
+  );
+}
 
-// Every geometry of a press around an atom that the browser and the reviews found, one row each,
-// with the place the caret goes, so that a rule which reads one of them right and another wrong
-// fails here. happy-dom lays nothing out, so each row gives the atom's boxes, its client rects in
-// the order Chromium gives them: left to right on the screen, one box for each run of one direction.
-// - An atom's box is as tall as its font, not as its line, and Chromium answers a place inside the
-//   atom for every point past it on its line: a raised footnote reference stood at 1.4 to 14.4 px
-//   in a line of 0 to 24 px, and inline HTML at 147 to 165 px in a line of 144 to 168 px, so a press
-//   past it over its box or under it goes after it.
-// - The line before an atom's last runs on below that box by its half-leading: the two lines meet
-//   half way between the earlier box's foot and the last box's top, and a press above that stays
-//   inside the atom, at its start, though it is right of the last line's short end.
-// - An atom drawn in two boxes on one line has no line before its last; a last line that holds
-//   right-to-left text is drawn in several boxes, and the line before it is the last box above it.
-// - The line ends at its greatest right where it runs left to right and at its least left where
-//   it runs right to left, whichever box that is. The left-to-right row whose last box ends short
-//   of the line draws boxes in an order Chromium does not, as a guard.
-// - A padded atom draws boxes taller than its line, so the boxes of two lines overlap: a picture's
-//   caption link under `.prose`, whose `a` it pads, drew 25 px boxes on 24 px lines in Chromium,
-//   at 791 to 816 px and 815 to 840 px. A box's line is read from its middle. The Spec view's
-//   words stand under no `.prose`, and a wrapped caption there drew 19 px boxes on 24 px lines, so
-//   these rows are a guard for any padded atom the words may draw.
-// - A hard break is no atom: a press at the start of the text after it goes into that text.
-test("a press around an atom is read by the line it is on, for every geometry found", () => {
+const CITED = "dispatch://CORE-2";
+/** A reference that ends the words, drawn by its target's key and title. */
+const ENDS_IN_REFERENCE = `<p>Read <a data-row-reference="${CITED}" data-row-written="${CITED}" href="/CORE-2"><span>CORE-2</span> The other issue</a></p>`;
+const MENTIONED = "dispatch://CORE-1/spec#b-r2";
+/** A mention that ends the words, drawn as a chip by its block's words. */
+const ENDS_IN_MENTION = `<p>Read <a data-row-chip="" data-row-reference="${MENTIONED}" data-row-written="${MENTIONED}" href="/CORE-1/spec#b-r2">The other statement</a></p>`;
+/** A press past a reference or a mention that ends the words: after its words as written. */
+function afterWritten(written: string, x: number, y: number): CaretAt {
+  return {
+    x,
+    y,
+    offset: "Read ".length + written.length,
+    word: ["Read ", written, "", written.length],
+  };
+}
+
+// The boxes the real Spec view draws for each inline kind, one row each, as the row "a press on
+// each inline kind of a Spec statement, at each place" of `e2e/issue-page-j.e2e.ts` measured them
+// in Chromium (its `E2E-BOXES` lines) at 1440 and 390 px, pressed where that row presses, with the
+// place the caret goes. A rule that reads one of them right and another wrong fails here. An atom
+// stands on one line as one box as tall as its font, 19 px on a 24 px line, and a picture's caption
+// 25 px. A reference is drawn in two boxes on one line at 1440 px, its key and its title, and its
+// link wraps at 390 px into boxes 25 px tall on 24 px lines, which overlap the line above by 1 px:
+// so a box's line is read from its middle.
+test("a press around each inline kind is read by the line it is on, in the boxes the Spec view draws", () => {
   const end = "<name>".length;
+  const html = noteAndHtml();
+  const picture = `<p>${NOTE}<a data-row-written="" ${PICTURE}><span>shot.png</span></a></p>`;
+  const note = `<p>${NOTE}<span data-row-written="">[^k5]</span></p>`;
   const rows: readonly (readonly [
     name: string,
     boxes: readonly DOMRect[],
@@ -367,83 +418,64 @@ test("a press around an atom is read by the line it is on, for every geometry fo
     caret: CaretAt,
   ])[] = [
     [
-      "past a raised footnote reference, below its box",
-      [new DOMRect(100, 1.4, 6, 13)],
-      () =>
-        pressInLastAtom(`<p>${NOTE}<sup data-type="footnote_reference">1</sup></p>`, 1, [110, 20]),
-      noteEnd(110, 20, true),
+      "inline HTML, inside it, at 1440 px",
+      [new DOMRect(578, 447, 58, 19)],
+      () => pressInLastAtom(html, 2, [607, 457]),
+      noteEnd(607, 457),
     ],
     [
-      "past inline HTML, over its box",
-      [new DOMRect(100, 147, 40, 18)],
-      () => pressInLastAtom(noteAndHtml(), end, [144, 145]),
-      noteEnd(144, 145, true),
+      "inline HTML, past the end of the words, at 1440 px",
+      [new DOMRect(678, 495, 58, 19)],
+      () => pressInLastAtom(html, end, [756, 505]),
+      noteEnd(756, 505, true),
     ],
     [
-      "past inline HTML, 1 px under its box",
-      [new DOMRect(100, 147, 40, 18)],
-      () => pressInLastAtom(noteAndHtml(), end, [144, 166]),
-      noteEnd(144, 166, true),
+      "inline HTML, past the end of the words, at 390 px",
+      [new DOMRect(170, 489, 58, 19)],
+      () => pressInLastAtom(html, end, [248, 499]),
+      noteEnd(248, 499, true),
     ],
     [
-      "in the band below the box of the line before the last",
-      [new DOMRect(-30, -18, 60, 18), new DOMRect(-99, 6, 60, 18)],
-      () => pressInLastAtom(noteAndHtml(), 2),
-      AT_NOTE_END,
+      "a picture's caption, past the end of the words, at 390 px",
+      [new DOMRect(170, 486, 60, 25)],
+      () => pressInLastMark(picture, "shot.png".length, [250, 499]),
+      noteEnd(250, 499, true),
     ],
     [
-      "past an atom drawn in two boxes on one line",
-      [new DOMRect(-90, -8, 30, 20), new DOMRect(-60, -8, 30, 20)],
-      () => pressInLastAtom(noteAndHtml(), end),
-      noteEnd(1, 2, true),
+      "a footnote's reference drawn as its written text, inside it, at 390 px",
+      [new DOMRect(70, 441, 36, 19)],
+      () => pressInLastMark(note, 2, [88, 451]),
+      noteEnd(88, 451),
     ],
     [
-      "on the line before a last line drawn in two boxes",
-      [new DOMRect(300, 147, 300, 18), new DOMRect(0, 171, 50, 18), new DOMRect(50, 171, 50, 18)],
-      () => pressInLastAtom(noteAndHtml(), 2, [400, 150]),
-      noteEnd(400, 150),
+      "a footnote's reference drawn as its written text, past the end of the words, at 1440 px",
+      [new DOMRect(678, 495, 36, 19)],
+      () => pressInLastMark(note, "[^k5]".length, [734, 505]),
+      noteEnd(734, 505, true),
     ],
     [
-      "left to right, past the last box, short of the line's end",
-      [new DOMRect(-20, -8, 40, 20), new DOMRect(-60, -8, 40, 20)],
-      () => pressInLastAtom(noteAndHtml("ltr"), end),
-      AT_NOTE_END,
+      "a reference in two boxes on one line, past the end of the words, at 1440 px",
+      [new DOMRect(673, 507, 45, 19), new DOMRect(718, 507, 462, 19)],
+      () => pressInLastMark(ENDS_IN_REFERENCE, " The other issue".length, [1200, 517]),
+      afterWritten(CITED, 1200, 517),
     ],
     [
-      "right to left, past the last box, short of the line's end",
-      [new DOMRect(-20, -8, 40, 20), new DOMRect(20, -8, 40, 20)],
-      () => pressInLastAtom(noteAndHtml("rtl"), end),
-      AT_NOTE_END,
+      "a reference wrapped in three overlapping boxes, past the end of the words, at 390 px",
+      [new DOMRect(165, 510, 128, 25), new DOMRect(26, 534, 297, 25), new DOMRect(26, 558, 74, 25)],
+      () => pressInLastMark(ENDS_IN_REFERENCE, " The other issue".length, [120, 571]),
+      afterWritten(CITED, 120, 571),
     ],
     [
-      "right to left, past the line's end, its left edge",
-      [new DOMRect(11, -8, 60, 20)],
-      () => pressInLastAtom(noteAndHtml("rtl"), end),
-      noteEnd(1, 2, true),
+      "a mention, past the end of the words, at 390 px",
+      [new DOMRect(169, 512.203125, 174, 24.59375)],
+      () => pressInLastMark(ENDS_IN_MENTION, "The other statement".length, [363, 525]),
+      afterWritten(MENTIONED, 363, 525),
     ],
     [
-      "boxes that overlap the line above, past the last line's end",
-      OVERLAPPING,
-      () => pressInLastAtom(noteAndHtml(), end, [124.42, 828]),
-      noteEnd(124.42, 828, true),
-    ],
-    [
-      "boxes that overlap the line above, on the line above, right of the last line's end",
-      OVERLAPPING,
-      () => pressInLastAtom(noteAndHtml(), 2, [278, 800]),
-      noteEnd(278, 800),
-    ],
-    [
-      "at the start of the text after a hard break",
-      [],
-      () => pressIn(BROKEN, "Line two, then the rest.", 0),
-      {
-        x: 1,
-        y: 2,
-        offset: "Line one.".length,
-        word: ["Line ", "one.Line", " two,", 4],
-        next: true,
-      },
+      "a mention wrapped in two overlapping boxes, past the end of its line, at 390 px",
+      [new DOMRect(213, 462.203125, 128, 24.59375), new DOMRect(26, 487.203125, 43, 24.59375)],
+      () => pressInLastMark(ENDS_IN_MENTION, "The other statement".length, [89, 500]),
+      afterWritten(MENTIONED, 89, 500),
     ],
   ];
   for (const [name, boxes, press, caret] of rows) {

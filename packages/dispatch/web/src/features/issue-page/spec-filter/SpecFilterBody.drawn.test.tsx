@@ -2624,6 +2624,33 @@ test("a press after a footnote reference lands in the word pressed", async () =>
   });
 });
 
+// A statement's own words define no note, so the view draws a footnote's reference as the text its
+// author wrote, `[^n1]`, while the editor holds it as an atom: the renderer marks that text with no
+// text of the editor's (`RowText.tsx`'s `markDrawnAtoms`), so a press after it counts it as nothing.
+test("a press after a footnote reference drawn as its written text lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const text = `Read the note[^n1]${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      const marked = [...words.querySelectorAll('[data-row-written=""]')];
+      expect(marked.map((element) => element.textContent)).toEqual(["[^n1]"]);
+    },
+    held: (
+      <>
+        {"Read the note"}
+        <sup contentEditable={false} data-type="footnote_reference">
+          n1
+        </sup>
+        {after}
+      </>
+    ),
+    into: 3,
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
 // A statement whose reading draws a token as plain characters, with no mark of what the editor
 // holds there, is an inline kind the count leaves uncounted: the editor holds `[atom]` as an atom
 // the caret cannot enter, so the count of the press runs on by its 6 characters, to the end of

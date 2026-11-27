@@ -270,6 +270,62 @@ const ROW_CHIP = "data-row-chip";
 /** The mark the deleted line carries wherever it is drawn (`DeletedBody`, `RefLink`). */
 const POST_DELETED = "data-post-deleted";
 
+/** The mark of what a node's words draw in place of the text its editor holds there, which holds
+ *  the editor's text for it: a reference's words as its author wrote them (the mark of the same
+ *  name `row-references.ts` keeps private, which the reference pass sets), and nothing for what
+ *  the editor holds as an atom with no text a caret can enter. A press's count reads this mark and
+ *  no list of shapes (`spec-filter/pressed-words.ts`), so a kind the words draw in a new way needs
+ *  only its mark. */
+export const ROW_WRITTEN = "data-row-written";
+
+/** What the words draw an editor's atom as: inline HTML and a footnote's reference by the schema's
+ *  own `toDOM` (Milkdown's `span[data-type="html"]` and `sup[data-type="footnote_reference"]`),
+ *  and a picture of an artifact as a link holding the picture, or its caption where it has not
+ *  loaded (`markdown-serializer.ts`'s `pictureSerializer`, `DispatchPicture`). */
+const DRAWN_ATOMS = '[data-type="html"], [data-type="footnote_reference"], [data-dispatch-picture]';
+
+/** A footnote's reference as its author wrote it, `[^label]`, which the reading of a node's own
+ *  words leaves as text where the note it names is defined elsewhere in the document, as a
+ *  statement's is, and which the editor holds as an atom. A `[^label]:` opens a definition. */
+const FOOTNOTE_CALL = /\[\^[^\]\s]+\](?!:)/gu;
+
+/** Marks with `ROW_WRITTEN` what the words painted into `root` draw in place of an atom of the
+ *  editor's, with no text of the editor's: each of `DRAWN_ATOMS`, and a footnote's reference the
+ *  words draw as the text its author wrote, wrapped in an element of its own. Run again after every
+ *  paint, after the reference pass; it finds nothing to do twice. */
+function markDrawnAtoms(root: HTMLElement): void {
+  for (const atom of root.querySelectorAll(DRAWN_ATOMS)) {
+    if (!atom.hasAttribute(ROW_WRITTEN)) atom.setAttribute(ROW_WRITTEN, "");
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    if (
+      node instanceof Text &&
+      node.data.includes("[^") &&
+      node.parentElement?.closest(`a, code, pre, [${ROW_WRITTEN}]`) == null
+    ) {
+      texts.push(node);
+    }
+  }
+  for (const text of texts) {
+    const value = text.data;
+    const pieces: (Node | string)[] = [];
+    let at = 0;
+    for (const call of value.matchAll(FOOTNOTE_CALL)) {
+      pieces.push(value.slice(at, call.index));
+      const note = document.createElement("span");
+      note.setAttribute(ROW_WRITTEN, "");
+      note.textContent = call[0];
+      pieces.push(note);
+      at = call.index + call[0].length;
+    }
+    if (at === 0) continue;
+    pieces.push(value.slice(at));
+    text.replaceWith(...pieces.filter((piece) => piece !== ""));
+  }
+}
+
 /** A typed block's source line in a node's words: its opening `:::requirement{#r1}`, or its
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
  *  decision's text holds the lines of a block its section quotes, and both its stored text and
@@ -538,6 +594,7 @@ function DrawnText({
     if (element === null) return;
     dropDirectiveLines(element);
     linkRowReferences(element, names, issues, issue, ambiguous, edited);
+    markDrawnAtoms(element);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
       const route = parseNodeReference(reference);
