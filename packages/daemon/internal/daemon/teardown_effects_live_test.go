@@ -479,7 +479,7 @@ func (r *teardownEffectsRun) setupGit(world teardownEffectsWorld, runDir string)
 	}
 	r.git.Run(r.workspace, fixturegit.JJInit("", true)...)
 	r.git.Run(filepath.Dir(r.remote), fixturegit.InitBare(r.remote, r.base)...)
-	r.git.Run(r.workspace, "jj", "git", "remote", "add", "origin", r.remote)
+	r.git.Run(r.workspace, "jj", "git", "remote", "add", r.remoteName, r.remote)
 	if world.Git == nil {
 		return
 	}
@@ -510,7 +510,7 @@ func (r *teardownEffectsRun) setupGit(world teardownEffectsWorld, runDir string)
 		r.push(b.Name, r.sha(b.Head))
 	}
 	// Git's object store can hold a commit that jj has not imported. Give jj a local
-	// ref for the standing commit without giving origin either the ref or its object.
+	// ref for the standing commit without giving the remote either the ref or its object.
 	standing := r.sha(world.Git.Workspace.StandingOn)
 	const localRef = "refs/heads/fixture-standing"
 	r.git.Run(r.workspace, "git", "update-ref", localRef, standing)
@@ -575,7 +575,7 @@ func (r *teardownEffectsRun) push(branch, head string) {
 	ref := "refs/heads/" + branch
 	r.git.Run(r.workspace, "git", "update-ref", ref, head)
 	r.git.Run(r.workspace, "git", "--git-dir", r.remote, "fetch", "--quiet", r.workspace, "+"+ref+":"+ref)
-	r.git.Run(r.workspace, "jj", "git", "fetch", "--remote", "origin")
+	r.git.Run(r.workspace, "jj", "git", "fetch", "--remote", r.remoteName)
 }
 
 func (r *teardownEffectsRun) document(name, body string) {
@@ -1400,9 +1400,12 @@ func (r *teardownEffectsRun) runScript(plan teardownEffectsPlan, clock, launched
 // (teardownEffectsTraceAnswer); each push, GitHub change and Dispatch write a change made before the
 // next call, or after the last one, by the run replay's own writers at the action's case time
 // (applyTraceAction), a request-approval among them, which the replay makes as a refused write and
-// records with its refusal under the action's own seq and case time. A staging action, and a GitHub
-// call that changes no pull request (a read: teardownEffectsTraceRead), change nothing the replay
-// holds, and are not made. It also answers the seq of each call's action, in the order of the calls.
+// records its refusal under the action's own seq and case time. A staging action, a GitHub call
+// that changes no pull request (a read: teardownEffectsTraceRead) and an action of a carried kind
+// (an Envoy message, a Dispatch read, a task agent's start: teardownEffectsCarriedKinds) change
+// nothing the replay holds, and are not made; each action that is made keeps its own seq and case
+// time however many of them stand between. It also answers the seq of each call's action, in the
+// order of the calls.
 func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffectsTrace) (teardownEffectsScript, []int) {
 	var script teardownEffectsScript
 	var seqs []int
@@ -1410,7 +1413,7 @@ func (r *teardownEffectsRun) traceScript(caseID, name string, trace teardownEffe
 	for _, a := range trace.Actions {
 		source := fmt.Sprintf("%s %s trace, action %d", caseID, name, a.Seq)
 		switch {
-		case a.Kind == "staging", a.Kind == "github" && teardownEffectsTraceRead(a):
+		case teardownEffectsMakesNothing(a):
 		case a.Kind == "daemon":
 			call := teardownEffectsCall{ID: source, Op: a.Op, Args: teardownEffectsParams(a.Op, a.Args), IsError: a.Answer.Code != nil}
 			judge := func(replies []teardownEffectsHTTP, _ teardownEffectsAnswered, _ int) ([]teardownEffectsAnswerRef, []teardownEffectsDifference, error) {

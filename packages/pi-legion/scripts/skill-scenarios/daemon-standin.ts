@@ -3,13 +3,14 @@
  * A stand-in for the Legion daemon that serves exactly the routes a Legion role's `legion` tool
  * and plugin hit in a skill scenario: the claim's registration (`claims/register`, `claims/ready`,
  * the daemon's claim routes the plugin boots through), the pane's turn-boundary reports
- * (`claims/activity` and `claims/turn-outcome`, after each turn), the grant the tool mints
+ * (`claims/activity` and `claims/turn-outcome`, after each turn), what the claim owes
+ * (`claims/owed`, which the phase reminder and the stall watch ask), the grant the tool mints
  * in-process before each of its own daemon calls (`grants`, in its session form for a phase worker
  * or an architect and its controller form for the controller), the issue's record
- * (`GET /legion/v1/issues/<key>/record`, the tool's `read_record` and the reminder's own check) and
- * the state (`GET /legion/v1/state`, the controller's `read_state`), the health route
- * (`GET /healthz`, which the tool's `read_build` reads for the contract this stand-in states on
- * it), and the writes each role's operations make, every one of which redeems a grant:
+ * (`GET /legion/v1/issues/<key>/record`, the tool's `read_record`) and the state
+ * (`GET /legion/v1/state`, the controller's `read_state`), the health route (`GET /healthz`, which
+ * the tool's `read_build` reads for the contract this stand-in states on it), and the writes each
+ * role's operations make, every one of which redeems a grant:
  *
  *   phase worker   `handoff_complete` (`handoff/complete`, a step's completion or a production
  *                  check's look report) and `request_backward_move` (`phase/backward`)
@@ -66,6 +67,15 @@
  * reads no handoff record from Dispatch: the `legion` tool found the newest record of the phase on
  * Dispatch before posting, and the rig's scorer reads that record back from Dispatch and holds it
  * to the run's session (score.ts testerProof).
+ *
+ * `claims/owed` is answered from the record this stand-in holds, as the daemon's `owedBy`
+ * (`packages/daemon/internal/api/owed.go`) reads its own: the architect and the controller owe
+ * nothing and name no architect; a phase worker owes the production check while the record holds
+ * the check's look open for its role, else the phase the record holds its issue in while its role
+ * works that phase and no completion of it has been accepted since the phase was set, by the
+ * built-in answer or a recorded one; a merger owes nothing once the world holds its pull request
+ * merged. Each phase worker's answer names the tree root's architect. An accepted completion moves
+ * no phase of the record, which the daemon's workflow would move on.
  *
  * A start with a case's world (`--world`) replays the case. Any other start is the stand-in of a
  * scored run, an owner's (rig.sh scored_session), or of rig.sh's tester-proof run, and differs in
@@ -155,13 +165,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  controllerToken,
-  isLegionRole,
-  type LegionRole,
-  roleForPhase,
-  roleToken,
-} from "@legion/contracts";
+import { controllerToken, isLegionRole, type LegionRole, roleToken } from "@legion/contracts";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASES,
@@ -174,6 +178,9 @@ import {
   LegionHealthResponse,
   LegionIssueRecordResponse,
   LegionIssueStatusRequest,
+  type LegionOwed,
+  LegionOwedRequest,
+  LegionOwedResponse,
   LegionPhaseBackwardRequest,
   LegionPlanRegisterRequest,
   LegionReadyRequest,
@@ -335,11 +342,16 @@ interface Grant {
 }
 
 /** A route's answer, or the refusal it gave before any answer was due. An answer of the stand-in's
- * own state (`own`) is never one an answers file holds. `logged` is what a scored run's log line
- * keeps of a request that parsed (its `body`). */
+ * own state (`own`) is never one an answers file holds. `took` is what an answer moves in that
+ * state, whether a recorded answer or the route's own gave it. `logged` is what a scored run's log
+ * line keeps of a request that parsed (its `body`). */
 type Prepared = (
   | { readonly refusal: Reply }
-  | { readonly answer: () => Reply | Promise<Reply>; readonly own?: boolean }
+  | {
+      readonly answer: () => Reply | Promise<Reply>;
+      readonly own?: boolean;
+      readonly took?: (reply: Reply) => void;
+    }
 ) & { readonly logged?: Record<string, unknown> };
 type Route = (body: unknown) => Prepared;
 
@@ -349,6 +361,21 @@ type Route = (body: unknown) => Prepared;
  * `complete` makes in the daemon's order. */
 const HandoffCompleteBody = z.strictObject(LegionHandoffCompleteRequest.shape);
 type HandoffComplete = z.output<typeof HandoffCompleteBody>;
+
+/** The role that works each phase, the daemon's `phase.RoleFor`
+ * (`packages/daemon/internal/phase/phase.go`): a phase no role works (awaiting_person,
+ * awaiting_children, done, held, unrecorded) has no row. A completion is held to it, and
+ * `claims/owed` reads it. */
+const ROLE_FOR_PHASE: Readonly<Record<string, LegionRole>> = {
+  admitted: "architect",
+  planning: "planner",
+  implementing: "implementer",
+  testing: "tester",
+  reviewing: "reviewer",
+  accepting: "architect",
+  retro: "implementer",
+  merging: "merger",
+};
 
 /** The response header the daemon states its own contract in
  * (`packages/daemon/internal/api/server.go`). */
@@ -714,11 +741,13 @@ export function startDaemonStandin(options: StandinOptions): Standin {
 
   const daemonWorld = world?.daemon ?? null;
   /** What moves while the run goes on: the phase a backward move sets, the status `set_status`
-   * writes, whether the production check is still open, whether its look is, when its next look
-   * is due, and the looks reported on it. */
+   * writes, the phase the claim's accepted completion was of (until the phase is set again),
+   * whether the production check is still open, whether its look is, when its next look is due,
+   * and the looks reported on it. */
   const held = {
     phase: options.phase,
     status: world?.dispatch.issue.status ?? claimInWorld?.status ?? "in_progress",
+    completed: undefined as string | undefined,
     checkOpen: daemonWorld?.productionCheck != null,
     lookOpen: true,
     nextWakeAt: daemonWorld?.productionCheck?.boundAt ?? "",
@@ -858,7 +887,8 @@ export function startDaemonStandin(options: StandinOptions): Standin {
   /** A route: its request is parsed with `schema`, named `name` in the 400 that refuses a body
    * that does not parse, held to a live grant when `grantOf` names the request's, and then
    * answered by `handle`, unless an answers file answers it first; a request `own` names is
-   * answered by `handle` alone. `logged` is what a scored run's log line keeps of the request. */
+   * answered by `handle` alone. `took` is what the answer, either one, moves in the stand-in's
+   * state. `logged` is what a scored run's log line keeps of the request. */
   function route<S extends z.ZodType>(
     name: string,
     schema: S,
@@ -866,6 +896,7 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     how: {
       readonly grantOf?: (request: z.output<S>) => string;
       readonly own?: (request: z.output<S>) => boolean;
+      readonly took?: (request: z.output<S>, reply: Reply) => void;
       readonly logged?: (request: z.output<S>) => Record<string, unknown>;
     } = {}
   ): Route {
@@ -885,6 +916,7 @@ export function startDaemonStandin(options: StandinOptions): Standin {
       return {
         answer: () => handle(parsed.data, grant),
         own: how.own?.(parsed.data) ?? false,
+        took: (reply) => how.took?.(parsed.data, reply),
         logged,
       };
     };
@@ -1063,7 +1095,7 @@ export function startDaemonStandin(options: StandinOptions): Standin {
         `the architect accepts ${issue} with sign_off, not handoff_complete; this completion changed nothing`
       );
     }
-    if (roleForPhase(held.phase) !== role) {
+    if (ROLE_FOR_PHASE[held.phase] !== role) {
       return failure(
         409,
         "HANDOFF_NOT_CURRENT_PHASE",
@@ -1111,6 +1143,37 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     return answered();
   };
 
+  /** `POST /legion/v1/claims/owed`: the daemon's `owedBy` (`api/owed.go`), read from the record
+   * this stand-in holds (`issueRecord`). The architect and the controller owe nothing and name no
+   * architect. A phase worker owes the production check's look while the record holds the check
+   * and its look open for the worker's role; else it owes the phase the record holds its issue in
+   * while its role works that phase (`ROLE_FOR_PHASE`) and the stand-in has accepted no completion
+   * of it since the phase was set (`held.completed`), and a merger whose pull request the world
+   * holds merged owes nothing, since that merge finishes merging. Each phase worker's answer names
+   * the architect that owns the claim, the end of the daemon's owner walk: no issue the stand-in
+   * records holds an architect claim, so the walk ends at the tree root's architect. */
+  const owedAnswer = (): LegionOwed => {
+    if (role === "architect" || role === "controller") {
+      return LegionOwedResponse.parse({ owes: false, work: "" });
+    }
+    const record = issueRecord();
+    let work = "";
+    if (record.check?.lookOpen === true && record.check.role === role) {
+      work = `the production check of ${issue}`;
+    } else if (
+      ROLE_FOR_PHASE[held.phase] === role &&
+      held.completed !== held.phase &&
+      !(held.phase === "merging" && record.pullRequest?.state === "merged")
+    ) {
+      work = `the ${held.phase} phase of ${issue}`;
+    }
+    return LegionOwedResponse.parse({
+      owes: work !== "",
+      work,
+      architect: roleToken(project, tree, "architect"),
+    });
+  };
+
   const routes: Record<string, Route> = {
     "POST /legion/v1/claims/register": (body) => ({
       answer: () => {
@@ -1154,6 +1217,13 @@ export function startDaemonStandin(options: StandinOptions): Standin {
           ? forbidden("Invalid session secret")
           : answered({ refusedRun: 0, failed: false })
     ),
+    // What the claim owes, under its secret: the phase reminder asks after each turn, and the
+    // stall watch asks for its notice's owner.
+    "POST /legion/v1/claims/owed": route("LegionOwedRequest", LegionOwedRequest, (request) =>
+      request.secret === sessionSecret
+        ? answered(owedAnswer())
+        : forbidden("Invalid session secret")
+    ),
     "POST /legion/v1/grants": (body) => {
       const controller = role === "controller";
       const parsed = (controller ? LegionControllerGrantRequest : LegionGrantRequest).safeParse(
@@ -1179,12 +1249,22 @@ export function startDaemonStandin(options: StandinOptions): Standin {
       };
     },
     // A look report is answered from the check this stand-in holds, whose state each report
-    // moves: an answer recorded against one state of a check is no answer to another.
+    // moves: an answer recorded against one state of a check is no answer to another. A step's
+    // completion that is accepted, by `complete` or by a recorded answer, is the claim's completion
+    // of the phase its issue stands in, which `claims/owed` then answers it owes nothing of.
     "POST /legion/v1/handoff/complete": route(
       "LegionHandoffCompleteRequest",
       HandoffCompleteBody,
       complete,
-      { grantOf: grantId, own: (request) => request.checkOpenedAt !== undefined }
+      {
+        grantOf: grantId,
+        own: (request) => request.checkOpenedAt !== undefined,
+        took: (request, reply) => {
+          if (request.checkOpenedAt === undefined && reply.status >= 200 && reply.status < 300) {
+            held.completed = held.phase;
+          }
+        },
+      }
     ),
     "POST /legion/v1/phase/backward": route(
       "LegionPhaseBackwardRequest",
@@ -1197,7 +1277,10 @@ export function startDaemonStandin(options: StandinOptions): Standin {
             `a phase worker moves only its own issue ${issue}, not ${request.issue}`
           );
         }
-        if (request.issue === undefined || request.issue === issue) held.phase = request.to;
+        if (request.issue === undefined || request.issue === issue) {
+          held.phase = request.to;
+          held.completed = undefined;
+        }
         return answered();
       },
       owner
@@ -1295,7 +1378,8 @@ export function startDaemonStandin(options: StandinOptions): Standin {
 
   /** The answer to one request: the route's refusal where the request does not parse or holds no
    * live grant, else a recorded answer, unless the route answers it from the stand-in's own state,
-   * else the route's own; and what a scored run's line keeps of the request. */
+   * else the route's own, then what that answer moves (`took`); and what a scored run's line keeps
+   * of the request. */
   const respond = async (
     method: string,
     pathname: string,
@@ -1307,22 +1391,19 @@ export function startDaemonStandin(options: StandinOptions): Standin {
     const recordedReply = prepared?.own
       ? undefined
       : recordedAnswer(answers, method, pathname, body);
+    let reply: Reply;
     if (recordedReply !== undefined) {
-      return {
-        reply:
-          recordedReply.status === 204
-            ? { status: 204 }
-            : { status: recordedReply.status, body: recordedReply.body ?? {} },
-        logged,
-      };
+      reply =
+        recordedReply.status === 204
+          ? { status: 204 }
+          : { status: recordedReply.status, body: recordedReply.body ?? {} };
+    } else if (prepared === undefined) {
+      reply = json(404, { error: `no route for ${method} ${pathname}` });
+    } else {
+      reply = await prepared.answer();
     }
-    return {
-      reply:
-        prepared === undefined
-          ? json(404, { error: `no route for ${method} ${pathname}` })
-          : await prepared.answer(),
-      logged,
-    };
+    prepared?.took?.(reply);
+    return { reply, logged };
   };
 
   const server = Bun.serve({

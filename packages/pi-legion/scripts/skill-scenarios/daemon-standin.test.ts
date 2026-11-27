@@ -2,10 +2,10 @@ import { afterAll, expect, setDefaultTimeout, setSystemTime, test } from "bun:te
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { roleForPhase } from "@legion/contracts";
 import {
   LegionErrorResponse,
   LegionIssueRecordResponse,
+  LegionOwedResponse,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -36,6 +36,7 @@ import {
   refused,
   register,
   SESSION,
+  type Standin,
   withStandin,
 } from "./daemon-standin-harness";
 import { World } from "./heldout-case";
@@ -1262,7 +1263,7 @@ test("the state lists the world's issues with their tree", async () => {
 });
 
 // Catches: an --issues file that would make the claim's own issue stand in another phase or tree
-// than the stand-in's command line gives it, which the run's reminder check and owner read.
+// than the stand-in's command line gives it, which the run's worker and owner read.
 test("an --issues file that gives the claim's issue another phase or tree is refused, naming both", () => {
   const dir = freshDir();
   const issuesFile = path.join(dir, "issues.json");
@@ -1342,8 +1343,9 @@ test("tasks/stop, release_children's waves/release and gates/register answer {} 
 });
 
 // Catches: a record route that answers the claim's issue in another phase than the one its role
-// works, or moves it, so the phase reminder's record check (pi-shared/src/phase-reminder.ts) drops
-// each reminder a deployment's worker would get while its phase is open.
+// works, or moves it, so a worker's `read_record` reads its phase as another while it is open, and
+// `claims/owed`, which the phase reminder asks and the stand-in answers from that phase, says its
+// work is done.
 test.skipIf(skipGo)(
   "issues/<key>/record keeps the worker's phase while it is open",
   async () => {
@@ -1366,7 +1368,6 @@ test.skipIf(skipGo)(
           return LegionIssueRecordResponse.parse(await answered.json()).phase;
         };
         expect(await phaseNow()).toBe("testing");
-        expect(roleForPhase(await phaseNow())).toBe("tester");
 
         const claim = await register(standin);
         const report = {
@@ -1396,6 +1397,229 @@ test.skipIf(skipGo)(
   },
   GO_BOUND
 );
+
+// Catches: what the claim owes answered 404, or answered from anything but the phase the record
+// holds its issue in. The phase reminder (pi-shared/src/phase-reminder.ts) asks `claims/owed`
+// after each turn, and the stall watch asks it for its notice's owner: unanswered, the reminder
+// names no work and the notice goes to the tree's architect, so the rig's workers would be told
+// what no deployment's worker is. The control is a tester whose issue the record holds in
+// reviewing, a phase its role does not work, which owes nothing.
+test.skipIf(skipGo)(
+  "claims/owed answers that a worker owes its phase while the record holds its issue there",
+  async () => {
+    const owedOf = async (standin: Standin) => {
+      const claim = await register(standin);
+      const ask = { claimToken: claim.claimToken, sessionId: SESSION, secret: claim.secret };
+      const answered = await post(standin, "/legion/v1/claims/owed", ask);
+      expect(answered.status).toBe(200);
+      const foreign = { ...ask, secret: fixtureSecret("other") };
+      expect((await post(standin, "/legion/v1/claims/owed", foreign)).status).toBe(403);
+      return LegionOwedResponse.parse(await answered.json());
+    };
+    await withStandin(freshDir(), [PROJECT, "LWEVAL-4", "tester", ...REPO], async (standin) => {
+      expect(await owedOf(standin)).toEqual({
+        owes: true,
+        work: "the testing phase of LWEVAL-4",
+        architect: "legion-skillsstandin-lweval-4-architect",
+      });
+    });
+    await withStandin(
+      freshDir(),
+      [PROJECT, "LWEVAL-4", "tester", ...REPO, "reviewing"],
+      async (standin) => {
+        expect(await owedOf(standin)).toEqual({
+          owes: false,
+          work: "",
+          architect: "legion-skillsstandin-lweval-4-architect",
+        });
+      }
+    );
+  },
+  GO_BOUND
+);
+
+const OWED = "/legion/v1/claims/owed";
+
+/** A booted stand-in as far as `owedNow` asks it: a request, and its status and body. */
+interface Caller {
+  call(
+    method: "POST",
+    route: string,
+    body: unknown
+  ): Promise<{ readonly status: number; readonly body: Body | null }>;
+}
+
+/** What the claim of `daemon` owes, asked as the phase reminder asks it after a turn: the body as
+ * it came over the wire, held to the contract. */
+async function owedNow(daemon: Caller): Promise<Body | null> {
+  const registered = await daemon.call("POST", "/legion/v1/claims/register", {
+    bootToken: BOOT_TOKEN,
+  });
+  const answer = await daemon.call("POST", OWED, {
+    claimToken: String(registered.body?.claimToken),
+    sessionId: "session-1",
+    secret: String(registered.body?.secret),
+  });
+  expect(answer.status).toBe(200);
+  LegionOwedResponse.parse(answer.body);
+  return answer.body;
+}
+
+// Catches: a worker told after each turn that it still owes the phase whose completion the stand-in
+// accepted, which no deployment's worker is told: the daemon's record holds the completion, and its
+// workflow moves the phase on. An answers file's acceptance counts as the stand-in's own does, and
+// a refused completion leaves the phase owed. The control is a move back into a phase the role
+// works, which owes that phase again.
+test("claims/owed owes nothing once a completion of the phase is accepted, and owes the phase a move back sets", async () => {
+  const architect = { architect: "legion-skillsrig-acme-12-architect" };
+  const implementing = { owes: true, work: "the implementing phase of ACME-12", ...architect };
+  const recorded = boot({
+    role: "implementer",
+    phase: "implementing",
+    answers: readAnswers(path.join(import.meta.dir, "testdata", "daemon-answers.json")),
+  });
+  expect(await owedNow(recorded)).toEqual(implementing);
+  const { grantId } = await recorded.grant();
+  const completion = {
+    grantId,
+    summary: "s",
+    verdict: "",
+    commit: "2e74250b193c1f3c1efcd146dc3f8dcecb2c419c",
+    handoffVersion: 1,
+  };
+  expect(
+    await recorded.call("POST", COMPLETE, {
+      ...completion,
+      handoffId: "3febcc18-9e66-48bc-a50e-77fb3126ca00",
+    })
+  ).toMatchObject({ status: 409, body: { code: "HANDOFF_NO_PULL_REQUEST" } });
+  expect(await owedNow(recorded)).toEqual(implementing);
+  expect(
+    await recorded.call("POST", COMPLETE, {
+      ...completion,
+      handoffId: "2c009b23-b8e9-4109-ac3a-50cb413bfb7f",
+    })
+  ).toMatchObject({ status: 200, body: {} });
+  expect(await owedNow(recorded)).toEqual({ owes: false, work: "", ...architect });
+  // The record keeps the phase: the stand-in moves none on a completion.
+  expect((await recorded.call("GET", RECORD("ACME-12"))).body).toMatchObject({
+    phase: "implementing",
+  });
+
+  // The stand-in's own acceptance, of the implementer's retro, then a move back to implementing.
+  const retro = boot({ role: "implementer", phase: "retro" });
+  expect(await owedNow(retro)).toEqual({
+    owes: true,
+    work: "the retro phase of ACME-12",
+    ...architect,
+  });
+  const retroGrant = (await retro.grant()).grantId;
+  expect(
+    await retro.call("POST", COMPLETE, {
+      grantId: retroGrant,
+      summary: "s",
+      verdict: "",
+      commit: "a".repeat(40),
+    })
+  ).toMatchObject({ status: 200, body: {} });
+  expect(await owedNow(retro)).toEqual({ owes: false, work: "", ...architect });
+  expect(
+    await retro.call("POST", "/legion/v1/phase/backward", {
+      grantId: retroGrant,
+      to: "implementing",
+      reason: "the retro found a regression",
+    })
+  ).toMatchObject({ status: 200 });
+  expect(await owedNow(retro)).toEqual(implementing);
+});
+
+// Catches: an architect or the controller told it owes a phase, or its answer naming an architect
+// above it. The daemon reads nothing for either (`claimOwed` in api/owed.go): neither works a phase
+// of its own, so the reminder must not nudge it, and no stall notice of it goes to an architect.
+// The architect stands in admitted and accepting, the two phases the daemon's RoleFor gives it, so
+// an answer read from that table alone would owe them.
+test("claims/owed: the architect and the controller owe nothing and name no architect", async () => {
+  for (const phase of ["admitted", "accepting"]) {
+    const architect = boot({ role: "architect", phase });
+    expect(await owedNow(architect)).toStrictEqual({ owes: false, work: "" });
+  }
+  const controller = boot({ role: "controller" });
+  expect(await owedNow(controller)).toStrictEqual({ owes: false, work: "" });
+});
+
+// Catches: a tester whose production check holds its look open told it owes nothing, or still told
+// it owes the look once its report ended that look: the reminder would leave the look unreported,
+// or nudge a tester whose report the stand-in took. The check is the tester's, so a reviewer of the
+// same issue, which stands done, owes nothing.
+test("claims/owed owes the production check's open look to the tester, and nothing once its report ends the look", async () => {
+  const check = { world: worldOf("P10"), phase: "done", issue: "ACME-21", tree: "ACME-21" };
+  const architect = { architect: "legion-skillsrig-acme-21-architect" };
+  const tester = boot({ ...check, role: "tester" });
+  expect(await owedNow(tester)).toEqual({
+    owes: true,
+    work: "the production check of ACME-21",
+    ...architect,
+  });
+  const { grantId } = await tester.grant();
+  const pending = {
+    grantId,
+    summary: "not in production yet",
+    verdict: "pending",
+    checkOpenedAt: "2030-01-08T11:58:00Z",
+    wakeAt: "2030-01-08T13:00:00Z",
+  };
+  expect(await tester.call("POST", COMPLETE, pending)).toMatchObject({ status: 200, body: {} });
+  expect((await tester.call("GET", RECORD("ACME-21"))).body).toMatchObject({
+    check: { lookOpen: false },
+  });
+  expect(await owedNow(tester)).toEqual({ owes: false, work: "", ...architect });
+
+  const reviewer = boot({ ...check, role: "reviewer" });
+  expect(await owedNow(reviewer)).toEqual({ owes: false, work: "", ...architect });
+});
+
+// Catches: a merger told it still owes the merge once the world holds its pull request merged, or
+// told it owes nothing while that pull request is open. The daemon reads the merge as what
+// finishes merging (`completionPosition.merged` in api/handoff_position.go), and a merged root
+// stands in merging until the rest of its tree leaves, so the reminder would nudge a merger whose
+// work is done, or leave an open pull request unmerged.
+test("claims/owed owes a merger the merging phase while its pull request is open, and nothing once the world holds it merged", async () => {
+  const world = (state: "open" | "merged"): World => ({
+    ...worldOf("P05"),
+    github: {
+      repository: "cybermonklabs/legion",
+      mergeQueue: [],
+      pullRequests: [
+        {
+          number: 5,
+          state,
+          draft: false,
+          head: { ref: "legion/ACME-12", sha: "b".repeat(40) },
+          base: "main",
+          title: "t",
+          body: "",
+          mergeCommit: state === "merged" ? "c".repeat(40) : null,
+          reviews: [],
+          reviewThreads: [],
+          checks: [],
+        },
+      ],
+    },
+  });
+  const architect = { architect: "legion-skillsrig-acme-12-architect" };
+  const open = boot({ role: "merger", phase: "merging", world: world("open") });
+  expect(await owedNow(open)).toEqual({
+    owes: true,
+    work: "the merging phase of ACME-12",
+    ...architect,
+  });
+  const merged = boot({ role: "merger", phase: "merging", world: world("merged") });
+  expect((await merged.call("GET", RECORD("ACME-12"))).body).toMatchObject({
+    phase: "merging",
+    pullRequest: { number: 5, state: "merged" },
+  });
+  expect(await owedNow(merged)).toEqual({ owes: false, work: "", ...architect });
+});
 
 // Catches: a change that breaks rig.sh's tester call (run_tester_proof: eight arguments, the
 // world's repository and default branch last, and no option), which serves a tester's one issue in

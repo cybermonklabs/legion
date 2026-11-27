@@ -125,7 +125,7 @@ type ArchitectStart struct {
 // Whether a member runs is read in the caller's transaction, at the moment the task is composed,
 // by each of the three that compose it. Admission's promotion composes it (StartArchitect) after
 // the re-admission has set the root back to admitted and cleared its generation, which rewrites no
-// member's phase or status (record.Store.ClearTreeGeneration), and before it starts again the
+// member's phase or status (Engine.ClearTreeGeneration), and before it starts again the
 // members that stood mid-phase (admit's startMidPhaseMembers), which writes start rows and no
 // member's record; so the read finds exactly the members that promotion starts. The sweep's
 // send of an entry the derivation raised (SendArchitectStart) and the daemon's narrowing of a
@@ -230,7 +230,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // the send-time narrowing of the held task of that entry (NarrowRootTask). Before each of those
 // the claim has retired no confirmed task of that entry: the raise makes the entry new, a claim
 // that retired its confirmed task was given the entry and is owed nothing (OwedEntry), and a task
-// a let-go took back is not retired. An entry is never reset (record.Store.ClearTreeGeneration
+// a let-go took back is not retired. An entry is never reset (Engine.ClearTreeGeneration
 // keeps it), so a served entry is one of an earlier generation, or the 1 that the upgrade to this
 // release gives every architect claim of the release before it
 // (20261113182000_architect_entry_upgrade), whose tasks carried no entry. That is the reading
@@ -272,7 +272,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // daemon. A tree that ran at an earlier generation has its members that stood mid-phase started
 // again by its re-admission, whose notices reach the architect. The text is for the architect
 // alone, and no reader of a task reads it back: what wrote an entry's task is a fact of the record
-// (record.PhaseRow.EntryVerbatim, which SendArchitectStart reads), and whether a held task carries
+// (record.PhaseRow.EntryAwaiting, which SendArchitectStart reads), and whether a held task carries
 // the first-task instruction is the entry it is of (NarrowRootTask).
 //
 // Decided leads every shape rather than replacing it, since a person's decision is read first and
@@ -492,20 +492,23 @@ func gatedDocuments(steps []record.DesignStep) string {
 }
 
 // NarrowRootTask is a root architect's held task rewritten from what it still names of its tree's
-// kept decisions (the daemon's rootTask, which drops a decision whose issue has left this tree).
-// The decisions' own text is written again from them, as it always was (KeptDecisionsTask), and
-// where the task it rewrites carried the first-task instruction that instruction is written again
-// with it: a decision leaving the tree says nothing about whether the tree has been taken up, and
-// a rewrite that dropped the instruction would hand a fresh architect the empty task the
-// instruction exists to replace. start is the record as it stands at the narrowing
-// (ArchitectStartOf), whose Decided this writes from stays; the shape is derived again from it, so
-// a root that moved between the send and the narrowing is rewritten into the shape it stands in
-// now, and a root that moved past admitted under its own power, which the derivation serves no
-// first act, is rewritten into the kept decisions' own text with no first-task instruction. Every
-// rewrite names the roots that rest on the root's approval as the record shows them then
-// (Resting), after the decisions, as every shape does (architectLead), so a task left naming no
-// decision still names them (dispatch://INFRA-3320, R8). The empty string is a task that names
-// nothing, which its caller retires rather than sends.
+// kept decisions (the daemon's rootTask, which drops a decision whose issue has left this tree,
+// and one that is no longer the person's word). decided is the decisions' own text, written again
+// from what stays by the wording it always was (KeptDecisionsTask), which the caller renders in
+// its own transaction from the gates as they stand at the narrowing, so every decision it names is
+// asked again whether it is still the person's word (SupersedingApproval). Where the task it
+// rewrites carried the first-task instruction that instruction is written again with it: a
+// decision leaving the tree says nothing about whether the tree has been taken up, and a rewrite
+// that dropped the instruction would hand a fresh architect the empty task the instruction exists
+// to replace.
+// start is the record as it stands at the narrowing (ArchitectStartOf), whose Decided this sets
+// to decided; the shape is derived again from it, so a root that moved between the send and the
+// narrowing is rewritten into the shape it stands in now, and a root that moved past admitted
+// under its own power, which the derivation serves no first act, is rewritten into the kept
+// decisions' own text with no first-task instruction. Every rewrite names the roots that rest on
+// the root's approval as the record shows them then (Resting), after the decisions, as every shape
+// does (architectLead), so a task left naming no decision still names them (dispatch://INFRA-3320,
+// R8). The empty string is a task that names nothing, which its caller retires rather than sends.
 //
 // entry is the phase entry the held task is of (supervise.Delivery.Entry), and it is what says
 // whether the task was the derivation's, not the task's text. A task that holds kept decisions
@@ -516,8 +519,8 @@ func gatedDocuments(steps []record.DesignStep) string {
 // entry was queued by a release before the architect held an entry, whose start carried a task
 // only where it named decisions, and whose text was those decisions alone, so it is rewritten into
 // the decisions and the resting roots alone.
-func NarrowRootTask(start ArchitectStart, entry int64, stays record.KeptDecisions) string {
-	start.Decided = KeptDecisionsTask(start.Root.Tree, stays)
+func NarrowRootTask(start ArchitectStart, entry int64, decided string) string {
+	start.Decided = decided
 	if entry == 0 {
 		return architectLead(start)
 	}

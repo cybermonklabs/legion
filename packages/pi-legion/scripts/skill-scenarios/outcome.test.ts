@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { cpSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { type OutcomeRecord, parseHeldoutFile, parseOutcome } from "./heldout-case";
@@ -170,6 +177,60 @@ test("invalid records are refused before outcome.json is written", () => {
   write("staging.jsonl", '{"at":"2026-01-07T15:00:02Z","tree":"not-a-tree","files":[]}\n');
   expect(() => writeOutcome(dir)).toThrow("tree");
   expect(existsSync(path.join(dir, "outcome.json"))).toBe(false);
+});
+
+// A skill read's `beforeFirstAction` is whether it came before the run's first scored action, the
+// first action of outcome.json, by their places on the host clock the transcript and the logs
+// share (heldout-case.ts's SkillRead). A tool call that is no scored action, a `bash` that runs
+// `git status`, comes first here and decides nothing.
+test("a skill read is before the first action where it precedes outcome.json's first scored action", () => {
+  const { dir, write } = syntheticRun();
+  const call = (at: string, id: string, name: string, args: object, result: string) => [
+    {
+      type: "message",
+      timestamp: at,
+      message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] },
+    },
+    {
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolName: name,
+        toolCallId: id,
+        content: [{ type: "text", text: result }],
+      },
+    },
+  ];
+  write(
+    "sessions/example.jsonl",
+    [
+      { type: "session", id: "ses-synthetic", timestamp: "2026-01-07T15:00:00Z" },
+      ...call("2026-01-07T15:00:01.000Z", "status", "bash", { command: "git status" }, "clean"),
+      ...call(
+        "2026-01-07T15:00:01.500Z",
+        "entry",
+        "read",
+        { path: "skill://legion-worker" },
+        "A café"
+      ),
+      // The first scored action, P05's result, is at 15:00:02.000000001 (syntheticRun).
+      ...call(
+        "2026-01-07T15:00:03.000Z",
+        "reference",
+        "read",
+        { path: "skill://legion-worker/references/merge-gate.md" },
+        "Details"
+      ),
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")
+  );
+  const got = writeOutcome(dir);
+  expect(got.actions[0]?.at).toBe("2030-01-07T15:00:02.000000001Z");
+  expect(got.skillReads.map(({ path, beforeFirstAction }) => [path, beforeFirstAction])).toEqual([
+    ["SKILL.md", true],
+    ["references/merge-gate.md", false],
+  ]);
 });
 
 /** `dir`'s dispatch-readback.json with `events` added to its event log. */
@@ -416,10 +477,11 @@ test("A case takes the selected task's returned report, not the host paraphrase"
 // A run's Dispatch gives each seeded record an id of its own, and the seed writes each seeded
 // handoff's and comment's Dispatch id by its case id to dispatch-ids.json (seed.ts
 // seedCaseDispatch). The role names the Dispatch id and the case's rubric names the case's, so every
-// string of the run's actions, the other writes, the report and the last text names a seeded id by
-// the case's: the whole id, or its first 8 hexadecimal characters where no other seeded id begins
-// so. An id is read only as a whole token: one that a lower-case hexadecimal character precedes or
-// follows is part of a longer run, and a whole uuid, seeded or not, is one token.
+// string of the run's actions of every kind, the other writes, the report, the last text and the
+// workspace's operations names a seeded id by the case's: the whole id, or its first 8 hexadecimal
+// characters where no other seeded id begins so. An id is read only as a whole token: one that a
+// lower-case hexadecimal character precedes or follows is part of a longer run, and a whole uuid,
+// seeded or not, is one token.
 
 /** A comment the event log holds after the seed, by `actor`, with `payload`. */
 function commentEvent(seq: number, fraction: string, actor: object, payload: object) {
@@ -568,5 +630,363 @@ test("a run with no dispatch-ids.json is written as before", () => {
   expect(existsSync(path.join(dir, "dispatch-ids.json"))).toBe(false);
   expect(commentFields(writeOutcome(dir))).toEqual([
     { body: `${test1} (${test1.slice(0, 8)}) at ${caseHead}.` },
+  ]);
+});
+
+// The records of a run's other tools: what its transcript shows of an Envoy tool, a `task` call and
+// the workspace, and what dispatch-recorder.ts logged of each `dispatch` command.
+
+/** A transcript entry in which the assistant makes the tool call `id` of `name` at `at`. */
+const calls = (at: string, ...made: { id: string; name: string; args: object }[]) => ({
+  type: "message",
+  timestamp: at,
+  message: {
+    role: "assistant",
+    content: made.map(({ id, name, args }) => ({
+      type: "toolCall",
+      id,
+      name,
+      arguments: args,
+    })),
+  },
+});
+/** The tool's answer to call `id`, an error where `isError`. */
+const answer = (id: string, text: string, isError = false) => ({
+  type: "message",
+  message: {
+    role: "toolResult",
+    toolName: "tool",
+    toolCallId: id,
+    isError,
+    content: [{ type: "text", text }],
+  },
+});
+/** Writes the run's session transcript as `entries` under the run's own session id. */
+function transcriptOf(write: (name: string, value: string) => void, ...entries: object[]) {
+  write(
+    "sessions/example.jsonl",
+    [{ type: "session", id: "ses-synthetic" }, ...entries].map((e) => JSON.stringify(e)).join("\n")
+  );
+}
+/** Appends `rows` to the run's calls.jsonl. */
+function addCalls(dir: string, ...rows: object[]) {
+  appendFileSync(
+    path.join(dir, "calls.jsonl"),
+    `\n${rows.map((row) => JSON.stringify(row)).join("\n")}`
+  );
+}
+const host = (fraction: string) => `2026-01-07T15:00:01.${fraction}Z`;
+const caseTime = (fraction: string) => `2030-01-07T15:00:01.${fraction}Z`;
+
+// An Envoy message is what its tool answered without error, called by the tool's name or as a write
+// to its xd:// device. A send the tool refused (a session no listener knows) sent nothing, and a call
+// it never answered, nor any other device, is no message.
+test("an Envoy message is a call its tool answered, by name or by device, and a refused or unanswered one is none", () => {
+  const { dir, write } = syntheticRun();
+  const device = (name: string, args: object) => ({
+    name: "write",
+    args: { path: `xd://${name}`, content: JSON.stringify(args), i: "Post" },
+  });
+  transcriptOf(
+    write,
+    calls(
+      host("100"),
+      {
+        id: "published",
+        name: "envoy_publish",
+        args: {
+          topic: "notifications.role.acme.acme-12-tester",
+          message: "ACME-12 is pushed.",
+          expects_reply: false,
+          i: "Telling the tester",
+        },
+      },
+      { id: "sent", ...device("envoy_send", { session_id: "ses-other", message: "hello" }) },
+      { id: "refused", name: "envoy_send", args: { session_id: "ses-gone", message: "lost" } },
+      { id: "device", ...device("envoy_publish", { topic: "team.news", message: "m2" }) },
+      { id: "unanswered", name: "envoy_publish", args: { topic: "team.none", message: "m3" } },
+      { id: "elsewhere", ...device("bash", { command: "echo envoy_publish" }) },
+      { id: "listing", name: "envoy_list", args: {} }
+    ),
+    answer("published", "Published."),
+    answer("sent", "Sent."),
+    answer("refused", "no live session ses-gone", true),
+    answer("device", "Published."),
+    answer("elsewhere", "ok"),
+    answer("listing", "[]")
+  );
+  const sent = writeOutcome(dir).actions.filter((action) => action.kind === "envoy");
+  expect(sent.map(({ tool, target, fields }) => [tool, target, fields])).toEqual([
+    [
+      "publish",
+      "notifications.role.acme.acme-12-tester",
+      { message: "ACME-12 is pushed.", expects_reply: false },
+    ],
+    ["send", "ses-other", { message: "hello" }],
+    ["publish", "team.news", { message: "m2" }],
+  ]);
+  expect(sent[0]?.at).toBe(`${caseTime("100").slice(0, -1)}000000Z`);
+});
+
+// One agent for each item of a `task` call's tasks, with the end of its own transcript. A call the
+// tool refused, whose agents wrote nothing, started none.
+test("a task call with two items is two agent actions, each with its own end where its transcript wrote one", () => {
+  const { dir, write } = syntheticRun();
+  transcriptOf(
+    write,
+    calls(host("100"), {
+      id: "two",
+      name: "task",
+      args: {
+        context: "Shared brief.",
+        tasks: [
+          { agent: "sonic", name: "Alpha", task: "Read the diff.", solutionSpace: "one reading" },
+          { name: "Beta", task: "Read the spec." },
+        ],
+        i: "Starting two agents",
+      },
+    }),
+    calls(host("200"), {
+      id: "refused",
+      name: "task",
+      args: { tasks: [{ agent: "sonic", name: "Gamma", task: "Never started." }] },
+    }),
+    answer("two", "Both done."),
+    answer("refused", "Unknown agent sonic", true)
+  );
+  const message = (at: string) => ({ type: "message", timestamp: at, message: { role: "user" } });
+  mkdirSync(path.join(dir, "sessions", "example"));
+  write(
+    "sessions/example/Alpha.jsonl",
+    [{ type: "session", id: "ses-alpha" }, message(host("300")), message(host("900"))]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")
+  );
+  const agents = writeOutcome(dir).actions.filter((action) => action.kind === "agent");
+  expect(agents).toHaveLength(2);
+  expect(agents[0]).toMatchObject({
+    agent: "sonic",
+    name: "Alpha",
+    fields: { task: "Read the diff.", solutionSpace: "one reading" },
+    at: `${caseTime("100").slice(0, -1)}000000Z`,
+    endedAt: `${caseTime("900").slice(0, -1)}000000Z`,
+  });
+  expect(agents[1]).toMatchObject({
+    agent: "task",
+    name: "Beta",
+    fields: { task: "Read the spec." },
+  });
+  expect(agents[1]).not.toHaveProperty("endedAt");
+});
+
+// A `dispatch` command is a read where it exited 0 and sent Dispatch only GET requests, and no dry
+// run. The CLI's own write stays the `dispatch` action Dispatch's events make, once.
+test("a dispatch command that wrote nothing is a dispatch-read, and one that wrote, failed, only checked or sent nothing known is none", () => {
+  const { dir } = syntheticRun();
+  const get = (path: string) => ({ method: "GET", path });
+  const row = (fraction: string, command: string, flags: object, extra: object = {}) => ({
+    at: host(fraction),
+    done: host(fraction),
+    as: "dispatch",
+    argv: [command],
+    exit: 0,
+    requests: [get(`/api/v1/${command}`)],
+    call: { command, flags, dryRun: false },
+    ...extra,
+  });
+  addCalls(
+    dir,
+    row("100", "read", { issue: "ACME-12" }),
+    row("200", "handoff-read", { issue: "ACME-12", phase: "implement", "handoff-id": "h" }),
+    row("300", "doc-read", { ref: "dispatch://ACME-12/spec", project: "ACME" }),
+    row("400", "open-asks", {}),
+    row(
+      "500",
+      "comment",
+      { issue: "ACME-12", body: "A note." },
+      {
+        requests: [
+          get("/api/v1/issues/ACME-12"),
+          { method: "POST", path: "/api/v1/issues/ACME-12/comments" },
+        ],
+      }
+    ),
+    row(
+      "600",
+      "read",
+      { issue: "ACME-12" },
+      { call: { command: "read", flags: { issue: "ACME-12" }, dryRun: true } }
+    ),
+    row("700", "read", { issue: "ACME-12" }, { exit: 1 }),
+    row("800", "read", { issue: "ACME-12" }, { requests: null }),
+    row("900", "read", { issue: "ACME-12" }, { call: null }),
+    row("950", "read", { issue: "ACME-12" }, { requests: [] })
+  );
+  addEvents(dir, {
+    seq: 12,
+    created_at: host("500"),
+    type: "comment.created",
+    issue_key: "ACME-12",
+    actor: { kind: "session", id: "ses-synthetic" },
+    payload: { body: "A note." },
+  });
+  const got = writeOutcome(dir);
+  const reads = got.actions.filter((action) => action.kind === "dispatch-read");
+  expect(reads.map(({ command, target, fields }) => [command, target, fields])).toEqual([
+    ["read", "ACME-12", {}],
+    ["handoff-read", "ACME-12", { phase: "implement", "handoff-id": "h" }],
+    ["doc-read", "dispatch://ACME-12/spec", { project: "ACME" }],
+    ["open-asks", "/api/v1/open-asks", {}],
+  ]);
+  // The command that wrote is one `dispatch` action, from Dispatch's own event, and no read.
+  const comments = got.actions.filter(
+    (action) => action.kind === "dispatch" && action.command === "comment"
+  );
+  expect(comments).toHaveLength(1);
+  expect(got.actions.map((action) => action.seq)).toEqual(got.actions.map((_, at) => at + 1));
+});
+
+// The skill reads before the first action of a T0 kind: a Dispatch read, an Envoy message or a task
+// agent's start before it does not move that point.
+test("a skill read between a dispatch-read and the first action of a T0 kind is before the first action", () => {
+  const { dir, write } = syntheticRun();
+  addCalls(dir, {
+    at: "2026-01-07T15:00:00.900Z",
+    done: "2026-01-07T15:00:00.950Z",
+    as: "dispatch",
+    argv: ["read"],
+    exit: 0,
+    requests: [{ method: "GET", path: "/api/v1/issues/ACME-12" }],
+    call: { command: "read", flags: { issue: "ACME-12" }, dryRun: false },
+  });
+  const read = (at: string, id: string, uri: string) => [
+    calls(at, { id, name: "read", args: { path: uri } }),
+    answer(id, "A café"),
+  ];
+  transcriptOf(
+    write,
+    ...read("2026-01-07T15:00:01.500Z", "first", "skill://legion-worker"),
+    ...read("2026-01-07T15:00:03.000Z", "later", "skill://legion-worker/references/merge-gate.md")
+  );
+  const got = writeOutcome(dir);
+  expect(got.actions[0]).toMatchObject({ kind: "dispatch-read", seq: 1 });
+  // The first action of a T0 kind is P05's result, at 15:00:02.000000001.
+  expect(got.actions[1]).toMatchObject({ kind: "dispatch", seq: 2 });
+  expect(got.skillReads.map(({ path, beforeFirstAction }) => [path, beforeFirstAction])).toEqual([
+    ["SKILL.md", true],
+    ["references/merge-gate.md", false],
+  ]);
+});
+
+// The workspace is jj's operation record, one entry for each operation in the order it ended, with
+// the commits it left `@-` on written as the world names them.
+test("the workspace is each jj operation by its end, in that order, with the world's commit ids; a staged Job keeps its name and source", () => {
+  const { dir, write, caseHead } = syntheticRun();
+  const head = "a".repeat(40);
+  const root = "0".repeat(40);
+  const operation = (end: string, description: string, standingOn: string[]) => ({
+    id: description,
+    start: end,
+    end,
+    description,
+    standingOn,
+  });
+  // Written newest first, as a record of concurrent operations may be: the entries are in time order.
+  write(
+    "workspace-ops.jsonl",
+    [
+      operation("2026-01-07T15:00:02.500+00:00", `commit ${head.slice(0, 12)}`, [head]),
+      operation("2026-01-07T15:00:01.250+00:00", "add workspace 'default'", [root]),
+    ]
+      .map((line) => `${JSON.stringify(line)}\n`)
+      .join("")
+  );
+  write(
+    "staging.jsonl",
+    `${JSON.stringify({
+      at: host("600"),
+      tree: "b".repeat(40),
+      files: ["app.ts"],
+      job: "build",
+      source: "$TMPDIR/stage-a",
+    })}\n${JSON.stringify({ at: host("700"), tree: "c".repeat(40), files: ["app.ts"] })}\n`
+  );
+  const got = writeOutcome(dir);
+  expect(got.workspace).toEqual([
+    {
+      at: "2030-01-07T15:00:01.250000000Z",
+      description: "add workspace 'default'",
+      standingOn: [root],
+    },
+    {
+      at: "2030-01-07T15:00:02.500000000Z",
+      description: `commit ${caseHead.slice(0, 12)}`,
+      standingOn: [caseHead],
+    },
+  ]);
+  const staged = got.actions.filter((action) => action.kind === "staging");
+  expect(staged).toMatchObject([{ job: "build", source: "$TMPDIR/stage-a" }, {}]);
+  expect(staged[1]).not.toHaveProperty("job");
+  expect(parseOutcome(readFileSync(path.join(dir, "outcome.json"), "utf8"))).toEqual(got);
+  // A run with no record of its workspace has no workspace in its outcome.
+  const { dir: bare } = syntheticRun();
+  expect(writeOutcome(bare)).not.toHaveProperty("workspace");
+});
+
+// A Dispatch read's target and flags, an Envoy message and a task agent's brief name Dispatch ids
+// as a comment does, and each names a seeded one by the case's id.
+test("a dispatch-read, an Envoy message and a task agent that name a seeded Dispatch id name the case's", () => {
+  const { dir, write } = syntheticRun();
+  const test1 = "5f2c8a1e-3b4d-4e6f-8a9b-0c1d2e3f4a5b";
+  const departure = "9d4e7b20-6c1a-4f3e-9b8d-2e5f6a7c8d90";
+  write(
+    "dispatch-ids.json",
+    JSON.stringify({ "hnd-acme-12-test-1": test1, "cmt-acme-12-departure": departure })
+  );
+  const read = (fraction: string, command: string, flags: object) => ({
+    at: host(fraction),
+    done: host(fraction),
+    as: "dispatch",
+    argv: [command],
+    exit: 0,
+    requests: [{ method: "GET", path: `/api/v1/${command}` }],
+    call: { command, flags, dryRun: false },
+  });
+  addCalls(
+    dir,
+    read("100", "read", { ref: `dispatch://ACME-12/comment/${departure}` }),
+    read("200", "handoff-read", { issue: "ACME-12", "handoff-id": test1 })
+  );
+  transcriptOf(
+    write,
+    calls(
+      host("300"),
+      {
+        id: "sent",
+        name: "envoy_send",
+        args: { session_id: "ses-other", message: `Read ${test1.slice(0, 8)}.` },
+      },
+      {
+        id: "started",
+        name: "task",
+        args: {
+          tasks: [{ name: "Alpha", task: `Answer dispatch://ACME-12/comment/${departure}.` }],
+        },
+      }
+    ),
+    answer("sent", "Sent."),
+    answer("started", "Done.")
+  );
+  const got = writeOutcome(dir);
+  const reads = got.actions.filter((action) => action.kind === "dispatch-read");
+  expect(reads.map(({ command, target, fields }) => [command, target, fields])).toEqual([
+    ["read", "dispatch://ACME-12/comment/cmt-acme-12-departure", {}],
+    ["handoff-read", "ACME-12", { "handoff-id": "hnd-acme-12-test-1" }],
+  ]);
+  expect(got.actions.filter((action) => action.kind === "envoy")).toMatchObject([
+    { tool: "send", target: "ses-other", fields: { message: "Read hnd-acme-12-test-1." } },
+  ]);
+  expect(got.actions.filter((action) => action.kind === "agent")).toMatchObject([
+    { name: "Alpha", fields: { task: "Answer dispatch://ACME-12/comment/cmt-acme-12-departure." } },
   ]);
 });

@@ -36,8 +36,20 @@
 #                                                  starts the scratch services and runs each
 #                                                  label's cell of the case the scenario's case
 #                                                  variable names until <count> runs of it scored,
-#                                                  at most three times <count> launches; a cell
-#                                                  short of its count prints UNKNOWN
+#                                                  at most three times <count> launches, a run
+#                                                  already in <work>/runs counted among them; a
+#                                                  cell short of its count prints UNKNOWN. With
+#                                                  RT_STORE, each run is stored as it ends, its
+#                                                  pack and then its row, which names the pack's
+#                                                  sha256 (store_scored_run)
+#   rig.sh restore-stored <scenario>               each run of the scenario whose row an earlier
+#                                                  pod of the Job stored (RT_STORE): the pack its
+#                                                  row names, checked and unpacked into
+#                                                  <work>/runs (cmd_restore_stored)
+#   rig.sh check-stored <dir> <job log>...         a download of a Job's store, checked against
+#                                                  the sha256 its logs and its rows name: each run
+#                                                  unpacked into <dir>/checked, or a rig error row
+#                                                  naming each fault; then the cells
 #   rig.sh rows      [<scenario>]                  each scored run's row.json, then each entry of
 #                                                  its reach, without scoring it again
 #   rig.sh cell      <scenario> <label> <case> <count>
@@ -108,6 +120,14 @@
 # file before it starts anything, and refuses to start while one names a gap, naming each gap. A
 # devcase batch checks only that its case is in the file.
 # D1 gets $TMPDIR/stage-a and stage-b at the default branch's head and a local stage-job recorder.
+# The outcome also records an Envoy message the role sent (`envoy`, from its transcript, where the
+# tool answered without error), a `dispatch` command it ran that wrote nothing (`dispatch-read`: a
+# Legion pane's <state>/bin holds dispatch-recorder.ts as `dispatch`, in front of the plugin's,
+# which keeps the requests each invocation sent), each task agent it started (`agent`), the jj
+# operations of its workspace (`workspace`), and a staged Job's name and source (`staging`). A case
+# run's pane reaches the batch's Envoy listener through envoy-standin.ts (the front run_case starts),
+# which answers a send to a session of the case's world as the listener answers a send to a live
+# session. A plain session records no `dispatch-read`: it has no launcher directory.
 # A case world names commits and no files (git-world.ts): each commit's tree holds CHANGES.md, a
 # line for it and each commit under it, and, at each commit off the default branch's first-parent
 # line and every commit above one, a generated Go module: go.mod at the root and, for each `check`
@@ -481,7 +501,7 @@ tmux() { command tmux -S "$tmux_socket" "$@"; }
 # pids lib/rig.sh's start_process sets (a run's own Dispatch server among them), and the services'
 # ports, URLs and directory.
 R='' session='' daemon_pid='' listener_pid='' dispatch_pid='' runs_pid='' batch_scenario=''
-proxy_pid='' model_pid='' omp_pid='' rpc_fd=''
+proxy_pid='' model_pid='' omp_pid='' front_pid='' rpc_fd=''
 S='' envoy_port='' dispatch_port='' pg_url='' nats_url=''
 
 label_dir() {
@@ -1036,7 +1056,7 @@ stop_panes() {
 stop_run() {
   local pid
   [ -z "$rpc_fd" ] || { exec {rpc_fd}>&- && rpc_fd=''; } 2>/dev/null || true
-  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$dispatch_pid"; do
+  for pid in "$omp_pid" "$daemon_pid" "$proxy_pid" "$model_pid" "$front_pid" "$dispatch_pid"; do
     [ -z "$pid" ] || { stop_tree "$pid" && wait "$pid" 2>/dev/null || true; }
   done
   [ -z "$session" ] || stop_panes "$session"
@@ -1257,7 +1277,7 @@ connections_needed() {
 # operator gave (given_services) or two containers it starts, and the Envoy listener built from
 # this checkout, which the services file ($services_env) names with the NATS and the listener
 # token. PARALLEL is how many runs the batch runs at once, SKILL_SCENARIOS_PARALLEL (default 5)
-# when it is not given; an owner-walk batch runs one at a time and gives 1.
+# when it is not given; an owner-walk batch and a case batch each run one at a time and give 1.
 #
 # Each run's Dispatch server opens at most store.ConnectionsPerProcess connections to the batch's
 # Postgres: its counted pools and its permanent listeners (packages/envoy/internal/dispatch/store/
@@ -2040,8 +2060,22 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
 }
 
+# handoff_line WORD VERSION ISSUE prints the sentence the daemon's task names a predecessor's
+# handoff record in (task, packages/daemon/internal/workflow/effects.go), read from the daemon's
+# copy of it with its placeholders filled. That copy is the one a workflow test holds to the task
+# the daemon writes (TestTheHandoffLineExtractIsTheSentenceTheTaskWrites), so the rig keeps no
+# sentence of its own that could drift from the daemon's.
+handoff_line() {
+  local extract=$root/packages/daemon/internal/workflow/handoff_line_extract.txt line
+  line=$(awk 'body { print; exit } /^$/ { body = 1 }' "$extract") || fail "could not read $extract"
+  [[ -n $line ]] || fail "$extract holds no sentence after the blank line under its header"
+  line=${line//"{word}"/"$1"}
+  line=${line//"{version}"/"$2"}
+  printf '%s\n' "${line//"{issue}"/"$3"}"
+}
+
 run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 state project port pr head version
+  local name=$1 n=$2 index=$3 start=$4 state project port pr head version handoff
   # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
   # reads and whose newest test record it writes.
   own_dispatch project
@@ -2052,9 +2086,10 @@ run_tester_proof() {
   version=$(jq -r .implement.version "$R/fixture.json")
   read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
-  # record in (packages/daemon/internal/workflow/effects.go).
-  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
+  # record in (handoff_line).
+  handoff=$(handoff_line implement "$version" "$worker_key")
+  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. %s Test it and finish your phase.\n' \
+    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$handoff" >"$R/prompt.txt"
   state=$R/state
   # Each run its own Legion project, so concurrent runs claim distinct role tokens on one listener.
   # A project token is lower-case letters and digits only (isLegionProjectToken), so the label's
@@ -2548,6 +2583,7 @@ scored_rig_error() {
 
 # scored_attempt SCENARIO LABEL CASE N launches one run, `rig.sh run`, and writes its row: the
 # scenario's score (score_scored_run), or the rig's error with the reason the run's stderr named.
+# Then it stores the run, scored or not (store_scored_run).
 scored_attempt() {
   local name=$1-$3-$2-$4 err status=0
   mkdir -p "$work/scored-logs"
@@ -2560,14 +2596,24 @@ scored_attempt() {
   else
     scored_rig_error "$name" "$2" "$3" "$(grep '^skill-scenarios: ' "$err" | tail -n 1)"
   fi
+  store_scored_run "$name"
 }
 scored_index=0
 
 # batch_scored_cell SCENARIO LABEL CASE COUNT launches runs of CASE under LABEL (scored_attempt)
 # until COUNT of them hold a scored row, and stops the cell at three times COUNT launches, where
-# it prints UNKNOWN: a cell short of its count is never a pass.
+# it prints UNKNOWN: a cell short of its count is never a pass. The runs of the cell already in
+# $work/runs, each with its row, count as launches too: a restarted Job counts the runs rig.sh
+# restore-stored put back. A run its store does not hold, one lost to an eviction mid-run or whose
+# pack or put failed, is not counted, so a Job that restarts can launch more than three times its
+# count in all. The count runs without RT_STORE too: in a work directory that already holds runs
+# of the cell, those runs are among its launches.
 batch_scored_cell() {
-  local scenario=$1 label=$2 case=$3 count=$4 launches=0
+  local scenario=$1 label=$2 case=$3 count=$4 launches=0 dir
+  for dir in "$work/runs/$scenario-$case-$label-"*; do
+    [[ ${dir##*/} =~ ^$scenario-$case-$label-[0-9]+$ ]] && [ -f "$dir/row.json" ] || continue
+    launches=$((launches + 1))
+  done
   while [ "$(scored_count "$label" "$case")" -lt "$count" ]; do
     if [ "$launches" -ge $((3 * count)) ]; then
       echo "UNKNOWN: $scenario $label $case: $(scored_count "$label" "$case") scored runs of $count after $launches launches, three times its count"
@@ -2576,6 +2622,266 @@ batch_scored_cell() {
     launches=$((launches + 1))
     scored_attempt "$scenario" "$label" "$case" "$(next_run "$scenario-$case" "$label")"
   done
+}
+
+# The store of a scored run. RT_STORE is the runner's helper (legion-remote-test.sh --store-key):
+# `put <file> <name>`, `list <prefix>` and `get <name> <file>`, each under the Job's own key, each
+# put and get printing `stored|got <name> sha256 <hex>` in the Job's log. The bucket's name stays
+# in the runner. One key is one Job's. A run is two objects: its pack, runs/<run>.tar.gz, and then
+# its row, runs/<run>.row.json, which is the run's row.json with one more field, `pack`, the pack's
+# sha256. The row goes last, so a stored row says its pack is stored too, and names which pack. A
+# pod stopped between the two leaves a pack no restart fetches, and its run's name is run, and its
+# pack stored, again.
+#
+# A pack holds the run's regular files and directories alone, a hard link as its file. It leaves
+# out every other entry (a symlink, a FIFO, a socket), and names them. It leaves out, by name, the
+# places the run's credentials are in: every directory named secrets (the daemon stand-in's boot
+# token, the owner's Envoy token and gh configuration), home/ (the label's HOME, copied), pane.env
+# and the launch's texts/launch-request.json and texts/launch-answer.json, which can carry the
+# batch's NATS URL with its credential. The scorer reads none of them.
+
+# store_scored_run NAME stores the run NAME, when RT_STORE is set. A failed pack or put is noted and
+# stops neither the batch nor the run's count in this pod. After a failed pack or a failed put of
+# it, its row is not stored, so no restart counts the run; at download (cmd_check_stored) a run
+# whose object the log names and the download lacks is a rig error.
+store_scored_run() {
+  [ -n "${RT_STORE:-}" ] || return 0
+  local name=$1 pack=$work/stored/$1.tar.gz row=$work/stored/$1.row.json list=$work/stored/$1.list
+  local hex left
+  mkdir -p "$work/stored"
+  rm -f -- "$pack" "$row" "$list"
+  (cd "$work/runs" && find "$name" \( -path "$name/home" -o -path "$name/pane.env" -o -type d -name secrets \
+    -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
+    -o \( -type d -o -type f \) -print0) >"$list"
+  left=$(cd "$work/runs" && find "$name" \( -path "$name/home" -o -path "$name/pane.env" -o -type d -name secrets \
+    -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
+    -o ! -type d ! -type f -printf '%P\n' | LC_ALL=C sort)
+  [ -z "$left" ] ||
+    note "the pack of $name leaves out $(grep -c . <<<"$left") entries that are no regular file or directory: $(paste -sd' ' <<<"$left")"
+  if ! tar -czf "$pack" -C "$work/runs" --no-recursion --hard-dereference --null -T "$list"; then
+    note "the pack of $name failed, so the run is not stored"
+    rm -f -- "$pack" "$list"
+    return 0
+  fi
+  rm -f -- "$list"
+  hex=$(sha256sum <"$pack")
+  hex=${hex%% *}
+  if ! "$RT_STORE" put "$pack" "runs/$name.tar.gz" </dev/null; then
+    note "the store of runs/$name.tar.gz failed, so its row is not stored"
+    rm -f -- "$pack"
+    return 0
+  fi
+  rm -f -- "$pack"
+  jq -c --arg pack "$hex" '. + {pack: $pack}' "$work/runs/$name/row.json" >"$row"
+  "$RT_STORE" put "$row" "runs/$name.row.json" </dev/null || note "the store of runs/$name.row.json failed"
+  rm -f -- "$row"
+}
+
+# pack_problem PACK RUN prints why the pack of the run RUN may not be unpacked, or nothing. Each of
+# its members must be a regular file or a directory, by its type in tar's own listing, and RUN or
+# under RUN/. Its name says nothing of a member's type: a symlink, or a hard link, lets a later
+# member, or a later write, land in another run or outside the directory it is unpacked in.
+pack_problem() {
+  local listing names i what
+  local -a types members
+  if ! listing=$(tar -tvzf "$1" 2>/dev/null) || ! names=$(tar -tzf "$1" 2>/dev/null); then
+    echo "is no pack: tar cannot list it"
+    return
+  fi
+  mapfile -t types < <(cut -c1 <<<"$listing")
+  mapfile -t members <<<"$names"
+  if [ ${#types[@]} != ${#members[@]} ]; then
+    echo "is listed as ${#types[@]} members with their types and ${#members[@]} by name"
+    return
+  fi
+  for i in "${!members[@]}"; do
+    case ${types[$i]} in
+    - | d) what='' ;;
+    l) what="a symlink" ;;
+    h) what="a hard link" ;;
+    *) what="a member of type '${types[$i]}'" ;;
+    esac
+    if [ -z "$what" ] && [[ ${members[$i]} != "$2" && ${members[$i]} != "$2/"* ]]; then
+      what="which is not under $2/"
+    fi
+    if [ -n "$what" ]; then
+      echo "holds '${members[$i]}', $what: a pack holds its run's regular files and directories alone"
+      return
+    fi
+  done
+}
+
+# unpack_fresh PACK RUN PARENT unpacks PACK, which pack_problem passed, into a new directory under
+# PARENT, and prints that directory, which holds RUN alone.
+unpack_fresh() {
+  local fresh
+  fresh=$(mktemp -d "$3/.unpack.XXXXXX") || fail "cannot make a directory under $3 to unpack $1 in"
+  tar -xzf "$1" -C "$fresh" --no-same-owner || fail "the unpack of $1 failed"
+  [ -d "$fresh/$2" ] && [ ! -L "$fresh/$2" ] || fail "$1 holds no directory $2"
+  printf '%s\n' "$fresh"
+}
+
+# same_row STORED ROW is true when the stored row STORED, its `pack` taken out, is the run's ROW.
+same_row() {
+  [ "$(jq -S -c 'del(.pack)' "$1" 2>/dev/null)" = "$(jq -S -c . "$2" 2>/dev/null)" ]
+}
+
+# cmd_restore_stored SCENARIO (the header): each run of SCENARIO whose row an earlier pod of the
+# same Job stored, put back into $work/runs. Its row is fetched first, then the pack it names; the
+# pack must be of the row's sha256, pass pack_problem, unpack into a fresh directory, and hold the
+# row's own row.json. Each get prints its object's sha256, so the Job's log names every object a
+# cell counts. A run already in $work/runs is left. A failed list or get, or a pack refused, ends
+# the restore and the Job: a pod that cannot read its store would run again, and store over, the
+# names it already holds.
+cmd_restore_stored() {
+  [ $# = 1 ] || fail "usage: rig.sh restore-stored <scenario>"
+  [ -n "${RT_STORE:-}" ] || fail "restore-stored reads the Job's store, and RT_STORE is unset: legion-remote-test.sh --store-key sets it"
+  local names name run listed=0 restored=0 here_dir problem want hex fresh
+  names=$("$RT_STORE" list runs/ </dev/null) || fail "the store's list of runs/ failed"
+  mkdir -p "$work/runs" "$work/stored"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    listed=$((listed + 1))
+    [[ $name =~ ^runs/($1-[A-Za-z0-9_-]+)\.row\.json$ ]] || continue
+    run=${BASH_REMATCH[1]}
+    [ ! -e "$work/runs/$run" ] || continue
+    here_dir=$work/stored/$run
+    rm -rf -- "$here_dir"
+    mkdir -p "$here_dir"
+    "$RT_STORE" get "runs/$run.row.json" "$here_dir/row.json" </dev/null || fail "the get of runs/$run.row.json failed"
+    want=$(jq -r '.pack // empty' "$here_dir/row.json" 2>/dev/null)
+    [[ $want =~ ^[0-9a-f]{64}$ ]] || fail "runs/$run.row.json names no pack sha256"
+    "$RT_STORE" get "runs/$run.tar.gz" "$here_dir/pack.tar.gz" </dev/null || fail "the get of runs/$run.tar.gz failed"
+    hex=$(sha256sum <"$here_dir/pack.tar.gz")
+    hex=${hex%% *}
+    [ "$hex" = "$want" ] || fail "runs/$run.tar.gz is not the pack its row names: the row names $want, the store holds $hex"
+    problem=$(pack_problem "$here_dir/pack.tar.gz" "$run")
+    [ -z "$problem" ] || fail "runs/$run.tar.gz $problem"
+    fresh=$(unpack_fresh "$here_dir/pack.tar.gz" "$run" "$here_dir")
+    same_row "$here_dir/row.json" "$fresh/$run/row.json" || fail "runs/$run.tar.gz's row.json is not the row stored beside it"
+    mv -- "$fresh/$run" "$work/runs/$run"
+    rm -rf -- "$here_dir"
+    restored=$((restored + 1))
+  done <<<"$names"
+  note "the store lists $listed names under runs/; $restored runs of $1 restored from it"
+}
+
+# cmd_check_stored DIR LOG... (the header). DIR is a download of a Job's store, DIR/runs/<run>.tar.gz
+# and DIR/runs/<run>.row.json, and each LOG a log of the Job, in the order its pods ran. Their
+# `stored` and `got` lines name each object's sha256: a `stored` line sets it, and a later `got`
+# line of another sha256 is a fault, since the object then changed between the pods. A `got` line
+# of a name no LOG stores sets it, so with the last pod's log alone, a row and pack an earlier pod
+# stored and that changed together before the later pod's get read as stored. Each owner-walk run
+# whose row the download holds, or whose object a LOG names, is checked: its row must be in the
+# download, named in a LOG, and of that sha256; its pack must be in the download, of the sha256
+# its row names (and of a LOG's, when one names it), pass pack_problem, and hold the row's own
+# row.json. A run that passes is unpacked into DIR/checked, through a fresh directory. One that
+# fails gets a rig error row there, naming each fault, and its pack is not unpacked; with no
+# world.json, it is in no cell. Then a line for each run, and the cells (score.ts cells). The check
+# catches an object changed or mixed up after a pod stored it, not one an agent in the same pod
+# changed before the rig stored it.
+cmd_check_stored() {
+  [ $# -ge 2 ] || fail "usage: rig.sh check-stored <dir> <job log>..."
+  local dir=$1 log line file name run object hex faults joined kind form family kase label rest want problem fresh
+  local -A logged=() named=()
+  shift
+  faults=()
+  local -A conflict=()
+  for log in "$@"; do
+    [ -f "$log" ] || fail "the Job's log $log is not a file"
+    while IFS= read -r line; do
+      [[ $line =~ ^(stored|got)\ (runs/(owner-walk-[A-Za-z0-9_-]+)\.(tar\.gz|row\.json))\ sha256\ ([0-9a-f]{64})$ ]] || continue
+      object=${BASH_REMATCH[2]} hex=${BASH_REMATCH[5]}
+      named[${BASH_REMATCH[3]}]=1
+      if [ "${BASH_REMATCH[1]}" = stored ] || [ -z "${logged[$object]:-}" ]; then
+        logged[$object]=$hex
+      elif [ "$hex" != "${logged[$object]}" ]; then
+        conflict[$object]="$object was stored with sha256 ${logged[$object]} and later got with sha256 $hex"
+      fi
+    done <"$log"
+  done
+  # A download that holds nothing was not checked, whatever the logs name: each run would read as
+  # its objects missing, and the count of that is no measurement of the store.
+  if ! compgen -G "$dir/runs/*" >/dev/null; then
+    echo "UNKNOWN: $dir/runs holds no object: nothing was checked"
+    return 1
+  fi
+  for file in "$dir"/runs/*.row.json; do
+    [ -f "$file" ] || continue
+    name=${file##*/}
+    if [[ $name =~ ^(owner-walk-[A-Za-z0-9_-]+)\.row\.json$ ]]; then
+      named[${BASH_REMATCH[1]}]=1
+    else
+      printf 'UNKNOWN: %q in %s/runs is no run'"'"'s object: it is left out\n' "$name" "$dir"
+    fi
+  done
+  if [ ${#named[@]} = 0 ]; then
+    echo "UNKNOWN: neither the Job's logs nor $dir/runs name an owner-walk run: nothing was checked"
+    return 1
+  fi
+  rm -rf -- "$dir/checked"
+  mkdir -p "$dir/checked"
+  while IFS= read -r run; do
+    faults=()
+    object=runs/$run.row.json file=$dir/$object want=''
+    if [ ! -f "$file" ]; then
+      faults+=("$object is not in the download")
+    elif [ -n "${conflict[$object]:-}" ]; then
+      faults+=("${conflict[$object]}")
+    elif [ -z "${logged[$object]:-}" ]; then
+      faults+=("$object has no stored or got line in the Job's logs")
+    else
+      hex=$(sha256sum <"$file")
+      hex=${hex%% *}
+      if [ "$hex" != "${logged[$object]}" ]; then
+        faults+=("$object differs from the Job's log: logged ${logged[$object]}, downloaded $hex")
+      else
+        want=$(jq -r '.pack // empty' "$file" 2>/dev/null)
+        [[ $want =~ ^[0-9a-f]{64}$ ]] || {
+          faults+=("$object names no pack sha256")
+          want=''
+        }
+      fi
+    fi
+    object=runs/$run.tar.gz file=$dir/$object
+    if [ ! -f "$file" ]; then
+      faults+=("$object is not in the download")
+    else
+      hex=$(sha256sum <"$file")
+      hex=${hex%% *}
+      [ -z "${conflict[$object]:-}" ] || faults+=("${conflict[$object]}")
+      [ -z "${logged[$object]:-}" ] || [ "$hex" = "${logged[$object]}" ] ||
+        faults+=("$object differs from the Job's log: logged ${logged[$object]}, downloaded $hex")
+      [ -z "$want" ] || [ "$hex" = "$want" ] ||
+        faults+=("$object is not the pack its row names: the row names $want, the download holds $hex")
+    fi
+    if [ ${#faults[@]} = 0 ]; then
+      problem=$(pack_problem "$file" "$run")
+      [ -z "$problem" ] || faults+=("$object $problem")
+    fi
+    if [ ${#faults[@]} = 0 ]; then
+      fresh=$(unpack_fresh "$file" "$run" "$dir/checked")
+      if same_row "$dir/runs/$run.row.json" "$fresh/$run/row.json"; then
+        mv -- "$fresh/$run" "$dir/checked/$run"
+        rm -rf -- "$fresh"
+        printf 'checked %s: as stored\n' "$run"
+        continue
+      fi
+      rm -rf -- "$fresh"
+      faults+=("$object's row.json is not the row stored beside it")
+    fi
+    # The run's name gives its case and label: owner-walk-<kind>-<form>-<family>-<label>-<n>.
+    rest=${run#owner-walk-}
+    IFS=- read -r kind form family label <<<"$rest"
+    kase=$kind-$form-$family label=${label%-*}
+    printf -v joined '%s; ' "${faults[@]}"
+    joined=${joined%; }
+    mkdir -p "$dir/checked/$run"
+    jq -cn --arg run "$run" --arg label "$label" --arg case "$kase" --arg error "the store's objects of the run are at fault: $joined" \
+      '{outcome: "rig-error", run: $run, scenario: "owner-walk", label: $label, case: $case, error: $error}' >"$dir/checked/$run/row.json"
+    printf 'checked %s: rig error: %s\n' "$run" "$joined"
+  done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
+  bun "$here/score.ts" cells "$dir/checked" owner-walk
 }
 
 # cmd_batch_scored SCENARIO COUNT LABEL... (the header): the batch's services, each label's texts
@@ -2693,14 +2999,22 @@ cmd_case_world() {
   bun "$here/case-world.ts" prepare "$dir" "$file" "$1" "$2"
 }
 
-# Read the label's daemon module for the pane, never a restatement of its role prompt.
+# Read the label's daemon module for the pane, never a restatement of its role prompt. The stand-in
+# and the pane are given the one repository and default branch case-world.ts wrote to launch.json
+# (caseRepository), so the pane's addressing names the branch the stand-in's record of the issue
+# answers, as a real daemon tells a launch its record's own. The pane's launcher directory,
+# <state>/bin, which the pane's PI_SHELL_PREFIX keeps first on the PATH of every command the role
+# runs, holds the `dispatch` that dispatch-recorder.ts is, in front of the Envoy plugin's: it runs
+# the real CLI and records each invocation's exit and requests to $R/calls.jsonl, which outcome.ts
+# reads the role's Dispatch reads from. A plain session has no launcher directory, so its
+# `dispatch` is the plugin's and records nothing.
 case_legion_pane() {
   local role=$1 issue tree claim port repo branch project
   local -a answers=()
   issue=$(jq -er .dispatch.issue.key "$R/launch-world.json")
   tree=$(jq -er '.dispatch.issue | .parent // .key' "$R/launch-world.json")
-  repo=$(jq -er '.github.repository // "example/widgets"' "$R/launch-world.json")
-  branch=$(jq -er '[.git.remote.branches[]?.name] | if index("main") then "main" else .[0] // "main" end' "$R/launch-world.json")
+  repo=$(jq -er .repository "$R/launch.json")
+  branch=$(jq -er .defaultBranch "$R/launch.json")
   claim=$role
   case $role in
     root-architect | child-architect) claim=architect ;;
@@ -2709,7 +3023,10 @@ case_legion_pane() {
     production-check) claim=tester ;;
   esac
   project=sc$(openssl rand -hex 6)
-  mkdir -p "$R/state/gh" "$R/state/secrets"
+  mkdir -p "$R/state/gh" "$R/state/secrets" "$R/state/bin"
+  printf '#!/bin/sh\nexec %q %q %q %q "$@"\n' "$(bun -e 'console.log(process.execPath)')" \
+    "$here/dispatch-recorder.ts" "$R" "$R/state/bin" >"$R/state/bin/dispatch"
+  chmod +x "$R/state/bin/dispatch"
   chmod 0700 "$R/state/secrets"
   (umask 077 && openssl rand -hex 16 >"$R/state/secrets/boot")
   if [ -n "${SKILL_SCENARIOS_DAEMON_ANSWERS:-}" ]; then
@@ -2725,12 +3042,13 @@ case_legion_pane() {
     --clock-real "$R/clock-real.txt" --tree "$tree" --gh-calls "$R/calls.jsonl" "${answers[@]}"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
-  bun "$here/case-world.ts" pane "$R" "$co" "$port" "$profile" "$project" "$claim" "$issue" "$tree"
+  bun "$here/case-world.ts" pane "$R" "$co" "$port" "$profile" "$project" "$claim" "$issue" "$tree" \
+    "$repo" "$branch"
   mv "$R/worker.env" "$R/pane.env"
 }
 
 run_case() {
-  local scenario=$1 id=$2 name=$3 file role agent model gateway_pid=
+  local scenario=$1 id=$2 name=$3 file role agent model front_url gateway_pid=
   local -a tools=()
   file=$(case_input) || exit 1
   bun "$here/case-world.ts" prepare "$R" "$file" "$scenario" "$id" >>"$R/fixture.log" 2>&1 ||
@@ -2738,8 +3056,16 @@ run_case() {
   SKILL_SCENARIO_RUN="$R" own_dispatch case-world
   base_env
   standins
+  # The pane's Envoy is a front of the batch's listener (envoy-standin.ts): a send the listener
+  # refuses for a session it has never heard of, as a world's sessions are, is answered as a send
+  # to a live session is, so a role's send succeeds as it does in production. It records each send
+  # to $R/calls.jsonl.
+  start_process front bun "$here/envoy-standin.ts" "$(service_value ENVOY_URL)" "$R/calls.jsonl"
+  await_start front "$front_pid" 30 "the Envoy front to listen" grep -q '^listening on ' "$R/logs/front.log"
+  front_url=$(sed -n 's|^listening on ||p' "$R/logs/front.log")
   {
     cat "$services_env"
+    echo "ENVOY_URL=$front_url"
     echo "GIT_CONFIG_COUNT=0"
     echo "GIT_CONFIG_GLOBAL=/dev/null"
     echo "GIT_CONFIG_NOSYSTEM=1"
@@ -2828,7 +3154,8 @@ cmd_case_batch() {
   mkdir -p "$work/runs"
   lock_services
   on_exit stop_batch
-  services_up
+  # One `rig.sh run` at a time, below: the services are sized for one run.
+  services_up 1
   export SKILL_SCENARIOS_CASES=$file
   for ((n=0; n<pairs; n++)); do
     order=$(bun "$here/case-world.ts" order "$seed" "$scenario:$id:$n" "$@") || exit 1
@@ -2961,6 +3288,8 @@ profile) shift && cmd_profile "$@" ;;
 live-read) shift && cmd_live_read "$@" ;;
 batch) shift && if is_case_scenario "${1:-}"; then cmd_case_batch "$@"; else cmd_batch "$@"; fi ;;
 batch-scored) shift && cmd_batch_scored "$@" ;;
+restore-stored) shift && cmd_restore_stored "$@" ;;
+check-stored) shift && cmd_check_stored "$@" ;;
 run) shift && if is_case_scenario "${1:-}"; then cmd_case_run "$@"; else cmd_run "$@"; fi ;;
 heldout | skilluse | devcase) cmd_case_once "$@" ;;
 case-world) shift && cmd_case_world "$@" ;;

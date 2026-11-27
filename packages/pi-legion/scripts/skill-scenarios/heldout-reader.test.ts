@@ -17,6 +17,7 @@ import {
   answerOf,
   type Batch,
   buildBatch,
+  CARRIED_INSTRUCTION,
   type CaseRubric,
   F4_ANSWER,
   F4_COMMAND,
@@ -39,6 +40,7 @@ import {
 import {
   type Disposition,
   gradedOf,
+  modelOutcome,
   parseEffects,
   parseReplay,
   replayOf,
@@ -2231,4 +2233,177 @@ test("--capture makes one call on the case file's traces and writes the raw answ
     "batch: CONCLUSIVE (4 of 4 controls graded right)",
     `usage: ${JSON.stringify(answerOf(F4).usage)}`,
   ]);
+});
+
+// The carried kinds: the example with an Envoy message, a Dispatch read and a task agent's start
+// among its traces' actions (the daemon testdata's carried-kinds-cases.json, whose .command says how
+// it was made), so a run that holds them reaches the grader as the run did it.
+const CARRIED_FILE = path.join(
+  import.meta.dir,
+  "../../../daemon/internal/daemon/testdata/teardown-effects/carried-kinds-cases.json"
+);
+const carried = parseCases(readFileSync(CARRIED_FILE, "utf8"));
+const [C05, C10] = carried.cases;
+if (C05 === undefined || C10 === undefined) throw new Error("the carried file holds P05 and P10");
+const kindsOf = (outcome: { actions: readonly { kind: string }[] }) =>
+  outcome.actions.map((action) => action.kind);
+
+test("a batch with no carried action, staged Job name or workspace is sent INSTRUCTION alone, and one with any is sent the appendix after it", () => {
+  const plain = buildBatch(RUBRIC, cases, RUNS, 7);
+  expect(JSON.parse(requestOf(plain)).system).toBe(INSTRUCTION);
+
+  // Each thing the appendix describes brings it alone: an action of each carried kind, a staging
+  // action's job, its source, and the workspace's operations. A staging action with neither of
+  // the two is the T0 one, and brings nothing.
+  const staging = { kind: "staging" as const, seq: 6, at: "2030-01-07T15:05:00Z" };
+  const staged = { tree: "a".repeat(40), files: ["app.ts"] };
+  const withAction = (extra: Partial<OutcomeRecord>): Batch =>
+    buildBatch(
+      RUBRIC,
+      cases,
+      [runOf(P05.id, { ...P05.traces.good, ...extra }, RUN_IDS[0] ?? "")],
+      7
+    );
+  const system = (batch: Batch) => JSON.parse(requestOf(batch)).system;
+  const bare = withAction({ actions: [...P05.traces.good.actions, { ...staging, ...staged }] });
+  expect(system(bare)).toBe(INSTRUCTION);
+  const rows: [string, Partial<OutcomeRecord>][] = [
+    ["a staged Job's name", { actions: [{ ...staging, ...staged, job: "build" }] }],
+    ["a staged Job's source", { actions: [{ ...staging, ...staged, source: "$TMPDIR/stage-a" }] }],
+    ["the workspace's operations", { workspace: [] }],
+    ...carried.cases.flatMap((each) =>
+      (["envoy", "dispatch-read", "agent"] as const).map(
+        (kind): [string, Partial<OutcomeRecord>] => [
+          `${each.id}'s ${kind} action`,
+          {
+            actions: each.traces.good.actions.filter((action) => action.kind === kind).slice(0, 1),
+          },
+        ]
+      )
+    ),
+  ];
+  for (const [what, extra] of rows)
+    expect([what, system(withAction(extra))]).toEqual([
+      what,
+      `${INSTRUCTION}\n\n${CARRIED_INSTRUCTION}`,
+    ]);
+
+  // With a record that stops short as well, the two appendices follow in that order.
+  const both = buildBatch(RUBRIC, carried, [], 7);
+  const observed = {
+    ...both,
+    items: both.items.map((item, at) => (at === 0 ? { ...item, observedThrough: 1 } : item)),
+  };
+  expect(JSON.parse(requestOf(observed)).system).toBe(
+    [INSTRUCTION, OBSERVED_INSTRUCTION, CARRIED_INSTRUCTION].join("\n\n")
+  );
+});
+
+test("each carried action and the workspace reach the grader in the order they were taken, under fresh ids and a shuffle, and no field names a case, an arm, a route or a token count", () => {
+  const workspace = [
+    { at: "2030-01-07T15:00:05Z", description: "commit abc", standingOn: ["a".repeat(40)] },
+  ];
+  const withWorkspace = {
+    ...carried,
+    cases: carried.cases.map((each) => ({
+      ...each,
+      traces: {
+        good: { ...each.traces.good, workspace },
+        ...(each.traces.bad === undefined ? {} : { bad: each.traces.bad }),
+      },
+    })),
+  };
+  const batch = buildBatch(RUBRIC, withWorkspace, [], 7);
+  const traceIds = new Set(
+    carried.cases.flatMap((each) => [each.traces.good.id, each.traces.bad?.id ?? ""])
+  );
+  expect(batch.items).toHaveLength(4);
+  for (const item of batch.items) {
+    expect(traceIds.has(item.id)).toBe(false);
+    expect(item.outcome.actions.map((action) => action.seq)).toEqual(
+      item.outcome.actions.map((_, at) => at + 1)
+    );
+  }
+  // Each control is given the actions its trace holds, carried ones among them, in its order.
+  const given = new Map(batch.items.map((item) => [item.outcome.lastText, item]));
+  for (const each of carried.cases)
+    for (const trace of [each.traces.good, each.traces.bad ?? each.traces.good]) {
+      const item = given.get(trace.lastText);
+      expect(kindsOf(item?.outcome ?? { actions: [] })).toEqual(kindsOf(trace));
+    }
+  const holding = batch.items.filter((item) => item.outcome.workspace !== undefined);
+  expect(holding).toHaveLength(2);
+  expect(holding.every((item) => item.outcome.workspace?.[0]?.description === "commit abc")).toBe(
+    true
+  );
+
+  // No key of a given item names what it must not: a case's route, an arm, a prompt or a count of
+  // tokens. The request holds no trace id, and the shuffle moves the items from seed to seed.
+  const keys = new Set(keysOf(batch.items.map((item) => item.outcome)));
+  for (const forbidden of ["route", "routes", "arm", "prompt", "tokens", "usage", "otherWrites"])
+    expect(keys.has(forbidden)).toBe(false);
+  const request = requestOf(batch);
+  for (const id of traceIds) expect(request).not.toContain(id);
+  const orders = new Set(
+    [1, 2, 3, 4, 5].map((seed) =>
+      buildBatch(RUBRIC, withWorkspace, [], seed)
+        .items.map((item) => item.outcome.lastText)
+        .join("|")
+    )
+  );
+  expect(orders.size).toBeGreaterThan(1);
+});
+
+test("lane D's receipt names no carried action: a replay with them among its calls is ok, and a DIVERGED record holds nothing that came after its last action", () => {
+  const completed = { ...C05.traces.good, id: laneDId(41) };
+  const parsedReceipts = (outcome: OutcomeRecord, real?: ReadonlyMap<number, Said>) => {
+    const receipts = receiptsOf(outcome, real);
+    return {
+      receipt: parseReplay(JSON.stringify(receipts.replay)),
+      effects: parseEffects(JSON.stringify(receipts.effects)),
+    };
+  };
+  // The replay made the completion again, at action 9, and none of the carried actions around it.
+  const whole = parsedReceipts(completed);
+  expect(whole.receipt.calls.map((call) => call.standin.map((ref) => ref.outcomeSeq))).toEqual([
+    [9],
+  ]);
+  expect(replayOf(completed, whole.receipt, whole.effects, C05).verdict).toBe("ok");
+  const given = gradedOf(completed, replayOf(completed, whole.receipt, whole.effects, C05));
+  expect(kindsOf(given?.outcome ?? { actions: [] })).toEqual(kindsOf(completed));
+  const { id: _id, ...bare } = completed;
+  expect(given?.outcome).toEqual(modelOutcome(bare));
+
+  // The real daemon refused the completion, which the stand-in took: the record stops at action 9.
+  // The task agent started at action 4 ended after it, and the workspace's second operation too.
+  const later: OutcomeRecord = {
+    ...completed,
+    id: laneDId(42),
+    actions: completed.actions.map((action) =>
+      action.kind === "agent" ? { ...action, endedAt: "2030-01-07T15:09:00Z" } : action
+    ),
+    workspace: [
+      { at: "2030-01-07T15:04:00Z", description: "commit one", standingOn: ["b".repeat(40)] },
+      { at: "2030-01-07T15:05:00Z", description: "commit two", standingOn: ["c".repeat(40)] },
+    ],
+  };
+  const refused = new Map([[9, { status: 400, code: "HANDOFF_NO_PULL_REQUEST" }]]);
+  const stopped = parsedReceipts(later, refused);
+  const observed = gradedOf(later, replayOf(later, stopped.receipt, stopped.effects, C05));
+  expect(observed?.observedThrough).toBe(9);
+  expect(kindsOf(observed?.outcome ?? { actions: [] })).toEqual(kindsOf(later));
+  const agent = observed?.outcome.actions.find((action) => action.kind === "agent");
+  expect(agent).toMatchObject({ name: "ReviewDiff" });
+  expect(agent).not.toHaveProperty("endedAt");
+  expect(observed?.outcome.workspace?.map((operation) => operation.description)).toEqual([
+    "commit one",
+  ]);
+  // An agent that ended before the record's last action keeps its end, and a record with no
+  // workspace holds none.
+  const ended = parsedReceipts(completed, refused);
+  const early = gradedOf(completed, replayOf(completed, ended.receipt, ended.effects, C05));
+  expect(early?.outcome.actions.find((action) => action.kind === "agent")).toMatchObject({
+    endedAt: "2030-01-07T15:03:20Z",
+  });
+  expect(early?.outcome).not.toHaveProperty("workspace");
 });

@@ -116,7 +116,7 @@ func TestAReplayedRefusalOnlyClearsTheMarkItsPromptSet(t *testing.T) {
 	waitFor(t, "the re-send", gated.entered)
 	// The backlog is read before the re-send is answered.
 	if err := h.m.Handle(h.ctx, StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID,
-		Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion.", Replayed: true,
+		Error: busyWords, Outcome: runtime.OutcomeAgentBusy, Replayed: true,
 		ConnSequence: gated.Sequence()}); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestAReplayedRefusalTakesBackATaskAForeignTurnConfirmed(t *testing.T) {
 			charged := h.claim().Budgets
 			sent := len(conn.Prompts())
 
-			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: busy, Replayed: true, ConnSequence: conn.Sequence()})
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: conn.Sequence()})
 			if p := h.pending(); !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
 				t.Fatalf("pending after the replayed refusal = %+v, want it taken back unread", p)
 			}
@@ -416,7 +416,7 @@ func TestAReplayedRefusalLeavesTheReSendUnderItsIdUnanswered(t *testing.T) {
 		t.Fatalf("pending once the turn started = %+v, want %s confirmed by it: this test proves nothing", p, first)
 	}
 
-	handle(StreamLateRefusal{Claim: testToken, DeliveryID: first, Error: busyAnswer, Replayed: true, ConnSequence: gated.Sequence()})
+	handle(StreamLateRefusal{Claim: testToken, DeliveryID: first, Error: busyWords, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: gated.Sequence()})
 	handle(StreamTurnEnd{Claim: testToken})
 	if c := h.claim(); c.Pending == nil || c.Pending.ID != first || c.ServingGeneration == 7 {
 		t.Fatalf("after the turn's end, read before the re-send's acknowledgement: pending %+v serving %d, want %s kept for the re-send's answer: the replayed refusal answered the earlier connection's prompt", c.Pending, c.ServingGeneration, first)
@@ -485,13 +485,13 @@ func TestAReplayedRefusalLeavesATaskThisConnectionReSent(t *testing.T) {
 			if ack == "after another connection's hello and the refusal" {
 				replay(StreamHello{Claim: testToken, Generation: h.generation()})
 			}
-			replay(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Replayed: true, ConnSequence: gated.Sequence()})
+			replay(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: gated.Sequence()})
 			if strings.HasPrefix(ack, "after") {
 				acknowledge()
 			}
 
 			// From here on Oh My Pi is in the task's own turn, so any further prompt is refused busy.
-			gated.Conn.RefusePrompt(busy)
+			gated.Conn.FailPrompt(busyRefusal())
 			go func() {
 				for range gated.entered {
 					gated.release <- struct{}{}
@@ -614,28 +614,50 @@ func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 // A replayed refusal of a prompt no turn confirmed takes nothing back, even from a connection that
 // has not prompted the task: the prompt was acknowledged, so its turn wait is armed and keeps the
 // hello from re-sending, and the refusal clears the mark it set. The task keeps its id and its
-// wait, and the prompt is charged when that wait runs out, as any acknowledged prompt that started
-// no turn is.
+// wait. When that wait runs out, the prompt is charged as any acknowledged prompt that started no
+// turn is (OutcomeNoTurnStarted) — unless the replayed refusal was the agent's answer that it is
+// in a turn of its own, which is the one thing a wait that carries no words can learn of the
+// agent's turn (noTurn, answeredBusy): that wait ended on the agent's turn, and is charged
+// nothing. The answer is read by the one rule of the refusal paths (agentRefusalOutcome), so the
+// earlier pin's busy refusal, which carries no code, is that answer too when the agent says it is
+// streaming when asked.
 func TestAReplayedRefusalOfAnUnconfirmedTaskKeepsItsWait(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
-	h := newHarness(t)
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
-	d := h.wantPrompts(1)[0].DeliveryID
-	charged := h.claim().Budgets
-	replacement := reconnect(h, false)
-	if prompts := replacement.Prompts(); len(prompts) != 0 {
-		t.Fatalf("the hello re-sent %+v, want the armed turn wait to hold it", prompts)
-	}
+	for _, tc := range []struct {
+		name    string
+		refusal string
+		outcome runtime.Outcome
+		// streaming is what the agent answers get_state with when the refusal arrives.
+		streaming bool
+		charged   int
+	}{
+		{name: "the agent refused the work", refusal: "the model provider refused the request", outcome: runtime.OutcomePromptRefused, charged: 1},
+		{name: "the agent is in a turn of its own", refusal: busyWords, outcome: runtime.OutcomeAgentBusy, charged: 0},
+		{name: "the agent is in a turn of its own, its refusal carrying no code and the agent streaming when asked",
+			refusal: busyWords, outcome: runtime.OutcomeUnrecognised, streaming: true, charged: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			d := h.wantPrompts(1)[0].DeliveryID
+			charged := h.claim().Budgets
+			replacement := reconnect(h, false)
+			if prompts := replacement.Prompts(); len(prompts) != 0 {
+				t.Fatalf("the hello re-sent %+v, want the armed turn wait to hold it", prompts)
+			}
+			replacement.SetStreaming(tc.streaming)
 
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Replayed: true, ConnSequence: replacement.Sequence()})
-	if p := h.pending(); p.ID != d || !p.DeliveredAt.IsZero() || h.claim().Budgets != charged {
-		t.Fatalf("after the replayed refusal: pending %+v budgets %+v, want %s kept, its mark cleared, nothing charged",
-			p, h.claim().Budgets, d)
-	}
-	h.advance(2 * testRPC)
-	if got := h.claim().Budgets.PromptFailures; got != charged.PromptFailures+1 {
-		t.Fatalf("after the turn wait: %d prompt failures, want %d", got, charged.PromptFailures+1)
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: tc.refusal, Outcome: tc.outcome, Replayed: true,
+				ConnSequence: replacement.Sequence()})
+			if p := h.pending(); p.ID != d || !p.DeliveredAt.IsZero() || h.claim().Budgets != charged {
+				t.Fatalf("after the replayed refusal: pending %+v budgets %+v, want %s kept, its mark cleared, nothing charged",
+					p, h.claim().Budgets, d)
+			}
+			h.advance(2 * testRPC)
+			if got := h.claim().Budgets.PromptFailures; got != charged.PromptFailures+tc.charged {
+				t.Fatalf("after the turn wait: %d prompt failures, want %d", got, charged.PromptFailures+tc.charged)
+			}
+		})
 	}
 }
 
@@ -702,9 +724,9 @@ func TestAReplayedRefusalLeavesATaskItsConnectionSentBeforeItsHello(t *testing.T
 			handle(StreamTurnStart{Claim: testToken}) // the agent's own turn, replayed
 			replacement.release <- struct{}{}
 			h.m.Wait()
-			handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Replayed: true, ConnSequence: replacement.Sequence()})
+			handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
 
-			replacement.Conn.RefusePrompt(busy)
+			replacement.Conn.FailPrompt(busyRefusal())
 			go func() {
 				for range replacement.entered {
 					replacement.release <- struct{}{}
@@ -752,7 +774,7 @@ func TestARefusalWhoseWriteFailedIsWrittenBeforeARestartReadsIt(t *testing.T) {
 		h.must(StreamTurnStart{Claim: testToken})
 		replacement := reconnect(h, true)
 		h.store.fail("PutDelivery", errBoom)
-		_ = h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Replayed: true, ConnSequence: replacement.Sequence()})
+		_ = h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
 		h.store.fail("PutDelivery", nil)
 		h.observe(runtime.Alive)
 
@@ -769,7 +791,7 @@ func TestARefusalWhoseWriteFailedIsWrittenBeforeARestartReadsIt(t *testing.T) {
 		d := h.wantPrompts(1)[0].DeliveryID
 		replacement := reconnect(h, false)
 		h.store.fail("PutDelivery", errBoom)
-		_ = h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Replayed: true, ConnSequence: replacement.Sequence()})
+		_ = h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
 		h.store.fail("PutDelivery", nil)
 		h.observe(runtime.Alive)
 
@@ -833,12 +855,12 @@ func TestAReplayedRefusalLeavesATaskANewerConnectionReSent(t *testing.T) {
 			if ack == "between the start and the refusal" {
 				acknowledge()
 			}
-			handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Replayed: true, ConnSequence: backlog.Sequence()})
+			handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: backlog.Sequence()})
 			if ack == "after the refusal" {
 				acknowledge()
 			}
 
-			newest.Conn.RefusePrompt(busy)
+			newest.Conn.FailPrompt(busyRefusal())
 			go func() {
 				for range newest.entered {
 					newest.release <- struct{}{}
@@ -890,7 +912,7 @@ func TestAFailedConfirmIsWrittenAgainWholeBeforeARestartReadsIt(t *testing.T) {
 			if !foreign {
 				return
 			}
-			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Replayed: true, ConnSequence: replacement.Sequence()})
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
 			if p := h.pending(); !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
 				t.Fatalf("pending after the replayed refusal = %+v, want it taken back unread", p)
 			}

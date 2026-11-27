@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import path from "node:path";
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
+import { parseInstant } from "./production-dispatch";
 import { dispatchFirstInjected, session, skillReads } from "./transcript";
 
 // Fixture F2: a real lane R transcript, P10's production-check look on the base label, as the
@@ -9,8 +10,13 @@ import { dispatchFirstInjected, session, skillReads } from "./transcript";
 const f2 = path.join(import.meta.dir, "testdata", "f2");
 const synthetic = path.join(import.meta.dir, "testdata", "lane-r-synthetic");
 
-test("F2's skill reads, in call order, with the bytes each returned and whether a non-read came first", () => {
-  expect(skillReads(session(f2))).toEqual([
+// F2's first scored action is the gh stand-in's record of `gh pr view 77` (its calls.jsonl, which
+// the fixture does not keep), no earlier than the start of the bash call that ran it. Every read
+// came before it, the two made after a bash call of `jj status`, which is no scored action, too.
+const F2_FIRST_ACTION = parseInstant("2026-11-26T12:13:32.165Z");
+
+test("F2's skill reads, in call order, with the bytes each returned and whether it came before the first scored action", () => {
+  expect(skillReads(session(f2), F2_FIRST_ACTION)).toEqual([
     {
       skill: "legion-worker",
       path: "SKILL.md",
@@ -30,22 +36,23 @@ test("F2's skill reads, in call order, with the bytes each returned and whether 
       path: "references/findings.md",
       resolved: true,
       bytes: 6934,
-      beforeFirstAction: false,
+      beforeFirstAction: true,
     },
-    { skill: "dispatch", path: "SKILL.md", resolved: true, bytes: 5951, beforeFirstAction: false },
+    { skill: "dispatch", path: "SKILL.md", resolved: true, bytes: 5951, beforeFirstAction: true },
   ]);
 });
 
+// With no scored action, every read came before the first one.
 test("counts skill bytes in call order, excluding errors and the skill banner", () => {
   expect(skillReads(session(synthetic))).toEqual([
     { skill: "legion-worker", path: "SKILL.md", resolved: true, bytes: 7, beforeFirstAction: true },
-    { skill: "withheld", path: "SKILL.md", resolved: false, bytes: 0, beforeFirstAction: false },
+    { skill: "withheld", path: "SKILL.md", resolved: false, bytes: 0, beforeFirstAction: true },
     {
       skill: "legion-worker",
       path: "references/merge-gate.md",
       resolved: true,
       bytes: 7,
-      beforeFirstAction: false,
+      beforeFirstAction: true,
     },
   ]);
 });

@@ -2135,6 +2135,47 @@ def by_name_job(path: Path) -> str:
     return "the envoy-go-claim-model job" if path.as_posix() in CLAIM_MODEL_TESTS else "the text-check job"
 
 
+# The priorities read's tests over its corpus of production's counts (internal/dispatch/api,
+# INFRA-5791), keyed by path as TEXT_CHECK_TESTS is. Each carries `//go:build !race`, so the walk
+# below puts them in the plain run the race build cannot make. They assert no time: the bound's test
+# holds the answers of the reads it times and their shape under each plan (the statements, the round
+# trips and the event probes) and prints their times, which c-both-forms' step, outside CI, holds to
+# the bound, and the other three hold answers, walks and buffer ratios. So they stay in that run's
+# rows that measure no time, in envoy-go-race-impossible (RACE_IMPOSSIBLE_STEP). The bound's test
+# reads each statement's database time from pg_stat_statements and stops where the server does not
+# preload it, and the four are checks whose server is a Postgres of the image CI pins started with
+# shared_preload_libraries=pg_stat_statements and max_connections=200 (INFRA-5791's verification). A
+# server loads that module only at its start, and every Postgres service starts on the one command
+# line postgres-service-settings.sh --command prints (check-workflow-files.sh's rule 7), which
+# preloads nothing, so the job's service cannot be that server. So that step runs these tests in a
+# go test of their own on PG_STAT_STATEMENTS_URL, a Postgres of the service's own image that the
+# job's step before it starts so (PG_STAT_STATEMENTS_STEP), and any other row of their package it
+# holds on the service. They are held to the files they are about as TEXT_CHECK_TESTS' are: a file
+# named here that does not carry the tag, or whose tests are not exactly the names here, is refused
+# (race_impossible_tests_of), and so is a row whose file the lane's walk never reads
+# (race_impossible_tests).
+PG_STAT_STATEMENTS_TESTS = {
+    f"{ENVOY}/internal/dispatch/api/priority_read_bound_test.go": {
+        "TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan"},
+    f"{ENVOY}/internal/dispatch/api/priority_read_merge_base_test.go": {
+        "TestThePrioritiesReadAnswersAsTheMergeBaseAnswers"},
+    f"{ENVOY}/internal/dispatch/api/priority_read_plan_stable_test.go": {
+        "TestThePrioritiesReadKeepsItsPlansWithAProjectNamed", "TestThePrioritiesReadWalksIssuesOnceOnTheCorpus"},
+}
+PG_STAT_STATEMENTS_STEP = "Start a Postgres that preloads pg_stat_statements"
+PG_STAT_STATEMENTS_URL = "postgres://postgres:ci@localhost:5433/postgres?sslmode=disable"
+
+
+def pg_stat_statements_packages() -> dict:
+    """PG_STAT_STATEMENTS_TESTS by package, as race_impossible_tests() keys a package: its
+    directory under packages/envoy, and the names of its tests the row of each of its files holds."""
+    packages = {}
+    for path, names in PG_STAT_STATEMENTS_TESTS.items():
+        under = Path(path).parent.relative_to(ENVOY).as_posix()
+        packages[under] = packages.get(under, set()) | names
+    return packages
+
+
 def race_impossible_tests_of(path: Path) -> set:
     """The tests of one _test.go file that only a plain run covers: every test of a file the race
     build does not compile (`//go:build !race`), and every test whose body reads raceEnabled, the
@@ -2149,7 +2190,9 @@ def race_impossible_tests_of(path: Path) -> set:
     the plain run and dropping the one that does. A file BY_NAME_TESTS names is the exception:
     it names no test here, since a job of its own runs its tests by name (the text-check job, or
     the claim model's), and it is refused unless it carries the tag and its tests are exactly the
-    names that list holds for it."""
+    names that list holds for it. A file PG_STAT_STATEMENTS_TESTS names keeps its tests here, and
+    is refused on the same two counts, since race_impossible_script() runs the names that list
+    holds on another Postgres."""
     text = path.read_text()
     found = GO_BUILD_LINE.search(text)
     constraint = found.group(1) if found else ""
@@ -2161,6 +2204,11 @@ def race_impossible_tests_of(path: Path) -> set:
         raise ValueError(f"{path}: {by_name_list(path)} leaves this file's tests out of the plain step because "
                          f"{by_name_job(path)} runs them by name, but the file does not carry `//go:build !race`, "
                          "so the race build still compiles and runs them; restore the tag, or drop the row")
+    preloaded = PG_STAT_STATEMENTS_TESTS.get(path.as_posix())
+    if preloaded is not None and constraint != "!race":
+        raise ValueError(f"{path}: PG_STAT_STATEMENTS_TESTS runs this file's tests in the plain step on a Postgres "
+                         "that preloads pg_stat_statements, but the file does not carry `//go:build !race`, so the "
+                         "plain step does not run them; restore the tag, or drop the row")
     # A file the race build compiles and that nowhere writes raceEnabled, in code or in a comment,
     # names no test here and refuses nothing, so it never reaches the blanking pass below. That is
     # almost every file of the lane: 610 of them, 10.9 MB, which this guard takes from 3.0 s to
@@ -2199,6 +2247,12 @@ def race_impossible_tests_of(path: Path) -> set:
                              f"file: {stale or 'none'}. A test {by_name_job(path)} does not run by name "
                              "belongs in the plain step, so name it in both places or in neither")
         return set()
+    if preloaded is not None and names != preloaded:
+        raise ValueError(f"{path}: PG_STAT_STATEMENTS_TESTS does not name this file's tests exactly - in the file "
+                         f"and not in the list: {', '.join(sorted(names - preloaded)) or 'none'}; in the list and "
+                         f"not in the file: {', '.join(sorted(preloaded - names)) or 'none'}. A test of the file runs "
+                         "on the Postgres that preloads pg_stat_statements only where the list names it, so name it "
+                         "in both places or in neither")
     return names
 
 
@@ -2206,9 +2260,9 @@ def race_impossible_tests(root, packages=None) -> dict:
     """Per package under `root`, in the order `packages` lists them, the tests only a plain run
     covers (race_impossible_tests_of). `packages` is each (path under `root`, directory) to read,
     and the envoy lane's (race_lane_packages) when it is not given. A package that has none is left
-    out. A file BY_NAME_TESTS names under `root` that this walk never reads is refused: the row
-    would otherwise go on exempting a file that has moved out of the lane, or been deleted, and say
-    nothing."""
+    out. A file BY_NAME_TESTS or PG_STAT_STATEMENTS_TESTS names under `root` that this walk never
+    reads is refused: the row would otherwise go on exempting a file that has moved out of the lane,
+    or been deleted, and say nothing."""
     found, read = {}, set()
     for under, directory in race_lane_packages(root) if packages is None else packages:
         names = set()
@@ -2222,10 +2276,15 @@ def race_impossible_tests(root, packages=None) -> dict:
         raise ValueError(f"{', '.join(sorted({by_name_list(Path(f)) for f in gone}))} names {', '.join(gone)}, "
                          f"which the lane's walk of {root} does not read: the file moved out of the lane or is "
                          "gone, and its row now exempts nothing; follow the file, or drop the row")
+    gone = sorted(f for f in PG_STAT_STATEMENTS_TESTS if f.startswith(f"{root}/") and f not in read)
+    if gone:
+        raise ValueError(f"PG_STAT_STATEMENTS_TESTS names {', '.join(gone)}, which the lane's walk of {root} does "
+                         "not read: the file moved out of the lane or is gone, and its row now runs nothing on the "
+                         "Postgres that preloads pg_stat_statements; follow the file, or drop the row")
     return found
 
 
-def race_impossible_script(packages) -> str:
+def race_impossible_script(packages, preloaded=None) -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
     sorted, in its -run, under a 10-minute timeout. A package of CLEANUP_DETECTOR_PACKAGES runs
@@ -2233,11 +2292,21 @@ def race_impossible_script(packages) -> str:
     with -v, and the document service's is evidence - its TestMain's count of services left
     alive, and the xid window rig's logs of which branch a load test reached
     (xid_window_load_linux_test.go, xid_window_ownps_linux_test.go) - which the job that ran the
-    package plain under the detector alone printed for the same reason."""
-    return "\n".join(f"{CLEANUP_DETECTOR + ' ' if under in CLEANUP_DETECTOR_PACKAGES else ''}"
-                     f"go test{' -v' if under in CLEANUP_DETECTOR_PACKAGES else ''} -count=1 -timeout 10m "
-                     f"-run '^({'|'.join(sorted(names))})$' ./{under}"
-                     for under, names in packages.items())
+    package plain under the detector alone printed for the same reason. `preloaded` maps a
+    package to those of its tests that run on PG_STAT_STATEMENTS_URL (pg_stat_statements_packages):
+    they are a `go test` of their own, after the package's other tests, with
+    DISPATCH_TEST_DATABASE_URL naming that Postgres."""
+    preloaded = preloaded or {}
+    lines = []
+    for under, names in packages.items():
+        own = names & preloaded.get(under, set())
+        detector = under in CLEANUP_DETECTOR_PACKAGES
+        for selected, database in ((names - own, ""), (own, f"DISPATCH_TEST_DATABASE_URL='{PG_STAT_STATEMENTS_URL}' ")):
+            if selected:
+                lines.append(f"{database}{CLEANUP_DETECTOR + ' ' if detector else ''}"
+                             f"go test{' -v' if detector else ''} -count=1 -timeout 10m "
+                             f"-run '^({'|'.join(sorted(selected))})$' ./{under}")
+    return "\n".join(lines)
 
 
 # The step as the lane and packages/envoy's own source make it, so a test added under
@@ -2248,8 +2317,9 @@ def race_impossible_script(packages) -> str:
 # the thread clocks those gaps come from; the API's 200 ms bound on the issue list
 # (TestAPriorityListAnswersWithinItsBoundOnEveryPlan); and the auth service's restart storm, whose
 # five hundred connections must all be admitted within the callout's deadline. The rest, the bus's
-# allocation count and the documents package's memory bounds and render storms, measure no time
-# and run in envoy-go-race-impossible.
+# allocation count, the priorities read's four tests (PG_STAT_STATEMENTS_TESTS) and the documents
+# package's memory bounds and render storms, measure no time and run in envoy-go-race-impossible,
+# the four on the Postgres that job's step before this one starts (PG_STAT_STATEMENTS_STEP).
 RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
 RACE_IMPOSSIBLE_ALONE_STEP = "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone"
 RACE_IMPOSSIBLE_ALONE_PREFIX = "TestXidWindow"
@@ -2282,7 +2352,7 @@ RACE_IMPOSSIBLE_ALONE_RUN = {under: {n for n in names if race_impossible_alone(u
 RACE_IMPOSSIBLE_PACKAGES = {under: {n for n in names if not race_impossible_alone(under, n)}
                             for under, names in RACE_IMPOSSIBLE_ALL.items()
                             if any(not race_impossible_alone(under, n) for n in names)}
-RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
+RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES, pg_stat_statements_packages())
 RACE_IMPOSSIBLE_ALONE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_ALONE_RUN)
 
 
@@ -2632,7 +2702,7 @@ def browser_gate(filter, job):
         # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
         # which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this suite
         # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
-        # `build:dispatch`, whose four entries compile nothing outside dispatch_ui's.
+        # `build:dispatch`, whose five entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "`packages/dispatch/e2e/inbox-cli.e2e.ts#runDispatch` runs it through `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`"),
         (f"{FIX}/priority-ids.json", "`packages/dispatch/e2e/priorities.e2e.ts#idFixture` reads the shared list of the priority "
                                      "id rule's cases by path"),

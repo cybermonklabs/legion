@@ -321,8 +321,54 @@ export function translateCommits<T>(value: T, mapping: CommitMap): T {
   return translate(value) as T;
 }
 
+/** The directory variables the role is given for the run's own directories, each with its
+ * subdirectory inside the run directory, in the order a tie between two that name one directory is
+ * broken. */
+const RUN_DIRECTORIES = [
+  ["LEGION_WORKSPACE", "workspace"],
+  ["TMPDIR", "tmp"],
+  ["HOME", "home"],
+] as const;
+
+/** `root` with the run's own directory that holds it written by the name the role was given for
+ * it: the deepest directory one of RUN_DIRECTORIES names in `env` or under `runDir`
+ * (`$TMPDIR/stage-a`, `$LEGION_WORKSPACE`), each compared by its real path, as `root` is one. A
+ * root already named that way, or one none of them holds, is written as it is. */
+export function namedSource(
+  root: string,
+  runDir?: string,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  if (root.startsWith("$")) return root;
+  const real = (dir: string): string | undefined => {
+    try {
+      return realpathSync(dir);
+    } catch {
+      return undefined;
+    }
+  };
+  const target = real(root) ?? root;
+  let named: { name: string; dir: string } | undefined;
+  for (const [name, sub] of RUN_DIRECTORIES) {
+    const candidates = [env[name], runDir === undefined ? undefined : path.join(runDir, sub)];
+    for (const value of candidates) {
+      if (!value) continue;
+      const dir = real(value);
+      if (dir === undefined) continue;
+      const holds =
+        target === dir || target.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+      if (holds && dir.length > (named?.dir.length ?? -1)) named = { name, dir };
+    }
+  }
+  if (named === undefined) return root;
+  const rest = target.slice(named.dir.length).replace(/^\/*/, "");
+  return rest === "" ? `$${named.name}` : `$${named.name}/${rest}`;
+}
+
 /** stage-job records the current checked-out files (tracked and non-ignored untracked files),
- * not HEAD. Both the index and new objects go into a disposable repository, not the source. */
+ * not HEAD. Both the index and new objects go into a disposable repository, not the source. The
+ * record names the job and the checkout root it was taken from, written by the name the role was
+ * given for the run's directory that holds it (namedSource). */
 export function stageJob(dir: string, job: string, source = process.cwd()) {
   if (!job.trim()) throw new Error("stage-job needs a job name");
   const root = realpathSync(source);
@@ -369,7 +415,13 @@ export function stageJob(dir: string, job: string, source = process.cwd()) {
       .split("\0")
       .filter(Boolean);
     if (staged.length === 0) throw new Error("stage-job snapshot has no files");
-    const record = { at: new Date().toISOString(), job, tree, files: staged };
+    const record = {
+      at: new Date().toISOString(),
+      job,
+      tree,
+      files: staged,
+      source: namedSource(root, dir),
+    };
     appendFileSync(path.join(dir, "staging.jsonl"), `${JSON.stringify(record)}\n`);
     return record;
   } finally {

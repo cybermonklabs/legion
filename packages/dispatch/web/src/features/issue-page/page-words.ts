@@ -80,6 +80,7 @@ import {
 } from "./page-structure";
 import { joinWords, PART_ANSWER_SOURCES, PART_UNASKED_SOURCES } from "./page-words-parts";
 
+export * from "./page-words-dashboard";
 export * from "./page-words-j";
 export * from "./page-words-l";
 export * from "./page-words-m";
@@ -218,7 +219,8 @@ export const NODE_STATE_WORDS = joinWords("NODE_STATE_WORDS", {
 /** How an ask stands, by the `state` the server writes into its block. */
 export type AskState = keyof typeof NODE_STATE_WORDS.ask;
 
-/** How a check stands, over every result recorded against it (`tree-drafts.ts`'s `checkState`). */
+/** How a check stands, over every result recorded against it (`statement-rules.ts`'s
+ *  `checkState`). */
 export type CheckState = keyof typeof NODE_STATE_WORDS.check;
 
 /** How a decision stands with the reader, from the decisions read. */
@@ -278,12 +280,13 @@ export function sentenceCase(name: string): string {
   return name === "" ? name : `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`;
 }
 
-/** The five controls of the filter row in the order the row draws them (R2): Conversation,
- *  which is the page with no filter on, then the four filters in the order of his answer of
- *  2026-11-11 20:57Z, "the spec, the verification, the plan, the decisions"
- *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). The page opens on
- *  Conversation. */
+/** The six controls of the filter row in the order the row draws them (R2): Dashboard, which the
+ *  page opens on (dispatch://INFRA-5702/spec#b-r-new-page), then Conversation, which is the page
+ *  with no filter on, then the four filters in the order of his answer of 2026-11-11 20:57Z, "the
+ *  spec, the verification, the plan, the decisions"
+ *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). */
 export const PRESET_ORDER = freeze([
+  "dashboard",
   "conversation",
   "spec",
   "verification",
@@ -291,14 +294,16 @@ export const PRESET_ORDER = freeze([
   "decisions",
 ] as const);
 
-/** One control of the filter row, by its own token: `conversation`, which turns every filter
- *  off, or one of the four filters. Each has an address of its own (`issue-address.ts`). */
+/** One control of the filter row, by its own token: `dashboard`, `conversation`, which turns
+ *  every filter off, or one of the four filters. Each has an address of its own
+ *  (`issue-address.ts`). */
 export type Preset = (typeof PRESET_ORDER)[number];
 
 /** The name of each control of the filter row. Verification is his word for the filter that
  *  draws the checks (2026-11-11 21:57Z), and nothing is called Tree (R2). */
 export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   conversation: "Conversation",
+  dashboard: "Dashboard",
   decisions: "Decisions",
   plan: "Plan",
   spec: "Spec",
@@ -851,13 +856,6 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
    *  the focused open question's control that sets the writer's answer to it, as `a` does (R16,
    *  the prototype's `.acts`); nothing sends that answer yet (`OutlineWriter.answer`). */
   answer: "Answer",
-  /** What the line at the foot of the outline says of the open question it answers, before the
-   *  question's own first line (the prototype's `.tgt.ans`). */
-  answering: "Answering:",
-  /** What it says of the options the reader picked, before them: "you chose 1024 px". */
-  answer_chose: "you chose",
-  /** What the line says while it is empty and answers a question. */
-  answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
   /** The document a design-gate step reviews, by the step (`StepEntry.step`; `criteria` reviews
    *  the verification), as the names of that document's Approve and Request changes end with
    *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
@@ -1057,8 +1055,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** What a row's byline, a parent line and a chip say after an edited post's time or words:
    *  ` · edited` (INFRA-1523, R2), as every surface's byline says it. */
   post_edited: POST_MARK_WORDS.edited,
-  /** The row of five controls, Conversation and the four filters, as a reader hears it named
-   *  (R2). */
+  /** The row of six controls, Dashboard, Conversation and the four filters, as a reader hears it
+   *  named (R2). */
   presets: "Filters",
   /** The priority picker, named by what the issue will do with the one picked. */
   priority_to_advance: "Priority to advance",
@@ -1110,10 +1108,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
-  /** Sends what the line at the foot of the outline holds (R16), and the answer it holds to the
-   *  question it answers (`send_answer`). */
+  /** Sends what the line at the foot of the outline holds (R16). */
   send: "Send",
-  send_answer: "Send answer",
   /** How many checks serve a requirement, which the coverage read counts without naming them
    *  (R4, until the chain read lands). */
   serving_checks: "Checks serving it",

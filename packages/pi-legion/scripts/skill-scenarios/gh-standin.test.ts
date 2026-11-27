@@ -760,7 +760,9 @@ test("a pull request the role opens is kept, follows its branch, and GitHub's re
 // Help and the version reach no GitHub: the real gh, the first executable gh on PATH outside the
 // run's bin directory that is no script (a wrapper such as `legion gh`'s is skipped), answers them,
 // and they go to gh-local.jsonl, so `gh pr create --help` opens no pull request and is no call of
-// the record. The row's real gh is a copy of /bin/echo, a binary that prints its arguments.
+// the record. The row's real gh is a copy of /bin/echo, a binary that prints its arguments. Help
+// is a flag as gh reads the arguments, never a flag's value: `--body -h` opens a pull request whose
+// body is `-h`, and that call is the record's.
 test("help and the version are the real gh's answers and no call of the record", () => {
   const run = runWith(
     githubFixtures(
@@ -773,7 +775,7 @@ test("help and the version are the real gh's answers and no call of the record",
     path.join(run, "world.json"),
     JSON.stringify({ dispatch: { issue: { key: "ACME-12" } } })
   );
-  pushed(run, "legion/ACME-12");
+  const head = pushed(run, "legion/ACME-12");
   const standin = path.join(import.meta.dir, "gh-standin.ts");
   const own = path.join(run, "bin");
   const wrapper = path.join(run, "wrapper");
@@ -805,8 +807,27 @@ test("help and the version are the real gh's answers and no call of the record",
     stdout: "pr create --help\n",
     stderr: "",
   });
+  expect(local("pr", "create", "-h")).toEqual({ code: 0, stdout: "pr create -h\n", stderr: "" });
   expect(local("version")).toEqual({ code: 0, stdout: "version\n", stderr: "" });
   expect(existsSync(path.join(run, "calls.jsonl"))).toBe(false);
+  expect(local("pr", "view", "1").code).toBe(1);
+  expect(local("pr", "create", "--title", "T", "--body", "-h")).toEqual({
+    code: 0,
+    stdout: "https://github.com/acme/widgets/pull/1\n",
+    stderr: "",
+  });
+  expect(pullChanges(run)).toEqual([
+    {
+      action: "open",
+      number: 1,
+      head: "legion/ACME-12",
+      base: "main",
+      sha: head,
+      title: "T",
+      body: "-h",
+      draft: false,
+    },
+  ]);
   const LocalCall = z.object({ argv: z.array(z.string()), gh: z.string(), exit: z.number() });
   expect(
     readFileSync(path.join(run, "gh-local.jsonl"), "utf8")
@@ -816,9 +837,9 @@ test("help and the version are the real gh's answers and no call of the record",
       .map(({ argv, gh, exit }) => [argv.join(" "), gh, exit])
   ).toEqual([
     ["pr create --help", path.join(real, "gh"), 0],
+    ["pr create -h", path.join(real, "gh"), 0],
     ["version", path.join(real, "gh"), 0],
   ]);
-  expect(local("pr", "view", "1").code).toBe(1);
 }, 60_000);
 
 // The stand-in reads each command's flags as gh 2.98.0's help lists them (testdata/f9-gh-help.json,

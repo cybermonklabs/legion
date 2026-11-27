@@ -1,4 +1,8 @@
 
+## The catch-up notice
+
+At each launch the daemon sends you a `catch-up` notice. It holds your tree as the daemon's record holds it when the notice reaches you: the generation, the state of each step of the design gate, and each issue of the tree with its phase and status.
+
 ## Your root's claim
 
 At each `catch-up`, read who holds your root's claim by session id: `dispatch api --path /api/v1/issues/<root>` gives `claim.actor.id`, and `dispatch whoami` gives yours. The `Claimed by:` line of `dispatch read` shows only a session title, which every architect session of a root shares. Where no claim stands, or the claim is yours, claim the root with `dispatch claim --issue <root>`: a session that returns to the issue is then refused with `409 ISSUE_CLAIMED` and does not work beside Legion. Never take a claim another holder shows, one marked `· not running` included.

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -55,6 +56,10 @@ const (
 	// shipped thirty minutes. The rig's clock is held, so a round reaches its bound only where a
 	// test moves the clock there (podUpdateBound).
 	podUpdateGrace = 30 * time.Minute
+	// podUpdateRepo is the repository the issue's record holds and the pod was built from: the
+	// two agree, as they do for every issue no correction has moved, so the sweep reads no
+	// repository reason (groupDrift). A test that moves the record scripts both.
+	podUpdateRepo = "acme/widgets"
 	// podUpdateSilence is the next, as legion.yaml's worker_silence_minutes sets it: how long a
 	// phase worker's last recorded step may be in the past before the silence sweep reads that
 	// worker as one nothing will prompt (config.Config.WorkerSilence). It is the shipped default.
@@ -84,12 +89,13 @@ var podUpdateStart = time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
 
 // podUpdateRole is one role claim a test seeds: the state the store holds it in, whether an agent
 // has run for it (a session), whether it records a process in the issue's pod, and the plugin
-// contract its registration declared. round, reasons and signalled seed an update round the store
-// already holds on the claim, as an earlier tick or an earlier release left it, with the sweep's
-// ask of it already published (supervise.Claim.UpdateTaskedAt) unless unasked says it is not;
-// left is the round the claim left when the daemon started it again in another pod than that
-// round's own, as the launch records it (supervise's leftPodRoundAt); pod names a pod of its own,
-// for a claim that records one the rest of the issue has left behind; suspendedBy is who
+// contract its registration declared. round, reasons, repository and signalled seed an update
+// round the store already holds on the claim, as an earlier tick or an earlier release left it,
+// repository being the one the round's pod was built from (supervise.Claim.UpdateRepository), with
+// the sweep's ask of it already published (supervise.Claim.UpdateTaskedAt) unless unasked says it
+// is not; left is the round the claim left when the daemon started it again in another pod than
+// that round's own, as the launch records it (supervise's leftPodRoundAt); pod names a pod of its
+// own, for a claim that records one the rest of the issue has left behind; suspendedBy is who
 // suspended a claim seeded suspended; serving is the issue generation of the last confirmed task
 // this claim retired, zero for a claim that has retired none, which is what says which run of the
 // issue its worker is on (supervise.Claim.ServingRun, which the silence sweep reads); given is the
@@ -103,6 +109,7 @@ type podUpdateRole struct {
 	contract    int
 	round       string
 	reasons     string
+	repository  string
 	signalled   bool
 	unasked     bool
 	left        string
@@ -152,9 +159,12 @@ type podUpdateRig struct {
 	// supervisor, so an ask reaches a session and marks its claim as the daemon's do
 	// (supervise's Machine.PublishUpdateAsk).
 	lane *outbox
-	// asked is every update-ask row the sweep has written, by id, kept once read: the lane
-	// deletes each row it finishes, as the outbox does, and asks reads every row ever written.
-	asked map[int64]record.UpdateAsk
+	// asked is every update-ask row the sweep has written, by id, with its issue, kept once
+	// read: the lane deletes each row it finishes, as the outbox does, and asks reads every row
+	// ever written. second is every issue secondIssue seeded beside the rig's own: a case of two
+	// issues reads each issue's asks (asksOn), and asks answers the rig's own issue's.
+	asked  map[int64]askedRow
+	second map[string]bool
 	// keptSince is when the API server made the issue's Sandbox, where that Sandbox owns the
 	// issue's kept volume, as a pod's launcher session reads it (sandbox's keptVolumeSince), and
 	// the zero time while the issue's pods have volumes of their own. While it is set, the start of
@@ -166,6 +176,12 @@ type podUpdateRig struct {
 	// restart builds afresh, as a restarted daemon builds its one pacer anew; nil is the pacing
 	// off.
 	wakePace func(supervise.Clock) supervise.WakePace
+}
+
+// askedRow is one update-ask row the rig has read, decoded, and the issue it was written on.
+type askedRow struct {
+	issue string
+	ask   record.UpdateAsk
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -226,6 +242,9 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		if role.round != "" {
 			opened := podUpdateStart
 			c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt = role.round, role.reasons, &opened
+			if role.repository != "" {
+				c.UpdateRepository = ghrepo.MustParse(role.repository)
+			}
 			c.UpdateLeftRound = role.left
 			if !role.unasked {
 				c.UpdateTaskedAt = &opened
@@ -238,7 +257,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		claims = append(claims, c)
 	}
 	seedWorkflowTree(t, dsn, podUpdateProject, record.Issue{
-		Key: podUpdateIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Key: podUpdateIssue, Repo: podUpdateRepo, DefaultBranch: "main", GitHubRepo: podUpdateRepo,
 		Project: "LEGION", Tree: podUpdateIssue, Title: "The update round", Phase: phase.Implementing,
 		Generation: 1, Status: "in_progress", HandedOver: true, Rank: "U",
 	}, claims...)
@@ -261,6 +280,9 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// backend writes rig.s.cfg, and the closure reads it when a registration asks.
 	logs := &syncBuffer{}
 	log := slog.New(slog.NewJSONHandler(logs, nil))
+	// The workflow's own outbox, record reads and fact handlers, which is everything supervision
+	// is given of the workflow: the rows a sweep writes, the repository an issue's record holds
+	// now, and the facts the silence sweep applies.
 	w := podUpdateWorkflow(pool, records, clock, log)
 	s := &supervision{
 		// The rig's claims run in an issue pod, so its configuration is a Kubernetes
@@ -268,10 +290,13 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		// lane is read from, beside the role's backend (noPluginInstall).
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateGrace: podUpdateGrace, WorkerSilence: podUpdateSilence},
-		log:     log,
-		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
+		log: log,
+		// The plan carries every answer the workflow lends supervision, the repository an
+		// issue's record holds among them, so a supervision this rig relaunches keeps it: it
+		// copies the plan (podUpdateRig.restart).
+		plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval,
+			enqueue: w.enqueueOutbox, recordedRepository: recordedRepositoryOf(w.recordedIssue)},
 		runtime: rt, supervisor: sup,
-		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
@@ -284,7 +309,10 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		pace = opts.wakePace(clock)
 	}
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		// Every launch is built from the issue's record, as the daemon's own specs builds one:
+		// the repository the record names now and its default branch, which is what a pod is
+		// provisioned from (recordSpecs).
+		Runtime: rt, Conns: conns, Store: st, Specs: recordSpecs{read: w.recordedIssue}, Clock: clock, Log: quietLogger(),
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
 		// relaunch records the background work it ended from (supervise's recordEnd).
 		ClaimActivity:  st.ClaimActivity,
@@ -320,7 +348,8 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 	// sequential flow's: a goroutine a test starts beside it takes worker() instead.
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log, engine: w.engine,
-		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}, wakePace: opts.wakePace}
+		listener: &holderPublisher{}, asked: map[int64]askedRow{},
+		second: map[string]bool{}, wakePace: opts.wakePace}
 	rig.lane = &outbox{project: podUpdateProject, notices: rig.listener, supervisor: sup, log: log}
 	for _, role := range roles {
 		if !role.session {
@@ -329,6 +358,11 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		conn := fake.NewConn()
 		conns.Register(tokens[role.role], conn)
 		rig.workers[role.role] = conn
+	}
+	// The pod every claim records was built from the repository the record holds, which is the
+	// issue that has not been moved: the sweep reads the two as one and adds no reason.
+	for _, token := range tokens {
+		rt.ScriptPodRepository(token, podUpdateRepo)
 	}
 	// A role seeded as having answered its round answered from a turn whose end sent the report
 	// that nothing of its own runs, as signal writes for an answer a test makes. Without it the
@@ -1180,7 +1214,12 @@ func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *test
 		switch call.Method {
 		case "WorkspaceWork":
 			reads++
-		case "ReplacePod", "PodDrift", "Probe", "Observe", "ReconcileOrphans":
+		// PodRepository is a sweep read like PodDrift: groupDrift asks the pod which repository
+		// it was built from at every sweep, once per group, to read a corrected repository as
+		// drift (repositoryDrift). Each launch asks it too, of the process it started, to record
+		// the repository that process works (supervise's workingRepository). It decides nothing of
+		// this round, which no correction opened.
+		case "ReplacePod", "PodDrift", "PodRepository", "Probe", "Observe", "ReconcileOrphans":
 		default:
 			t.Errorf("the runtime was called %s for the round, want nothing but the sweep's reads, one read of the workspace and one ReplacePod: %v", call.Method, asked)
 		}
@@ -1322,32 +1361,56 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 // (runtime.IssueVolumeReader): a Sandbox made after the round opened, by a reset or a change of
 // the disk's shape, holds a new volume, and the work is lost as it is for an ephemeral volume. In
 // both of those cases the message is the one every other pod's issue is told, word for word.
+//
+// A round whose pod was built from a repository the issue's record has left says more of a kept
+// volume: the work is in the workspace of that repository, and the next pod makes a workspace of
+// the new repository beside it, where every role works. So the message names the old workspace's
+// path and tells a role how to keep the work, with other reasons in the round or without them. On
+// such a round, whatever the disk, the pushed work is on the old repository's issue branch and the
+// new pod's origin is the new repository, so the last sentence names both. The message of every
+// other round, and the disk's part of it for an ephemeral volume, is the one above, word for word.
 func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 	t.Parallel()
-	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
-		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
-	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
-	const lost = opened + "These roles did not answer the update round before the pod went: implementer (ready). " +
-		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
-	const stays = opened + "These roles did not answer the update round before the pod went: implementer (ready). " +
-		"The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. " +
-		"The next pod of this issue mounts the volume." + restarted
+	moved := keptVolumeMovedTo(podUpdateCorrectedRepo)
+	before, after := podUpdateStart.Add(-time.Hour), podUpdateStart.Add(time.Minute)
 	for _, tc := range []struct {
 		name string
 		// created is when the issue's kept Sandbox was made, zero for none.
 		created time.Time
-		want    string
+		// drifted is whether the runtime reads podUpdateDrift on the pod, and corrected whether
+		// Dispatch moved the issue to podUpdateCorrectedRepo, which adds
+		// podUpdateRepositoryReason, a drift that breaks the pod, so the round records it before
+		// the runtime's reasons (runtime.RoundReasons).
+		drifted, corrected bool
+		disk               string
 	}{
-		{"a kept volume made before the round opened", podUpdateStart.Add(-time.Hour), stays},
-		{"a kept volume made after the round opened", podUpdateStart.Add(time.Minute), lost},
-		{"an ephemeral volume", time.Time{}, lost},
+		{"a kept volume made before the round opened", before, true, false, podUpdateKeptVolumeStays},
+		{"a kept volume made after the round opened", after, true, false, podUpdateDiskLost},
+		{"an ephemeral volume", time.Time{}, true, false, podUpdateDiskLost},
+		{"a kept volume of a repository the issue has left", before, false, true, moved},
+		{"a kept volume of a repository the issue has left, with another drift",
+			before, true, true, moved},
+		{"an ephemeral volume of a repository the issue has left", time.Time{}, false, true, podUpdateDiskLost},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
-			rig.drifts(podUpdateDrift)
+			var reasons []string
+			if tc.drifted {
+				rig.drifts(podUpdateDrift)
+				reasons = append(reasons, podUpdateDrift)
+			}
+			if tc.corrected {
+				rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+				reasons = append(reasons, podUpdateRepositoryReason)
+			}
 			if !tc.created.IsZero() {
 				rig.rt.ScriptKeptVolume(podUpdateIssue, tc.created)
 			}
+			pushed := podUpdateAtOrigin
+			if tc.corrected {
+				pushed = pushedMovedTo(podUpdateCorrectedRepo)
+			}
+			want := implementerLostWith(runtime.RoundReasons(reasons), tc.disk, pushed)
 
 			rig.tick()
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
@@ -1359,14 +1422,79 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 			if len(messages) != 1 {
 				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
 			}
-			if messages[0] != tc.want {
-				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], tc.want)
+			if messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
 			}
 			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 				rig.awaitClaim(role, "its round to end with the pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
 			}
 		})
 	}
+}
+
+// podUpdateOldWorkspace is where the pod of podUpdateRepo kept the issue's workspace: the
+// directory names the repository and the issue's key, lowercased.
+const podUpdateOldWorkspace = "/legion/workspaces/acme/widgets/legion-484"
+
+// podUpdateKeptVolumeStays is what the message on a gone pod says of a kept volume that is still
+// there, on a round of an issue that moved to no other repository, podUpdateDiskLost what it says
+// of a disk that went with the pod, whatever the repository, and podUpdateAtOrigin that message's
+// last sentence on a round of an issue that moved to no other repository, whatever the disk.
+const (
+	podUpdateKeptVolumeStays = "The pod's disk is a kept volume, and the volume is still there. " +
+		"Work that these roles did not push is on that volume. " +
+		"The next pod of this issue mounts the volume."
+	podUpdateDiskLost = "The pod's disk went with the pod. Work that these roles did not push is lost."
+	podUpdateAtOrigin = "Each role must read its issue branch at origin " +
+		"to see the work that it pushed."
+)
+
+// implementerLostWith is the message on the issue whose pod went before its round was over, with
+// the implementer the one role that had not answered: reasons is what the round recorded, disk
+// what the message says of the pod's disk, and pushed its last sentence, where the pushed work is.
+func implementerLostWith(reasons, disk, pushed string) string {
+	return "The pod that ran this issue's roles is gone. " +
+		"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
+		"The reasons were: " + reasons + ". " +
+		"The pod went before the round was over.\n\n" +
+		"These roles did not answer the update round before the pod went: " +
+		"implementer (ready). " + disk +
+		"\n\nThe daemon starts each role again, in the same session, on a new pod. " + pushed
+}
+
+// keptVolumeMovedTo is what that message says of a kept volume that is still there, on a round
+// whose pod was built from podUpdateRepo while the issue's record holds the repository to when
+// the message is written, whatever drift opened the round.
+func keptVolumeMovedTo(to string) string {
+	return "The pod's disk is a kept volume, and the volume is still there. " +
+		keptWorkMovedTo("Work that these roles did not push", to)
+}
+
+// keptWorkMovedTo is what a message of a round on the issue says of the work on such a kept
+// volume, unpushed being the words that message names the work with: the message on a gone pod
+// (keptVolumeMovedTo) and the message of a replacement that passed over a role
+// (TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved).
+func keptWorkMovedTo(unpushed, to string) string {
+	return "This issue moved from the repository `" + podUpdateRepo + "` " +
+		"to the repository `" + to + "`. " +
+		unpushed + " is on that volume, " +
+		"in the workspace of `" + podUpdateRepo + "` at `" + podUpdateOldWorkspace + "`. " +
+		"The next pod of this issue mounts the volume. " +
+		"That pod makes a new workspace of `" + to + "`. " +
+		"Every role works in that new workspace. " +
+		"No role works in the workspace of `" + podUpdateRepo + "` again. " +
+		"To keep that work, read it at `" + podUpdateOldWorkspace + "` in the next pod. " +
+		"Put that work on the issue branch in the new workspace. Then push the issue branch."
+}
+
+// pushedMovedTo is the last sentence of that message on such a round, whatever the disk: the
+// pushed work is on the issue branch of podUpdateRepo, and the new pod's origin is to.
+func pushedMovedTo(to string) string {
+	return "Work that each role pushed before the pod went " +
+		"is on the issue branch of the repository `" + podUpdateRepo + "`. " +
+		"In the new pod, origin is the repository `" + to + "`. " +
+		"To see that work, each role must read the issue branch of the repository `" +
+		podUpdateRepo + "`."
 }
 
 // tickBackIn is one sweep over claims that record pod rather than the one their round was opened
@@ -1839,7 +1967,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	r.t.Cleanup(sup.stop)
 	s := &supervision{
-		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
+		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup,
 		applySweepFacts: r.s.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
@@ -1864,7 +1992,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
-		listener: r.listener, asked: r.asked, keptSince: r.keptSince, wakePace: r.wakePace}
+		listener: r.listener, asked: r.asked, second: r.second, keptSince: r.keptSince, wakePace: r.wakePace}
 	next.lane = &outbox{project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = s
 	return next

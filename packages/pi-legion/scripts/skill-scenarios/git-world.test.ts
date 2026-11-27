@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { loadCase } from "./case-world";
-import { buildGitWorld, recordWorkspace } from "./git-world";
+import { buildGitWorld, namedSource, recordWorkspace } from "./git-world";
 
 const work = temporaryDirectory("git-world");
 const example = path.join(import.meta.dir, "testdata", "heldout-case-example.json");
@@ -111,3 +111,38 @@ test.skipIf(withoutTools)(
   },
   60_000
 );
+
+// A staged Job's source reaches the reader with the run's own directories written by the names the
+// role was given for them, so two Jobs staged from separate scratch copies read as separate and no
+// run-specific path is in the record.
+test("a staged source is written by the name the role was given for the run's directory that holds it", () => {
+  const run = path.join(work, "named-run");
+  const stageA = path.join(run, "tmp", "stage-a");
+  mkdirSync(stageA, { recursive: true });
+  mkdirSync(path.join(run, "workspace", "packages"), { recursive: true });
+  symlinkSync("workspace", path.join(run, "ws"));
+  const elsewhere = path.join(work, "named-elsewhere");
+  mkdirSync(elsewhere);
+
+  // The test process's own TMPDIR names no directory here: each call gives the variables it means.
+  const named = (root: string) => namedSource(root, run, {});
+  expect(named(stageA)).toBe("$TMPDIR/stage-a");
+  expect(named(path.join(run, "tmp"))).toBe("$TMPDIR");
+  expect(named(path.join(run, "workspace"))).toBe("$LEGION_WORKSPACE");
+  expect(named(path.join(run, "workspace", "packages"))).toBe("$LEGION_WORKSPACE/packages");
+  // A symlink the role was given (`ws`) is the directory it points to.
+  expect(named(path.join(run, "ws"))).toBe("$LEGION_WORKSPACE");
+  // A root already named, and a root no run directory holds, are written as they are.
+  expect(named("$TMPDIR/stage-b")).toBe("$TMPDIR/stage-b");
+  expect(named(elsewhere)).toBe(elsewhere);
+  // A directory only shares a name's prefix with the run's: it is not inside it.
+  mkdirSync(path.join(run, "tmp-other"));
+  expect(named(path.join(run, "tmp-other"))).toBe(path.join(run, "tmp-other"));
+
+  // The role's own variables name the directories too, and the deepest one that holds the root is
+  // the name it is written by.
+  const env = { TMPDIR: path.join(run, "tmp"), LEGION_WORKSPACE: path.join(run, "tmp", "stage-a") };
+  expect(namedSource(stageA, undefined, env)).toBe("$LEGION_WORKSPACE");
+  expect(namedSource(path.join(run, "tmp"), undefined, env)).toBe("$TMPDIR");
+  expect(namedSource(stageA, undefined, {})).toBe(stageA);
+});
