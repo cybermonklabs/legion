@@ -262,6 +262,14 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	if locks := locksUnder(t, filepath.Join(repository, ".git")); len(locks) > 0 {
 		t.Errorf("the git left %v under .git after %s: its own Timeout's stop gave it no SIGTERM to remove its lock on, and every later git and jj of this repository fails on it", locks, elapsed)
 	}
+	// The git's Timeout is a span of the clock, and the stop that ends it cannot come before that
+	// span is over: a loaded machine only delays the stop, never brings it forward. A run that
+	// ended earlier was given less than the Timeout it was handed — a runner that keeps part of
+	// every command's Timeout back for itself ends a two-second git in one second — which no row
+	// that reads a timeout alone can tell from a git stopped on time (dispatch://INFRA-5244).
+	if elapsed < timeout-stopEarly {
+		t.Errorf("Run returned after %s, before the %s Timeout it gave its git, less %s: the runner must give a command the whole Timeout its caller named, and a loaded machine only ends a run later, never sooner", elapsed, timeout, stopEarly)
+	}
 	state := ended.Load()
 	status, ok := waitStatus(state)
 	if !ok || !status.Signaled() || status.Signal() != syscall.SIGTERM {
