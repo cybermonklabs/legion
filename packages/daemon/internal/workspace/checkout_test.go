@@ -100,6 +100,7 @@ func (r *checkoutRunner) Run(ctx context.Context, command Command) (Result, erro
 // half of the tree and half of one file's bytes clears the partial working copy and redoes the
 // checkout whole on the next provision.
 func TestProvisionRedoesACheckoutThatWasCutShort(t *testing.T) {
+	// Not parallel: newLocalRunner calls t.Setenv.
 	run := newLocalRunner(t)
 	tree := map[string]string{
 		"alpha.txt":        "alpha content\n",
@@ -166,6 +167,7 @@ func TestProvisionRedoesACheckoutThatWasCutShort(t *testing.T) {
 // agent later clears its sparse patterns and leaves an untracked file, the next provision writes
 // no marker and keeps the untracked file.
 func TestProvisionKeepsTheFilesOfAWorkspaceItDidNotCheckOut(t *testing.T) {
+	// Not parallel: newLocalRunner calls t.Setenv.
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "main", "tracked.txt")
 	req := provisionRequest(t)
@@ -215,6 +217,7 @@ func TestProvisionKeepsTheFilesOfAWorkspaceItDidNotCheckOut(t *testing.T) {
 // checkout's end and the marker's removal) has that marker removed on its next provision, so a
 // later agent sparse-clear and untracked file are kept across the provision after that.
 func TestProvisionRemovesTheMarkerOfAFinishedCheckout(t *testing.T) {
+	// Not parallel: newLocalRunner calls t.Setenv.
 	run := newLocalRunner(t)
 	pushRemoteBranch(t, run.remote, "main", "tracked.txt")
 	req := provisionRequest(t)
@@ -259,6 +262,7 @@ func TestProvisionRemovesTheMarkerOfAFinishedCheckout(t *testing.T) {
 // follows no symlink outside the workspace directory, and refuses a symlinked workspace directory.
 // The checkout marker helpers refuse a symlinked `.jj`.
 func TestProvisionClearWorkingCopyFollowsNoLinkAndKeepsMetadata(t *testing.T) {
+	t.Parallel()
 	ws := t.TempDir()
 	outside := t.TempDir()
 	outsideFile := filepath.Join(outside, "precious.txt")
