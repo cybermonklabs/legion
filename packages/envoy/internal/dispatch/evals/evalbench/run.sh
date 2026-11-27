@@ -369,7 +369,7 @@ if [ "$mode" = head ]; then
   # handler, every statement it runs in its one snapshot, and the registry's folds of what they
   # read: api/evals.go (readEvalList, evalProjectsIn, readEvalValues); loadProject of
   # api/owner.go; evals.ProjectsIn, CurrentIn, FirstDaysIn and DayWindowIn of reads.go, with the
-  # column lists and scans of store.go; DeployRepoIn and deployRepoCase of deploy_repos.go;
+  # column lists and scans of store.go; DeployReposIn and deployRepoCase of deploy_repos.go;
   # viaAsRead of owners.go; RefresherAgeIn of refresher.go; ReadStoredFiguresIn of figures_read.go,
   # figuresThrough of figures_refresher.go and the stored figures' keys, decode and statement cuts
   # of figures.go; the folds of statistics.go; VerdictOf of delivery_targets.go; and the
