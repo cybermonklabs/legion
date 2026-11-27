@@ -275,10 +275,10 @@ test("with the asks read out, a reply to an agent's comment under an open approv
   }
 });
 
-// Review finding 2: the outline and the history found the reader's new node for a `newest`
-// landing by two copies of one rule, which had drifted apart: the outline noted only the reader's
-// own nodes under what the write answered, the history every node there. One rule serves both
-// (`newOwnNode`). Its first look for a landing notes every node there, whoever wrote it, so a
+// Review 6090963101's finding 2: the outline and the history found the reader's new node for a
+// `newest` landing by two copies of one rule, which had drifted apart: the outline noted only the
+// reader's own nodes under what the write answered, the history every node there. One rule serves
+// both (`newOwnNode`). Its first look for a landing notes every node there, whoever wrote it, so a
 // reader whose login is read after that look takes none of their earlier nodes for new; each look
 // after it takes the first node the reader wrote that the first look did not note, none until a
 // read draws one, and never a new node another author wrote or a node that names no author.

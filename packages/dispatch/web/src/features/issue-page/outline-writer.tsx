@@ -170,8 +170,9 @@ export interface HeldLanding extends Landing {
   /** Whether the writer opened Details for it (decision 581): a landing in the history asked for
    *  on a phone while Details, a sheet over the page there, was shut, as a turn's Reply shuts it
    *  so that the line at the foot can take the focus (`history-entries.tsx`). The history is then
-   *  drawn from the commit that holds the landing, and takes it as one asked for while it is
-   *  drawn, not as one it finds held as it mounts (`IssueHistory.tsx`'s `useHistoryLanding`). */
+   *  drawn from the commit that holds the landing, down to the thread the landing answers however
+   *  far under its first entries that stands, and takes it as one asked for while it is drawn, not
+   *  as one it finds held as it mounts (`IssueHistory.tsx`'s `useHistoryLanding`). */
   readonly opensDetails: boolean;
 }
 
@@ -197,8 +198,8 @@ export interface LandingSight {
  * look for `landing` - `sight` is of another landing, or none - the answer is the sight to hold:
  * every candidate, whoever wrote it, so that a reader whose login is read only after that look
  * takes none of their earlier nodes there for the new one. At each look after it the answer is
- * the first candidate the reader wrote (`isViewer`) that the sight does not hold, or none until a
- * read draws one; a new node another author wrote is never it.
+ * the first candidate the reader wrote (`readerWrote`) that the sight does not hold, or none until
+ * a read draws one; a new node another author wrote is never it.
  */
 export function newOwnNode<T extends { readonly author?: Actor | undefined; readonly id: string }>(
   landing: Landing,
@@ -211,12 +212,19 @@ export function newOwnNode<T extends { readonly author?: Actor | undefined; read
   }
   return {
     made: candidates.find(
-      (candidate) =>
-        !sight.before.has(candidate.id) &&
-        candidate.author !== undefined &&
-        isViewer(candidate.author, reader)
+      (candidate) => !sight.before.has(candidate.id) && readerWrote(candidate, reader)
     ),
   };
+}
+
+/** Whether the reader wrote `node`: a person signed in as `reader`, in any casing, as the
+ *  server matches a login (`isViewer`), whether they wrote it themselves or a session acting
+ *  for them did - a write from the line at the foot is theirs either way. */
+export function readerWrote(
+  node: { readonly author?: Actor | undefined },
+  reader: string | undefined
+): boolean {
+  return node.author !== undefined && isViewer(node.author, reader);
 }
 
 /** The answer the writer holds (`OutlineWriter.answer`, which says what reads it). */

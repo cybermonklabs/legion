@@ -13,7 +13,6 @@ import { useNavigate } from "react-router-dom";
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, DisplayTree } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
-import { isViewer } from "../refs/actor";
 import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { PublishedReferenceNames, type PublishedReferences } from "../refs/reference-names";
@@ -42,6 +41,7 @@ import {
   LANDING_WAIT_MS,
   type LandingSight,
   newOwnNode,
+  readerWrote,
   useOutlineWriter,
 } from "./outline-writer";
 import { editWords, NoteOwnAct, noteAfterDraw, type OwnAct } from "./own-act";
@@ -1591,13 +1591,6 @@ function openingMayFocus(tree: HTMLElement | null, focused: HTMLElement | undefi
   return focusIsLoose(tree)
     ? focused?.isConnected !== true
     : focused?.contains(document.activeElement) === true;
-}
-
-/** Whether the reader wrote `node`: a person signed in as `reader`, in any casing, as the
- *  server matches a login (`isViewer`), whether they wrote it themselves or a session acting
- *  for them did - a write from the line at the foot is theirs either way. */
-function readerWrote(node: TreeNode, reader: string | undefined): boolean {
-  return node.author !== undefined && isViewer(node.author, reader);
 }
 
 /** The node a write was made under, by the item the line wrote to; the tree's own root for a

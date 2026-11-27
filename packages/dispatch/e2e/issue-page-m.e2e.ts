@@ -5237,8 +5237,7 @@ test("on a phone, a reply sent from a turn of the daemon's thread in the history
       .poll(
         async () => {
           const drawn = await reply.boundingBox();
-          const view = await historyViewport(page);
-          return drawn !== null && drawn.y >= view.top && drawn.y + drawn.height <= view.bottom;
+          return drawn !== null && wholly(drawn, await historyViewport(page));
         },
         { message: "the reply in the history is not wholly in Details' view" }
       )
@@ -5742,7 +5741,9 @@ test("what references the focused row names a task whose block opens with long a
       return { key: issue.key, statement: blockNode(spec.slug, "r-served") };
     },
     async (page, seeded) => {
-      const facts = await rowFacts(page, seeded.key, seeded.statement);
+      await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+      await expect(tree(page)).toBeVisible();
+      const facts = await focusedRowFacts(page, seeded.statement);
       const references = facts.locator("[data-node-references]");
       await references
         .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
