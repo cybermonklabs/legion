@@ -275,7 +275,8 @@ type pendingLease struct {
 	done  chan struct{}
 	lease Lease
 	err   error
-	// stale says a fresh list replaced the installation while this mint ran.
+	// stale says a fresh list replaced the installation while this mint ran, and the mint's own
+	// caller asks again, so every waiter asks again too (lease).
 	stale bool
 }
 
@@ -488,8 +489,14 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // concurrent callers. A caller that waited on another's mint, which ended only because that
 // caller's own deadline did (a context error, or ErrCommandPending), asks again under its own
 // context rather than take that caller's failure as its own.
-// A mint whose installation a concurrent whole list replaced is also asked again, so neither its
-// first caller nor a waiter can publish an old installation's token after the replacement.
+// A mint whose installation a concurrent whole list replaced is also asked again, once, so neither
+// its first caller nor a waiter can publish an old installation's token after the replacement. The
+// lease is stale only when the id the Manager holds for the owner changed while its mint ran and
+// the mint's installation is not the one held now. A mint whose installation differs from a held
+// id that did not change gives the same id at every mint, so asking again would only mint again
+// until the caller's deadline: an owner the configuration pins to another owner's installation,
+// or a token_command's release for one owner after a reinstall, which moves no held id. A second
+// mint that is stale too is served to its callers and not cached.
 //
 // A narrowing GitHub refused is remembered per scope for narrowingRefusalWindow and served from
 // that memory while it holds, GitHub asked nothing: it is GitHub's definitive answer about what
@@ -524,6 +531,7 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 		return Lease{}, fmt.Errorf("the %s App's token names no owner account to mint on", request.role)
 	}
 	cacheKey := request.scope()
+	retried := false
 	for {
 		now := m.now()
 		m.mu.Lock()
@@ -552,6 +560,7 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 		}
 		waiting := &pendingLease{done: make(chan struct{})}
 		m.pending[cacheKey] = waiting
+		heldID := m.installations[request.role][cacheKey.owner]
 		m.mu.Unlock()
 
 		lease, err := m.mint(ctx, request)
@@ -560,7 +569,7 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 		// A list may replace this installation while its exchange is in flight. Do not put the
 		// old lease back after holdInstallations dropped it; every waiter asks the current scope.
 		installation := m.installations[request.role][cacheKey.owner]
-		stale := err == nil && installation != "" && lease.Installation != installation
+		stale := err == nil && installation != heldID && installation != "" && lease.Installation != installation
 		switch {
 		case err == nil && !stale:
 			m.leases[cacheKey] = lease
@@ -569,11 +578,13 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 		case NarrowingRefused(err):
 			m.refusals[cacheKey] = refusedNarrowingAt{err: err, at: minted}
 		}
-		waiting.lease, waiting.err, waiting.stale = lease, err, stale
+		again := stale && !retried
+		waiting.lease, waiting.err, waiting.stale = lease, err, again
 		delete(m.pending, cacheKey)
 		close(waiting.done)
 		m.mu.Unlock()
-		if stale {
+		if again {
+			retried = true
 			continue
 		}
 		return lease, err
