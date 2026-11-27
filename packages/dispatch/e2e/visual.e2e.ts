@@ -43,7 +43,7 @@
  *    The day headings ("Today", "Yesterday") read that same clock, so the seed is written on one
  *    UTC day with the rows' reach after it (`e2e/visual-day.ts`) and the rows draw in UTC.
  *    The `<time>` elements (`web/src/features/refs/Timestamp.tsx`, `web/src/features/inbox/
- *    Inbox.tsx`, `web/src/features/inbox/EarlierApproval.tsx`) are painted over as well, by the
+ *    Inbox.tsx`, `web/src/features/ask-body/EarlierApproval.tsx`) are painted over as well, by the
  *    page itself (`e2e/visual-time.css`; the mask list below says why that is not a mask). The
  *    cost is that the text of a timestamp is in no baseline; its place, its size and the layout
  *    around it still are.

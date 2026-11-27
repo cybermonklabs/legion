@@ -58,6 +58,9 @@ export const lazyPieces = {
     "approval's card, so the Inbox's list is what shows it ran",
   "create-issue":
     "the Create issue dialog (features/issue/CreateIssueDialogHost.tsx), which `c` opens",
+  dashboard:
+    "today's Dashboard tab (features/issue/tab-chunks.ts), visible inside " +
+    "#issue-dashboard-panel (features/issue/IssuePage.tsx)",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
     "the document editor, @legion/proof-editor and its stylesheet, and the document's Yjs " +

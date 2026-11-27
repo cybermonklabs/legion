@@ -45,6 +45,7 @@ import {
   childrenTabChunk,
   collaboratorsTabChunk,
   conversationTabChunk,
+  dashboardTabChunk,
   decisionsTabChunk,
   planTabChunk,
   stepsTabChunk,
@@ -55,9 +56,11 @@ import { useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
 
 // Every panel but the Spec's is a chunk of its own, fetched when its tab first opens
-// (`tab-chunks.ts` says why). Each panel draws its skeleton until its chunk is in. It is not a
-// `lazy` under a `Suspense`, because React shows a suspended panel no sooner than 300 ms after
-// its skeleton, also when the chunk is already in (`features/shell/chunk-component.tsx`).
+// (`tab-chunks.ts` says why). Each panel draws its skeleton until its chunk is in, and Dashboard
+// draws nothing until then. It is not a `lazy` under a `Suspense`, because React shows a
+// suspended panel no sooner than 300 ms after its skeleton, also when the chunk is already in
+// (`features/shell/chunk-component.tsx`).
+const DashboardTab = chunkComponent(dashboardTabChunk, null);
 const ConversationTab = chunkComponent(
   conversationTabChunk,
   <LoadingSkeleton label="Loading the conversation" />
@@ -88,7 +91,6 @@ const ArtifactRoutePanel = chunkComponent(
   <LoadingSkeleton label="Loading the artifacts" />
 );
 const StepsTab = chunkComponent(stepsTabChunk, <LoadingSkeleton label="Loading the steps" />);
-
 export function IssuePage(): ReactNode {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
@@ -433,6 +435,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     children: activeTab === "children",
     collaborators: activeTab === "collaborators",
     conversation: activeTab === "conversation",
+    dashboard: activeTab === "dashboard",
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
     spec: activeTab === "spec",
@@ -551,6 +554,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           ) : undefined
         }
       />
+      <div
+        aria-hidden={activeTab !== "dashboard"}
+        aria-labelledby="issue-dashboard-tab"
+        hidden={activeTab !== "dashboard"}
+        id="issue-dashboard-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.dashboard ? <DashboardTab issueKey={issueKey} page="today" /> : null}
+      </div>
       <div
         aria-hidden={activeTab !== "spec"}
         aria-labelledby="issue-spec-tab"

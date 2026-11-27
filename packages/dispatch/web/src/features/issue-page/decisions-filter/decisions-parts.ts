@@ -11,6 +11,7 @@ import { buildIssuePath } from "../../refs/page-routes";
 import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { type ChangeComment, inReviewList } from "../decision-review";
+import { presetPath } from "../issue-address";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
 import { type DecisionState, isReader } from "../page-words";
 
@@ -196,10 +197,11 @@ export interface DecisionsParts {
 export type DecisionsAsk = Pick<TreeAsk, "id" | "resolution">;
 
 /**
- * The address of `node` in the conversation: an ask's own, and for a block of a document the
- * issue's own address with the block as its fragment, which opens the outline on that block's
- * node (`issue-address.ts`). A decision's own address opens `decisions.md` at its heading,
- * which is the document and not the conversation.
+ * The address of `node` in the conversation: an ask's own, and for a block of a document
+ * Conversation's own address (`presetPath`, `/conversation`) with the block as its fragment,
+ * which opens the outline on that block's node (`issue-address.ts`,
+ * dispatch://INFRA-5702/spec#b-r-new-page). A decision's own address opens `decisions.md` at
+ * its heading, which is the document and not the conversation.
  */
 export function conversationPath(node: Pick<TreeNode, "reference">): string | undefined {
   const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
@@ -210,7 +212,7 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
   const block = "block" in route ? route.block : undefined;
   return block === undefined
     ? undefined
-    : `${buildIssuePath({ key: route.key, kind: "issue" })}${blockFragment(block.id)}`;
+    : `${presetPath(route.key, "conversation")}${blockFragment(block.id)}`;
 }
 
 /**

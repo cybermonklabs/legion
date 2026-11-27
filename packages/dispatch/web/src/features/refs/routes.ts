@@ -402,6 +402,10 @@ function pageRoutes(
   if (route === undefined || (isProjectRoute(route) && route.kind !== "document")) {
     return undefined;
   }
+  // Dashboard's path names nothing in text, as the server's `text` reads it (`parseIssuePath`).
+  if (route.kind === "dashboard") {
+    return undefined;
+  }
   // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
   // whatever its fragment, as the server's `text` and the agent client read the page.
   if (route.kind === "decisions") {
@@ -473,6 +477,10 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   // verification, plan, steps, activity, children, artifacts, collaborators and the
   // conversation's `log` - were references the server refused to read.
   if (isPlainIssueRoute(route) || route.kind === "conversation") {
+    return issue;
+  }
+  // Dashboard's tab is the issue, as every other tab is, though no reference names the tab.
+  if (route.kind === "dashboard") {
     return issue;
   }
   if (route.kind === "decisions") {
@@ -673,6 +681,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} log`;
     case "decisions":
       return `${route.key} decisions`;
+    case "dashboard":
+      return `${route.key} dashboard`;
     case "artifact":
       return `${route.key} ${route.slug}${block}`;
     case "ask":

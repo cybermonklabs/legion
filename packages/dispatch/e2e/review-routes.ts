@@ -118,10 +118,12 @@ function wideLayout(page: Page): boolean {
  *  43395925903), and once on the phone's issue page with no sheet (run 43430182487).
  *  `cardText` is the text of a margin card: an ask's question, by default the open ask of the
  *  issue the review corpus opens, which is its only one, or a decision card's preview of a
- *  block. */
-function heldMargin(page: Page, cardText = "Which sign-in path?"): Locator[] {
+ *  block. `cardPart`, where given, is the part of the card that text is read in: a decision
+ *  card draws the block's words in its statements (`[data-decision-statements]`). */
+function heldMargin(page: Page, cardText = "Which sign-in path?", cardPart?: string): Locator[] {
+  const card = page.locator("[data-margin-item]");
   return wideLayout(page)
-    ? [page.locator("[data-margin-item]").getByText(cardText)]
+    ? [(cardPart === undefined ? card : card.locator(cardPart)).getByText(cardText)]
     : [page.getByTestId("margin-sheet").getByText("Review (1)")];
 }
 
@@ -213,7 +215,11 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // `heldMargin` waits on whichever of the two the width draws.
     ready: (page) => [
       page.getByRole("status", { name: "connected" }),
-      ...heldMargin(page, "One command, a seeded corpus, a signed-in browser."),
+      ...heldMargin(
+        page,
+        "One command, a seeded corpus, a signed-in browser.",
+        "[data-decision-statements]"
+      ),
     ],
   },
   {
@@ -325,7 +331,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names.
     ready: (page) => [
       page.getByRole("region", { name: "Waiting for your review" }),
-      page.getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
+      page
+        .locator("[data-decision-statements]")
+        .getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
     ],
   },
   {

@@ -14,7 +14,7 @@ import {
   STATE_LINES,
   VERIFICATION_WORDS,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import {
   createComment,
   createIssue,

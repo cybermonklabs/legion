@@ -20,6 +20,7 @@ const gateBasisVersion = 20261114064234
 // and leaves them as they are. Each version and sequence refuses zero, as 0055's do, and each read
 // by a basis, a pending request or a rest has its index.
 func TestTheGateBasisArrivesWith20261114064234(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, gateBasisVersion-1)

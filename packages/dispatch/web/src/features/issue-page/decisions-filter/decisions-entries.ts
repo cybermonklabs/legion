@@ -13,7 +13,7 @@ import { compareTimestamps } from "../../../lib/timestamps";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
-import { treeContext } from "../tree-drafts";
+import { treeContext } from "../target-naming";
 import { nodesInOrder } from "../tree-keys";
 import {
   askIdOf,

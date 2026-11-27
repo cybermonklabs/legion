@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { textPrimaryOnSurface } from "../../theme/classes";
 import { linkText, textMutedOnSurface } from "../../theme/shell-classes";
-import { AskOptionList } from "../inbox/AskOptionList";
+import { AskOptionList } from "../ask-body/AskOptionList";
 import { eventDescription } from "../issue/event-description";
 import { AskResolutionLine } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";

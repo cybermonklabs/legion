@@ -907,7 +907,7 @@ enough: `globalSetup` runs after the config has loaded. A workstation gets the b
 this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no other
 (`.github/workflows/ci-job-dispatch-ui.yaml#Build contracts for the suites that spawn Playwright` says
 how that list grows), so it compiles no module the dispatch_browser filter's listed
-block leaves out - not ./legion-api, which no row loads. It is the one build left in this
+block leaves out. It is the one build left in this
 job: the binaries job builds everything else this job runs, and contracts is not in that
 artifact, since what Playwright resolves is the package inside this checkout.
 

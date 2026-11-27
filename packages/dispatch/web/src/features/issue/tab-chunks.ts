@@ -18,6 +18,12 @@ import { chunk } from "../shell/chunk-component";
  * the issue page's own commit when the entry's download is already in
  * (`features/shell/chunk-component.tsx` says why that matters).
  */
+/** Dashboard, today's first tab (dispatch://INFRA-5702/spec#b-r-today-tab) and the new page's
+ *  opening view (`issue-page/slots/view-dashboard.tsx`), which reads this same chunk: this is the
+ *  one import of either page that reaches it (R14). */
+export const dashboardTabChunk = chunk(() =>
+  import("../dashboard/DashboardTab").then((module) => module.DashboardTab)
+);
 export const conversationTabChunk = chunk(() =>
   import("../conversation/ConversationTab").then((module) => module.ConversationTab)
 );
@@ -50,6 +56,8 @@ export function issueTabChunk(tab: IssueTab): (() => Promise<unknown>) | undefin
   switch (tab) {
     case "spec":
       return undefined;
+    case "dashboard":
+      return dashboardTabChunk.load;
     case "conversation":
       return conversationTabChunk.load;
     case "activity":

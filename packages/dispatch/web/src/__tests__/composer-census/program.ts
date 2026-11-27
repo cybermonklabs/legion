@@ -2,9 +2,10 @@
  * The composer census (INFRA-1503), its first part: the program it reads. Every module under the
  * root it is given, tests left out, parsed into syntax trees (no type checker), its imports
  * resolved by path, a chunk's constant resolved to the component it loads (`CHUNK_COMPONENTS`),
- * and its components and their uses indexed, so that the census sees exactly the files under
- * that root. `trees.ts`, with its walk up (`walk.ts`), `forms.ts` and `lifetime.ts` read the
- * census's items out of it, and `census.ts` names them.
+ * a table's entries read as drawn by the element that draws the table's pick
+ * (`COMPONENT_TABLES`), and its components and their uses indexed, so that the census sees
+ * exactly the files under that root. `trees.ts`, with its walk up (`walk.ts`), `forms.ts` and
+ * `lifetime.ts` read the census's items out of it, and `census.ts` names them.
  *
  * The census lives here. It began as a scratch script outside the repository (version 2 at
  * dispatch://INFRA-1503/artifact/composer-census-ts), which this module replaces as its source,
@@ -224,7 +225,67 @@ export function readProgram(root: string): Program {
     };
     visit(mod.sf);
   }
+  for (const [key, { tag }] of Object.entries(COMPONENT_TABLES)) {
+    for (const use of tableUses(program, key, tag)) {
+      const list = usesById.get(use.id) ?? [];
+      list.push({ element: use.element, mod: use.mod });
+      usesById.set(use.id, list);
+    }
+  }
   return program;
+}
+
+/**
+ * The tables of components a component draws by a key the census does not read, each by
+ * `<module>#<constant>`, with the tag that draws the table's entry in the module that holds the
+ * table: an entry of the table is read as drawn by each element of that tag, as an element naming
+ * it would be, so the climb from a mount goes on up through it (`trees.ts`), which would otherwise
+ * find that entry drawn as no element and stop there.
+ */
+const COMPONENT_TABLES: Readonly<Record<string, { readonly tag: string; readonly why: string }>> = {
+  "features/issue-page/slots/stage.tsx#VIEW_SLOTS": {
+    tag: "View",
+    why: "the new issue page's views by preset: `StageSlot` draws the address's view as `<View {...props} onAddressDrawn={onAddressDrawn} />`, `View` being `views[preset]`, whose default is this table, where the outline is not drawn in the view's place",
+  },
+};
+
+/** The uses `COMPONENT_TABLES` gives the entries of the table `key`: each element of `tag` in the
+ *  table's module, once for each entry that names a component. A table the census cannot read is
+ *  refused, so a renamed or moved table fails here rather than drawing its views as no element. */
+function tableUses(
+  program: Program,
+  key: string,
+  tag: string
+): { readonly element: ts.Node; readonly id: string; readonly mod: Mod }[] {
+  const [rel = "", name = ""] = key.split("#");
+  const mod = program.mods.get(rel);
+  const decl = mod?.decls.get(name);
+  if (
+    mod === undefined ||
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer === undefined ||
+    !ts.isObjectLiteralExpression(decl.initializer)
+  ) {
+    throw new Error(`${key} is no table of components the census reads (COMPONENT_TABLES)`);
+  }
+  const ids = decl.initializer.properties.flatMap((property) => {
+    if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.initializer)) return [];
+    const id = resolveLocal(program, mod, property.initializer.text);
+    return id !== undefined && program.comps.has(id) ? [id] : [];
+  });
+  const elements: ts.Node[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      (ts.isJsxSelfClosingElement(node) || ts.isJsxElement(node)) &&
+      tagOf(node)?.getText() === tag
+    ) {
+      elements.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(mod.sf);
+  return ids.flatMap((id) => elements.map((element) => ({ element, id, mod })));
 }
 
 /**

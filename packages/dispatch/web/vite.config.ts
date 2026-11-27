@@ -35,13 +35,15 @@ const characterReferenceDecoder = createRequire(
 const vite = packageRoot("vite", fileURLToPath(new URL(".", import.meta.url)));
 /**
  * The code the build emits from no source file it records: Vite's own helpers (module preload,
- * and the CommonJS interop of the @rollup/plugin-commonjs build Vite 5 carries inside it), and
- * the wrappers that interop puts around a CommonJS module, whose own file the build records.
+ * and the CommonJS interop of the @rollup/plugin-commonjs build Vite 5 carries inside it), the
+ * wrappers that interop puts around a CommonJS module, whose own file the build records, and the
+ * source map a `--sourcemap` build writes beside each chunk, of modules the chunk holds.
  */
 const GENERATED_CODE: GeneratedCode[] = [
   viteRuntimeGeneratedCode(vite),
   { id: /^\0(commonjsHelpers\.js|commonjs-dynamic-modules)$/, packages: [vite] },
   { id: /^\0\/.*\?commonjs-(module|exports)$/, packages: [] },
+  { id: /\.js\.map$/, packages: [] },
 ];
 
 /**

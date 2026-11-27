@@ -106,7 +106,9 @@ LISTED = [
     ("dispatch_ui", "packages/contracts/src", ("dispatch_ui",),
      "the dashboard's and the proof editor's typechecks, tests and SPA build compile the contracts modules "
      "these two programs import and what those import, and no other: `packages/dispatch/web/vite.config.ts#alias` "
-     "maps the entries the dashboard imports to the same sources"),
+     "maps the entries the dashboard imports to the same sources, all but ./legion-api, which its tsc program compiles: "
+     "the SPA's sources take its types alone, and the e2e seed takes `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` "
+     "as a value, which Playwright's Node run reads from dist/legion-api.js"),
     # The browser suite has no tsc program of its own. Its rows drive the SPA built from
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles: that
@@ -118,9 +120,11 @@ LISTED = [
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
     # which bundles the entries packages/dispatch imports
-    # (`packages/dispatch/web/vite.config.ts#alias` holds an entry for each of them) and so
-    # compiles nothing outside dispatch_ui's set: not
-    # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
+    # (`packages/dispatch/web/vite.config.ts#alias` holds an entry for each of them but
+    # ./legion-api, whose types the SPA's sources import and whose
+    # `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` the e2e seed imports as a
+    # value, read from dist/legion-api.js by Playwright's Node run); the dashboard's tsc program
+    # compiles every one of them, and so the build compiles nothing outside dispatch_ui's set. A
     # change that breaks the package's full `build` fails the contracts job's own
     # `Build contracts` step, whose filter takes the whole tree.
     ("dispatch_browser", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),

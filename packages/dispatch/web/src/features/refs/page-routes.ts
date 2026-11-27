@@ -34,6 +34,7 @@ export type IssueRoute =
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
   | { key: string; kind: "collaborators" }
+  | { key: string; kind: "dashboard" }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
@@ -101,6 +102,7 @@ export type IssueTab =
   | "artifacts"
   | "activity"
   | "decisions"
+  | "dashboard"
   | "collaborators";
 
 /** An issue tab whose whole route is the tab itself (`@legion/contracts`'s `PLAIN_ISSUE_TABS`,
@@ -154,6 +156,9 @@ export function issueTabForRoute(
   }
   if (route.kind === "decisions") {
     return "decisions";
+  }
+  if (route.kind === "dashboard") {
+    return "dashboard";
   }
   if (route.kind === "artifact") {
     return isPrimaryDocumentArtifactRoute(route, artifact) ? "spec" : "artifacts";
@@ -249,6 +254,12 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   }
   if (target === "decisions") {
     return { key, kind: "decisions" };
+  }
+  // Dashboard's tab is a page of the web alone, out of `PLAIN_ISSUE_TABS`: its path opens the tab,
+  // and no reader of text reads `dispatch://<KEY>/dashboard` or this path as a reference
+  // (`routes.ts`'s `pageRoutes`), as the server's `text` reads neither.
+  if (target === "dashboard") {
+    return { key, kind: "dashboard" };
   }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
@@ -347,6 +358,9 @@ export function buildIssuePath(route: IssueRoute): string {
   }
   if (route.kind === "decisions") {
     return `${issue}/decisions`;
+  }
+  if (route.kind === "dashboard") {
+    return `${issue}/dashboard`;
   }
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;

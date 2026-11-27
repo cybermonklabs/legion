@@ -1,11 +1,12 @@
 /** What `watchApiRequests` holds in flight across a navigation.
  *
  *  A request of the document a `page.goto` tears down never fires `requestfinished` or
- *  `requestfailed`. Before the watcher dropped such requests at the next main-frame document,
- *  issue-page-q.e2e.ts's "an address the view draws no row for draws the outline's line for it in
- *  the view's place", which loads eleven addresses under one watcher, waited out its 30 s quiet
- *  wait about half its runs (INFRA-1109). The rows drive the watcher with a stand-in page whose
- *  events they fire themselves, so no row opens a browser. */
+ *  `requestfailed`. Before the watcher dropped such requests once the main frame committed the
+ *  next document, issue-page-q.e2e.ts's "an address the view draws no row for draws the outline's
+ *  line for it in the view's place", which loads eleven addresses under one watcher, waited out
+ *  its 30 s quiet wait about half its runs (INFRA-1109). The rows drive the watcher with a
+ *  stand-in page whose events they fire themselves, so no row opens a browser; traffic.e2e.ts's
+ *  rows hold the same rule against a real browser. */
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { Frame, Page, Request } from "@playwright/test";
@@ -15,12 +16,16 @@ import { watchApiRequests } from "../traffic";
 const ORIGIN = "http://127.0.0.1:5173";
 
 /** A page with one main frame: the only parts of a page `watchApiRequests` touches are its
- *  events and `mainFrame()`. */
+ *  events and the `url()` of the frame a `framenavigated` names. */
 class StandInPage extends EventEmitter {
-  readonly main = {} as Frame;
+  /** The URL of the document the main frame last committed. */
+  private committed = `${ORIGIN}/`;
+  readonly main = { url: () => this.committed } as unknown as Frame;
 
-  mainFrame(): Frame {
-    return this.main;
+  /** The main frame commits the document at `path`, as Playwright reports a commit. */
+  commit(path: string) {
+    this.committed = `${ORIGIN}${path}`;
+    this.emit("framenavigated", this.main);
   }
 
   watch() {
@@ -38,7 +43,7 @@ function request(path: string, frame: () => Frame, navigation = false): Request 
   } as unknown as Request;
 }
 
-test("a main-frame navigation drops what the document it replaces left in flight, and counts the new document's requests", () => {
+test("a main-frame commit drops what the document it replaces left in flight, and counts the new document's requests", () => {
   const page = new StandInPage();
   const traffic = page.watch();
 
@@ -47,9 +52,11 @@ test("a main-frame navigation drops what the document it replaces left in flight
   expect(traffic.quietFor(0), "a read in flight leaves the page quiet").toBe(false);
 
   // The next address's document: its own request is in flight until it finishes, and the read the
-  // old document left never finishes.
+  // old document left never finishes. The main frame's commit of that document ends the old
+  // read's count, and not the navigation's own.
   const document = request("/issues/CORE-1?comment=0190e7a1", () => page.main, true);
   page.emit("request", document);
+  page.commit("/issues/CORE-1?comment=0190e7a1");
   expect(traffic.quietFor(0), "the new document's own request was dropped").toBe(false);
   page.emit("requestfinished", document);
   expect(traffic.quietFor(0), "the old document's read still keeps the page busy").toBe(true);
