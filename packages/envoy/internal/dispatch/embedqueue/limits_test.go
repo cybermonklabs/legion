@@ -303,10 +303,15 @@ func azureClientFor(t *testing.T, server *httptest.Server) *embed.AzureClient {
 	return client
 }
 
-// bedrockClientFor is a real BedrockClient that calls server, from a test's fake AWS configuration
-// (embedtest.BedrockConfig).
-func bedrockClientFor(server *httptest.Server) *embed.BedrockClient {
-	return embed.NewBedrockWithConfig(embedtest.BedrockConfig(), embed.WithBaseEndpoint(server.URL))
+// bedrockClientFor is a real BedrockClient whose calls stand-in Bedrock answers in this process
+// (embedtest.ServingBedrockConfig, from the same fake AWS configuration embedtest.BedrockConfig
+// gives): the SDK builds, signs and encodes each request as it does for Bedrock, and the client
+// decodes what the handler answers, with no socket in between. A call over the machine's loopback
+// could fail for a reason that is no part of what these rows state - a dial, a port, a file
+// descriptor, a connection the machine broke - and the queue reads any failed call as the rows'
+// own, bisects the group and sends every text again, which is what these rows then report.
+func bedrockClientFor(bedrock http.Handler) *embed.BedrockClient {
+	return embed.NewBedrockWithConfig(embedtest.ServingBedrockConfig(bedrock), embed.WithBaseEndpoint("http://bedrock.test"))
 }
 
 // embeddingStates is each issue row's id with whether it is embedded, its confirmed failures and
@@ -672,17 +677,16 @@ func (f *bedrockFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // The largest group Bedrock's token ceiling alone allows, 25 pending full texts (800,000 bytes),
-// goes through ProcessBatch and the paced Bedrock client cmd/dispatch builds, over HTTP to a
-// stand-in Bedrock, as three calls of 10, 10 and 5 texts: two exactly at the 320,000-byte budget
-// and none past it, every text sent once (nothing was bisected), and every row current.
+// goes through ProcessBatch and the paced Bedrock client cmd/dispatch builds, in HTTP to a
+// stand-in Bedrock this process answers (bedrockClientFor), as three calls of 10, 10 and 5 texts:
+// two exactly at the 320,000-byte budget and none past it, every text sent once (nothing was
+// bisected), and every row current.
 func TestNoBedrockCallCarriesMoreThanItsByteBudget(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	seedManyIssues(t, database, "BYTE", 25, fullText)
 	fake := &bedrockFake{}
-	server := httptest.NewServer(fake)
-	defer server.Close()
-	client := bedrockClientFor(server)
+	client := bedrockClientFor(fake)
 	const budget = 320_000 // Bedrock's MaxBatchBytes, which TestABedrockGroupAtItsByteBudgetIsSplitNotCutOff checks
 
 	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), Deps{Store: database, Embedder: client}.Paced())

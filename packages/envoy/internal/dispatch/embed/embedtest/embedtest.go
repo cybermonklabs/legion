@@ -3,6 +3,12 @@
 package embedtest
 
 import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 )
@@ -30,4 +36,56 @@ func BedrockConfig() aws.Config {
 		Credentials: credentials.NewStaticCredentialsProvider("test-access-key", "test-secret-key", ""),
 		Retryer:     func() aws.Retryer { return aws.NopRetryer{} },
 	}
+}
+
+// ServingBedrockConfig is BedrockConfig with handler as the Bedrock it calls, reached in this
+// process rather than over the machine's network: every request the AWS SDK builds is written as
+// HTTP/1.1, read back as a server request, answered by handler, and what handler wrote is the
+// client's response (ServingHTTPClient). The whole client is still the real one - the SDK's
+// middleware, SigV4, the request and response encodings and the client's own decoding all run - and
+// only the loopback socket is gone, so no verdict of a test using it rests on a dial, a port, a
+// file descriptor or a connection the machine broke. A test whose subject IS the socket (embed's
+// own hanging-server rows) keeps httptest.NewServer and a real client.
+//
+// A test points the client at a stand-in endpoint all the same (embed.WithBaseEndpoint), so the
+// request names the stand-in rather than Bedrock's own host; nothing ever resolves or dials it.
+func ServingBedrockConfig(handler http.Handler) aws.Config {
+	cfg := BedrockConfig()
+	cfg.HTTPClient = ServingHTTPClient{Handler: handler}
+	return cfg
+}
+
+// ServingHTTPClient is the aws.HTTPClient ServingBedrockConfig installs: it answers each request
+// from Handler, in this process.
+type ServingHTTPClient struct{ Handler http.Handler }
+
+// Do answers request from the handler. It writes the request as HTTP/1.1 and reads it back, so the
+// handler receives a server request as net/http's own server would build it (its URI, its host and
+// a body of exactly Content-Length bytes), and it honours the request's context as a transport
+// does: a handler that answers nothing before the context ends gives the context's error, and the
+// handler keeps the recorder it is writing to, which nothing here reads again.
+func (c ServingHTTPClient) Do(request *http.Request) (*http.Response, error) {
+	var wire bytes.Buffer
+	if err := request.Write(&wire); err != nil {
+		return nil, fmt.Errorf("embedtest: write the request: %w", err)
+	}
+	served, err := http.ReadRequest(bufio.NewReader(&wire))
+	if err != nil {
+		return nil, fmt.Errorf("embedtest: read the request back: %w", err)
+	}
+	ctx := request.Context()
+	recorder := httptest.NewRecorder()
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		c.Handler.ServeHTTP(recorder, served.WithContext(ctx))
+	}()
+	select {
+	case <-answered:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	response := recorder.Result()
+	response.Request = request
+	return response, nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -67,15 +66,14 @@ func TestABedrockCallPastTheBoundEndsWithTheDeadline(t *testing.T) {
 	// Not parallel: it shortens callBound (shortenForTest), which every Embed call the queue makes reads.
 	shortenForTest(t, &callBound, 300*time.Millisecond)
 	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	defer close(release)
+	bedrock := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 		case <-release:
 		}
-	}))
-	defer server.Close()
-	defer close(release)
-	deps := Deps{Embedder: bedrockClientFor(server)}.Paced()
+	})
+	deps := Deps{Embedder: bedrockClientFor(bedrock)}.Paced()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
