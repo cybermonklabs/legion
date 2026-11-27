@@ -226,8 +226,8 @@ func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, erro
 	case apiV2:
 		spec.Info.WithVersion("2")
 		spec.Info.WithDescription(
-			"Generated from the /api/v2 rows of the Go route table (the v2<Group>Rows functions of " +
-				"internal/dispatch/api/v2_<group>.go) and the query, body and answer types each row " +
+			"Generated from the /api/v2 rows of Dispatch's route declarations (one file per route in " +
+				"internal/dispatch/api) and the query, body and answer types each row " +
 				"declares, by `envoy-dispatch openapi`. Edit those, never this document: it is " +
 				"committed so a client's types can be rendered from it, and `envoy-dispatch openapi " +
 				"--check` refuses a tree where it is stale. Each operation of a /api/v2 row lists " +
