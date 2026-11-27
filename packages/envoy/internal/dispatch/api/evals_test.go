@@ -199,8 +199,11 @@ func holdsPRSize(t *testing.T, body []byte) bool {
 // the global session parameter alone is accepted. Both writes refuse a body that names one key twice
 // in one object, at the top level, one level down, in a reading's row and in its attributes,
 // naming the key and where it stands, and the register write takes a body naming one key in two
-// objects. A target its eval's unit cannot hold (evals.CheckTarget) is refused EVAL_FIELD_INVALID
-// naming target.
+// objects. A target outside its range (evals.CheckTarget) is refused EVAL_FIELD_INVALID naming
+// target: its eval's unit's, or the range of each judge a delivery eval's target names, so
+// deploy-run-success, in ratio, refuses 300 judged by runs.rate, alone or beside runs.concluded,
+// takes 300 judged by runs.concluded with the version it stores, and then refuses a write of
+// runs.rate alone, which would leave that 300 judged by a share, and stores nothing for it.
 func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -271,6 +274,8 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		{name: "a reading naming an attribute twice", method: http.MethodPost, path: readings, body: json.RawMessage(`{"readings": [{"series": "minutes", "row_kind": "sample", "value": 1, "measured_at": "` + at.Format(time.RFC3339Nano) + `", "attributes": {"repo": "acme/widgets", "repo": "acme/gadgets"}}]}`), key: "r-twice-attribute", status: 400, code: "INVALID_JSON", names: `readings[0].attributes holds the key "repo" twice`},
 		{name: "a target past 1 on a ratio eval", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": evals.SlugDeployRunSuccess, "target": 7}, key: "g-target-ratio", status: 400, code: evals.CodeFieldInvalid, names: "target 7", field: "target"},
 		{name: "a target below 0 on an eval of deploys a day", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": evals.SlugDeployFrequency, "target": -3}, key: "g-target-count", status: 400, code: evals.CodeFieldInvalid, names: "target -3", field: "target"},
+		{name: "a target of 300 judged by runs.rate on a ratio eval", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": evals.SlugDeployRunSuccess, "target": 300, "target_judges": []string{"runs.rate"}}, key: "g-target-rate", status: 400, code: evals.CodeFieldInvalid, names: "runs.rate", field: "target"},
+		{name: "a target of 300 judged by runs.concluded and runs.rate", method: http.MethodPost, path: "/api/v1/projects/EVL/evals", body: map[string]any{"slug": evals.SlugDeployRunSuccess, "target": 300, "target_judges": []string{"runs.concluded", "runs.rate"}}, key: "g-target-both", status: 400, code: evals.CodeFieldInvalid, names: "runs.rate", field: "target"},
 		{name: "a readings write with no Idempotency-Key", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{good}}, status: 400, code: codeIdempotencyKeyRequired},
 		{name: "a reading carrying recorded_by", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_by": map[string]any{"kind": "user", "id": "mallory"}})}}, key: "r-by", status: 400, code: evals.CodeFieldServerSet, names: "recorded_by", rows: []int{0}},
 		{name: "a reading carrying recorded_at", method: http.MethodPost, path: readings, body: map[string]any{"readings": []any{withKey(map[string]any{"recorded_at": at.Format(time.RFC3339)})}}, key: "r-at", status: 400, code: evals.CodeFieldServerSet, names: "recorded_at", rows: []int{0}},
@@ -370,6 +375,30 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 		if read := evalRequest(t, handler, http.MethodGet, path, nil, ""); read.Code != http.StatusOK {
 			t.Errorf("GET %s: status %d, body %s, want 200", path, read.Code, read.Body.String())
 		}
+	}
+	// deploy-run-success, in ratio, takes 300 judged by runs.concluded, a count, and stores it; a
+	// write of runs.rate alone then would leave that 300 judged by a share, and is refused.
+	versionsBefore = countRows(t, database, countVersions)
+	counted := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals",
+		map[string]any{"slug": evals.SlugDeployRunSuccess, "target": 300, "target_judges": []string{"runs.concluded"}}, "g-target-concluded")
+	stored := decodeBody[evalRegisterResponse](t, counted)
+	if counted.Code != http.StatusCreated || len(stored.Items) != 1 || !stored.Items[0].Wrote || stored.Items[0].Definition.Target == nil ||
+		*stored.Items[0].Definition.Target != 300 || !slices.Equal(stored.Items[0].Definition.TargetJudges, []string{"runs.concluded"}) {
+		t.Fatalf("300 judged by runs.concluded on %s: status %d, body %s; want 201 with the version holding 300 judged by runs.concluded",
+			evals.SlugDeployRunSuccess, counted.Code, counted.Body.String())
+	}
+	if got := countRows(t, database, countVersions); got != versionsBefore+1 {
+		t.Errorf("300 judged by runs.concluded stored %d versions, want 1", got-versionsBefore)
+	}
+	judgeOnly := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals",
+		map[string]any{"slug": evals.SlugDeployRunSuccess, "target_judges": []string{"runs.rate"}}, "g-target-judge-only")
+	if refusal := decodeBody[evalRefusal](t, judgeOnly); judgeOnly.Code != http.StatusBadRequest || refusal.Code != evals.CodeFieldInvalid ||
+		refusal.Field != "target" || !strings.Contains(refusal.Error, "runs.rate") {
+		t.Errorf("runs.rate alone on 300 judged by runs.concluded: status %d, body %s; want 400 %s naming target and runs.rate",
+			judgeOnly.Code, judgeOnly.Body.String(), evals.CodeFieldInvalid)
+	}
+	if got := countRows(t, database, countVersions); got != versionsBefore+1 {
+		t.Errorf("the refused write of runs.rate alone stored %d versions, want none", got-versionsBefore-1)
 	}
 }
 

@@ -263,8 +263,10 @@ type Registered struct {
 // of a series, past MaxVersionBytes as JSON is refused (CodeVersionTooLarge), judged once the
 // fields it leaves out are copied forward, under the eval's lock, so two writes each within the
 // bound cannot leave a version past it, and before it does its document work or stores anything.
-// So is one whose definition would hold a target its unit cannot hold (CheckTarget), judged on the
-// version the write leaves: the target the body sets, and one a change of the unit carries forward.
+// So is one whose definition would hold a target outside its range (CheckTarget): its unit's, or,
+// on a delivery eval whose target names its judges, each judge's (rangedJudges). It is judged on the
+// version the write leaves: the target the body sets, and one a change of the unit or of the judges
+// carries forward, a judge-only write or one that clears the judges among them.
 // A version that lists or unlists a logged eval's series lists or unlists that series' stored day
 // rows in the same transaction (relistDays), and one that moves a logged eval's fold key (foldKeyOf:
 // a listing, or the fold or the role of a listed series) marks stale, in it too, each cut that holds
@@ -331,14 +333,15 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 		// eval holds none, where the write changes a field of it, and where doc_text is a method the
 		// eval's section does not hold yet, which gives it block, the id of the method's new block:
 		// it is judged holding the longer of block and the block it holds now. Its target is judged
-		// in its unit there, and where the body names the target or the unit and stores no version,
-		// so a body naming a target its unit cannot hold is refused whatever the eval holds; a write
-		// of neither that stores no version of the definition, a write of a series alone, leaves the
-		// standing version as it is and is not judged by it.
+		// in its range there, its unit's or its delivery judges' (CheckTarget, rangedJudges), and
+		// where the body names the target, the unit or the judges and stores no version, so a body
+		// naming a target outside the range it leaves is refused whatever the eval holds; a write
+		// of none of them that stores no version of the definition, a write of a series alone,
+		// leaves the standing version as it is and is not judged by it.
 		block := uuid.NewString()
 		writesDefinition := !found || change.DocText.Set || !sameDefinition(current, next)
-		if writesDefinition || change.Target.Set || change.Unit.Set {
-			if err := CheckTarget(next.Unit, next.Target); err != nil {
+		if writesDefinition || change.Target.Set || change.Unit.Set || change.TargetJudges.Set {
+			if err := CheckTarget(next.Unit, next.Target, rangedJudges(next)...); err != nil {
 				return err
 			}
 		}
@@ -861,7 +864,9 @@ type targetRange struct {
 // and a size's (bytes) 0 or more, since no reading in any of them is below 0. A target outside
 // its unit's range judges every reading alike, so no reading could meet or miss it: -3 deploys a
 // day is met by every day, and a share of 7 by none. No other unit states a range: a logged eval's
-// unit is the writer's own words (`lines`, `usd`, `score`), or none.
+// unit is the writer's own words (`lines`, `usd`, `score`), or none. A delivery eval's target that
+// names its judges lies in their ranges instead (deliveryJudgeRanges); one that names none, in its
+// unit's.
 var targetRanges = map[string]targetRange{
 	unitRatio:         {least: 0, most: 1},
 	"count":           {least: 0, most: math.Inf(1)},
@@ -878,13 +883,19 @@ var targetRanges = map[string]targetRange{
 
 // CheckTarget refuses target, the target a version of an eval whose unit is unit will hold, where
 // no reading of the eval could meet or miss it: a number that is not finite (NaN, an infinity,
-// which no JSON answer writes), or one outside the range unit holds (targetRanges), 400
-// EVAL_FIELD_INVALID naming target (CodeFieldInvalid). nil where the target is off (nil), within
-// the range, or any finite number of a unit that states no range. The range is read from the unit
-// alone, never from the eval's slug, so a logged eval in ratio holds to it as deploy-run-success
-// does. It is the one statement of the rule: every write of a target calls it on the version it
-// will store, the register write (Store.Register) and any route that sets an eval's target.
-func CheckTarget(unit string, target *float64) error {
+// which no JSON answer writes), or one outside its range, 400 EVAL_FIELD_INVALID naming target
+// (CodeFieldInvalid) and the judge or the unit whose range it is outside. judges are the
+// statistics the target judges that hold ranges of their own, a delivery eval's target_judges
+// (rangedJudges). Where there are any, the target lies in the range of each (deliveryJudgeRanges)
+// rather than in the unit's, since a target judged by a count is a count whatever its eval's unit;
+// a judge with no range of its own holds the unit's. Where there are none, the range is the unit's
+// (targetRanges), read from the unit alone, never from the eval's slug, so a logged eval in ratio
+// holds to it as deploy-run-success does; a caller whose target names no judge passes the unit and
+// the target alone. nil where the target is off (nil), within every range, or any finite number of
+// a unit that states no range. It is the one statement of the rule: every write of a target calls
+// it on the version it will store, the register write (Store.Register) and any route that sets an
+// eval's target.
+func CheckTarget(unit string, target *float64, judges ...string) error {
 	if target == nil {
 		return nil
 	}
@@ -892,17 +903,47 @@ func CheckTarget(unit string, target *float64) error {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return fieldRefusal(CodeFieldInvalid, fieldTarget, "target %v is no finite number, so no reading could meet or miss it", value)
 	}
-	bounds, ranged := targetRanges[unit]
-	switch {
-	case !ranged:
-	case value < bounds.least:
-		return fieldRefusal(CodeFieldInvalid, fieldTarget, "target %v is below %v, the least a target in %s takes: no reading in %s is below %v, so the target would judge every reading alike",
-			value, bounds.least, unit, unit, bounds.least)
-	case value > bounds.most:
-		return fieldRefusal(CodeFieldInvalid, fieldTarget, "target %v is past %v, the most a target in %s takes: no reading in %s is past %v, so the target would judge every reading alike",
-			value, bounds.most, unit, unit, bounds.most)
+	if len(judges) == 0 {
+		return targetOutside(value, unit, "")
+	}
+	for _, judge := range judges {
+		if err := targetOutside(value, unit, judge); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// targetOutside refuses value, a finite target, where it lies outside the range of judge
+// (deliveryJudgeRanges), or, where judge is "" or holds no range of its own, of unit
+// (targetRanges), naming the judge or the unit (CheckTarget); nil within it, or where neither
+// states a range.
+func targetOutside(value float64, unit, judge string) error {
+	var bounds targetRange
+	var ranged bool
+	if judge != "" {
+		bounds, ranged = deliveryJudgeRanges[judge]
+	}
+	if !ranged {
+		bounds, ranged = targetRanges[unit]
+		judge = ""
+	}
+	if !ranged || (bounds.least <= value && value <= bounds.most) {
+		return nil
+	}
+	var of, reading string
+	if judge == "" {
+		of = "in " + unit
+		reading = of
+	} else {
+		of, reading = "judged by "+judge, "of "+judge
+	}
+	if value < bounds.least {
+		return fieldRefusal(CodeFieldInvalid, fieldTarget, "target %v is below %v, the least a target %s takes: no reading %s is below %v, so the target would judge every reading alike",
+			value, bounds.least, of, reading, bounds.least)
+	}
+	return fieldRefusal(CodeFieldInvalid, fieldTarget, "target %v is past %v, the most a target %s takes: no reading %s is past %v, so the target would judge every reading alike",
+		value, bounds.most, of, reading, bounds.most)
 }
 
 // computationField is the first field change names that the computation of a computed eval

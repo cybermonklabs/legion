@@ -166,6 +166,40 @@ var deliveryJudges = func() map[string][]string {
 	return judges
 }()
 
+// deliveryJudgeRanges is the range of targets each judge of deliveryJudges holds, by
+// `<series>.<stat>`: a target of a delivery eval that names its judges lies in the range of each
+// (CheckTarget, through rangedJudges) rather than in its unit's. A rate, a share of its own counts
+// (runs.rate, per_deploy.rate, per_pr.rate, upper_bound.rate), is from 0 to 1, as a ratio is; every
+// other judge, a count, a sum, a per-day count or a quantile in minutes, is 0 or more, as a count
+// is, whatever its eval's unit: deploy-run-success is in ratio, and a target of 300 judged by
+// runs.concluded is 300 concluded runs over the window. Each judge has its row by name, never by a
+// rule a new judge would fall under, and TestEveryDeliveryJudgeHasATargetRange holds every judge of
+// deliveryJudges to a row.
+var deliveryJudgeRanges = func() map[string]targetRange {
+	share, count := targetRanges[unitRatio], targetRanges["count"]
+	return map[string]targetRange{
+		"deploys.deploys": count, "deploys.per_day": count, "deploys.with_prs": count, "deploys.with_prs_per_day": count,
+		"per_deploy.rate": share, "per_deploy.confirmed": count, "per_deploy.pending": count, "per_deploy.rejected": count, "per_deploy.total": count,
+		"per_pr.rate": share, "per_pr.confirmed": count, "per_pr.pending": count, "per_pr.rejected": count, "per_pr.reverts": count, "per_pr.total": count,
+		"upper_bound.rate": share, "upper_bound.confirmed_or_pending": count,
+		"minutes.n": count, "minutes.median": count, "minutes.p90": count, "minutes.max": count,
+		"runs.rate": share, "runs.concluded": count, "runs.reached_production": count, "runs.cancelled": count,
+		"issues.value": count,
+	}
+}()
+
+// rangedJudges is the judges whose ranges definition's target lies in (CheckTarget): its
+// target_judges where it is an eval of deliveryJudges, each a statistic the delivery answers state a
+// figure of, and none of any other eval, whose target lies in its unit's range whatever it judges,
+// since a statistic of another eval that shares a judge's name (a CI eval's minutes.n) is no figure
+// of it.
+func rangedJudges(definition Definition) []string {
+	if _, delivered := deliveryJudges[definition.Slug]; !delivered {
+		return nil
+	}
+	return definition.TargetJudges
+}
+
 // DeployRepoEvals reads the current definition and series of each of slugs in the project of
 // deployRepo, by slug, in one snapshot. The deployment-wide answers count every project's rows, so
 // no row names their project; the one a repository names is the project whose published default

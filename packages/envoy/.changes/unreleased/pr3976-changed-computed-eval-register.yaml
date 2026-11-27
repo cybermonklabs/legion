@@ -36,7 +36,13 @@ body: |-
   They judge every statistic those six evals state, a lead time's `n` included; a target judge of
   one of them that the delivery answers state no figure of (`unowned-p0`'s `issues.n`, the count
   of stored days, or any statistic or series the eval does not state) is `400 EVAL_FIELD_INVALID`
-  naming `target_judges[i]`. The Delivery page and the Pipeline name the statistics each target
+  naming `target_judges[i]`. A target no reading could meet or miss is `400 EVAL_FIELD_INVALID`
+  naming `target`, judged on the version the write leaves: a target of one of them that names its
+  judges lies in the range of each, from 0 to 1 for a rate (`runs.rate`, `per_deploy.rate`,
+  `per_pr.rate`, `upper_bound.rate`) and 0 or more for every other judge, whatever the eval's
+  unit, so `deploy-run-success`, in `ratio`, takes 300 judged by `runs.concluded`; any other
+  target lies in its unit's range, from 0 to 1 in `ratio` and 0 or more in a count, a duration or
+  a size. The Delivery page and the Pipeline name the statistics each target
   judges under its card. A card's badge is its eval's verdict of the whole window; every other
   figure, count, bar and per-day cell is coloured only where the target judges the statistic it
   shows, by its own value of that statistic, a day's bar or cell only for a rate or a quantile of
