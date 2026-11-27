@@ -149,9 +149,11 @@
 #      top-level files and their bytecode among them, in a form unread_named reads, is refused
 #      by name at its
 #      command wherever it is written but in the places WHAT IT READS lists, which are every
-#      place this tree writes one, so every route from such a file to a shell through a word of
-#      that form, the ones round 38 found and the ones it did not, is refused by its place rather
-#      than by its shape (unread_uses); a pattern naming one is read as the reach below reads it.
+#      place this tree writes one, and in an `xargs` command writing an option xargs_command
+#      does not read, which is refused for that option alone (odd_command; round 75), so every
+#      route from such a file to a shell through a word of that form, the ones round 38 found and
+#      the ones it did not, is refused by its place rather than by its shape (unread_uses); a
+#      pattern naming one is read as the reach below reads it.
 #      Such a file is named by
 #      its path from the repository's root, and where a `cd` or a `pushd` in the text, or a
 #      `working-directory` the step or its job's or workflow's defaults set, may move the shell
@@ -529,36 +531,49 @@
 #     and a `retry_fetch` call outside its signature or behind a wrapper, wherever written, the
 #     one form `gh_wait_reset [--stderr <file>] retry_fetch …` aside (rule 6; odd_command);
 #   - an option of a wrapper this check drops (PASSTHROUGH) other than those WRAPPER_OPTIONS
-#     reads, `env -S` among them, and
-#     `busybox` as a command word with any program
-#     after it, wherever written
-#     (`busybox --help`, `--list` and `--list-full` run no program and pass),
-#     whatever the command holds, in a step, a script, the text of a shell's `-c` and a
-#     Dockerfile RUN: this check reads no fetch and no run of a script after either, and until
+#     reads, `env -S` among them, and `busybox` as a command word with any program after it
+#     (`busybox --help`, `--list` and `--list-full` run no program and pass), whatever the
+#     command holds, at a top-level command of a step, of a composite action's step, of a
+#     script, of the text of a shell's `-c` where that shell is the command once the wrappers
+#     this check drops are gone, and of a Dockerfile RUN, but not in a probe, a call whose own
+#     failure is consumed as its answer (THREE SCOPINGS OF THE SUBJECT below): this check reads
+#     no fetch and no run of a script after either, and until
 #     round 38 it read the option, or `busybox`, as the program that runs and so the fetch behind
 #     it as none (odd_command; dispatch://INFRA-1545, round 38); a wrapper is read by its name
 #     whatever directory names it, so `/usr/bin/env -S` is `env -S` (program_name; round 42);
 #   - an option of `timeout` other than those TIMEOUT_OPTIONS and TIMEOUT_JOINED read, `--kill 5`
 #     or `-vk 5` among them; an option of `xargs` other than those XARGS_OPTIONS and
 #     XARGS_PLACEHOLDERS read, `-rn 1` or `--max-args 1` among them; and a shell's group of short
-#     options holding `o` or `O`, `bash -eo pipefail`, wherever written and whatever the command
-#     holds, in the same places: this check cannot tell the duration, the command xargs runs, or
-#     the file or the text the shell runs, after one of them. Until round 74 each was stepped past
-#     as an option taking no value, and the word after it read as the duration, the command or
-#     the shell's operand, so `xargs -rn 1 bash` passed a shell that runs each word xargs reads
+#     options holding `o` or `O`, `bash -eo pipefail`, whatever the command holds, at the same
+#     commands: this check cannot tell the duration, the command xargs runs, or the file or the
+#     text the shell runs, after one of them. Until round 74 each was stepped past as an option
+#     taking no value, and the word after it read as the duration, the command or the shell's
+#     operand, so `xargs -rn 1 bash` passed a shell that runs each word xargs reads
 #     (timeout_option, xargs_command, shell_operand, odd_command; dispatch://INFRA-1545, round
 #     74). The tree writes none: its `timeout` options are `-k <duration>`, `--kill-after=`,
 #     `--signal=` and `--foreground`, its `xargs` options `-r` and `-0`, and its shells' `-c`;
 #   - an option before the subcommand of a tool SUBCOMMAND_TOOLS names, or before the program a
 #     package runner runs, other than those LEADING_OPTIONS reads for that tool, `go -C=dir mod
 #     download`, `docker --config <dir> pull` and `bunx --bun playwright install` among them,
-#     wherever written and whatever the command holds, in the same places, in a call that hands
-#     its words to a loop, and in the body of a heredoc something may run (unread_heredocs): this
-#     check cannot tell the subcommand from the option's value after one. Until round 74 each
-#     verb took the first word that is no option as its subcommand, so `docker --config dir pull`
-#     read `dir` as the subcommand and its pull as no fetch, go stepped past `-C <dir>` alone,
-#     and a runner's option read as the program it runs (leading_options, unread_option,
-#     odd_command; round 74). The table reads `go -C <dir>` and the `bun --revision` query;
+#     whatever the command holds, at the same commands, at a call that hands its words to a loop
+#     (unread_in), and at a top-level command of the body of a heredoc something may run
+#     (unread_heredocs): this check cannot tell the subcommand from the option's value after
+#     one. Until round 74 each verb took the first word that is no option as its subcommand, so
+#     `docker --config dir pull` read `dir` as the subcommand and its pull as no fetch, go
+#     stepped past `-C <dir>` alone, and a runner's option read as the program it runs
+#     (leading_options, unread_option, odd_command; round 74). The table reads `go -C <dir>` and
+#     the `bun --revision` query. An option of env is read at one more place, the `#!` line of
+#     a file directly in .github/scripts/ of a suffix SCRIPT_DATA names, or of Python's bytecode
+#     for one, where an option of env that interpreter_of does not read is refused by name
+#     (round 74). Every other place one of these options may stand is a stated limit under
+#     dispatch://INFRA-1310/artifact/decisions-md, "The download gate's reach ends at the forms
+#     the tree writes", recorded in dispatch://INFRA-1545/artifact/r37-accepted-refusals-md
+#     (dispatch://INFRA-1545, round 75): an option of a wrapper, of `timeout`, of `xargs` or of
+#     a shell, or one before a tool's subcommand, in the command that `xargs` or `find -exec`
+#     runs; an option of a wrapper, of `timeout`, of `xargs` or of a shell in the body of a
+#     heredoc; an option after a `gh` subcommand, which gh_verb_of steps past as one taking no
+#     value; and env's options read in two lists, WRAPPER_OPTIONS["env"] and interpreter_of's
+#     own, each of which fails closed;
 #   - a setting that changes how bash expands a word, a `shopt`, a `set`, a shell's options, a
 #     variable such as GLOBIGNORE, BASH_ENV or ENV, an `env:` or a `shell:`, written in a step, a
 #     composite action, a script, or the text of a shell's `-c` or a `trap`'s action where that
@@ -714,12 +729,18 @@
 #   - which module comes down: a download of `packages/envoy` answers for a
 #     `go -C packages/envoy/infra test` whose module `go.work` does not bind;
 #   - commands outside its pattern that fetch, among them `go list -deps`, `go mod tidy`, `go get`
-#     and `go list -m all`. `go -C=dir build` was one until round 74, and is now refused by name
-#     wherever it is written, since LEADING_OPTIONS reads `-C` only as a word of its own
-#     (odd_command; dispatch://INFRA-1545, round 74). `go generate` is not one: driven at this
-#     head in packages/envoy with an empty module cache and GOPROXY=off, `go generate -n ./...`
-#     exits 0, while `go list -deps ./cmd/dispatch` fails `module lookup disabled by
-#     GOPROXY=off`. Only a command a `//go:generate` directive runs can fetch.
+#     and `go list -m all`. `go -C=dir build` was one until round 74, and is now refused by name,
+#     since LEADING_OPTIONS reads `-C` only as a word of its own, at the places rule 8 refuses an
+#     option before a tool's subcommand (odd_command; dispatch://INFRA-1545, round 74): a
+#     top-level command of a step, of a composite action's step, of a script, of the text of a
+#     shell's `-c` where that shell is the command once the wrappers are gone, and of a Dockerfile
+#     RUN, a call that hands its words to a loop, and a top-level command of the body of a
+#     heredoc something may run. In the command that `xargs` or `find -exec` runs it is still
+#     one, a stated limit under dispatch://INFRA-1310/artifact/decisions-md, recorded in
+#     dispatch://INFRA-1545/artifact/r37-accepted-refusals-md (round 75). `go generate` is not
+#     one: driven at this head in packages/envoy with an empty module cache and GOPROXY=off,
+#     `go generate -n ./...` exits 0, while `go list -deps ./cmd/dispatch` fails `module lookup
+#     disabled by GOPROXY=off`. Only a command a `//go:generate` directive runs can fetch.
 #   - `go install` and `go run` of a `module@version`, which build from THAT module's own go.mod
 #     and read no go.work at all, so a job's workspace `go mod download` covers none of what
 #     they fetch: each such call is a download site of its own. They are retried where they are
@@ -1826,10 +1847,11 @@ WRAPPER_OPTIONS = {
 # `--foreground`, and the rest are their other spellings and timeout's two other options,
 # `--preserve-status` and `-v` or `--verbose`, which take no word.
 # Any other option word, a cluster such as `-vk`, an abbreviation such as `--kill` or one joined
-# to its value such as `-k5`, is refused by name wherever it is written (timeout_option,
-# odd_command): until round 74 reduce_words and odd_command each stepped past such a word as an
-# option taking no value, so `timeout --kill 5 60 curl …` read 5 as the duration and 60 as the
-# command, and the fetch behind it as none (dispatch://INFRA-1545, round 74).
+# to its value such as `-k5`, is refused by name at the places the header's list of shapes
+# REFUSED BY NAME gives for it (timeout_option, odd_command): until round 74 reduce_words and
+# odd_command each stepped past such a word as an option taking no value, so `timeout --kill 5
+# 60 curl …` read 5 as the duration and 60 as the command, and the fetch behind it as none
+# (dispatch://INFRA-1545, round 74).
 TIMEOUT_OPTIONS = {"-k": ("<duration>",), "--kill-after": ("<duration>",), "-s": ("<signal>",),
                    "--signal": ("<signal>",), "--foreground": (), "--preserve-status": (),
                    "-v": (), "--verbose": ()}
@@ -1839,10 +1861,11 @@ TIMEOUT_JOINED = ("--kill-after=", "--signal=")
 # take a word of their own that this reading has listed since round 37. Besides them it reads the
 # placeholder forms `-i`, `-i<placeholder>`, `-I<placeholder>`, `--replace` and
 # `--replace=<placeholder>`, and a `--` that ends the options (xargs_command). Any other option
-# word, a cluster such as `-rn` or a long option such as `--max-args`, is refused by name wherever
-# it is written (odd_command): until round 74 it was stepped past as an option taking no value,
-# so `xargs -rn 1 bash` read `1` as the command xargs runs, and passed a shell that runs each
-# word xargs reads (dispatch://INFRA-1545, round 74).
+# word, a cluster such as `-rn` or a long option such as `--max-args`, is refused by name at the
+# places the header's list of shapes REFUSED BY NAME gives for it (odd_command): until round 74
+# it was stepped past as an option taking no value, so `xargs -rn 1 bash` read `1` as the command
+# xargs runs, and passed a shell that runs each word xargs reads (dispatch://INFRA-1545, round
+# 74).
 XARGS_OPTIONS = {"-r": (), "-0": (), "-I": ("<placeholder>",), "-n": ("<max-args>",),
                  "-L": ("<max-lines>",), "-P": ("<max-procs>",), "-d": ("<delimiter>",),
                  "-a": ("<file>",), "-E": ("<eof-str>",), "-s": ("<max-chars>",)}
@@ -1920,12 +1943,13 @@ SUBCOMMAND_TOOLS = {"apt-get", "apt", "aptitude", "apk", "pip", "pip3", "uv", "b
 # The options a tool of SUBCOMMAND_TOOLS may write before its subcommand, each with the words after
 # it that it takes, as LEADING_OPTION's refusal names them. Each entry is a form the tree writes,
 # and the comment above it says where. A tool with no entry reads none. Any other option before
-# the subcommand is refused by name wherever it is written (leading_options, odd_command), since
-# this check cannot tell the subcommand from that option's value. Until round 74 each verb took
-# the first word that is no option as its subcommand, so in `docker --config dir pull` the value
-# `dir` read as the subcommand and the pull as no fetch; go stepped past `-C <dir>` alone, and
-# read `go -C=dir mod download` as no fetch (dispatch://INFRA-1545, round 74). Informational
-# flags still work. An informational word after an unread option does not excuse that option.
+# the subcommand is refused by name at the places the header's list of shapes REFUSED BY NAME
+# gives for it (leading_options, odd_command), since this check cannot tell the subcommand from
+# that option's value. Until round 74 each verb took the first word that is no option as its
+# subcommand, so in `docker --config dir pull` the value `dir` read as the subcommand and the pull
+# as no fetch; go stepped past `-C <dir>` alone, and read `go -C=dir mod download` as no fetch
+# (dispatch://INFRA-1545, round 74). Informational flags still work. An informational word after
+# an unread option does not excuse that option.
 LEADING_OPTIONS: dict[str, dict[str, tuple[str, ...] | None]] = {
     # `go -C <dir>`: retried module downloads in workflows, release commands, and the
     # agent-secrets build in packages/daemon/docker/worker.Dockerfile.
@@ -3549,6 +3573,8 @@ RETRY_UNSIGNED = (
 # `busybox`, each refused by name whatever the command holds (odd_command; dispatch://INFRA-1545,
 # rounds 38 and 74): this check reads no command after any of them, so a fetch or a run of a
 # script written there would be held to no floor and charged to no budget. The tree writes none.
+# A form round 74 added cites that round in its own sentence, which each refusal site keeps in
+# place of the round it writes for the others (dispatch://INFRA-1545, round 75).
 WRAPPER_OPTION = (
     "runs `{wrapper}` with `{option}`, an option of it this check does not read: it reads "
     + ticked([" ".join([wrapper, option, *(taken or ())])
@@ -3567,7 +3593,7 @@ TIMEOUT_OPTION = (
     + ", each written as a word of its own. After any other option it cannot tell the duration "
     "from the command, so a fetch or a script that `timeout` runs there is held to no floor and "
     "charged to no budget. Write each option of `timeout` as a word of its own, from that list: "
-    "`-v -k 5`, not `-vk 5`")
+    "`-v -k 5`, not `-vk 5` (dispatch://INFRA-1545, round 74)")
 XARGS_OPTION = (
     "runs `xargs` with `{option}`, an option of xargs that this check does not read. This check "
     "reads "
@@ -3575,14 +3601,15 @@ XARGS_OPTION = (
              + [f"xargs {form}" for form in XARGS_PLACEHOLDERS] + ["xargs --"], "and")
     + ", each written as a word of its own. After any other option it reads no command, so a "
     "fetch or a script that `xargs` runs there is held to no floor and charged to no budget. "
-    "Write each option of `xargs` as a word of its own, from that list: `-r -n 1`, not `-rn 1`")
+    "Write each option of `xargs` as a word of its own, from that list: `-r -n 1`, not `-rn 1` "
+    "(dispatch://INFRA-1545, round 74)")
 SHELL_OPTION = (
     "runs `{shell}` with `{option}`, a group of the shell's short options that holds `o` or `O`. "
     "Each of those two letters takes the next word as its value, and this check reads `-o`, "
     "`+o`, `-O` and `+O` only as words of their own. After this group it cannot tell which word "
     "is the file or the text the shell runs, so a fetch or a script there is held to no floor "
     "and charged to no budget. Write `-o` and `-O` each as a word of its own: `-e -o pipefail`, "
-    "not `-eo pipefail`")
+    "not `-eo pipefail` (dispatch://INFRA-1545, round 74)")
 # An option before the subcommand of a tool SUBCOMMAND_TOOLS names, or before the program a
 # package runner runs, that LEADING_OPTIONS does not read for that tool, refused by name whatever
 # the command holds (leading_options, odd_command; dispatch://INFRA-1545, round 74): this check
@@ -3594,9 +3621,32 @@ LEADING_OPTION = (
     "there. Before a subcommand it reads "
     + (ticked(LEADING_READ, "and") + " alone" if LEADING_READ else "no option")
     + ". It also accepts informational flags " + ticked(sorted(INFORMATIONAL), "or")
-    + ". An unread option may take a value, so the gate does not guess the subcommand. "
+    + ". An unread option may take a value, so this check does not guess the subcommand. {cure} "
+    "(dispatch://INFRA-1545, round 74)")
+# The fix LEADING_OPTION advises (leading_refusal). For an option LEADING_OPTIONS reads for the
+# tool, joined to its value by an `=`, it is the same option written as separate words, the one
+# form the table reads; for any other, the option after the subcommand or a row of the table.
+# Until round 75 every option took the second, which told `go -C=dir` to write `-C` after the
+# subcommand, where go does not take it (dispatch://INFRA-1545, round 75).
+LEADING_JOINED = "Write `{form}` as separate words, the form of it LEADING_OPTIONS reads"
+LEADING_UNREAD = (
     "Where the tool takes the option after its subcommand, write it there. Otherwise add the "
     "option under `{tool}` in LEADING_OPTIONS in this check, with the words it takes")
+
+
+def leading_refusal(tool: str, option: str) -> str:
+    """LEADING_OPTION for `option`, written before the subcommand of `tool`, with the fix that
+    works for that tool: LEADING_JOINED where `option` is one LEADING_OPTIONS reads for `tool`,
+    with the words it takes, joined to its value by an `=`, such as `go -C=packages/envoy`, and
+    LEADING_UNREAD for any other (dispatch://INFRA-1545, round 75). An option written alone, with
+    no `=`, is none the table reads, or it would not be refused."""
+    known = option.partition("=")[0]
+    taken = LEADING_OPTIONS.get(tool, {}).get(known)
+    cure = (LEADING_UNREAD.format(tool=tool) if taken is None
+            else LEADING_JOINED.format(form=" ".join([tool, known, *taken])))
+    return LEADING_OPTION.format(tool=tool, option=option, cure=cure)
+
+
 BUSYBOX_RUN = (
     "runs `{program}`, a program named by an argument of `busybox`, a form this check does "
     "not read: it reads no fetch and no run of a script there, so a `busybox wget` or a `busybox "
@@ -4111,7 +4161,7 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
                 return SHELL_OPTION.format(shell=first, option=option), False, True
         unread = unread_option(rest)
         if unread is not None:
-            return LEADING_OPTION.format(tool=unread[0], option=unread[1]), False, True
+            return leading_refusal(*unread), False, True
         return None
     return None
 
@@ -5305,9 +5355,7 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
         for command in body_loops.commands:
             unread = unread_option(reduce_words(command.words)[0])
             if unread is not None:
-                shapes.append((command.line, LEADING_OPTION.format(tool=unread[0],
-                                                                   option=unread[1]),
-                               True, set(), set(), set()))
+                shapes.append((command.line, leading_refusal(*unread), True, set(), set(), set()))
     for line, form, why in loops.shell_texts:
         # A fetch in the text is a site on the command's own line (sites_of_command).
         shapes.append((line, SHELL_TEXT_REFUSAL.format(form=form, why=why),
@@ -5377,13 +5425,15 @@ def sites_of(path: str, body: str, first_line: int, step: str,
     because a *.sh and a Dockerfile RUN are read with no step's `shell:` to ask about and each
     sets its own flags. A command odd_command names is kept for its refusal, and one that calls
     the helper in a form that fetches nothing holds no site (dispatch://INFRA-1545, round 37). A
-    form odd_command refuses whatever the command holds, an option of a wrapper it does not read
-    or `busybox`, is kept as one that waits, so it is refused wherever it is written
-    (dispatch://INFRA-1545, round 38). A trap's action is commands of the text written on the
-    trap's line (structure), so a fetch there is a site to every rule, charged once where the
-    trap runs once, on EXIT alone set outside every loop and every function's body, which
-    times_run reads as once; and a trap that does not run once is kept for its refusal where its
-    action reaches a fetch (odd_traps, TRAP_FETCH_REFUSAL; dispatch://INFRA-1545, round 46)."""
+    form odd_command refuses whatever the command holds, each one its third answer marks and its
+    own docstring lists, the four round 74 added beside a wrapper's option and `busybox`, is kept
+    as one that waits, so it is refused at that command whatever the command holds
+    (dispatch://INFRA-1545, rounds 38, 74 and 75). A trap's action is commands of the text
+    written on the trap's line (structure), so a fetch there is a site to every rule, charged
+    once where the trap runs once, on EXIT alone set outside every loop and every function's
+    body, which times_run reads as once; and a trap that does not run once is kept for its
+    refusal where its action reaches a fetch (odd_traps, TRAP_FETCH_REFUSAL;
+    dispatch://INFRA-1545, round 46)."""
     commands, loops, probes = commands_of(body, first_line)
 
     def held_by(command: Command) -> list[Site]:
@@ -5543,9 +5593,11 @@ def sites_of_command(path: str, command: Command, loops: Loops,
             # A `bash -c '…' | tar` pipes the interpreter, so a fetch inside it loses its own
             # status the same way a fetch written in the pipeline would.
             sub.piped = sub.piped or command.piped
-            # A wrapper's option this check does not read, or `busybox`, hides the command in the
-            # text as it would in the step, so it is refused there too (odd_command;
-            # dispatch://INFRA-1545, round 38).
+            # A form odd_command refuses whatever the command holds, each one its third answer
+            # (odd[2]) marks and its own docstring lists, the four round 74 added beside a
+            # wrapper's option and `busybox`, hides the command in the text as it would in the
+            # step, so it is refused there too (odd_command; dispatch://INFRA-1545, rounds 38, 74
+            # and 75).
             odd = odd_command(sub.words)
             if odd is not None and odd[2]:
                 loops.odd_commands.append((command.line, odd[0], True, False))
@@ -5562,8 +5614,7 @@ def sites_of_command(path: str, command: Command, loops: Loops,
         if not held:
             unread = unread_in(words[1:])
             if unread is not None:
-                loops.odd_commands.append((command.line, LEADING_OPTION.format(
-                    tool=unread[0], option=unread[1]), True, False))
+                loops.odd_commands.append((command.line, leading_refusal(*unread), True, False))
             return []
         verb, rest = held
         _, _, inner_bound, inner_seconds = reduce_words(rest)
@@ -6850,15 +6901,17 @@ for path in DOCKERFILES:
         while match := re.match(r"\s*--(mount|network|security)=\S+", rest):
             rest = rest[match.end():]
         found, run_loops = sites_of(path, rest, line, "-")
-        # A form odd_command names hides a fetch from every rule here as it does in a step: an
-        # option of a wrapper, of `timeout` or of `xargs` this check does not read, a shell's
-        # group of short options holding `o` or `O`, `busybox`, and an option before a tool's
-        # subcommand that LEADING_OPTIONS does not read. Until round 38 a Dockerfile's were read
-        # and dropped (dispatch://INFRA-1545, rounds 38 and 74). The Dockerfiles use only forms
-        # the gate reads, including the worker's Go build with `-C` as a separate word.
+        # A form odd_command names hides a fetch from every rule here as it does in a step, each
+        # one odd_command refuses whatever the command holds among them, as its third answer marks
+        # and its own docstring lists. Until round 38 a Dockerfile's were read and dropped
+        # (dispatch://INFRA-1545, rounds 38 and 74). A sentence that cites the round that added its
+        # form, as each of round 74's does, keeps that round here as at a step's refusal, and any
+        # other cites round 38 (dispatch://INFRA-1545, round 75). The Dockerfiles use only forms
+        # this check reads, including the worker's Go build with `-C` as a separate word.
         for _at, sentence, waits, _helper in run_loops.odd_commands:
             if waits:
-                problem(path, line, f"this RUN {sentence} (dispatch://INFRA-1545, round 38).")
+                problem(path, line, f"this RUN {sentence}" + (
+                    "." if "(dispatch://" in sentence else " (dispatch://INFRA-1545, round 38)."))
         if not found:
             continue
         sites += found
@@ -7145,8 +7198,8 @@ for site in exempted:
 # the next job of that name.
 # The options between `go` and its subcommand are those LEADING_OPTIONS reads for go, each with the
 # words it takes, so this text reading steps past what verb_of steps past and no more. Any other
-# option there is refused by name wherever it is written (odd_command; dispatch://INFRA-1545,
-# round 74).
+# option there is refused by name at the places the header's list of shapes REFUSED BY NAME
+# gives for it (odd_command; dispatch://INFRA-1545, round 74).
 GO_LEADING = "(?:" + "|".join(r"\s+" + re.escape(option) + r"\s+\S+" * len(taken)
                               for option, taken in LEADING_OPTIONS.get("go", {}).items()
                               if taken is not None) + ")*"
@@ -8410,7 +8463,9 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
     there is, and a word between xargs and it as one in the words before its command. Until the
     forward merge of main's #5583, whose document-service legs write `… | xargs -r env GODEBUG=…
     RACE_MEM_LIMIT_KB=… ../../.github/scripts/race_memory.py go test …`, such a file was read as
-    an argument of `xargs`."""
+    an argument of `xargs`. The one command not read is an `xargs` that writes an option
+    xargs_command does not read: odd_command refuses that option by name whatever the command
+    holds, and that refusal stands alone (dispatch://INFRA-1545, round 75)."""
     scanner = CallScanner(first_line)
     commands = scanner.scan(text)
     elsewhere = elsewhere or any(reduce_words(command.words)[0][:1] in (["cd"], ["pushd"])
@@ -8424,10 +8479,14 @@ def unread_uses(text: str, first_line: int, action: str | None, elsewhere: bool,
         start = len(words) - len(reduced)
         if reduced and program_name(reduced[0]) == "xargs":
             # After an option xargs_command does not read, the command xargs runs is not read,
-            # and every word after `xargs` is one of its arguments: odd_command refuses the
-            # option by name (dispatch://INFRA-1545, round 74).
+            # and odd_command refuses the option by name whatever the command holds, so the
+            # command is read no further here: until round 75 each word after `xargs` was read as
+            # one of its arguments, and a file there was refused a second time, as an argument of
+            # `xargs` (dispatch://INFRA-1545, rounds 74 and 75).
             at, _placeholder, unread = xargs_command(reduced)
-            handed = reduce_words(reduced[at:])[0] if unread is None else []
+            if unread is not None:
+                continue
+            handed = reduce_words(reduced[at:])[0]
             if handed:
                 start = len(words) - len(handed)
         for at, word in [*enumerate(words), *((None, word) for word in command.redirected)]:

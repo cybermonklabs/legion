@@ -15739,13 +15739,14 @@ check "refuses at line 16 the program with no first line as the command word xar
     .github/scripts/zz-plain.py '#!')"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
 
-# R74 xargs. An option of xargs that xargs_command does not read is refused by name, wherever it is
-# written and whatever xargs runs (dispatch://INFRA-1545, round 74): review 6085108423's three
-# inputs, a cluster before a literal program, the same cluster before a shell that runs each word
-# xargs reads, and a long option whose value is a word of its own before that shell. Until round
-# 74 each such option was stepped past as one taking no value, so `1` read as the command xargs
-# runs: both shells passed, and the program was refused as an argument of `1`. Now the program is
-# an argument of `xargs`, the one place this check reads it in after an option it does not read.
+# R74 xargs. An option of xargs that xargs_command does not read is refused by name, at the
+# commands odd_command reads and whatever xargs runs (dispatch://INFRA-1545, round 74): review
+# 6085108423's three inputs, a cluster before a literal program, the same cluster before a shell
+# that runs each word xargs reads, and a long option whose value is a word of its own before that
+# shell. Until round 74 each such option was stepped past as one taking no value, so `1` read as
+# the command xargs runs: both shells passed, and the program was refused as an argument of `1`.
+# Now the option's refusal stands alone, citing round 74 in its own sentence: until round 75 the
+# program was refused a second time, as an argument of `xargs` (dispatch://INFRA-1545, round 75).
 # The same options as words of their own are read: the program, whose first line names python3,
 # passes, and the shell is refused for the run it makes, which the gate read before round 74 too.
 # Each refusal row is checked by its line, the program it names and the option, never by the
@@ -15779,15 +15780,18 @@ for refusal in "8	-rn" "10	-rn" "12	--max-args"; do
   IFS=$'\t' read -r line option <<<"$refusal"
   check "refuses the option $option of xargs at line $line by name" \
     "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" '`xargs`' "\`$option\`")"
+  check "cites round 74 for the option $option at line $line, not round 37 or 38" \
+    "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" "\`$option\`" \
+      'round 74' --not 'round 37' 'round 38')"
 done
-check "refuses the program at line 8 as an argument of xargs, not of the option's value" \
-  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' \
-    '`.github/scripts/zz-r74.py`' '`xargs`' --not '`-rn`' '`1`')"
+check "refuses the program at line 8 in no refusal of its own: the option's refusal stands alone" \
+  "$(is "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=8::' \
+    '`.github/scripts/zz-r74.py`')" false)"
 check "passes the program after the options written as words of their own, at line 14" \
   "$(is "$(contains "$out" 'case.yaml,line=14::')" false)"
 check "reads the shell after the options written as words of their own, and refuses its run at line 16" \
   "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=16::' '`xargs`' '`bash`')"
-check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
 
 # R74 class. The other readings that stepped past an option they did not know before the command,
 # the operand or the interpreter they look for fail closed the same way, each refused by name
@@ -15833,6 +15837,12 @@ check "refuses no option of timeout at line 11" \
   "$(is "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=11::' '`timeout`')" false)"
 check "refuses the group -eo of bash at line 13 by name" \
   "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=13::' '`bash`' '`-eo`')"
+for refusal in "8	--kill" "13	-eo"; do
+  IFS=$'\t' read -r line option <<<"$refusal"
+  check "cites round 74 for the option $option at line $line, not round 37 or 38" \
+    "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" "\`$option\`" \
+      'round 74' --not 'round 37' 'round 38')"
+done
 check "reads the built path after -o written apart at line 15, and refuses its run" \
   "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=15::' '`$SCRIPT`' '`bash`')"
 check "refuses zz-r74-argv0.py at its line 1, naming env and its option -a" \
@@ -15911,13 +15921,31 @@ for refusal in "20	go	-C=packages/envoy" "22	docker	--config" "24	docker	--confi
   check "refuses the option $option before the subcommand of $tool at line $line by name" \
     "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" "\`$tool\`" \
       "\`$option\`")"
+  check "cites round 74 for the option $option of $tool at line $line, not round 37 or 38" \
+    "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" "\`$option\`" \
+      'round 74' --not 'round 37' 'round 38')"
 done
-check "names at line 20 the supported Go option and the table that lists it" \
+# The advice names a fix that works for the tool (dispatch://INFRA-1545, round 75): go takes `-C`
+# before its subcommand alone, so the joined `-C=<dir>` is told to write `go -C <dir>`, the form
+# the table reads, and is not told to write the option after the subcommand; docker's `--config`,
+# which the table does not read, is still told either fix. The Go row names `go -C <dir>` twice,
+# once in the list the table reads and once in the advice, and fails where the joined form gets
+# the advice of an option the table does not read.
+check "advises at line 20 the Go option as separate words, the form LEADING_OPTIONS reads, and not after the subcommand" \
   "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=20::' '`go -C <dir>`' \
-    'LEADING_OPTIONS')"
+    '`go -C <dir>`' 'LEADING_OPTIONS' --not 'after its subcommand')"
+check "advises at line 22 docker's option after its subcommand or in LEADING_OPTIONS" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=22::' '`docker`' \
+    '`--config`' 'after its subcommand' 'LEADING_OPTIONS')"
 check "refuses the Dockerfile RUN's joined -C at its line 3 by name" \
   "$(names_at "$out" '::error file=packages/daemon/docker/worker.Dockerfile,line=3::' '`go`' \
     '`-C=/src/packages/envoy`')"
+check "cites round 74 for the Dockerfile RUN's joined -C at its line 3, not round 37 or 38" \
+  "$(names_at "$out" '::error file=packages/daemon/docker/worker.Dockerfile,line=3::' \
+    '`-C=/src/packages/envoy`' 'round 74' --not 'round 37' 'round 38')"
+check "advises the Dockerfile RUN's joined -C at its line 3 as separate words, and not after the subcommand" \
+  "$(names_at "$out" '::error file=packages/daemon/docker/worker.Dockerfile,line=3::' \
+    '`go -C <dir>`' '`go -C <dir>`' --not 'after its subcommand')"
 check "passes the Dockerfile RUN that runs go env after -C <dir>" \
   "$(is "$(contains "$out" 'worker.Dockerfile,line=4::')" false)"
 check "passes docker --version and gh --version, which answer about themselves" \
@@ -15985,10 +16013,20 @@ check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses by name the option --config of docker that the call at line 19 hands the loop" \
   "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=19::' '`docker`' '`--config`')"
-check "reads the pull whose option follows the subcommand, and refuses the loop at line 25 as a copy of the helper" \
-  "$(contains "$out" 'file=.github/workflows/case.yaml,line=25::this loop retries .docker pull. itself')"
+check "reads the pull whose option follows the subcommand, and refuses the loop at line 25 that retries it" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=25::' '`docker pull`')"
+check "refuses the pull the call at line 32 hands the loop, which no retry_fetch holds" \
+  "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=32::' '`docker pull`' \
+    "'Hand the loop a pull with its option after the subcommand'")"
 check "refuses by name the option --debug of docker at line 36, in the body of a heredoc a shell runs" \
   "$(names_at "$out" '::error file=.github/workflows/case.yaml,line=36::' '`docker`' '`--debug`')"
+for refusal in "19	--config" "36	--debug"; do
+  IFS=$'\t' read -r line option <<<"$refusal"
+  check "cites round 74 for the option $option at line $line, not round 37 or 38" \
+    "$(names_at "$out" "::error file=.github/workflows/case.yaml,line=$line::" "\`$option\`" \
+      'round 74' --not 'round 37' 'round 38')"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
 
 # W17. Six glob shapes the Spec draft's review drove past the gate at bd06b2a2, each exit 0 under
 # a one-minute key (dispatch://INFRA-1545, round 38): a glob or a brace expansion in a run's
