@@ -716,6 +716,8 @@ export async function roomWriteGate(page: Page, key: string): Promise<Gate> {
     await gotoIssue(probe, presetPath(key, "graph"));
     const row = readRow(probe, statement.id);
     await expect(row.first(), "Graph drew no third statement row").toBeVisible();
+    // One read is enough: a statement of a document carries its edit cue from the commit that
+    // first draws its row, and the room's facts keep it when they come (`nodeEditable`).
     const editable = await row.evaluateAll(([one]) => one?.hasAttribute("data-editable") ?? null);
     if (editable !== true) {
       return {
@@ -800,6 +802,8 @@ export async function criterionEditorGate(page: Page, key: string): Promise<Gate
       "Graph drew no third statement row"
     ).toBeVisible();
     const criterionRow = readRow(probe, criterion.id);
+    // One read is enough: the visible third statement and the criterion come from the same
+    // committed tree read, and a block of a document carries its edit cue from that commit.
     const editable = await criterionRow.evaluateAll(
       ([row]) => row?.hasAttribute("data-editable") ?? null
     );
