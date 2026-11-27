@@ -22,14 +22,17 @@ export function waitInAct(ms: number, first?: () => void): Promise<void> {
   });
 }
 
-/** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
- *  still asked for - as the next frame would; a frame cancelled first is not run. `asked` names
- *  the frames asked for and not run yet, and `restore` gives the frames back to happy-dom. */
-export function framesByHand(): {
+/** The frames a case holds and runs by hand (`framesByHand`). */
+export interface HeldFrames {
   readonly asked: () => number[];
   readonly restore: () => void;
   readonly run: (frames?: readonly number[]) => Promise<void>;
-} {
+}
+
+/** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
+ *  still asked for - as the next frame would; a frame cancelled first is not run. `asked` names
+ *  the frames asked for and not run yet, and `restore` gives the frames back to happy-dom. */
+export function framesByHand(): HeldFrames {
   const asked = new Map<number, FrameRequestCallback>();
   let last = 0;
   const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
