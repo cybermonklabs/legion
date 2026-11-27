@@ -15,7 +15,9 @@ import (
 // H1 before the install, #70 is now at H2, and the install seeded H1. The first settle's read of
 // #70's commits gets no list: GitHub answers 502, or 404 (a repository or pull request the App
 // cannot see right now), or the deployment holds no App key. Each time H1 stays an unverified
-// candidate, nothing is published there, and the issue keeps a mark due after the backoff. Once
+// candidate and nothing is published there. Where a retry can answer (502, 404) the issue keeps
+// a mark due after the backoff; with no App key, which no retry answers
+// (delivery.MembershipUnreadable), it keeps none, so no test handoff waits for the read. Once
 // GitHub answers and the issue is owed again, the settle reads #70's commits, which list H1, and
 // publishes k1 yes at H1.
 func TestAFormerHeadTheInstallSeededOutlastsAReadGitHubDidNotAnswer(t *testing.T) {
@@ -49,8 +51,12 @@ func TestAFormerHeadTheInstallSeededOutlastsAReadGitHubDidNotAnswer(t *testing.T
 				select count(*) from check_states_owed where issue_key = $1 and due_at > now() + interval '10 seconds'`, rig.issue).Scan(&later); err != nil {
 				t.Fatalf("read the marks of %s: %v", rig.issue, err)
 			}
-			if later != 1 {
-				t.Fatalf("%s holds %d marks due after the backoff after a read that got no list (%s), want one: the candidate still owes a read", rig.issue, later, failure)
+			want := 1
+			if failure == "no App key" {
+				want = 0
+			}
+			if later != want {
+				t.Fatalf("%s holds %d marks due after the backoff after a read that got no list (%s), want %d", rig.issue, later, failure, want)
 			}
 
 			rig.served.deps.GitHub = client
