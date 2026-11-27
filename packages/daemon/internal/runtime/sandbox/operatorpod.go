@@ -95,9 +95,8 @@ func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
 // recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
 // image (ImageEnv), every launch's spec (the role App's git identity, the table of every role's
-// identity, runtime.RoleIdentitiesVariable, which a workflow role's launch alone carries, the
-// project's two refusal patterns, runtime.OwnRefusalVariable and runtime.ProviderRefusalVariable,
-// and each launch secret's `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes
+// identity, runtime.RoleIdentitiesVariable, which a workflow role's launch alone carries, and
+// each launch secret's `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes
 // for each role out of the operator's own value (roleOperatorEnv: the settings overlays, which are
 // hand-added here since `composed` deliberately leaves them out, and every name of `composed`, the
 // spend attributes alone today), and the operator's own pod env. The exchange identity's two
@@ -162,9 +161,6 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 		add(name, "every launch sets (the git identity the role's GitHub App commits as)", false)
 	}
 	add(runtime.RoleIdentitiesVariable, "every launch sets (the identities of the issue's roles, which the push step reads)", false)
-	for _, name := range []string{runtime.OwnRefusalVariable, runtime.ProviderRefusalVariable} {
-		add(name, "every launch sets from the project's own refusal pattern (projects.<KEY>.signal_own_refusal_pattern, signal_provider_refusal_pattern)", false)
-	}
 	for _, name := range launchSecrets {
 		add(name+"_FILE", "every launch sets (the pointer to the launch secret "+name+")", false)
 	}

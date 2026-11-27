@@ -41,8 +41,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Config is one bridge's resolved inputs. Run spawns Argv once and bridges until it exits.
@@ -64,12 +62,6 @@ type Config struct {
 	DaemonURL     string
 	BootTokenFile string
 	Generation    uint64
-	// OwnRefusal and ProviderRefusal are the project's two refusal patterns, by which the bridge
-	// classes each refused model request it reports (modelrequests.go), as the pane is told them
-	// (runtime.OwnRefusalVariable, runtime.ProviderRefusalVariable); "" where the project sets
-	// none.
-	OwnRefusal      string
-	ProviderRefusal string
 	// Stdin carries the daemon's frames from the shim, Stdout the frames back to it. Log receives
 	// the bridge's own lines and Claude Code's stderr: what the pane shows.
 	Stdin  io.Reader
@@ -118,15 +110,13 @@ func Configure(argv, env []string) (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		Argv:            argv,
-		Env:             env,
-		SessionID:       session,
-		Seed:            fresh,
-		DaemonURL:       envValue(env, "LEGION_DAEMON_URL"),
-		BootTokenFile:   envValue(env, "LEGION_BOOT_TOKEN_FILE"),
-		Generation:      generationOf(envValue(env, "LEGION_GENERATION")),
-		OwnRefusal:      envValue(env, runtime.OwnRefusalVariable),
-		ProviderRefusal: envValue(env, runtime.ProviderRefusalVariable),
+		Argv:          argv,
+		Env:           env,
+		SessionID:     session,
+		Seed:          fresh,
+		DaemonURL:     envValue(env, "LEGION_DAEMON_URL"),
+		BootTokenFile: envValue(env, "LEGION_BOOT_TOKEN_FILE"),
+		Generation:    generationOf(envValue(env, "LEGION_GENERATION")),
 	}
 	if fresh {
 		role, issue := envValue(env, "LEGION_ROLE"), envValue(env, "LEGION_ISSUE")

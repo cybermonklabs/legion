@@ -3139,18 +3139,16 @@ type Store interface {
 	// wait on the project's default assignee, or why the signal cannot be computed.
 	ApprovalsOf(ctx context.Context, tx pgx.Tx, project string) (Approvals, error)
 	// KeepModelRequests keeps each request of report once by its claim, its generation and the
-	// request's id, each marked counted where counts takes its model and with the report's word on
-	// the 429s its host's transport retries, keeps none that ended before the first minute a read
-	// at now or later reaches, and deletes the project's requests of minutes no read reaches again.
+	// request's id, each marked counted where counts takes its model, keeps none that ended before
+	// the first minute a read at now or later reaches, and deletes the project's requests of
+	// minutes no read reaches again.
 	KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, report ModelRequestsReport, counts func(model string) bool, now time.Time) error
 	// KeepTokenLimit records limit (0 for none) as project's token limit a minute from at, where it
 	// differs from the limit in force then, and deletes the limits no read at at or later reaches.
 	KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string, limit int64, at time.Time) error
 	// ProviderMinutes is project's provider record of each whole minute that begins in [from,
 	// to), each held only where every request of it is known to have been reported by a host of a
-	// plugin contract at or above reporting, and the latest of those minutes that holds a request
-	// of a host that does not report the 429s its transport retries: what the provider's headroom
-	// and refusals read.
+	// plugin contract at or above reporting: what the provider's headroom reads.
 	ProviderMinutes(ctx context.Context, tx pgx.Tx, project string, from, to time.Time, reporting int) (ProviderMinutes, error)
 	// SignalDeadline is project's one deadline of admission by signals as committed, and
 	// PutSignalDeadline writes it, in the transaction of the fact whose pass computed it (admit's

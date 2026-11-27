@@ -8,7 +8,8 @@
 # control); the limit raised above the value starts it with no restart while the second stays
 # behind its Dispatch link; a restart over the same store reads back the switch, the limit, who set
 # them, why and every entry of the record of changes; a limit outside its signal's range is refused
-# with its reason and changes nothing; a limit cleared while the rule is on takes that limit alone
+# with its reason and changes nothing, as is a limit on the provider's part `refusals`, which the
+# provider does not have; a limit cleared while the rule is on takes that limit alone
 # away; and with the rule off the cap starts the second issue once its link is gone, though the
 # queue still reads over its limit. The recording Dispatch stand-in refuses any write of an
 # admission reading, and the proof holds that none came. The whole daemon is booted by the function

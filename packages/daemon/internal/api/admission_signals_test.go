@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,10 +188,10 @@ func TestAdmissionSignalSettings(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
 		h := newSignalsHarness(t)
 		answer := h.changed(operatorSignalsRoute, operatorChange(SignalsClearLimit, signals.Kills, nil, "the owner asked whether a limit stands"))
-		if answer.Changed || answer.Settings.On || answer.Settings.Switch != nil || len(answer.Settings.Limits) != len(signals.Names()) {
-			t.Fatalf("a fresh project's settings = %+v, want off, no switch's change, and the six series", answer)
+		if answer.Changed || answer.Settings.On || answer.Settings.Switch != nil || len(answer.Settings.Limits) != len(store.LiveSeries()) {
+			t.Fatalf("a fresh project's settings = %+v, want off, no switch's change, and the five series", answer)
 		}
-		for i, series := range signals.Names() {
+		for i, series := range store.LiveSeries() {
 			signal, part := store.SignalPart(series)
 			got := answer.Settings.Limits[i]
 			if got.Signal != signal || (got.Part == nil) != (part == "") || got.Limit != nil || got.Set != nil {
@@ -242,10 +243,10 @@ func TestAdmissionSignalSettings(t *testing.T) {
 		h := newSignalsHarness(t)
 		grant := h.controllerSession()
 		answer := h.changed(controllerSignalsRoute, ProjectSignalsRequest{GrantID: grant, Action: SignalsSetLimit, Signal: signals.Provider,
-			Part: store.PartRefusals, Limit: new(3.0), Reason: "the owner's word in the weekly plan"})
+			Part: store.PartHeadroom, Limit: new(0.8), Reason: "the owner's word in the weekly plan"})
 		want := store.PauseActor{Kind: store.PauseByController, Session: controllerSession}
-		if got := limitOf(t, answer.Settings, signals.Refusals); got.Limit == nil || *got.Limit != 3 || got.Set == nil || got.Set.By != want {
-			t.Fatalf("the refusals' limit through the controller = %+v, want 3 set by %+v", got, want)
+		if got := limitOf(t, answer.Settings, signals.Provider); got.Limit == nil || *got.Limit != 0.8 || got.Set == nil || got.Set.By != want {
+			t.Fatalf("the headroom's limit through the controller = %+v, want 0.8 set by %+v", got, want)
 		}
 		operatorGrant := controllerGrant(t, h.harness).GrantID
 		on := h.changed(controllerSignalsRoute, ProjectSignalsRequest{GrantID: operatorGrant, Action: SignalsOn, Reason: "the operator's grant"})
@@ -266,14 +267,57 @@ func TestAdmissionSignalSettings(t *testing.T) {
 			t.Fatalf("the refused callers changed %s into %s", before, after)
 		}
 	})
-	// ranges: each series refuses 0 and a limit above its top and takes its top; the three that
+	// provider refusals: the provider's one part is its headroom, so a set or a clear of a limit
+	// of its refusals, through either route, is refused SIGNAL_SETTING_INVALID with the reason,
+	// changing nothing, and the state and its record of changes carry no series of them.
+	t.Run("provider refusals", func(t *testing.T) {
+		h := newSignalsHarness(t)
+		grant := h.controllerSession()
+		h.changed(operatorSignalsRoute, operatorChange(SignalsOn, "", nil, "the owner turned it on"))
+		for _, tc := range []struct {
+			name  string
+			route string
+			req   any
+		}{
+			{"set by the operator", operatorSignalsRoute, OperatorSignalsRequest{Action: SignalsSetLimit, Signal: signals.Provider, Part: "refusals", Limit: new(2.0), Reason: "r"}},
+			{"cleared by the operator", operatorSignalsRoute, OperatorSignalsRequest{Action: SignalsClearLimit, Signal: signals.Provider, Part: "refusals", Reason: "r"}},
+			{"set by the controller", controllerSignalsRoute, ProjectSignalsRequest{GrantID: grant, Action: SignalsSetLimit, Signal: signals.Provider, Part: "refusals",
+				Limit: new(2.0), Reason: "the owner's word"}},
+			{"cleared by the controller", controllerSignalsRoute, ProjectSignalsRequest{GrantID: grant, Action: SignalsClearLimit, Signal: signals.Provider, Part: "refusals",
+				Reason: "the owner's word"}},
+			{"named as a signal of its own", operatorSignalsRoute, OperatorSignalsRequest{Action: SignalsSetLimit, Signal: "refusals", Limit: new(2.0), Reason: "r"}},
+		} {
+			before := h.standing()
+			status, _, raw := h.change(tc.route, tc.req)
+			var failure Failure
+			if status != http.StatusBadRequest || json.Unmarshal([]byte(raw), &failure) != nil || failure.Code != signalSettingInvalid ||
+				!strings.Contains(failure.Error, "provider (part headroom)") || !strings.Contains(failure.Error, "nothing changed") {
+				t.Errorf("%s = %d %s, want 400 %s naming the provider's one part and that nothing changed", tc.name, status, raw, signalSettingInvalid)
+			}
+			if after := h.standing(); after != before {
+				t.Errorf("%s, refused, changed %s into %s", tc.name, before, after)
+			}
+		}
+		reading, changes := h.servedSignals()
+		for name := range seriesServed(t, reading) {
+			if name != seriesKey(signals.Provider) && strings.HasPrefix(name, signals.Provider+"/") {
+				t.Errorf("the state serves the provider's series %s, want the headroom alone", name)
+			}
+		}
+		for _, raw := range changes {
+			if entry := raw.(map[string]any); entry["signal"] == signals.Provider && entry["part"] != store.PartHeadroom {
+				t.Errorf("the record of changes holds %v, want no entry of the provider but its headroom's", entry)
+			}
+		}
+	})
+	// ranges: each series refuses 0 and a limit above its top and takes its top; the two that
 	// count events refuse a fraction; every refusal answers SIGNAL_SETTING_INVALID with the reason
 	// and changes nothing.
 	t.Run("ranges", func(t *testing.T) {
 		h := newSignalsHarness(t)
-		tops := map[string]float64{signals.Idle: 1, signals.Queue: 168, signals.Provider: 10, signals.Refusals: 1_000_000, signals.Kills: 1_000_000, signals.Approvals: 1_000_000}
-		whole := []string{signals.Refusals, signals.Kills, signals.Approvals}
-		for _, series := range signals.Names() {
+		tops := map[string]float64{signals.Idle: 1, signals.Queue: 168, signals.Provider: 10, signals.Kills: 1_000_000, signals.Approvals: 1_000_000}
+		whole := []string{signals.Kills, signals.Approvals}
+		for _, series := range store.LiveSeries() {
 			top, held := tops[series]
 			if !held {
 				t.Fatalf("the series %s has no top in this test", series)
@@ -313,7 +357,6 @@ func TestAdmissionSignalSettings(t *testing.T) {
 			{"a provider limit of another part", OperatorSignalsRequest{Action: SignalsSetLimit, Signal: signals.Provider, Part: "tokens", Limit: new(0.5), Reason: "r"}},
 			{"a part on another signal", OperatorSignalsRequest{Action: SignalsSetLimit, Signal: signals.Kills, Part: store.PartHeadroom, Limit: new(2.0), Reason: "r"}},
 			{"a signal that is none", OperatorSignalsRequest{Action: SignalsSetLimit, Signal: "memory", Limit: new(2.0), Reason: "r"}},
-			{"the refusals by their own name", OperatorSignalsRequest{Action: SignalsClearLimit, Signal: signals.Refusals, Reason: "r"}},
 			{"an action that is none", OperatorSignalsRequest{Action: "raise", Reason: "r"}},
 			{"on naming a limit", OperatorSignalsRequest{Action: SignalsOn, Signal: signals.Kills, Limit: new(2.0), Reason: "r"}},
 			{"a set with no limit", OperatorSignalsRequest{Action: SignalsSetLimit, Signal: signals.Kills, Reason: "r"}},
@@ -397,7 +440,7 @@ var (
 	entryMembers  = []string{"absent", "at", "id", "part", "reason", "setBy", "signal", "value", "what"}
 )
 
-// TestAdmissionSignalState: `legion state --json` gives, for each of the six series, its value or
+// TestAdmissionSignalState: `legion state --json` gives, for each of the five series, its value or
 // why it cannot be computed, its limit or none, whether it holds admission and since when (S2),
 // computed at the read from what the daemon keeps of the inputs; a series that cannot be computed
 // shows no value and holds no start; a hold no committed pass dated is told from a dated one by a
@@ -409,11 +452,11 @@ func TestAdmissionSignalState(t *testing.T) {
 	if len(changes) != 0 || reading["on"] != false || reading["switch"] != nil {
 		t.Fatalf("a fresh project's state = %v and changes %v, want off, no switch's change and []", reading, changes)
 	}
-	// series-inventory: every series of signals.Names() is served under its signal and part, with
-	// every member, the provider's two parts apart.
+	// series-inventory: every series of store.LiveSeries() is served under its signal and part,
+	// with every member, and no other series is.
 	t.Run("series-inventory", func(t *testing.T) {
 		byName := seriesServed(t, reading)
-		for _, series := range signals.Names() {
+		for _, series := range store.LiveSeries() {
 			row, held := byName[seriesKey(series)]
 			if !held {
 				t.Errorf("the state serves no series %s", seriesKey(series))
@@ -423,8 +466,8 @@ func TestAdmissionSignalState(t *testing.T) {
 				t.Errorf("the series %s carries %v, want exactly %v", seriesKey(series), got, seriesMembers)
 			}
 		}
-		if len(byName) != len(signals.Names()) {
-			t.Errorf("the state serves %d series %v, want the %d of signals.Names()", len(byName), slices.Collect(maps.Keys(byName)), len(signals.Names()))
+		if len(byName) != len(store.LiveSeries()) {
+			t.Errorf("the state serves %d series %v, want the %d of store.LiveSeries()", len(byName), slices.Collect(maps.Keys(byName)), len(store.LiveSeries()))
 		}
 	})
 	// absence: before the daemon keeps an input its series has no value, a reason, and no hold, a

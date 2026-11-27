@@ -23,7 +23,6 @@ var controllerKeys = []string{
 	"project", "daemon_url", "operator_token_file", "envoy_url", "envoy_token_file", "nats_urls",
 	"nats_nkey_seed_file", "dispatch_url", "dispatch_token_file", "dispatch_token_broker",
 	"instructions", "omp_invocation", "omp_launch_prefix", "state_dir",
-	"signal_own_refusal_pattern", "signal_provider_refusal_pattern",
 }
 
 // ControllerConfig is `legion controller start`'s operator-side file, settled. Every path is
@@ -58,14 +57,6 @@ type ControllerConfig struct {
 	// StateDir is "" when the file sets none; the command then picks the default under
 	// `$XDG_STATE_HOME/legion`.
 	StateDir string
-	// OwnRefusalPattern and ProviderRefusalPattern are `signal_own_refusal_pattern` and
-	// `signal_provider_refusal_pattern`, the project's two refusal patterns as legion.yaml's
-	// project entry names them (SignalProvider), held to the same subset; "" where the file names
-	// one none. The controller's host classes the refusals of its own session by them, as a
-	// role's host does, so the start tells it each one that is set (runtime.RefusalEnvironment) and none
-	// that is not. They are the operator's to keep equal to the project's: this file is read on the
-	// operator's machine, which reads no legion.yaml.
-	OwnRefusalPattern, ProviderRefusalPattern string
 }
 
 // LoadController reads the operator-side file strictly: a YAML mapping whose every key is one of
@@ -204,9 +195,6 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 		}
 	}
 	if cfg.StateDir, err = optionalPath("state_dir"); err != nil {
-		return ControllerConfig{}, err
-	}
-	if cfg.OwnRefusalPattern, cfg.ProviderRefusalPattern, err = readRefusalPatterns(values, ""); err != nil {
 		return ControllerConfig{}, err
 	}
 	if daemonURL != "" {

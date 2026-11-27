@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -256,17 +255,17 @@ func (r *signalRig) committed() record.SignalDeadline {
 	return deadline
 }
 
-// requests applies one report of the host of token's launch: the requests, each of tokens and
-// refusal, ended at the moments given, the batch saying retried of whether its host reports each
-// 429 its transport retries, as the claim route applies a report (api's modelRequests).
-func (r *signalRig) requests(token claim.Token, id string, tokens int64, refusal claim.RefusalClass, retried bool, ended ...time.Time) {
+// requests applies one report of the host of token's launch: the requests, each of tokens uncached
+// input tokens, ended at the moments given, as the claim route applies a report (api's
+// modelRequests).
+func (r *signalRig) requests(token claim.Token, id string, tokens int64, ended ...time.Time) {
 	r.t.Helper()
 	var requests []claim.ModelRequest
 	for i, at := range ended {
 		requests = append(requests, claim.ModelRequest{ID: fmt.Sprintf("%s-%d", id, i), Session: "ses_" + id, Model: "acme-model", EndedAt: at,
-			UncachedInputTokens: &tokens, Refusal: refusal})
+			UncachedInputTokens: &tokens})
 	}
-	r.apply("api", "requests:"+id, intake.ModelRequests{Claim: token, Generation: 1, Requests: requests, RetriedRefusalsReported: retried})
+	r.apply("api", "requests:"+id, intake.ModelRequests{Claim: token, Generation: 1, Requests: requests})
 }
 
 // guardKill hands the kill holder the memory guard's kill of a process of an issue pod's tester, a
@@ -390,14 +389,13 @@ func signalEvents() []signalEvent {
 			r.apply("dispatch", "settings:1", intake.DispatchDefaultAssignee{Assignee: "lead@example.invalid", Seq: 1, At: now})
 		}},
 		{name: "issue pod guard kill", series: signals.Kills, value: 1, passes: 1, drive: func(r *signalRig, now time.Time) { r.guardKill(now) }},
-		// The pinned Oh My Pi host cannot report the 429s its transport retries, so its report
-		// leaves the refusals unrecorded and moves the headroom; the bridge reports each such 429,
-		// so its refused request moves the refusals.
+		// A report of either host moves the headroom: the pinned Oh My Pi host's, and the Claude
+		// Code bridge's, whose answered requests are all it reports.
 		{name: "Oh My Pi report", series: signals.Provider, value: 4000.0 / 6000, passes: 1, limits: map[string]float64{signals.Provider: 0.5}, drive: func(r *signalRig, now time.Time) {
-			r.requests(hostToken(r.t, issue, claim.RoleImplementer), "omp", 4000, "", false, now.Truncate(time.Minute).Add(-30*time.Second))
+			r.requests(hostToken(r.t, issue, claim.RoleImplementer), "omp", 4000, now.Truncate(time.Minute).Add(-30*time.Second))
 		}},
-		{name: "Claude Code report", series: signals.Refusals, value: 1, passes: 1, limits: map[string]float64{signals.Refusals: 1}, drive: func(r *signalRig, now time.Time) {
-			r.requests(hostToken(r.t, issue, claim.RoleReviewer), "bridge", 0, claim.RefusalOwn, true, now.Truncate(time.Minute).Add(-30*time.Second))
+		{name: "Claude Code report", series: signals.Provider, value: 3000.0 / 6000, passes: 1, limits: map[string]float64{signals.Provider: 0.5}, drive: func(r *signalRig, now time.Time) {
+			r.requests(hostToken(r.t, issue, claim.RoleReviewer), "bridge", 3000, now.Truncate(time.Minute).Add(-30*time.Second))
 		}},
 		// A turn edge runs the pass only where a series moved against the last committed pass: the
 		// holder's claim is written with no edge, a pass records the holder as it stands, and then
@@ -547,20 +545,13 @@ func signalInputs() []signalInput {
 	}
 	approvals := func(r *signalRig, now time.Time) string { return fmt.Sprint(r.reading(signals.Approvals).Value.Value) }
 	kills := func(r *signalRig, now time.Time) string { return fmt.Sprint(r.reading(signals.Kills).Value.Value) }
-	// Each host's report is read for its tokens of the minute before and for the refusals: the
-	// Oh My Pi host says it cannot report the 429s its transport retries, which leaves them not
-	// recorded for that cause, and the bridge says it does, which leaves them recorded.
-	report := func(name string, role claim.Role, ended time.Duration, retried bool) signalInput {
-		want := "300 tokens, the refusals not recorded for the retried 429s"
-		if retried {
-			want = "300 tokens, the refusals 0"
-		}
-		return signalInput{name: name, want: want, keep: func(r *signalRig, now time.Time, again bool) {
+	// Each host's report is read for its tokens of the minute before.
+	report := func(name string, role claim.Role, ended time.Duration) signalInput {
+		return signalInput{name: name, want: "300 tokens", keep: func(r *signalRig, now time.Time, again bool) {
 			at := now.Truncate(time.Minute).Add(-time.Minute).Add(ended)
 			tokens := int64(300)
 			r.apply("api", id(again, "requests:"+name), intake.ModelRequests{Claim: hostToken(r.t, issue, role), Generation: 1,
-				Requests:                []claim.ModelRequest{{ID: name, Session: "ses_" + name, Model: "acme-model", EndedAt: at, UncachedInputTokens: &tokens}},
-				RetriedRefusalsReported: retried})
+				Requests: []claim.ModelRequest{{ID: name, Session: "ses_" + name, Model: "acme-model", EndedAt: at, UncachedInputTokens: &tokens}}})
 		}, read: func(r *signalRig, now time.Time) string {
 			var minutes record.ProviderMinutes
 			if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -571,14 +562,7 @@ func signalInputs() []signalInput {
 				r.t.Fatal(err)
 			}
 			minute, _ := minutes.Read(now.Truncate(time.Minute).Add(-time.Minute))
-			refusals := r.reading(signals.Refusals)
-			switch {
-			case refusals.Value.Recorded:
-				return fmt.Sprintf("%d tokens, the refusals %v", minute.Uncached, refusals.Value.Value)
-			case strings.Contains(refusals.Absent, retriedRefusalsCause):
-				return fmt.Sprintf("%d tokens, the refusals not recorded for the retried 429s", minute.Uncached)
-			}
-			return fmt.Sprintf("%d tokens, the refusals not recorded: %s", minute.Uncached, refusals.Absent)
+			return fmt.Sprintf("%d tokens", minute.Uncached)
 		}}
 	}
 	return []signalInput{
@@ -621,10 +605,10 @@ func signalInputs() []signalInput {
 				PodUID: "pod-1", Report: shimwire.LauncherMemoryKill{Guard: "guard-1", Sequence: 2, PID: 4243, Executable: "postgres", LimitBytes: 4 << 30,
 					At: now.Add(-time.Minute), Cause: shimwire.MemoryKillCauseKernel, NoRole: true}})
 		}, read: kills},
-		report("Oh My Pi report mid-turn", claim.RoleImplementer, 15*time.Second, false),
-		report("Oh My Pi report at the turn's end", claim.RoleImplementer, 50*time.Second, false),
-		report("Claude Code report mid-turn", claim.RoleReviewer, 15*time.Second, true),
-		report("Claude Code report at the turn's end", claim.RoleReviewer, 50*time.Second, true),
+		report("Oh My Pi report mid-turn", claim.RoleImplementer, 15*time.Second),
+		report("Oh My Pi report at the turn's end", claim.RoleImplementer, 50*time.Second),
+		report("Claude Code report mid-turn", claim.RoleReviewer, 15*time.Second),
+		report("Claude Code report at the turn's end", claim.RoleReviewer, 50*time.Second),
 	}
 }
 
@@ -632,9 +616,8 @@ func signalInputs() []signalInput {
 // under its own id (a duplicate the fact's mark refuses), and brought again under another id (a
 // read of the same source by another path, which the row's own key keeps once); and each host's
 // report at each of its two flush points, the request 15 seconds after it ended and at the turn's
-// end, is kept, and read by the live signals, once: its tokens in the headroom's minute, and the
-// refusals not recorded after the Oh My Pi host's report, which cannot carry the 429s its transport
-// retried, and recorded after the bridge's, which does. It fails where an input has no row.
+// end, is kept, and read by the live signals, once: its tokens in the headroom's minute. It fails
+// where an input has no row.
 func TestSignalInputInventory(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute).Add(20 * time.Second)
 	rows := map[string]bool{}

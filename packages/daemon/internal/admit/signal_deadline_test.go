@@ -67,17 +67,16 @@ func TestSignalDeadline(t *testing.T) {
 	})
 	// earliest: the next crossing of each series is its own, and the deadline is the earliest:
 	// the minute boundary at which the headroom's minute stops binding, before the queue's exit
-	// leaving its 6 hours, the idle holder's hour, the kill's and the refusal's hours.
+	// leaving its 6 hours, the idle holder's hour and the kill's hour.
 	t.Run("earliest", func(t *testing.T) {
 		pool := migratedPool(t)
-		lt := newLiveTest(t, 2, nil, on(map[string]float64{signals.Idle: 0.5, signals.Queue: 2, signals.Provider: 1, signals.Refusals: 1, signals.Kills: 1}))
+		lt := newLiveTest(t, 2, nil, on(map[string]float64{signals.Idle: 0.5, signals.Queue: 2, signals.Provider: 1, signals.Kills: 1}))
 		lt.boot(t, pool, clockAt(5, 0, 0), "acme-owner@example.invalid")
 		holderAt(t, pool, "ACME-340", clockAt(10, 0, 0), clockAt(11, 15, 0), false)
 		lt.queued(t, pool, 7, clockAt(10, 20, 0), time.Time{})
 		lt.queued(t, pool, 8, clockAt(4, 0, 0), clockAt(6, 10, 0))
 		lt.kill(t, pool, 1, clockAt(11, 25, 0))
-		lt.request(t, pool, "r1", clockAt(11, 59, 30), 7000, "")
-		lt.request(t, pool, "r2", clockAt(11, 30, 10), 0, claim.RefusalOwn)
+		lt.request(t, pool, "r1", clockAt(11, 59, 30), 7000)
 		lt.resume(t, pool, "resume")
 		next := func(at time.Time) (map[string]string, string) {
 			t.Helper()
@@ -101,7 +100,7 @@ func TestSignalDeadline(t *testing.T) {
 			return got, deadline.Signal + " at " + deadline.At.Format("15:04:05")
 		}
 		got, deadline := next(fixedNow)
-		want := map[string]string{signals.Idle: "12:15:00", signals.Queue: "12:10:00", signals.Provider: "12:01:00", signals.Refusals: "12:31:00", signals.Kills: "12:25:00"}
+		want := map[string]string{signals.Idle: "12:15:00", signals.Queue: "12:10:00", signals.Provider: "12:01:00", signals.Kills: "12:25:00"}
 		if !maps.Equal(got, want) || deadline != "provider at 12:01:00" {
 			t.Errorf("the next crossings at 12:00 = %v, deadline %s; want %v, deadline provider at 12:01:00", got, deadline, want)
 		}
@@ -109,7 +108,7 @@ func TestSignalDeadline(t *testing.T) {
 			t.Errorf("the committed deadline is %+v, want 12:01:00", committed)
 		}
 		got, deadline = next(clockAt(12, 12, 0))
-		want = map[string]string{signals.Idle: "12:15:00", signals.Queue: "12:20:00", signals.Refusals: "12:31:00", signals.Kills: "12:25:00"}
+		want = map[string]string{signals.Idle: "12:15:00", signals.Queue: "12:20:00", signals.Kills: "12:25:00"}
 		if !maps.Equal(got, want) || deadline != "idle at 12:15:00" {
 			t.Errorf("the next crossings at 12:12 with no new event = %v, deadline %s; want %v, deadline idle at 12:15:00 (the queue's wait grows to its limit at 12:20)",
 				got, deadline, want)
@@ -325,7 +324,7 @@ func TestSignalReportPredicate(t *testing.T) {
 		if got := committedDeadline(t, pool); !got.Set || !got.Due.Equal(clockAt(13, 0, 10)) {
 			t.Errorf("after the turn's end the committed deadline is %+v, want 13:00:10, the hour the holder is idle", got)
 		}
-		lt.request(t, pool, "r1", clockAt(12, 0, 15), 7000, "")
+		lt.request(t, pool, "r1", clockAt(12, 0, 15), 7000)
 		if got := committedDeadline(t, pool); !got.Set || !got.Due.Equal(clockAt(12, 1, 0)) {
 			t.Errorf("after the report the committed deadline is %+v, want 12:01:00, where the minute under way is the one the headroom reads", got)
 		}
@@ -358,7 +357,7 @@ func TestSignalReportPredicate(t *testing.T) {
 		}
 		passes := lt.passCount()
 		lt.at(clockAt(12, 25, 5))
-		lt.request(t, pool, "r1", clockAt(12, 25, 0), 10, "")
+		lt.request(t, pool, "r1", clockAt(12, 25, 0), 10)
 		if got := lt.passCount(); got != passes+1 {
 			t.Errorf("the report ran %d passes, want 1", got-passes)
 		}

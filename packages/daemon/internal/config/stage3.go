@@ -117,10 +117,9 @@ type Project struct {
 	// DefaultSteps is `default_steps` as the file names it, nil when it names none. Every reader
 	// asks RunsByDefault, which resolves the unset field.
 	DefaultSteps []plan.Step
-	// Provider is the project's four keys of its model provider's signals
-	// (`signal_token_limit_per_minute`, `signal_token_model_pattern`,
-	// `signal_own_refusal_pattern` and `signal_provider_refusal_pattern`); its zero value is a
-	// file that names none of them.
+	// Provider is the project's two keys of its model provider's headroom
+	// (`signal_token_limit_per_minute` and `signal_token_model_pattern`); its zero value is a file
+	// that names neither.
 	Provider SignalProvider
 }
 

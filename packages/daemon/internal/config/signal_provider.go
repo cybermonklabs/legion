@@ -11,17 +11,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SignalProvider is a project's model provider as the two signals of admission by signals that
-// read it are configured: the headroom, the uncached input tokens of a minute over the project's
-// own limit, and the refusals, each classed by who refused it. Each field is optional, and its
-// zero value is the key unset.
-//
-// Every pattern is in the subset SharedPattern holds: the hosts class a refusal by its text
-// (the Claude Code bridge with Go's regexp, the Oh My Pi plugin with JavaScript's RegExp), the
-// pattern of the project's own limit first and the provider's second, and a refusal that matches
-// neither is unknown. A deployment's own limit and its provider can both answer 429 with no header
-// that tells them apart, which is why the text decides; each deployment writes its own patterns,
-// and Legion names none.
+// SignalProvider is a project's model provider as the provider's headroom signal is configured:
+// the uncached input tokens of a minute over the project's own limit, and which models count
+// toward it. Each field is optional, and its zero value is the key unset.
 type SignalProvider struct {
 	// TokenLimit is `signal_token_limit_per_minute`, the uncached input tokens the project may
 	// spend in a minute, and 0 where the file names none: the headroom then reads as not
@@ -29,17 +21,11 @@ type SignalProvider struct {
 	TokenLimit int64
 	// TokenModels is `signal_token_model_pattern`, the models whose tokens count against the
 	// limit; "" where the file names none, under which every model's tokens count. A request of
-	// another model is kept all the same, and its refusal counts, but its tokens count nowhere.
+	// another model is kept all the same, and its tokens count nowhere.
 	TokenModels string
-	// OwnRefusal is `signal_own_refusal_pattern`, the text of a refusal by the project's own
-	// limit, and ProviderRefusal `signal_provider_refusal_pattern`, the text of a refusal by the
-	// provider; "" where the file names it none, which tells the hosts no pattern. The two reach
-	// every host that runs a session of the project in its launch environment, as
-	// runtime.OwnRefusalVariable and runtime.ProviderRefusalVariable, and no other way.
-	OwnRefusal, ProviderRefusal string
 }
 
-// readSignalProvider reads a project's four provider keys out of fields, its members, under key,
+// readSignalProvider reads a project's two provider keys out of fields, its members, under key,
 // the project's own path. A key the project leaves out keeps its zero value.
 func readSignalProvider(fields map[string]*yaml.Node, key string) (SignalProvider, error) {
 	var provider SignalProvider
@@ -57,32 +43,7 @@ func readSignalProvider(fields map[string]*yaml.Node, key string) (SignalProvide
 		}
 		provider.TokenModels = read
 	}
-	var err error
-	if provider.OwnRefusal, provider.ProviderRefusal, err = readRefusalPatterns(fields, key+"."); err != nil {
-		return SignalProvider{}, err
-	}
 	return provider, nil
-}
-
-// readRefusalPatterns reads the two refusal pattern keys, `signal_own_refusal_pattern` and
-// `signal_provider_refusal_pattern`, out of fields, each named in a refusal by prefix and its name:
-// a project's entry of legion.yaml (its path and a dot), or the controller's file (""). A key
-// left out is "".
-func readRefusalPatterns(fields map[string]*yaml.Node, prefix string) (own, provider string, err error) {
-	for _, pattern := range []struct {
-		name string
-		into *string
-	}{
-		{"signal_own_refusal_pattern", &own},
-		{"signal_provider_refusal_pattern", &provider},
-	} {
-		if value := fields[pattern.name]; value != nil {
-			if *pattern.into, err = readSharedPattern(value, prefix+pattern.name); err != nil {
-				return "", "", err
-			}
-		}
-	}
-	return own, provider, nil
 }
 
 // readSharedPattern is a pattern key's value, refused naming the key and the reason where it is
@@ -132,9 +93,9 @@ const maxRepeat = 1000
 // alone, `[]` a class's first member in Go and an empty class in JavaScript, and a lone `{` or `]`
 // a literal in one reading and a refusal in the other. A repetition of a group that holds one,
 // such as `(a+)+` or `(.*)*`, matches in a time linear in the text in Go and backtracks in
-// JavaScript for a time that grows exponentially with it, and the Oh My Pi host matches the text of
-// each refusal as its turn goes on. An empty pattern matches every text, which would class every
-// refusal as the pattern's; a key with no pattern is the key left out.
+// JavaScript for a time that grows exponentially with it. An empty pattern matches every text,
+// which would count every model's tokens as the pattern's; a key with no pattern is the key left
+// out.
 func checkSharedPattern(pattern string) error {
 	if pattern == "" {
 		return errors.New("it is empty, and an empty pattern matches every text")

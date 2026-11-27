@@ -1,7 +1,5 @@
 package claudebridge
 
-//ci:reads packages/contracts/fixtures/refusal-classes.json TestBridgeReportsModelRequests reads it
-
 import (
 	"encoding/json"
 	"io"
@@ -69,7 +67,7 @@ type requestsRig struct {
 	started time.Time
 }
 
-func newRequestsRig(t *testing.T, env []string) *requestsRig {
+func newRequestsRig(t *testing.T) *requestsRig {
 	t.Helper()
 	r := &requestsRig{
 		// Place the reporting clock at the earliest recorded stream so replays retain their dates.
@@ -118,11 +116,11 @@ func newRequestsRig(t *testing.T, env []string) *requestsRig {
 	if err := os.WriteFile(tokenFile, []byte(testBootToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r.rig = startRig(t, append([]string{
+	r.rig = startRig(t, []string{
 		"LEGION_DAEMON_URL=" + daemon.URL,
 		"LEGION_BOOT_TOKEN_FILE=" + tokenFile,
 		"LEGION_GENERATION=4",
-	}, env...), r.clock, "-p", "--resume", sessionID)
+	}, r.clock, "-p", "--resume", sessionID)
 	return r
 }
 
@@ -163,34 +161,6 @@ func (r *requestsRig) untilAnswer() {
 	}
 }
 
-// refusalClasses is packages/contracts/fixtures/refusal-classes.json, the table of refusal texts
-// and their classes that the Oh My Pi plugin's test (packages/pi-legion/src/model-requests.test.ts)
-// reads too, so the two hosts class one text alike.
-type refusalClasses struct {
-	Patterns struct {
-		Own      string `json:"own"`
-		Provider string `json:"provider"`
-	} `json:"patterns"`
-	Cases []struct {
-		Name    string             `json:"name"`
-		Text    string             `json:"text"`
-		Refusal claim.RefusalClass `json:"refusal"`
-	} `json:"cases"`
-}
-
-func readRefusalClasses(t *testing.T) refusalClasses {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "refusal-classes.json"))
-	if err != nil {
-		t.Fatalf("read the fixture refusal-classes.json: %v", err)
-	}
-	var classes refusalClasses
-	if err := json.Unmarshal(raw, &classes); err != nil {
-		t.Fatalf("decode the fixture refusal-classes.json: %v", err)
-	}
-	return classes
-}
-
 // requestRow is what a row asserts of one reported request: everything but its id, and its
 // end where the stream named one.
 type requestRow struct {
@@ -198,15 +168,12 @@ type requestRow struct {
 	model    string
 	endedAt  string
 	uncached string
-	refusal  claim.RefusalClass
 }
 
 // rowsOf is each request of reports as a requestRow, and fails on a request that names no id, no
-// end, or an id another request of reports has: each request counts once. It fails too on a
-// report that does not say its host reports each 429 its transport retries, which the bridge does
-// by each `api_retry` line, so a Claude Code session never leaves the provider's refusals
-// unrecorded. An end at or after since is the bridge's own clock, for a line that names none (a
-// retry line), and reads "now"; uncached is "" where the request names none.
+// end, or an id another request of reports has: each request counts once. An end at or after
+// since is the bridge's own clock, for a line that names none, and reads "now"; uncached is ""
+// where the request names none.
 func rowsOf(t *testing.T, since time.Time, reports ...claim.ModelRequestsRequest) []requestRow {
 	t.Helper()
 	var rows []requestRow
@@ -215,15 +182,12 @@ func rowsOf(t *testing.T, since time.Time, reports ...claim.ModelRequestsRequest
 		if report.BootToken != testBootToken || report.Generation != 4 || report.ClaimToken != "" || report.Secret != "" {
 			t.Fatalf("the report named %+v, want the launch's boot token and generation 4 and no other credential", report)
 		}
-		if !report.RetriedRefusalsReported {
-			t.Fatalf("the report %+v does not say that its host reports each 429 its transport retries, which the bridge does by each api_retry line", report)
-		}
 		for _, request := range report.Requests {
 			if request.ID == "" || seen[request.ID] || request.EndedAt.IsZero() {
 				t.Fatalf("the request %+v has no id, an id reported already, or no end", request)
 			}
 			seen[request.ID] = true
-			row := requestRow{session: request.Session, model: request.Model, refusal: request.Refusal,
+			row := requestRow{session: request.Session, model: request.Model,
 				endedAt: request.EndedAt.UTC().Format(time.RFC3339Nano)}
 			if !request.EndedAt.Before(since) {
 				row.endedAt = "now"
@@ -256,21 +220,15 @@ const (
 )
 
 // The bridge reports each model request of the stream within its window of the request's end
-// while the turn goes on, and what is left at the turn's end at once; each refused attempt with
-// who refused it; the role's own session and each subagent's once each, under the launch's boot
-// token alone, each batch saying that its host reports each 429 its transport retries; and
-// classes a refusal's text by the project's two patterns as the Oh My Pi plugin does.
+// while the turn goes on, and what is left at the turn's end at once; the role's own session and
+// each subagent's once each, under the launch's boot token alone, with the request's time and
+// uncached input tokens and nothing about a refusal. The daemon's route decodes each report
+// strictly (newRequestsRig), so a member a request does not name fails the row that sent it.
 func TestBridgeReportsModelRequests(t *testing.T) {
-	classes := readRefusalClasses(t)
-	patterns := []string{
-		"LEGION_SIGNAL_OWN_REFUSAL=" + classes.Patterns.Own,
-		"LEGION_SIGNAL_PROVIDER_REFUSAL=" + classes.Patterns.Provider,
-	}
-
 	// The window sends every answer seen so far, including the last one whose result has not
 	// arrived. The result must not send any of those IDs twice.
 	t.Run("partial", func(t *testing.T) {
-		r := newRequestsRig(t, patterns)
+		r := newRequestsRig(t)
 		r.prompt("p1", "replay subagent-turn.jsonl")
 		r.expect("agent_start", nil)
 		r.untilAnswer()
@@ -292,7 +250,7 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 	// The turn ends before the window: every request goes at once, the window the first armed
 	// sends nothing more, and the turn's own outcome is reported exactly as before.
 	t.Run("end", func(t *testing.T) {
-		r := newRequestsRig(t, patterns)
+		r := newRequestsRig(t)
 		r.prompt("p1", "replay subagent-turn.jsonl")
 		r.expect("agent_start", nil)
 		r.open()
@@ -317,14 +275,14 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 		r.noReport()
 	})
 
-	// Each attempt the provider refused with 429 is a request of its own: Claude Code's retry
-	// lines say no text of the refusal (testdata/api-error-429.jsonl:2-3), so each is unknown, and
-	// the final attempt's text, which matches neither pattern here, is unknown too; a 529 is no
-	// limit's refusal and is not reported; a retry the next attempt answered is the refusal and the
-	// answer; and the three lines of one request (testdata/background-turn.jsonl:4-6) are one
-	// request, ended at its last line.
-	t.Run("refusals", func(t *testing.T) {
-		r := newRequestsRig(t, patterns)
+	// A request the provider refused is no request that was answered: Claude Code's retry lines
+	// (testdata/api-error-429.jsonl:2-3, testdata/api-error-529.jsonl:2-3) and the synthetic
+	// answer that ends a request refused for good (testdata/api-error-429.jsonl:4) name no
+	// request of their own, so neither is reported; a retry the next attempt answered is reported
+	// as the answer alone; and the three lines of one request (testdata/background-turn.jsonl:4-6)
+	// are one request, ended at its last line.
+	t.Run("retries", func(t *testing.T) {
+		r := newRequestsRig(t)
 		for _, file := range []string{"api-error-429.jsonl", "api-error-529.jsonl", "api-retry-answered.jsonl"} {
 			r.prompt("p-"+file, "replay "+file)
 			r.expect("agent_start", nil)
@@ -333,15 +291,11 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 			if err := os.Remove(r.gate); err != nil {
 				t.Fatal(err)
 			}
+			if file != "api-retry-answered.jsonl" {
+				r.noReport()
+			}
 		}
-		refused := r.rows(r.reported())
-		compareRows(t, "the 429's attempts", refused, []requestRow{
-			{session: "7e61602e-c2c7-4381-ac7e-04fa5b74b101", model: capturedModel, endedAt: "now", refusal: claim.RefusalUnknown},
-			{session: "7e61602e-c2c7-4381-ac7e-04fa5b74b101", model: capturedModel, endedAt: "now", refusal: claim.RefusalUnknown},
-			{session: "7e61602e-c2c7-4381-ac7e-04fa5b74b101", model: capturedModel, endedAt: "2026-11-04T17:06:20.465Z", refusal: claim.RefusalUnknown},
-		})
 		compareRows(t, "the retry an attempt answered", r.rows(r.reported()), []requestRow{
-			{session: "d60bd78b-9d12-46e5-86d9-9d02d2edd19e", model: capturedModel, endedAt: "now", refusal: claim.RefusalUnknown},
 			{session: "d60bd78b-9d12-46e5-86d9-9d02d2edd19e", model: capturedModel, endedAt: "2026-11-26T05:13:34.279Z", uncached: "49"},
 		})
 		r.prompt("p-background", "replay background-turn.jsonl")
@@ -358,7 +312,7 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 	// Each is reported once, under its own session, and every report names the launch's boot token
 	// alone, never a credential of the subagent's (rowsOf).
 	t.Run("session-inventory", func(t *testing.T) {
-		r := newRequestsRig(t, patterns)
+		r := newRequestsRig(t)
 		r.prompt("p1", "replay subagent-turn.jsonl")
 		r.expect("agent_start", nil)
 		r.open()
@@ -378,30 +332,6 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 		}
 		if len(counted) != len(inventory) {
 			t.Errorf("the bridge reported the sessions %v, want exactly %v", counted, inventory)
-		}
-	})
-
-	// A refusal's text is classed by the launch's two patterns, the own one first, as the table
-	// both hosts read says; a launch that sets neither classes every refusal unknown.
-	t.Run("configured-patterns", func(t *testing.T) {
-		for _, configuration := range []struct {
-			name string
-			env  []string
-			want func(claim.RefusalClass) claim.RefusalClass
-		}{
-			{"both set", patterns, func(c claim.RefusalClass) claim.RefusalClass { return c }},
-			{"unset", nil, func(claim.RefusalClass) claim.RefusalClass { return claim.RefusalUnknown }},
-		} {
-			r := newRequestsRig(t, configuration.env)
-			for i, row := range classes.Cases {
-				r.prompt("p"+strconv.Itoa(i), "refused429 "+row.Text)
-				r.expect("agent_start", nil)
-				r.untilTurnEnds()
-				reported := r.rows(r.reported())
-				if len(reported) != 1 || reported[0].refusal != configuration.want(row.Refusal) {
-					t.Errorf("%s, %s: the bridge reported %+v, want one request refused %s", configuration.name, row.Name, reported, configuration.want(row.Refusal))
-				}
-			}
 		}
 	})
 }

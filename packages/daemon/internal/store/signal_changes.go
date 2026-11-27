@@ -7,8 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
 // The record of changes of admission by signals (S6 of dispatch://INFRA-5899): per project, one
@@ -117,7 +115,7 @@ type SeriesEntries struct {
 	Holds *SignalChange
 }
 
-// NewestSeriesEntriesTx is, by series name of signals.Names(), the newest value entry and holds
+// NewestSeriesEntriesTx is, by series name of LiveSeries(), the newest value entry and holds
 // entry of each series of project, read through tx: what the last committed pass wrote of each,
 // which the next pass and the state compare with. It reads one row of the index of each series
 // and kind (newestSeriesEntries), however long the project's record is.
@@ -159,7 +157,7 @@ func NewestSeriesEntriesTx(ctx context.Context, tx pgx.Tx, project string) (map[
 var newestSeriesEntries = func() string {
 	var probes []string
 	for _, what := range []SignalChangeKind{SignalChangeValue, SignalChangeHolds} {
-		for _, series := range signals.Names() {
+		for _, series := range liveSeries {
 			signal, part := SignalPart(series)
 			ofPart := "part is null"
 			if part != "" {
@@ -223,9 +221,9 @@ func readSignalChanges(ctx context.Context, tx pgx.Tx, project, query string, ar
 }
 
 // SignalsReading is the state's `admission.signals` (S2): whether admission by signals is on, who
-// set the switch last, when and why (null before a person first did), each of the six series in the
-// order of signals.Names() as the live signals read it at the state's moment (SignalSeriesReading),
-// and the provider's record of the hour the provider's two series read (ProviderReading). Every
+// set the switch last, when and why (null before a person first did), each of the five series in
+// the order of LiveSeries() as the live signals read it at the state's moment
+// (SignalSeriesReading), and the provider's record of the last hour (ProviderReading). Every
 // reading is computed at the read from what the daemon keeps of the inputs, never from an entry of
 // the record; only since is read from the record. admit's LiveSignals.State builds it.
 type SignalsReading struct {
@@ -253,24 +251,22 @@ type SignalSeriesReading struct {
 	Since    *time.Time `json:"since"`
 }
 
-// ProviderReading is the provider's record the provider's headroom and refusals read at the state's
-// moment, so a reader compares the daemon's own input with another record of the provider: each
-// whole minute of the hour before the minute under way, oldest first (ProviderMinuteReading). It
-// names no request and no session.
+// ProviderReading is the provider's record of the hour before the minute under way at the state's
+// moment, of which the headroom reads the minute before, so a reader compares the daemon's own
+// input with another record of the provider: each whole minute of that hour
+// (claim.ModelRequestsSpan), oldest first (ProviderMinuteReading). It names no request and no
+// session.
 type ProviderReading struct {
 	Minutes []ProviderMinuteReading `json:"minutes"`
 }
 
 // ProviderMinuteReading is one minute of ProviderReading: its start, whether every request of it is
-// known to have been reported (held; a minute that is not is absent from both of the provider's
-// series), the uncached input tokens of the models the project counts, the token limit in force
-// when it began (0 for none), and its refused requests by class: the project's own limit (an
-// unknown refusal among them) and the provider.
+// known to have been reported (held; the headroom of a minute that is not is absent), the uncached
+// input tokens of the models the project counts, and the token limit in force when it began (0 for
+// none).
 type ProviderMinuteReading struct {
 	At                  time.Time `json:"at"`
 	Held                bool      `json:"held"`
 	UncachedInputTokens int64     `json:"uncachedInputTokens"`
 	TokenLimit          int64     `json:"tokenLimit"`
-	OwnRefusals         int64     `json:"ownRefusals"`
-	ProviderRefusals    int64     `json:"providerRefusals"`
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -357,8 +356,9 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 
 // claimTurnsKept is how long a turn's row outlives its end: a new turn of a claim deletes the
 // project's turns that ended longer ago than this before it began, since the provider's record is
-// read no further back than its refusals' hour and the minute before it (signals.RefusalSpan).
-const claimTurnsKept = signals.RefusalSpan + time.Minute
+// read no further back than the hour of minutes the state shows and the minute before it
+// (claim.ModelRequestsSpan).
+const claimTurnsKept = claim.ModelRequestsSpan + time.Minute
 
 // keepClaimTurn keeps c's turn edges, as this write carries them, in claim_turns, one row per
 // turn: a claim in a turn (working, its last turn's start after its last turn's end) has the row
