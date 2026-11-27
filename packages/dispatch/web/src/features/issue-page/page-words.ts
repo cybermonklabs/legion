@@ -708,7 +708,7 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
    *  which checks serve each statement, the issue's decisions, the checks' results, the
-   *  questions, the comments and the messages. The spec's, the plan's and the verification
+   *  questions and the messages. The spec's, the plan's and the verification
    *  document's lines, last, are what the Plan and the Verification views say of a tree read
    *  refused before it first answered, each named by the part the document whose blocks the view
    *  waits on plays (`PlanFilterBody`, `VerificationFilterBody`). */
@@ -717,7 +717,6 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   issue_decisions_unreadable: "Could not load this issue's decisions.",
   results_unreadable: "Could not load the checks' results.",
   asks_unreadable: "Could not load the questions.",
-  comments_unreadable: "Could not load the comments.",
   messages_unreadable: "Could not load the messages.",
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",

@@ -71,6 +71,7 @@ import { treeRows } from "./tree-fold";
 import { decisionBehind, nodesInOrder } from "./tree-keys";
 import {
   treeNode as answerNode,
+  treeAnchor,
   treeAnswer,
   treeParent,
   treeTuple,
@@ -524,6 +525,10 @@ function thread(id: string, createdAt: string): MessageRead {
 
 /** A case's issue as the earlier reads hold it, with what the tree read answers beside them. */
 interface Fixture extends IssueTreeReads {
+  /** The issue's comments, each of which the tree read answers as a node with its anchor, and
+   *  with the marks its author's corrections leave, as a correction writes them into the answer
+   *  the cache holds (`api/corrected-post.ts`). */
+  readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   /** The blocks of each document of the issue, whose typed blocks the tree read answers. */
   readonly documents?: readonly DocumentBlocks[];
   /** The issue's messages with their replies, each of which the tree read answers as a node. */
@@ -584,7 +589,15 @@ function siblingOrder(one: Written, other: Written): number {
  * them by time, then id, as the read orders them.
  */
 function answered(fixture: Fixture): IssueTreeReads {
-  const { documents, messages, nodes: added, parents: given, tuples: tied, ...reads } = fixture;
+  const {
+    comments,
+    documents,
+    messages,
+    nodes: added,
+    parents: given,
+    tuples: tied,
+    ...reads
+  } = fixture;
   const issue = reads.issue;
   const key = issue.key;
   const { nodeIdOf, slugOf, specSlug } = treeContext({ issue });
@@ -729,11 +742,11 @@ function answered(fixture: Fixture): IssueTreeReads {
     });
   }
   for (const node of added ?? []) written.push({ node });
-  const history = agentsOnlyIds(reads.comments, messages, [...asks.values()]);
+  const history = agentsOnlyIds(comments, messages, [...asks.values()]);
   const blocks = new Map(
     written.flatMap(({ node }) => (node.document === undefined ? [] : [[nodeNameOf(node), node]]))
   );
-  for (const comment of reads.comments ?? []) {
+  for (const comment of comments ?? []) {
     if (history.has(comment.id)) continue;
     const anchored = comment.anchor?.block_id ? blocks.get(comment.anchor.block_id) : undefined;
     const parent =
@@ -745,10 +758,15 @@ function answered(fixture: Fixture): IssueTreeReads {
         : undefined);
     written.push({
       node: answerNode(comment.id, "comment", parent ?? key, {
+        ...(comment.anchor === null ? {} : { anchor: treeAnchor(comment.anchor) }),
         author: [comment.author],
         made_at: comment.created_at,
         text: comment.body,
         ...(comment.body_tree === undefined ? {} : { text_tree: comment.body_tree }),
+        ...(comment.edited_at === null ? {} : { edited_at: comment.edited_at }),
+        ...(comment.deleted_at === null
+          ? {}
+          : { deleted_at: comment.deleted_at, deleted_by: comment.deleted_by }),
       }),
     });
   }

@@ -1,5 +1,5 @@
-import { type InfiniteData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type InfiniteData, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import { issueAskThreadsQuery } from "../../api/queries";
@@ -19,15 +19,18 @@ import {
 } from "../issue/pins";
 import { EditedMark } from "../refs/PostMarks";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
-import { EVENT_FRESH } from "../refs/reference-target";
+import { commentQuery, EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
+import { treeComments } from "./decision-review";
 import { useListPages } from "./details-leaves";
+import { useMarginDrawer } from "./margin-slot";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
-import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { outlineQuery } from "./tree-read/tree-read";
+import { issueMessagesQuery } from "./useIssueTree";
 
 /**
  * The reader's pins, as links to what they pinned: each pinned ask, comment and message by its
@@ -39,8 +42,13 @@ import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
  * and its Unpin. The pins are one list, drawn 20 at a time with Show more under them. The pin of
  * a row itself is the focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
- * Pins use the outline's reads for comments, messages and asks with their threads
- * (`issueAskThreadsQuery`), with the same `EVENT_FRESH` options. Pinned history events use
+ * Pins use the outline's reads for messages and asks with their threads
+ * (`issueAskThreadsQuery`), with the same `EVENT_FRESH` options. A pinned comment is drawn from
+ * the outline's tree read where its answer holds the comment (`treeComments`), and else from the
+ * comment's own read (`GET /api/v1/comments/{id}`, `commentQuery`), made only once that answer
+ * is held and only while Details is open: a load that leaves Details shut reads no pinned
+ * comment, and a pin of a thread only agents wrote in, or of a comment older than the read's
+ * first comment page, costs one read of its own. Pinned history events use
  * the pages of the log already held. A record's line is its one line, as the outline draws a
  * node's (`PinLine`), drawn whole, wrapping rather than cut. Where a read has not answered, has
  * failed, or holds no words for a pin - a handoff, an event older than the history has read -
@@ -73,8 +81,26 @@ export function IssuePins({
   const eventPins = pinnedEventIds([...(dismissed ?? [])]);
   const reading = pins.length > 0;
   const asks = useQuery({ ...issueAskThreadsQuery(issueKey), ...EVENT_FRESH, enabled: reading });
-  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH, enabled: reading });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH, enabled: reading });
+  // The comments of the outline's tree read as the page holds it - Conversation's, or Graph's in
+  // Graph - watched and never sent, since the outline sends it, by id; and the pinned comments it
+  // does not hold, each read on its own while Details is open, once the answer is held to say
+  // which it lacks.
+  const conversation = useQuery({ ...outlineQuery(issueKey, "conversation"), enabled: false });
+  const graph = useQuery({ ...outlineQuery(issueKey, "graph"), enabled: false });
+  const answer = conversation.data ?? graph.data;
+  const held = useMemo(
+    () => new Map(treeComments(answer).map((comment) => [comment.id, comment])),
+    [answer]
+  );
+  const open = useMarginDrawer()?.open === true;
+  const unheld =
+    answer === undefined
+      ? []
+      : pins.flatMap((pin) => (pin.kind === "comment" && !held.has(pin.id) ? [pin.id] : []));
+  const unheldReads = useQueries({
+    queries: unheld.map((id) => ({ ...commentQuery(id), ...EVENT_FRESH, enabled: open })),
+  });
   // The history's own log, under its key (`IssueHistory.tsx`), which the history under this list
   // reads: watched here and never asked for, so a pinned line is drawn from the pages it holds.
   const log = useQuery<InfiniteData<DispatchEvent[]>>({
@@ -96,7 +122,7 @@ export function IssuePins({
     }
     const post =
       kind === "comment"
-        ? comments.data?.find((one) => one.id === id)
+        ? (held.get(id) ?? unheldReads[unheld.indexOf(id)]?.data?.comment)
         : kind === "message"
           ? (messages.data ?? [])
               .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])

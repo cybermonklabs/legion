@@ -6,11 +6,11 @@ import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
-import { decisionChanges } from "../decision-review";
+import { decisionChangeComments, decisionChanges, treeComments } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueCommentsQuery } from "../useIssueTree";
+import { useTreeRead } from "../tree-read/tree-read";
 import {
   askIdOf,
   type DecisionsEntry,
@@ -27,11 +27,13 @@ import {
  * person's the answered ask itself, which the view reads as the page's tree reads them
  * (`tree-read/tree-nodes.ts`).
  *
- * The reads are the ones the page's tree is built from: the three reads the tree reads, under
+ * The reads are the ones the page's tree is built from: the two reads the tree reads, under
  * the keys `useIssueTree.ts` reads them by, the asks by the tree's own definition of that read
- * (`issueAskThreadsQuery`), so the view adds no request. Each takes the tree's freshness
+ * (`issueAskThreadsQuery`), and the tree read's answer, whose comments are the Changes
+ * (`treeComments`), so the view adds no request. Each takes the tree's freshness
  * too (`EVENT_FRESH`), whose own doc gives the reason. No document's blocks are read, as the
- * tree reads none: a Change stands under the first decision whose words hold its quote
+ * tree reads none: a decision node takes the Changes the read hangs under it, as the outline
+ * does, and any other decision the first Change whose quote its words hold
  * (`decision-review.ts`). A read that holds no decisions, or that has not answered yet, gives no
  * decision and no error: the view draws the questions alone.
  *
@@ -134,10 +136,11 @@ export function useDecisionsEntries({
   const decisions = decisionsRead.data;
   const asksRead = useQuery({ ...issueAskThreadsQuery(issue.key), ...EVENT_FRESH });
   const asks = asksRead.data;
-  // The issue's comments, which hold the changes a person asked of a decision
-  // (`decision-review.ts`), under the key the tree reads them by (`issueCommentsQuery`).
-  const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH }).data;
-  // The comments only move a decision between parts, so they are not waited for.
+  // The comments of the tree read's answer, which hold the changes a person asked of a decision
+  // (`decision-review.ts`): a decision node's are the ones the read hangs under it, as the
+  // outline reads them, and the comments only move a decision between parts, so they are not
+  // waited for.
+  const answer = useTreeRead(issue).answer;
   const readsHeld = decisions !== undefined && asks !== undefined;
   // A read stands refused by the page's one rule (`standsFailed`): it holds no answer, and a
   // fetch of it failed since it last held one. Not by its status: a refetch that fails over the
@@ -177,10 +180,11 @@ export function useDecisionsEntries({
     },
     [refetchAsks, refetchDecisions]
   );
-  const changes = useMemo(
-    () => decisionChanges(decisions, comments, issue, undefined),
-    [decisions, comments, issue]
-  );
+  const changes = useMemo(() => {
+    const comments = treeComments(answer);
+    const placed = decisionChangeComments(decisions, comments, issue, undefined, answer);
+    return decisionChanges(decisions, comments, issue, undefined, placed);
+  }, [answer, decisions, issue]);
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);

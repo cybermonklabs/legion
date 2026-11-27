@@ -1,10 +1,10 @@
 import type { IssueDecisions, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import {
-  type ChangeComment,
   decisionChangeComments,
   deletedPostIds,
   inReviewList,
+  treeComments,
 } from "./decision-review";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
@@ -29,9 +29,9 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  *
  * A decision the reader asked to change waits on its agent and is not counted, by the outline's
  * one rule (`decisionChangeComments`): a decision node's Change is a comment the tree read
- * (`tree`) hangs under it, whether or not the comments read holds that comment yet, and the
- * Change of a decision the read holds no node for is a comment of the issue's (`comments`) whose
- * quote its words hold, so the count reads no block of a document. A person's decision - the
+ * (`tree`) hangs under it, and the Change of a decision the read holds no node for is a comment
+ * of the read's answer (`treeComments`) whose quote its words hold, so the count reads no block
+ * of a document and no comment list of its own. A person's decision - the
  * answered ask, or a `decision` block whose `decided_by` names a person - waits for no review
  * (the server's `waiting_review` is false for it) and is never counted here.
  */
@@ -53,7 +53,6 @@ export function waitingOnReader(
   viewer: string | undefined,
   decisions: IssueDecisions | undefined,
   isCoverageStatement: (reference: string) => boolean,
-  comments: readonly ChangeComment[] | undefined,
   tree: TreeAnswer | undefined
 ): WaitingOnReader {
   const open =
@@ -72,8 +71,9 @@ export function waitingOnReader(
     );
   const asks = open.length - approvals.length;
   // The decisions a Change waits on, each by its address: a decision node's from the tree read
-  // alone, as the outline finds it, so the two agree while the comments read is out or older. A
-  // Change its author deleted asks nothing any more, as in the outline (`decisionNodeChanges`).
+  // alone, as the outline finds it. A Change its author deleted asks nothing any more, as in the
+  // outline (`decisionNodeChanges`).
+  const comments = treeComments(tree);
   const deleted = deletedPostIds(comments);
   const changed = new Set(
     [...decisionChangeComments(decisions, comments, issue, undefined, tree)]

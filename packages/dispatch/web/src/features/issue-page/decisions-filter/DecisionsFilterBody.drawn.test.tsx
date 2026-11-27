@@ -57,6 +57,8 @@ import {
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
+import { markedCommentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { outlineQuery, subscribeTreeFreshness, type TreeAnswer } from "../tree-read/tree-read";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
@@ -291,11 +293,23 @@ function publishedStatements(root: TreeNode): PublishedReferences {
   };
 }
 
-/** The body over the issue whose tree holds `children`, with `asks`, `comments` and the
- *  decisions read of `made` as the cache holds them. `made` or `asks` null leaves that read out
- *  of the cache, as before it answers. It is drawn under the names store, with what the page
- *  publishes for the tree's statements published to it and handed to the body
- *  (`publishedStatements`), where a case gives nothing else, and with no names line. */
+/** Conversation's tree read of the issue holding `comments` under the issue, where the read
+ *  hangs a comment of a decision it holds no node for: each Change is found by its quote, with
+ *  its author's corrections as a correction writes them into the answer the cache holds
+ *  (`api/corrected-post.ts`). */
+function commentsTree(comments: readonly Comment[]): TreeAnswer {
+  return treeAnswer([
+    treeNode(KEY, "issue", null),
+    ...comments.map((comment) => markedCommentNode(comment, KEY)),
+  ]);
+}
+
+/** The body over the issue whose tree holds `children`, with `asks`, the decisions read of
+ *  `made` and Conversation's tree read holding `comments` as the cache holds them. `made` or
+ *  `asks` null leaves that read out of the cache, as before it answers. It is drawn under the
+ *  names store, with what the page publishes for the tree's statements published to it and
+ *  handed to the body (`publishedStatements`), where a case gives nothing else, and with no
+ *  names line. */
 function renderBody(
   {
     asks = [],
@@ -344,7 +358,7 @@ function renderBody(
   // The reads the page's tree is built from, under the keys it reads them by.
   if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made), answered);
   if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
-  client.setQueryData(["comments", KEY], comments, answered);
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, commentsTree(comments), answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {
@@ -1179,13 +1193,13 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
 // reader's that Dispatch refused, or that it was replaced - keeps the focus where it now
 // stands: under Your decisions, or in the foot, which unfolds for it.
 test("a decision that leaves the review list by no act of the reader keeps the focus", async () => {
-  // The address names the decision, and a Change on it arrives in the comments read.
+  // The address names the decision, and a Change on it arrives in the tree read.
   const changed = renderBody(wholeIssue(), { reveal: D("second") });
   await waitFor(() => expect(focusedRow(changed)).toBe(D("second")));
   await act(async () =>
     changed.client.setQueryData(
-      ["comments", KEY],
-      [changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.")]
+      outlineQuery(KEY, "conversation").queryKey,
+      commentsTree([changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.")])
     )
   );
   await waitFor(() => expect(rowsOfPart(changed, "review")).toEqual([D("first")]));
@@ -1332,7 +1346,7 @@ test("the view opened after the app's staleTime asks no read again, its rows' Ke
   const names = [
     "getIssueDecisions",
     "listIssueAskThreads",
-    "listComments",
+    "getIssueTree",
     "getArtifactBlocks",
   ] as const;
   // Each read held, so a read the mount started reaches no server.
@@ -1349,7 +1363,7 @@ test("the view opened after the app's staleTime asks no read again, its rows' Ke
     ).toEqual({
       getArtifactBlocks: 0,
       getIssueDecisions: 0,
-      listComments: 0,
+      getIssueTree: 0,
       listIssueAskThreads: 0,
     });
     view.unmount();
@@ -2263,10 +2277,11 @@ test("each press of the count of what waits goes to the next thing that waits", 
   await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
 });
 
-// The tester's F6: a Change sent on a decision is a comment anchored to its words. Once it is
-// in the comments read the decision says a change was asked for, leaves the review list for
-// the reader's own decisions, draws no Keep or Change, and draws what the reader asked under
-// its words with a link to it in the conversation.
+// The tester's F6: a Change sent on a decision is a comment anchored to its words. The send names
+// the issue, so the tree read is read again once it lands, and once the read answers the Change
+// the decision says a change was asked for, leaves the review list for the reader's own
+// decisions, draws no Keep or Change, and draws what the reader asked under its words with a
+// link to it in the conversation. No comments list is read.
 test("a decision the reader sent a Change on says so, leaves the review list and draws the change", async () => {
   // The send reads the spec's text to say which place of the quote in it is the decision's own,
   // and the reading of that text is the page's engine's, which must be loaded.
@@ -2275,7 +2290,9 @@ test("a decision the reader sent a Change on says so, leaves the review list and
   const whole = wholeIssue();
   const sent = changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.");
   const create = spyOn(api, "createComment").mockResolvedValue(sent as never);
-  const list = spyOn(api, "listComments").mockResolvedValue([sent] as never);
+  const tree = spyOn(api, "getIssueTree").mockResolvedValue(commentsTree([sent]));
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead(whole.made));
+  const list = spyOn(api, "listComments");
   const markdown = specText(whole.made);
   const text = spyOn(api, "getArtifactText").mockImplementation(
     async (): Promise<ArtifactText> => ({
@@ -2286,6 +2303,9 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     })
   );
   const view = renderBody(whole);
+  // The page's one subscription (`ViewReadProvider`), which reads the tree again once a write
+  // naming the issue settles with no live feed.
+  const unsubscribe = subscribeTreeFreshness(view.client, KEY);
   try {
     expect(rowsOfPart(view, "review")).toEqual([D("second"), D("first")]);
     const change = rowOf(view, D("second")).querySelector('button[data-row-action="change"]');
@@ -2305,11 +2325,12 @@ test("a decision the reader sent a Change on says so, leaves the review list and
       },
     ]);
 
-    // The comments are read again, and the decision is no longer the reader's to review.
+    // The tree read is read again, and the decision is no longer the reader's to review.
     await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
     // The reader sent it, so the focus goes on to the next decision of the review list.
     await waitFor(() => expect(focusedRow(view)).toBe(D("first")));
-    expect(list).toHaveBeenCalled();
+    expect(tree).toHaveBeenCalled();
+    expect(list, "the send read the issue's comments").not.toHaveBeenCalled();
     expect(rowsOfPart(view, "yours")[0]).toBe(D("second"));
     const row = rowOf(view, D("second"));
     expect(row.getAttribute("data-node-state")).toBe("change_requested");
@@ -2327,9 +2348,42 @@ test("a decision the reader sent a Change on says so, leaves the review list and
       words(view.container.querySelector('[data-decisions-part="review"] [data-decisions-count]'))
     ).toBe("1");
   } finally {
+    unsubscribe();
     create.mockRestore();
+    decisions.mockRestore();
     list.mockRestore();
+    tree.mockRestore();
     text.mockRestore();
+  }
+});
+
+// A decision whose Change may stand on a comment page the tree read has not loaded
+// (`TreeNode.changeUnread`, which the model sets where the read names an older comment page and
+// the decision changed before its oldest held comment) is drawn in the Decisions filter as the
+// outline draws it: its state with "+" after it, the page's mark of more to read (R15), rather
+// than as a decision nobody asked to change. A decision with no such Change draws its state
+// alone.
+test("a decision whose Change may stand on an unread comment page draws + after its state in the filter", () => {
+  const made = [
+    decision("first", { links: [shaped(specRef("s1"))] }),
+    decision("second", { links: [shaped(specRef("s1"))] }),
+  ];
+  const view = renderBody({
+    children: [
+      statement("s1"),
+      decisionNode("first", { changeUnread: true }),
+      decisionNode("second"),
+    ],
+    made,
+  });
+  try {
+    const state = (id: string) =>
+      rowOf(view, D(id)).querySelector("[data-node-margin] [data-node-state]");
+    expect(words(state("first"))).toBe(`${NODE_STATE_WORDS.decision.waiting_review}+`);
+    expect(state("first")?.querySelector("[data-change-unread]")?.textContent).toBe("+");
+    expect(words(state("second"))).toBe(NODE_STATE_WORDS.decision.waiting_review);
+  } finally {
+    view.unmount();
   }
 });
 
@@ -2343,8 +2397,8 @@ test("a Change's body is drawn through the renderer, its marks gone", async () =
   try {
     await act(async () =>
       view.client.setQueryData(
-        ["comments", KEY],
-        [changeOf("second", "2026-11-16T09:00:00Z", body)]
+        outlineQuery(KEY, "conversation").queryKey,
+        commentsTree([changeOf("second", "2026-11-16T09:00:00Z", body)])
       )
     );
     await waitFor(() =>

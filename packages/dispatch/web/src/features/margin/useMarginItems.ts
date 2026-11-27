@@ -333,6 +333,7 @@ export function useMarginItems(
   blockFilterId: string | undefined,
   {
     documentShown = false,
+    documentUp = false,
     held = NO_THREADS,
     issue,
   }: {
@@ -340,6 +341,10 @@ export function useMarginItems(
      *  its Spec editor mounted while the Conversation covers it, so without this the decisions
      *  of every issue page would be read where nothing shows them. */
     readonly documentShown?: boolean;
+    /** Whether a document's editor is up beside the margin (`useMargin().documentBridge`): in the
+     *  new issue page's Details the margin's cards are drawn only then (`slots/details.tsx`), so
+     *  its comments are read only then, and that page reads no comment list while none is up. */
+    readonly documentUp?: boolean;
     /** Threads whose card's reply holds a send of its own - out, or refused - each of which stays
      *  in the list it was in, open or resolved, whoever resolves or reopens it meanwhile: moving
      *  it between them would remount its card, and the composer and what it holds with it. */
@@ -373,9 +378,12 @@ export function useMarginItems(
     [asks.data, owner]
   );
   const freshness = useNewIssuePageFreshness();
+  // Every page but the new issue page reads the comments as it always has: only that page's
+  // shell hands the margin its Details drawer, which `freshness` is read from too.
+  const commentsShown = freshness === undefined || documentUp;
   const comments = useQuery({
-    enabled: owner !== undefined,
-    queryKey: commentsQueryKey,
+    enabled: owner !== undefined && commentsShown,
+    queryKey: commentsShown ? commentsQueryKey : ["comments", undefined],
     queryFn: () => {
       if (owner === undefined) {
         throw new Error("Margin comments require an owner.");
