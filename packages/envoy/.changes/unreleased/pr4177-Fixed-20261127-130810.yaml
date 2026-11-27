@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+    A parent's progress, in `GET /api/v1/issues`, `GET /api/v1/issues/{key}` and its children's rollup, counts only the children its reader sees, since a child may be of another project.
+
+    An issue's Legion state (`GET /api/v1/issues/{key}/legion`) names and counts only the blockers and waiting issues its reader sees, as the board's cards do.
+
+    `PUT` and `DELETE /api/v1/projects/{key}/proven-sessions` answer a project their caller does not see 404 PROJECT_NOT_FOUND, as a key no project holds, before they take its lock.
+
+    With `DISPATCH_PARENT_STATUS_RULE` on, the parent status rule judges and names only the issues its writer sees: an issue of a project the writer does not see decides no 409 PARENT_STATUS_CONFLICT.
+
+    `POST /api/v1/issues/{key}/status-change` reads the issue it names as its caller reads it before any walk or lock, and answers one its caller does not see as a key no issue holds (404, or 403 PROJECT_SCOPE for a credential that names one project); its plan moves, unlinks and names no issue its caller does not see, and its dry run, its answer and each step's issue hold only what its caller reads.
+
+    The comments a status change writes name no issue of a private project other than the named issue's own project, and a step's comment calls a private named issue of another project "an issue of another project".
+
+    A repeat of a keyed status change is replayed, and a refusal hands back its recovery point, only to a caller that sees every issue, session, person and role project its stored issues name.
+
+    `GET /api/v1/agents/{session_id}/artifacts` lists a file only where `GET /api/v1/agents/{session_id}/artifacts/{slug}` answers it to the same caller, so a conversation its caller may not read lists none.
+
+    A step or plan write that names another issue's step or plan id (409 STEP_OTHER_ISSUE, 409 PLAN_OTHER_ISSUE) names only the issue the write names, never the issue that holds the id.
+
+    A parent write refused for the depth cap (409 PARENT_INPUT) names the cap and never a depth, which could count issues of a project its writer does not see.
+
+    `POST /api/v1/results/{id}/retract` answers a result whose check is on an issue its caller does not see 404 RESULT_NOT_FOUND, as a result no row holds, and takes no lock of that issue.
+time: 2026-11-27T13:08:10Z
+custom:
+    Issue: pr4177

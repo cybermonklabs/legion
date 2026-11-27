@@ -1,5 +1,0 @@
-kind: Added
-body: 'The generated types add `GET /api/v1/access/projects/{key}/repositories` with `ProjectRepositoriesAnswer`, `{project, repositories}`: the repositories a project''s issues resolve to, each `owner/name` once and sorted, and `[]` when none resolves.'
-time: 2026-11-20T14:04:08Z
-custom:
-    Issue: pr4635
