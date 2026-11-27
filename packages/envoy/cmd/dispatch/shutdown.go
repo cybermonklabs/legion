@@ -218,14 +218,14 @@ func shutdown(ctx context.Context, server *http.Server, documentService *docs.Se
 		select {
 		case <-intakes:
 		default:
-			slog.Warn("dispatch: exit with the GitHub intakes still stopping at the shutdown deadline")
+			slog.Warn("dispatch: exit with the intakes still stopping at the shutdown deadline")
 		}
 		return
 	}
 	select {
 	case <-intakes:
 	case <-ctx.Done():
-		slog.Warn("dispatch: exit with the GitHub intakes still stopping at the shutdown deadline")
+		slog.Warn("dispatch: exit with the intakes still stopping at the shutdown deadline")
 		return
 	}
 	if waitUntilIdle(ctx, drained, pool) {

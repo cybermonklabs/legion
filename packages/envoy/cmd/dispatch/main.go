@@ -911,9 +911,9 @@ func main() {
 		fatal("dispatch: the lease pool's callers are not its connections", "error", err)
 	}
 	// The background loops below - the embedding queue and its coverage pass, the suggestion
-	// sweep, the term-statistics refresh, the architecture importer's ticker, the Legion sampler,
-	// the delivery reconcile and intakes - read and write through the background pool opened
-	// above (background, backgroundStore), so under load a request
+	// sweep, the term-statistics refresh, the architecture importer's ticker, the delivery
+	// reconcile, the delivery intakes and the Legion state intake - read and write through the
+	// background pool opened above (background, backgroundStore), so under load a request
 	// never queues behind a loop's statement for a connection, nor a loop behind the requests. The
 	// document service's own loops (the settlement resumption, the task progress and reference
 	// excerpt reconciliations) take it from the store themselves. Each leased loop still takes its
@@ -1366,7 +1366,7 @@ func main() {
 		// name, a project's reads at least legion.ReadRetryAfter apart, and no recurring timer
 		// reads one. A connect that fails stops the delivery intakes before the exit, since they
 		// may hold their durables already.
-		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, database.Pool, legionIntakeLeases, legionSettingsWake)
+		stopLegionIntake, err := legion.StartIntake(ctx, connectIntake, background, legionIntakeLeases, legionSettingsWake)
 		if err != nil {
 			slog.Error("dispatch: connect the Legion state intake to NATS", "error", err)
 			cancel()

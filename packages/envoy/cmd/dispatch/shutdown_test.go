@@ -1219,8 +1219,8 @@ func (p *dispatchProcess) requireOwnExitWithinTheMargin(t *testing.T, signalled 
 // WARN lines from the signal on, as the row's record of the stop.
 func (p *dispatchProcess) requireShutdownGaveUpOnTheIntakes(t *testing.T) {
 	t.Helper()
-	if !p.logged("level=WARN", `msg="dispatch: exit with the GitHub intakes still stopping at the shutdown deadline"`) {
-		t.Errorf("Dispatch's log does not say its shutdown gave up on the GitHub intakes at its deadline:\n%s", p.Output.String())
+	if !p.logged("level=WARN", `msg="dispatch: exit with the intakes still stopping at the shutdown deadline"`) {
+		t.Errorf("Dispatch's log does not say its shutdown gave up on the intakes at its deadline:\n%s", p.Output.String())
 	}
 	output := p.Output.String()
 	if at := strings.Index(output, `msg="dispatch: shutting down"`); at >= 0 {

@@ -778,14 +778,14 @@ func (p *Pool) Horizon() (*RawPool, error) {
 // its listing, each text's and each document's index and its count), the edit-notice sweep, the
 // repair of closed and
 // reopened issues' asks, the boot's check that every project has an owner and its grants
-// (EnsureProjectOwners), the Legion sampler's reads of its settings and records of each daemon's
-// state (legion.RunSampler), the server process registry's prune and the fleet build announcer, and
-// what a request leaves running behind its answer: the comment mention sender's claim statements
-// (api/comment_mention_sender.go) and the one retry of a related_checks or near_copy_checks row
-// its first attempt could not write (api's retryRecord, at most four at once). Six is the
-// background's share of the budget SharedPoolSize describes; nobody waits on these loops, so they
-// wait for each other here (up to backgroundAcquireBound) instead of for the requests'
-// connections.
+// (EnsureProjectOwners), the Legion state intake's reads of the settings and records of each
+// daemon's state (legion.Intake), the server process registry's prune and the fleet build
+// announcer, and what a request leaves running behind its answer: the comment mention sender's
+// claim statements (api/comment_mention_sender.go) and the one retry of a related_checks or
+// near_copy_checks row its first attempt could not write (api's retryRecord, at most four at
+// once). Six is the background's share of the budget SharedPoolSize describes; nobody waits on
+// these loops, so they wait for each other here (up to backgroundAcquireBound) instead of for the
+// requests' connections.
 const backgroundPoolSize = 6
 
 // Background is the pool for background loops and the work a request leaves behind it, so that

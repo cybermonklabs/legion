@@ -504,7 +504,7 @@ This is what each pool's work does with such a refusal, at the 10 seconds above 
 
   - the issue-ask repair, at boot and on its interval, leaves an issue it could not repair to its next interval's pass;
 
-  - the settlement resumption's query, the schema-admission re-check, the Legion sampler, the server registry's prune, the fleet build announcer, the webhook redelivery sweep, the CI reconcile pass, the architecture importer's ticker and the delivery reconcile each run again at their next pass;
+  - the settlement resumption's query, the schema-admission re-check, the server registry's prune, the fleet build announcer, the webhook redelivery sweep, the CI reconcile pass, the architecture importer's ticker and the delivery reconcile each run again at their next pass;
 
   - the delivery intake acknowledges an event whose handling failed, which the delivery reconcile's next pass covers, and hands back for redelivery an envelope whose pull request head was not stored; the job intake leaves a run's jobs to the read its run's end makes;
 
@@ -2195,7 +2195,7 @@ its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it in
 The server's shutdown waits for `Run`'s stop, which begins at the signal and gives handlers 15 s from it, then closes the intake client and waits each pending hand-back finalizer before it deregisters the process and closes the database pool.
 It waits for that beside its wait for the background work (keyed handlers, detached deliveries, the live sockets), within the same deadline, so a shutdown that gives up on that work at its deadline has waited for the intakes' stop too.
 That wait can reach the shutdown's deadline only while `Client.Close` waits for nats.go's lock, behind the writes queued on it, each until the 5 s write deadline (above), or behind a reconnect attempt's dial and handshake.
-The shutdown then stops waiting and logs `dispatch: exit with the GitHub intakes still stopping at the shutdown deadline`, and the process writes its log and exits on its own, with no second wait for that stop: its exit ends the client and the renewal, and the hold lapses.
+The shutdown then stops waiting and logs `dispatch: exit with the intakes still stopping at the shutdown deadline`, and the process writes its log and exits on its own, with no second wait for that stop: its exit ends the client and the renewal, and the hold lapses.
 
 ### The Legion state intake
 
