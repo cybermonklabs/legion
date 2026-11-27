@@ -4373,6 +4373,7 @@ function labelRun(
     '. "$root/scripts/e2e/lib/rig.sh"',
     defs(
       "require_label_texts",
+      "owner_only",
       "base_env",
       "standins",
       "pod_standins",
