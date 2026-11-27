@@ -1350,6 +1350,17 @@ func clientWrites() []clientWrite {
 			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"experiment":"memory","variant":"off","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
 		},
 		{
+			method: "PutStepCommits", route: "PUT /api/v1/issues/OTHER-7/steps/" + step + "/commits",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				fixRun := started
+				fixRun.Kind, fixRun.Step = "step", 1
+				return client.PutStepCommits(ctx, "OTHER-7", step, fixRun, StepCommits{StartCommit: strings.Repeat("a", 40),
+					EndCommit: strings.Repeat("b", 40), FixCheck: "k-ci"})
+			},
+			body: `{"task":"default","step":1,"kind":"step","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"start_commit":"` +
+				strings.Repeat("a", 40) + `","end_commit":"` + strings.Repeat("b", 40) + `","fix_check":"k-ci","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
 			method: "PutPlan", route: "PUT /api/v1/issues/OTHER-7/plans/" + plan,
 			call: func(ctx context.Context, client *HTTPClient) error {
 				return client.PutPlan(ctx, "OTHER-7", plan, PlanWrite{Generation: 2, Source: "default",
@@ -1452,7 +1463,7 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
 	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "Artifacts", "Ask", "Reviews", "DocumentVersion",
 		"EventsAfter", "MessageBodiesSince", "Approval", "ApprovedVersionBefore", "ArtifactChanges", "PlanDocument", "Handoff",
-		"Whoami"}
+		"Whoami", "CIJob"}
 	listed := map[string]string{}
 	for _, read := range reads {
 		listed[read] = "the list of reads"

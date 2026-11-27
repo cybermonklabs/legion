@@ -146,6 +146,12 @@ func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []st
 	}
 	return of, nil
 }
+
+// PullRequestRow answers the one pull request of issue the store holds, nil for none, as the real
+// store reads its row alone: the held list's read of a hold for CI (record.EndHoldsOf).
+func (s projectionStore) PullRequestRow(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
+	return s.pullRequests[issue], nil
+}
 func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
 	return s.gates[issue], nil
 }

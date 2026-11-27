@@ -70,9 +70,11 @@ func fixHolding(ctx context.Context, tx pgx.Tx, store Store, issue Issue) ([]str
 }
 
 // ciHolding is each check a CI job runs that has not passed at the head of key's open pull
-// request (CIWaits), and nothing where key has no open pull request.
+// request (CIWaits), and nothing where key has no open pull request. It writes no record back, so
+// it reads the pull request's row alone (Store.PullRequestRow), with none of what it remembers of
+// its settled heads.
 func ciHolding(ctx context.Context, tx pgx.Tx, store Store, key string) ([]string, error) {
-	pr, err := store.PullRequest(ctx, tx, key)
+	pr, err := store.PullRequestRow(ctx, tx, key)
 	if err != nil || pr == nil || pr.State != PullRequestOpen {
 		return nil, err
 	}
