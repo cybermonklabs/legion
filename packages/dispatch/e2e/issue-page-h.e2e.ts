@@ -1468,6 +1468,15 @@ function priorityPicker(page: Page): Locator {
   return page.getByRole("listbox", { name: "Priorities options" });
 }
 
+/** The line's picker trigger in `scope` while a write of the line and the reads after it hold it:
+ *  it then says "Saving priorities…" in place of its words, and is named by them, in either place
+ *  the line stands (`priorityTriggerName`). */
+function heldPriorityTrigger(scope: Locator, key: string): Locator {
+  return scope.getByRole("button", {
+    name: priorityTriggerName(key, false, { ANSWER_LINES, CONTROL_LABELS }),
+  });
+}
+
 /**
  * Ticks the priority `title` in the priorities' picker whose trigger is `trigger`, or unticks it,
  * by the keyboard, and leaves it so where `ticks` says: Enter on the trigger opens the picker with
@@ -1702,7 +1711,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       await issue.landed;
       await readHeld(page, issue);
       await expect(
-        trigger,
+        heldPriorityTrigger(advances, one),
         "the picker's trigger lost the focus as its write landed"
       ).toBeFocused();
       await page.keyboard.press("Enter");
@@ -1714,7 +1723,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       );
       await expectPressRefused(
         page,
-        trigger,
+        heldPriorityTrigger(advances, one),
         "after a second Enter between the added priority landing and the new read"
       );
       await issue.releaseReads();
@@ -1832,11 +1841,14 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     await togglePriority(page, addPriority, PRIORITY_TITLE, true);
     await issue.landed;
     await readHeld(page, issue);
-    await expect(addPriority, "the add control lost the focus as its write landed").toBeFocused();
+    await expect(
+      heldPriorityTrigger(priorityLine(page), three),
+      "the add control lost the focus as its write landed"
+    ).toBeFocused();
     await page.keyboard.press("Enter");
     await expectPressRefused(
       page,
-      addPriority,
+      heldPriorityTrigger(priorityLine(page), three),
       "after a second Enter between the added priority landing and the new read"
     );
     await issue.releaseReads();
@@ -1873,11 +1885,14 @@ test("Details' priority picker's removal of an issue's last priority keeps the f
     await togglePriority(page, trigger, PRIORITY_TITLE, false);
     await issue.landed;
     await readHeld(page, issue);
-    await expect(trigger, "the picker's trigger lost the focus as its write landed").toBeFocused();
+    await expect(
+      heldPriorityTrigger(priorityLine(page), one),
+      "the picker's trigger lost the focus as its write landed"
+    ).toBeFocused();
     await page.keyboard.press("Enter");
     await expectPressRefused(
       page,
-      trigger,
+      heldPriorityTrigger(priorityLine(page), one),
       "after a second Enter between the removal landing and the new read"
     );
     await issue.releaseReads();

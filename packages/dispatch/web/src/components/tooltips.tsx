@@ -18,6 +18,7 @@ export interface PageWords {
     | "priorities_unreadable"
     | "saving_components"
     | "saving_labels"
+    | "saving_priorities"
   >;
   readonly AUTHOR_KIND_WORDS: Words<"agent">;
   readonly CONTROL_LABELS: Words<
@@ -70,9 +71,9 @@ export interface PageWords {
  *  read, so the ellipsis that shows a write under way ("Saving labels…") is no word of it, and
  *  one `…`, or three dots, at the end goes ("Saving labels"). Inside `NoTooltips` the shared
  *  controls name a busy control by the words it draws this way, then `CONTROL_LABELS`'
- *  `control_name_of` and the issue's key: `labelsControlName` and `componentsControlName`, each
- *  given the control's state inside `NoTooltips`, whether a save is in flight among it, or `null`
- *  outside it for `main`'s name. */
+ *  `control_name_of` and the issue's key: `labelsControlName`, `componentsControlName` and the
+ *  priority line's `priorityTriggerName`, each given the control's state inside `NoTooltips`,
+ *  whether a save is in flight among it, or `null` outside it for `main`'s name. */
 export function withoutEllipsis(words: string): string {
   return words.replace(/\s*(?:…|\.{3})$/u, "");
 }
