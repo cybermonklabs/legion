@@ -7,16 +7,20 @@
 # asks sum.golang.org, the checksum database, for every hash it does not find there. Two image
 # builds died on that request on 2026-11-24: the worker image's after 864 s on `stream error
 # INTERNAL_ERROR` for two modules (job 138667218057) and the listener image's go-licenses install
-# at 18:42Z (job 138687314598). The 240 go.mod hashes go.work.sum lacked are what sent those builds
-# to the database at all. With every hash committed, a build reads the proxy alone, and a database
-# that fails cannot fail a build that never asks it.
+# at 18:42Z (job 138687314598). The hashes go.work.sum lacked (240 lines at main 0dbe504849a, 229
+# module content lines at 77d3d14c) are what sent those builds to the database at all. With
+# every hash committed, a build reads the proxy alone, and a database that fails cannot fail a
+# build that never asks it.
 #
 # How: `go mod download -json all` reports, for each module of the workspace graph, two hashes:
 # `Sum`, of its content (the `h1:` line), and `GoModSum`, of its go.mod. This check compares each
-# against the committed files and names every module whose hash is in none of them. It asks the
-# checksum database for nothing and downloads nothing it does not already hold, so it cannot be
-# confused by a toolchain switch, an unreachable database or a module cache that is cold - the four
-# ways the first version of this check failed for reasons that were not a missing hash.
+# against the committed files and names every module whose hash is in none of them. It downloads
+# what the module cache lacks, with GOSUMDB=off, so it asks the checksum database for nothing: on
+# a cold cache a module whose hash no file holds is downloaded unverified and named here, where
+# a build would have asked the database for it. So neither a toolchain switch, nor an unreachable
+# database, nor a cold module cache can fail this check for a reason that is not a missing hash.
+# The committed hashes are read before the download, so a hash the download writes into
+# go.work.sum cannot hide a missing one.
 #
 # It needs the Go this repository pins, because the graph is the one that Go resolves: CI's
 # setup-go installs it, and a box whose `go` reaches it through a toolchain module serves too,
@@ -32,7 +36,17 @@ trap 'rm -f "$sums" "$graph"' EXIT
 # Every committed hash: go.work.sum and each module's go.sum, as `<module> <version>[/go.mod] <hash>`.
 { cat go.work.sum; git ls-files -z '*go.sum' | xargs -0 -r cat; } > "$sums"
 
-go mod download -json all > "$graph" 2>"$graph.err" || {
+# A Go that switches to the pinned toolchain downloads it as a module and verifies it against the
+# checksum database on every switch, which GOSUMDB=off refuses. So the switch happens once here,
+# verified as a build verifies it, and the download below runs that toolchain's own go with
+# GOTOOLCHAIN=local, which switches to nothing.
+goroot=$(go env GOROOT 2>"$graph.err") && [ -x "$goroot/bin/go" ] || {
+  echo "::error::the Go toolchain this workspace pins could not be started, so this check says nothing about the committed checksums:" >&2
+  sed -n '1,10p' "$graph.err" >&2
+  rm -f "$graph.err"
+  exit 1
+}
+GOSUMDB=off GOTOOLCHAIN=local "$goroot/bin/go" mod download -json all > "$graph" 2>"$graph.err" || {
   echo "::error::the module graph could not be listed, so this check says nothing about the committed checksums:" >&2
   sed -n '1,10p' "$graph.err" >&2
   rm -f "$graph.err"
@@ -63,18 +77,14 @@ while index < len(text):
         break
     module, index = decoder.raw_decode(text, index)
     path, version = module.get("Path"), module.get("Version")
-    if not path or not version or module.get("Main"):
+    if not path or not version:  # a module of the workspace itself, which has no hash to commit
         continue
     seen += 1
-    # A replaced module is verified under the path it is replaced by, and a local replacement has
-    # no hash at all; `go mod download` reports the replacement in Replace.
-    target = module.get("Replace") or module
-    path, version = target.get("Path", path), target.get("Version", version)
-    if not version:  # a directory replacement: nothing to verify
-        continue
-    if target.get("Sum") and (path, version) not in held:
+    # A replaced module is reported under the path and version it is replaced by, which are the
+    # ones its hashes are committed under; a directory replacement is a workspace module, above.
+    if module.get("Sum") and (path, version) not in held:
         gaps.append(f"{path} {version}")
-    if target.get("GoModSum") and (path, f"{version}/go.mod") not in held:
+    if module.get("GoModSum") and (path, f"{version}/go.mod") not in held:
         gaps.append(f"{path} {version}/go.mod")
 
 print(seen)
