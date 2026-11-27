@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -260,7 +261,7 @@ func TestNoRefusalPathPrintsACanary(t *testing.T) {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'gh ran %s\\n' \"$*\"\nexit 0\n"), 0o700); err != nil {
+	if err := execfile.Write(stub, []byte(ghStandInPrefix(help)+"printf 'gh ran %s\\n' \"$*\"\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	pane := map[string]string{

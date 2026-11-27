@@ -1286,11 +1286,10 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
 			}
-			// The launch text renders the prefix as one shell word and the invocation as its own
-			// already-rendered shell word. It does not call shellprefix.Command, the gate's
-			// renderer, so a renderer that drops the prefix fails here. Word is necessary: a
-			// temporary prefix path can hold a space or an apostrophe.
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(shellprefix.Word(f.prefix) + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
+			// The refusal names the launch command as the prefix program's base name and the omp
+			// path, the way main's gate renders it; the prefix's directory, which can hold a space
+			// or a quote, is not part of what the refusal shows (the launch still quotes it to run).
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", filepath.Base(f.prefix) + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}
@@ -1316,7 +1315,7 @@ func TestTheLoadProbeQuotesNoWordOfTheLaunchPrefix(t *testing.T) {
 	gate, _ := gateUnder(t, f, contractCurrent)
 	echoing := filepath.Join(t.TempDir(), "echoing-prefix")
 	script := "#!/bin/sh\necho \"$0: proxy refused $1, and again:$1; token ${2#*=} rejected\" >&2\nexit 3\n"
-	if err := os.WriteFile(echoing, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(echoing, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	gate.prefix = []string{echoing, argument, "OMP_TOKEN=" + value}
