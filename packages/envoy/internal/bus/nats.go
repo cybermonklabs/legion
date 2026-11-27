@@ -917,7 +917,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 			if hook := opts.beforeBackgroundInstall; hook != nil {
 				hook(nc)
 			}
-			if err := c.install(nc, false, false); err != nil {
+			if err := c.install(nc, false); err != nil {
 				c.stop()
 				return err
 			}
@@ -933,7 +933,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 	if err != nil {
 		return nil, stepDial, err
 	}
-	if err := c.install(nc, ownsStream, true); err != nil {
+	if err := c.install(nc, ownsStream); err != nil {
 		// The constructor returns no client, so no caller can Close it: the client is stopped
 		// before nc closes, so the recovery nc's close begins (onClosed) finds it stopped and dials
 		// nothing. Running, that recovery would dial and install a connection held by no one, which
@@ -973,11 +973,14 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 // only a client it returns gets this far, so a caller holding a connection can find the client
 // that owns it (clientOwning) for as long as that client is a caller's to use.
 //
-// connected says nc has connected, as the foreground start's has: install then reads the size
-// checks' bound from it (Client.maxPayload). The background start's connection may not have, and
-// nats.go may be reconnecting it under its connection lock, which that read takes, so install
-// leaves the bound unknown and onConnect reads it once nc has connected.
-func (c *Client) install(nc *nats.Conn, ensure, connected bool) error {
+// install reads the size checks' bound (Client.maxPayload) from nc unless the client is awaiting
+// its first connection (awaitingFirstConnection). The foreground start's nc has connected; the
+// background start's may not have, and nats.go may be reconnecting it under its connection lock,
+// which that read takes. So the background install leaves the bound unknown and onConnect reads it
+// once nc has connected: the background start marks the client awaiting before it dials, and
+// onConnect runs only once install has returned (connectFirstInBackground), so the mark holds
+// throughout install.
+func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
@@ -999,7 +1002,7 @@ func (c *Client) install(nc *nats.Conn, ensure, connected bool) error {
 		}
 	}
 	var maxPayload int64
-	if connected {
+	if !c.awaitingFirstConnection() {
 		maxPayload = nc.MaxPayload()
 	}
 	c.mu.Lock()

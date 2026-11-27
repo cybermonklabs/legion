@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -73,10 +74,11 @@ func TestTheSizeChecksAnswerWhileAReconnectHoldsTheConnectionLock(t *testing.T) 
 // its dial and handshake: the start leaves the size checks' bound unknown, and onConnect reads it
 // once the connection has connected. The client dials through a handshake hold already in force,
 // so its first attempt is held and fails at its timeout, and nats.go goes on reconnecting in the
-// background. The row holds the start between its dial and its install
-// (WithBeforeBackgroundInstall) until a later attempt's CONNECT is held with the lock taken
-// (AwaitAttempt), then lets the install run, which must be over within that attempt: once the
-// start has returned the lock must still be taken and no later attempt may have reached the hold.
+// background. The start runs on a goroutine of its own and is held between its dial and its
+// install (WithBeforeBackgroundInstall) until the row has seen a later attempt's CONNECT held with
+// the lock taken (AwaitAttempt). The row then lets the install run, which must be over within that
+// attempt (AnswersWithinAttempt): once the start has returned the lock must still be taken, nats.go
+// must not have let it go since the install began, and no later attempt may have reached the hold.
 // An install that read the bound would wait out the attempt, and the row would fail there, on the
 // start by name. The control is the bound itself: unknown while the hold stands, and the server's
 // once the hold is released and the client has connected.
@@ -85,34 +87,61 @@ func TestABackgroundStartInstallsWithoutWaitingForAHeldReconnect(t *testing.T) {
 	hold := testnats.StartHandshakeHold(t, testnats.URL(t))
 	hold.Hold()
 	var (
-		conn          *nats.Conn
-		began, dialed int64
-		heldAtInstall bool
+		client *Client
+		err    error
 	)
-	beforeInstall := func(nc *nats.Conn) {
-		conn = nc
-		hold.AwaitAttempt(t, nc, hold.Attempts())
-		began, dialed, heldAtInstall = hold.Attempts(), hold.Dials(), true
-	}
-	client, err := Connect([]string{hold.URL()}, WithName(t.Name()), WithConnectInBackground(), WithBeforeBackgroundInstall(beforeInstall))
-	if err != nil {
-		t.Fatalf("connect in the background through the handshake hold: %v", err)
-	}
-	// nats.go's Close waits for its connection lock, which a held handshake holds, so the hold is
-	// released and the proxy restored before the client closes (heldHandshakeClient).
-	t.Cleanup(client.Close)
-	t.Cleanup(hold.Restore)
-	t.Cleanup(hold.Release)
-	if !heldAtInstall {
-		t.Fatal("UNKNOWN: the start installed without the hook, so no held attempt was measured")
-	}
-	if !t.Run("within the held attempt", func(t *testing.T) {
-		testnats.RequireLockHeld(t, conn)
-		if attempts, dials := hold.Attempts(), hold.Dials(); attempts != began || dials != dialed {
-			t.Fatalf("%d more handshake attempt(s) dialed the hold (%d more reached it with a CONNECT) before the start returned", dials-dialed, attempts-began)
+	dialed, install, returned := make(chan *nats.Conn, 1), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(returned)
+		client, err = Connect([]string{hold.URL()}, WithName(t.Name()), WithConnectInBackground(), WithBeforeBackgroundInstall(func(nc *nats.Conn) {
+			dialed <- nc
+			<-install
+		}))
+		// A start that returned without reaching its install's hook dialed nothing to measure. One
+		// that reached it has had its connection taken by now, so this send finds room and is read
+		// by no one.
+		select {
+		case dialed <- nil:
+		default:
 		}
+	}()
+	conn := testwait.Receive(t, "the background start to reach its install", dialed)
+	if conn == nil {
+		t.Fatalf("UNKNOWN: the start returned without reaching its install (%v), so no held attempt was measured", err)
+	}
+	// Registered before the first wait that can end the test (FailNow): until the start returns it
+	// is held in its hook, with a connection that reconnects for good (MaxReconnect -1). nats.go's
+	// Close waits for its connection lock, which a held handshake holds, so the hold is released and
+	// the proxy restored first (heldHandshakeClient); then the start is let go, and the client it
+	// returned is closed, or the connection it dialed when it returned none. With the hold released
+	// the install waits for nothing, so the wait for the start has no bound of testwait's: a wait
+	// that failed at testwait's bound has spent it, and a wait under it would give up at once and
+	// leave the connection open.
+	var installOnce sync.Once
+	letInstall := func() { installOnce.Do(func() { close(install) }) }
+	t.Cleanup(func() {
+		hold.Release()
+		hold.Restore()
+		letInstall()
+		<-returned
+		if client != nil {
+			client.Close()
+			return
+		}
+		conn.Close()
+	})
+	hold.AwaitAttempt(t, conn, hold.Attempts())
+	if !t.Run("within the held attempt", func(t *testing.T) {
+		hold.AnswersWithinAttempt(t, conn, "the background start's install", func() error {
+			letInstall()
+			<-returned
+			return err
+		})
 	}) {
 		t.Fatal("the background start waited for nats.go's connection lock: its install was not over within the reconnect attempt that held it, as the subtest above reads")
+	}
+	if err != nil {
+		t.Fatalf("connect in the background through the handshake hold: %v", err)
 	}
 	if bound := client.maxPayload.Load(); bound != 0 {
 		t.Errorf("the client keeps a max payload of %d while its first connection has not connected, want none", bound)

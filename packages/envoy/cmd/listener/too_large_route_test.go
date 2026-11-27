@@ -238,6 +238,12 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 
 	spent, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
+	// deadlines are the request deadlines a row below is sent under, written once so every row sent
+	// under both meets the same two: one already past, the state the CI run reached, and a live one.
+	deadlines := []struct {
+		name string
+		ctx  context.Context
+	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}}
 	oversized := strings.Repeat("m", 2<<20)
 	// The header band: an envelope within the bound by itself and one byte past it with the
 	// Nats-Msg-Id header its publish carries, from the limited sender under the key the request
@@ -250,10 +256,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	if encoded, err := json.Marshal(headerEnvelope(band)); err != nil || len(encoded) > maxPayload {
 		t.Fatalf("UNKNOWN: the header band's envelope takes %d bytes by itself (%v), want it within the max payload of %d", len(encoded), err, maxPayload)
 	}
-	for _, deadline := range []struct {
-		name string
-		ctx  context.Context
-	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}} {
+	for _, deadline := range deadlines {
 		for _, row := range []struct {
 			name string
 			path string
@@ -274,10 +277,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	}
 	watch.through(t, conn)
 	refused("a publish from a sender at its limit", request(context.Background(), "/v1/messages/publish", map[string]string{"topic": topic, "message": oversized, "source_session": limited}))
-	for _, deadline := range []struct {
-		name string
-		ctx  context.Context
-	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}} {
+	for _, deadline := range deadlines {
 		refused("a publish within the bound but for its header, from a sender at its limit, "+deadline.name, request(deadline.ctx, "/v1/messages/publish", map[string]string{
 			"topic": topic, "message": band, "source_session": limited, "idempotency_key": headerKey,
 		}))
@@ -310,10 +310,7 @@ func TestAMessageNATSCannotTakeWholeIs413BeforeTheRouteDoesAnyBusWork(t *testing
 	publishBand := stampBand("the publish's band message", func(text string) contracts.Envelope {
 		return contracts.MessageEnvelope(listenerMessage(listenerwire.MessageBody{Source: "agent", SourceSession: live, Message: text}, contracts.ExpectsReplyUnset), topic, publishDedupePrefix+publishKey)
 	})
-	for _, deadline := range []struct {
-		name string
-		ctx  context.Context
-	}{{"its deadline spent", spent}, {"its deadline live", context.Background()}} {
+	for _, deadline := range deadlines {
 		recorder := request(deadline.ctx, "/v1/messages/publish", map[string]string{
 			"topic": topic, "message": publishBand, "source_session": live, "idempotency_key": publishKey,
 		})
