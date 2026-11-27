@@ -61,9 +61,10 @@ to approve it on the secrets broker: <url>`.
 
 A **Secret request** row is a link to the request's page on the broker,
 `<broker>/approve/<record>`. Click it: the page opens in a new tab, and the Inbox stays where you
-left it. After you decide, close that tab; the row leaves the Inbox within 15 seconds of your
-return. When you signed in to the broker within the last day (a sign-in lasts a day unless the
-deployment set it shorter) the page opens at once. Otherwise the
+left it. After you decide, close that tab; the row leaves the Inbox as you return to it (within
+15 seconds when the page opened in a window beside a visible Inbox). When you signed in to the
+broker within the last day (a sign-in lasts a day unless the deployment set it shorter) the page
+opens at once. Otherwise the
 broker sends you to sign in with your Workspace account and brings you back to the same request.
 Signed in to that one Google account, you are asked nothing; signed in to several, Google shows
 its account chooser, and you choose the Workspace account.
