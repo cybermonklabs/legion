@@ -337,19 +337,9 @@ func (e *Engine) boundFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // push of it, read from the fix the branch names (record.Store.FixAt, record.TaskFix.Pushed), ""
 // for none.
 func (e *Engine) boundBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (branch, pushed string, err error) {
-	start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place})
-	if err != nil || start.Run != record.RunOpen || start.PushBranch == "" {
-		return "", "", err
-	}
-	_, _, _, number, role, ok := claim.MatchBesideBranch(start.PushBranch, []string{w.Task})
-	if !ok {
-		return start.PushBranch, "", nil
-	}
-	fix, err := e.store.FixAt(ctx, tx, issue.Key, issue.Generation, w.Task, number)
-	if err != nil || fix == nil {
-		return start.PushBranch, "", err
-	}
-	return start.PushBranch, fix.Pushed[string(role)], nil
+	// CONTROL (fb8-ctl-5): the open start's binding is not read, so a step that way 2 runs again
+	// is given neither its kept branch nor the head recorded for it.
+	return "", "", nil
 }
 
 // fixFacts is the start facts of fix's own start (startFacts), pr being issue's pull request on
