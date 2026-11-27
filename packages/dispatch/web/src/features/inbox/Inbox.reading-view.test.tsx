@@ -539,47 +539,47 @@ test("at 390 px the bar's Snooze of the open row lands on the next row's own mar
 // row is leaving, so the landing is owed again. The apply then takes the row away and its view
 // with it, which drops the focus onto the body, and the landing is made on the next row's own mark
 // in its view.
-test.each([
-  "a wheel",
-  "a key",
-] as const)("at 390 px, with the landing of the bar's Dismiss of the open row owed, %s in the row's reading view owes it again, made on the next row's mark once the row goes", async (reader) => {
-  const user = userEvent.setup();
-  const width = movableReadingPaneWidth(390);
-  const threads = serveThreads();
-  const { queryClient, unmount } = renderInbox("/?group=none");
-  try {
-    const mark = await markOpenThread(user);
-    const apply = Promise.withResolvers<void>();
-    const cancel = spyOn(queryClient, "cancelQueries").mockReturnValue(apply.promise);
+test.each(["a wheel", "a key"] as const)(
+  "at 390 px, with the landing of the bar's Dismiss of the open row owed, %s in the row's reading view owes it again, made on the next row's mark once the row goes",
+  async (reader) => {
+    const user = userEvent.setup();
+    const width = movableReadingPaneWidth(390);
+    const threads = serveThreads();
+    const { queryClient, unmount } = renderInbox("/?group=none");
     try {
-      await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
-      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
-      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
-      if (reader === "a wheel") {
-        mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
-      } else {
-        await user.keyboard("{ArrowDown}");
+      const mark = await markOpenThread(user);
+      const apply = Promise.withResolvers<void>();
+      const cancel = spyOn(queryClient, "cancelQueries").mockReturnValue(apply.promise);
+      try {
+        await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+        expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+        await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
+        if (reader === "a wheel") {
+          mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        } else {
+          await user.keyboard("{ArrowDown}");
+        }
+        // Read once the act has been answered: the focus is still on the mark, in the leaving row.
+        await afterFrameAndTasks();
+        expect(placeOf(document.activeElement)).toBe(placeOf(mark));
+        expect(viewRow()).toBe("reply:c2");
+      } finally {
+        cancel.mockRestore();
       }
-      // Read once the act has been answered: the focus is still on the mark, in the leaving row.
-      await afterFrameAndTasks();
-      expect(placeOf(document.activeElement)).toBe(placeOf(mark));
-      expect(viewRow()).toBe("reply:c2");
-    } finally {
-      cancel.mockRestore();
-    }
 
-    await act(async () => {
-      apply.resolve();
-      await apply.promise;
-    });
-    await waitFor(() => expect(viewRow()).toBe("reply:c3"));
-    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
-  } finally {
-    await threads.restore();
-    unmount();
-    width.restore();
+      await act(async () => {
+        apply.resolve();
+        await apply.promise;
+      });
+      await waitFor(() => expect(viewRow()).toBe("reply:c3"));
+      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
+    } finally {
+      await threads.restore();
+      unmount();
+      width.restore();
+    }
   }
-});
+);
 
 // The bar's Snooze of the open row keeps the bar up while its write is out, with the row still
 // drawn in its reading view. The reader unticks the row's own mark there with a click, which
@@ -700,62 +700,61 @@ function rest(): void {
 // list lets both rows go, and the selection is handed on to the next row only in the commit after
 // that one. The open row stays named leaving until then, so the landing waits for the next row's
 // view and is made on that row's own mark, and the focus is never left on the page's body.
-test.each([
-  "no act",
-  "a wheel",
-  "a key",
-] as const)("at 390 px, with the bar's Dismiss of the open row and another row out while the pointer travels, %s, the write landing and the rows going lands the focus on the next row's own mark in its reading view, never on the body", async (reader) => {
-  const user = userEvent.setup();
-  const width = movableReadingPaneWidth(390);
-  const threads = serveHeldDismiss();
-  const { unmount } = renderInbox("/?group=none");
-  const focus = recordFocus();
-  try {
-    const mark = await markTwoThreads(user);
-    travel();
-    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
-    travel();
-    expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
-    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
-    travel();
-    if (reader === "a wheel") {
-      mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
-    } else if (reader === "a key") {
-      await user.keyboard("{ArrowDown}");
+test.each(["no act", "a wheel", "a key"] as const)(
+  "at 390 px, with the bar's Dismiss of the open row and another row out while the pointer travels, %s, the write landing and the rows going lands the focus on the next row's own mark in its reading view, never on the body",
+  async (reader) => {
+    const user = userEvent.setup();
+    const width = movableReadingPaneWidth(390);
+    const threads = serveHeldDismiss();
+    const { unmount } = renderInbox("/?group=none");
+    const focus = recordFocus();
+    try {
+      const mark = await markTwoThreads(user);
+      travel();
+      await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+      travel();
+      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
+      travel();
+      if (reader === "a wheel") {
+        mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+      } else if (reader === "a key") {
+        await user.keyboard("{ArrowDown}");
+      }
+      travel();
+      // Read once the act has been answered: the focus is still on the mark, in the leaving row.
+      await afterFrameAndTasks();
+      travel();
+      expect(placeOf(document.activeElement)).toBe(placeOf(mark));
+      expect(viewRow()).toBe("reply:c2");
+
+      // Dispatch takes the write while the list still draws both rows.
+      await threads.land();
+      travel();
+      await afterFrameAndTasks();
+      travel();
+      expect(rowIds()).toEqual(["reply:c1", "reply:c2", "reply:c3"]);
+      expect(viewRow()).toBe("reply:c2");
+      const from = focus.landed.length;
+
+      // The pointer rests, and the rows go.
+      rest();
+      await waitFor(() => expect(viewRow()).toBe("reply:c3"));
+      await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
+      // Still there once every frame and task the going asked for has run.
+      await afterFrameAndTasks();
+      expect(placeOf(document.activeElement)).toBe(placeOf(viewMark()));
+      expect(rowIds()).toEqual(["reply:c3"]);
+      expect(focus.landed.slice(from).filter((place) => place.startsWith("the list"))).toEqual([]);
+    } finally {
+      focus.stop();
+      await threads.land();
+      unmount();
+      width.restore();
+      threads.restore();
     }
-    travel();
-    // Read once the act has been answered: the focus is still on the mark, in the leaving row.
-    await afterFrameAndTasks();
-    travel();
-    expect(placeOf(document.activeElement)).toBe(placeOf(mark));
-    expect(viewRow()).toBe("reply:c2");
-
-    // Dispatch takes the write while the list still draws both rows.
-    await threads.land();
-    travel();
-    await afterFrameAndTasks();
-    travel();
-    expect(rowIds()).toEqual(["reply:c1", "reply:c2", "reply:c3"]);
-    expect(viewRow()).toBe("reply:c2");
-    const from = focus.landed.length;
-
-    // The pointer rests, and the rows go.
-    rest();
-    await waitFor(() => expect(viewRow()).toBe("reply:c3"));
-    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
-    // Still there once every frame and task the going asked for has run.
-    await afterFrameAndTasks();
-    expect(placeOf(document.activeElement)).toBe(placeOf(viewMark()));
-    expect(rowIds()).toEqual(["reply:c3"]);
-    expect(focus.landed.slice(from).filter((place) => place.startsWith("the list"))).toEqual([]);
-  } finally {
-    focus.stop();
-    await threads.land();
-    unmount();
-    width.restore();
-    threads.restore();
   }
-});
+);
 
 // The open row taken away by another device's Dismiss, with the bar up over it and another marked
 // row: no press of the reader's here names it, so the bar's hand-off never names it leaving and

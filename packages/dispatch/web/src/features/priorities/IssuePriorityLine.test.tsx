@@ -500,78 +500,83 @@ test("the priorities picker holds a text box that narrows the priorities", async
 test.each([
   ["advancing one", [{ id: "evals-now", inherited: false }], "+", "Edit priorities", "reread"],
   ["advancing none", [], CONTROL_LABELS.add_priority, "Add a priority to CORE-9", "write"],
-] as const)("inside NoTooltips the held trigger of a line %s says it saves the priorities, and is named by those words", async (_case, advances, drawn, name, held) => {
-  const user = userEvent.setup();
-  const answered = Promise.withResolvers<void>();
-  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(body);
-  const patchIssue = answerIssuePatches().mockResolvedValue({} as never);
-  if (held === "reread") {
-    listPriorities.mockResolvedValueOnce(body).mockImplementationOnce(async () => {
-      await answered.promise;
-      return body;
-    });
-  } else {
-    patchIssue.mockImplementation(async () => {
-      await answered.promise;
-      return {} as never;
-    });
-  }
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <NoTooltips>
-          <IssuePriorityLine
-            disabled={false}
-            inRow
-            issue={{ advances: [...advances], advances_revision: REVISION, key: "CORE-9" }}
-          />
-        </NoTooltips>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  const q = within(view.container);
-  const savingName = priorityTriggerName("CORE-9", advances.length === 0, {
-    ANSWER_LINES,
-    CONTROL_LABELS,
-  });
-  /** The trigger by `named`, with what it draws and whether it is held. */
-  const read = (named: string) => {
-    const trigger = q.getByRole<HTMLButtonElement>("button", { name: named });
-    return {
-      ariaDisabled: trigger.getAttribute("aria-disabled"),
-      disabled: trigger.disabled,
-      text: trigger.textContent,
-    };
-  };
-  try {
-    expect(read(name)).toEqual({ ariaDisabled: null, disabled: false, text: drawn });
-    await user.click(q.getByRole("button", { name }));
-    const listbox = await screen.findByRole("listbox", { name: "Priorities options" });
-    await user.click(
-      await within(listbox).findByRole("option", { name: "#2 Rocq and Lean speed work restarted" })
+] as const)(
+  "inside NoTooltips the held trigger of a line %s says it saves the priorities, and is named by those words",
+  async (_case, advances, drawn, name, held) => {
+    const user = userEvent.setup();
+    const answered = Promise.withResolvers<void>();
+    const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(body);
+    const patchIssue = answerIssuePatches().mockResolvedValue({} as never);
+    if (held === "reread") {
+      listPriorities.mockResolvedValueOnce(body).mockImplementationOnce(async () => {
+        await answered.promise;
+        return body;
+      });
+    } else {
+      patchIssue.mockImplementation(async () => {
+        await answered.promise;
+        return {} as never;
+      });
+    }
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <NoTooltips>
+            <IssuePriorityLine
+              disabled={false}
+              inRow
+              issue={{ advances: [...advances], advances_revision: REVISION, key: "CORE-9" }}
+            />
+          </NoTooltips>
+        </QueryClientProvider>
+      </MemoryRouter>
     );
-    await user.click(q.getByRole("button", { name }));
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    if (held === "reread") await waitFor(() => expect(listPriorities).toHaveBeenCalledTimes(2));
-
-    expect(savingName).toBe("Saving priorities of CORE-9");
-    await waitFor(() => expect(q.queryByRole("button", { name: savingName })).not.toBeNull());
-    expect(read(savingName)).toEqual({
-      ariaDisabled: "true",
-      disabled: false,
-      text: ANSWER_LINES.saving_priorities,
+    const q = within(view.container);
+    const savingName = priorityTriggerName("CORE-9", advances.length === 0, {
+      ANSWER_LINES,
+      CONTROL_LABELS,
     });
-    await user.click(q.getByRole("button", { name: savingName }));
-    expect(screen.queryAllByRole("listbox", { name: "Priorities options" })).toHaveLength(0);
+    /** The trigger by `named`, with what it draws and whether it is held. */
+    const read = (named: string) => {
+      const trigger = q.getByRole<HTMLButtonElement>("button", { name: named });
+      return {
+        ariaDisabled: trigger.getAttribute("aria-disabled"),
+        disabled: trigger.disabled,
+        text: trigger.textContent,
+      };
+    };
+    try {
+      expect(read(name)).toEqual({ ariaDisabled: null, disabled: false, text: drawn });
+      await user.click(q.getByRole("button", { name }));
+      const listbox = await screen.findByRole("listbox", { name: "Priorities options" });
+      await user.click(
+        await within(listbox).findByRole("option", {
+          name: "#2 Rocq and Lean speed work restarted",
+        })
+      );
+      await user.click(q.getByRole("button", { name }));
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      if (held === "reread") await waitFor(() => expect(listPriorities).toHaveBeenCalledTimes(2));
 
-    await act(async () => answered.resolve());
-    await waitFor(() => expect(q.queryByRole("button", { name })).not.toBeNull());
-    expect(read(name)).toEqual({ ariaDisabled: null, disabled: false, text: drawn });
-  } finally {
-    view.unmount();
-    queryClient.clear();
-    listPriorities.mockRestore();
-    patchIssue.mockRestore();
+      expect(savingName).toBe("Saving priorities of CORE-9");
+      await waitFor(() => expect(q.queryByRole("button", { name: savingName })).not.toBeNull());
+      expect(read(savingName)).toEqual({
+        ariaDisabled: "true",
+        disabled: false,
+        text: ANSWER_LINES.saving_priorities,
+      });
+      await user.click(q.getByRole("button", { name: savingName }));
+      expect(screen.queryAllByRole("listbox", { name: "Priorities options" })).toHaveLength(0);
+
+      await act(async () => answered.resolve());
+      await waitFor(() => expect(q.queryByRole("button", { name })).not.toBeNull());
+      expect(read(name)).toEqual({ ariaDisabled: null, disabled: false, text: drawn });
+    } finally {
+      view.unmount();
+      queryClient.clear();
+      listPriorities.mockRestore();
+      patchIssue.mockRestore();
+    }
   }
-});
+);

@@ -301,48 +301,48 @@ test.each([
   { label: "Add source", role: "button" },
   { label: "Source repository", role: "textbox" },
   { label: "Branch", role: "textbox" },
-] as const)("$label, held while its write is out, keeps the focus, and a second press sends nothing", async ({
-  label,
-  role,
-}) => {
-  const user = userEvent.setup();
-  const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
-    architectureSource,
-  ]);
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
-  // The writes' answer, held until the case refuses it inside `act`.
-  const answer = Promise.withResolvers<never>();
-  const writes = [
-    spyOn(api, "syncArchitectureSource").mockReturnValue(answer.promise),
-    spyOn(api, "deleteArchitectureSource").mockReturnValue(answer.promise),
-    spyOn(api, "putArchitectureSource").mockReturnValue(answer.promise),
-  ];
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+] as const)(
+  "$label, held while its write is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role }) => {
+    const user = userEvent.setup();
+    const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+      architectureSource,
+    ]);
+    const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+    // The writes' answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const writes = [
+      spyOn(api, "syncArchitectureSource").mockReturnValue(answer.promise),
+      spyOn(api, "deleteArchitectureSource").mockReturnValue(answer.promise),
+      spyOn(api, "putArchitectureSource").mockReturnValue(answer.promise),
+    ];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-  try {
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ArchitectureSourcesSection />
-      </QueryClientProvider>
-    );
-    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
-    await section.findByRole("cell", { name: "legion/arch" });
-    await pickFromLabelled(user, "Source project", "CORE · Core");
-    await user.click(section.getByLabelText("Source repository"));
-    await user.paste("acme/infra");
-    await pressHeld(user, section.getByRole(role, { name: label }), {
-      name: label,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
-    });
-  } finally {
-    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
-    cleanup();
-    queryClient.clear();
-    listArchitectureSources.mockRestore();
-    listProjects.mockRestore();
-    for (const write of writes) write.mockRestore();
+    try {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <ArchitectureSourcesSection />
+        </QueryClientProvider>
+      );
+      const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+      await section.findByRole("cell", { name: "legion/arch" });
+      await pickFromLabelled(user, "Source project", "CORE · Core");
+      await user.click(section.getByLabelText("Source repository"));
+      await user.paste("acme/infra");
+      await pressHeld(user, section.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+      cleanup();
+      queryClient.clear();
+      listArchitectureSources.mockRestore();
+      listProjects.mockRestore();
+      for (const write of writes) write.mockRestore();
+    }
   }
-});
+);
 
 /** The section over CORE and OPS, with no source yet and every save answered as the server would
  *  answer it. */

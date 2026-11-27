@@ -324,18 +324,21 @@ test.each([
     "?ask=1234abcd",
     "#b-1",
   ],
-])("a redirect to %s lands on exactly that address, dropping the page's own query and hash", (to, pathname, search, hash) => {
-  const hook = renderRedirect({ to }, "/projects/CORE?label=a&q=ship#top");
-  try {
-    expect(hook.result.current.location.pathname).toBe(pathname);
-    expect(hook.result.current.location.search).toBe(search);
-    expect(hook.result.current.location.hash).toBe(hash);
-    act(() => hook.result.current.back(-1));
-    expect(hook.result.current.location.pathname).toBe("/elsewhere");
-  } finally {
-    hook.unmount();
+])(
+  "a redirect to %s lands on exactly that address, dropping the page's own query and hash",
+  (to, pathname, search, hash) => {
+    const hook = renderRedirect({ to }, "/projects/CORE?label=a&q=ship#top");
+    try {
+      expect(hook.result.current.location.pathname).toBe(pathname);
+      expect(hook.result.current.location.search).toBe(search);
+      expect(hook.result.current.location.hash).toBe(hash);
+      act(() => hook.result.current.back(-1));
+      expect(hook.result.current.location.pathname).toBe("/elsewhere");
+    } finally {
+      hook.unmount();
+    }
   }
-});
+);
 
 const PLAIN_TABLE = tableAddressGrammar();
 const LEFT_TABLE = tableAddressGrammar({ prefix: "left", pageSize: 50 });

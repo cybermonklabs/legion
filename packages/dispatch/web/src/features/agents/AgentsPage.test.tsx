@@ -1879,94 +1879,94 @@ test.each([
     retried: "message-3",
     which: "reply's",
   },
-] as const)("offline, the $which $pressed holds its retry row with the focus on it through the write and the paused read, and lets go at the request deadline, saying why", async ({
-  drawn,
-  exchange,
-  mode,
-  pressed: pressedName,
-  retried,
-}) => {
-  const online = onlineManager.isOnline();
-  const user = userEvent.setup();
-  const page = renderAgents({
-    listedAgents: steerCapableAgents(),
-    messages: [{ message: exchange.message, replies: [...exchange.replies] }],
-    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
-  });
-  // The retry's answer, held until the case moves the clock, so what it sets off runs in `act`.
-  const delivered = Promise.withResolvers<MessageDelivery>();
-  page.createMessageDelivery.mockImplementation(() => delivered.promise);
-  const stopFocusFixup = emulateChromiumFocusFixup();
+] as const)(
+  "offline, the $which $pressed holds its retry row with the focus on it through the write and the paused read, and lets go at the request deadline, saying why",
+  async ({ drawn, exchange, mode, pressed: pressedName, retried }) => {
+    const online = onlineManager.isOnline();
+    const user = userEvent.setup();
+    const page = renderAgents({
+      listedAgents: steerCapableAgents(),
+      messages: [{ message: exchange.message, replies: [...exchange.replies] }],
+      queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+    });
+    // The retry's answer, held until the case moves the clock, so what it sets off runs in `act`.
+    const delivered = Promise.withResolvers<MessageDelivery>();
+    page.createMessageDelivery.mockImplementation(() => delivered.promise);
+    const stopFocusFixup = emulateChromiumFocusFixup();
 
-  try {
-    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
-    await expand(user, planner, "Planner");
-    const pressed = await within(planner).findByRole("button", { name: pressedName });
-    const row = () => ({ buttons: retryButtons(planner, drawn), focus: focusedControl() });
-    const held = { buttons: drawn.map((name) => `${name}: held`), focus: `button ${pressedName}` };
-    const reads = page.listAgentMessages.mock.calls.length;
-    jest.useFakeTimers();
-    const onClock = userOnFakeClock();
-    /** Presses the held button again, by key and by pointer, and lets what it set off run. */
-    const pressAgain = async () => {
+    try {
+      const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+      await expand(user, planner, "Planner");
+      const pressed = await within(planner).findByRole("button", { name: pressedName });
+      const row = () => ({ buttons: retryButtons(planner, drawn), focus: focusedControl() });
+      const held = {
+        buttons: drawn.map((name) => `${name}: held`),
+        focus: `button ${pressedName}`,
+      };
+      const reads = page.listAgentMessages.mock.calls.length;
+      jest.useFakeTimers();
+      const onClock = userOnFakeClock();
+      /** Presses the held button again, by key and by pointer, and lets what it set off run. */
+      const pressAgain = async () => {
+        await onClock.keyboard("{Enter}");
+        await onClock.click(pressed);
+        await tick(0);
+      };
+      onlineManager.setOnline(false);
+      act(() => pressed.focus());
       await onClock.keyboard("{Enter}");
-      await onClock.click(pressed);
       await tick(0);
-    };
-    onlineManager.setOnline(false);
-    act(() => pressed.focus());
-    await onClock.keyboard("{Enter}");
-    await tick(0);
-    expect(page.createMessageDelivery).toHaveBeenCalledWith(retried, mode, keyedAttempt);
-    // The retry is out: the row is held, and the pressed button keeps the focus.
-    expect(row()).toEqual(held);
-    await pressAgain();
-    expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
+      expect(page.createMessageDelivery).toHaveBeenCalledWith(retried, mode, keyedAttempt);
+      // The retry is out: the row is held, and the pressed button keeps the focus.
+      expect(row()).toEqual(held);
+      await pressAgain();
+      expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
 
-    delivered.resolve({
-      ...failedAttempt(retried, mode),
-      attempt: 2,
-      envelope_id: "envelope-2",
-      error: null,
-      state: "sent",
-    });
-    await tick(1_000);
-    expect(
-      page.queryClient.getQueryState(["agents", "planner-session", "messages"])?.fetchStatus
-    ).toBe("paused");
-    // The retry landed and its read is paused: the row is still held, with the focus.
-    expect(row()).toEqual(held);
-    await pressAgain();
-    expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
+      delivered.resolve({
+        ...failedAttempt(retried, mode),
+        attempt: 2,
+        envelope_id: "envelope-2",
+        error: null,
+        state: "sent",
+      });
+      await tick(1_000);
+      expect(
+        page.queryClient.getQueryState(["agents", "planner-session", "messages"])?.fetchStatus
+      ).toBe("paused");
+      // The retry landed and its read is paused: the row is still held, with the focus.
+      expect(row()).toEqual(held);
+      await pressAgain();
+      expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
 
-    // The retry landed within the second before, which is when the hold's timer started.
-    await tick(REQUEST_DEADLINE_MS - 2_000);
-    expect(row()).toEqual(held);
+      // The retry landed within the second before, which is when the hold's timer started.
+      await tick(REQUEST_DEADLINE_MS - 2_000);
+      expect(row()).toEqual(held);
 
-    await tick(2_000);
-    expect(row()).toEqual({
-      buttons: drawn.map((name) => `${name}: free`),
-      focus: `button ${pressedName}`,
-    });
-    expect(page.listAgentMessages.mock.calls.length).toBe(reads);
-    expect(within(planner).getByText(/^Could not load this conversation\./).textContent).toBe(
-      "Could not load this conversation. Dispatch could not be reached."
-    );
+      await tick(2_000);
+      expect(row()).toEqual({
+        buttons: drawn.map((name) => `${name}: free`),
+        focus: `button ${pressedName}`,
+      });
+      expect(page.listAgentMessages.mock.calls.length).toBe(reads);
+      expect(within(planner).getByText(/^Could not load this conversation\./).textContent).toBe(
+        "Could not load this conversation. Dispatch could not be reached."
+      );
 
-    act(() => onlineManager.setOnline(true));
-    await tick(0);
-    expect(page.listAgentMessages.mock.calls.length).toBeGreaterThan(reads);
-    expect(within(planner).queryByText(/^Could not load this conversation\./)).toBeNull();
-  } finally {
-    stopFocusFixup();
-    // The page and its reads go before the network returns, so no read paused offline goes on.
-    page.view.unmount();
-    page.queryClient.clear();
-    onlineManager.setOnline(online);
-    realClock();
-    page.restore();
+      act(() => onlineManager.setOnline(true));
+      await tick(0);
+      expect(page.listAgentMessages.mock.calls.length).toBeGreaterThan(reads);
+      expect(within(planner).queryByText(/^Could not load this conversation\./)).toBeNull();
+    } finally {
+      stopFocusFixup();
+      // The page and its reads go before the network returns, so no read paused offline goes on.
+      page.view.unmount();
+      page.queryClient.clear();
+      onlineManager.setOnline(online);
+      realClock();
+      page.restore();
+    }
   }
-});
+);
 
 test("Use Send instead is disabled when the target does not advertise steer", async () => {
   const user = userEvent.setup();

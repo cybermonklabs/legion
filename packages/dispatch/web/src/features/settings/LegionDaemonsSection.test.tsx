@@ -203,36 +203,35 @@ test.each([
     role: "button",
     start: "Remove the Legion daemon of ACME",
   },
-] as const)("$label, held while a write of the section is out, keeps the focus, and a second press sends nothing", async ({
-  label,
-  role,
-  start,
-}) => {
-  const user = userEvent.setup();
-  // The writes' answer, held until the case refuses it inside `act`.
-  const answer = Promise.withResolvers<never>();
-  const writes = [
-    spyOn(api, "putLegionDaemon").mockReturnValue(answer.promise),
-    spyOn(api, "deleteLegionDaemon").mockReturnValue(answer.promise),
-  ];
-  spies.push(...writes);
-  const section = await renderSection(
-    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
-  );
-  try {
-    await section.findByRole("cell", { name: "CORE" });
-    await pickFromLabelled(user, "Legion project", "ACME · ACME");
-    await user.click(section.getByLabelText("Legion daemon state URL"));
-    await user.paste("http://127.0.0.1:9731");
-    await pressHeld(user, section.getByRole(role, { name: label }), {
-      name: label,
-      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
-      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
-    });
-  } finally {
-    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+] as const)(
+  "$label, held while a write of the section is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role, start }) => {
+    const user = userEvent.setup();
+    // The writes' answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const writes = [
+      spyOn(api, "putLegionDaemon").mockReturnValue(answer.promise),
+      spyOn(api, "deleteLegionDaemon").mockReturnValue(answer.promise),
+    ];
+    spies.push(...writes);
+    const section = await renderSection(
+      legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }])
+    );
+    try {
+      await section.findByRole("cell", { name: "CORE" });
+      await pickFromLabelled(user, "Legion project", "ACME · ACME");
+      await user.click(section.getByLabelText("Legion daemon state URL"));
+      await user.paste("http://127.0.0.1:9731");
+      await pressHeld(user, section.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+        start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+    }
   }
-});
+);
 
 test("a refusal the server made is shown as the server wrote it, and the row goes back", async () => {
   const user = userEvent.setup();

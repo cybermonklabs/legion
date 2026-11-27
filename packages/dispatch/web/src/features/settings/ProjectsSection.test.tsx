@@ -103,43 +103,43 @@ test.each([
   { label: "Key", role: "textbox" },
   { label: "Name", role: "textbox" },
   { label: "New project", role: "button" },
-] as const)("$label, held while the create is out, keeps the focus, and a second press sends nothing", async ({
-  label,
-  role,
-}) => {
-  const user = userEvent.setup();
-  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
-  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
-  // The create's answer, held until the case refuses it inside `act`.
-  const answer = Promise.withResolvers<never>();
-  const createProject = spyOn(api, "createProject").mockReturnValue(answer.promise);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+] as const)(
+  "$label, held while the create is out, keeps the focus, and a second press sends nothing",
+  async ({ label, role }) => {
+    const user = userEvent.setup();
+    const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+    const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+    // The create's answer, held until the case refuses it inside `act`.
+    const answer = Promise.withResolvers<never>();
+    const createProject = spyOn(api, "createProject").mockReturnValue(answer.promise);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
-  try {
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ProjectsSection />
-      </QueryClientProvider>
-    );
-    await screen.findByRole("cell", { name: "CORE" });
-    await user.click(screen.getByLabelText("Key"));
-    await user.paste("qa");
-    await user.click(screen.getByLabelText("Name"));
-    await user.paste("Quality");
-    await pressHeld(user, screen.getByRole(role, { name: label }), {
-      name: label,
-      sent: () => createProject.mock.calls.length,
-    });
-  } finally {
-    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
-    cleanup();
-    queryClient.clear();
-    listProjects.mockRestore();
-    listDefaults.mockRestore();
-    createProject.mockRestore();
+    try {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectsSection />
+        </QueryClientProvider>
+      );
+      await screen.findByRole("cell", { name: "CORE" });
+      await user.click(screen.getByLabelText("Key"));
+      await user.paste("qa");
+      await user.click(screen.getByLabelText("Name"));
+      await user.paste("Quality");
+      await pressHeld(user, screen.getByRole(role, { name: label }), {
+        name: label,
+        sent: () => createProject.mock.calls.length,
+      });
+    } finally {
+      await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+      cleanup();
+      queryClient.clear();
+      listProjects.mockRestore();
+      listDefaults.mockRestore();
+      createProject.mockRestore();
+    }
   }
-});
+);
 
 /** The section over CORE, which names alice until a save names another, with `readUsers`
  *  answering the people list and `whoAmI` the viewer; every create and default-assignee save is
