@@ -556,9 +556,16 @@ refused_write "a new block under the old id c-held, carrying ci_check" "$work/k1
   "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
 
 # The sockets: the scope Hocuspocus's authentication answers, as the browser's provider reads it.
+# Version 4 is the version that knows `ci_check`, which the two socket rows below drive; the
+# schema rises as later blocks land (6 at the head this was last run at), so the check is that it
+# is at least 4. A schema below it would admit no read-write socket at 4 and the rows below would
+# say why.
 get "/api/v1/schema/blocks"
 want_status 200 k1 "the block schema answers"
-expect k1 "the block schema is version 4" 4 '.version'
+schema_version="$(jq -r '.version' <"$work/body")"
+[[ "$schema_version" =~ ^[0-9]+$ ]] && [ "$schema_version" -ge 4 ] ||
+  fail k1 "the block schema is at least version 4, which knows ci_check" "it is $schema_version"
+pass k1 "the block schema is version $schema_version, at least the 4 that knows ci_check"
 curl -sS -o /dev/null -D "$work/signin" "$base/auth/_dev/signin?login=$(q "$dev_login")" \
   2>"$work/curl" || fail k1 "sign $dev_login in" "$(<"$work/curl")"
 sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\).*/\1/p' "$work/signin" | paste -sd ';' >"$work/cookie"
