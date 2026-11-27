@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 
+import { heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   dangerText,
@@ -78,8 +79,12 @@ export function SpecToolbar({
       <button
         aria-label="Name version"
         className={`${toolbarButton} ${secondaryButtonDisabledText}`}
-        disabled={isClosed || toolbar.isNamingVersion}
-        onClick={toolbar.requestNamedVersion}
+        disabled={isClosed}
+        // Held, not disabled, while the version it names is saving: the naming dialog gives the
+        // focus back to this button as it closes, in the commit before the page learns that the
+        // save has ended (`isNamingVersion`), and a disabled button there would drop that focus
+        // onto the page's body.
+        {...heldPress(toolbar.isNamingVersion, toolbar.requestNamedVersion)}
         type="button"
       >
         Name
