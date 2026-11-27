@@ -8,10 +8,12 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 )
 
@@ -93,6 +95,35 @@ func TestRevokingASignInEndsTheCredentialItHolds(t *testing.T) {
 	}
 	if rows := ts.personSignIns(t, signInAda); len(rows) != 0 {
 		t.Fatalf("the sign-ins of %s after the revoke = %+v, want none", signInAda, rows)
+	}
+}
+
+// TestASignInSessionPastItsCredentialsExpiryIsNotLive: a session enrolled under a person's
+// sign-in on a box whose account the broker lists renews while the sign-in's credential is live,
+// and once the expiry the person's last traded identity token gave it has passed, its renewal is
+// answered 401 ENROLLMENT_NOT_LIVE, the one code every renewer stops on, with the broker's words
+// saying the sign-in ended.
+func TestASignInSessionPastItsCredentialsExpiryIsNotLive(t *testing.T) {
+	t.Parallel()
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.Enroll.VMServicesByAccount = map[string]string{signInFleetOne: signInCredentialFleet}
+	})
+	id, key := ts.newSessionEnrollment(t, "signin-"+t.Name(), signInAda)
+	credentialID := ts.signInCredential(t, signInAda, adaBoxOne, signInFleetOne)
+	if _, err := ts.Store.Pool.Exec(context.Background(), `update enrollments set launcher_credential_id = $2 where id = $1`, id, credentialID); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/enrollments/" + id + "/renew"
+	if status, body := ts.session(t, key, id, http.MethodPost, path, nil); status != http.StatusOK {
+		t.Fatalf("renew a sign-in session while its credential is live = %d %s, want 200", status, body)
+	}
+	if _, err := ts.Store.Pool.Exec(context.Background(), `update launcher_credentials set expires_at = now() - interval '1 second' where id = $1`, credentialID); err != nil {
+		t.Fatal(err)
+	}
+	status, body := ts.session(t, key, id, http.MethodPost, path, nil)
+	refusal := decode[wireError](t, body)
+	if status != http.StatusUnauthorized || refusal.Code != "ENROLLMENT_NOT_LIVE" || !strings.Contains(refusal.Error, "sign-in that enrolled this session has ended") {
+		t.Fatalf("renew a sign-in session past its credential's expiry = %d %s, want 401 ENROLLMENT_NOT_LIVE saying the sign-in ended", status, body)
 	}
 }
 
