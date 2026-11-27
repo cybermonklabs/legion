@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -283,7 +284,7 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 
 	h.pass()
 
-	h.noSettlementAt(settlements, "after the pass over what the webhooks recorded", capturedOwner, capturedName, fmt.Sprint(capturedNumber), capturedSHA)
+	h.noSettlementAt(settlements, "after the pass over what the webhooks recorded", capturedOwner, capturedName, fmt.Sprint(capturedNumber))
 	state, after := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
 	if state == nil {
 		t.Fatal("the head has no record after the pass")
@@ -308,12 +309,13 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 func capturedRevision(t *testing.T, h *harness) uint64 {
 	t.Helper()
 	var revision uint64
-	return testwait.UntilPolling(t, 50*time.Millisecond, "the captured head's settled record with a stable revision", func() (uint64, bool) {
+	testwait.UntilPolling(t, 50*time.Millisecond, "the captured head's settled record with a stable revision", func() (*cistore.State, bool) {
 		state, next := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
 		settled := state != nil && state.SettledEmitted && state.Claim == nil && next == revision
 		revision = next
-		return next, settled
+		return state, settled
 	})
+	return revision
 }
 
 // capturedWebhook is one GitHub webhook body carrying a captured object as its event, named for

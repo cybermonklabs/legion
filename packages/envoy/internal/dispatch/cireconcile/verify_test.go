@@ -261,7 +261,7 @@ func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) 
 		h.post("check_run", webhookFor("check_run", run, pull.number), fmt.Sprintf("d%d", i))
 		h.waitForRequestOf(pull.sha, 0)
 		if i == 0 {
-			h.noSettlementAt(settlements, "before any verify pass", gitHubOwner, gitHubName, fmt.Sprint(pull.number), pull.sha)
+			h.noSettlementAt(settlements, "before any verify pass", gitHubOwner, gitHubName, fmt.Sprint(pull.number))
 		}
 		began := time.Now()
 		h.verifyPass()

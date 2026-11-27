@@ -448,10 +448,10 @@ func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary
 	return summary
 }
 
-// noSettlement waits for the summary loop's positive decision on this harness's default head.
+// noSettlement waits for completed summary decisions for this harness's default pull request.
 func (h *harness) noSettlement(sub *nats.Subscription, why string) {
 	h.t.Helper()
-	h.noSettlementAt(sub, why, gitHubOwner, gitHubName, pullNumber, headSHA)
+	h.noSettlementAt(sub, why, gitHubOwner, gitHubName, pullNumber)
 }
 
 // settledRecord is the head's record once the summary loop has finished with it. Publishing a
