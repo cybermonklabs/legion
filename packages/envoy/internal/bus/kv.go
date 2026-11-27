@@ -83,10 +83,11 @@ const RequestTimeout = 10 * time.Second
 // none and reads js's MaxWait alone) is waited for only until ctx ends, its answer then dropped
 // (Bounded; the lookup changes nothing, so a dropped one leaves nothing behind). A reconnect hook
 // gives it the run's context, so a lookup sent on a connection that then drops ends the hook at
-// the drop.
+// the drop. An open while the bus reconnects fails as ErrReconnecting: a wait that ends first
+// (Bounded), or a lookup nats.go refused (namedJetStream).
 func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
-	js = readsRefusals(conn, js)
-	kv, _, err := Bounded(ctx, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
+	js = readsRefusals(conn, namedJetStream(conn, js))
+	kv, _, err := Bounded(ctx, conn, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
 	if err != nil {
 		return KeyValue{}, err
 	}
@@ -171,7 +172,7 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 		watch, err = open()
 	}
 	if err != nil {
-		return KeyValue{}, fmt.Errorf("open the jetstream handle of KV bucket %s: %w", kv.Bucket(), err)
+		return KeyValue{}, fmt.Errorf("open the jetstream handle of KV bucket %s: %w", kv.Bucket(), Reconnecting(err))
 	}
 	return KeyValue{legacy: kv, watch: watch, streams: js, owner: owner}, nil
 }
@@ -374,6 +375,16 @@ func (kv KeyValue) Streams() jetstream.JetStream {
 	return kv.streams
 }
 
+// Conn is the connection kv's calls go on, the one its jetstream context was opened on, and nil
+// for a handle a test built with no jetstream context. A caller that bounds a call on kv by its
+// own deadline passes it to Bounded, which waits for it while nats.go reconnects it.
+func (kv KeyValue) Conn() *nats.Conn {
+	if kv.streams == nil {
+		return nil
+	}
+	return kv.streams.Conn()
+}
+
 // Bucket is the name of the bucket kv is a handle on.
 func (kv KeyValue) Bucket() string {
 	return kv.legacy.Bucket()
@@ -394,7 +405,7 @@ func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream
 		return nil, err
 	}
 	watcher, err := kv.watchRefused(kv.watchCreate([]string{keys}), func() (jetstream.KeyWatcher, error) { return kv.watch.Watch(ctx, keys, opts...) })
-	return watcher, invalidKey(keys, err)
+	return watcher, kvAnswer(keys, err)
 }
 
 // WatchFilteredKeys is WatchKeys over several key patterns at once, the watch a caller that reads
@@ -408,7 +419,7 @@ func (kv KeyValue) WatchFilteredKeys(ctx context.Context, keys []string, opts ..
 		}
 	}
 	watcher, err := kv.watchRefused(kv.watchCreate(keys), func() (jetstream.KeyWatcher, error) { return kv.watch.WatchFiltered(ctx, keys, opts...) })
-	return watcher, invalidKey(keys, err)
+	return watcher, kvAnswer(keys, err)
 }
 
 // The subjects nats.go builds from a key of bucket, each as the bytes it puts around the key. A put
@@ -455,6 +466,16 @@ func invalidKey(key any, err error) error {
 		return fmt.Errorf("%w: key %q: %w", ErrInvalidKey, key, err)
 	}
 	return err
+}
+
+// kvAnswer is err, the answer of a call on key through the handle, with the two refusals nats.go
+// makes before it sends anything named: a key outside its alphabet (invalidKey), and a send while
+// it reconnects the connection, which with the reconnect buffer off it refuses at once
+// (Reconnecting). So a call on a bucket while the bus reconnects fails with an error that says so,
+// and that was not sent. A call a caller bounds by its deadline waits for the connection first
+// (Bounded), and meets the refusal only when the connection drops again before its send.
+func kvAnswer(key any, err error) error {
+	return Reconnecting(invalidKey(key, err))
 }
 
 // jsStreamMessageExceedsMaximum is nats-server's code for a message larger than its stream takes
@@ -536,7 +557,7 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 		return nil, err
 	}
 	entry, err := refusedAfterOn(kv, kv.getSubjects(key), func() (nats.KeyValueEntry, error) { return kv.legacy.Get(key) })
-	return entry, invalidKey(key, err)
+	return entry, kvAnswer(key, err)
 }
 
 // RefusesRead answers the refusal a Get of key through this handle would answer before anything is
@@ -608,7 +629,7 @@ func natsKeyValid(key string) bool {
 // only nats.go's alphabet check refuses a key here.
 func (kv KeyValue) GetRevision(key string, revision uint64) (nats.KeyValueEntry, error) {
 	entry, err := refusedAfterOn(kv, kv.revisionSubjects, func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
-	return entry, invalidKey(key, err)
+	return entry, kvAnswer(key, err)
 }
 
 func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
@@ -616,7 +637,7 @@ func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
-	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
+	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
 func (kv KeyValue) PutString(key string, value string) (uint64, error) {
@@ -624,7 +645,7 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
-	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
+	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
 func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
@@ -632,7 +653,7 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
-	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
+	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
 func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
@@ -640,7 +661,7 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 		return 0, err
 	}
 	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
-	return revision, kv.tooLarge(key, len(value), invalidKey(key, err))
+	return revision, kv.tooLarge(key, len(value), kvAnswer(key, err))
 }
 
 // IsCASConflict reports whether err is JetStream's refusal of a conditional write over a record
@@ -670,7 +691,7 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 		return err
 	}
 	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
-	return invalidKey(key, err)
+	return kvAnswer(key, err)
 }
 
 // ReadStored is key's newest record, read by a direct get and read again from the stream's leader
@@ -768,33 +789,74 @@ func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
 		return err
 	}
 	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
-	return invalidKey(key, err)
+	return kvAnswer(key, err)
 }
 
 // Status reads the bucket's status through the legacy handle, which waits out that handle's
 // JetStream MaxWait: the open-time read of a bucket's TTL and a store's health probe, whose
-// openers chose that wait. A read held to RequestTimeout instead is ReadStreamState.
+// openers chose that wait. A read held to RequestTimeout instead is ReadStreamState. A read while
+// the bus reconnects fails as ErrReconnecting (Reconnecting).
 func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
-	return refusedOn(kv, []string{jsAPI("STREAM.INFO", "KV_"+kv.Bucket())}, kv.legacy.Status)
+	status, err := refusedOn(kv, []string{jsAPI("STREAM.INFO", "KV_"+kv.Bucket())}, kv.legacy.Status)
+	return status, Reconnecting(err)
 }
 
-// Bounded is call, a bucket call that takes no context, as a caller holding ctx waits for it:
-// nats.go's KV reads, writes and deletes take none and wait out the JetStream MaxWait (10 s), so
-// the wait ends at the earlier of call's answer and ctx's end. answered is false when ctx ended
-// first, and err is then ctx's error; the abandoned call runs on to its own end and its answer is
-// dropped, so a write or a delete it sent may still land after the caller has answered (each
-// caller says why that is safe). A ctx that has already ended starts no call, and a ctx that can
-// never end (context.Background, which a caller with no request behind it passes) is simply
-// call, in this goroutine. A background loop is not such a caller: the role claim reaper passes
-// its own loop's ctx, which the listener's shutdown ends under a pass in flight
-// (store.StartRoleClaimReaper).
-func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answered bool, err error) {
+// Bounded is call, a bucket call on conn that takes no context, as a caller holding ctx waits for
+// it: nats.go's KV reads, writes and deletes take none and wait out the JetStream MaxWait (10 s), so
+// the wait ends at the earlier of call's answer and ctx's end. conn is the connection the bucket's
+// handle is on (KeyValue.Conn), and nil waits for none.
+//
+// call starts only once conn can take it. While nats.go reconnects conn, which with the reconnect
+// buffer off refuses every send at once, call waits for the connection within ctx
+// (awaitConnected). A ctx that ends in that wait starts no call: answered is false, and err is
+// ErrReconnecting with ctx's error, `bus: NATS is reconnecting: context deadline exceeded`, so the
+// caller's answer says why the bus did not answer. ctx is read again once the wait ends, before
+// the call starts, so a call never starts after its caller's ctx has ended. A ctx found ended
+// there starts no call either, and its err is the same ErrReconnecting while nats.go reconnects
+// conn, and ctx's bare error while nats.go is not connecting or reconnecting conn (endedUnsent). A
+// connection that drops again after the wait refuses the call itself, which a KeyValue call names
+// ErrReconnecting (kvAnswer).
+//
+// The wait and endedUnsent read conn's state, and each read waits for nats.go's connection lock,
+// which nats.go holds through a reconnect's dial and handshake. So each read is made on a goroutine
+// of its own and waited for within ctx (readWithin). A call made during a handshake waits for the
+// connection as a call made between two attempts does: when ctx ends first, it starts no call, and
+// its err is the same ErrReconnecting, at ctx's end. Each read is given ConnLockWait however soon
+// ctx ends, so a connection whose lock is free gives the answers above under any ctx, and a call
+// made during a handshake under a ctx that ends sooner answers once ConnLockWait has passed. A read
+// left running when Bounded returns ends when nats.go lets the lock go, and changes nothing.
+//
+// A start's waits on the cluster pass a nil conn (sentAgain, limitedRead, updateStream and the
+// stream ensure's migrate and purge): their requests go through a JetStream context that names a
+// send nats.go refuses while it reconnects (namedRequests), so such a send fails at once as
+// ErrReconnecting, and the step ends on that answer as it ends on any answer that is not a silence
+// (unanswered). A call that waits for its client's connection itself passes a nil conn too: a send
+// window's first pin (window.pinFirst). So does a call that reads its connection's state itself, an
+// intake's flush of its hand-backs (delivery's flushHandBacks), and a read of roles.Buckets, which
+// begins its bucket's open at once (roles.within). So does the listener's flush that /healthz and
+// /readyz share (cmd/listener busAnswers): a flush takes nats.go's connection lock before it waits
+// on its context, and again to forget its PING once that context ends, so a reconnect's handshake
+// would otherwise hold the check past its budget.
+//
+// Once call has started, answered is false when ctx ended first, and err is then ctx's error; the
+// abandoned call runs on to its own end and its answer is dropped. So a write or a delete that was
+// sent may still land after the caller has answered (each caller says why that is safe), and one
+// still waiting for the connection when ctx ended was never sent and never lands. A ctx that can
+// never end (context.Background, which a caller with no request behind it passes) is simply call,
+// in this goroutine, with no wait: there is no deadline to wait within, so a call on a
+// reconnecting connection fails at once as ErrReconnecting. A background loop is not such a
+// caller: the role claim reaper passes its own loop's ctx, which the listener's shutdown ends
+// under a pass in flight or a wait (store.StartRoleClaimReaper).
+func Bounded[T any](ctx context.Context, conn *nats.Conn, call func() (T, error)) (value T, answered bool, err error) {
 	if ctx.Done() == nil {
 		value, err = call()
 		return value, true, err
 	}
-	if err := ctx.Err(); err != nil {
+	if err := awaitConnected(ctx, conn); err != nil {
 		return value, false, err
+	}
+	if ctx.Err() != nil {
+		return value, false, endedUnsent(ctx, conn)
 	}
 	type answer struct {
 		value T
@@ -844,7 +906,7 @@ func (kv KeyValue) ReadStreamState(ctx context.Context) (StreamState, error) {
 		return StreamState{}, fmt.Errorf("read the stream of KV bucket %s: %w: %w", kv.Bucket(), nats.ErrStreamNotFound, err)
 	}
 	if err != nil {
-		return StreamState{}, err
+		return StreamState{}, Reconnecting(err)
 	}
 	info := stream.CachedInfo()
 	return StreamState{

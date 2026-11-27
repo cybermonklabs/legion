@@ -376,7 +376,7 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 		// runtime's in a deployment.
 		pods := rig.sup.deps.Runtime.(*sandboxTeardowns).sandboxes
 		rig.w.idleRuntime = pods
-		idleRigEventually(t, 10*time.Second, "the runtime's store to hold the running kept Sandbox", func() bool {
+		idleRigEventually(t, "the runtime's store to hold the running kept Sandbox", func() bool {
 			got, present := pods.IssueSandbox(rig.issue.Key)
 			return present && got == name
 		})

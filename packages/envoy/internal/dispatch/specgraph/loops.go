@@ -132,12 +132,13 @@ func shortestCycle(edges map[string][]edge, start string, part []string) []strin
 	return path
 }
 
-// loopDetail writes a cycle as the loop rule's Detail names it: "a -[parent]-> b -[serves]-> a".
+// loopDetail writes a cycle as the loop rule's Detail names it: "a -[parent]-> b -[serves]-> a",
+// each id cut (Cut).
 func loopDetail(cycle []string) string {
 	var b strings.Builder
-	b.WriteString(cycle[0])
+	b.WriteString(Cut(cycle[0]))
 	for i := 1; i+1 < len(cycle); i += 2 {
-		b.WriteString(" -[" + cycle[i] + "]-> " + cycle[i+1])
+		b.WriteString(" -[" + cycle[i] + "]-> " + Cut(cycle[i+1]))
 	}
 	return b.String()
 }
