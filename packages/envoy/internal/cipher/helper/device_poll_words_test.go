@@ -33,14 +33,17 @@ const (
 // endpoint (devicePoll) at the configured address, which can carry a credential in its user
 // information and in a query value. A poll that gets no answer at all - nothing listening, or a
 // joined URL net/url refuses, which is sent nowhere - names the request through redact.Unanswered:
-// net/http's operation and the URL the poll asked (its scheme, host and path alone), or nothing of
-// a URL that does not parse, and then the failure's own transport words or its class. Neither
-// print holds any part of the credentials, under any verb, in a log field or inside another value.
-// Each case's twin shows net/http's and net/url's own errors quote them, so the row can see a
-// leak. Captures helper.device-poll-unanswered/<case>.
+// net/http's operation and the URL the poll asked (its scheme and path alone, its host and port
+// written as redact's mark for a URL with credentials, since what url.Parse reads as the host of
+// such a URL can be the tail of a password that holds an "@"), or nothing of a URL that does not
+// parse, and then the failure's own transport words, the dialled host and port as the same mark,
+// or its class. Neither print holds any part of the credentials, under any verb, in a log field
+// or inside another value. Each case's twin shows net/http's and net/url's own errors quote them,
+// so the row can see a leak. Captures helper.device-poll-unanswered/<case>.
 func TestADeviceCodePollThatGetsNoAnswerNamesTheURLItAsked(t *testing.T) {
+	const marked = "[a URL with credentials]"
 	cases := []struct{ name, url, want string }{
-		{"no-answer", devicePollCredentialedURL, `Post "https://127.0.0.1:1/v1/oauth/token": `},
+		{"no-answer", devicePollCredentialedURL, `Post "https://` + marked + `/v1/oauth/token": dial tcp ` + marked + ":" + marked + ": "},
 		{"unparsed", devicePollUnparsedURL, `parse "` + redact.NotPrinted + `": ` + redact.ClassNotAURL},
 	}
 	for _, c := range cases {

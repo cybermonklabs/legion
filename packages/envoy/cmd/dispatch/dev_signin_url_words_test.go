@@ -21,25 +21,33 @@ func credentialURL(host string) string {
 }
 
 // TestADevSignInLineNamesNoCredentialAURLItReadsCarries: dev sign-in reads two URLs a deployment
-// can write with a credential in its user information or its query, and each line or refusal that
-// names one names it as the URL rule names a configured URL (redact.URL), never as written:
+// can write with a credential in it, and each line or refusal that names one names it as the URL
+// rule names a configured URL (redact.URL), never as written:
 //   - api-base: the refusal of an App key that would sign calls to a DISPATCH_GITHUB_API_BASE
-//     on another host than this machine's (devSignInLoadedFence);
+//     on another host than this machine's (devSignInLoadedFence). Boot refuses a base with user
+//     information, an "@" past its host, a query or a fragment by the setting alone
+//     (gitHubAPIBaseRefusal), so a credential that reaches this refusal stands in the base's
+//     path: here the probe's user and password written as user:password and its token, a path
+//     the URL rule does not print;
 //   - origin: the warning a dev sign-in server starts with, which names the dashboard origin,
 //     envoy.json's dispatch.serverUrl, held only to an http(s) URL with a host and, under the flag,
 //     to a loopback host (routes.DevSignInOrigin), so its user information and query pass. The
 //     warning is written by main, so the row runs this test binary as the server (TestMain's
 //     DISPATCH_MEMORY_TEST_SERVE) and reads its standard error up to the warning.
 //
-// The twin shows the fence takes the origin and the URLs as written hold the markers. Captures
-// dispatch.dev-signin-url/<case>.
+// The twin shows boot takes the base, the fence takes the origin and the URLs as written hold the
+// markers. Captures dispatch.dev-signin-url/<case>.
 func TestADevSignInLineNamesNoCredentialAURLItReadsCarries(t *testing.T) {
+	apiBase := "http://github.example/api/" + redacttest.User + ":" + redacttest.Password + "/" + redacttest.Token
 	origin := strings.Replace(credentialURL("127.0.0.1:8799"), "/api", "", 1)
 	t.Run("twin", func(t *testing.T) {
-		for _, raw := range []string{credentialURL("github.example"), origin} {
+		for _, raw := range []string{apiBase, origin} {
 			if held := redacttest.Held(raw); len(held) != len(redacttest.Secrets) {
 				t.Errorf("%q holds %v; want every marker, so the rows can see it printed", raw, held)
 			}
+		}
+		if boot := devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": apiBase}); boot.GitHubAPIBase != apiBase {
+			t.Errorf("boot read DISPATCH_GITHUB_API_BASE=%q as %q; want it taken as written, so the fence names it", apiBase, boot.GitHubAPIBase)
 		}
 		if err := devSignInLoadedFence(devSignInBoot(t, nil), origin, nil, appCredentialSource{}); err != nil {
 			t.Errorf("the fence refused the origin %q: %v; want it taken, so the warning names it", origin, err)
@@ -47,13 +55,16 @@ func TestADevSignInLineNamesNoCredentialAURLItReadsCarries(t *testing.T) {
 	})
 	t.Run("api-base", func(t *testing.T) {
 		key := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
-		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": credentialURL("github.example")}), devSignInOrigin, key, appCredentialSource{})
+		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": apiBase}), devSignInOrigin, key, appCredentialSource{})
 		if err == nil {
 			t.Fatal("the fence took an App key signing calls to a remote base; want it refused")
 		}
 		redacttest.RequireNoPiece(t, "dispatch.dev-signin-url/api-base", err.Error(), redacttest.User, redacttest.Password, redacttest.Token)
 		if !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE=") || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
 			t.Errorf("the refusal is %q; want it to name DISPATCH_GITHUB_API_BASE and DISPATCH_APP_PEM_B64", err)
+		}
+		if !strings.Contains(err.Error(), redact.NotPrinted) {
+			t.Errorf("the refusal is %q; want the base as redact.URL names it, %q", err, redact.NotPrinted)
 		}
 	})
 	t.Run("origin", func(t *testing.T) {
