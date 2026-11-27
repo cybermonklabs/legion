@@ -24,9 +24,10 @@ import (
 // Each card is a day builder and a fold (parts.go): PRChecks, DeployJobs and LeadTimes put their
 // rows on the shown UTC days, build each day's parts (PRChecksDay, DeployJobsDay and the lead-time
 // builders of measures.go), and fold each day's parts alone and the shown days' together
-// (FoldTiming, FoldSlowestJobs, FoldLeadTime), the folds the CI and delivery evals read stored
-// parts with. The failing-jobs table is no day part: FailingJobs reads the run jobs of the
-// FailingWindow before the end its caller names.
+// (FoldTiming, FoldSlowestJobs, FoldLeadTime), the folds a later slice of
+// cybermonklabs/legion#3976 reads the stored parts of the CI and delivery evals with. The
+// failing-jobs table is no day part: FailingJobs reads the run jobs of the FailingWindow before
+// the end its caller names.
 
 // ShownDayCount is how many UTC days the Pipeline page shows, ending today (pipeline.py:19).
 const ShownDayCount = 7

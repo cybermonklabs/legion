@@ -170,9 +170,9 @@ func (c *computedAt) at(moment time.Time) map[string]IssueFacts {
 // closing moment and a minute on either side of a UTC midnight, with no input in between:
 //
 //	(a) the facts ProjectFactsClosed answers, grown to the moment by the one computation a
-//	    reader of a stored row makes (IssueFacts.Grown, which legionfacts' Row.At calls), are
-//	    the computation run at that moment over the same inputs (factsOf), field for field, to a
-//	    tenth of an hour and exactly for counts;
+//	    reader of a stored row makes (IssueFacts.Grown, which the reader of the rows
+//	    dispatch://INFRA-5577 stores calls), are the computation run at that moment over the
+//	    same inputs (factsOf), field for field, to a tenth of an hour and exactly for counts;
 //	(b) each fact the computation answers at the moment is its value at the closing moment plus
 //	    its rate times the time elapsed, read with this test's own arithmetic rather than with
 //	    Grown. It fails the day a rule of the computation comes to depend on elapsed time, and

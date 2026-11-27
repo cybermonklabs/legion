@@ -96,7 +96,7 @@ func TestTheKeywordFillReadsEveryEventOfTheSeededHistory(t *testing.T) {
 	t.Logf("the fill decided all %d events: %d issues with their titles, %d comments and %d asks", newest, read, comments, asks)
 }
 
-// TestASeedLeavesNoStoredKeywordReachAboveItsEvents: a kit loads this history through evalfixture
+// TestASeedLeavesNoStoredKeywordReachAboveItsEvents: a command loads this history through Write
 // into a database that a server serves, and that server's keyword fill has stored a reach. The
 // reach says that every event created at or before it has its keyword rows. The history's events
 // are dated in the past, below that reach, so the fill would write each of them as a breach of it.

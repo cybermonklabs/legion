@@ -16,10 +16,10 @@
 //     slot holder for a root: a card's tree is the daemon's own `tree` where a read carried one
 //     (dispatch://INFRA-980 adds it) and the parent chain otherwise.
 //   - The columns are the spec's, with Waiting on children for the phase dispatch://INFRA-3320
-//     added, in one ordered list (legionBoardColumnOrder), and a phase maps to exactly one of them
-//     (legion.PhaseColumns, which the metrics key their hours by too), so the view and metric 2's
-//     "no role" bar agree on where `awaiting_children`, `awaiting_person` and `held` go (the
-//     plan's D11).
+//     added, in one ordered list (legion.Columns), and a phase maps to exactly one of them
+//     (legion.PhaseColumns, read off that list, which the metrics key their hours by too), so the
+//     view and metric 2's "no role" bar agree on where `awaiting_children`, `awaiting_person` and
+//     `held` go (the plan's D11).
 package api
 
 import (
@@ -38,22 +38,22 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// legionBoardColumnOrder is every column of the board, left to right, with the label the view
-// shows. Every answer carries all of them, empty where nothing is in them, so a page draws the
-// board from the body alone.
-var legionBoardColumnOrder = []struct{ id, label string }{
-	{legion.ColumnQueue, "Queue"},
-	{legion.ColumnDesign, "Design"},
-	{legion.ColumnPlanning, "Planning"},
-	{legion.ColumnImplementing, "Implementing"},
-	{legion.ColumnTesting, "Testing"},
-	{legion.ColumnReviewing, "Reviewing"},
-	{legion.ColumnAccepting, "Accepting"},
-	{legion.ColumnRetro, "Retro"},
-	{legion.ColumnMerging, "Merging"},
-	{legion.ColumnAwaitingChildren, "Waiting on children"},
-	{legion.ColumnAwaiting, "Waiting on a person"},
-	{legion.ColumnHeld, "Held"},
+// legionBoardColumnLabels is the label the view shows over each column of the board, by the
+// column's id. The board draws every column of legion.Columns, left to right, in every answer,
+// empty where nothing is in it, so a page draws the board from the body alone.
+var legionBoardColumnLabels = map[string]string{
+	legion.ColumnQueue:            "Queue",
+	legion.ColumnDesign:           "Design",
+	legion.ColumnPlanning:         "Planning",
+	legion.ColumnImplementing:     "Implementing",
+	legion.ColumnTesting:          "Testing",
+	legion.ColumnReviewing:        "Reviewing",
+	legion.ColumnAccepting:        "Accepting",
+	legion.ColumnRetro:            "Retro",
+	legion.ColumnMerging:          "Merging",
+	legion.ColumnAwaitingChildren: "Waiting on children",
+	legion.ColumnAwaiting:         "Waiting on a person",
+	legion.ColumnHeld:             "Held",
 }
 
 // legionNotConfiguredCode and legionNotConfiguredMessage are the one refusal a project with no
@@ -102,8 +102,8 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the twelve columns, in the order legionBoardColumnOrder draws
-// them; the enum is what makes the generated type carry that set rather than a bare string.
+// the view draws them. ID is one of the twelve columns, in the order legion.Columns lists them;
+// the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
 	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_children,awaiting_person,held"`
 	Label string            `json:"label"`
@@ -583,13 +583,13 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		}
 	}
 
-	columns := make([]legionBoardColumn, 0, len(legionBoardColumnOrder))
-	for _, column := range legionBoardColumnOrder {
-		made := cards[column.id]
+	columns := make([]legionBoardColumn, 0, len(legion.Columns))
+	for _, column := range legion.Columns {
+		made := cards[column.ID]
 		if made == nil {
 			made = []legionBoardCard{}
 		}
-		columns = append(columns, legionBoardColumn{ID: column.id, Label: column.label, Cards: made})
+		columns = append(columns, legionBoardColumn{ID: column.ID, Label: legionBoardColumnLabels[column.ID], Cards: made})
 	}
 
 	header := legionBoardHeader{QueueLength: len(cards[legion.ColumnQueue])}

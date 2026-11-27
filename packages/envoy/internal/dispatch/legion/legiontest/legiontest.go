@@ -3,7 +3,8 @@
 // at once, and a check of them can count nothing until a history that size exists. It is an
 // ordinary package rather than a _test.go file, as store/storetest is, so every package whose
 // tests need such a history can import it (Go cannot share test-only code across packages), and
-// a command can write the same history through Write (evals/evalfixture/cmd).
+// a command can write the same history through Write, as cybermonklabs/legion#3976's loader of
+// its eval checks does.
 //
 // Write stores the rows a running Legion leaves behind: the project and its issues, an event of
 // each role's session, the handoffs, and the observations of the phase, the slot, each role's
@@ -296,7 +297,7 @@ type rows struct {
 // Dispatch learns the session by. Every reader of the phase-work rule resolves a session's newest
 // title (delivery.ResolveSessionTitles) from the session's own events, whose insert records it
 // (migration 20261117100015's trigger, which fires for this package's bare inserts too), so the
-// title belongs on the actor of each event it writes; evalbench's load writes its sessions so.
+// title belongs on the actor of each event it writes.
 func SessionActor(role, issue string) string {
 	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`,
 		role, issue, "Legion "+role+" · "+issue)
@@ -610,7 +611,7 @@ func (s *seeding) eventPayload(issue, kind string, seq int32, fields string) str
 // CommentID is the id of the comment that the comment event at seq of issue writes. It is a uuid
 // derived from the issue's key and seq under commentNamespace, so it is this rig's own, every
 // seeding of one history writes the same one, and a reader that casts a comment's id to uuid can
-// read it. evalbench's load names its comments by it too.
+// read it.
 func CommentID(issue string, seq int32) string {
 	return uuid.NewSHA1(commentNamespace, fmt.Appendf(nil, "%s/%d", issue, seq)).String()
 }
@@ -774,15 +775,15 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 // events_issue_key_seq_key holds one event to each, so an issue left at 0 beside events 1..n would
 // refuse the next write the API makes to it.
 //
-// The events are dated in the history's past. A keyword fill serving the database, as a kit's
-// server does when evalfixture loads into it, may have stored a reach above those dates, which
-// says that every event up to it has its keyword rows. Its batches would then log each of these
-// events as a breach of that reach. So where the database has the fill's cursor table (this
-// head's schema; the base head's lacks it), the events statement also nulls the stored reach. The
-// table's migration (20261120021308) names only a reset of the event log as lowering the reach; a
-// seed of events dated in the past is a second case. The reach is nulled in the same statement as
-// the insert, and so in the same transaction, so no fill batch can store a reach between the two.
-// The fill computes the reach again once the events are committed.
+// The events are dated in the history's past. A keyword fill serving the database, as a server
+// does when a command loads this history into it through Write, may have stored a reach above
+// those dates, which says that every event up to it has its keyword rows. Its batches would then
+// log each of these events as a breach of that reach. So where the database has the fill's cursor
+// table (this head's schema; the base head's lacks it), the events statement also nulls the
+// stored reach. The table's migration (20261120021308) names only a reset of the event log as
+// lowering the reach; a seed of events dated in the past is a second case. The reach is nulled in
+// the same statement as the insert, and so in the same transaction, so no fill batch can store a
+// reach between the two. The fill computes the reach again once the events are committed.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {

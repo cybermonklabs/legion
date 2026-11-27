@@ -149,9 +149,8 @@ func (t phaseTimeline) statusesBefore(issue *Issue) []Mark {
 // workTimeRow is one memoised answer of workedOf: when the work time started (the first worker
 // event), its hours and the parked and queued hours taken out of the issue's life, the spans its
 // hours are the measure of, and whether the issue has a work time at all. The hours out of the
-// workflow it takes out too are no fact of the issue's (computeWorkTime): issue_facts has no
-// column for them, so no stored row or items list carries them, and the work time and the bars
-// already leave them out.
+// workflow it takes out too are no fact of the issue's (computeWorkTime): IssueFacts has no field
+// for them, and the work time and the bars already leave them out.
 type workTimeRow struct {
 	started               time.Time
 	hours, parked, queued float64

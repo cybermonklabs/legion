@@ -125,9 +125,10 @@ func readPopulation(ctx context.Context, db Querier, scope Scope, window Window)
 	return held, nil
 }
 
-// readIssues reads every issue of the project created by window.To: its parent link, and when it
-// closed if it had closed by window.To (an issue closed after window.To stands open as of
-// window.To).
+// readIssues reads every issue of the project created by window.To, with its parent link and its
+// close as its current row holds them (Window): the row's parent_key, whenever it was set, and
+// the row's closed_at where that is by window.To. An issue closed after window.To stands open, and
+// so does one closed by window.To and opened again after it, whose row no longer holds that close.
 func (p *population) readIssues(ctx context.Context, db Querier) error {
 	rows, err := db.Query(ctx, `
 		select key, coalesce(parent_key, ''),

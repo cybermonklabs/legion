@@ -8,10 +8,10 @@
 //
 // It is the second side of that requirement's check (k1 and k9), which compares every fact of
 // every issue against a reading of the requirement. A check whose two sides are one function can
-// never fail, so this package imports neither legion/metrics nor legionfacts: it reads `events`,
-// `handoffs` and `legion_observations` itself, with statements of its own, and works the numbers
-// out from the requirement's words. Where this reading and the computation disagree, one of them
-// is wrong and the check has found it.
+// never fail, so this package imports nothing it is compared with, legion/metrics among them: it
+// reads `events`, `handoffs` and `legion_observations` itself, with statements of its own, and
+// works the numbers out from the requirement's words. Where this reading and the computation
+// disagree, one of them is wrong and the check has found it.
 //
 // It takes the scope and the window as arguments and answers both beside the facts it reads
 // (Reading), because a check whose two sides read different scopes proves nothing.
@@ -41,8 +41,12 @@ type Scope struct {
 func (s Scope) String() string { return s.Project }
 
 // Window is the stretch of time one reading measures over: To is the moment of the computation,
-// which bounds every read (issues, closes, events, titles, handoffs and observations stand as of
-// To) and is where an open issue's work time runs to.
+// which bounds what the reading takes from the log (the issues created by To, and their events,
+// titles, handoffs and observations as of To) and is where an open issue's work time runs to.
+// An issue's parent and its close come from its current `issues` row, as legion/metrics reads
+// them, and not as of To: the close counts where the row's closed_at is by To, so an issue closed
+// by To and opened again after it reads open at To, and a parent set after To is the parent the
+// reading walks.
 //
 // R1 covers every issue the project has Legion phase work for from the beginning of the project's
 // history up to To, so From must be the zero moment; Read refuses a non-zero From rather than

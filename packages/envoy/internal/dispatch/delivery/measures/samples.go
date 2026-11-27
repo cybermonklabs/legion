@@ -12,8 +12,8 @@ import (
 // samples already ascend and hold no -0 and no NaN (SortableSamples), the parts' lists as they
 // stand, of which each rank a fold reads is selected across the lists when it is read (At).
 //
-// The stored figures fold one series' days into many ranges, each of up to 85 days (evals,
-// figures.go), so the fold sorts each day's samples once, and every range that holds the day
+// The stored figures of cybermonklabs/legion#3976 fold one series' days into many ranges, each of
+// up to 85 days, so the fold sorts each day's samples once, and every range that holds the day
 // reads them sorted: a range's median and 90th percentile are two selections across its days'
 // lists, each of the two adjacent ranks a quantile reads (adjacent), where a merge and a sort of
 // every sample is paid again for each range. k8 measured selection on the bench's busiest quantile

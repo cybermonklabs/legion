@@ -83,7 +83,7 @@ func TreeRoot(key string, lookup func(key string) (TreeNode, bool)) string {
 //     issue. The rule and the reason for it are in TreeChain's doc below.
 //   - The scope walks state which rows a computation must read, and they climb through a parent
 //     that is not a Legion issue. The rule and the reason for it are in the doc of each walk
-//     that holds it, in legion/metrics and in legionfacts.
+//     that holds it, in legion/metrics (treeScopeKeys and placedKeys).
 //
 // Each of the two rules is written once, where it holds. A caller that needs another stopping
 // rule writes a third rule with a name and a reason of its own, and never a copy of one of these

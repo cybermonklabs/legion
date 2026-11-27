@@ -502,9 +502,9 @@ func latestShipBefore(repo, jobNames, applyStep, at string) string {
 // ReadLatestShipBefore is latestShipBefore's creation for deployRepo and production, the zero time
 // when no deploy succeeded before at. Every pull request merged before it had shipped by at, so no
 // deploy completing at or after at ships one: it is the earliest merge the shipped set of such a
-// deploy reaches back to (ReadDeploys reads a window's shipped sets from it; the day-row refresher
-// asks it whether a deploy can have been the first of its repository to complete, evals'
-// shippedNeighbours).
+// deploy reaches back to (ReadDeploys reads a window's shipped sets from it, and the day rows of
+// cybermonklabs/legion#3976 ask it whether a deploy can have been the first of its repository to
+// complete).
 func ReadLatestShipBefore(ctx context.Context, q Querier, deployRepo string, production Production, at time.Time) (time.Time, error) {
 	var created time.Time
 	err := q.QueryRow(ctx, latestShipBefore("$1", "$2", "$3", "$4"), deployRepo, production.JobNames, production.ApplyStep, at).Scan(&created)

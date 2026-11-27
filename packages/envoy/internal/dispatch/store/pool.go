@@ -119,9 +119,10 @@ func ForConcurrentRead(ctx context.Context) (context.Context, error) {
 // ReadSideBySide runs reads at once and answers the first error. Each runs on a hold mark of its
 // own (ForConcurrentRead), so it takes at most one connection of the pool and one read's open
 // cursor refuses no other; a read holds no lock past its own statements and waits on no other
-// read, so none waits on another: a read opens no transaction, or one of its own that only reads
-// and commits once its statements end (legion/metrics' readSampled). A caller that holds a
-// connection is refused (ErrNestedAcquire) before any read starts.
+// read, so none waits on another: a read opens no transaction, or reads in one that only reads,
+// which its caller opened before the group on a hold mark of its own and the read commits once
+// its statements end (legion/metrics' read opens it, and readSampled reads in it and commits it).
+// A caller that holds a connection is refused (ErrNestedAcquire) before any read starts.
 func ReadSideBySide(ctx context.Context, reads ...func(ctx context.Context) error) error {
 	group, groupCtx := errgroup.WithContext(ctx)
 	for _, read := range reads {

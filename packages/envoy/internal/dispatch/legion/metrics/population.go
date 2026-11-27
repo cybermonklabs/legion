@@ -511,11 +511,12 @@ func (p *Population) placedKeys(scope []string) []string {
 }
 
 // TreeLinks is every issue of the project by the issue above it, and "" for an issue nothing
-// stands above it: the one read of a project's tree links. It is exported for the Legion facts
-// pass (legionfacts), which climbs and descends them to state which stored rows a change to an
-// issue can move, and the links state the same tree this package's own scope holds
-// (treeScopeKeys), because both take the one tree step (legion.TreeAbove). An issue the
-// project does not hold has no entry, so a walk that reaches it stops.
+// stands above it: the one read of a project's tree links. Nothing in this slice calls it: it is
+// exported for the Legion facts consumer of a later slice (dispatch://INFRA-5577), which climbs
+// and descends the links to state which stored rows a change to an issue can move, and the links
+// state the same tree this package's own scope holds (treeScopeKeys), because both take the one
+// tree step (legion.TreeAbove). An issue the project does not hold has no entry, so a walk that
+// reaches it stops.
 //
 // It makes two reads, one for each fact the step reads: what the daemon reports of every issue
 // of the project (legion.ReadCurrent's Reported, the read the board and this package's own
@@ -863,9 +864,9 @@ func (p *Population) readObservations(ctx context.Context, tx pgx.Tx, project st
 // for each: legion.ReadCurrent's Reported, the read the Legion board makes too, of the whole
 // project rather than the scope's keys (legion.TreeNode), in the transaction readSampled takes
 // the scope's observations in. Of the read's Newest, the board's cards, it keeps the daemon's
-// admission block alone (Admission), so a stored row's waiting line reads the block of the moment
-// its observations are of; the rest go unused here, which is the cost of one read answering the
-// rule for both readers.
+// admission block alone (Admission), so a reader that numbers the waiting line from it reads the
+// block of the moment the observations are of; the rest go unused here, which is the cost of one
+// read answering the rule for both readers.
 func (p *Population) readReported(ctx context.Context, tx pgx.Tx, project string) error {
 	current, err := legion.ReadCurrent(ctx, tx, project)
 	if err != nil {

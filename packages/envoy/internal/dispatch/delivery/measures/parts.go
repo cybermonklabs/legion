@@ -6,9 +6,9 @@ import "time"
 // builder (the functions named <Measure>Day) turns the rows of one UTC day into that day's parts,
 // and one exported fold (the functions named Fold<Measure>) turns any set of parts into the
 // answer. The delivery routes build the parts of their window's days from the rows they read and
-// fold them (Compute, PRChecks, DeployJobs, LeadTimes); the eval routes fold the parts stored in
-// eval_days through the same folds, so each rule has one statement and a read that both families
-// serve has one answer.
+// fold them (Compute, PRChecks, DeployJobs, LeadTimes). A later slice of cybermonklabs/legion#3976
+// stores the parts as day rows and folds them through the same folds, so each rule has one
+// statement and a read that both families serve has one answer.
 //
 // A fold reads the parts of its own series and passes over the rest, so it can be handed every
 // part of its eval. A count or a sum adds Sum; a share is the summed Num over the summed Den, never
@@ -22,18 +22,17 @@ import "time"
 // FoldChangeFailureRate returns zero failure counts and rates in this slice (no failure source),
 // with its totals still counted.
 
-// DayPart is one series' part of one UTC day: what one eval_days row holds except its key's
-// project, eval and repository and its bookkeeping (listed, built_by, updated_at), so a fold
-// reads a stored row and a part built on request alike; evals.DayRow is a DayPart with that key
-// and bookkeeping beside it, and its JSON keys are the part's. Sum, Num, Den, Max and LastValue
-// are nil where the part holds no such value.
+// DayPart is one series' part of one UTC day: what a day row of cybermonklabs/legion#3976's store
+// holds beside its key (project, eval and repository) and its bookkeeping, so a fold reads a
+// stored row and a part built on request alike, and its JSON keys are the stored row's. Sum, Num,
+// Den, Max and LastValue are nil where the part holds no such value.
 // A builder fills the columns its series' fold reads: a sum N and Sum; a share N (the rows its
 // denominator counts), Num and Den; a quantile N, Sum, Max and Samples, every value of the day.
 // Counts are the named sub-counts a fold sums beside the value (CountWithPRs and the rest).
 // LastValue is the value measured last and LastAt its moment, nil where LastValue is.
 // LastRecordedAt and LastReading say which write stored it, a logged eval's reading by its
-// recorded_at and id, which breaks a tie of two parts' LastAt for the `last` fold (evals); they
-// are nil and "" where the part records no write.
+// recorded_at and id, which breaks a tie of two parts' LastAt for the `last` fold of the logged
+// evals cybermonklabs/legion#3976 adds; they are nil and "" where the part records no write.
 // ViaRepository is how many of the day's rows reached the part's project through a repository
 // rather than an issue (dispatch://INFRA-2916, D1); the builders here read no project, and leave it
 // to the caller that attributes their rows.
@@ -55,7 +54,7 @@ type DayPart struct {
 	ViaRepository  int                `json:"via_repository"`
 }
 
-// The series the delivery and CI evals' parts are stored under (the seeded catalogue's).
+// The series the delivery and CI evals' parts are named by.
 const (
 	// SeriesDeploys is deploy-frequency's: the successful deploys (a sum).
 	SeriesDeploys = "deploys"
@@ -88,8 +87,8 @@ const (
 )
 
 // CountPart is a sum's part: count rows, with counts beside them. The part helpers and the fold
-// helpers below are exported because the Legion builders and folds (legion/metrics) and a logged
-// eval's fold (evals) build and add up their parts by the same rules.
+// helpers below are exported because the Legion builders and folds (legion/metrics) build and add
+// up their parts by the same rules.
 func CountPart(day time.Time, series string, count int, counts map[string]float64) DayPart {
 	sum := float64(count)
 	return DayPart{Series: series, Day: day, N: count, Sum: &sum, Counts: counts}

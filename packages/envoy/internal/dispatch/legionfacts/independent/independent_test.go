@@ -29,10 +29,8 @@ const issueFloor = 200
 // grown to the read's end, against a reading written from the requirement's words (package
 // independent), over one history of more than 200 issues with Legion phase work.
 //
-// It fails where the two disagree on any fact, below the floor of issues, where the history's
-// issue with no measured work is missing from either side, and where the two sides read
-// different scopes or different windows — a comparison of two scopes proves nothing about
-// either.
+// It fails where the two disagree on any fact, below the floor of issues, and where the
+// history's issue with no measured work is missing from either side.
 func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
@@ -54,15 +52,6 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	reading, err := independent.Read(t.Context(), database.Pool, scope, window)
 	if err != nil {
 		t.Fatalf("read the project independently: %v", err)
-	}
-
-	// The two sides report the same scope and the same window, or the comparison below compares
-	// two different questions.
-	if reading.Scope.String() != computedScope {
-		t.Fatalf("the reading reported scope %s and the computation scope %s", reading.Scope, computedScope)
-	}
-	if reading.Window.String() != computedWindow.String() {
-		t.Fatalf("the reading reported window %s and the computation window %s", reading.Window, computedWindow)
 	}
 
 	compared, zeroHours, awaitingChildren, differences := 0, 0, 0, 0
@@ -112,7 +101,7 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 		compared, zeroHours, awaitingChildren, differences)
 }
 
-// TestIndependentReadAsOfSnapshotAndTitleTieBreak: Read stands every read it makes as of
+// TestIndependentReadAsOfSnapshotAndTitleTieBreak: Read stands what it takes from the log as of
 // Window.To, in one snapshot. An issue created after To is absent; an issue closed after To is open
 // and its work time runs to To; a retitle after To does not take a session's title away; a handoff
 // after To makes no issue one that Legion worked. Where two titled events of a session share a

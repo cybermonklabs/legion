@@ -11,9 +11,9 @@ import (
 // The per-issue Legion facts (dispatch://INFRA-2915): one issue's work hours shared out by phase,
 // the work time they come out of, its review rounds, where it stands in its tree, how long it
 // held an admission slot, and when it opened, closed and was worked. factsOf is the one
-// computation of them, which ProjectFactsClosed runs for every row legionfacts stores, and every
-// reader of these numbers reads those rows and keeps no rule of its own, so no two views of one
-// issue can answer different numbers.
+// computation of them, which ProjectFactsClosed runs for every issue it answers. A later slice
+// (dispatch://INFRA-5577) stores those answers as rows for every reader of these numbers to read,
+// so no reader keeps a rule of its own and no two views of one issue can answer different numbers.
 //
 // The hours are shared out part by part, each hour counted once (dispatch://INFRA-979). They are
 // the bars' hours (the work time less the queued time). An hour an ask held is waiting on a
@@ -29,27 +29,42 @@ const (
 	breakdownOther  = "other"
 )
 
-// breakdownParts are the parts in the order a page draws them, each with the phases whose hours
-// it holds. Their ids are the board's columns, which the legion package declares
-// (legion.ColumnDesign and the rest, and legion.PhaseColumns, which they follow), with waiting on
-// children and other beside them: retro is a part of its own, and merging holds merging and
-// awaiting merge alone (dispatch://INFRA-1077's b74df7a79b), so an issue's retro hours are under
-// `retro` and on no merger figure, as retro is on the implementer's bar of metric 2.
-var breakdownParts = []struct {
+// breakdownPart is one part an issue's hours are shared out over: its id, and the phases whose
+// hours it holds.
+type breakdownPart struct {
 	id     string
 	phases []string
-}{
-	{legion.ColumnDesign, []string{phaseDesign}},
-	{legion.ColumnPlanning, []string{legion.PhasePlanning}},
-	{legion.ColumnImplementing, []string{legion.PhaseImplementing}},
-	{legion.ColumnTesting, []string{legion.PhaseTesting}},
-	{legion.ColumnReviewing, []string{legion.PhaseReviewing}},
-	{legion.ColumnAccepting, []string{legion.PhaseAccepting}},
-	{legion.ColumnRetro, []string{legion.PhaseRetro}},
-	{legion.ColumnMerging, []string{legion.PhaseMerging, legion.PhaseAwaitingMerge}},
-	{legion.ColumnAwaitingChildren, []string{legion.PhaseAwaitingChildren}},
-	{breakdownPerson, []string{legion.PhaseAwaitingPerson}},
-	{legion.ColumnHeld, []string{legion.PhaseHeld}},
+}
+
+// breakdownParts are the parts in the order a page draws them, each with the phases whose hours
+// it holds: the board's columns in the board's order (legion.Columns), each column that holds a
+// phase with the phases the board places in it (partsOf). So retro is a part of its own and
+// merging holds merging and awaiting merge alone (dispatch://INFRA-1077's b74df7a79b), as the
+// board's table has them: an issue's retro hours are under `retro` and on no merger figure, as
+// retro is on the implementer's bar of metric 2.
+var breakdownParts = partsOf(legion.Columns)
+
+// partsOf is the parts of columns: each column that holds a phase, in the order columns lists
+// them, with its phases as the timeline names them. The queue holds no phase and is no part.
+// The one phase the timeline names otherwise is `admitted`, the phase the board places in its
+// design column: the timeline reads it as design where the issue holds a slot and as queued,
+// which is on no bar, where it holds none (phaseDesign, phaseQueued), so that part holds design.
+func partsOf(columns []legion.Column) []breakdownPart {
+	parts := make([]breakdownPart, 0, len(columns))
+	for _, column := range columns {
+		if len(column.Phases) == 0 {
+			continue
+		}
+		phases := make([]string, 0, len(column.Phases))
+		for _, phase := range column.Phases {
+			if phase == legion.PhaseAdmitted {
+				phase = phaseDesign
+			}
+			phases = append(phases, phase)
+		}
+		parts = append(parts, breakdownPart{id: column.ID, phases: phases})
+	}
+	return parts
 }
 
 // personClaim and childrenClaim are the two places in the precedence issueParts takes its hours
@@ -181,9 +196,9 @@ func (p *Population) factsIssues(wanted map[string]bool) iter.Seq[*Issue] {
 
 // factsOf is one issue's facts at the population's end, counted as the metrics count them: an
 // open issue's hours run to the population's To. It is the one computation of the per-issue
-// facts, which ProjectFactsClosed runs for every issue factsIssues selects, which legionfacts
-// stores and the Legion evals' day builders fold. A part with no hours is left out of
-// PhaseHours, which is `{}` for an issue whose work took no measured time.
+// facts, which ProjectFactsClosed runs for every issue factsIssues selects, and whose answers the
+// Legion day builders fold. A part with no hours is left out of PhaseHours, which is `{}` for an
+// issue whose work took no measured time.
 func (c *computation) factsOf(issue *Issue) IssueFacts {
 	population, key := c.population, issue.Key
 	spent := c.issueParts(issue)
@@ -238,12 +253,12 @@ type IssueFiling struct {
 }
 
 // ProjectFilings is every filing the population read (Population.Filed), each classified by the
-// rule metric 4 classifies it by, one per filed issue: issue_filings holds one row per filed
-// issue, so a filed issue that somehow carries two `issue.created` events by Legion sessions keeps
-// the first, in the order the population read them, and a second row of one key in one write
-// cannot fail the whole write. The class and the filer's phase read the filer's own issue, so the
-// population must hold that issue's timeline: ReadProject and ReadIssues both read the filers of
-// the filings they read.
+// rule metric 4 classifies it by, one per filed issue, as the filing rows dispatch://INFRA-5577
+// stores hold one per filed issue: a filed issue that somehow carries two `issue.created` events
+// by Legion sessions keeps the first, in the order the population read them, so a second row of
+// one key in one write cannot fail the whole write. The class and the filer's phase read the
+// filer's own issue, so the population must hold that issue's timeline: ReadProject and
+// ReadIssues both read the filers of the filings they read.
 func ProjectFilings(population *Population) []IssueFiling {
 	c := newComputation(population)
 	filings := make([]IssueFiling, 0, len(population.Filed))

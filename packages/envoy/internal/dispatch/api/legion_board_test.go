@@ -187,13 +187,13 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if board.Project != "INFRA" {
 		t.Fatalf("the board names project %q, want INFRA", board.Project)
 	}
-	if len(board.Columns) != len(legionBoardColumnOrder) {
-		t.Fatalf("the board has %d columns, want the %d the view draws", len(board.Columns), len(legionBoardColumnOrder))
+	if len(board.Columns) != len(legion.Columns) {
+		t.Fatalf("the board has %d columns, want the %d the view draws", len(board.Columns), len(legion.Columns))
 	}
 	for index, column := range board.Columns {
-		want := legionBoardColumnOrder[index]
-		if column.ID != want.id || column.Label != want.label {
-			t.Fatalf("column %d is %q/%q, want %q/%q", index, column.ID, column.Label, want.id, want.label)
+		want := legion.Columns[index].ID
+		if label := legionBoardColumnLabels[want]; column.ID != want || column.Label != label || label == "" {
+			t.Fatalf("column %d is %q/%q, want %q/%q", index, column.ID, column.Label, want, label)
 		}
 	}
 	// The waiting line's own order, which the view does not re-sort: the answered root first,
