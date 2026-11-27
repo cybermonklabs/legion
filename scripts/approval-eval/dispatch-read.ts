@@ -52,7 +52,10 @@ export interface DispatchConfig {
   token: string;
 }
 
-/** The environment does not name the server or the token: nothing can be read. */
+/**
+ * The environment does not name the server or the token, or names a server that is not an absolute
+ * URL with a host: nothing can be read.
+ */
 export class DispatchConfigError extends CannotRunError {
   override readonly name = "DispatchConfigError";
 }
