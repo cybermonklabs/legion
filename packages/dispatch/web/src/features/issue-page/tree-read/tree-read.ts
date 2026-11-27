@@ -122,11 +122,11 @@ export function resetViews(queryClient: QueryClient, key: string): () => void {
  *  decisions view holds as it is dropped is kept for the read the drop starts (`LoadHold.kept`),
  *  written before the reset tells the view's readers, and the Decisions view draws it until that
  *  read's answer lands (`useDecisionsView`): only where the view's own read is mounted - an
- *  observer that may read it (TanStack Query's `Query.isActive`), which only the Decisions
- *  filter's own (`ViewRead`) is - so its read is out now, or owed to the last write's settle and
- *  sent then. Every other reader of the view only watches it, so a drop on any other view keeps
- *  nothing, whether or not another write of the issue holds the view, and the Decisions view
- *  opened later draws no answer from before the write while its read is out. */
+ *  observer whose `enabled` option is not `false`, which only the Decisions filter's own
+ *  (`ViewRead`) is - so its read is out now, or owed to the last write's settle and sent then.
+ *  Every other reader of the view only watches it, so a drop on any other view keeps nothing,
+ *  whether or not another write of the issue holds the view, and the Decisions view opened later
+ *  draws no answer from before the write while its read is out. */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const name of TREE_VIEWS) {
     const queryKey = viewKey(key, name);
@@ -140,8 +140,10 @@ export function dropViews(queryClient: QueryClient, key: string): void {
       // Only an observer that may read the view sends the read the drop starts, at once or as the
       // last write settles; the answer the drop takes is the one that read replaces.
       const hold = loadHoldOf(queryClient, key);
-      if (!view.isActive()) hold.kept = undefined;
-      else if (view.state.data !== undefined) hold.kept = view.state.data;
+      // Not `isActive()`: it runs `enabled` on the state, and `mayReadNow` is false under a hold.
+      if (!view.observers.some((observer) => observer.options.enabled !== false)) {
+        hold.kept = undefined;
+      } else if (view.state.data !== undefined) hold.kept = view.state.data;
     }
     void queryClient.resetQueries({ exact: true, queryKey });
   }
@@ -677,8 +679,8 @@ interface LoadHold {
   ended: boolean;
   /** The decisions view's own: the answer it held as a write's own callback dropped it
    *  (`dropViews`), for the read that drop starts, during a load, where the view's own read is
-   *  mounted (an observer that may read it, the Decisions filter's); none where only watchers
-   *  observe it, and once a load resets the view or the last one ends. */
+   *  mounted (an observer whose `enabled` option is not `false`, the Decisions filter's); none
+   *  where only watchers observe it, and once a load resets the view or the last one ends. */
   kept: TreeAnswer | undefined;
 }
 
@@ -913,13 +915,14 @@ export function useOlderComments(issue: IssueDetails): OlderComments {
  *  (`readOlderComments`). */
 const commentPagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
 
-/** Starts a page read only if that client has no matching read out. */
-function joinedPage(
-  pagesOut: WeakMap<QueryClient, Map<string, Promise<void>>>,
+/** Starts a page read only if that client has no matching read out; a press that joins one gets
+ *  its answer. */
+function joinedPage<Answer>(
+  pagesOut: WeakMap<QueryClient, Map<string, Promise<Answer>>>,
   client: QueryClient,
   page: string,
-  readPage: () => Promise<void>
-): Promise<void> {
+  readPage: () => Promise<Answer>
+): Promise<Answer> {
   let pages = pagesOut.get(client);
   if (pages === undefined) {
     pages = new Map();
@@ -1004,7 +1007,7 @@ function pagedQuery(
 
 /** The next pages out, by client, each by its query and the cursor it reads
  *  (`readNextTreePage`). */
-const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
+const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<boolean>>>();
 
 /**
  * Reads the page after the last one `read`'s answer of issue `key` holds (R15): one request with
@@ -1028,31 +1031,34 @@ const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
  * again reads as far (`readTree`). A query an event or a write had marked stale stays marked, so
  * the read it owes is still made. A refused page leaves the answer as it was, and the press may
  * be made again. A view read at a `version` (`viewQuery`) reads its next page at that version
- * too, under its own key.
+ * too, under its own key. It answers whether it merged a page: false where it read nothing, and
+ * where the page it read landed once the answer had moved on.
  */
 export function readNextTreePage(
   queryClient: QueryClient,
   key: string,
   read: PagedRead,
   version?: number
-): Promise<void> {
+): Promise<boolean> {
   const { query, queryKey } = pagedQuery(key, read, version);
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   if (held === undefined) {
     // The read out brings the answer whose next page the press asks for.
     const cached = queryClient.getQueryCache().find<TreeAnswer>({ exact: true, queryKey });
     const out = cached?.state.fetchStatus === "fetching" ? cached.promise : undefined;
-    if (out === undefined) return Promise.resolve();
+    if (out === undefined) return Promise.resolve(false);
     const again = () => readNextTreePage(queryClient, key, read, version);
     return out.then(again, again);
   }
   const cursor = nextTreeCursor(held);
-  if (cursor === undefined) return Promise.resolve();
+  if (cursor === undefined) return Promise.resolve(false);
   return joinedPage(treePagesOut, queryClient, `${hashKey(queryKey)} ${cursor}`, () =>
     api.getIssueTree(key, { ...query, cursor }).then((answered) => {
       const now = queryClient.getQueryData<TreeAnswer>(queryKey);
       const cached = queryClient.getQueryCache().find({ exact: true, queryKey });
-      if (now === undefined || cached === undefined || nextTreeCursor(now) !== cursor) return;
+      if (now === undefined || cached === undefined || nextTreeCursor(now) !== cursor) {
+        return false;
+      }
       const walk = treePagesOf.get(cached);
       const asked = new Set([...(walk?.cursors ?? []), cursor]);
       nextCursorOf(key, query, answered, asked);
@@ -1062,6 +1068,7 @@ export function readNextTreePage(
         walked: (walk?.walked ?? now.nodes?.length ?? 0) + (answered.nodes?.length ?? 0),
       });
       writeKeepingStale(queryClient, cached, queryKey, mergeTreePages([now, answered]));
+      return true;
     })
   );
 }
@@ -1069,10 +1076,10 @@ export function readNextTreePage(
 /** The next page of a read whose answer names one (`cursor`, R15): how many nodes the read holds
  *  after the pages read (`left`, the answer's `remaining`, undefined where it gives none), and
  *  how to read it (`readNextTreePage`), one request however often it is asked while that page is
- *  out. */
+ *  out, answering whether it merged a page. */
 export interface NextTreePage {
   readonly left: number | undefined;
-  readonly read: () => Promise<void>;
+  readonly read: () => Promise<boolean>;
 }
 
 /** The next page of the outline read the page holds (`OutlineChoice`), for the control after the
@@ -1107,7 +1114,7 @@ function useNextPage(
   const cursor = answer === undefined ? undefined : nextTreeCursor(answer);
   const left = answer === undefined ? undefined : nodesRemaining(answer);
   const readNext = useCallback(
-    () => (read === undefined ? Promise.resolve() : readNextTreePage(queryClient, key, read)),
+    () => (read === undefined ? Promise.resolve(false) : readNextTreePage(queryClient, key, read)),
     [key, queryClient, read]
   );
   return useMemo(
