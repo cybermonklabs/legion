@@ -45,9 +45,9 @@ type supervisor struct {
 	// beforeDecision is overrides.beforeDecision, run on a claim's feed before its machine decides
 	// each event (add); nil runs nothing. It is set before the first machine is added.
 	beforeDecision func(claim.Token, supervise.Event)
-	// turnEdge is told each start and each end of a turn a machine's decision wrote to its claim,
-	// once that decision returns (OnTurnEdge, add): the claim, whether the edge is a start, and its
-	// moment as the claim records it. Nil tells nobody.
+	// turnEdge is told each start and each end of a turn a decision of any machine wrote to its
+	// claim, once that decision has ended (OnTurnEdge, tellTurnEdge): the claim, whether the edge
+	// is a start, and its moment as the claim records it. Nil tells nobody.
 	turnEdge atomic.Pointer[func(supervise.Claim, bool, time.Time)]
 
 	mu       sync.RWMutex
@@ -154,26 +154,22 @@ func (s *supervisor) OnDurableState(callback func(supervise.Claim, supervise.Cla
 	}
 }
 
-// OnTurnEdge tells callback each start and each end of a turn any machine of this supervisor
-// writes to its claim, after the decision that wrote it returns, so the claim the store holds
-// carries the edge when callback runs (tellTurnEdges).
+// OnTurnEdge tells callback each start and each end of a turn any decision of any machine of this
+// supervisor writes to its claim, once: the decision of an event of the claim's feed (add), and
+// as well that of a request handed to Machine.Handle directly — the outbox's delivery, which can
+// start a turn (supervise's sendPending), a route's, a timer's, a send's outcome — each machine
+// telling it after the decision that wrote it has ended (supervise.Machine.OnTurnEdge), so the
+// claim the store holds carries the edge when callback runs. It runs on the goroutine of that
+// decision.
 func (s *supervisor) OnTurnEdge(callback func(supervise.Claim, bool, time.Time)) {
 	s.turnEdge.Store(&callback)
 }
 
-// tellTurnEdges tells the turn-edge callback (OnTurnEdge) of each edge after records that before
-// did not, the claim as one decision found and left it: a turn's start where its last start moved,
-// and its end where its last end moved, the start first.
-func (s *supervisor) tellTurnEdges(before, after supervise.Claim) {
-	tell := s.turnEdge.Load()
-	if tell == nil {
-		return
-	}
-	if !after.LastTurnStart.IsZero() && !after.LastTurnStart.Equal(before.LastTurnStart) {
-		(*tell)(after, true, after.LastTurnStart)
-	}
-	if !after.LastTurnEnd.IsZero() && !after.LastTurnEnd.Equal(before.LastTurnEnd) {
-		(*tell)(after, false, after.LastTurnEnd)
+// tellTurnEdge is every machine's turn-edge callback (add): it tells the supervisor's
+// (OnTurnEdge), whenever that was installed, and tells nobody while none is.
+func (s *supervisor) tellTurnEdge(c supervise.Claim, start bool, at time.Time) {
+	if tell := s.turnEdge.Load(); tell != nil {
+		(*tell)(c, start, at)
 	}
 }
 
@@ -279,6 +275,7 @@ func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]c
 // add supervises m, starting the goroutine that feeds it. The caller holds mu.
 func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 	m.OnDurableState(s.durableState)
+	m.OnTurnEdge(s.tellTurnEdge)
 	queue := newInbox()
 	s.machines[token] = &member{machine: m, inbox: queue, issue: m.Claim().Issue}
 	all := append(slices.Clip(s.supervised()), m)
@@ -306,7 +303,7 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 			if s.beforeDecision != nil {
 				s.beforeDecision(token, ev)
 			}
-			ended, before := m.TurnsEnded(), m.Published()
+			ended := m.TurnsEnded()
 			if err := m.Handle(working, ev); err != nil {
 				s.decisionFailed(token, fmt.Sprintf("%T", ev), err, "supervise: an event failed")
 			}
@@ -318,9 +315,6 @@ func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 			if _, end := ev.(supervise.StreamTurnEnd); end || m.TurnsEnded() != ended {
 				s.wakeIssue(token)
 			}
-			// A start or an end of a turn this decision wrote to the claim is an input of the idle
-			// signal of admission by signals, which no other fact carries (OnTurnEdge).
-			s.tellTurnEdges(before, m.Published())
 		}
 	}()
 }

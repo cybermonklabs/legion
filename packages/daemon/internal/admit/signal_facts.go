@@ -18,8 +18,9 @@ import (
 // fact's own transaction and before the fact's admission pass (Apply), so the pass the fact runs
 // reads what it kept, and the fact, the rows it kept and the pass commit together or not at all.
 // The fact's processed mark (intake.ApplyFactWith) makes a fact delivered twice a duplicate that
-// reaches no handler, and each row is keyed by its source's own identity as well, so a fact is
-// kept once however it arrives.
+// reaches no handler, but for a report of model requests and a turn edge, which keep none, and
+// each row is keyed by its source's own identity as well, so a fact is kept once however it
+// arrives.
 //
 //   - intake.MemoryGuardKill: the memory kill of an issue pod of the project, of a role's process or
 //     of one of no role, by the guard or by the pod's kernel, kept at the report's own moment
@@ -67,10 +68,12 @@ import (
 //     its launch generation and the request's own id, marked counted where the configured model
 //     selector takes its model (record.Store.KeepModelRequests), with no mark of a write of its
 //     own: the series-moved pass rule decides whether the report runs the pass (signalFactMoved),
-//     and the deadline is set again from it either way.
+//     and, while admission by signals is on, the deadline is set again from it either way. The
+//     fact keeps no processed mark (intake's keepsMark): the request's own key keeps it once.
 //   - intake.TurnEdge: the start or end of a turn of a claim, which the claim itself records, so
-//     nothing is kept; where the claim's issue holds a slot, the series-moved pass rule decides whether
-//     it runs the pass, as for a report. A claim of an issue that holds none moves no series.
+//     nothing is kept, nor any processed mark; where the claim's issue holds a slot, the
+//     series-moved pass rule decides whether it runs the pass, as for a report. A claim of an
+//     issue that holds none moves no series.
 //   - intake.SignalSettingChanged: a person's change of the switch or of a limit, which Apply keeps
 //     itself (keepSignalSetting) since the fact answers whether it moved the setting.
 //
@@ -117,7 +120,7 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		if err := a.store.KeepModelRequests(ctx, tx, a.project, report, a.countsTokens, a.now()); err != nil {
 			return err
 		}
-		return a.signalFactMoved(ctx, tx)
+		return a.signalFactMoved(ctx, tx, signals.Provider)
 	case intake.TurnEdge:
 		slots, err := a.store.Slots(ctx, tx)
 		if err != nil {
@@ -126,7 +129,7 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		if !slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == fact.Issue }) {
 			return nil
 		}
-		return a.signalFactMoved(ctx, tx)
+		return a.signalFactMoved(ctx, tx, signals.Idle)
 	case intake.DaemonBooted:
 		for _, input := range []string{signals.Kills, signals.Queue, signals.Provider} {
 			if err := a.store.BeginSignalInput(ctx, tx, a.project, input, a.now()); err != nil {

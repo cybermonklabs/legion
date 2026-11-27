@@ -66,10 +66,8 @@ func newSignalRig(t *testing.T, limits map[string]float64) *signalRig {
 	admission.UseModelRequests(6000, nil)
 	r.w = &workflowRuntime{pool: r.pool, records: records, admission: admission, dispatchProject: killsProject, log: quietLogger(),
 		signalDue: make(chan record.SignalDeadline, 1)}
-	r.live = admit.NewLiveSignals(admission, admit.StoreSignalSettings{}, api.ModelRequestsContract())
-	admission.UseSignals(r.live.Read)
 	r.w.signalTimer = admit.NewDeadlineTimer(r.w.signalDeadlineDue)
-	admission.UseLiveSignals(r.live, r.w.signalTimer.Arm)
+	r.live = admission.UseLiveSignals(admit.StoreSignalSettings{}, api.ModelRequestsContract(), r.w.signalTimer.Arm)
 	admission.UsePassObserver(func(view admit.PassView) {
 		r.mu.Lock()
 		defer r.mu.Unlock()

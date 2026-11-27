@@ -33,10 +33,12 @@ import (
 // The generation is the authenticated launch's: a body naming another is refused as stale.
 //
 // The batch is one fact (intake.ModelRequests) under an id that names the claim, the generation
-// and the batch's ids, each with the end it reports, so a batch sent again is a duplicate that
-// keeps nothing twice; a batch carrying an id already held keeps that id's first report, but for
-// a later end, to which the store moves the request (record.Store.KeepModelRequests): the Claude
-// Code bridge reports a request again with the end of a block of it that came after its report.
+// and the batch's ids, each with the end it reports. The fact keeps no processed mark (intake's
+// keepsMark), which would be a row for ever for each report: a batch sent again applies again
+// and keeps nothing twice, since the store keeps each request once by the claim, the generation
+// and its id; a batch carrying an id already held keeps that id's first report, but for a later
+// end, to which the store moves the request (record.Store.KeepModelRequests): the Claude Code
+// bridge reports a request again with the end of a block of it that came after its report.
 func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 	var req claim.ModelRequestsRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireGeneration(w, r, req.Generation) {
@@ -69,8 +71,8 @@ func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 		s.writeRefusal(w, r, result.Refusal)
 		return
 	}
-	// A duplicate batch is one an earlier fact kept the same way, and a request it kept the store
-	// deletes only once it ended before the hour a read reaches, so every id is answered kept.
+	// A batch sent again keeps what an earlier fact kept the same way, and a request it kept the
+	// store deletes only once it ended before the hour a read reaches, so every id is answered kept.
 	s.writeAnswer(w, r, AnswerModelRequests, http.StatusOK, claim.ModelRequestsResponse{Kept: ids})
 }
 
@@ -161,8 +163,9 @@ func modelRequestsProblem(requests []claim.ModelRequest) string {
 
 // modelRequestsFactID names a batch's fact: the claim, the launch generation and a digest of the
 // batch's ids, each with the instant it reports the request ended, in order of the ids, so the
-// same batch sent again is the fact already applied, and a batch of other ids, or one that reports
-// a later end of a request already held, is a fact of its own.
+// same batch sent again names the same fact, and a batch of other ids, or one that reports a later
+// end of a request already held, a fact of its own. The fact keeps no processed mark under it
+// (intake's keepsMark): the store keeps each request once by its own key.
 func modelRequestsFactID(token claim.Token, generation uint64, requests []claim.ModelRequest) string {
 	keys := make([]string, len(requests))
 	for i, request := range requests {

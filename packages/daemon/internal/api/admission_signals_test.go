@@ -61,9 +61,7 @@ func newSignalsHarness(t *testing.T, first ...intake.Handler) *signalsHarness {
 	engine := workflow.New(records, workflow.Config{Project: testDispatchProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quiet)
 	h.admission = admit.New(records, engine, 2, testDispatchProject, quiet)
 	h.admission.UseClock(clock)
-	h.live = admit.NewLiveSignals(h.admission, admit.StoreSignalSettings{}, ModelRequestsContract())
-	h.admission.UseSignals(h.live.Read)
-	h.admission.UseLiveSignals(h.live, func(record.SignalDeadline) {})
+	h.live = h.admission.UseLiveSignals(admit.StoreSignalSettings{}, ModelRequestsContract(), func(record.SignalDeadline) {})
 	h.handlers = admit.Handlers(records, testDispatchProject, engine, h.admission)
 	handlers := append(slices.Clone(first), h.handlers...)
 	h.handler = NewServer("127.0.0.1", 8437, Options{

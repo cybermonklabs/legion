@@ -158,13 +158,15 @@ type Admission struct {
 	p0Configured *int
 
 	// signalRead is the signals a pass admits below P0 by (UseSignals, gateFor), read through the
-	// pass's own transaction: nil in the daemon until a person turns admission by signals on, when
-	// every pass admits under the cap.
+	// pass's own transaction: in the daemon the live signals' reader, which every boot registers
+	// (UseLiveSignals) and which answers whether a person turned admission by signals on, and in a
+	// replay the replay's own. Where it is nil, in an admission that registers none, every pass
+	// admits under the cap.
 	signalRead func(ctx context.Context, tx pgx.Tx, at time.Time) (signals.Snapshot, bool, error)
 
 	// live is the daemon's live signals and armDeadline the arming of the project's one deadline
 	// once a fact that changed it commits (UseLiveSignals): nil in a replay and in a test that
-	// registers neither, where a pass keeps no marks and no deadline, and every firing of a
+	// registers no live signals, where a pass keeps no marks and no deadline, and every firing of a
 	// deadline runs its pass.
 	live        *LiveSignals
 	armDeadline func(record.SignalDeadline)

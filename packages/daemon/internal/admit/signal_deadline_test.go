@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/signals"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // committedDeadline is the deadline the store holds of acmeProject.
@@ -365,4 +368,139 @@ func TestSignalReportPredicate(t *testing.T) {
 			t.Errorf("after the report's pass: %s, want the root started", got)
 		}
 	})
+}
+
+// readsCounted is the admission's store, counting its reads of the provider's minutes and of the
+// approvals: a reading of every live series makes each once (LiveSignals.Reading), and a read of
+// the idle share alone makes neither.
+type readsCounted struct {
+	record.Store
+	mu                 sync.Mutex
+	minutes, approvals int
+}
+
+func (s *readsCounted) ProviderMinutes(ctx context.Context, tx pgx.Tx, project string, from, to time.Time, reporting int) (record.ProviderMinutes, error) {
+	s.mu.Lock()
+	s.minutes++
+	s.mu.Unlock()
+	return s.Store.ProviderMinutes(ctx, tx, project, from, to, reporting)
+}
+
+func (s *readsCounted) ApprovalsOf(ctx context.Context, tx pgx.Tx, project string) (record.Approvals, error) {
+	s.mu.Lock()
+	s.approvals++
+	s.mu.Unlock()
+	return s.Store.ApprovalsOf(ctx, tx, project)
+}
+
+// reads is how many of each read the store counted since the last call, which counts from zero
+// again.
+func (s *readsCounted) reads() (minutes, approvals int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	minutes, approvals = s.minutes, s.approvals
+	s.minutes, s.approvals = 0, 0
+	return minutes, approvals
+}
+
+// processedMarks is how many facts processed_events holds marked.
+func processedMarks(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var marks int
+	if err := pool.QueryRow(context.Background(), `select count(*) from processed_events`).Scan(&marks); err != nil {
+		t.Fatalf("count the processed marks: %v", err)
+	}
+	return marks
+}
+
+// newestIdleValue is the idle share's newest value entry in acmeProject's record of changes, nil
+// for none or for one the daemon could not compute.
+func newestIdleValue(t *testing.T, pool *pgxpool.Pool) *float64 {
+	t.Helper()
+	var value *float64
+	inTx(t, pool, func(tx pgx.Tx) {
+		newest, err := store.NewestSeriesEntriesTx(context.Background(), tx, acmeProject)
+		if err != nil {
+			t.Fatalf("read the newest entries: %v", err)
+		}
+		if entry := newest[signals.Idle].Value; entry != nil {
+			value = entry.Value
+		}
+	})
+	return value
+}
+
+// A report of model requests and a turn edge keep no processed mark (intake's keepsMark), so
+// neither adds a row to processed_events, which nothing prunes, and one applied again under the
+// same id applies again and keeps nothing twice. While admission by signals is off, a report
+// reads no series of the live signals, and a turn edge the idle share alone, the one series it
+// moves (signalFactMoved): a turn's start that moves that share by its step runs the pass, which
+// writes its value entry as every pass does while the rule is off, and the same edge told again
+// moves nothing and runs none. With the rule on, a report reads every series, as it always did.
+func TestASignalFactKeepsNoMarkAndReadsOnlyWhatItCanMove(t *testing.T) {
+	pool := migratedPool(t)
+	ctx := context.Background()
+	const holder = "ACME-350"
+	lt := newLiveTest(t, 2, nil, SignalSwitch{})
+	counted := &readsCounted{Store: lt.admission.store}
+	lt.admission.store = counted
+	lt.boot(t, pool, fixedNow.Add(-7*time.Hour), "acme-owner@example.invalid")
+	holderAt(t, pool, holder, clockAt(10, 0, 0), clockAt(10, 30, 0), false)
+	lt.resume(t, pool, "resume")
+	if got := newestIdleValue(t, pool); got == nil || *got != 1 {
+		t.Fatalf("after the resume's pass the idle share's newest value is %v, want 1: its one holder is idle since 10:30", got)
+	}
+	marks, passes := processedMarks(t, pool), lt.passCount()
+
+	// The holder's turn starts, which moves the idle share from 1 to 0.
+	lt.at(clockAt(12, 0, 20))
+	token := acmeToken(t, holder, claim.RoleImplementer)
+	if err := claimStore(t, pool).PutClaim(ctx, supervise.Claim{Token: token, Project: acmeProjectToken(t), Tree: holder, Issue: holder,
+		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, State: supervise.StateWorking, Session: "ses_implementer_" + holder,
+		LastTurnStart: clockAt(12, 0, 10), LastTurnEnd: clockAt(10, 30, 0)}); err != nil {
+		t.Fatalf("record the holder's turn: %v", err)
+	}
+	edge := intake.TurnEdge{Claim: token, Issue: holder, Start: true, At: clockAt(12, 0, 10)}
+	applyThrough(t, pool, lt.admission, "supervise", "turn-start", edge)
+	if got := lt.passCount(); got != passes+1 {
+		t.Errorf("the turn's start ran %d passes, want 1: it moved the idle share by its step", got-passes)
+	}
+	if got := newestIdleValue(t, pool); got == nil || *got != 0 {
+		t.Errorf("after the turn's start the idle share's newest value is %v, want 0, written by the pass it ran", got)
+	}
+	counted.reads()
+
+	applyThrough(t, pool, lt.admission, "supervise", "turn-start", edge)
+	if minutes, approvals := counted.reads(); minutes != 0 || approvals != 0 {
+		t.Errorf("the turn edge told again read the provider's minutes %d times and the approvals %d, want neither: the rule is off, and the edge moves the idle share alone",
+			minutes, approvals)
+	}
+	lt.request(t, pool, "r1", clockAt(12, 0, 15), 7000)
+	lt.request(t, pool, "r1", clockAt(12, 0, 15), 7000)
+	if minutes, approvals := counted.reads(); minutes != 0 || approvals != 0 {
+		t.Errorf("the reports read the provider's minutes %d times and the approvals %d, want neither: the rule is off, and a report moves the headroom alone",
+			minutes, approvals)
+	}
+	if got := lt.passCount(); got != passes+1 {
+		t.Errorf("the edge told again and the reports ran %d passes, want none", got-passes-1)
+	}
+	var kept int
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := tx.QueryRow(ctx, `select count(*) from model_requests where project = $1 and id = 'r1'`, acmeProject).Scan(&kept); err != nil {
+			t.Fatalf("count the requests kept: %v", err)
+		}
+	})
+	if kept != 1 {
+		t.Errorf("the report sent twice kept r1 %d times, want once", kept)
+	}
+
+	// With the rule on, a report reads every series.
+	lt.settings.set(on(nil))
+	lt.request(t, pool, "r2", clockAt(12, 0, 16), 10)
+	if minutes, approvals := counted.reads(); minutes == 0 || approvals == 0 {
+		t.Errorf("with the rule on the report read the provider's minutes %d times and the approvals %d, want every series read", minutes, approvals)
+	}
+	if got := processedMarks(t, pool); got != marks {
+		t.Errorf("the turn edges and the reports left processed_events holding %d marks, want %d, the marks before them", got, marks)
+	}
 }

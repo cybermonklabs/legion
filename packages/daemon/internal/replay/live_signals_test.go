@@ -144,9 +144,7 @@ func newLiveDaemon(t *testing.T) *liveDaemon {
 	d.admission = admit.New(record.NewStore(), d.engine, 4, builtProject, quiet)
 	d.admission.UseClock(func() time.Time { return d.now })
 	d.admission.UseModelRequests(6000, nil)
-	d.live = admit.NewLiveSignals(d.admission, liveReplaySettings{}, 0)
-	d.admission.UseSignals(d.live.Read)
-	d.admission.UseLiveSignals(d.live, func(record.SignalDeadline) {})
+	d.live = d.admission.UseLiveSignals(liveReplaySettings{}, 0, func(record.SignalDeadline) {})
 	return d
 }
 

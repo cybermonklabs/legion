@@ -74,9 +74,7 @@ func newLiveTest(t *testing.T, cap int, priorities map[string]record.Priority, s
 	lt.admission = ruledAdmission(t, cap, record.MainRule, slog.New(slog.NewJSONHandler(lt.logged, nil)))
 	lt.admission.store = prioritized{Store: lt.admission.store, of: priorities}
 	lt.admission.UseModelRequests(6000, nil)
-	lt.live = NewLiveSignals(lt.admission, lt.settings, 0)
-	lt.admission.UseSignals(lt.live.Read)
-	lt.admission.UseLiveSignals(lt.live, func(deadline record.SignalDeadline) {
+	lt.live = lt.admission.UseLiveSignals(lt.settings, 0, func(deadline record.SignalDeadline) {
 		lt.mu.Lock()
 		defer lt.mu.Unlock()
 		lt.armed = append(lt.armed, deadline)

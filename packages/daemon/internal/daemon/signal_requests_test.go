@@ -251,11 +251,16 @@ func (r *requestsRig) minutes(from, to time.Time) record.ProviderMinutes {
 }
 
 // provider is the provider's headroom at at as admission's live signals read it (admit.LiveSignals,
-// registered as the daemon registers it, its hosts reporting their requests from the
-// admission-signals contract on), admission by signals on with limits.
+// registered as the daemon registers them, its hosts reporting their requests from the
+// admission-signals contract on), admission by signals on with limits. The live signals are an
+// admission's of their own over the rig's store, so the rig's own admission, which the reports
+// apply through, reads no signal.
 func (r *requestsRig) provider(at time.Time, limits map[string]float64) admit.SeriesReading {
 	r.t.Helper()
-	live := admit.NewLiveSignals(r.admission, signalSettings(limits), api.ModelRequestsContract())
+	engine := workflow.New(r.records, workflow.Config{Project: requestsProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	reader := admit.New(r.records, engine, 1, requestsProject, quietLogger())
+	reader.UseClock(func() time.Time { return r.now })
+	live := reader.UseLiveSignals(signalSettings(limits), api.ModelRequestsContract(), nil)
 	var reading admit.LiveReading
 	if err := store.TransactWith(r.ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error

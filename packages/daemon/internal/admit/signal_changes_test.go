@@ -438,9 +438,7 @@ func storeSettingsTest(t *testing.T, logged *testlog.Buffer) *liveTest {
 	lt := newLiveTest(t, 3, nil, SignalSwitch{})
 	lt.logged = logged
 	lt.admission.log = slog.New(slog.NewJSONHandler(logged, nil))
-	lt.live = NewLiveSignals(lt.admission, StoreSignalSettings{}, 0)
-	lt.admission.UseSignals(lt.live.Read)
-	lt.admission.UseLiveSignals(lt.live, func(record.SignalDeadline) {})
+	lt.live = lt.admission.UseLiveSignals(StoreSignalSettings{}, 0, func(record.SignalDeadline) {})
 	return lt
 }
 

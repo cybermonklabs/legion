@@ -120,7 +120,8 @@ func (r LiveReading) Deadline() (signals.Crossing, bool) {
 // (signals.QueueAt), the provider's minutes of the model requests the hosts report
 // (signals.ProviderAt), the kills of the project's issue pods (signals.KillsAt) and the asks that
 // wait on the project's default assignee (record.Approvals, by signals.ApprovalState's rule). Each
-// read runs in the transaction given, so a pass reads what its own fact kept.
+// read runs in the transaction given, so a pass reads what its own fact kept. The admission that
+// reads them builds them (Admission.UseLiveSignals).
 type LiveSignals struct {
 	admission *Admission
 	settings  SignalSettings
@@ -129,16 +130,11 @@ type LiveSignals struct {
 	reporting int
 }
 
-// NewLiveSignals is the live signals of admission's project, its switch and limits read from
-// settings, and reporting the first plugin contract whose host reports its model requests.
-func NewLiveSignals(admission *Admission, settings SignalSettings, reporting int) *LiveSignals {
-	return &LiveSignals{admission: admission, settings: settings, reporting: reporting}
-}
-
-// Read is the reader the daemon registers as the pass's gate (Admission.UseSignals): the snapshot
-// of the five series at at, and whether admission by signals is on. The pass keeps the reading it
-// answered (keepPassReading), each series with the reason it cannot be computed, which the
-// snapshot does not carry, so the record of changes the pass writes is of its own reading.
+// Read is the reader UseLiveSignals registers as the pass's gate (Admission.UseSignals): the
+// snapshot of the five series at at, and whether admission by signals is on. The pass keeps the
+// reading it answered (keepPassReading), each series with the reason it cannot be computed,
+// which the snapshot does not carry, so the record of changes the pass writes is of its own
+// reading.
 func (l *LiveSignals) Read(ctx context.Context, tx pgx.Tx, at time.Time) (signals.Snapshot, bool, error) {
 	reading, err := l.Reading(ctx, tx, at)
 	if err != nil {
@@ -169,14 +165,32 @@ func (l *LiveSignals) Reading(ctx context.Context, tx pgx.Tx, at time.Time) (Liv
 // reads), and the store's settings its switch and limits were read from (SignalSwitch), which the
 // state shows beside them.
 func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at, from time.Time) (LiveReading, record.ProviderMinutes, store.SignalSettings, error) {
+	settings, err := l.signalSwitch(ctx, tx)
+	if err != nil {
+		return LiveReading{}, record.ProviderMinutes{}, store.SignalSettings{}, err
+	}
+	reading, minutes, err := l.readUnder(ctx, tx, settings, at, from)
+	if err != nil {
+		return LiveReading{}, record.ProviderMinutes{}, store.SignalSettings{}, err
+	}
+	return reading, minutes, settings.stored, nil
+}
+
+// signalSwitch is the project's switch and limits of admission by signals, through tx.
+func (l *LiveSignals) signalSwitch(ctx context.Context, tx pgx.Tx) (SignalSwitch, error) {
+	settings, err := l.settings.SignalSwitch(ctx, tx, l.admission.project)
+	if err != nil {
+		return SignalSwitch{}, fmt.Errorf("read the settings of admission by signals: %w", err)
+	}
+	return settings, nil
+}
+
+// readUnder is read under settings, the switch and limits already read through tx.
+func (l *LiveSignals) readUnder(ctx context.Context, tx pgx.Tx, settings SignalSwitch, at, from time.Time) (LiveReading, record.ProviderMinutes, error) {
 	a := l.admission
 	var minutes record.ProviderMinutes
-	settings, err := l.settings.SignalSwitch(ctx, tx, a.project)
-	if err != nil {
-		return LiveReading{}, minutes, store.SignalSettings{}, fmt.Errorf("read the settings of admission by signals: %w", err)
-	}
-	fail := func(err error) (LiveReading, record.ProviderMinutes, store.SignalSettings, error) {
-		return LiveReading{}, minutes, store.SignalSettings{}, err
+	fail := func(err error) (LiveReading, record.ProviderMinutes, error) {
+		return LiveReading{}, minutes, err
 	}
 	reading := LiveReading{At: at, On: settings.On}
 	limit := func(name string) *float64 {
@@ -192,13 +206,9 @@ func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at, from time.Time) (
 		reading.Series = append(reading.Series, series)
 	}
 
-	holders, idleSince, err := a.idleHolders(ctx, tx, at)
+	idle, err := l.idle(ctx, tx, at, limit(signals.Idle))
 	if err != nil {
 		return fail(err)
-	}
-	idle := SeriesReading{Name: signals.Idle, Value: signals.IdleAt(signals.Coverage{}, holders, idleSince, at, signals.DefaultIdleAfter)}
-	if bound := limit(signals.Idle); bound != nil {
-		idle.Next, idle.Due = signals.IdleNext(signals.Coverage{}, holders, idleSince, at, signals.DefaultIdleAfter, *bound)
 	}
 	add(idle)
 
@@ -225,7 +235,21 @@ func (l *LiveSignals) read(ctx context.Context, tx pgx.Tx, at, from time.Time) (
 		return fail(err)
 	}
 	add(SeriesReading{Name: signals.Approvals, Value: approvals.Value(), Absent: approvals.Unrecorded})
-	return reading, minutes, settings.stored, nil
+	return reading, minutes, nil
+}
+
+// idle is the idle share of the slots at at (signals.IdleAt), over the holders and their states
+// (idleHolders), and its next crossing of limit where it has one (signals.IdleNext).
+func (l *LiveSignals) idle(ctx context.Context, tx pgx.Tx, at time.Time, limit *float64) (SeriesReading, error) {
+	holders, idleSince, err := l.admission.idleHolders(ctx, tx, at)
+	if err != nil {
+		return SeriesReading{}, err
+	}
+	idle := SeriesReading{Name: signals.Idle, Value: signals.IdleAt(signals.Coverage{}, holders, idleSince, at, signals.DefaultIdleAfter)}
+	if limit != nil {
+		idle.Next, idle.Due = signals.IdleNext(signals.Coverage{}, holders, idleSince, at, signals.DefaultIdleAfter, *limit)
+	}
+	return idle, nil
 }
 
 // spanCoverage is the coverage of a series counted over span whose input the daemon began keeping

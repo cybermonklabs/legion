@@ -11,32 +11,41 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/signals"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The project's one deadline of admission by signals (S5): from the inputs each fact committed,
 // the moment the earliest series with a limit would next cross it with no new event
-// (LiveReading.Deadline). It is computed again at each pass and at each report of model requests
-// and turn edge, written in that fact's transaction under a fence that rises at each change
-// (nextDeadline), and armed once the fact commits (UseLiveSignals' arm, DeadlineTimer). Its firing
-// is intake.SignalDeadline, carrying the fence, which runs one pass of a deadline where it is
-// still the committed deadline and due (deadlineFires), and that pass computes the deadline again.
-// Nothing fires on a period, and a fact rolled back neither writes nor arms anything.
+// (LiveReading.Deadline). It is computed again at each pass and, while admission by signals is
+// on, at each report of model requests and turn edge (signalFactMoved), written in that fact's
+// transaction under a fence that rises at each change (nextDeadline), and armed once the fact
+// commits (UseLiveSignals' arm, DeadlineTimer). Its firing is intake.SignalDeadline, carrying the
+// fence, which runs one pass of a deadline where it is still the committed deadline and due
+// (deadlineFires), and that pass computes the deadline again. Nothing fires on a period, and a
+// fact rolled back neither writes nor arms anything.
 
 // SignalHeldStartLine is the line of each start a signal held at a pass (S4), once its fact
 // commits: the issue, the signal and part (store.SignalPart), its value and its limit.
 const SignalHeldStartLine = "admission: a signal held a start"
 
-// UseLiveSignals registers live, the daemon's live signals whose reader is the pass's gate
-// (UseSignals), for what admission keeps beside each pass: the record of changes of what the pass
-// computed of each series (writeSignalChanges), whose newest entries the series-moved pass rule for a
-// report of model requests and a turn edge reads (signalsMoved), and the project's one deadline,
-// which each pass computes again (commitDeadline) and hands to arm once the fact that changed it
-// commits. A firing of the deadline (intake.SignalDeadline) runs a pass only where it is still the
-// committed deadline and due. It is a setter rather than a parameter of New for the reason
-// UseExperiments is.
-func (a *Admission) UseLiveSignals(live *LiveSignals, arm func(record.SignalDeadline)) {
+// UseLiveSignals builds the daemon's live signals of admission's project, their switch and limits
+// read from settings and reporting the first plugin contract whose host reports its model
+// requests, and registers them in one call: their reader as the pass's gate (UseSignals), and
+// them for what admission keeps beside each pass: the record of changes of what the pass
+// computed of each series (writeSignalChanges), whose newest entries the series-moved pass rule
+// for a report of model requests and a turn edge reads (signalsMoved), and the project's one
+// deadline, which each pass computes again (commitDeadline) and hands to arm once the fact that
+// changed it commits. A firing of the deadline (intake.SignalDeadline) runs a pass only where it
+// is still the committed deadline and due. It answers the live signals, which the state reads
+// (LiveSignals.State). Registering both at once is what keeps a pass from keeping the live
+// signals of a reading its gate never read (afterSignalPass). It is a setter rather than a
+// parameter of New for the reason UseExperiments is.
+func (a *Admission) UseLiveSignals(settings SignalSettings, reporting int, arm func(record.SignalDeadline)) *LiveSignals {
+	live := &LiveSignals{admission: a, settings: settings, reporting: reporting}
+	a.UseSignals(live.Read)
 	a.live, a.armDeadline = live, arm
+	return live
 }
 
 // nextDeadline is the deadline committed after a fact whose pass computed due (set false for none)
@@ -110,19 +119,46 @@ func (a *Admission) commitDeadline(ctx context.Context, tx pgx.Tx, reading LiveR
 	return nil
 }
 
-// signalFactMoved is the series-moved pass rule for a fact that keeps an input of a signal with no mark
-// of its own (a report of model requests, a turn edge): it reads the live signals at the
-// admission's clock, sets the deadline again from them, and keeps the mark that runs the pass
-// (record.NoteSignalsMoved) only where they moved against the last committed pass, the record's
-// newest entries of each series (signalsMoved). A pass it runs computes the deadline again itself.
-// Where admission keeps no live signals, it keeps nothing.
-func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx) error {
+// signalFactMoved is the series-moved pass rule for a fact that keeps an input of a signal with no
+// mark of its own (a report of model requests, a turn edge), input being the series it moves
+// (signals.Provider, signals.Idle). While admission by signals is on, it reads the live signals
+// at the admission's clock, sets the deadline again from them, and keeps the mark that runs the
+// pass (record.NoteSignalsMoved) only where they moved against the last committed pass, the
+// record's newest entries of each series (signalsMoved). A pass it runs computes the deadline
+// again itself. Where admission keeps no live signals, it keeps nothing.
+//
+// While admission by signals is off, it reads the switch and no more than the one series the
+// fact moves, and sets no deadline: every hold is then 0, and no deadline is due
+// (LiveReading.Deadline), so the committed one is none from the pass of the fact that turned the
+// rule off on. A report moves only the provider's headroom, whose value entry a pass writes only
+// where it moves a slot or the hold changes, so it moves nothing the record keeps and reads no
+// series. A turn edge moves the idle share, whose value entry a pass writes while the rule is off
+// too (passChanges), so it reads the idle share alone and runs the pass where that moved. A series
+// that moved since the last pass by the clock alone is left to the next pass, as no entry is
+// written because a clock reached a time.
+func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx, input string) error {
 	if a.live == nil {
 		return nil
 	}
-	reading, err := a.live.Reading(ctx, tx, a.now())
+	settings, err := a.live.signalSwitch(ctx, tx)
 	if err != nil {
-		return fmt.Errorf("read the signals at a report: %w", err)
+		return err
+	}
+	at := a.now()
+	var reading LiveReading
+	switch {
+	case settings.On:
+		if reading, _, err = a.live.readUnder(ctx, tx, settings, at, signals.MinuteBefore(at)); err != nil {
+			return fmt.Errorf("read the signals at a fact that moves the %s series: %w", input, err)
+		}
+	case input == signals.Idle:
+		idle, err := a.live.idle(ctx, tx, at, nil)
+		if err != nil {
+			return fmt.Errorf("read the idle share at a turn edge: %w", err)
+		}
+		reading = LiveReading{At: at, Series: []SeriesReading{idle}}
+	default:
+		return nil
 	}
 	newest, err := store.NewestSeriesEntriesTx(ctx, tx, a.project)
 	if err != nil {
@@ -130,6 +166,9 @@ func (a *Admission) signalFactMoved(ctx context.Context, tx pgx.Tx) error {
 	}
 	if signalsMoved(reading, newest) {
 		record.NoteSignalsMoved(ctx)
+		return nil
+	}
+	if !settings.On {
 		return nil
 	}
 	return a.commitDeadline(ctx, tx, reading)
@@ -147,7 +186,7 @@ func (a *Admission) afterSignalPass(ctx context.Context, tx pgx.Tx, gate passGat
 	}
 	read, ok := passReadingOf(ctx)
 	if !ok {
-		return fmt.Errorf("the %s pass keeps the live signals, and its gate read none of them: register the live signals' Read as its reader (UseSignals)", gate.kind)
+		return fmt.Errorf("the %s pass keeps the live signals, and its gate read none of them: a reader registered after them (UseSignals) replaced theirs (UseLiveSignals)", gate.kind)
 	}
 	if err := a.writeSignalChanges(ctx, tx, read, len(moves.given) > 0 || len(moves.taken) > 0); err != nil {
 		return err

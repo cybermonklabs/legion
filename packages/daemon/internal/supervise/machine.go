@@ -1606,6 +1606,12 @@ type Machine struct {
 	log            *slog.Logger
 	claim          Claim
 	onDurableState func(Claim, ClaimState)
+	// onTurnEdge is told each start and each end of a turn a decision writes to the claim
+	// (OnTurnEdge), and toldStart and toldEnd are the claim's last turn start and end as the
+	// machine last took them to tell (untoldTurnEdges), at first as it was built with them: a
+	// published claim whose edge differs from the one taken carries an edge not told yet.
+	onTurnEdge         func(Claim, bool, time.Time)
+	toldStart, toldEnd time.Time
 
 	timers map[TimerKind]armed
 	seq    uint64
@@ -2174,6 +2180,8 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		registeredPods: bootRegisteredPods(c),
 		timers:         map[TimerKind]armed{},
 		stale:          map[string]bool{},
+		toldStart:      c.LastTurnStart,
+		toldEnd:        c.LastTurnEnd,
 	}
 	m.idle = sync.NewCond(&m.mu)
 	switch c.State {
@@ -2966,25 +2974,78 @@ func (m *Machine) stoppingProcess() func() {
 // load of a process the decision left registered, or ends the load of one it left no longer
 // booting, which gives its issue pod's start to the next role (endPodLoad), tells the daemon of a
 // wait for the wake pacing that began or ended in the decision (tellWakeQueue), publishes the
-// claim, says the machine decides nothing, then releases mu.
+// claim and takes each edge of a turn that publication carries and no earlier one did
+// (untoldTurnEdges), says the machine decides nothing, releases mu, and then tells those edges
+// (OnTurnEdge), outside the lock.
 //
-// Every decision of a machine ends here, which is what makes it the place those five are kept:
-// every locked section that can change the wake, the credit, the intent or the claim's process
-// ends in unlock, and a section that takes mu without it reads the claim or counts goroutines and
-// changes none of them. The sections that defer it are Handle, which every event and every timer
-// of this package comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold),
-// PublishUpdateAsk, StartedBy, ReadProcess, Retree and the refresh gate's reclaimCredit; the
-// sections that take mu without it are Claim, OnDurableState, Wait, compaction and the two
-// goroutine tails in delivery.go and secrets.go. It is that rule a section added later has to
-// keep, rather than this list of the sections there are now.
+// Every decision of a machine ends here, which is what makes it the place those six are kept:
+// every locked section that can change the wake, the credit, the intent, the claim's process or
+// its turn's start or end ends in unlock, and a section that takes mu without it reads the claim
+// or counts goroutines and changes none of them. The sections that defer it are Handle, which
+// every event and every timer of this package comes through, ReleaseUncertainLaunch, markRound
+// (PodUpdateTold), PublishUpdateAsk, StartedBy, ReadProcess, Retree and the refresh gate's
+// reclaimCredit; the sections that take mu without it are Claim, OnDurableState, OnTurnEdge,
+// Wait, compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a
+// section added later has to keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.endPodPark()
 	m.endPodLoad()
 	m.tellWakeQueue()
 	m.publish()
+	edges := m.untoldTurnEdges()
 	m.decide(nil)
 	m.mu.Unlock()
+	edges.tell()
+}
+
+// OnTurnEdge installs the daemon callback for each start and each end of a turn a decision writes
+// to the claim (Claim.LastTurnStart, Claim.LastTurnEnd), whoever asked for the decision: an event
+// the daemon's feed hands Handle, a request its outbox or a route hands Handle directly, a timer,
+// a send's outcome. Each edge is told once, with the claim as the decision published it, after
+// the decision that wrote it has released the machine's lock (unlock), so the store holds the
+// edge where the decision's write landed, and the callback may read any machine and apply a
+// fact; a start is told before an end the same decision wrote. An edge the machine was built
+// with, an earlier daemon's, is never told, nor is one written before a callback was installed.
+// A machine keeps one callback.
+func (m *Machine) OnTurnEdge(callback func(Claim, bool, time.Time)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onTurnEdge = callback
+}
+
+// turnEdges is the edges of a turn one publication of the claim carries that no earlier one did
+// (untoldTurnEdges): the claim as published, whether its start and its end are untold, and the
+// callback they are told to, nil for none.
+type turnEdges struct {
+	callback   func(Claim, bool, time.Time)
+	claim      *Claim
+	start, end bool
+}
+
+// untoldTurnEdges takes each edge of a turn the claim just published carries that differs from
+// the one taken last (toldStart, toldEnd), and marks it taken, whether or not a callback is
+// installed to tell it to. The caller holds mu.
+func (m *Machine) untoldTurnEdges() turnEdges {
+	c := &m.view.Load().Claim
+	edges := turnEdges{callback: m.onTurnEdge, claim: c,
+		start: !c.LastTurnStart.IsZero() && !c.LastTurnStart.Equal(m.toldStart),
+		end:   !c.LastTurnEnd.IsZero() && !c.LastTurnEnd.Equal(m.toldEnd)}
+	m.toldStart, m.toldEnd = c.LastTurnStart, c.LastTurnEnd
+	return edges
+}
+
+// tell tells the callback each edge of e, the start first.
+func (e turnEdges) tell() {
+	if e.callback == nil {
+		return
+	}
+	if e.start {
+		e.callback(*e.claim, true, e.claim.LastTurnStart)
+	}
+	if e.end {
+		e.callback(*e.claim, false, e.claim.LastTurnEnd)
+	}
 }
 
 // OnDurableState installs the daemon callback for the durable transitions it acts on: ready,

@@ -278,9 +278,8 @@ func (s *Postgres) DefaultAssigneeSeq(ctx context.Context, tx pgx.Tx, project st
 
 // ApprovalsOf is the approvals signal's input of project as the store holds it: not recorded, with
 // the reason, where the boot's read of Dispatch failed (SetSignalInputReadError) or no default
-// assignee of the project is known (NoDefaultAssignee); else each open ask kept that waits on a
-// person (signals.Ask.Waits) who is the project's default assignee (signals.WaitsOnDefault), the
-// rule signals.ApprovalState counts by.
+// assignee of the project is known (NoDefaultAssignee); else each open ask kept that the approvals
+// signal counts, by the replay's own rule (signals.Ask.WaitsOnDefaultOf, signals.ApprovalState).
 func (s *Postgres) ApprovalsOf(ctx context.Context, tx pgx.Tx, project string) (Approvals, error) {
 	_, _, readError, err := s.SignalInputStatus(ctx, tx, project, signals.Approvals)
 	if err != nil {
@@ -309,7 +308,7 @@ func (s *Postgres) ApprovalsOf(ctx context.Context, tx pgx.Tx, project string) (
 	var ask signals.Ask
 	var assignee string
 	if _, err := pgx.ForEachRow(rows, []any{&ask.ID, &ask.Issue, &ask.Open, &ask.Human, &ask.AskedOf, &assignee}, func() error {
-		if ask.Waits() && signals.WaitsOnDefault(ask.AskedOf, assignee, defaultAssignee) {
+		if ask.WaitsOnDefaultOf(assignee, defaultAssignee) {
 			approvals.Waiting = append(approvals.Waiting, ask.ID)
 		}
 		return nil

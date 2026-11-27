@@ -774,3 +774,70 @@ func TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue(t *testing.T) {
 		t.Fatalf("adoptions = %+v, want one more, for the tester's App", made)
 	}
 }
+
+// turnEdgeTold is one edge of a turn the supervisor told its turn-edge callback (OnTurnEdge).
+type turnEdgeTold struct {
+	claim claim.Token
+	start bool
+	at    time.Time
+}
+
+// A turn's start that a decision outside the claim's feed writes is told to the turn-edge callback
+// once (supervisor.OnTurnEdge), and the next event of the feed tells no second one. The outbox's
+// delivery hands the machine its task through Machine.Handle directly (outbox.supervise), and the
+// agent, in a turn of its own, answers the prompt busy, so the send's outcome records the claim
+// working for that turn (supervise's sendPending, recordBusyTurn), on the send's own goroutine.
+// A supervisor that told only the edges of its feed's own decisions, comparing the claim before
+// and after each, read that start in the claim before the next event and told no edge at all.
+func TestATurnStartADecisionOutsideTheFeedWritesIsToldOnce(t *testing.T) {
+	t.Parallel()
+	rig := newIssueRig(t)
+	var mu sync.Mutex
+	var told []turnEdgeTold
+	rig.sup.OnTurnEdge(func(c supervise.Claim, start bool, at time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		told = append(told, turnEdgeTold{claim: c.Token, start: start, at: at})
+	})
+	edges := func() []turnEdgeTold {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(told)
+	}
+	conn := fake.NewConn()
+	implementer, m := rig.ready(claim.RoleImplementer, conn)
+	if got := edges(); len(got) != 0 {
+		t.Fatalf("the ready claim was told the edges %+v, want none: no turn has started", got)
+	}
+
+	conn.SetStreaming(true)
+	conn.RefusePrompt(keptBusyRefusal)
+	if err := m.Handle(rig.ctx, supervise.RequestDeliver{Claim: implementer, Task: "implement the plan", ID: "outbox:1",
+		Phase: phase.Implementing, Generation: 1}); err != nil {
+		t.Fatalf("deliver the implementer's task: %v", err)
+	}
+	m.Wait()
+	held := m.Claim()
+	if held.State != supervise.StateWorking || held.LastTurnStart.IsZero() {
+		t.Fatalf("the implementer is %s with its last turn start %v after its busy answer, want it recorded working from a start", held.State, held.LastTurnStart)
+	}
+	want := []turnEdgeTold{{claim: implementer, start: true, at: held.LastTurnStart}}
+	sameEdges := func(got []turnEdgeTold) bool {
+		return slices.EqualFunc(got, want, func(a, b turnEdgeTold) bool {
+			return a.claim == b.claim && a.start == b.start && a.at.Equal(b.at)
+		})
+	}
+	if got := edges(); !sameEdges(got) {
+		t.Fatalf("the busy answer's turn start was told as %+v, want once, %+v", got, want)
+	}
+
+	// The next event of the feed, a sweep that finds the agent still streaming, writes no edge,
+	// and its decision tells none.
+	rig.sup.post(implementer, aliveObservation(m))
+	decided := make(chan struct{})
+	rig.sup.drained(implementer, decided)
+	testwait.Receive(t, "the feed's decision of the sweep", decided)
+	if got := edges(); !sameEdges(got) {
+		t.Fatalf("after the feed's next event the edges told are %+v, want only the one start, %+v", got, want)
+	}
+}

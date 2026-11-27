@@ -867,12 +867,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// operator's or the controller's route is in force from its own fact's pass
 	// (admit.StoreSignalSettings). Beside each pass admission keeps the record of changes of what it
 	// computed of each series and the project's one deadline, which this runtime's timer fires
-	// (runSignalDeadline). The state reads the same live signals at each read (signals.State).
-	w.signals = admit.NewLiveSignals(w.admission, admit.StoreSignalSettings{}, api.ModelRequestsContract())
-	w.admission.UseSignals(w.signals.Read)
+	// (runSignalDeadline). One call builds the live signals and registers both (UseLiveSignals).
+	// The state reads the same live signals at each read (signals.State).
 	w.signalDue = make(chan record.SignalDeadline, 1)
 	w.signalTimer = admit.NewDeadlineTimer(w.signalDeadlineDue)
-	w.admission.UseLiveSignals(w.signals, w.signalTimer.Arm)
+	w.signals = w.admission.UseLiveSignals(admit.StoreSignalSettings{}, api.ModelRequestsContract(), w.signalTimer.Arm)
 	// The mirror runs before both deciders, and that order is load-bearing (admit.Handlers). The
 	// engine decides whether to start a child and admission whether to admit a root inside this
 	// same transaction, from the mirror's rows, so the row an event carries must already be
@@ -2805,8 +2804,8 @@ func (w *workflowRuntime) applySignalDeadline(ctx context.Context, deadline reco
 	})
 }
 
-// turnEdgeEventID is the event of the start (start) or end of a turn of token at at: one edge is
-// one fact, however often a decision publishes the claim that carries it.
+// turnEdgeEventID is the event of the start (start) or end of a turn of token at at, which names
+// the fact; it marks nothing, since a turn edge keeps no processed mark (intake's keepsMark).
 func turnEdgeEventID(token claim.Token, start bool, at time.Time) string {
 	edge := "end"
 	if start {
@@ -2817,9 +2816,11 @@ func turnEdgeEventID(token claim.Token, start bool, at time.Time) string {
 
 // turnEdge applies the start or end of a turn of c at at as an intake.TurnEdge, once its machine
 // wrote it (supervisor.OnTurnEdge), for the idle signal of admission by signals: a claim on no
-// issue, the controller's, holds no slot, so it applies none. It runs on the claim's own feed,
-// under a hold mark of its own, as terminal does; a failed apply is logged, and the next edge, pass
-// or deadline reads the claim again.
+// issue, the controller's, holds no slot, so it applies none. It runs on the goroutine of the
+// decision that wrote the edge, once that decision has ended, under a hold mark of its own, as
+// terminal does; a failed apply is logged, and the next edge, pass or deadline reads the claim
+// again. Each edge is told once (supervise.Machine.OnTurnEdge), and one told again would keep
+// nothing twice.
 func (w *workflowRuntime) turnEdge(c supervise.Claim, start bool, at time.Time) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return

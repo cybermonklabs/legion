@@ -79,6 +79,15 @@ type Ask struct {
 // Waits says whether the ask is open and waits on a person.
 func (a Ask) Waits() bool { return a.Open && a.Human }
 
+// WaitsOnDefaultOf says whether the approvals signal counts the ask, assignee being the assignee
+// of its issue ("" for none) and defaultAssignee the project's: the ask is open and waits on a
+// person (Waits) who is the project's default assignee (WaitsOnDefault). The replay's state
+// (ApprovalState.Waiting) and the daemon's count of its store (record.Postgres.ApprovalsOf) both
+// count by it.
+func (a Ask) WaitsOnDefaultOf(assignee, defaultAssignee string) bool {
+	return a.Waits() && WaitsOnDefault(a.AskedOf, assignee, defaultAssignee)
+}
+
 // NextAsk is the ask after event e, prev being the ask before it and known whether an earlier event
 // made it, and whether e changed it. It follows the daemon's own reading of Dispatch's events and
 // Dispatch's contract:
@@ -171,12 +180,12 @@ func (s *ApprovalState) Assign(issue, person string) {
 func (s *ApprovalState) SetDefaultAssignee(person string) { s.defaultAssignee = person }
 
 // Waiting is the id of each ask open that waits on a person who is the project's default assignee
-// (WaitsOnDefault), sorted: the asks the approvals signal counts.
+// (Ask.WaitsOnDefaultOf), sorted: the asks the approvals signal counts.
 func (s *ApprovalState) Waiting() []string {
 	var waiting []string
 	for _, id := range slices.Sorted(maps.Keys(s.asks)) {
 		ask := s.asks[id]
-		if ask.Waits() && WaitsOnDefault(ask.AskedOf, s.assignees[ask.Issue], s.defaultAssignee) {
+		if ask.WaitsOnDefaultOf(s.assignees[ask.Issue], s.defaultAssignee) {
 			waiting = append(waiting, id)
 		}
 	}

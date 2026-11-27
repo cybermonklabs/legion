@@ -832,12 +832,14 @@ func (SignalDeadline) namedIssue() (string, bool) { return "", false }
 // its last turn's end counts from that moment, so its edge is an input of the signal that reaches
 // no other fact. It is never decoded from an event. Issue is the claim's issue, At the edge's
 // moment, as the claim records it, and the event id names the claim, the edge and that moment
-// (daemon's turnEdgeEventID), so one edge is one fact.
+// (daemon's turnEdgeEventID). It keeps no processed mark (keepsMark), so an edge told again
+// applies again, which keeps nothing twice.
 //
 // Admission keeps nothing of it, since the claim is the record, and, where the claim's issue holds
 // a slot, runs its pass only where the series-moved pass rule finds a series moved against the last
-// committed pass (admit's signalsMoved), setting the project's deadline again either way. The
-// workflow does nothing with it.
+// committed pass (admit's signalsMoved), the idle share alone while admission by signals is off,
+// and sets the project's deadline again either way while it is on. The workflow does nothing with
+// it.
 type TurnEdge struct {
 	Claim claim.Token
 	Issue string
@@ -1939,9 +1941,10 @@ func (ControllerMemoryGuardKill) namedIssue() (string, bool) { return "", false 
 // (claim.ModelRequestsRequest): the Oh My Pi plugin's or the Claude Code bridge's, of the role's own
 // session, of a subagent's session it starts, or of the controller's session. It is never decoded
 // from an event: the API's route applies one fact per report, after authenticating its caller as
-// a turn outcome's is, under an id that names the batch's claim, generation and ids, so a batch
-// sent again is a duplicate (api's modelRequests). Claim and Generation are the authenticated
-// launch's, never anything the body says; the project is the claim's, admission's own.
+// a turn outcome's is, under an id that names the batch's claim, generation and ids (api's
+// modelRequests). It keeps no processed mark (keepsMark), so a batch sent again applies again,
+// which keeps nothing twice. Claim and Generation are the authenticated launch's, never anything
+// the body says; the project is the claim's, admission's own.
 //
 // Admission keeps each request once, by the claim, the generation and the request's own id, in
 // the fact's transaction before its pass (admit's keepSignalFacts), so a request two batches carry
@@ -2584,15 +2587,16 @@ func PlanRatingUnexpected(what string) *Refusal {
 
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
 // API, or supervision. It records the event before running handlers, skips duplicates before any
-// handler runs, remembers the first refusal while completing every handler, and rolls all writes
-// back when any handler returns an error. An Observed issue fact is settled first, under the lock
-// (settleObserved): the handlers see its view only while the workflow records no such issue. A
-// fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
-// in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer). A fact a replay applies (withReplayClose) closes the
-// give-up it was stored in, in the same transaction too, as applied or, for a duplicate, as
-// already applied (closeReplayed). The fact commits through store.Transact, so a fact whose
-// commit's reply is lost is reported by what the store says of it.
+// handler runs (but for a fact that keeps no mark, keepsMark), remembers the first refusal while
+// completing every handler, and rolls all writes back when any handler returns an error. An
+// Observed issue fact is settled first, under the lock (settleObserved): the handlers see its view
+// only while the workflow records no such issue. A fact a durable consumer delivered
+// (withStreamPosition) records that consumer's stream position in the same transaction
+// (recordStreamPosition), so a consumer found missing is created at the last message it applied
+// (openConsumer). A fact a replay applies (withReplayClose) closes the give-up it was stored in,
+// in the same transaction too, as applied or, for a duplicate, as already applied
+// (closeReplayed). The fact commits through store.Transact, so a fact whose commit's reply is lost
+// is reported by what the store says of it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -2657,9 +2661,13 @@ func ApplyFactWith(ctx context.Context, pool store.TxPool, records *record.Postg
 		if err := SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
 		}
-		firstSeen, err := records.MarkProcessed(ctx, tx, source, eventID)
-		if err != nil {
-			return err
+		// A fact that keeps no mark applies as first seen every time it comes.
+		firstSeen, marks := true, keepsMark(fact)
+		if marks {
+			var err error
+			if firstSeen, err = records.MarkProcessed(ctx, tx, source, eventID); err != nil {
+				return err
+			}
 		}
 		// A duplicate records its position too: it is acknowledged as applied, so its consumer is
 		// past it either way.
@@ -2697,7 +2705,7 @@ func ApplyFactWith(ctx context.Context, pool store.TxPool, records *record.Postg
 		// (factApplies), and its mark from a give taken stays, for a release before, which reads
 		// the give as one applied.
 		_, report := fact.(CheckReport)
-		if firstSeen && ((report && result.Refusal != nil) || result.Unspent) {
+		if marks && firstSeen && ((report && result.Refusal != nil) || result.Unspent) {
 			if err := records.ForgetProcessed(ctx, tx, source, eventID); err != nil {
 				return err
 			}
@@ -2744,6 +2752,23 @@ func factApplies(fact Fact, firstSeen bool) bool {
 		return true
 	}
 	return firstSeen
+}
+
+// keepsMark says whether ApplyFact marks fact processed (MarkProcessed), in processed_events,
+// which nothing prunes, so the same id delivered again is a duplicate that reaches no handler. A
+// report of model requests (ModelRequests) and the edge of a turn (TurnEdge) keep none: the hosts
+// report each session's model requests up to four times a minute and the supervisor tells each
+// turn's start and end, and a mark for each would be a row for ever, for a fact that needs no mark
+// to keep its input once. The store keeps each model request once, by its claim, its launch
+// generation and its own id (record.Store.KeepModelRequests), and a turn edge keeps no row, the
+// claim being its record, so either applied again keeps nothing twice and only judges again
+// whether the signals moved (admit's signalFactMoved).
+func keepsMark(fact Fact) bool {
+	switch fact.(type) {
+	case ModelRequests, TurnEdge:
+		return false
+	}
+	return true
 }
 
 // factTurns is a pool that gives one fact at a time its turn to apply (store.Pool.FactTurn): a
