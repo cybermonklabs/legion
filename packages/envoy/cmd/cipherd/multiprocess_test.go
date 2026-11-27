@@ -1096,6 +1096,8 @@ func TestTwoBrokers(t *testing.T) {
 		serving, draining := stopping.Processes[0], stopping.Processes[1]
 
 		signalled := draining.Terminate(t)
+		// CONTROL ONLY: the test is held up 31 s after the signal before its observations.
+		time.Sleep(31 * time.Second)
 		testwait.Until(t, fmt.Sprintf("GET /healthz at the signalled process %s to answer 503 SHUTTING_DOWN", draining.Addr),
 			func() (string, bool) {
 				status, body := mustRequest(t, draining.Addr, "/healthz")
