@@ -155,6 +155,7 @@ func putStoredWait(issue *record.Issue, stored record.StoredWait) error {
 func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWait, now time.Time) record.StoredWait {
 	wait := view.wait
 	stored := record.StoredWait{Entered: old.Entered, Withdrawn: slices.Clone(old.Withdrawn)}
+	blocks := map[string]dispatch.CheckBlock{}
 	if view.answer != nil {
 		for _, block := range view.answer.Results.Checks {
 			blocks[block.BlockID] = block
