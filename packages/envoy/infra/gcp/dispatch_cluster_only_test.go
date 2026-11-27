@@ -160,17 +160,18 @@ type dispatchInput struct {
 }
 
 // dispatchClusterOnlyRefusals is every input the cluster-only mode refuses, one row each, holding
-// a value a consumer would plausibly send. The eight rows of the tailnet and sign-in groups come
-// from the groups' own tables, which are where those values are written
-// (dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup), so a group that gains an input is
-// refused here without that input being written down a second time.
+// a value a consumer would plausibly send. The ten rows of the tailnet, sign-in and Directory
+// groups come from the groups' own tables, which are where those values are written
+// (dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, dispatchDirectoryGroup), so a group
+// that gains an input is refused here without that input being written down a second time.
 // TestDispatchEveryInputIsLiveOrRefusedUnderClusterOnly holds the table complete against
 // DispatchArgs itself.
 func dispatchClusterOnlyRefusals() []dispatchInput {
-	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, []dispatchInput{
+	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, dispatchDirectoryGroup, []dispatchInput{
 		{"outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }},
 		{"signInOutside", func(a *gcp.DispatchArgs) { a.SignInOutside = true }},
 		{"signInPasskey", func(a *gcp.DispatchArgs) { a.SignInPasskey = true }},
+		{"trustedProxyRanges", func(a *gcp.DispatchArgs) { a.TrustedProxyRanges = []string{"192.0.2.0/24"} }},
 		{"signInWorkspaceDomains", func(a *gcp.DispatchArgs) { a.SignInWorkspaceDomains = []string{"example.net"} }},
 		{"parentStatusRule", func(a *gcp.DispatchArgs) { a.ParentStatusRule = true }},
 		{"legionStatusScope", func(a *gcp.DispatchArgs) { a.LegionStatusScope = true }},

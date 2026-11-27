@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  Behind Google's external load balancer, Dispatch names each caller by its own address, not the
+  balancer's. For a connection from the balancer (a peer in `35.191.0.0/16` or `130.211.0.0/22`),
+  the caller's address is the second-to-last entry of the one `X-Forwarded-For` line, the client
+  address the balancer appends before its own, as the secrets broker's edge reads it. The access
+  log's `address`, the previous shared-token log's and the broker token check's per-address bucket
+  read it. Before, every caller through the balancer was named by the balancer's own address, the
+  header's last entry, and so shared one bucket. A header that is not one such line is ignored on
+  that connection, and the caller is named by the balancer's address; every other connection is
+  read as before.
+time: 2026-11-21T04:36:29.000000000Z
+custom:
+    Issue: pr4199

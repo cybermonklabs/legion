@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `AUTH_SIGNED_OUT_REASONS` adds `WORKSPACE_ADDRESS`: Dispatch signed out a person from outside the
+  sign-in domain because their address is now on a domain the Google Workspace owns, which signs in
+  only as a Workspace account.
+time: 2026-11-16T23:25:39.771885573Z
+custom:
+    Issue: pr4199

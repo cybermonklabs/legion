@@ -85,6 +85,7 @@ func holdPlaces() []holdPlace {
 		{name: "introspection (POST /v1/oauth/introspect as Dispatch)", wiring: "exchangeConfig.Hold = holdGate", gated: true, probe: (*holdRig).introspectTheSessionToken},
 		{name: "an approval-page decision", wiring: "approval.Config's Hold: holdGate", gated: true, probe: (*holdRig).decideOnThePage},
 		{name: "an airlock request", wiring: "proxy.Options's Hold: holdGate", gated: true, probe: (*holdRig).askThroughTheAirlock},
+		{name: "the person-access route (GET /v1/person-access as Dispatch)", wiring: "api.Deps's Exchange: exchangePolicy", probe: (*holdRig).countExchangeEntries},
 		{name: "a device-code redemption of a person Dispatch answers with no deadline", wiring: "hold.Config's RequireDeadline: cfg.HoldRequiresDeadline", deadline: true, probe: (*holdRig).redeemWithNoDeadline},
 	}
 }
@@ -490,6 +491,24 @@ func (r *holdRig) askThroughTheAirlock(t *testing.T, p *holdPerson) holdAnswer {
 		return holdAnswer{answeredServed, said}
 	case res.StatusCode == http.StatusForbidden && strings.Contains(string(body), r.heldText(p.login)) && carried == 0:
 		return holdAnswer{answeredHeld, said}
+	}
+	return holdAnswer{answeredNeither, said}
+}
+
+// countExchangeEntries is Dispatch asking what p holds that outlives their browser (GET
+// /v1/person-access): served when the answer names p and counts the one exchange entry that names
+// them. The route asks no hold, so it answers alike whether the broker holds p or not.
+func (r *holdRig) countExchangeEntries(t *testing.T, p *holdPerson) holdAnswer {
+	t.Helper()
+	status, body := r.client.UI(t, http.MethodGet, "/v1/person-access?person="+url.QueryEscape(p.login), nil)
+	said := fmt.Sprintf("GET /v1/person-access answered %d %s, where one exchange entry names %s", status, strings.TrimSpace(string(body)), p.login)
+	var answer struct {
+		Person          string `json:"person"`
+		ExchangeEntries *int   `json:"exchange_entries"`
+	}
+	if status == http.StatusOK && json.Unmarshal(body, &answer) == nil && answer.Person == p.login &&
+		answer.ExchangeEntries != nil && *answer.ExchangeEntries == 1 {
+		return holdAnswer{answeredServed, said}
 	}
 	return holdAnswer{answeredNeither, said}
 }

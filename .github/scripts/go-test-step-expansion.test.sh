@@ -135,12 +135,13 @@ else:
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
 
-# Two steps run database-skips.sh, each with the argument list its entry reads: envoy-go's unit
+# Three steps run database-skips.sh, each with the argument list its entry reads: envoy-go's unit
 # step, which runs the module less the race lane's packages, the text checks, internal/integration
-# and the packages envoy-go-build runs, and envoy-go-race-api's race step, which runs the API
-# package. Each step is read out of the file that holds it, in the directory GitHub runs it from,
-# so the case holds the entry to the steps as written; an argument list the entry does not list is
-# refused, since what the script runs then is a reading nobody made.
+# and the packages envoy-go-build runs, envoy-go-race-api's race step, which runs the API package,
+# and envoy-go-race's counted step, which runs the NATS auth service. Each step is read out of the
+# file that holds it, in the directory GitHub runs it from, so the case holds the entry to the
+# steps as written; an argument list the entry does not list is refused, since what the script
+# runs then is a reading nobody made.
 echo "case: a step that runs an audited script is read through its entry, by its argument list"
 read_audited() { py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
@@ -155,14 +156,17 @@ except ex.Refused:
 else:
     print(read.workdir, read.script)' "$@"; }
 unit_listing=$(cat <<'EOF'
-packages/envoy go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -json -count=1 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 20m
+packages/envoy go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/oidc$|/internal/dispatch/store($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -json -count=1 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestIAPLeaverHoldThroughTheRealBroker|TestLeaverHoldBound|TestLeaverHoldBoundByThePass|TestLeaverHoldRelease|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 20m
 EOF
 )
-check "envoy-go's unit step runs the module less the other jobs' packages, less the fixture's and the backend count's tests" \
+check "envoy-go's unit step runs the module less the other jobs' packages, less the fixture's, the backend count's and the leaver hold's tests" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Unit test envoy Go package" "")" "$unit_listing")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
     "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"
+check "envoy-go-race's counted step runs the NATS auth service under -race through the counter" \
+  "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race.yaml "Race-test the NATS auth service and count its skips" "")" \
+    "packages/envoy go test -json -count=1 -race -timeout 10m ./internal/cipher/natscallout/")"
 check "the race step with one more argument, which the entry does not list, is refused" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" " --race")" "refused")"
 

@@ -9,6 +9,7 @@ import {
 } from "@legion/contracts";
 import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
 
+import { dispatchOrigins, hereHref } from "../../api/origins";
 import { borderDefault } from "../../theme/classes";
 import { isPartyRoute } from "./party-references";
 import { useReferenceHref, useReferenceLabel, useReferenceTarget } from "./reference-target";
@@ -576,25 +577,27 @@ function anchorFormatting(anchor: HTMLAnchorElement, root: HTMLElement): WordsFo
 
 /**
  * Finds every already-rendered `<a>` in root whose href is a dispatch:// reference or a
- * same-origin dashboard path — a link `linkifyDispatchRefs` just inserted, an ordinary Markdown
- * link a user wrote by hand, or a bare `http(s)://` URL remark-gfm autolinked — rewrites its href
- * to the SPA route via `buildReferencePath`, and clears its text so the caller can
- * portal a `RefLink` in to render the resolved title. A URL its author left as text - what GFM
- * autolinks, a bare `https://…` (a bare `www.…`, whose target gains `http://`) or one in angle
- * brackets (`<dispatch://…>` too), the anchor `linkifyDispatchRefs` wraps around a bare
- * `dispatch://…`, and a Markdown link whose words are its own target, the form a document stores
- * an autolink in (`@legion/contracts`'s `wordsAreAddress`) - is read as the server's
- * `text.Extract` reads text (`referenceRouteFromHref`): one
- * whose block is past the bounds the index keys names its document, as the server cites it; an
- * `http(s)://` one past them stays the link it is; and a `dispatch://` one that names nothing
- * becomes its words as they were drawn, as a bare one already renders, with no link to click and
- * no hover trigger. A link its author wrote names its target explicitly, and drawing or opening it
- * is a read, so its href is read as the server reads a request (`nodeRouteFromHref`), whatever the
- * length of its names. An external link, or an author's href that fails to parse as a reference,
- * is left untouched, and so is a picture's link (`data-dispatch-picture`, the engine's
- * `pictureSerializer`), whose content is a `DispatchPicture` rather than a title. A person's
- * reference, which opens no page, becomes a `<span>` the portal draws their login into, or its
- * words where its author wrote their own.
+ * dashboard path of any origin this Dispatch answers at (`dispatchOrigins`) — a link
+ * `linkifyDispatchRefs` just inserted, an ordinary Markdown link a user wrote by hand, or a bare
+ * `http(s)://` URL remark-gfm autolinked — rewrites its href to the SPA route via
+ * `buildReferencePath`, and clears its text so the caller can portal a `RefLink` in to render
+ * the resolved title. A URL its author left as text - what GFM autolinks, a bare `https://…` (a
+ * bare `www.…`, whose target gains `http://`) or one in angle brackets (`<dispatch://…>` too),
+ * the anchor `linkifyDispatchRefs` wraps around a bare `dispatch://…`, and a Markdown link whose
+ * words are its own target, the form a document stores an autolink in (`@legion/contracts`'s
+ * `wordsAreAddress`) - is read as the server's `text.Extract` reads text
+ * (`referenceRouteFromHref`): one whose block is past the bounds the index keys names its
+ * document, as the server cites it; an `http(s)://` one past them stays the link it is; and a
+ * `dispatch://` one that names nothing becomes its words as they were drawn, as a bare one
+ * already renders, with no link to click and no hover trigger. A link its author wrote names its
+ * target explicitly, and drawing or opening it is a read, so its href is read as the server reads
+ * a request (`nodeRouteFromHref`), whatever the length of its names. An external link, or an
+ * author's href that fails to parse as a reference, keeps its words; one to another origin this
+ * Dispatch answers at - a project's board, say - opens on the origin the page is on (`hereHref`),
+ * where the reader holds a session, and any other is left untouched. So is a picture's link
+ * (`data-dispatch-picture`, the engine's `pictureSerializer`), whose content is a
+ * `DispatchPicture` rather than a title. A person's reference, which opens no page, becomes a
+ * `<span>` the portal draws their login into, or its words where its author wrote their own.
  *
  * Before it clears an anchor, it notes which of the anchor's words a search mark inside it
  * covers (`ReferenceAnchor.marked`, `markedStretches`), so `RefLink` can draw the server's marks
@@ -605,12 +608,12 @@ function anchorFormatting(anchor: HTMLAnchorElement, root: HTMLElement): WordsFo
  * (Milkdown's link sanitizer only allows http/https/mailto/tel/ftp — a document strangers can
  * edit should never render an attacker-chosen non-http scheme as a clickable href), but tags the
  * anchor with `data-dispatch-href` carrying the original target. `linkifyDispatchRefs`'s own
- * freshly-wrapped anchors, and a same-origin dashboard URL a remark-gfm autolinked, still carry
+ * freshly-wrapped anchors, and a dashboard URL remark-gfm autolinked, still carry
  * their real value in `href` — `data-dispatch-href` takes priority when present.
  */
 export function collectReferenceAnchors(
   root: HTMLElement,
-  appOrigin: string = window.location.origin
+  appOrigins: readonly string[] = dispatchOrigins()
 ): ReferenceAnchor[] {
   const targets: ReferenceAnchor[] = [];
   const anchors = Array.from(
@@ -633,8 +636,8 @@ export function collectReferenceAnchors(
     // words its author wrote another way as those words.
     const textUrl = wordsAreAddress(text, href);
     const route = textUrl
-      ? referenceRouteFromHref(href, appOrigin)
-      : nodeRouteFromHref(href, appOrigin);
+      ? referenceRouteFromHref(href, appOrigins)
+      : nodeRouteFromHref(href, appOrigins);
     if (route === undefined) {
       // A `dispatch://` address that cites nothing - past the bounds the index keys, or a name
       // no kind of node is written under - is the words the writer wrote, with no link (R8),
@@ -645,6 +648,12 @@ export function collectReferenceAnchors(
       // and open a hover card for a reference the server never recorded.
       if (href.startsWith("dispatch://")) {
         anchor.replaceWith(...anchor.childNodes);
+        continue;
+      }
+      const shown = anchor.getAttribute("href") ?? "";
+      const here = hereHref(shown);
+      if (here !== shown) {
+        anchor.setAttribute("href", here);
       }
       continue;
     }

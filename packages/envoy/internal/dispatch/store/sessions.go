@@ -64,10 +64,11 @@ func (s *PgSessionStore) CurrentSessionGeneration(ctx context.Context, login str
 	return generation, true, nil
 }
 
-// revokeSessionsSQL advances $1's session generation, creating its row at generation 1. The
-// domain-mode people writes run it inside their own transaction, under the people row's lock: a
-// sign-in under another subject (PgPeopleStore.SignInSubject) and a confirmation's end
-// (PgPeopleStore.EndSubject).
+// revokeSessionsSQL advances $1's session generation, creating its row at generation 1. A
+// confirmation's end (PgPeopleStore.EndSubject) runs it inside its own transaction, under the
+// people row's lock. A sign-in that records another account does not: the database advances the
+// generation itself whenever people records a new account (migration 20261118041916), whichever
+// statement writes it.
 const revokeSessionsSQL = `
 	insert into user_sessions (login, generation) values ($1, 1)
 	on conflict (login) do update set generation = user_sessions.generation + 1

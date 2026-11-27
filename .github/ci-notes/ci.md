@@ -2729,6 +2729,30 @@ the runner has for as long as it runs, which beside envoy-go's other steps would
 minutes on theirs and theirs on its deadline. Its rules' test opens the store, so the job
 carries a Postgres service.
 
+## Why the Dispatch store runs alone under the race detector
+
+The Dispatch store alone, under the race detector, with a deadline of its own:
+envoy-go-race-store, the second job of ci-job-envoy-go-race.yaml, on a runner of its own.
+ci.yaml's envoy-go-race job calls that file, so the store runs on exactly the changes that ran
+it in envoy-go-race's race step, and a failure of either job fails that one job of ci.yaml. In
+that 30-minute step the store was already the slowest package, 1094 s to 1201 s over six
+merge-group runs of main on 2026-11-22 (job 137151013393 among them), past the lane's bar of
+1080 s; and once its tests grew from 238 to 337 the step died on go test's own deadline at
+1800 s with a 2 s test running, out of time rather than hung (job 137158396292). Alone, on
+4 vCPU and 16 GiB beside its own Postgres with the CI service's settings, the same package took
+732 s at main, and with those tests 1129.5 s on one run and 1509.6 s on another of the same
+tests, so a run on that machine varies by a third. Against main's run, the 99 new tests added
+271.6 s, and TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration, which takes one census
+at the schema before each shipped census file, 277 of them where main has 222, grew from
+101.85 s to 192.45 s. Its step's -timeout of 60 minutes is twice and more the longer run.
+
+A job and not a step: a step after envoy-go-race's race step would add the store's whole run
+to that job's, and a job of ci.yaml of its own would call one more workflow than
+.github/scripts/check-workflow-files.sh allows ci.yaml, whose calls are at its limit of 45. The
+second runner need not lengthen a merge group: in three merge groups of main on 2026-11-22
+envoy-go ran beside envoy-go-race and took 36 to 37 minutes, longer than the store's longer
+run alone and the job's setup together.
+
 ## Why the document service runs alone under the race detector
 
 The document service alone, under the race detector, with a deadline of its own. It is by far

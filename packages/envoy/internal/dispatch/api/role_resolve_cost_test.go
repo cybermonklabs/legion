@@ -39,6 +39,7 @@ func (c *contextStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQ
 // Control: the visibility reads run only when the listener names a holder; the unheld role then
 // costs fewer statements, and the test fails naming each count.
 func TestARoleHeldByAHiddenSessionCostsWhatAnUnheldRoleCosts(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"last_seen":300}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

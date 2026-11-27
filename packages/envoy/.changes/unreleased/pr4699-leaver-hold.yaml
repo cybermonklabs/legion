@@ -1,0 +1,28 @@
+kind: Added
+body: |-
+  Dispatch holds a person whom Google refuses: under `DISPATCH_SIGNIN_DOMAIN`, a refused refresh
+  ends the person's browser sessions, and it
+  forgets the refresh token and records a hold when Google answers `invalid_grant`, when the
+  refreshed sign-in names another address or Google account, and when the rule no longer admits
+  the refreshed sign-in. From then on a held person's personal tokens and every
+  broker credential that names them are refused until they sign in to Dispatch again. A hold
+  revokes nothing: after the sign-in each credential still within its own lifetime works again
+  within 40 seconds, with no new token, machine login or approval. While Google cannot be reached,
+  a person is served for 24 hours after their last confirmation and held after, until a refresh
+  confirms them; a stored refresh token that does not open is held the same 24 hours after. A
+  personal token, and a broker token at Dispatch and at the Envoy listener, is
+  `401 MEMBERSHIP_HELD`, in words that say what ends the hold. The secrets broker answers
+  `403 MEMBERSHIP_HELD` on its session and machine-credential routes, its airlock and its approval
+  page, and `membership_held` at its token endpoint, cuts a call its airlock carries, and, where it
+  runs the NATS hub's auth service, refuses a held person's session connection there; it still
+  serves a held person's refresh grant, lease renewal and the calls that only end access. The
+  broker asks Dispatch through `BROKER_PROJECT_ACCESS_URL`, whose person answer now carries `held`
+  and `as_of`, and keeps each answer in its new table `person_standing` (migration
+  `0045_person_standing`), so an outage of Dispatch releases nobody it last knew as held and serves
+  everyone else, logging a WARN line a minute per person and counting
+  `broker_hold_unchecked_total{last_answer}`. With `BROKER_PROJECT_ACCESS_URL` unset the broker
+  holds nobody, and logs `hold of refused people state=off` at boot. A broker that cannot tell is
+  `503 HOLD_UNCHECKABLE`, naming one of six fixed reasons.
+time: 2026-11-20T20:29:55Z
+custom:
+    Issue: pr4699

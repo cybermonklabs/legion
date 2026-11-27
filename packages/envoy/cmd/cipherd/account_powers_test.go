@@ -129,6 +129,9 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		// refuses 400 before it writes anything.
 		{method: http.MethodPost, pattern: "/v1/person-subjects/revoke", path: "/v1/person-subjects/revoke",
 			contentType: "application/json", body: `{"person":"` + powersApprover + `","issuer":"https://accounts.google.com","subject":"1","holder_subject":"1"}`, caller: dispatchCaller},
+		// A person this broker holds nothing of is answered zero counts, which is the route's
+		// answer and not a refusal.
+		{method: http.MethodGet, pattern: "/v1/person-access", path: "/v1/person-access?person=" + powersApprover, caller: dispatchCaller},
 		// The review's own route, called for a period that closed long ago, so the answer the
 		// review gets here is a page of the grant log rather than a refusal of its period.
 		{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller},

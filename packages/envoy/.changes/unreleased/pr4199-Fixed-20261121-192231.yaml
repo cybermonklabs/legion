@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The secrets broker's token endpoint now answers a DPoP proof its replay store cannot record (a
+  `jti` holding a control character, or a `jti` and `htu` together over 2,048 bytes) with
+  `400 invalid_request` (`REQUEST_INVALID`), the caller's own refusal. Before, it answered
+  `500 server_error`.
+time: 2026-11-21T19:22:31.000000000Z
+custom:
+    Issue: pr4199

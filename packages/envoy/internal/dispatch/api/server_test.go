@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -98,7 +99,7 @@ func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
-	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"))
+	origins := text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin)
 	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
@@ -146,6 +147,24 @@ type testServerOptions struct {
 	// oidc is the service-account token verifier; nil is the unconfigured
 	// deployment, whose bearer handling is untouched by that feature.
 	oidc ServiceTokenVerifier
+	// oidcAccounts and accessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts: the
+	// service-account subjects the deployment admits, and those that read the routes of the read
+	// class accessAccount. Nil is the deployment that names none.
+	oidcAccounts   []string
+	accessAccounts []string
+	// signInIssuer is Deps.SignInIssuer: the issuer people sign in through, the issuer of every
+	// Google account people records. Empty is the deployment that records none.
+	signInIssuer string
+	// admitsRestricted is a deployment that admits restricted members, people from outside its
+	// domain that an access list names: its sign-in rule (testOutsideRule over the server's
+	// database) is Deps.RestrictedAdmission, which a restricted member's tokens are held to. False
+	// is the deployment that does not, whose server holds no such rule.
+	admitsRestricted bool
+	// passkeyIssuer is a deployment whose people from outside sign in with a passkey
+	// (DISPATCH_SIGNIN_PASSKEY=1) at this outside origin: Deps.Passkeys over the server's database,
+	// recording each passkey's subject under it, and the rule's check of a Workspace address
+	// (testOutsideRule's). Empty is the deployment with passkey sign-in off.
+	passkeyIssuer string
 	// privateProjects, privateBeforeFullSwitch and busProjects are Deps.PrivateProjects,
 	// Deps.PrivateBeforeFullSwitch and Deps.BusProjects: the projects the deployment has
 	// provisioned as private, those it makes private before their full switch, and the
@@ -435,6 +454,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		HorizonStallAfter:       horizontest.StallWarning,
 		HorizonWarnEvery:        horizontest.StallWarning,
 		OIDC:                    options.oidc,
+		OIDCAccounts:            options.oidcAccounts,
+		SignInIssuer:            options.signInIssuer,
+		Passkeys:                passkeysOf(t, options, database.Pool),
+		RestrictedAdmission:     restrictedAdmissionOf(options.admitsRestricted, database.Pool),
 		BrokerTokens:            brokerTokens,
 		AgentSecretsURL:         options.agentSecretsURL,
 		AgentSecretsTokenFile:   agentSecretsTokenFile,
@@ -477,6 +500,51 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	// so a test that did not wait for them would close its database under a worker still writing.
 	t.Cleanup(func() { waitBackgroundOf(t, served) })
 	return mux, database, deps, served
+}
+
+// testOutsideRule is the sign-in rule a deployment that admits restricted members runs for the
+// Workspace domain example.com and the other domains it owns, workspaceDomains, its access lists
+// read through pool as main's are through the server's own database (accessLister): the rule a
+// restricted member's tokens are held to.
+func testOutsideRule(pool *store.Pool, workspaceDomains ...string) identity.OutsideRule {
+	return identity.OutsideRule{
+		DomainRule: identity.DomainRule{Domain: "example.com"},
+		People: identity.ListerFunc(func(ctx context.Context, email string) (bool, error) {
+			return access.Listed(ctx, pool, email)
+		}),
+		WorkspaceDomains: workspaceDomains,
+	}
+}
+
+// restrictedAdmissionOf is Deps.RestrictedAdmission for a deployment that admits restricted
+// members (testOutsideRule over pool) or one that does not (none).
+func restrictedAdmissionOf(admitsRestricted bool, pool *store.Pool) identity.RestrictedAdmission {
+	if !admitsRestricted {
+		return nil
+	}
+	return testOutsideRule(pool)
+}
+
+// passkeysOf is Deps.Passkeys for a deployment whose people from outside sign in with a passkey at
+// options.passkeyIssuer, the outside origin, over pool, under the passkey rule over
+// testOutsideRule; nil for none. Its people store owes the broker the revocation of an account the
+// Reset replaces where options configure a broker and a sign-in issuer, as cmd/dispatch's
+// peopleOptions gives the one store main shares with it.
+func passkeysOf(t testing.TB, options testServerOptions, pool *store.Pool) *identity.Passkeys {
+	t.Helper()
+	if options.passkeyIssuer == "" {
+		return nil
+	}
+	var people []store.PeopleOption
+	if options.agentSecretsURL != "" && options.signInIssuer != "" {
+		people = append(people, store.WithBrokerRevocations(options.signInIssuer))
+	}
+	passkeys := store.NewPgPasskeys(store.NewPgPeopleStore(pool, auth.SingleSigningKey("passkey test key"), nil, people...), options.passkeyIssuer)
+	ceremonies, err := identity.NewPasskeys(options.passkeyIssuer, passkeys, identity.PasskeyRule{OutsideRule: testOutsideRule(pool)})
+	if err != nil {
+		t.Fatalf("build the passkey ceremonies: %v", err)
+	}
+	return ceremonies
 }
 
 // waitBackgroundOf waits out served's background work at a test's end. A handler may be held on a

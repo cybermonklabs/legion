@@ -169,6 +169,8 @@ var referenceDispositions = map[string]referenceDisposition{
 	"messages.target":                           {filteredReference, "a `session:<id>` or `role:<name>` target, on an issue any session: leaveOutHiddenMessageSessions; on no issue a party of the conversation (MessageClause)"},
 	"near_copy_checks.issue_key":                {ownColumn, "the issue its create wrote, of the row's project, whose candidates are issues of that project too (duplicateGate)"},
 	"near_copy_checks.project_key":              {ownColumn, "the create's project (nearCopyChecksPageQuery and getNearCopyCheck bind its project clause)"},
+	"outside_invitations.project_key":           {internalColumn, "the link's project, which the enrollment holds the person to (NamedDirectly) and logs; no read answers it"},
+	"passkeys.project_key":                      {filteredReference, "the project of the link that enrolled the passkey, which only the owner's access answer reads (withOwnersPasskeys), leaving it out where its reader does not see that project"},
 	"post_body_history.comment_id":              {ownColumn, "the corrected comment, whose earlier bodies its own history read answers"},
 	"post_body_history.message_id":              {ownColumn, "the corrected message, whose earlier bodies its own history read answers"},
 	"project_access.project_key":                {ownColumn, "the access list's project"},
@@ -365,6 +367,12 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 		fixture.private.issue, "acme/"+strings.ToLower(seedPublic)+"-app"); err != nil {
 		t.Fatalf("credit PUB's pull request to %s: %v", fixture.private.issue, err)
 	}
+	// A passkey names the project of the link that enrolled it; the owner's access answer alone
+	// reads it (withOwnersPasskeys), which leaves out a project its reader does not see.
+	if _, err := fixture.database.Pool.Exec(context.Background(), `insert into passkeys (credential_id, email, user_handle, public_key, aaguid, flags, project_key, made_by)
+		values ('\x0c'::bytea, $1, convert_to('census-passkey', 'UTF8'), '\x02'::bytea, ''::bytea, 0, $2, $3)`, cross.publicPerson, seedPrivate, seedCarol); err != nil {
+		t.Fatalf("store a passkey enrolled through a link of %s: %v", seedPrivate, err)
+	}
 	// PUB's daemon reports PRIV's issue as a card of PUB's board, among its slots and its trees,
 	// and as the tree root of PUB's issue, as a daemon that serves both projects reported it before
 	// the sampler kept a project's record to its own issues (legion.State's keepProject).
@@ -522,6 +530,7 @@ func (h hiddenObjects) leaksOf(value any, path string) []leak {
 // (payloadReferenceKeys), and the seed must have written one under each key that names an object of
 // another project.
 func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
+	t.Parallel()
 	census := &fragmentCensus{}
 	fixture := seedFragmentCensus(t, census)
 	mintListingToken(t, fixture.privateSeed, callerAlicePubToken, seedAlice, []string{seedPublic})
@@ -697,6 +706,7 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 // reads it, and alice's answer still names the PRIV objects PUB's rows name. A reader that sees
 // every object takes the filters' short path (seesEveryObject), which reads nothing more.
 func TestWithNoPrivateProjectAReferenceReadsAsToday(t *testing.T) {
+	t.Parallel()
 	census := &fragmentCensus{}
 	fixture := seedFragmentCensus(t, census)
 	seedCrossReferences(t, fixture)

@@ -82,10 +82,23 @@ const stubSpecs = /\.stub\.e2e\.ts$/;
 // through the dev OIDC issuer alone: it runs only then, and every other multiprocess spec, which
 // signs in through dev sign-in, runs only without it.
 const signInSpecs = /\/signin\.multiprocess\.e2e\.ts$/;
+// The specs of DISPATCH_E2E_SIGNIN=google (e2e/harness-signin.ts), whose servers sign people in
+// through the dev OIDC issuer standing in for Google at their canonical origin, and with a passkey
+// at their outside origin: outside sign-in, the outside collaborator's passkey, and the hold on a
+// person Google stops confirming (`leaver-hold.e2e.ts`). They run only then, and alone then
+// (`outsideSignInProjects` below), and every project of every other mode ignores them.
+const outsideSignInSpecs = /\/(outside-(sign-in|passkey)|leaver-hold)\.e2e\.ts$/;
 if (harnessProcessCount === 2 && process.env.PLAYWRIGHT_BASE_URL) {
   throw new Error(
     "DISPATCH_E2E_PROCESSES=2 runs against two Dispatch servers of this run's own behind the " +
       "round-robin proxy, so it cannot run against PLAYWRIGHT_BASE_URL. Unset one of them."
+  );
+}
+if (harnessSignIn === "google" && process.env.PLAYWRIGHT_BASE_URL) {
+  throw new Error(
+    "DISPATCH_E2E_SIGNIN=google signs people in at the dev OIDC issuer this run starts, which a " +
+      "deployed server does not trust, so it cannot run against PLAYWRIGHT_BASE_URL. Unset one " +
+      "of them."
   );
 }
 
@@ -131,6 +144,7 @@ const stub = stubSelection({
   env: process.env,
   processes: harnessProcessCount,
   projects: stubProjectNames,
+  signIn: harnessSignIn,
 });
 
 // A command that names a wall-clock spec file as a filter while naming no project
@@ -251,7 +265,8 @@ const testTimeout = 60_000;
 const actionTimeout = 45_000;
 
 // Two-process mode's one project: the multiprocess specs, in Chromium, the sign-in spec alone under
-// DISPATCH_E2E_SIGNIN=oidc and every other one without it.
+// DISPATCH_E2E_SIGNIN=oidc and every other one without it. DISPATCH_E2E_SIGNIN=google takes its
+// own list in either mode (`outsideSignInProjects` below).
 //
 // `retries: 0`, against the one retry the run takes on CI, and for a reason of its own: the
 // `-alone` projects below also set it, but their argument is about the wall clock and does not
@@ -273,6 +288,19 @@ const multiprocessProjects = [
   },
 ];
 
+// DISPATCH_E2E_SIGNIN=google's one project, with one server process or two: its specs,
+// outside-sign-in.e2e.ts, outside-passkey.e2e.ts and leaver-hold.e2e.ts, in Chromium. `retries: 0`
+// for the multiprocess project's reason above: the job that runs it is the same multiprocess job,
+// which writes no blob report.
+const outsideSignInProjects = [
+  {
+    name: "chromium",
+    testMatch: outsideSignInSpecs,
+    use: { ...devices["Desktop Chrome"] },
+    retries: 0,
+  },
+] satisfies Project[];
+
 // The three rows of `heavy-bodies.e2e.ts` that read where a reader's place ends up once a long
 // body fills under them. The compensation they measure is layout Chromium and WebKit anchor
 // differently, and those are the two engines it was ever measured on, so `firefox-alone` below
@@ -290,6 +318,17 @@ const readersPlaceRows =
 // spec in this directory, so the ignore is what keeps this file to its own two projects.
 const visualSpecs = /visual\.e2e\.ts$/;
 
+// What `chromium`, `iphone`, `webkit` and `firefox` below ignore: specs that a project or a mode
+// of their own runs.
+const parallelIgnore = [
+  plainHttpSpecs,
+  multiprocessSpecs,
+  clockSpecPattern,
+  visualSpecs,
+  stubSpecs,
+  outsideSignInSpecs,
+];
+
 // Every project that runs as wide as the run's own workers.
 const parallelProjects = [
   // The desktop half of the pair: every row of the suite except the two kinds this project is
@@ -297,13 +336,13 @@ const parallelProjects = [
   // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either.
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: parallelIgnore,
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: parallelIgnore,
     grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -358,7 +397,7 @@ const parallelProjects = [
   // that name it.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: parallelIgnore,
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -428,7 +467,7 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: parallelIgnore,
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -802,15 +841,18 @@ export default defineConfig({
   // a deployed server it would prove nothing about either, and `e2e:deployed` names no project
   // and builds no `web/dist` to serve. `stub.declared` is that answer, and `holdsStubRow`
   // above is built on the same one, so a server can never start for a project this list leaves
-  // out, nor a project be declared with no server to answer it.
+  // out, nor a project be declared with no server to answer it. DISPATCH_E2E_SIGNIN=google's
+  // list comes first, since it holds with one process or two.
   projects:
-    harnessProcessCount === 2
-      ? multiprocessProjects
-      : [
-          ...parallelProjects,
-          ...aloneProjects,
-          // Both are declared in every run, as their comment says.
-          ...visualProjects,
-          ...(stub.declared ? stubProjects : []),
-        ],
+    harnessSignIn === "google"
+      ? outsideSignInProjects
+      : harnessProcessCount === 2
+        ? multiprocessProjects
+        : [
+            ...parallelProjects,
+            ...aloneProjects,
+            // Both are declared in every run, as their comment says.
+            ...visualProjects,
+            ...(stub.declared ? stubProjects : []),
+          ],
 });

@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The database stamps when Dispatch recorded an address's Google account
+  (`people.sub_recorded_at`) on every change of `sub`, and refuses any other change of it. A
+  personal token's mint and a machine login's approve or deny wait on an advisory lock of the
+  address that a sign-in takes first, so neither is minted for nor relayed while a sign-in that
+  records another account is uncommitted, on an address no people row holds too. A token an
+  operator's exchange entry mapped (project scope `named`) is held to no account and no creation
+  time, so a pod's or a workflow's token keeps acting across its person's sign-ins. A broker token
+  recording an account of another issuer is refused once Dispatch records an account for its
+  person.
+time: 2026-11-17T21:50:32.617425964Z
+custom:
+    Issue: pr4199

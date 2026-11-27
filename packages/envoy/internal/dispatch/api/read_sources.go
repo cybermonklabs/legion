@@ -225,6 +225,7 @@ var readSources = map[string]readSource{
 	"GET /api/v1/delivery/runs/{id}":      reads("one run of the deployment's deploy repository, answered as missing where the timeline's rule does not show it", readProbe{"id": probeDeliveryRun}, readclass.Deployment, readclass.Project),
 	"GET /api/v1/settings/delivery":       reads("the deployment's delivery configuration", nil, readclass.Deployment),
 	"GET /api/v1/settings/new-issue":      reads("the deployment's new-issue label and session", nil, readclass.Deployment),
+	"GET /api/v1/projects/{key}/access":   reads("one project's access list, which names people", byProject, readclass.Project, readclass.People),
 	"GET /api/v1/credential-requests":     reads("the deployment's pending credential requests a signed-in person decides", nil, readclass.Deployment),
 	"GET /api/v1/machine-logins":          reads("the deployment's machine logins, a service's among them", nil, readclass.Deployment),
 

@@ -2,6 +2,7 @@
 package identity
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,49 @@ var ErrCredentialExpired = fmt.Errorf("%w: the credential has expired", ErrNoIde
 // down is the API's OIDC_ISSUER_UNAVAILABLE, never this.
 var ErrSignInUnavailable = errors.New("the sign-in issuer cannot be reached")
 
+// The reasons a 401 NO_IDENTITY tells a person whose sign-in has ended (SignedOut.Reason), each
+// read by the sign-in rule that no longer admits them (SignInRule.SignedOutReason), and spelled as
+// AUTH_SIGNED_OUT_REASONS in packages/contracts/src/dispatch-api-limits.ts spells them.
+const (
+	// SignedOutNotListed: the person was a restricted member, from outside the sign-in domain, and
+	// no project's access list names them any more (OutsideRule).
+	SignedOutNotListed = "NOT_LISTED"
+	// SignedOutOutsideOff: the person was a restricted member, from outside the sign-in domain, and
+	// the server admits nobody from outside any more (DomainRule: a deployment that no longer
+	// admits restricted members).
+	SignedOutOutsideOff = "OUTSIDE_SIGNIN_OFF"
+	// SignedOutWorkspaceAddress: the person was a restricted member, from outside the sign-in
+	// domain, and their address is now on a domain the Google Workspace owns (OutsideRule:
+	// DISPATCH_SIGNIN_DOMAIN, a domain DISPATCH_SIGNIN_WORKSPACE_DOMAINS lists, or a subdomain of
+	// one), which signs in only as a Workspace account (ErrWorkspaceAddress).
+	SignedOutWorkspaceAddress = "WORKSPACE_ADDRESS"
+)
+
+// SignedOut is ErrNoIdentity for a request whose session has ended, told with the reason the
+// person is given (one of the SignedOut* codes) and the address whose sign-in ended. It matches
+// ErrNoIdentity (errors.Is), so every caller that refuses no identity refuses it alike, and
+// WriteError adds the reason and the address to the 401.
+type SignedOut struct {
+	Email  string
+	Reason string
+}
+
+// Error words the reason as the 401's error does.
+func (e *SignedOut) Error() string {
+	switch e.Reason {
+	case SignedOutOutsideOff:
+		return "signed out: Dispatch no longer signs in " + e.Email + " or any other account outside its Google Workspace domain"
+	case SignedOutWorkspaceAddress:
+		return "signed out: " + e.Email + " is an address on a domain the Google Workspace owns, which signs in only as a Workspace account"
+	}
+	return "signed out: no Dispatch project's access list names " + e.Email + " any more"
+}
+
+// Is matches ErrNoIdentity.
+func (e *SignedOut) Is(target error) bool {
+	return target == ErrNoIdentity
+}
+
 // Identity resolves the person a request comes from, by lowercase email.
 type Identity interface {
 	Login(r *http.Request) (email string, err error)
@@ -50,8 +94,10 @@ type CookieIdentity struct {
 }
 
 // Login returns the email of a valid session cookie whose generation is current and whose person
-// is still a member; otherwise ErrNoIdentity, an error matching ErrSignInUnavailable when a lapsed
-// confirmation could not be renewed (Membership.Confirm), or the store's own error.
+// is still a member; otherwise ErrNoIdentity (a SignedOut where the cookie's session has ended
+// and Membership says why: CookieIdentity.ended), an error matching ErrSignInUnavailable when a
+// lapsed confirmation could not be renewed (Membership.Confirm), or the store's own error. A
+// cookie that does not verify, or has expired, is ErrNoIdentity alone: no reason is read for it.
 func (i CookieIdentity) Login(r *http.Request) (string, error) {
 	session, ok := auth.SessionFromRequest(r, i.SigningKey)
 	if !ok {
@@ -65,14 +111,47 @@ func (i CookieIdentity) Login(r *http.Request) (string, error) {
 		return "", err
 	}
 	if !found || generation != session.Generation {
-		return "", ErrNoIdentity
+		return "", i.ended(r.Context(), session.Login)
 	}
 	if i.Membership != nil {
 		if err := i.Membership.Confirm(r.Context(), session.Login); err != nil {
+			if errors.Is(err, ErrNoIdentity) {
+				return "", i.ended(r.Context(), session.Login)
+			}
 			return "", err
 		}
 	}
 	return session.Login, nil
+}
+
+// ended is ErrNoIdentity for email, whose session has ended, told as SignedOut where Membership
+// says why (Membership.signedOut). It reads the reason afresh at every request rather than keeping
+// it with the request that ended the session, so whichever request of the person's runs the hourly
+// confirmation (a page's read, its live socket's heartbeat, whoami itself) and whichever server
+// process answers the next one, that one says why. The local dev sign-in has no Membership and
+// says nothing.
+func (i CookieIdentity) ended(ctx context.Context, email string) error {
+	if i.Membership == nil {
+		return ErrNoIdentity
+	}
+	return i.Membership.signedOut(ctx, email)
+}
+
+// SessionCookies is an Identity whose person is proved by a signed session cookie
+// (CookieIdentity), so a caller holding a request it resolved can later ask whether that cookie's
+// session is still current: the agent-token mint does, under the person's people row lock.
+type SessionCookies interface {
+	// SessionCookie answers the login and session generation the request's session cookie
+	// carries, verified under the identity's keys and read from nothing else; ok is false when the
+	// request holds no cookie that verifies.
+	SessionCookie(r *http.Request) (login string, generation int64, ok bool)
+}
+
+// SessionCookie answers the login and generation of r's session cookie, verified under the key
+// set and with no read (SessionCookies).
+func (i CookieIdentity) SessionCookie(r *http.Request) (string, int64, bool) {
+	session, ok := auth.SessionFromRequest(r, i.SigningKey)
+	return session.Login, session.Generation, ok
 }
 
 // HeaderIdentity resolves the person a test or local harness names in Header, by email. Every
@@ -110,19 +189,36 @@ func (NoBrowserIdentity) Login(*http.Request) (string, error) {
 const signInUnavailableMessage = "the sign-in issuer cannot be reached; try again in a minute"
 
 // WriteError renders an Identity error, or a sign-in's, as Dispatch's JSON error response: 401
-// NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable (Membership: the
-// person stays signed in, and the first request after the issuer answers is served); and 500
-// IDENTITY_ERROR for anything else.
+// NO_IDENTITY for ErrNoIdentity, with the reason and the address as `reason` and `login` for a
+// SignedOut; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable (Membership: the person stays signed
+// in, and the first request after the issuer answers is served); and 500 IDENTITY_ERROR for
+// anything else.
 func WriteError(w http.ResponseWriter, err error) {
+	WriteErrorSigningIn(w, err, "")
+}
+
+// WriteErrorSigningIn is WriteError, with signIn, when not empty, added to a 401 NO_IDENTITY as
+// `sign_in`: how the page at the request's origin signs a person in. GET /auth/whoami names
+// "passkey" at the outside origin whatever DISPATCH_SIGNIN_PASSKEY says, since that origin serves
+// no Google sign-in either way; with passkey sign-in off its ceremonies answer 404, which the
+// dashboard's sign-in page words as sign-in turned off at this address.
+func WriteErrorSigningIn(w http.ResponseWriter, err error, signIn string) {
 	status := http.StatusInternalServerError
 	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}
+	var signedOut *SignedOut
 	switch {
+	case errors.As(err, &signedOut):
+		status = http.StatusUnauthorized
+		body = map[string]string{"error": signedOut.Error(), "code": "NO_IDENTITY", "reason": signedOut.Reason, "login": signedOut.Email}
 	case errors.Is(err, ErrNoIdentity):
 		status = http.StatusUnauthorized
 		body = map[string]string{"error": "unauthorized", "code": "NO_IDENTITY"}
 	case errors.Is(err, ErrSignInUnavailable):
 		status = http.StatusServiceUnavailable
 		body = map[string]string{"error": signInUnavailableMessage, "code": "SIGNIN_UNAVAILABLE"}
+	}
+	if status == http.StatusUnauthorized && signIn != "" {
+		body["sign_in"] = signIn
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

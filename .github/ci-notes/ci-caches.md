@@ -83,11 +83,12 @@ says) and builds from nothing.
 ## The envoy race lane's family
 
 go-envoy-race holds what the envoy race lane builds: the race build of every package of
-ci_job_reads.py's ENVOY_RACE_LANE (envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs'),
-the modules they need, and the plain build of the connection sizing program each of those jobs'
-pg-connection-ceiling.sh step runs (`go run ./internal/dispatch/store/cmd/connections`). The
-envoy-race job fills it on ubuntu-24.04-arm, the runner of all three jobs, on every push to main,
-as the other families are filled; every leg of the three jobs restores it. Before it, no cache
+ci_job_reads.py's ENVOY_RACE_LANE (envoy-go-race's, envoy-go-race-store's, envoy-go-race-api's and
+envoy-go-race-docs'), the modules they need, and the plain build of the connection sizing program
+each of those jobs' pg-connection-ceiling.sh step runs
+(`go run ./internal/dispatch/store/cmd/connections`). The envoy-race job fills it on
+ubuntu-24.04-arm, the runner of all four jobs, on every push to main, as the other families are
+filled; every leg of the four jobs restores it. Before it, no cache
 held a race object of the envoy module: envoy-go-race and envoy-go-race-api restored go-envoy-test
 (since #5626; nothing before it), which holds the modules and the plain objects of every package,
 and envoy-go-race-docs restored go-envoy, which holds the modules and the listener's plain objects.

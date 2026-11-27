@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  A machine login's approve is relayed to the secrets broker only while its sender still holds the
+  address: Dispatch checks the sender's cookie, personal token or broker token again once the
+  request's body has arrived, right before it calls the broker, so an approve whose body was held
+  back while another Google account took the address is refused `401` and reaches no broker,
+  however long the body was held. The approve also names the Google account of the credential
+  that made it (`approver_issuer`, `approver_subject`), never the account holding the address when
+  it is relayed: a personal token records the account it was minted by (a new column,
+  `agent_tokens.subject`). The broker records that account on the machine login it makes, so a later
+  revocation of that account ends the login too. Dispatch names the account only to a broker whose
+  `GET /v1/settings` answers `approver_fields: true`, as the broker of this release does; an older
+  broker, which refuses such an approve `400 INVALID_DECISION`, is sent the approve without it.
+time: 2026-11-16T23:55:21.344357564Z
+custom:
+    Issue: pr4199

@@ -233,6 +233,15 @@ type Caller struct {
 	// and the service that set the switch is the one that decides which of its routes the caller
 	// may call; it writes none of them.
 	ReadOnly bool
+	// AccountIssuer and AccountSubject are the Google account the token's credential records at
+	// the broker (Introspection's AccountIssuer and AccountSubject): the person token that made
+	// the sign-in the token was minted under, or the account that approved the machine login it
+	// was exchanged from. Both are empty for a token recording none: a token naming no person (a
+	// read-only one among them), and one whose sign-in or machine login was made before the
+	// broker recorded accounts. Whoever mounts this check decides whether that account may still
+	// act for Person.
+	AccountIssuer  string
+	AccountSubject string
 	// Held is the broker's introspection answer's `held` (Introspection.Held): Dispatch holds
 	// Person until they sign in again, or until a refresh confirms them. The Verifier sets it from
 	// the answer and keeps it as long as it keeps any affirmative answer
@@ -263,6 +272,12 @@ type Caller struct {
 	// word and decides nothing with it: the reader decides what it allows (Dispatch,
 	// brokerTokenActor). A reader that ignores it reads the token as it reads one without it.
 	LegionStatus bool
+	// CredentialCreatedAt is when the token's credential was made at the broker, from the broker
+	// database's clock (Introspection's CredentialCreatedAt): its sign-in on a machine, or the
+	// machine login it was exchanged from. The zero time for a token naming no person and for one
+	// minted before the broker recorded it. Whoever mounts this check holds a token recording no
+	// account to it.
+	CredentialCreatedAt time.Time
 }
 
 // Options is what a Verifier needs. BrokerURL, Account, Origins, Replay and Address are required.
@@ -275,11 +290,12 @@ type Options struct {
 	// token (GoogleAccount).
 	Account Account
 	// Origins are every origin the mounting program is reached at, each an absolute http(s) URL
-	// with no path: for Dispatch DISPATCH_SERVER_URL's first and then each DISPATCH_PROOF_ORIGINS
-	// adds, for a listener ENVOY_PUBLIC_URL alone. A proof's 'htu' is checked against the one of
-	// them it names plus the request's path, never against a forwarded header or the Host the
-	// request arrived under — see originFor and atOrigin. A proof naming none of them is checked
-	// against the first, and so refused as a target that is not this request's.
+	// with no path: for Dispatch DISPATCH_SERVER_URL's first, then DISPATCH_OUTSIDE_ORIGIN where it
+	// is set, and then each DISPATCH_PROOF_ORIGINS adds, for a listener ENVOY_PUBLIC_URL alone. A
+	// proof's 'htu' is checked against the one of them it names plus the request's path, never
+	// against a forwarded header or the Host the request arrived under — see originFor and
+	// atOrigin. A proof naming none of them is checked against the first, and so refused as a
+	// target that is not this request's.
 	Origins []string
 	// Replay is where a spent proof is recorded, so a captured one cannot be presented twice
 	// (store.DPoPProofs for Dispatch, the spent-proof KV bucket for a listener).

@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -165,6 +167,45 @@ func (s *server) accessAnswer(answer model.ProjectAccess) model.ProjectAccess {
 	return answer
 }
 
+// getProjectAccess answers who may see project key and who changes that, as the caller reads it:
+// a project the caller does not see answers as a key no project holds. The owner's browser session
+// gets the owner's passkey fields too where passkey sign-in is on (withOwnersPasskeys). Every read
+// of the answer is one snapshot, a read-only repeatable-read transaction: an enrollment uses its
+// link and stores its passkey in one commit, so the answer lists the link open or the passkey,
+// never neither, and the Access tab never drops a link with no passkey to show for it.
+func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
+	caller, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	pool, err := s.readyPool()
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	tx, err := pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The transaction reads only, so its end is a rollback whatever happened.
+	defer tx.Rollback(r.Context())
+	answer, err := access.ReadProject(r.Context(), tx, r.PathValue("key"), refs.VisibilityArg(who))
+	if err != nil {
+		s.writeAccessError(w, err)
+		return
+	}
+	if answer, err = s.withOwnersPasskeys(r.Context(), tx, answer, caller, who.Viewer); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, s.accessAnswer(answer))
+}
+
 // patchProjectAccess gives the project to another full member, at any time, sets its visibility,
 // and names its Slack channels. Only its owner calls it; any of the three fields may be left out,
 // and a body naming none is refused. Where passkey sign-in is on, a transfer is 409
@@ -233,6 +274,9 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			if hidden {
 				return model.ProjectAccess{}, nil, access.OwnerNotAllowed(*input.Owner)
 			}
+			if err := s.refuseTransferOfAnotherOwnersPasskey(ctx, tx, key, *input.Owner); err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
 			written, event, err := access.SetOwner(ctx, tx, s.deps.Events, key, *input.Owner, by)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
@@ -270,6 +314,89 @@ func ensurePrivate(ctx context.Context, tx pgx.Tx, bus BusProjects, key string) 
 	return nil
 }
 
+// putProjectAccessPerson names a person on the project's access list by email. Where passkey sign-in
+// is on, an address that holds a passkey enrolled through a link another owner made is 409
+// PASSKEY_OF_ANOTHER_OWNER (store.HeldByAnotherOwnersPasskey, read under the address's lock, which
+// an enrollment takes to check the other way): that passkey would read this project too, so the
+// owner whose link enrolled it resets the person first, and one owner binds an outside person.
+func (s *server) putProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
+	email := r.PathValue("email")
+	s.ownerWrite(w, r, "", "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+		if err := s.refusePasskeyOfAnotherOwner(ctx, tx, email, by.ID); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		answer, event, err := access.AddPrincipal(ctx, tx, s.deps.Events, key, access.PrincipalPerson, email, by)
+		if err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		return answer, []model.Event{event}, nil
+	})
+}
+
+// refusePasskeyOfAnotherOwner is errPasskeyOfAnotherOwner when email's address holds a passkey
+// enrolled through a link someone other than owner made, read in tx under the address's lock; an
+// email that names nobody is left to the list's own refusal. It runs whatever
+// DISPATCH_SIGNIN_PASSKEY says: a passkey enrolled while the setting was on reads every project that
+// names its person once it is on again, so a list written while it is off must not name them either.
+func (s *server) refusePasskeyOfAnotherOwner(ctx context.Context, tx pgx.Tx, email, owner string) error {
+	login, err := access.PersonPrincipal(email)
+	if err != nil {
+		return nil
+	}
+	if err := store.LockAddressTx(ctx, tx, login); err != nil {
+		return err
+	}
+	held, err := store.HeldByAnotherOwnersPasskey(ctx, tx, login, owner)
+	if err != nil {
+		return err
+	}
+	if held {
+		return errPasskeyOfAnotherOwner
+	}
+	return nil
+}
+
+// refuseTransferOfAnotherOwnersPasskey is errPasskeyOfAnotherOwner when a person project key's list
+// names directly holds a passkey that a link of someone other than owner, the project's next owner,
+// enrolled (store.ProjectNamesAnotherOwnersPasskey, read under each such person's address lock):
+// handing the project over would leave the link's maker, its owner until now, an account of their
+// own binding that reads it. The maker resets the person first, as a list's naming of them waits for
+// (refusePasskeyOfAnotherOwner). It runs whatever DISPATCH_SIGNIN_PASSKEY says, as that refusal does.
+func (s *server) refuseTransferOfAnotherOwnersPasskey(ctx context.Context, tx pgx.Tx, key, owner string) error {
+	held, err := store.ProjectNamesAnotherOwnersPasskey(ctx, tx, key, owner)
+	if err != nil {
+		return err
+	}
+	if held {
+		return errPasskeyOfAnotherOwner
+	}
+	return nil
+}
+
+// invitationAnswer is POST /api/v1/projects/{key}/access/people/{email}/invitations's answer: the
+// link the owner hands the person, the outside origin's enrollment page with the token in its
+// fragment, when it was made and when it lapses, on the database's clock. made_at is the key the
+// owner's Access tab holds the link by: a read of the access list that began after the link landed
+// and lists no open link of the person made at made_at (open_invitations) says it was used or
+// ended.
+type invitationAnswer struct {
+	URL       string    `json:"url"`
+	MadeAt    time.Time `json:"made_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// The refusals of the owner's link and Reset (createInvitation, resetProjectAccessPerson).
+var (
+	errPasskeySignInOff     = errors.New("this deployment signs nobody in with a passkey (DISPATCH_SIGNIN_PASSKEY is unset)")
+	errBrowserSessionNeeded = errors.New("only the owner's browser session makes a link or resets a person: no token does")
+	errPersonNotListed      = errors.New("the project's access list does not name this email directly: name the person on the list first")
+	errWorkspaceAddress     = errors.New("an address on a domain of the company's Workspace signs in with Google, never with a link")
+	errFullMember           = errors.New("a full member signs in with Google, never with a link")
+	// errPasskeyOfAnotherOwner refuses a list's naming of an address whose passkey another owner's
+	// link enrolled (putProjectAccessPerson).
+	errPasskeyOfAnotherOwner = errors.New("this address holds a passkey enrolled through another owner's link, which would read this project too: that owner resets the person first")
+)
+
 // ownerWrite runs one write of project {key}'s access for its owner (inOwnerWrite) and answers the
 // project's access as the write left it, with the owner's passkey fields where they apply
 // (withOwnersPasskeys), read in the write's transaction.
@@ -281,8 +408,8 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group, remov
 		if err != nil {
 			return nil, err
 		}
-		answer = written
-		return appended, nil
+		answer, err = s.withOwnersPasskeys(ctx, tx, written, by, viewer)
+		return appended, err
 	}) {
 		return
 	}
@@ -356,6 +483,68 @@ func (s *server) inOwnerWrite(w http.ResponseWriter, r *http.Request, group, rem
 	}
 	s.publish(r.Context(), appended...)
 	return true
+}
+
+// atBrowserAs reports whether actor, a person actingPerson resolved, is that person at a browser
+// (their sign-in proved them) rather than a credential acting for them: a personal token and a
+// broker token each name the agent that acted (model.Actor.Act), and a browser names none.
+func atBrowserAs(actor model.Actor) bool {
+	return actor.Act == nil
+}
+
+// withOwnersPasskeys adds to answer, read in q, the owner's passkey fields (model.ProjectAccess's
+// Passkeys, Invitable, ListedByAnotherOwner and OpenInvitations) when passkey sign-in is on and the
+// caller is the project's owner in a browser session, the one caller who may make a link; every
+// other answer carries none. Each passkey names who made the link that enrolled it and, where
+// viewer sees it, that link's project: a project of another owner the reader does not see is left
+// out, as every read leaves it out. A person a project of another owner names directly is listed
+// as such and is not invitable, as the link route refuses them (409 LISTED_BY_ANOTHER_OWNER).
+func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, answer model.ProjectAccess, caller model.Actor, viewer *model.Viewer) (model.ProjectAccess, error) {
+	if s.deps.Passkeys == nil || answer.Owner != caller.ID || !atBrowserAs(caller) {
+		return answer, nil
+	}
+	passkeys, err := store.EnrolledPasskeys(ctx, q, answer.People)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
+	// The test seam: a case commits an enrollment here, between the passkeys and the open links
+	// (server betweenOwnersPasskeyReads). Nothing but a test sets it.
+	if s.betweenOwnersPasskeyReads != nil {
+		s.betweenOwnersPasskeyReads()
+	}
+	for index := range passkeys {
+		if project := passkeys[index].Project; project != nil && !viewerSees(viewer, *project) {
+			passkeys[index].Project = nil
+		}
+	}
+	full, err := store.FullMembers(ctx, q, answer.People)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
+	listedElsewhere, err := store.ListedByOtherOwners(ctx, q, answer.People, answer.Owner)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
+	// Only a person from outside can be refused a link for another owner's listing: a full member
+	// or a Workspace address is refused one for what it is (FULL_MEMBER, WORKSPACE_ADDRESS), before
+	// the link route reads who else names it, so each person appears in one list at most.
+	invitable, others := []string{}, []string{}
+	for _, person := range answer.People {
+		switch {
+		case slices.Contains(full, person) || s.deps.Passkeys.WorkspaceAddress(person):
+		case slices.Contains(listedElsewhere, person):
+			others = append(others, person)
+		default:
+			invitable = append(invitable, person)
+		}
+	}
+	open, err := store.OpenInvitations(ctx, q, answer.Project)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
+	answer.Passkeys, answer.Invitable, answer.ListedByAnotherOwner = &passkeys, &invitable, &others
+	answer.OpenInvitations = &open
+	return answer, nil
 }
 
 // viewerSees reports whether viewer sees project; no viewer is the server's own read.

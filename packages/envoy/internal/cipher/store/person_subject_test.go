@@ -1,8 +1,13 @@
 package store_test
 
+//ci:reads docs/site/src/content/docs/dispatch/running-dispatch.md operatorClearBlock reads it, the first of operatorClearDocs, for the operator's clear of one refusal
+//ci:reads docs/site/src/content/docs/dispatch/after-a-restore.md operatorClearBlock and heredocAfter read it as restoreRunbook, for the reset's clear and its read of the broker's recorded generation
+//ci:reads packages/envoy/internal/dispatch/store/README.md operatorClearBlock reads it, the last of operatorClearDocs, for the clear the store README gives
+
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -125,6 +130,290 @@ func TestATradeOfAReplacedAccountIsRefusedOnEveryBoxKey(t *testing.T) {
 	}
 }
 
+// operatorClearDocs are the files that give the operator's clear of a broker refusal, each in a
+// psql heredoc: Dispatch's runbook, whose Running Dispatch page gives the clear of one refusal and
+// whose After a restore page gives it inside the loop of the reset after a lone Dispatch restore,
+// and Dispatch's store README.
+var operatorClearDocs = []string{
+	"../../../../../docs/site/src/content/docs/dispatch/running-dispatch.md",
+	restoreRunbook,
+	"../../dispatch/store/README.md",
+}
+
+// restoreRunbook is the page of Dispatch's runbook that gives the reset after a lone Dispatch
+// restore.
+const restoreRunbook = "../../../../../docs/site/src/content/docs/dispatch/after-a-restore.md"
+
+// operatorClearBlock is the one block of statements every operatorClearDocs file gives in every
+// heredoc that deletes from replaced_person_subjects, a statement a line, each line trimmed, since
+// a list item indents its code block: the operator's clear of one refusal, and the reset's clear
+// of the refusal of the account the Workspace directory names, whose psql line goes on past its
+// <<'SQL' with what the loop does on a failure; every such heredoc must be that same block, so a
+// fix to the clear reaches both.
+func operatorClearBlock(t *testing.T) []string {
+	t.Helper()
+	var block []string
+	for _, path := range operatorClearDocs {
+		text, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		var found [][]string
+		var heredoc []string
+		inside := false
+		for _, line := range strings.Split(string(text), "\n") {
+			line = strings.TrimSpace(line)
+			switch {
+			case !inside && strings.Contains(line, "<<'SQL'"):
+				inside, heredoc = true, nil
+			case inside && line == "SQL":
+				inside = false
+				for _, statement := range heredoc {
+					if strings.HasPrefix(statement, "delete from replaced_person_subjects ") {
+						found = append(found, heredoc)
+						break
+					}
+				}
+			case inside:
+				heredoc = append(heredoc, line)
+			}
+		}
+		if len(found) == 0 {
+			t.Fatalf("%s gives no block deleting from replaced_person_subjects, want the clear", path)
+		}
+		for _, other := range found[1:] {
+			if strings.Join(other, "\n") != strings.Join(found[0], "\n") {
+				t.Fatalf("%s gives two blocks deleting from replaced_person_subjects that differ, %q and %q; every one must be the clear", path, found[0], other)
+			}
+		}
+		if block != nil && strings.Join(found[0], "\n") != strings.Join(block, "\n") {
+			t.Fatalf("%s gives the clear as %q, and %s as %q: the two must say the same", path, found[0], operatorClearDocs[0], block)
+		}
+		block = found[0]
+	}
+	return block
+}
+
+// psqlVariables is block with its psql variables (:'person', :'issuer', :'subject') written as the
+// SQL literals psql sends for them.
+func psqlVariables(block []string, person, issuer, subject string) []string {
+	literal := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
+	replacer := strings.NewReplacer(":'person'", literal(person), ":'issuer'", literal(issuer), ":'subject'", literal(subject))
+	sent := make([]string, len(block))
+	for i, statement := range block {
+		sent[i] = replacer.Replace(statement)
+	}
+	return sent
+}
+
+// brokerGenerationLead starts the runbook's step of the reset after a lone Dispatch restore whose
+// first block reads the greatest session generation the broker recorded, for every address.
+const brokerGenerationLead = "**End every browser session and revoke every personal token.**"
+
+// heredocAfter is the first psql heredoc path gives after the line starting with lead, a statement
+// a line, each line trimmed.
+func heredocAfter(t *testing.T, path, lead string) []string {
+	t.Helper()
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var block []string
+	led, inside := false, false
+	for _, line := range strings.Split(string(text), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case !led:
+			led = strings.HasPrefix(line, lead)
+		case !inside && strings.HasSuffix(line, "<<'SQL'"):
+			inside = true
+		case inside && line == "SQL":
+			return block
+		case inside:
+			block = append(block, line)
+		}
+	}
+	t.Fatalf("%s gives no psql heredoc after a line starting %q", path, lead)
+	return nil
+}
+
+// TestTheRunbookReadsTheBrokersRecordedGeneration: the query Dispatch's runbook gives an operator to
+// read the session generation the broker recorded, run here from the runbook as psql sends it,
+// answers the greatest generation a revoke applied at any address: after revokes at 5 and 7 at one
+// address and at 3 at another, 7. On an empty table it answers 0, not nothing, so the reset's raise
+// still has a number to compare with.
+func TestTheRunbookReadsTheBrokersRecordedGeneration(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	block := heredocAfter(t, restoreRunbook, brokerGenerationLead)
+	if len(block) != 1 || !strings.HasPrefix(block[0], "select coalesce(max(session_generation), 0) from person_replacement_generations") {
+		t.Fatalf("the runbook gives %q after %q, want the one read of person_replacement_generations", block, brokerGenerationLead)
+	}
+	read := func() int64 {
+		t.Helper()
+		var got int64
+		if err := st.Pool.QueryRow(ctx, strings.TrimSuffix(block[0], ";")).Scan(&got); err != nil {
+			t.Fatalf("the runbook's read of the broker's recorded generation: %v", err)
+		}
+		return got
+	}
+	if got := read(); got != 0 {
+		t.Fatalf("on an empty table the runbook's read answered %d, want 0", got)
+	}
+	for _, revoke := range []struct {
+		person, subject, holder string
+		generation              int64
+	}{
+		{"recorded@example.com", "109recorded", "209recorded", 5},
+		{"recorded@example.com", "209recorded", "109recorded", 7},
+		{"other@example.com", "109other", "209other", 3},
+	} {
+		tx, err := st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.RecordReplacedSubjectTx(ctx, tx, revoke.person, signInIssuer, revoke.subject, revoke.holder, revoke.generation); err != nil {
+			t.Fatalf("the revoke at %d: %v", revoke.generation, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := read(); got != 7 {
+		t.Fatalf("the runbook's read of the broker's recorded generation answered %d; want 7", got)
+	}
+}
+
+// TestAnOperatorsClearLetsAReplacedAccountTradeAgain: the broker refuses an account it was told
+// no longer holds an address until a later revocation names it as the holder, and an operator who
+// chooses to lift that refusal by itself does so with the clear the runbook and Dispatch's store
+// README give, run here from those files as psql sends it: the account's next trade goes through,
+// while another account the broker refuses under the address stays refused, and the address's
+// holder trades as before. The clear lifts that one refusal and ends nothing. The clear's delete
+// sent without the marker the block sets first is refused, and lifts nothing.
+//
+// Control, in the test: before the clear, the account's trade is refused.
+func TestAnOperatorsClearLetsAReplacedAccountTradeAgain(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	account := accountOf(signInPerson)
+	holder := store.IssuerSubject{Issuer: signInIssuer, Subject: "209" + signInPerson}
+	other := store.IssuerSubject{Issuer: signInIssuer, Subject: "309" + signInPerson}
+	replace(t, st, signInPerson, other.Subject, holder.Subject)
+	replace(t, st, signInPerson, account.Subject, holder.Subject)
+
+	if err := recordAs(t, st, signInPerson, signInBoxOne, signInMachine, account); !errors.Is(err, store.ErrSubjectReplaced) {
+		t.Fatalf("control: before the clear, the account's trade = %v, want %v", err, store.ErrSubjectReplaced)
+	}
+	block := psqlVariables(operatorClearBlock(t), signInPerson, account.Issuer, account.Subject)
+	var bare string
+	for _, statement := range block {
+		if strings.HasPrefix(statement, "delete from replaced_person_subjects ") {
+			bare = statement
+		}
+	}
+	if _, err := st.Pool.Exec(ctx, bare); !isCheckViolation(err) {
+		t.Fatalf("the clear's delete without its marker = %v, want it refused with SQLSTATE 23514", err)
+	}
+	if err := recordAs(t, st, signInPerson, signInBoxOne, signInMachine, account); !errors.Is(err, store.ErrSubjectReplaced) {
+		t.Fatalf("after the refused bare delete, the account's trade = %v, want %v still", err, store.ErrSubjectReplaced)
+	}
+	if _, err := st.Pool.Exec(ctx, strings.Join(block, "\n")); err != nil {
+		t.Fatalf("the operator's clear: %v", err)
+	}
+	if err := recordAs(t, st, signInPerson, signInBoxOne, signInMachine, account); err != nil {
+		t.Fatalf("after the clear, the account's trade = %v, want it recorded", err)
+	}
+	if err := recordAs(t, st, signInPerson, signInBoxTwo, signInMachine, other); !errors.Is(err, store.ErrSubjectReplaced) {
+		t.Fatalf("after the clear, another refused account's trade = %v, want %v: the clear names one account", err, store.ErrSubjectReplaced)
+	}
+	if err := recordAs(t, st, signInPerson, signInBoxThree, signInMachine, holder); err != nil {
+		t.Fatalf("after the clear, the holder's trade = %v, want it recorded", err)
+	}
+}
+
+// TestADeleteMarkerNamesOnlyTheRowItNames: no field of replaced_person_subjects excludes any
+// character, so two rows can hold fields that read the same once joined by a separator: row A
+// (person "x@example.com|y", issuer "z") and row B (person "x@example.com", issuer "y|z"), of one
+// account. A transaction sets the marker of the operator's clear, read from the runbook and
+// Dispatch's store README, for A, then sends a delete whose where covers both: the guard lets A
+// through alone, so the delete is refused with SQLSTATE 23514 for B and deletes nothing, or it
+// deletes A alone. Control, in the test: under the same marker a delete naming A alone deletes it,
+// so the marker the test sets is A's.
+func TestADeleteMarkerNamesOnlyTheRowItNames(t *testing.T) {
+	st := storetest.Open(t)
+	ctx := context.Background()
+	const subject = "same-subject"
+	rowA := [2]string{"x@example.com|y", "z"}
+	rowB := [2]string{"x@example.com", "y|z"}
+	for _, row := range []struct{ person, issuer, holder string }{
+		{rowA[0], rowA[1], "holder-a"}, {rowB[0], rowB[1], "holder-b"},
+	} {
+		tx, err := st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.RecordReplacedSubjectTx(ctx, tx, row.person, row.issuer, subject, row.holder, 1); err != nil {
+			t.Fatalf("record %s replaced at %q under %q: %v", subject, row.person, row.issuer, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mark string
+	for _, statement := range psqlVariables(operatorClearBlock(t), rowA[0], rowA[1], subject) {
+		if strings.HasPrefix(statement, "select set_config(") {
+			mark = statement
+		}
+	}
+	if mark == "" {
+		t.Fatal("the operator's clear sets no marker")
+	}
+	// marked runs body in a transaction that sets A's marker first, and rolls it back.
+	marked := func(t *testing.T, body func(tx pgx.Tx)) {
+		t.Helper()
+		tx, err := st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, mark); err != nil {
+			t.Fatalf("A's marker %q: %v", mark, err)
+		}
+		body(tx)
+	}
+	t.Run("a delete whose where covers both rows", func(t *testing.T) {
+		marked(t, func(tx pgx.Tx) {
+			tag, err := tx.Exec(ctx, `delete from replaced_person_subjects where subject = $1`, subject)
+			if isCheckViolation(err) {
+				return
+			}
+			if err != nil {
+				t.Fatalf("the delete answered %v, want A deleted alone or a refusal with SQLSTATE 23514", err)
+			}
+			var left []string
+			rows, err := tx.Query(ctx, `select person || ' / ' || issuer from replaced_person_subjects where subject = $1 order by person`, subject)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if left, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+				t.Fatal(err)
+			}
+			if tag.RowsAffected() != 1 || len(left) != 1 || left[0] != rowB[0]+" / "+rowB[1] {
+				t.Errorf("a delete under A's marker alone deleted %d row(s), leaving %q; want A alone deleted, or a refusal with SQLSTATE 23514", tag.RowsAffected(), left)
+			}
+		})
+	})
+	t.Run("control: a delete naming A alone", func(t *testing.T) {
+		marked(t, func(tx pgx.Tx) {
+			tag, err := tx.Exec(ctx, `delete from replaced_person_subjects where person = $1 and issuer = $2 and subject = $3`, rowA[0], rowA[1], subject)
+			if err != nil || tag.RowsAffected() != 1 {
+				t.Errorf("a delete of A alone under A's marker = %d row(s), %v; want A deleted", tag.RowsAffected(), err)
+			}
+		})
+	})
+}
+
 // The guard on replaced_person_subjects (migration 0047, guard_replaced_person_subjects): a row
 // moves only as the revoke moves it, whatever statement is sent. guardPerson's rows are
 // guardReplaced and guardOther, each recorded at session generation 5, guardHolder holding the
@@ -217,7 +506,7 @@ func generationText(generation *int64) string {
 // before on the same connection let nothing be deleted. The revoke's own writes pass, run through
 // RecordReplacedSubjectTx: the insert, a repeat that raises the session generation (and one carrying
 // a lower one, which a later replacement superseded, so it writes nothing), and the delete of the
-// holder's row.
+// holder's row; so does the operator's clear, read from the runbook.
 func TestTheReplacedSubjectRowsMoveOnlyAsTheRevokeMovesThem(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := context.Background()
@@ -427,6 +716,27 @@ func TestTheReplacedSubjectRowsMoveOnlyAsTheRevokeMovesThem(t *testing.T) {
 				t.Errorf("the account the address moved from holds %v (%t), want generation 11", got, ok)
 			}
 		})
+	})
+	t.Run("allowed/the operator's clear, read from the runbook", func(t *testing.T) {
+		tx, err := st.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		for _, statement := range psqlVariables(operatorClearBlock(t), guardPerson, signInIssuer, guardReplaced) {
+			if statement == "begin;" || statement == "commit;" {
+				continue
+			}
+			if _, err := tx.Exec(ctx, statement); err != nil {
+				t.Fatalf("the clear's %q: %v", statement, err)
+			}
+		}
+		if _, ok := recorded(t, tx, guardReplaced); ok {
+			t.Errorf("after the operator's clear of %s its row is still there", guardReplaced)
+		}
+		if _, ok := recorded(t, tx, guardOther); !ok {
+			t.Errorf("the operator's clear of %s deleted %s's row too", guardReplaced, guardOther)
+		}
 	})
 }
 

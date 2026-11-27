@@ -901,6 +901,47 @@ func TestAPersonScopedTokenNamesNoProject(t *testing.T) {
 	}
 }
 
+// TestTheAccountATokenRecordsReachesBothChecksFromTheCacheToo: the Google account the broker
+// answers a token's credential records is part of the caller both checks answer, and an answer
+// remembered in the cache keeps it, so the requests inside AffirmativeCacheTTL and an open
+// connection's heartbeat read the same account the first request did. A token whose credential
+// records none answers none, and the time its credential was made (credential_created_at, Unix
+// seconds), which a resource server holds such a token to.
+func TestTheAccountATokenRecordsReachesBothChecksFromTheCacheToo(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const token, unrecorded = "a-token-whose-sign-in-records-its-account", "a-token-from-before-the-broker-recorded-accounts"
+	answer := liveToken(caller.jkt, time.Hour)
+	answer.AccountIssuer, answer.AccountSubject = "https://accounts.google.com", "109sjawhar"
+	rig.broker.Says(token, answer)
+	older := liveToken(caller.jkt, time.Hour)
+	older.CredentialCreatedAt = 1794900000
+	rig.broker.Says(unrecorded, older)
+
+	want := ciphertoken.Caller{
+		Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: ciphertoken.ProjectScopeNamed,
+		AccountIssuer: "https://accounts.google.com", AccountSubject: "109sjawhar",
+	}
+	for request := range 2 {
+		decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+		if err != nil || !reflect.DeepEqual(decided, want) {
+			t.Fatalf("Verify %d = %+v, %v; want %+v", request, decided, err, want)
+		}
+	}
+	live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+	if err != nil || !reflect.DeepEqual(live, want) {
+		t.Fatalf("Live = %+v, %v; want %+v", live, err, want)
+	}
+	if rig.broker.Count() != 1 {
+		t.Fatalf("two requests and a heartbeat cost %d introspections, want 1: the later two read the cache", rig.broker.Count())
+	}
+
+	none, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, unrecorded))
+	if err != nil || none.AccountIssuer != "" || none.AccountSubject != "" || !none.CredentialCreatedAt.Equal(time.Unix(1794900000, 0)) {
+		t.Fatalf("Verify of a token recording no account = %+v, %v; want a caller naming no account, its credential made at %s", none, err, time.Unix(1794900000, 0).UTC())
+	}
+}
+
 // TestOneTokenCostsOneIntrospectionInsideTheCachesLife: the cache is what keeps this check off
 // the broker's account-class bucket, so many requests bearing one live token cost one
 // introspection, and the answer is dropped at the token's own expiry rather than held for the

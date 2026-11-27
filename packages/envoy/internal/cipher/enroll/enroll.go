@@ -2505,6 +2505,15 @@ func signInCredential(subject *string) bool {
 	return exchange.ReadSubject(*subject).Kind == exchange.SubjectSignIn
 }
 
+// PodOperatorMappings counts the Kubernetes service accounts that BROKER_POD_OPERATORS maps to
+// person (record.CanonicalLogin), whether or not a pod of one holds a live login: a pod of each can
+// log in as person at any time with its own token, with no step of theirs. GET /v1/person-access
+// counts it as access that outlives the browser, as it counts an exchange entry.
+func (s *Service) PodOperatorMappings(person string) int {
+	mine, _ := s.podAccounts(record.CanonicalLogin(person))
+	return len(mine)
+}
+
 // podAccounts answers the subjects BROKER_POD_OPERATORS maps to person, a login as
 // record.CanonicalLogin spells it (mine), and every subject it maps (mapped).
 func (s *Service) podAccounts(person string) (mine, mapped []string) {

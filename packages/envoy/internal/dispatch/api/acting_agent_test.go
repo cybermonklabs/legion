@@ -537,7 +537,9 @@ func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
 // decided for its person is named on Dispatch's own access-log line: the session the caller named,
 // and otherwise the token, by its owner, with the credential beside it either way. The decision
 // Dispatch relays names the token's owner as the approver, which the broker takes on Dispatch's
-// word (credential_requests.go).
+// word (credential_requests.go), with the session generation its check read (0: alice holds no
+// session row here), which every approve to a broker that takes the approver fields carries, as
+// the fake broker's settings say it does.
 func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -565,7 +567,7 @@ func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T
 			if approved.Code != http.StatusOK {
 				t.Fatalf("approve a machine login with a personal token: status=%d body=%s", approved.Code, approved.Body.String())
 			}
-			if want := `{"approver":"alice","code":"123456"}`; broker.lastBody != want {
+			if want := `{"approver":"alice","code":"123456","approver_session_generation":0}`; broker.lastBody != want {
 				t.Fatalf("the approve sent the secrets broker %s, want %s: the token's owner is the approver", broker.lastBody, want)
 			}
 			lines := accessLines(t, logged)

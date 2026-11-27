@@ -34,7 +34,7 @@ const HEAD_ROWS: readonly HeadRow[] = JSON.parse(
 test("every row of the server's head table is cut as the server cuts it", () => {
   expect(HEAD_ROWS.length).toBeGreaterThan(0);
   const differing = HEAD_ROWS.flatMap((row) => {
-    const head = headRefs(row.text, row.limit, row.ellipsis, row.origin ?? "");
+    const head = headRefs(row.text, row.limit, row.ellipsis, [row.origin ?? ""]);
     return head === row.head ? [] : [{ got: head, name: row.name, want: row.head }];
   });
   expect(differing).toEqual([]);

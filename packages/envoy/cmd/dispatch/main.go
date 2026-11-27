@@ -13,10 +13,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -45,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -67,6 +70,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
+	"google.golang.org/api/option"
 )
 
 const (
@@ -122,6 +126,16 @@ type bootConfig struct {
 	// oidc.IAPKeySetURL, which no setting changes: a test points it at a key set it serves.
 	IAPAudience  string
 	IAPKeySetURL string
+	// DirectoryAccount and DirectoryAdmin are DISPATCH_DIRECTORY_ACCOUNT and
+	// DISPATCH_DIRECTORY_ADMIN under DISPATCH_IDENTITY=iap, both required there and refused under
+	// any other identity: the signer service account and the delegated Workspace user the Directory
+	// reader checks each person's account through (identity.NewDirectoryReader). DirectoryOptions
+	// are the options that reader reaches Google with, which no setting changes: none in a
+	// deployment, whose Application Default Credentials call signJwt; a test points them at the
+	// Google hosts it serves (directorytest).
+	DirectoryAccount string
+	DirectoryAdmin   string
+	DirectoryOptions []option.ClientOption
 	// SignInIssuer, SignInClientID and SignInClientSecret, with exactly one of SignInGroup and
 	// SignInDomain, configure Google sign-in (DISPATCH_SIGNIN_*): through a Cognito sign-in pool
 	// for a group, or with Google directly for a Workspace domain; empty means no sign-in.
@@ -130,7 +144,24 @@ type bootConfig struct {
 	SignInClientSecret string
 	SignInGroup        string
 	SignInDomain       string
-	NATSDisabled       bool
+	// SignInWorkspaceDomains is DISPATCH_SIGNIN_WORKSPACE_DOMAINS, the other domains the Workspace
+	// owns beside SignInDomain, each trimmed; nil when unset. A person from outside the domain at an
+	// address on one of them, or on SignInDomain, is refused (identity.OutsideRule's
+	// WorkspaceDomains, identity.WorkspaceAddress), since such an address signs in only as a
+	// Workspace account.
+	SignInWorkspaceDomains []string
+	// TrustedProxyRanges is DISPATCH_TRUSTED_PROXY_RANGES, the front doors whose X-Forwarded-For the
+	// passkey begins' bound reads (auth.BoundAddress, parseTrustedProxyRanges); nil when unset, which
+	// SignInPasskey refuses (checkSignInSettings).
+	TrustedProxyRanges []netip.Prefix
+	// TestSignInDomainIssuer is DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1, under the test hooks alone:
+	// SignInDomain runs under an issuer other than Google's, the dev OIDC issuer a browser suite
+	// signs people in through.
+	TestSignInDomainIssuer bool
+	// OutsideOrigin is DISPATCH_OUTSIDE_ORIGIN, the second origin the server answers at, as
+	// weborigin.Parse returns it; empty for none (parseOutsideOrigin, checkOutsideOrigin).
+	OutsideOrigin string
+	NATSDisabled  bool
 	// NATSReplicas is ENVOY_NATS_REPLICAS, the deployment's replica count for the stream and the
 	// webhook redelivery bucket, and StreamMaxBytes is ENVOY_STREAM_MAX_BYTES, the stream's byte
 	// limit or 0 for none set (bus.ParseNATSReplicas, bus.ParseStreamMaxBytes).
@@ -353,6 +384,13 @@ func main() {
 	if envoyConfig.Dispatch != nil {
 		serverURL = envoyConfig.Dispatch.ServerURL
 	}
+	// The outside origin is the second of two: its own spelling was judged with the rest of the
+	// settings (parseOutsideOrigin), and its host against the canonical origin's only now that the
+	// canonical origin is read.
+	if err := checkOutsideOrigin(boot.OutsideOrigin, serverURL); err != nil {
+		slog.Error("dispatch: resolve boot config", "error", err)
+		os.Exit(1)
+	}
 	// The App credentials are read before anything connects, so the dev sign-in fence refuses a
 	// key it will not sign with before NATS or Postgres is dialled.
 	dataDir, err := defaultDataDir()
@@ -572,13 +610,20 @@ func main() {
 		slog.Info("dispatch: storing uploaded files in a bucket", "bucket", boot.FileStoreBucket)
 	}
 
+	// The rule of who signs in is built once, here, over the database's access lists, and is the one
+	// value the sign-in, the hourly confirmation and the boot log consult.
+	rule, err := signInRule(boot, accessLister(database))
+	if err != nil {
+		slog.Error("dispatch: resolve boot config", "error", err)
+		os.Exit(1)
+	}
 	// INFRA-555: neither issuer is read at boot. The sign-in issuer's code flow and the
 	// service-account token verifier each discover their issuer in the background from here, and
 	// until then what needs one answers 503 (SIGNIN_UNAVAILABLE, OIDC_ISSUER_UNAVAILABLE) while
 	// everything else serves; /healthz reports each as `signin` and `service_tokens`.
 	signIn := signInFlow(boot)
 	if signIn != nil {
-		signInRule(boot).BootLog(boot.SignInIssuer, boot.SignInClientID)
+		rule.BootLog(boot.SignInIssuer, boot.SignInClientID)
 		go signIn.Run(ctx)
 	}
 
@@ -588,15 +633,28 @@ func main() {
 		os.Exit(1)
 	}
 	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	// Under DISPATCH_SIGNIN_DOMAIN, the people census, and the refusal of a domain no full member's
+	// sign-in records, which would hold every member (checkPeopleAtBoot). It reads people after the
+	// retirement above, so a retired row counts as one Dispatch cannot check, and refuses before
+	// the server serves.
+	if err := checkPeopleAtBoot(ctx, people, rule, boot.SignInDomain); err != nil {
+		slog.Error("dispatch: check the sign-in domain against the people", "error", err)
+		os.Exit(1)
+	}
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
 		slog.Warn("dispatch: using test/local header identity", "header", boot.IdentityHeader)
 	}
 	if boot.IAPAudience != "" {
-		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
+		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain,
+			"directory_account", boot.DirectoryAccount, "directory_admin", boot.DirectoryAdmin)
 	}
-	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
+	requestIdentity, membership, err := requestIdentityFor(ctx, boot, signingKey, people, sessions, signIn, rule)
+	if err != nil {
+		slog.Error("dispatch: build the request identity", "error", err)
+		os.Exit(1)
+	}
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, serverURL, docs.Deps{
@@ -647,6 +705,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The registry GET /metrics serves (api.Deps.Metrics), built whether or not NATS is
+	// configured: the route answers from the moment the server does, and a process with no bus
+	// simply leaves the outbox's counter at zero. The API adds the gauges of the mention sends it
+	// holds behind an earlier event to it, and the outbox those of its fallback copies.
+	met := metrics.New()
 	// The answers reads this process serves, each timed from the moment it enters the route's
 	// handler chain, as its access-log line times it: the API records them, and the keyword fill
 	// (textversions.Run, below) pauses on them, so the two share this one Latency.
@@ -671,8 +734,11 @@ func main() {
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
+		Metrics:        met,
 		Lifetime:       ctx,
-		AnswersLatency: answersLatency,
+		// Beside the owed revocations RegisterBrokerRevocationMetrics puts on met below.
+		BrokerRevocationsSuperseded: api.NewBrokerRevocationsSuperseded(met),
+		AnswersLatency:              answersLatency,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -690,12 +756,6 @@ func main() {
 		os.Exit(1)
 	}
 	built.BrokerTokens = brokerTokens
-	// The registry /metrics serves (dispatchHandler), built whether or not NATS is configured:
-	// the probe answers from the moment the server does, and a process with no bus simply leaves
-	// the outbox's counter at zero. The API adds the gauges of the mention sends it holds behind
-	// an earlier event to it (api.Deps.Metrics), and the outbox those of its fallback copies.
-	met := metrics.New()
-	built.Metrics = met
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
@@ -713,16 +773,19 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel) and the delivery settings both intakes route by
+	//     suggestion outcomes (api.EventsChannel), the broker revocations
+	//     (store.BrokerRevocationsChannel) and the delivery settings both intakes route by
 	//     (delivery.SettingsChannel). The two leased ones, reference-excerpts and edit-notices,
 	//     take their lease with no period (duty.RunWoken): a process that finds it held retries
 	//     until a pass of its own runs, since the other process's pass may have read before the
 	//     change that woke this one. The suggestion-outcome loop takes none: each of its pages
 	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
 	//     serialises two processes woken by one commit, the first pass on a database included
-	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
-	//     their window, and the deliveries a process that died left owed - keeps a timer of its
-	//     own below, because no wake announces either: a death commits nothing.
+	//     (api/suggestion_outcomes.go). The broker revocation loop takes none either: each pass
+	//     claims the revocations it pays (store.BrokerRevocations.Claim). The keyed writes' own
+	//     sweep - the Idempotency-Keys past their window, and the deliveries a process that died
+	//     left owed - keeps a timer of its own below, because no wake announces either: a death
+	//     commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
 	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
 	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
@@ -748,7 +811,8 @@ func main() {
 	//     (api.RunIssueAskRepair, every 10 minutes on a plain ticker, after the boot's own
 	//     unleased pass), the prune of the server process registry (processes.RunPrune, every
 	//     minute, which joinRegistry starts below), the keyed writes' maintenance sweep
-	//     (api.RunMaintenanceSweep, every minute), the document compaction sweep
+	//     (api.RunMaintenanceSweep, every minute, whose last work under a Google rule is the
+	//     membership pass, identity.MembershipPass), the document compaction sweep
 	//     (docs.Service.RunCompactionSweep, every hour from a tick at start, with or without NATS)
 	//     and the display tree fill (texttreefill.Run, every hour from a tick at start, whose
 	//     first pass of a display parser version runs until every stored text has a tree at it),
@@ -774,8 +838,9 @@ func main() {
 	// Deliberately NOT leased, in three classes:
 	//   - already claims its own work, so two processes never do one unit of it twice: the
 	//     embedding queue (embedqueue, `for update skip locked`), the task progress
-	//     reconciliation (`for no key update ... skip locked`) and the delivery intakes (each
-	//     delivers from its durable only while it holds that durable's duty.Hold, which
+	//     reconciliation (`for no key update ... skip locked`), the broker revocation loop (a
+	//     claim stamps each revocation tried, `for update skip locked`) and the delivery intakes
+	//     (each delivers from its durable only while it holds that durable's duty.Hold, which
 	//     delivery.StartIntakes takes).
 	//   - per-process by design, because each serves this process's own connections or memory:
 	//     the delivery live hub and its listener (migration 0107_events_notify.up.sql states that
@@ -915,7 +980,11 @@ func main() {
 	// The app context is built only now, so the rule the fix answered reaches the server
 	// (api.DepsInput through appContextOptions). Nothing above reads it.
 	built.ParentStatusRule = parentStatusRule
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
+	// Under a Google rule, whether a person's personal tokens and broker credentials are held
+	// (identity.Membership.Standing), asked by the API and answered on the person route; nil, which
+	// holds nobody, under any other rule. The membership is handed the router's check of access
+	// that outlives the browser here, before anything is served (buildAppContext).
+	appCtx, err := buildAppContext(boot, rule, built, membership)
 	if err != nil {
 		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
@@ -1014,6 +1083,7 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	brokerRevocationsWake := listenerHub.Wake(store.BrokerRevocationsChannel)
 	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
 	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
 	schemaWake := schemanodes.RegisterWake(listenerHub)
@@ -1354,16 +1424,41 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
-	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
-	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
-	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above.
+	// The Idempotency-Keys past their 24 hours, the deliveries a process that died left owed and,
+	// under a Google rule, the membership pass (identity.MembershipPass), once a minute across the
+	// processes under the suggestion-outcomes lease. It is a timer and not a woken loop because no
+	// commit announces any of these, and it starts here because it resumes those deliveries
+	// through the API server built just above. With a list of private projects, it checks the
+	// store once as it starts, beside the serving process, then hourly. The membership pass asks
+	// the Membership the router's Standing asks, and the sign-out's check of access that outlives
+	// the browser (routes.AppContext.Outliving); under IAP identity, whose rule is the domain's and
+	// whose Membership follows the Workspace Directory, it checks each full member's account there.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
+	var confirmMemberships func(context.Context) error
+	if standingFor(rule, membership) != nil {
+		confirmMemberships = identity.MembershipPass{Membership: membership, People: people, Outliving: appCtx.Outliving()}.Run
+	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries,
-		boot.PrivateProjects, boot.PrivateBeforeFullSwitch)
+		boot.PrivateProjects, boot.PrivateBeforeFullSwitch, confirmMemberships)
+	// The credentials at the secrets broker of a Google account another account took the
+	// address of are revoked there with one call naming that account, woken by each revocation a
+	// sign-in records and retried until the broker confirms. It takes no lease: each pass claims the
+	// revocations it pays. It starts here because it calls the broker through the API server built
+	// just above. A process with no broker configured records no revocation (peopleOptions), so
+	// every process of a deployment with a broker sets one; a revocation a process with a broker
+	// recorded waits, on a process without, for the first pass of a process that has one. The owed
+	// revocations are on /metrics, each series read from the table when a scrape asks for it, so one
+	// the broker never confirms shows whichever process recorded it (envoy-dispatch
+	// clear-broker-revocation settles it). Each pass also catches up, broker or none, once the
+	// account binding holds, the changes of an address's account the database kept, and the live
+	// personal tokens the binding refuses (store.CatchUpAccountBindingOf); every change of an
+	// account wakes it, and it reads the fleet every 10 seconds while such an address waits for the
+	// binding to hold.
+	go api.RunBrokerRevocations(ctx, background.RevokeBrokerCredentials, brokerRevocationsWake)
+	api.RegisterBrokerRevocationMetrics(met, database.Pool)
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.
@@ -1376,7 +1471,11 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	// The process's two probes stand above the router (routes.Process); /metrics is a row of the
+	// API's route table, which needs a credential (api.Deps.Metrics). Every response says whether
+	// any project is private, from the state read at boot.
+	handler := serveHandler(routes.Process(routesHandler, healthzHandler(database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, privateState, reads)), privateState)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1708,6 +1807,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		{"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER", &boot.TestSignInDomainIssuer},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
@@ -1720,6 +1820,14 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		boot.ParentStatusRule = true
 	default:
 		return bootConfig{}, fmt.Errorf("DISPATCH_PARENT_STATUS_RULE=%q (expected on, off or unset)", rule)
+	}
+	if boot.TrustedProxyRanges, err = parseTrustedProxyRanges(commaList(env, "DISPATCH_TRUSTED_PROXY_RANGES")); err != nil {
+		return bootConfig{}, err
+	}
+	// Checked with the rest of the sign-in settings (checkSignInSettings).
+	boot.SignInWorkspaceDomains = commaList(env, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
+	if boot.OutsideOrigin, err = parseOutsideOrigin(env.get("DISPATCH_OUTSIDE_ORIGIN"), boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
 	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
@@ -1758,6 +1866,14 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		boot.IdentityHeader = strings.TrimSpace(strings.TrimPrefix(mode, "header:"))
 		if boot.IdentityHeader == "" {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY header name required")
+		}
+		// The outside origin is the address people from outside reach Dispatch at, and header
+		// identity takes whoever a request header names, so together they would let anyone who
+		// reaches that address name themself in the header and be that person (R6). The
+		// acknowledgement below says the header is trusted on a test harness; it cannot make a
+		// deployment's outside address trustworthy, so the pair is refused before it is read.
+		if boot.OutsideOrigin != "" {
+			return bootConfig{}, errors.New("DISPATCH_OUTSIDE_ORIGIN must be unset because header identity takes whoever a request header names, and the outside origin is the address people from outside reach Dispatch at: header identity is only for tests and local harnesses")
 		}
 		if env.get("DISPATCH_IDENTITY_HEADER_TRUSTED") != "1" {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY_HEADER_TRUSTED=1 required: header identity is only for tests and local harnesses")
@@ -1832,7 +1948,27 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		}
 		boot.DevSignIn = true
 	}
+	// The Directory settings are IAP identity's alone (K12), read after the dev sign-in fence, so
+	// dev sign-in beside IAP identity is refused for the identity first.
+	if boot.DirectoryAccount, boot.DirectoryAdmin, err = directorySettings(env, boot.IAPAudience != ""); err != nil {
+		return bootConfig{}, err
+	}
 	return boot, nil
+}
+
+// commaList is the comma-separated list the setting name holds, each entry trimmed; a value blank
+// once trimmed is no list at all. An empty entry stays in the list for its reader to refuse by
+// position, as NATS_URLS refuses one.
+func commaList(env settingValues, name string) []string {
+	value := strings.TrimSpace(env.get(name))
+	if value == "" {
+		return nil
+	}
+	entries := strings.Split(value, ",")
+	for index, entry := range entries {
+		entries[index] = strings.TrimSpace(entry)
+	}
+	return entries
 }
 
 // devSignInFence is the dev sign-in fence over the environment; devSignInLoadedFence covers what
@@ -1848,6 +1984,12 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 	}
 	if boot.SignInIssuer != "" {
 		return errors.New("DISPATCH_DEV_SIGNIN=1 signs people in without the sign-in issuer, so DISPATCH_SIGNIN_* must be unset: a loopback server holds no sign-in client secret")
+	}
+	// The outside origin is the address people from outside reach Dispatch at, and dev sign-in
+	// signs in whoever a loopback client names, so the pair would hand that address a sign-in that
+	// proves nobody (R6), as header identity would (resolveBootConfig refuses that pair too).
+	if boot.OutsideOrigin != "" {
+		return errors.New("DISPATCH_DEV_SIGNIN=1 signs in whoever a loopback client names, so DISPATCH_OUTSIDE_ORIGIN must be unset: the outside origin is the address people from outside reach Dispatch at")
 	}
 	if !routes.LoopbackHostPort(boot.ListenAddr) {
 		if boot.ListenSocket != nil {
@@ -2023,7 +2165,7 @@ func documentDeps(boot bootConfig, serverURL string, built docs.Deps) docs.Deps 
 	built.MaxLiveRooms = boot.MaxLiveRooms
 	built.MaxDocConnections = boot.MaxDocConnections
 	built.TestHooks = boot.TestHooksEnabled
-	built.Origins = text.NewOrigins(strings.TrimSuffix(serverURL, "/"))
+	built.Origins = text.NewOrigins(strings.TrimSuffix(serverURL, "/"), boot.OutsideOrigin)
 	return built
 }
 
@@ -2172,10 +2314,12 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 }
 
 // appContextOptions is what main hands routes.BuildAppContext: built, what main made from the
-// configuration, with every setting the router takes from boot filled in. The settings tests build
-// the router through it, so dropping any hand-off here fails a case.
-func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.AppContextOptions {
-	built.SignInRule = signInRule(boot)
+// configuration, with rule, boot's sign-in rule (signInRule), and every setting the router takes
+// from boot filled in. The settings tests build the router through it, so dropping any hand-off
+// here fails a case.
+func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.AppContextOptions) routes.AppContextOptions {
+	built.SignInRule = rule
+	built.OutsideOrigin = boot.OutsideOrigin
 	built.AgentTokens = boot.AgentTokens
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
@@ -2190,6 +2334,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile
 	built.LegionStatusScope = boot.LegionStatusScope
+	built.SignInIssuer = accountIssuer(boot)
 	built.TestHooksEnabled = boot.TestHooksEnabled
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
@@ -2198,7 +2343,52 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
+	built.DevRestrictedAdmission = devRestrictedAdmission(boot, built.Store)
+	built.TrustedProxyRanges = boot.TrustedProxyRanges
 	return built
+}
+
+// parseTrustedProxyRanges parses the entries of DISPATCH_TRUSTED_PROXY_RANGES (commaList), each a
+// CIDR, IPv4 or IPv6, written as the network it names (35.191.0.0/16, not 35.191.4.5/16, so the
+// setting trusts what it says), with a prefix longer than /0, since 0.0.0.0/0 or ::/0 would trust
+// every peer's X-Forwarded-For and let any caller pick the address its passkey begins are bounded
+// by. It refuses an empty entry and any other, naming the entry by its position; nil for none.
+func parseTrustedProxyRanges(entries []string) ([]netip.Prefix, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	ranges := make([]netip.Prefix, len(entries))
+	for index, entry := range entries {
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is empty", index+1, len(entries))
+		}
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be a CIDR such as 35.191.0.0/16 or 2600:2d00:1:1::/64", index+1, len(entries))
+		}
+		if prefix != prefix.Masked() {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be written as the network it names, %s", index+1, len(entries), prefix.Masked())
+		}
+		if prefix.Bits() == 0 {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d trusts every peer's X-Forwarded-For, so any caller would pick the address its passkey begins are bounded by: name the front doors' own ranges", index+1, len(entries))
+		}
+		ranges[index] = prefix
+	}
+	return ranges, nil
+}
+
+// accountIssuer is the issuer of every Google account people records, which the API names a
+// credential's account under (api.Deps.SignInIssuer): boot's sign-in issuer for the sign-in that
+// records the account (DISPATCH_SIGNIN_DOMAIN, whose rule writes people.sub, identity.DomainRule
+// and store.PgPeopleStore.SignInSubject), and empty for a Cognito pool's group, whose sign-in
+// records none. So after a switch from Google to the pool, a `sub` a Google sign-in left in people
+// is never named as the account of a cookie, a mint or an approve the pool's sign-in made, and the
+// membership answer reads every account as the holder.
+func accountIssuer(boot bootConfig) string {
+	if boot.SignInDomain == "" {
+		return ""
+	}
+	return boot.SignInIssuer
 }
 
 // loadEnvoyConfig is envoy.json as Dispatch reads it: the files config.Load finds, the user file
@@ -2356,23 +2546,6 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 	return extra
 }
 
-// dispatchHandler mounts the three probes the process serves - /healthz, /livez and /metrics -
-// above every dashboard and API route, so each is answered whatever the router is doing. Go's
-// ServeMux prefers the longer pattern, so "GET /healthz", "GET /livez" and "GET /metrics" win
-// over the router's "/", which is also what keeps a scrape of /metrics from falling through to
-// the SPA shell the router answers an unknown path with. /livez answers 204 and touches nothing:
-// it says only that the process answers, for a liveness or startup probe, which must not wait on
-// or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
-// so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
-	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
-	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	mux.Handle("GET /metrics", registry.Handler())
-	mux.Handle("/", handler)
-	return mux
-}
-
 // issuers are the two OIDC issuers the process discovers in the background, as /healthz reports
 // them: the sign-in issuer's code flow and the service-account token verifier, each nil when boot
 // configures none.
@@ -2416,13 +2589,14 @@ type gitHubReadEntry struct {
 	State gitHubReadState `json:"state"`
 	// At is when the newest attempt was recorded, by the database's clock, in UTC.
 	At *time.Time `json:"at"`
-	// Cause is the newest attempt's first failure, at most githubreads.CauseLimit bytes.
+	// Cause is the class of the newest attempt's first failure (gitHubReadCauseClass); the
+	// failure's text is github_read_attempts'.
 	Cause *string `json:"cause"`
 }
 
 // gitHubReadEntryOf is read's entry: off when this process does not run it (runs false), unknown
 // before the copy's first load (loaded false), no_attempt when the copy holds no row for it, and
-// otherwise the row's own outcome, with its time, and with its cause when it failed.
+// otherwise the row's own outcome, with its time, and with its cause's class when it failed.
 func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[githubreads.Read]githubreads.Recorded) gitHubReadEntry {
 	if !runs {
 		return gitHubReadEntry{State: gitHubReadOff}
@@ -2438,8 +2612,28 @@ func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[github
 	if row.Succeeded {
 		return gitHubReadEntry{State: gitHubReadSucceeded, At: &at}
 	}
-	cause := row.Cause
-	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &cause}
+	class := gitHubReadCauseClass(row.Cause)
+	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &class}
+}
+
+// gitHubStatus matches the first HTTP status a GitHub read's cause names, "status <n>", which is
+// the class itself. The client words every answer it notes as a failure with its status ahead of
+// any body GitHub sent ("<METHOD> <target>: status <n>: <body>", and "rate-limited by GitHub
+// (status <n>)"; githubapp's failedAnswer), so the first one is the answer's own.
+var gitHubStatus = regexp.MustCompile(`\bstatus [1-5][0-9]{2}\b`)
+
+// gitHubReadCauseClass is the class /healthz answers for a failed read's cause: "status <n>" for
+// the status GitHub answered, and "no status" for a failure that carries none (a request GitHub
+// never answered, or a failure of the read's own). A cause is GitHub's error text, which names the
+// repository the read read, one a private project maps or one GitHub keeps private, and /healthz
+// answers whoever reaches the port, from outside too where the deployment has an outside origin
+// (R2). So /healthz answers the class alone, in every deployment, which can name no repository,
+// and the operator reads the cause itself in github_read_attempts.
+func gitHubReadCauseClass(cause string) string {
+	if status := gitHubStatus.FindString(cause); status != "" {
+		return status
+	}
+	return "no status"
 }
 
 // gitHubReadsMember is /healthz's github member: one entry for each read, in the order
@@ -2484,7 +2678,8 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
 // the approval relays already call, Dispatch's own projected ServiceAccount token from
 // DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
-// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, DISPATCH_OUTSIDE_ORIGIN where it
+// is set, so an agent whose Dispatch URL is the outside origin signs for it, and each one
 // DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
 // Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
 // Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
@@ -2506,10 +2701,14 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	if boot.AgentSecretsURL == "" {
 		return nil, nil
 	}
+	added := boot.ProofOrigins
+	if boot.OutsideOrigin != "" {
+		added = append([]string{boot.OutsideOrigin}, boot.ProofOrigins...)
+	}
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
-		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
+		Origins:   proofOrigins(serverURL, added),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
@@ -2606,8 +2805,11 @@ func proofOrigins(serverURL string, added []string) []string {
 // failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
 // this process has read the record, and `off` where this process does not run the read (no App
 // private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
-// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
-// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` the class of a
+// failed one's first failure, `status <n>` or `no status` (gitHubReadCauseClass); each is null
+// where the state carries none. The failure's text names the repository the read read, and this
+// answer reaches whoever reaches the port (R2), so it is never answered here: the operator reads
+// it in github_read_attempts.
 // It never decides `ok` or the status: a process serves everything but GitHub's own reads while
 // GitHub fails, so failing the probe would take every server process out of service for an outage
 // each of them serves through. It is read from this process's copy of the record

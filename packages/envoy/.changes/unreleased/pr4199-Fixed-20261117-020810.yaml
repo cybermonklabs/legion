@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  Through a Cognito sign-in pool, the hourly confirmation no longer signs out, or overwrites the
+  refresh token of, a person who signed in again while it ran. Like a Google domain's, it ends or
+  confirms the sign-in only while the person's record still holds the refresh token that
+  confirmation read.
+time: 2026-11-17T02:08:10.620646694Z
+custom:
+    Issue: pr4199

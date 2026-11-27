@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A restricted member whose address's domain is written in Unicode, such as `bob@bücher.example`,
+  is refused when that domain is one the Workspace owns, as the same address in A-labels
+  (`xn--bcher-kva.example`) was. The domain is compared as
+  IDNA lookup maps it, so a capital letter outside ASCII, fullwidth letters and an ideographic full
+  stop name the same domain, as does one trailing dot. `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` takes an
+  internationalized domain in Unicode or as its A-labels, and refuses startup for an entry IDNA
+  lookup does not take, such as `xn--a.example`.
+time: 2026-11-16T23:36:14.121017257Z
+custom:
+    Issue: pr4199

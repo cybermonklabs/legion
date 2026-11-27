@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A change of a person's member kind reaches their open sockets at once, not at their next
+  sign-in: the people write that changes it announces it in its own transaction, so their live
+  socket closes and the page opens a new one under the new kind, and a document socket or a
+  delivery view of a project the new kind does not see closes or is refused. A person from outside
+  the domain signs in with a passkey, and a Google account outside the domain is refused, so the
+  write that changes a kind is a Workspace member's Google sign-in taking back an address a
+  restricted member held.
+time: 2026-11-17T10:15:38.654187568Z
+custom:
+    Issue: pr4199

@@ -94,7 +94,7 @@ function testDatabaseServer(): string {
 /**
  * Starts a real Dispatch server, built from this checkout, on a loopback port and a database of
  * its own: a copy of template1 on the server `DISPATCH_TEST_DATABASE_URL` names, which the server
- * migrates itself as it boots. It resolves once `GET /api/v1` answers 200, and throws, naming why,
+ * migrates itself as it boots. It resolves once `GET /healthz` answers 200, and throws, naming why,
  * when `go` or the DSN is missing, the build fails, or the server does not come up.
  *
  * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
@@ -181,7 +181,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     child = started.child;
     const url = `http://127.0.0.1:${started.port}`;
     await awaitReady("Dispatch", started.child, log, DISPATCH_READY, async () => {
-      const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
+      const response = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(2_000) });
       return response.ok;
     });
     return { url, token, stop };

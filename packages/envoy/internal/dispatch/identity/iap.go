@@ -70,7 +70,7 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 		slog.Warn("dispatch: IAP assertion refused", "reason", oidc.Reason(err))
 		return "", ErrNoIdentity
 	}
-	email, refused := i.Rule.Person(claims)
+	signedIn, refused := i.Rule.Person(r.Context(), claims)
 	if refused != nil {
 		slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(claims), "reason", refused)...)
 		return "", ErrNoIdentity
@@ -79,8 +79,8 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 		slog.Debug("dispatch: IAP assertion expired", "error", err)
 		return "", ErrCredentialExpired
 	}
-	if err := i.People.Record(r.Context(), email); err != nil {
+	if err := i.People.Record(r.Context(), signedIn.Email); err != nil {
 		return "", err
 	}
-	return email, nil
+	return signedIn.Email, nil
 }

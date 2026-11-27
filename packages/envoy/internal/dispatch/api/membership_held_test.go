@@ -1,0 +1,422 @@
+// membership_held_test.go holds the API to a hold (K1, K2, K3, K5): when Google refuses a person's
+// Dispatch sign-in, or no refresh has confirmed them for 24 hours, their personal tokens and the
+// broker tokens naming them are refused 401 MEMBERSHIP_HELD until they sign in again, after every
+// revocation and admission check, on a request, at a live socket's heartbeat and at a machine
+// login's decision; and the person route the broker's hold gate asks answers held and as_of.
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/oidc"
+)
+
+// standingFake is a Deps.Standing answering what answer says (not held while it is nil), and
+// keeping each email it was asked about, so a test counts what a check cost. directory is its
+// ChecksDirectory: false, cookie identity, unless a test of IAP identity sets it.
+type standingFake struct {
+	mu        sync.Mutex
+	asked     []string
+	answer    func(email string) (identity.Standing, error)
+	directory bool
+}
+
+func (f *standingFake) Standing(_ context.Context, email string) (identity.Standing, error) {
+	f.mu.Lock()
+	f.asked = append(f.asked, email)
+	answer := f.answer
+	f.mu.Unlock()
+	if answer == nil {
+		return identity.Standing{}, nil
+	}
+	return answer(email)
+}
+
+func (f *standingFake) ChecksDirectory() bool { return f.directory }
+
+// answers makes every later call answer standing and err.
+func (f *standingFake) answers(standing identity.Standing, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answer = func(string) (identity.Standing, error) { return standing, err }
+}
+
+// askedSoFar is every email asked about so far, in order.
+func (f *standingFake) askedSoFar() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.asked)
+}
+
+// refusingRefresher is Google refusing every refresh (invalid_grant), counting the refreshes.
+type refusingRefresher struct{ calls atomic.Int64 }
+
+func (r *refusingRefresher) Refresh(context.Context, string) (oidc.Session, error) {
+	r.calls.Add(1)
+	return oidc.Session{}, fmt.Errorf("%w: invalid_grant", oidc.ErrGrantRefused)
+}
+
+// heldClock is the broker-token check's clock in a test that outlives an answer the check keeps
+// (ciphertoken.AffirmativeCacheTTL) without sleeping through it.
+type heldClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *heldClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *heldClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
+}
+
+// servedWith is the API over deps, as another process of the deployment newTestServer built deps
+// for serves it: the same database and broker, with the fields a test changed.
+func servedWith(t *testing.T, deps Deps) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitBackgroundOf(t, served) })
+	return mux
+}
+
+// peopleOf is the people store over database that the server under test reads.
+func peopleOf(database *store.Store) *store.PgPeopleStore {
+	return store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
+}
+
+// signInFor records email's Google sign-in under subject with refresh, as kind, which releases any
+// recorded hold, and dates its confirmation age back.
+func signInFor(t *testing.T, database *store.Store, email, subject, refresh string, kind model.MemberKind, age time.Duration) {
+	t.Helper()
+	ctx := context.Background()
+	if err := peopleOf(database).SignInSubject(ctx, email, subject, refresh, "", kind); err != nil {
+		t.Fatalf("sign %s in: %v", email, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `update people set confirmed_at = now() - make_interval(secs => $2) where email = $1`, email, age.Seconds()); err != nil {
+		t.Fatalf("date %s's confirmation %s back: %v", email, age, err)
+	}
+}
+
+// holdPerson records a hold of email as Google's refusal of their refresh does
+// (store.PgPeopleStore.EndSubject with auth.EndHold), for the sign-in under subject with refresh.
+func holdPerson(t *testing.T, database *store.Store, email, subject, refresh string) {
+	t.Helper()
+	ended, err := peopleOf(database).EndSubject(context.Background(), email, subject, refresh, auth.EndHold)
+	if err != nil || !ended {
+		t.Fatalf("record a hold of %s: ended %t, %v", email, ended, err)
+	}
+}
+
+// recordedHold is whether people records a hold of email.
+func recordedHold(t *testing.T, database *store.Store, email string) bool {
+	t.Helper()
+	var held bool
+	if err := database.Pool.QueryRow(context.Background(), `select coalesce(held_since > signed_in_at, false) from people where email = $1`, email).Scan(&held); err != nil {
+		t.Fatalf("read whether %s is held: %v", email, err)
+	}
+	return held
+}
+
+// wantHeldRefusal fails the test unless response is 401 MEMBERSHIP_HELD saying text.
+func wantHeldRefusal(t *testing.T, response *httptest.ResponseRecorder, text, what string) {
+	t.Helper()
+	var refusal refusalAnswer
+	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+	if response.Code != http.StatusUnauthorized || refusal.Code != codeMembershipHeld || refusal.Error != text {
+		t.Fatalf("%s = %d %s, want 401 %s saying %q", what, response.Code, strings.TrimSpace(response.Body.String()), codeMembershipHeld, text)
+	}
+}
+
+// brokerHeldText is the broker's words for a hold of person, which Dispatch and the listener give a
+// broker token whose introspection answered held.
+func brokerHeldText(person string) string {
+	return person + "'s credentials are held by Dispatch; they work again when " + person +
+		" signs in to Dispatch, or when Dispatch can confirm " + person + " with Google again"
+}
+
+// TestAPersonalTokenOfAHeldPersonIsRefused: a personal token whose owner Dispatch holds is 401
+// MEMBERSHIP_HELD, in words for the rule that holds them. A recorded hold is read in the token's
+// own statement and asks Standing nothing, and tells the owner to sign in again; once their
+// confirmation is older than an hour the token asks Standing, whose 24-hour rule says no refresh
+// confirmed the owner in 24 hours and whose unopenable rule, and a hold its refresh recorded, take
+// the recorded hold's words. A Standing that fails is 503 IDENTITY_UNAVAILABLE, never an accept.
+// Where no Google rule signs people in (Standing nil) a recorded hold holds nobody, and the owner's
+// next sign-in releases it.
+func TestAPersonalTokenOfAHeldPersonIsRefused(t *testing.T) {
+	_, database, deps := newTestServer(t, testServerOptions{})
+	signInFor(t, database, accessCarol, "carol-account", "carol-refresh", model.MemberFull, time.Minute)
+	token := personalTokenOwnedBy(t, database, accessCarol, model.ScopePerson)
+	standing := &standingFake{}
+	deps.Standing = standing
+	held := servedWith(t, deps)
+	withoutRule := deps
+	withoutRule.Standing = nil
+	unruled := servedWith(t, withoutRule)
+	whoami := func(handler http.Handler) *httptest.ResponseRecorder {
+		t.Helper()
+		return agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, token)
+	}
+	if response := whoami(held); response.Code != http.StatusOK {
+		t.Fatalf("carol's token before any hold = %d %s, want 200", response.Code, response.Body.String())
+	}
+
+	holdPerson(t, database, accessCarol, "carol-account", "carol-refresh")
+	wantHeldRefusal(t, whoami(held), membershipHeldText, "carol's token once Dispatch records her hold")
+	if asked := standing.askedSoFar(); len(asked) != 0 {
+		t.Fatalf("the token of a person whose hold is recorded asked Standing about %v, want nothing: its own statement reads the hold", asked)
+	}
+	if response := whoami(unruled); response.Code != http.StatusOK {
+		t.Fatalf("carol's token with her hold recorded where no Google rule signs people in = %d %s, want 200", response.Code, response.Body.String())
+	}
+
+	signInFor(t, database, accessCarol, "carol-account", "carol-refresh-again", model.MemberFull, 2*time.Hour)
+	for _, test := range []struct {
+		rule     string
+		standing identity.Standing
+		err      error
+		status   int
+		code     string
+		text     string
+	}{
+		{"the 24-hour rule", identity.Standing{Held: true, ByGrace: true}, nil, http.StatusUnauthorized, codeMembershipHeld, membershipHeldGraceText},
+		{"the unopenable rule", identity.Standing{Held: true, ByGrace: true, Unopenable: true}, nil, http.StatusUnauthorized, codeMembershipHeld, membershipHeldText},
+		{"a hold Standing's refresh recorded", identity.Standing{Held: true}, nil, http.StatusUnauthorized, codeMembershipHeld, membershipHeldText},
+		{"a Standing that fails", identity.Standing{}, identity.ErrMembershipUnreadable, http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE", ""},
+		{"a Standing that answers not held", identity.Standing{}, nil, http.StatusOK, "", ""},
+	} {
+		standing.answers(test.standing, test.err)
+		before := len(standing.askedSoFar())
+		response := whoami(held)
+		var refusal refusalAnswer
+		_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+		if response.Code != test.status || refusal.Code != test.code || (test.text != "" && refusal.Error != test.text) {
+			t.Errorf("carol's token, her confirmation two hours old, under %s = %d %s, want %d %s %q",
+				test.rule, response.Code, strings.TrimSpace(response.Body.String()), test.status, test.code, test.text)
+		}
+		if asked := standing.askedSoFar()[before:]; len(asked) != 1 || asked[0] != accessCarol {
+			t.Errorf("carol's token under %s asked Standing about %v, want %s once", test.rule, asked, accessCarol)
+		}
+	}
+}
+
+// TestAPersonalTokenOfASpelledOwnerIsHeld: a token whose row names its owner in other letters, or
+// with spaces around the address, than the owner's people row is held when the owner is. Erin's
+// confirmation is two hours old and Google refuses her refresh, and nothing records a hold of her
+// yet, so the token's first request is refused only through Standing (a real identity.Membership),
+// asked with erin's address as her row holds it, whose refresh records the hold.
+//
+// Control: with both canonicalisations removed, the token check's and Standing's own, Standing
+// reads no row for the address the token spells, erin's first request is served, and the test
+// fails naming the owner the token spells.
+func TestAPersonalTokenOfASpelledOwnerIsHeld(t *testing.T) {
+	for _, spelled := range []string{"Erin@Other.Example", "  erin@other.example  "} {
+		t.Run(strings.TrimSpace(spelled), func(t *testing.T) {
+			if spelled == accessErin || model.CanonicalLogin(spelled) != accessErin {
+				t.Fatalf("%q must differ from erin's row %q only in case or surrounding space", spelled, accessErin)
+			}
+			handler, database, deps := newTestServer(t, testServerOptions{admitsRestricted: true})
+			seedPeople(t, database, accessErin)
+			markRestricted(t, database, accessErin)
+			if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ACC", "name": "Access project"}, "alice"); response.Code != http.StatusCreated {
+				t.Fatalf("create ACC: %d %s", response.Code, response.Body.String())
+			}
+			if listed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+				t.Fatalf("alice names erin on ACC's list: %d %s", listed.Code, listed.Body.String())
+			}
+			signInFor(t, database, accessErin, "erin-account", "erin-refresh", model.MemberRestricted, 2*time.Hour)
+			token := personalTokenOwnedBy(t, database, spelled, model.ScopePerson)
+			google := &refusingRefresher{}
+			deps.Standing = &identity.Membership{People: peopleOf(database), SignIn: google, Rule: testOutsideRule(database.Pool)}
+			if recordedHold(t, database, accessErin) {
+				t.Fatal("people records a hold of erin before her token's first request")
+			}
+			response := agentRequest(t, servedWith(t, deps), http.MethodGet, "/api/v1/whoami", nil, token)
+			if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), `"code":"`+codeMembershipHeld+`"`) {
+				t.Fatalf("the first request of the token owned by %q, erin's confirmation two hours old and Google refusing her refresh = %d %s, want 401 %s",
+					spelled, response.Code, strings.TrimSpace(response.Body.String()), codeMembershipHeld)
+			}
+			if google.calls.Load() != 1 || !recordedHold(t, database, accessErin) {
+				t.Fatalf("the token owned by %q was refused after %d refreshes, erin's hold recorded %t: want it refused through Standing's one refresh, which records the hold",
+					spelled, google.calls.Load(), recordedHold(t, database, accessErin))
+			}
+		})
+	}
+}
+
+// openHeldSocket opens a connection held to its caller (whileCallerResolves with the live socket's
+// resolution, callerStillResolves, and its grant compare) for request on served, and answers once
+// it is open a channel that says, once it ends, whether the heartbeat closed it within ten seconds.
+func openHeldSocket(t *testing.T, served *server, request *http.Request) <-chan bool {
+	t.Helper()
+	opened, ended := make(chan struct{}), make(chan bool, 1)
+	connection := served.whileCallerResolves(served.callerStillResolves, true, func(_ http.ResponseWriter, r *http.Request) {
+		close(opened)
+		select {
+		case <-r.Context().Done():
+			ended <- true
+		case <-time.After(10 * time.Second):
+			ended <- false
+		}
+	})
+	go connection.ServeHTTP(httptest.NewRecorder(), request)
+	<-opened
+	time.Sleep(4 * served.deps.StreamHeartbeat)
+	select {
+	case closed := <-ended:
+		t.Fatalf("the socket ended (closed %t) before its person was held", closed)
+	default:
+	}
+	return ended
+}
+
+// heldRequestBody is a request body whose first read waits, after saying it began, until the test
+// lets it go: a client that sent its headers and holds its body back.
+type heldRequestBody struct {
+	body             io.Reader
+	reading, release chan struct{}
+	once             sync.Once
+}
+
+func newHeldRequestBody(body string) *heldRequestBody {
+	return &heldRequestBody{body: strings.NewReader(body), reading: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *heldRequestBody) Read(p []byte) (int, error) {
+	b.once.Do(func() {
+		close(b.reading)
+		<-b.release
+	})
+	return b.body.Read(p)
+}
+
+// serveWithBodyHeld serves request through handler while the client holds body back: once the
+// handler waits on the body it runs whileHeld, then lets the body go and answers the response.
+func serveWithBodyHeld(t *testing.T, handler http.Handler, request *http.Request, body *heldRequestBody, whileHeld func()) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder, answered := httptest.NewRecorder(), make(chan struct{})
+	go func() {
+		defer close(answered)
+		handler.ServeHTTP(recorder, request)
+	}()
+	release := sync.OnceFunc(func() { close(body.release) })
+	defer release()
+	select {
+	case <-body.reading:
+	case <-answered:
+		t.Fatalf("%s %s answered %d %s before reading its body", request.Method, request.URL.Path, recorder.Code, recorder.Body.String())
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s %s did not begin reading its body within 30 s", request.Method, request.URL.Path)
+	}
+	whileHeld()
+	release()
+	<-answered
+	return recorder
+}
+
+// personAnswerOf is GET /api/v1/access/person?person= on handler under bearer: its status, its
+// fields as sent, and its decoded answer.
+func personAnswerOf(t *testing.T, handler http.Handler, bearer, person string) (int, map[string]json.RawMessage, model.PersonAnswer) {
+	t.Helper()
+	response := agentRequest(t, handler, http.MethodGet, "/api/v1/access/person?person="+person, nil, bearer)
+	var fields map[string]json.RawMessage
+	var answer model.PersonAnswer
+	if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
+		t.Fatalf("GET the person answer of %s = %d %s, which is no JSON object: %v", person, response.Code, response.Body.String(), err)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the person answer of %s: %v", person, err)
+	}
+	return response.Code, fields, answer
+}
+
+// TestThePersonAnswerCarriesHeld (K1): the person route answers held and as_of beside member_kind.
+// With Standing, held is its answer and as_of the time of the read it rests on, a person no row
+// holds included (held false); with no Google rule (Standing nil) held is false and as_of the
+// database's now(); and a Standing that fails leaves held out, keeps member_kind and as_of, and
+// answers 200.
+func TestThePersonAnswerCarriesHeld(t *testing.T) {
+	issuer := newServiceTokenIssuer(t)
+	_, database, deps := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
+	bearer := issuer.Mint(t, issuer.signing, issuer.Claims(listedServiceAccount, serviceTokenAudience))
+	ctx := context.Background()
+	seedPeople(t, database, accessCarol, accessDave)
+	signInFor(t, database, accessCarol, "carol-account", "carol-refresh", model.MemberFull, time.Minute)
+	holdPerson(t, database, accessCarol, "carol-account", "carol-refresh")
+	const nobody = "nobody@example.com"
+	databaseNow := func() time.Time {
+		t.Helper()
+		var now time.Time
+		if err := database.Pool.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
+			t.Fatal(err)
+		}
+		return now
+	}
+	// wantAnswer asks for person on handler and wants 200, kind, held (nil for left out) and an
+	// as_of of asOf, or, for the zero time, one the database's clock read during the request.
+	wantAnswer := func(what string, handler http.Handler, person, kind string, held *bool, asOf time.Time) {
+		t.Helper()
+		from := databaseNow()
+		code, fields, answer := personAnswerOf(t, handler, bearer, person)
+		to := databaseNow()
+		if !asOf.IsZero() {
+			from, to = asOf, asOf
+		}
+		_, carriesHeld := fields["held"]
+		heldOK := (held == nil && !carriesHeld) || (held != nil && carriesHeld && answer.Held != nil && *answer.Held == *held)
+		if code != http.StatusOK || answer.MemberKind != kind || !heldOK || answer.AsOf.Before(from) || answer.AsOf.After(to) {
+			t.Errorf("%s: the person answer of %s = %d %v, want 200, member_kind %s, held %v and as_of within [%s, %s]",
+				what, person, code, fields, kind, describeHeld(held), from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano))
+		}
+	}
+	yes, no := true, false
+
+	wantAnswer("with no Google rule", servedWith(t, deps), accessCarol, model.MemberAnswerFull, &no, time.Time{})
+
+	ruled := deps
+	ruled.Standing = &identity.Membership{People: peopleOf(database), SignIn: &refusingRefresher{}, Rule: identity.DomainRule{Domain: "example.com"}}
+	standing := servedWith(t, ruled)
+	wantAnswer("with Standing, carol's hold recorded", standing, accessCarol, model.MemberAnswerFull, &yes, time.Time{})
+	wantAnswer("with Standing, dave stored no refresh token", standing, accessDave, model.MemberAnswerFull, &no, time.Time{})
+	wantAnswer("with Standing, a person no row holds", standing, nobody, model.MemberAnswerNone, &no, time.Time{})
+
+	asOf := time.Date(2026, 11, 17, 9, 30, 0, 0, time.UTC)
+	fixed := &standingFake{}
+	fixed.answers(identity.Standing{Held: true, AsOf: asOf}, nil)
+	ruled.Standing = fixed
+	wantAnswer("with Standing answering a held read of its own time", servedWith(t, ruled), accessDave, model.MemberAnswerFull, &yes, asOf)
+
+	failing := &standingFake{}
+	failing.answers(identity.Standing{}, errors.New("read membership: the database did not answer"))
+	ruled.Standing = failing
+	wantAnswer("with Standing failing", servedWith(t, ruled), accessCarol, model.MemberAnswerFull, nil, time.Time{})
+}
+
+// describeHeld is a wanted held as a failure names it.
+func describeHeld(held *bool) string {
+	if held == nil {
+		return "left out"
+	}
+	return fmt.Sprint(*held)
+}

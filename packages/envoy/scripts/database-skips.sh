@@ -71,6 +71,8 @@ cd "$(dirname "$0")/.."
 # its second in the same CI run, and would count nothing. Today it names none. The auth service's
 # natscallout is in the race lane, and its hold rows open the broker's Postgres and skip without
 # it, so this counter runs it too: that run is its second in CI, the price of counting its skips.
+# envoy-go-race runs the package through this script too, under the detector, so that run counts
+# its skips as well.
 DEFAULT_PACKAGES=(./internal/cipher/... ./cmd/cipherd/ ./internal/holdrecord/)
 DEFAULT_EXCEPT=''
 

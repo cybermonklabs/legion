@@ -49,9 +49,9 @@ func TestRouteIndexLinesOrderTwoMethodsOfOnePathByMethod(t *testing.T) {
 	t.Parallel()
 	got := routeIndexLines([]apiRoute{
 		{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/things/{id}", Auth: authAny}},
-		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authPublic}},
+		{routeRow: routeRow{Method: http.MethodDelete, Pattern: "/api/v1/things/{id}", Auth: authBearer}},
 	})
-	want := "DELETE /api/v1/things/{id} public\nGET /api/v1/things/{id} any\n"
+	want := "DELETE /api/v1/things/{id} bearer\nGET /api/v1/things/{id} any\n"
 	if got != want {
 		t.Fatalf("routeIndexLines = %q, want %q", got, want)
 	}
@@ -63,7 +63,9 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	request.Header.Set("Authorization", "Bearer agent-token")
+	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}
@@ -169,7 +171,9 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	request.Header.Set("Authorization", "Bearer agent-token")
+	mux.ServeHTTP(response, request)
 	if served := response.Body.String(); served != output.String() {
 		t.Fatalf("printed index differs from GET /api/v1:\nprinted %s\nserved  %s", output.String(), served)
 	}
@@ -204,7 +208,7 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has no handler", key)
 		}
 		switch route.Auth {
-		case authPublic, authAny, authBearer:
+		case authAny, authBearer:
 		default:
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}

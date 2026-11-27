@@ -13,6 +13,11 @@ func TestPgSessionStoreAdvancesGenerationOnRevocation(t *testing.T) {
 	}
 	sessions := NewPgSessionStore(database.Pool)
 	login := "session-" + randomDatabaseSuffix(t)
+	// A new session names an address people holds (migration 20261118041916's key), as every
+	// sign-in records the person before it makes the session.
+	if _, err := database.Pool.Exec(ctx, `insert into people (email) values ($1)`, login); err != nil {
+		t.Fatalf("record the person: %v", err)
+	}
 
 	generation, err := sessions.EnsureSession(ctx, login)
 	if err != nil {

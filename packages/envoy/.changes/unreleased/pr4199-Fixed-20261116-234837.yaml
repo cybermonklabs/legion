@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A token the secrets broker issued to a Google account that another account replaced at an
+  address no longer acts as the address in Dispatch: from the replacing sign-in's commit on, it is
+  refused `401 BROKER_TOKEN_NOT_ACTIVE`, on every route and at a live socket's next heartbeat, while
+  Dispatch has the broker revoke it. A broker token mints and approves nothing anyway: none holds
+  the approve scope.
+time: 2026-11-16T23:48:37.147031259Z
+custom:
+    Issue: pr4199

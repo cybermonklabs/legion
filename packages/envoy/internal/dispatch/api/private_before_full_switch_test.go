@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -144,3 +145,102 @@ const beforeFullSwitchRoster = `[
 	{"session_id":"session-priv","title":"On PRIV","capabilities":["btw"],"projects":["PRIV"],"last_seen":200},
 	{"session_id":"session-pub","title":"On PUB","capabilities":["btw"],"projects":["PUB"],"last_seen":100}
 ]`
+
+// TestAProjectPrivateBeforeItsFullSwitchIsHiddenAsAnyPrivateProject (spec "Day one and the full
+// switch"): Dispatch hides a project private before its full switch from every person and
+// credential that does not see it, as for any private project. On verification v16's seed, carol
+// makes PRIV private through the visibility route twice, on two deployments: one that names PRIV
+// private before its full switch and has no bus, and one that has provisioned it and has a bus
+// that takes its record. On each, alice, who does not see PRIV, reads PRIV's issue and its
+// document exactly as an issue and a document nobody holds, finds none of PRIV's objects by
+// search, and lists no session of PRIV among the agents; carol, who sees PRIV, reads each.
+// Control: the same reads with PRIV still public find PRIV's objects and session for alice, so
+// each read can see what it is looking for.
+func TestAProjectPrivateBeforeItsFullSwitchIsHiddenAsAnyPrivateProject(t *testing.T) {
+	for _, deployment := range []struct {
+		name    string
+		options testServerOptions
+		flagged bool
+	}{
+		{"private before its full switch", testServerOptions{privateBeforeFullSwitch: []string{seedPrivate}}, true},
+		{"provisioned", testServerOptions{privateProjects: []string{seedPrivate}, busProjects: acceptingBus{}}, false},
+	} {
+		t.Run(deployment.name, func(t *testing.T) {
+			listener, _ := newBroadcastListener(t, beforeFullSwitchRoster)
+			embedder := &fakeEmbedder{vectors: map[string][]float32{searchAccessMeaning: queryVector(), searchAccessWord: angledVector(0, 3)}}
+			options := deployment.options
+			options.envoyURL, options.embedder = listener.URL, embedder
+			seed := seedPublicProjectsWith(t, options)
+			objects := writeSearchableObjects(t, seed, embedder)
+			document := strings.TrimPrefix(objects[seedPrivate][1], "document/")
+			issue := seed.issue[seedPrivate]
+
+			agents := func(caller privateCaller) []string {
+				t.Helper()
+				got := []string{}
+				for _, row := range decodeBody[[]struct {
+					SessionID string `json:"session_id"`
+				}](t, seed.mustRequest(t, caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)) {
+					got = append(got, row.SessionID)
+				}
+				slices.Sort(got)
+				return got
+			}
+			found := func(caller privateCaller) []string {
+				t.Helper()
+				return searchResultKeys(seed.searchAs(t, caller, "q="+searchAccessWord+"&keywords_only=true").Results)
+			}
+			every := slices.Sorted(slices.Values(slices.Concat(objects[seedPublic], objects[seedPrivate])))
+			// The control: while PRIV is public, alice finds and lists what the reads below must hide.
+			if got := found(callerAlice); !slices.Equal(got, every) {
+				t.Fatalf("alice's search while PRIV is public finds %v, want every object %v: the search could not see PRIV's", got, every)
+			}
+			if got := agents(callerAlice); !slices.Equal(got, []string{"session-priv", "session-pub"}) {
+				t.Fatalf("alice's agents while PRIV is public = %v, want both sessions: the list could not see PRIV's", got)
+			}
+
+			if _, err := seed.database.Pool.Exec(context.Background(), `
+				insert into session_projects_filled default values;
+				insert into access_events_scrubbed default values;
+			`); err != nil {
+				t.Fatalf("write the backfill markers: %v", err)
+			}
+			switched := seed.mustRequest(t, callerCarol, http.MethodPatch, "/api/v1/projects/"+seedPrivate+"/access",
+				map[string]string{"visibility": model.ProjectPrivate}, http.StatusOK)
+			if flagged := decodeBody[model.ProjectAccess](t, switched).PrivateBeforeFullSwitch; flagged != deployment.flagged {
+				t.Fatalf("carol's switch of PRIV answered %s: private_before_full_switch %v, want %v", switched.Body.String(), flagged, deployment.flagged)
+			}
+
+			for _, read := range []struct {
+				what, present, absent string
+			}{
+				{"PRIV's issue", "/api/v1/issues/" + issue, "/api/v1/issues/" + seedPrivate + "-999999"},
+				{"PRIV's document", "/api/v1/artifacts/" + document, "/api/v1/artifacts/" + uuid.NewString()},
+			} {
+				got := seed.request(t, callerAlice, http.MethodGet, read.present, nil)
+				missing := seed.request(t, callerAlice, http.MethodGet, read.absent, nil)
+				absentID, presentID := read.absent[strings.LastIndex(read.absent, "/")+1:], read.present[strings.LastIndex(read.present, "/")+1:]
+				want := missingAnswerOf(missing.Body.Bytes(), map[string]string{"{id}": absentID}, map[string]string{"{id}": presentID})
+				if got.Code != missing.Code || string(got.Body.Bytes()) != string(want) {
+					t.Errorf("alice reads %s at GET %s = %d %s, want it as GET %s answers, %d %s",
+						read.what, read.present, got.Code, got.Body.String(), read.absent, missing.Code, want)
+				}
+				if seen := seed.request(t, callerCarol, http.MethodGet, read.present, nil); seen.Code != http.StatusOK {
+					t.Errorf("carol, who sees PRIV, reads %s at GET %s = %d %s, want 200", read.what, read.present, seen.Code, seen.Body.String())
+				}
+			}
+			if got, want := found(callerAlice), slices.Sorted(slices.Values(objects[seedPublic])); !slices.Equal(got, want) {
+				t.Errorf("alice's search with PRIV private finds %v, want PUB's objects alone, %v", got, want)
+			}
+			if got := found(callerCarol); !slices.Equal(got, every) {
+				t.Errorf("carol's search with PRIV private finds %v, want every object, %v", got, every)
+			}
+			if got := agents(callerAlice); !slices.Equal(got, []string{"session-pub"}) {
+				t.Errorf("alice's agents with PRIV private = %v, want PUB's session alone", got)
+			}
+			if got := agents(callerCarol); !slices.Equal(got, []string{"session-priv", "session-pub"}) {
+				t.Errorf("carol's agents with PRIV private = %v, want both sessions", got)
+			}
+		})
+	}
+}

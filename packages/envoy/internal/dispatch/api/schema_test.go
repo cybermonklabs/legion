@@ -7,16 +7,24 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
-	Register(mux, t.Context(), Deps{})
+	Register(mux, t.Context(), Deps{Identity: identity.HeaderIdentity{Header: "X-Dispatch-User"}, AgentTokens: sharedAgentTokens(t, "agent-token")})
 
+	anonymous := httptest.NewRecorder()
+	mux.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/v1/schema/blocks", nil))
+	if anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/v1/schema/blocks with no credential: status = %d, body=%s, want 401", anonymous.Code, anonymous.Body.String())
+	}
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/schema/blocks", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/schema/blocks", nil)
+	request.Header.Set("Authorization", "Bearer agent-token")
+	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /api/v1/schema/blocks status = %d, body=%s", response.Code, response.Body.String())
 	}

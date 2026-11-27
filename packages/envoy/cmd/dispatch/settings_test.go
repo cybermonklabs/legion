@@ -37,11 +37,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -226,34 +227,70 @@ func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) ht
 // testSigningKey is the one-key set appContextFor gives the router.
 var testSigningKey = auth.SingleSigningKey("signing-key")
 
-// appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store
-// and the request identity main builds for boot (requestIdentityFor) filled in, so a request
-// carrying signedIn's cookie is that person's. built.People is a store with no database unless the
-// case's requests record people (dev sign-in, a pool sign-in, header identity). A case that gives no
-// document service (built.Docs) gets one over the router's store, event broker, identity and
-// server URL, which is shut down once t ends.
+// appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store,
+// the sign-in rule (signInRule, its lister over built.Store as main's is over the database) and the
+// request identity main builds for boot (requestIdentityFor) filled in, so a request carrying
+// signedIn's cookie is that person's. built.People is a store with no database unless the case's
+// requests record people (dev sign-in, a pool sign-in, header identity). built.Sessions is
+// currentSessions unless the case passes the database's own, as one whose sign-ins record Google
+// accounts must: recording an account moves the session generation in the database itself
+// (migration 20261118041916), which the mint's and the approve's re-read compare a cookie with.
+// A case that gives no document service (built.Docs) gets one (withDocumentService).
 func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
 	t.Helper()
 	built.SigningKey = testSigningKey
 	if built.People == nil {
 		built.People = store.NewPgPeopleStore(nil, built.SigningKey, nil)
 	}
-	built.Sessions = currentSessions{}
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn)
-	options := appContextOptions(boot, built)
-	if options.Docs == nil {
-		if options.Events == nil {
-			options.Events = events.NewBroker()
-		}
-		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, Origins: text.NewOrigins(options.ServerURL)})
-		t.Cleanup(func() {
-			if err := documents.Shutdown(context.Background()); err != nil {
-				t.Errorf("shut the document service down: %v", err)
-			}
-		})
-		options.Docs = documents
+	if built.Sessions == nil {
+		built.Sessions = currentSessions{}
 	}
-	return routes.BuildAppContext(options)
+	rule, err := signInRule(boot, accessLister(built.Store))
+	if err != nil {
+		return nil, err
+	}
+	var membership *identity.Membership
+	built.Identity, membership, err = requestIdentityFor(built.Lifetime, boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	if err != nil {
+		return nil, err
+	}
+	return buildAppContext(boot, rule, withDocumentService(t, boot, built), membership)
+}
+
+// withDocumentService is built with a document service of the test's own where it has none
+// (built.Docs), which routes.BuildAppContext requires: one over built's store, event broker,
+// identity and server URL, built as main builds it (newDocumentService, which takes the origins
+// from boot), shut down once t ends. built with no broker gets one, which the router and the
+// service then share. Every test that builds the router through buildAppContext hands its options
+// through here.
+func withDocumentService(t testing.TB, boot bootConfig, built routes.AppContextOptions) routes.AppContextOptions {
+	t.Helper()
+	if built.Docs != nil {
+		return built
+	}
+	if built.Events == nil {
+		built.Events = events.NewBroker()
+	}
+	documents := newDocumentService(boot, built.ServerURL, docs.Deps{Store: built.Store, Events: built.Events, Identity: built.Identity})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	built.Docs = documents
+	return built
+}
+
+// pgPeople is the Postgres people store people is, or holds (testPeople), for the passkey store
+// main builds over the same one (passkeySignIn).
+func pgPeople(people auth.PeopleStore) *store.PgPeopleStore {
+	switch people := people.(type) {
+	case *store.PgPeopleStore:
+		return people
+	case testPeople:
+		return people.PgPeopleStore
+	}
+	return nil
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a
@@ -366,14 +403,26 @@ func googleSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, h
 }
 
 // codeFlowSignIn runs a whole sign-in through handler against issuer as the person claims names:
-// start, the issuer's sign-in, and the callback, whose answer it returns.
-func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, claims map[string]any) *httptest.ResponseRecorder {
+// start, the issuer's sign-in, and the callback, from a browser carrying cookies beside the state
+// cookie, whose answer it returns.
+func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, claims map[string]any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	return codeFlowSignInAt(t, handler, issuer, "dispatch.test", claims, cookies...)
+}
+
+// codeFlowSignInAt is codeFlowSignIn with the start and the callback both sent to host, a host the
+// canonical origin answers at: the outside origin serves no Google sign-in.
+func codeFlowSignInAt(t *testing.T, handler http.Handler, issuer *oidctest.Issuer, host string, claims map[string]any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	issuer.SignInAs(claims)
-	start := startSignIn(t, handler)
+	start := httptest.NewRecorder()
+	handler.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/start", nil))
+	if start.Code != http.StatusFound {
+		t.Fatalf("GET /auth/start at %s: %d %s, want a redirect to the sign-in issuer", host, start.Code, start.Body.String())
+	}
 	code, state := issuer.Authorize(t, start.Header().Get("Location"))
-	callback := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
-	for _, cookie := range start.Result().Cookies() {
+	callback := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
+	for _, cookie := range append(start.Result().Cookies(), cookies...) {
 		callback.AddCookie(cookie)
 	}
 	response := httptest.NewRecorder()
@@ -559,7 +608,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			t.Run("iap router", func(t *testing.T) {
 				keys, signing := iapKeySet(t)
 				people := peopleStore(t)
-				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
+				handler := routerFor(t, iapBoot(t, keys, directorytest.ServeGoogle(t), nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
 				member := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil)
 				if member.Code != http.StatusOK || !strings.Contains(member.Body.String(), `"login":"a.person@example.com"`) {
 					t.Errorf("DISPATCH_IDENTITY=iap: a member's assertion: GET /auth/whoami answered %d %s, want a.person@example.com", member.Code, member.Body.String())
@@ -588,7 +637,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// another backend service is refused, the same assertion for this one admitted.
 			t.Run("router", func(t *testing.T) {
 				keys, signing := iapKeySet(t)
-				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
+				handler := routerFor(t, iapBoot(t, keys, directorytest.ServeGoogle(t), nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
 				if response := iapWhoami(handler, iapAssertion(t, keys, signing, "/projects/123456789012/global/backendServices/1", "example.com"), nil); response.Code != http.StatusUnauthorized {
 					t.Errorf("an assertion for another audience: GET /auth/whoami answered %d %s, want 401", response.Code, response.Body.String())
 				}
@@ -596,6 +645,32 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("the same assertion for DISPATCH_IAP_AUDIENCE: GET /auth/whoami answered %d %s, want 200", response.Code, response.Body.String())
 				}
 			})
+		},
+		// directory-check reads both, trimmed: the signer is the account each signJwt names, and
+		// the delegated user the subject of each JWT it asks IAM to sign. The server reads both
+		// under IAP identity alone, trimmed, into the Directory reader it builds at boot
+		// (TestIAPReleaseNeedsNoAssertion follows them to signJwt), and refuses either elsewhere.
+		"DISPATCH_DIRECTORY_ACCOUNT": func(t *testing.T) {
+			for _, sign := range directoryCheckReaches(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": " " + directoryCheckSigner + " ", "DISPATCH_DIRECTORY_ADMIN": directoryCheckAdmin}) {
+				if sign.Principal != directoryCheckSigner || sign.Issuer != directoryCheckSigner {
+					t.Errorf("signJwt on %q with iss %q, want the trimmed DISPATCH_DIRECTORY_ACCOUNT", sign.Principal, sign.Issuer)
+				}
+			}
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": " table@example.com "}))); err != nil || iap.DirectoryAccount != "table@example.com" {
+				t.Errorf("iap: DirectoryAccount = %q, %v", iap.DirectoryAccount, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner}, "DISPATCH_DIRECTORY_ACCOUNT is read only with DISPATCH_IDENTITY=iap")
+		},
+		"DISPATCH_DIRECTORY_ADMIN": func(t *testing.T) {
+			for _, sign := range directoryCheckReaches(t, map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner, "DISPATCH_DIRECTORY_ADMIN": " " + directoryCheckAdmin + " "}) {
+				if sign.Subject != directoryCheckAdmin {
+					t.Errorf("a JWT for %q, want the trimmed DISPATCH_DIRECTORY_ADMIN", sign.Subject)
+				}
+			}
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_DIRECTORY_ADMIN": " table@example.com "}))); err != nil || iap.DirectoryAdmin != "table@example.com" {
+				t.Errorf("iap: DirectoryAdmin = %q, %v", iap.DirectoryAdmin, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_DIRECTORY_ADMIN": directoryCheckAdmin}, "DISPATCH_DIRECTORY_ADMIN is read only with DISPATCH_IDENTITY=iap")
 		},
 		"DISPATCH_SIGNIN_ISSUER": func(t *testing.T) {
 			pool := signInPool(t, "dispatch-client", "client-secret")
@@ -731,6 +806,33 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("an account that left example.com, past the hour: whoami answered %d %s, want 401", response.Code, response.Body.String())
 				}
 			})
+		},
+		"DISPATCH_OUTSIDE_ORIGIN":           outsideOriginReachesItsReaders,
+		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": workspaceDomainsReachTheirReader,
+		// Boot parses each entry, trimmed, as a CIDR, and the router is handed them as boot parsed
+		// them; an entry that is no CIDR refuses the boot, named by its position.
+		"DISPATCH_TRUSTED_PROXY_RANGES": func(t *testing.T) {
+			ranges := map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": " 192.0.2.0/24 , 2001:db8:100::/48 "}
+			boot := resolveWith(t, ranges)
+			const want = "[192.0.2.0/24 2001:db8:100::/48]"
+			if got := fmt.Sprint(boot.TrustedProxyRanges); got != want {
+				t.Errorf("TrustedProxyRanges = %s, want %s", got, want)
+			}
+			if got := fmt.Sprint(appContextOptions(boot, nil, routes.AppContextOptions{}).TrustedProxyRanges); got != want {
+				t.Errorf("appContextOptions hands the router TrustedProxyRanges %s, want %s", got, want)
+			}
+			ranges["DISPATCH_TRUSTED_PROXY_RANGES"] = "192.0.2.0/24,example.com"
+			refusedWith(t, ranges, "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 must be a CIDR")
+		},
+		"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": func(t *testing.T) {
+			domain := map[string]string{"DISPATCH_SIGNIN_ISSUER": "http://127.0.0.1:9", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_TEST_HOOKS": "1"}
+			refusedWith(t, domain, "DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com")
+			domain["DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER"] = "1"
+			if boot := resolveWith(t, domain); !boot.TestSignInDomainIssuer || boot.SignInDomain != "example.com" {
+				t.Errorf("DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1: TestSignInDomainIssuer %t, SignInDomain %q", boot.TestSignInDomainIssuer, boot.SignInDomain)
+			}
+			delete(domain, "DISPATCH_TEST_HOOKS")
+			refusedWith(t, domain, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER")
 		},
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": func(t *testing.T) {
 			for _, value := range []string{"", "true"} {
@@ -1006,14 +1108,14 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
 			}
 			// No outbox runs without NATS, so no mention's send waits on events nothing will send.
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.OutboxPublishes {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.OutboxPublishes {
 				t.Error("DISPATCH_NATS_DISABLED=1: the router is handed OutboxPublishes = true, want false")
 			}
 			boot = resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"})
 			if boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=true: NATS off, want only 1 to turn it off")
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.OutboxPublishes {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); !options.OutboxPublishes {
 				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
 			}
 		},
@@ -2057,7 +2159,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.RouteRosterTTL != longTTL {
 				t.Errorf("DISPATCH_TEST_ROUTE_ROSTER_TTL: RouteRosterTTL = %v, want %v", boot.RouteRosterTTL, longTTL)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.RouteRosterTTL != longTTL {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.RouteRosterTTL != longTTL {
 				t.Errorf("DISPATCH_TEST_ROUTE_ROSTER_TTL: the router is handed RouteRosterTTL = %v, want %v", options.RouteRosterTTL, longTTL)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -2078,7 +2180,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.ListenerTakeoverWindow != shortWindow {
 				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW: ListenerTakeoverWindow = %v, want %v", boot.ListenerTakeoverWindow, shortWindow)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.ListenerTakeoverWindow != shortWindow {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.ListenerTakeoverWindow != shortWindow {
 				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW: the router is handed ListenerTakeoverWindow = %v, want %v", options.ListenerTakeoverWindow, shortWindow)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -2099,7 +2201,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.HorizonStallAfter != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: HorizonStallAfter = %v, want %v", boot.HorizonStallAfter, quick)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonStallAfter != quick {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.HorizonStallAfter != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: the router is handed HorizonStallAfter = %v, want %v", options.HorizonStallAfter, quick)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -2120,7 +2222,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.HorizonWarnEvery != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: HorizonWarnEvery = %v, want %v", boot.HorizonWarnEvery, quick)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonWarnEvery != quick {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.HorizonWarnEvery != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: the router is handed HorizonWarnEvery = %v, want %v", options.HorizonWarnEvery, quick)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -2321,7 +2423,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if !boot.LegionStatusScope {
 				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: LegionStatusScope false")
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.LegionStatusScope {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); !options.LegionStatusScope {
 				t.Error("DISPATCH_LEGION_STATUS_SCOPE=on: the router is handed LegionStatusScope = false, want true")
 			}
 			for name, overrides := range map[string]map[string]string{
@@ -2332,7 +2434,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				if boot.LegionStatusScope {
 					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: LegionStatusScope true", name)
 				}
-				if options := appContextOptions(boot, routes.AppContextOptions{}); options.LegionStatusScope {
+				if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.LegionStatusScope {
 					t.Errorf("DISPATCH_LEGION_STATUS_SCOPE %s: the router is handed LegionStatusScope = true, want false", name)
 				}
 			}

@@ -1,5 +1,6 @@
 import { referenceSpans } from "@legion/contracts";
 
+import { dispatchOrigins } from "../../api/origins";
 import { type CodeRange, codeRanges } from "./code-ranges";
 import { type InlineLink, inlineLinks } from "./party-references";
 import { buildDispatchReference, referenceRouteFromHref } from "./routes";
@@ -45,7 +46,7 @@ const LONGEST_WHOLE_REFERENCE = 1024;
  * appended. A character is a code point, as the server counts runes.
  *
  * A reference is what the server's cut reads as one: a `dispatch://` address and a page of the
- * dashboard at `origin` as the shared span reader finds them, a URL of anywhere else left out,
+ * dashboard at one of `origins` as the shared span reader finds them, a URL elsewhere left out,
  * and a bare issue key and a `#id` as the shared reader finds them (`readTextReferences`), each
  * widened over the inline link that holds it, a picture's `!` included (`inlineLinks`). A span
  * that is a link's address is read as that reader reads any span, not as the link's own address
@@ -87,7 +88,7 @@ export function headRefs(
   text: string,
   limit: number,
   ellipsis: string,
-  origin: string = window.location.origin
+  origins: readonly string[] = dispatchOrigins()
 ): string {
   const keep = Math.max(limit - Array.from(ellipsis).length, 0);
   let cut = 0;
@@ -106,7 +107,7 @@ export function headRefs(
     at += character.length;
   }
   if (!over) return text;
-  return `${headOf(text.slice(0, windowEnd), windowEnd < text.length, cut, 0, ellipsis, origin)}${ellipsis}`;
+  return `${headOf(text.slice(0, windowEnd), windowEnd < text.length, cut, 0, ellipsis, origins)}${ellipsis}`;
 }
 
 /** The head of `windowed`, the text's first characters, cut at `cut` (`headRefs`), without its
@@ -120,16 +121,16 @@ function headOf(
   cut: number,
   floor: number,
   ellipsis: string,
-  origin: string
+  origins: readonly string[]
 ): string {
-  const written = referenceExtents(windowed, origin).filter(
+  const written = referenceExtents(windowed, origins).filter(
     (reference) => !truncated || reference.end < windowed.length
   );
   const spans = windowSpans(windowed, truncated);
-  const end = headEnd(windowed, written, spans, cut, ellipsis, origin);
+  const end = headEnd(windowed, written, spans, cut, ellipsis, origins);
   return end > floor
     ? windowed.slice(0, end)
-    : closeCut(windowed, written, spans, cut, floor, origin);
+    : closeCut(windowed, written, spans, cut, floor, origins);
 }
 
 /** Where the head of `windowed` cut at `cut` ends (`headRefs`): `cut` moved back past every
@@ -142,7 +143,7 @@ function headEnd(
   spans: readonly CodeRange[],
   cut: number,
   ellipsis: string,
-  origin: string
+  origins: readonly string[]
 ): number {
   let at = cut;
   while (at > 0) {
@@ -150,7 +151,7 @@ function headEnd(
     for (const crossing of [...written, ...spans]) {
       if (crossing.start < at && at < crossing.end) back = Math.min(back, crossing.start);
     }
-    const read = referenceExtents(`${windowed.slice(0, at)}${ellipsis}`, origin);
+    const read = referenceExtents(`${windowed.slice(0, at)}${ellipsis}`, origins);
     for (const reference of read) {
       if (reference.start < at && !holds(written, reference)) {
         back = Math.min(back, reference.start);
@@ -181,9 +182,9 @@ function closeCut(
   spans: readonly CodeRange[],
   cut: number,
   floor: number,
-  origin: string
+  origins: readonly string[]
 ): string {
-  const link = closeLink(windowed, written, cut, floor, origin);
+  const link = closeLink(windowed, written, cut, floor, origins);
   if (link !== undefined) return link;
   const span = spans.find((one) => floor <= one.start && one.start < cut && cut < one.end);
   return span === undefined ? windowed.slice(0, cut) : closeSpan(windowed, span, cut);
@@ -202,7 +203,7 @@ function closeLink(
   written: readonly Extent[],
   cut: number,
   floor: number,
-  origin: string
+  origins: readonly string[]
 ): string | undefined {
   const link = [...inlineLinks(windowed)]
     .sort((one, other) => linkStart(one) - linkStart(other))
@@ -223,7 +224,7 @@ function closeLink(
   for (let left = room; left > 0; left -= 1) {
     wordsCut += (windowed.codePointAt(wordsCut) ?? 0) > 0xffff ? 2 : 1;
   }
-  const head = `${headOf(windowed.slice(0, link.wordsEnd), false, wordsCut, words, "", origin)}${rest}`;
+  const head = `${headOf(windowed.slice(0, link.wordsEnd), false, wordsCut, words, "", origins)}${rest}`;
   return inlineLinks(head).some((one) => linkStart(one) === start && one.close === head.length)
     ? head
     : undefined;
@@ -304,11 +305,11 @@ function linkStart(link: InlineLink): number {
 /** Every reference of `text` as a cut reads it (`headRefs`), none of them resolved against what
  *  Dispatch holds, since a cut that splits a reference changes what the text says whether or not
  *  its target exists: each span the shared span reader finds that is an address of Dispatch or of
- *  the dashboard at `origin`, read as that reader reads it - a link's address ended at the link's
- *  `)` and trimmed as any span is - and each bare key and `#id` the shared reader finds, each
- *  widened over the inline link that holds it and named as `Extent` says. The link that holds one
- *  is the first to open, as the server's link reader lists them. */
-function referenceExtents(text: string, origin: string): Extent[] {
+ *  the dashboard at one of `origins`, read as that reader reads it - a link's address ended at the
+ *  link's `)` and trimmed as any span is - and each bare key and `#id` the shared reader finds,
+ *  each widened over the inline link that holds it and named as `Extent` says. The link that
+ *  holds one is the first to open, as the server's link reader lists them. */
+function referenceExtents(text: string, origins: readonly string[]): Extent[] {
   const links = [...inlineLinks(text)].sort((one, other) => linkStart(one) - linkStart(other));
   const extents: Extent[] = [];
   const add = (start: number, end: number, names: string) => {
@@ -320,12 +321,12 @@ function referenceExtents(text: string, origin: string): Extent[] {
     );
   };
   for (const span of referenceSpans(text)) {
-    const route = span.value === "" ? undefined : referenceRouteFromHref(span.value, origin);
+    const route = span.value === "" ? undefined : referenceRouteFromHref(span.value, origins);
     if (route !== undefined) {
       add(span.start, span.start + span.value.length, buildDispatchReference(route));
     }
   }
-  for (const reference of readTextReferences(text, { origin }).references) {
+  for (const reference of readTextReferences(text, { origins }).references) {
     if (reference.form === "key") {
       add(reference.start, reference.end, `dispatch://${reference.text}`);
     }

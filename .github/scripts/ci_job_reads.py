@@ -1331,53 +1331,62 @@ hold_supervise_table_tests()
 
 
 # ---------------------------------------------------------------- the envoy race lane
-# The three jobs that run packages/envoy's concurrent packages under the race detector, declared
-# once: each job's step name, its -timeout, and the packages the step names, in the order it names
-# them. Everything the lane decides is built from this list - the three steps' own texts, the
-# envoy-go unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists
-# of the plain step that runs what a race build cannot (RACE_IMPOSSIBLE_SCRIPT below) - and
+# The jobs that run packages/envoy's concurrent packages under the race detector, declared once:
+# each job's step name, its -timeout, and the packages the step names, in the order it names
+# them. Everything the lane decides is built from this list - the steps' own texts, the envoy-go
+# unit step's `grep -Ev`, which leaves out exactly what the lane runs, and the -run lists of the
+# plain step that runs what a race build cannot (RACE_IMPOSSIBLE_SCRIPT below) - and
 # check-ci-filters.sh fails when ci.yaml's text for any of them differs from the text built here,
 # so a package added to the lane reaches all of them or the check goes red. internal/dispatch/pmdoc
 # is not in the lane: it runs plain only.
 class RacePackage(NamedTuple):
     """A package of the lane, named under packages/envoy. A `tree` package is the one a step names
     as `./<name>/...`, that directory and every package under it; any other is `./<name>/`, the
-    package alone."""
+    package alone. A `counted` package its job runs in a step of its own through database-skips.sh
+    (RACE_COUNTED_STEP), which fails on any skip of it, rather than in the job's race step."""
 
     name: str
     tree: bool = False
+    counted: bool = False
 
 
 class RaceJob(NamedTuple):
-    """One job of the lane: the ci.yaml job, its race step's name and -timeout, and its packages."""
+    """One job of the lane: its id, its race step's name and -timeout, and its packages. A job with
+    a `caller` is a second job of the file ci.yaml's job of that id calls, on a runner of its own,
+    selected and gated with it; any other is ci.yaml's job of its own id."""
 
     job: str
     step: str
     timeout: str
     packages: tuple
+    caller: str = ""
 
 
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
-            "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
-            "NATS credentials, the NATS auth service and the sign-in code flow",
-            "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
-                    RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
-                    RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
-                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout"), RacePackage("internal/oidc"))),
+            "Race-test delivery, the bus, the listener, the registry store, the session cache, kvwatch, the NATS "
+            "credentials and the sign-in code flow",
+            "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/bus"),
+                    RacePackage("cmd/listener"), RacePackage("internal/store"), RacePackage("internal/session"),
+                    RacePackage("internal/kvwatch", tree=True), RacePackage("natscred"),
+                    RacePackage("internal/cipher/natscallout", counted=True), RacePackage("internal/oidc"))),
+    RaceJob("envoy-go-race-store", "Race-test the Dispatch store", "60m",
+            (RacePackage("internal/dispatch/store", tree=True),), caller="envoy-go-race"),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
 
 
-def race_pkgs(job):
-    """The package arguments of a race job's step, in the order it names them."""
-    return [f"./{p.name}/..." if p.tree else f"./{p.name}/" for p in job.packages]
+def race_pkgs(job, counted=False):
+    """The package arguments of a race job's race step, in the order it names them, or with
+    `counted` those of its counted step (RACE_COUNTED_STEP)."""
+    return [f"./{p.name}/..." if p.tree else f"./{p.name}/" for p in job.packages if p.counted == counted]
 
 
 # The job of ci-caches.yaml whose race build fills go-envoy-race, the cache every leg of the lane
-# restores: it compiles every job's packages of the lane, in the lane's order.
+# restores: it compiles every job's packages of the lane, in the lane's order, a counted package
+# among them, since its counted step builds it under -race too.
 ENVOY_RACE_FILL_JOB = "envoy-race"
 
 # ci-caches.yaml's race builds that name a lane's packages inline, each (fill job, the name of the
@@ -1388,20 +1397,44 @@ ENVOY_RACE_FILL_JOB = "envoy-race"
 RACE_FILLS = [
     (DAEMON_RACE_FILL_JOB, "DAEMON_RACE_FILL_JOB", [f"./{p}/" for p in DAEMON_RACE_PACKAGES], "DAEMON_RACE_PACKAGES",
      f"{CI}'s race step", CI, f"{CI}'s two race steps follow it already"),
-    (ENVOY_RACE_FILL_JOB, "ENVOY_RACE_FILL_JOB", [word for job in ENVOY_RACE_LANE for word in race_pkgs(job)],
+    (ENVOY_RACE_FILL_JOB, "ENVOY_RACE_FILL_JOB",
+     [f"./{p.name}/..." if p.tree else f"./{p.name}/" for job in ENVOY_RACE_LANE for p in job.packages],
      "ENVOY_RACE_LANE", "the envoy race lane's steps", "the envoy race lane",
-     "envoy-go-race's and envoy-go-race-api's steps follow it already (race_step, RACE_API_SCRIPT), and "
-     "envoy-go-race-docs' line is RACE_DOCS_SCRIPT's, written by hand, so a change to the lane's docs "
-     "entry changes that line too"),
+     "envoy-go-race's, envoy-go-race-store's and envoy-go-race-api's steps follow it already (race_step, "
+     "RACE_COUNTED_SCRIPT, RACE_API_SCRIPT), and envoy-go-race-docs' line is RACE_DOCS_SCRIPT's, written by "
+     "hand, so a change to the lane's docs entry changes that line too"),
 ]
 
 
 def race_step(job):
-    """The one go command of a race job's step, pinned to the text this declaration builds."""
+    """The one go command of a race job's race step, pinned to the text this declaration builds and
+    cited in the file that holds the job: its caller's, where it has one."""
     pkgs = race_pkgs(job)
     text = f"go test -count=1 -race -timeout {job.timeout} " + " ".join(pkgs)
-    return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
+    where = at(job.job, job.step, job_file(job.caller or job.job))
+    return run(ENVOY, pkgs, f"{where}: {text}", step=job.step, text=text, race=True)
 
+
+# envoy-go-race runs its counted package, the NATS auth service (internal/cipher/natscallout), in a
+# step of its own through database-skips.sh, which counts the skips of that same run and fails on
+# any: a test of that package opens the broker's Postgres (hold_budget_test.go) and skips without
+# BROKER_TEST_DATABASE_URL, and a step that runs without -v prints nothing for a skip. The job's
+# race step keeps its other packages, and the envoy-go-race-store job's step the store's, some of
+# whose tests skip in every CI run by design (a measurement run by hand, a stored shape a later
+# migration refuses), which the counter would count. The step's -timeout is its own: the package
+# took 46 s under -race on a dev box, so 10 minutes still names a hung test before the job's
+# timeout-minutes cuts it off.
+RACE = RACE_JOBS["envoy-go-race"]
+RACE_COUNTED_STEP = "Race-test the NATS auth service and count its skips"
+RACE_COUNTED_TIMEOUT = "10m"
+RACE_COUNTED_SCRIPT = ("scripts/database-skips.sh --var BROKER_TEST_DATABASE_URL "
+                       f"--race --timeout {RACE_COUNTED_TIMEOUT} " + " ".join(race_pkgs(RACE, counted=True)))
+if any(p.counted for job in ENVOY_RACE_LANE if job is not RACE for p in job.packages):
+    raise ValueError("a counted package is in a race job other than envoy-go-race, whose gate alone runs the "
+                     "counted step: it would run in no step of its job")
+# envoy-go-race-store, the second job of ci-job-envoy-go-race.yaml: race_step's plain go test of the
+# store's tree on a runner of its own, under a -timeout of its own (that file says how it is sized).
+RACE_STORE = RACE_JOBS["envoy-go-race-store"]
 
 # The architecture-note and spec-file rules and the commands that run them, which envoy-go-build
 # tests in a step of their own: they need no database, so they run there on every push, and that
@@ -1518,7 +1551,7 @@ hold_database_skips_packages()
 
 # The unit step runs the module less five things: the lane's packages but those under the broker's
 # tree whose skips it counts (DATABASE_SKIPS_RACE_ONLY names none, so the auth service's natscallout
-# runs here), which the three race jobs run under the detector, internal/integration, which
+# runs here), which the race lane's jobs run under the detector, internal/integration, which
 # envoy-go's integration step runs, the text checks, which the text-check job runs, and the
 # architecture-note and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and
 # internal/wirecheck), which envoy-go-build runs. Its `grep -Ev` is `/integration`, then the text
@@ -1622,9 +1655,32 @@ for backend_package in BACKEND_COUNT_TESTS:
         raise ValueError(f"the backend count's tests of {backend_package} are skipped by the unit step, whose "
                          f"`grep -Ev` takes that package out, so the -skip below skips nothing; name the step "
                          f"that runs that package now and move the skip to it")
+# The four tests of cmd/dispatch that hold the leaver hold to bounds of real time: a refresh Google
+# answers slowly, the membership pass's schedule, the broker's cache, and the release a day later.
+# Each waits out its bound on the wall clock, about 245, 128, 64 and 40 seconds of a dev box, which
+# took cmd/dispatch past the unit step's 20-minute -timeout on CI's runner (job 136860339963 timed
+# out at 1200 s, where the same package took 642.9 s before they joined it, job 136853209152). The
+# leaver hold's step runs them in parallel with one another, each on a rig of its own, through
+# named-tests.sh, which fails unless each named test ran and passed: a -run that matches nothing is
+# a pass to go test, so a renamed test would otherwise leave that step green while it runs fewer
+# tests than it names. The unit step skips them by name. Both step texts are built from this one
+# list, and check-ci-filters.sh pins each step's whole script, so the -skip and the names the
+# script runs cannot come to differ.
+LEAVER_BOUND_PACKAGE = "cmd/dispatch"
+LEAVER_BOUND_TESTS = ["TestLeaverHoldBound", "TestLeaverHoldBoundByThePass", "TestLeaverHoldRelease",
+                      "TestIAPLeaverHoldThroughTheRealBroker"]
+LEAVER_BOUND_STEP = "Test the leaver hold's real-time bounds"
+NAMED_TESTS_SCRIPT = "packages/envoy/scripts/named-tests.sh"
+LEAVER_BOUND_TIMEOUT = "15m"
+LEAVER_BOUND_RUN = (f"{NAMED_TESTS_SCRIPT} --timeout {LEAVER_BOUND_TIMEOUT} ./{LEAVER_BOUND_PACKAGE}/ -- "
+                    + " ".join(sorted(LEAVER_BOUND_TESTS)))
+if re.search(UNIT_TEST_PATTERN, f"/{LEAVER_BOUND_PACKAGE}"):
+    raise ValueError(f"the leaver hold's tests of {LEAVER_BOUND_PACKAGE} are skipped by the unit step, whose "
+                     f"`grep -Ev` takes that package out, so the -skip below skips nothing; name the step that "
+                     f"runs that package now and move the skip to it")
 # One go test of the module through the skip counter (DATABASE_SKIPS_PKGS above says why one).
 UNIT_TEST_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
-                 f"--skip {names_pattern(WEB_FIXTURE_TESTS + [t for ts in BACKEND_COUNT_TESTS.values() for t in ts])} "
+                 f"--skip {names_pattern(WEB_FIXTURE_TESTS + [t for ts in BACKEND_COUNT_TESTS.values() for t in ts] + LEAVER_BOUND_TESTS)} "
                  f"--module-except '{UNIT_TEST_PATTERN}'")
 
 

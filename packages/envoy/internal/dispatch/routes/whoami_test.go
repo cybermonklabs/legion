@@ -42,7 +42,7 @@ func TestMain(m *testing.M) {
 // GET /auth/whoami answers it: the sign-in tests read whoami for the person it names, and their
 // routers hold no database to read a head from.
 func standInEventLog(ctx *AppContext, head int64) {
-	ctx.eventHead = func(context.Context) (int64, error) { return head, nil }
+	ctx.eventHead = func(*http.Request) (int64, error) { return head, nil }
 }
 
 // storeRouter is the router main serves over database, with header identity naming the person and
@@ -319,7 +319,7 @@ func TestAnAnonymousWhoamiIsUnauthorizedWhileTheEventHeadCannotBeRead(t *testing
 		t.Fatalf("build context: %v", err)
 	}
 	var reads atomic.Int32
-	ctx.eventHead = func(context.Context) (int64, error) {
+	ctx.eventHead = func(*http.Request) (int64, error) {
 		reads.Add(1)
 		return 0, errors.New("the database stopped answering")
 	}
@@ -381,7 +381,7 @@ func TestWhoamiAnswersEventHeadUnavailableOnlyWhileNoHeadIsProven(t *testing.T) 
 			if err != nil {
 				t.Fatalf("build context: %v", err)
 			}
-			ctx.eventHead = func(context.Context) (int64, error) { return 0, tc.err }
+			ctx.eventHead = func(*http.Request) (int64, error) { return 0, tc.err }
 			handler, background := New(ctx)
 			t.Cleanup(background.Wait)
 			request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)

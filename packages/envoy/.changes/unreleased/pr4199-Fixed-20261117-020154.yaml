@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  Under a Google Workspace domain, an hourly confirmation that began before a person signed in
+  again no longer overwrites that newer sign-in's refresh token or member kind. It writes only while
+  the person's record still holds the refresh token that confirmation read.
+time: 2026-11-17T02:01:54.138656888Z
+custom:
+    Issue: pr4199

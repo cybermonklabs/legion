@@ -34,8 +34,9 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     # The Run names the packages the step's own --module-except keeps (packages_kept over
     # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
     # beside it. A Run saying more would credit this job with tests other jobs run: the race
-    # lane's are envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the text checks
-    # are the text-check job's, those packages are envoy-go-build's, and the closure of ./...
+    # lane's are envoy-go-race's, envoy-go-race-store's, envoy-go-race-api's and
+    # envoy-go-race-docs', the text checks are the text-check job's, those packages are
+    # envoy-go-build's, and the closure of ./...
     # would put their test files and the files only those tests read on this job's filter, so a
     # change to one of them would start a job that does not run the test it touches.
     # Its --skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
@@ -46,11 +47,21 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     # makes the first a requirement. It also takes the backend count's tests of cmd/cipher
     # and internal/cipher/api out (BACKEND_COUNT_TESTS), which the backend count runs in this
     # same job and environment. The tests stay compiled into this step's binary, which is what
-    # a skipped test is.
+    # a skipped test is. Its --skip also takes LEAVER_BOUND_TESTS out of this step: the leaver
+    # hold's step below runs them, in parallel with one another, and fails unless each ran and
+    # passed.
     pinned_step("envoy-go", UNIT_TEST_STEP, ".", UNIT_TEST_RUN, [
         (ENVOY, packages_kept(ENVOY, UNIT_TEST_PATTERN),
          f"packages/envoy/scripts/database-skips.sh's go test -json -timeout {UNIT_TEST_TIMEOUT} of the "
          "packages its --module-except keeps", {}),
+    ]),
+    # The leaver hold's four real-time tests of cmd/dispatch, which named-tests.sh runs from
+    # packages/envoy with `go test -json -run` of their names alone (LEAVER_BOUND_RUN). The -run
+    # moves no closure, so the Run is the plain go test of the package.
+    pinned_step("envoy-go", LEAVER_BOUND_STEP, ".", LEAVER_BOUND_RUN, [
+        (ENVOY, [f"./{LEAVER_BOUND_PACKAGE}/"],
+         f"{NAMED_TESTS_SCRIPT}'s go test -json -timeout {LEAVER_BOUND_TIMEOUT} -run of LEAVER_BOUND_TESTS "
+         f"in ./{LEAVER_BOUND_PACKAGE}/", {}),
     ]),
     # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
     # test of internal/bus that needs a real server image, the auth service's check that the
@@ -73,6 +84,7 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', UNIT_TEST_STEP)} runs it, and "
                             f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
     (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
+    (NAMED_TESTS_SCRIPT, f"{at('envoy-go', LEAVER_BOUND_STEP)} runs it"),
 ) + ceiling_reads("envoy-go") + service_settings_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go"))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go held packages/envoy/** by hand before the filters were computed: it selected 728 file(s) no other read of this gate declares", but=('**/*_test.go',)),

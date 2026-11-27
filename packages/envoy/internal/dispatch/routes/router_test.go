@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -56,7 +57,7 @@ func withDocuments(t testing.TB, options AppContextOptions) AppContextOptions {
 	if options.Events == nil {
 		options.Events = events.NewBroker()
 	}
-	origins := text.NewOrigins(strings.TrimSuffix(options.ServerURL, "/"))
+	origins := text.NewOrigins(strings.TrimSuffix(options.ServerURL, "/"), options.OutsideOrigin)
 	documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
@@ -111,11 +112,18 @@ type memoryPeopleStore struct {
 }
 
 // memoryPerson is one person's row in memoryPeopleStore: ConfirmedAt is the store clock's time of
-// the last confirmation, zero for none.
+// the last confirmation, zero for none, Kind the member kind the last sign-in or confirmation
+// wrote, HostedDomain the `hd` it recorded, Held a recorded hold, SignedOut a sign-out that kept
+// the refresh token, and SignedInAt the store clock's time of the last sign-in.
 type memoryPerson struct {
 	RefreshToken string
 	Subject      string
 	ConfirmedAt  time.Time
+	Kind         model.MemberKind
+	HostedDomain string
+	Held         bool
+	SignedOut    bool
+	SignedInAt   time.Time
 }
 
 func newMemoryPeople() *memoryPeopleStore {
@@ -157,7 +165,7 @@ func (s *memoryPeopleStore) SignIn(_ context.Context, email, refreshToken string
 	return nil
 }
 
-func (s *memoryPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string) error {
+func (s *memoryPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	defer s.runAfterSignIn()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -187,7 +195,7 @@ func (s *memoryPeopleStore) Membership(_ context.Context, email string) (auth.Pe
 	return membership, found, nil
 }
 
-func (s *memoryPeopleStore) Confirm(_ context.Context, email, refreshToken string) error {
+func (s *memoryPeopleStore) ConfirmSubject(_ context.Context, email, subject, readToken, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
@@ -212,7 +220,28 @@ func (s *memoryPeopleStore) End(_ context.Context, email string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if person, found := s.people[email]; found {
-		s.people[email] = memoryPerson{Subject: person.Subject}
+		person.RefreshToken, person.ConfirmedAt, person.SignedOut = "", time.Time{}, false
+		s.people[email] = person
+	}
+	return nil
+}
+
+func (s *memoryPeopleStore) KeepAfterSignOut(_ context.Context, email string, signedInAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if person, found := s.people[email]; found && person.RefreshToken != "" && person.SignedInAt.Equal(signedInAt) {
+		person.SignedOut = true
+		s.people[email] = person
+	}
+	return nil
+}
+
+func (s *memoryPeopleStore) ForgetAfterSignOut(_ context.Context, email string, signedInAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if person, found := s.people[email]; found && person.SignedInAt.Equal(signedInAt) {
+		person.RefreshToken, person.ConfirmedAt, person.SignedOut = "", time.Time{}, false
+		s.people[email] = person
 	}
 	return nil
 }
@@ -708,6 +737,9 @@ func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 			}
 			if body := response.Body.String(); !strings.Contains(body, tc.page) || !strings.Contains(body, `href="/auth/start"`) {
 				t.Errorf("refusal page does not say %q and offer another sign-in: %s", tc.page, body)
+			}
+			if body := response.Body.String(); !strings.Contains(body, `<meta name="viewport" content="width=device-width, initial-scale=1">`) {
+				t.Errorf("refusal page names no viewport, so a phone lays it out 980 pixels wide and scales it down: %s", body)
 			}
 			if sessionCookie(response) != nil {
 				t.Error("a refused sign-in received a session cookie")
@@ -1623,7 +1655,7 @@ func TestUnknownReservedPathIsJSONNotFoundWithHint(t *testing.T) {
 				want := map[string]string{
 					"code":  "NOT_FOUND",
 					"error": "no route for GET " + path,
-					"hint":  "GET /api/v1 lists every route",
+					"hint":  "GET /api/v1, with a credential, lists every route",
 				}
 				if !reflect.DeepEqual(body, want) {
 					t.Fatalf("%s body = %v, want %v", path, body, want)
@@ -1666,7 +1698,7 @@ func TestAMethodAKnownPathDoesNotServeIsJSONNoRoute(t *testing.T) {
 		want := map[string]string{
 			"code":  "NOT_FOUND",
 			"error": "no route for " + method + " " + path,
-			"hint":  "GET /api/v1 lists every route",
+			"hint":  "GET /api/v1, with a credential, lists every route",
 		}
 		if !reflect.DeepEqual(body, want) {
 			t.Fatalf("%s %s body = %v, want %v", method, path, body, want)
@@ -1697,7 +1729,7 @@ func TestTheRepositoryMappingWritesAreNoRoute(t *testing.T) {
 		want := map[string]string{
 			"code":  "NOT_FOUND",
 			"error": "no route for " + method + " " + path,
-			"hint":  "GET /api/v1 lists every route",
+			"hint":  "GET /api/v1, with a credential, lists every route",
 		}
 		if !reflect.DeepEqual(body, want) {
 			t.Fatalf("%s %s body = %v, want %v", method, path, body, want)
@@ -1981,7 +2013,7 @@ func TestIAPAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
 	}
 }
 
-func (s *memoryPeopleStore) EndSubject(ctx context.Context, email, subject string) (bool, error) {
+func (s *memoryPeopleStore) EndSubject(ctx context.Context, email, subject, refreshToken string, mode auth.EndMode) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
@@ -1994,6 +2026,10 @@ func (s *memoryPeopleStore) EndSubject(ctx context.Context, email, subject strin
 	if err := s.sessions.RevokeSessions(ctx, email); err != nil {
 		return false, err
 	}
-	s.people[email] = memoryPerson{Subject: person.Subject}
+	person.RefreshToken, person.ConfirmedAt = "", time.Time{}
+	if mode == auth.EndHold {
+		person.Held = true
+	}
+	s.people[email] = person
 	return true, nil
 }

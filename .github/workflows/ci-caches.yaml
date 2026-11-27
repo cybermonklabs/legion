@@ -486,7 +486,7 @@ jobs:
       # it), each test binary built and started as the lane's go test does, running no test.
       - name: Build what the envoy race lane builds
         run: |
-          go test -count=1 -race -run '^$' ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/ ./internal/dispatch/api/ ./internal/dispatch/docs/
+          go test -count=1 -race -run '^$' ./internal/dispatch/delivery/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/cipher/natscallout/ ./internal/oidc/ ./internal/dispatch/store/... ./internal/dispatch/api/ ./internal/dispatch/docs/
           go run ./internal/dispatch/store/cmd/connections
         working-directory: packages/envoy
 

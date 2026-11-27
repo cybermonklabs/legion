@@ -499,8 +499,7 @@ const (
 
 // ProjectAccess is who may see one project and who changes that: its owner, its visibility, and
 // the people (lowercase emails) and groups its access list names, each list sorted and never
-// null. The access package's writes answer it (access.SetOwner); a later slice adds the route that
-// reads and writes it.
+// null (GET /api/v1/projects/{key}/access).
 type ProjectAccess struct {
 	Project    string   `json:"project"`
 	Owner      string   `json:"owner"`
@@ -524,6 +523,48 @@ type ProjectAccess struct {
 	// stores and bus gate come with its full switch. Absent for every other project, so a
 	// deployment that names no such project answers what it always answered.
 	PrivateBeforeFullSwitch bool `json:"private_before_full_switch,omitempty"`
+	// Passkeys is, in the owner's answer of a deployment whose people from outside sign in with a
+	// passkey (DISPATCH_SIGNIN_PASSKEY=1), when each passkey of a person People names was enrolled,
+	// sorted by email and then by that time, [] for none; absent from every other answer. The owner
+	// sees from it whether a link they made was used first by someone else (R5).
+	Passkeys *[]EnrolledPasskey `json:"passkeys,omitempty"`
+	// Invitable is, in that same answer alone, the people of People the owner can make a link for
+	// now (POST /api/v1/projects/{key}/access/people/{email}/invitations): each on no domain of the
+	// company's Workspace, with no full member's sign-in, and named by no project of another owner,
+	// sorted, [] for none.
+	Invitable *[]string `json:"invitable,omitempty"`
+	// ListedByAnotherOwner is, in that same answer alone, the people from outside of People (no
+	// full member, no Workspace address) a project of another owner names directly, sorted, [] for
+	// none: one owner binds a person from outside, so the owner makes no link for them (409
+	// LISTED_BY_ANOTHER_OWNER) until that project's owner takes them off its list, or an operator
+	// does.
+	ListedByAnotherOwner *[]string `json:"listed_by_another_owner,omitempty"`
+	// OpenInvitations is, in that same answer alone, each link of this project that can still
+	// enroll someone: unused and not lapsed, sorted by email and then by when it was made, [] for
+	// none. It holds no token. The owner's page drops a link it shows once a read made after that
+	// link landed no longer holds it: a Reset, a newer link, a delisting or the person's
+	// enrollment ended it, wherever that was done.
+	OpenInvitations *[]OpenInvitation `json:"open_invitations,omitempty"`
+}
+
+// OpenInvitation is one link of a project that can still enroll someone
+// (ProjectAccess.OpenInvitations): the address it was made for, when it was made, and when it
+// lapses, both on the database's clock, as the owner's Invite answered them.
+type OpenInvitation struct {
+	Email     string    `json:"email"`
+	MadeAt    time.Time `json:"made_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// EnrolledPasskey is one passkey of a person (ProjectAccess.Passkeys): when it was enrolled, who
+// made the link that enrolled it, and that link's project, which only a reader who sees it is
+// answered (nil otherwise), so the owner sees whose link a passkey came through before the person
+// reads their project.
+type EnrolledPasskey struct {
+	Email      string    `json:"email"`
+	EnrolledAt time.Time `json:"enrolled_at"`
+	MadeBy     string    `json:"made_by"`
+	Project    *string   `json:"project,omitempty"`
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the

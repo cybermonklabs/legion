@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -231,30 +230,6 @@ func refuseDispatchSeed(value pulumi.StringInput, dispatch, input string) pulumi
 	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
 		if bus.HoldsSeed(v) {
 			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf(input, "%w", core.SeedRefusal(input)))
-		}
-		return v, nil
-	}).(pulumi.StringOutput)
-}
-
-// iapAudienceRule is the audience IAP signs a request for when it reaches the app through a
-// load balancer's backend service: /projects/<project number>/global/backendServices/<backend
-// service id>, both numbers (https://cloud.google.com/iap/docs/signed-headers-howto, "Verifying
-// the JWT payload", aud).
-var iapAudienceRule = regexp.MustCompile(`^/projects/[0-9]+/global/backendServices/[0-9]+$`)
-
-// dispatchIAPAudience is iapAudience as DISPATCH_IAP_AUDIENCE carries it, judged once it resolves:
-// a seed is refused first, naming the input and never the value, as refuseDispatchSeed refuses
-// one, and then any value of another form, naming the input and quoting the value, which is no
-// secret. Dispatch holds each assertion's aud claim to this value as a string, so an audience of
-// another form would admit no browser at all.
-func dispatchIAPAudience(value pulumi.StringInput, dispatch string) pulumi.StringOutput {
-	return value.ToStringOutput().ApplyT(func(v string) (string, error) {
-		if bus.HoldsSeed(v) {
-			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience", "%w", core.SeedRefusal("iapAudience")))
-		}
-		if !iapAudienceRule.MatchString(v) {
-			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("iapAudience",
-				"iapAudience %q must be the audience IAP signs for a load balancer's backend service, /projects/<project number>/global/backendServices/<backend service id>", v))
 		}
 		return v, nil
 	}).(pulumi.StringOutput)
@@ -698,16 +673,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
 	// sign-in on, and DISPATCH_SIGNIN_WORKSPACE_DOMAINS follows them only with signInWorkspaceDomains,
 	// which needs sign-in on too: the entries comma-joined, as Dispatch splits them. The IAP door's
-	// three variables take that same place, since the resolver refuses the Google client beside it,
-	// and render only with iapAudience: the identity mode, the audience, and the domain whose
-	// accounts may use Dispatch, which Dispatch holds the signed header's hd claim to. A deployment
-	// without it names no identity mode, and Dispatch keeps its default. DISPATCH_SERVER_URL is the
-	// address a reader is sent back to, so it is the url output's own derivation (serverURL) and
-	// never a second spelling of it.
+	// five variables take that same place, since the resolver refuses the Google client beside it,
+	// and render only with iapAudience: the identity mode, the audience, the domain whose accounts
+	// may use Dispatch, which Dispatch holds the signed header's hd claim to, and the signer and the
+	// delegated user its Workspace Directory reads sign as and act as. A deployment without it names
+	// no identity mode, and Dispatch keeps its default. DISPATCH_SERVER_URL is the address a reader
+	// is sent back to, so it is the url output's own derivation (serverURL) and never a second
+	// spelling of it.
 	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, and DISPATCH_SIGNIN_PASSKEY follows
-	// that only with signInPasskey, which needs outsideOrigin, so a deployment that sets none of the
-	// outside inputs renders byte for byte what it always rendered. DISPATCH_PARENT_STATUS_RULE=on
-	// comes next, only with parentStatusRule, in every mode: it is no sign-in setting, and after the
+	// that only with signInPasskey, which needs outsideOrigin, then DISPATCH_TRUSTED_PROXY_RANGES,
+	// which Dispatch refuses passkey sign-in without, so a deployment that sets none of the outside
+	// inputs renders byte for byte what it always rendered. DISPATCH_PARENT_STATUS_RULE=on comes
+	// next, only with parentStatusRule, in every mode: it is no sign-in setting, and after the
 	// origins it moves none of the variables above it. DISPATCH_LEGION_STATUS_SCOPE=on comes after
 	// it, or in its place without parentStatusRule, only with legionStatusScope and in every mode,
 	// for the same reasons.
@@ -724,13 +701,16 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if s.iap {
 		appEnv = append(appEnv, valueEnv("DISPATCH_IDENTITY", "iap"),
 			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_IAP_AUDIENCE"), Value: dispatchIAPAudience(args.IapAudience, dispatch)},
-			valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
+			valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain),
+			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_DIRECTORY_ACCOUNT"), Value: dispatchDirectorySetting(args.DirectoryAccount, dispatch, "directoryAccount")},
+			corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_DIRECTORY_ADMIN"), Value: dispatchDirectorySetting(args.DirectoryAdmin, dispatch, "directoryAdmin")})
 	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
 	if s.outsideOrigin != "" {
 		appEnv = append(appEnv, valueEnv("DISPATCH_OUTSIDE_ORIGIN", s.outsideOrigin))
 		if s.signInPasskey {
-			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_PASSKEY", "1"))
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_PASSKEY", "1"),
+				valueEnv("DISPATCH_TRUSTED_PROXY_RANGES", strings.Join(s.trustedProxyRanges, ",")))
 		}
 	}
 	if s.parentStatusRule {

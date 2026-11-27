@@ -1,5 +1,7 @@
 import {
   AUTH_NO_IDENTITY,
+  AUTH_SIGNED_OUT_REASONS,
+  type AuthSignedOutReason,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
@@ -19,6 +21,7 @@ import {
   sleep,
 } from "@legion/contracts";
 
+import { setDispatchOrigins } from "./origins";
 import {
   type Answer,
   type Body,
@@ -118,6 +121,15 @@ interface ErrorPayload {
   candidates?: readonly ErrorCandidate[];
   issues?: readonly ParentStatusConflictIssue[] | null;
   changed?: readonly StatusChangeEntry[] | null;
+  reason?: string;
+  login?: string;
+}
+
+/** Why Dispatch signed the person out, and the address it signed out, as its `401
+ *  AUTH_NO_IDENTITY` names them (`AUTH_SIGNED_OUT_REASONS`). */
+export interface SignedOut {
+  readonly login: string;
+  readonly reason: AuthSignedOutReason;
 }
 
 export class ApiError extends Error {
@@ -140,6 +152,10 @@ export class ApiError extends Error {
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
+  /** Why Dispatch signed the person out, for its own `401 AUTH_NO_IDENTITY` naming a reason this
+   *  page knows and the address; undefined for every other answer, a sign-out's and an expired
+   *  cookie's 401 among them. */
+  readonly signedOut: SignedOut | undefined;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -151,7 +167,19 @@ export class ApiError extends Error {
     this.issues = payload.issues ?? undefined;
     this.changed = payload.changed ?? undefined;
     this.retryAfterMs = retryAfterMs;
+    this.signedOut = signedOutOf(status, payload);
   }
+}
+
+/** The reason and address a `401 AUTH_NO_IDENTITY` gives for a sign-out, when it gives a reason
+ *  `AUTH_SIGNED_OUT_REASONS` names and an address to name. */
+function signedOutOf(status: number, payload: ErrorPayload): SignedOut | undefined {
+  const { code, login, reason } = payload;
+  if (status !== 401 || code !== AUTH_NO_IDENTITY || typeof login !== "string" || login === "") {
+    return undefined;
+  }
+  const known = AUTH_SIGNED_OUT_REASONS.find((named) => named === reason);
+  return known === undefined ? undefined : { login, reason: known };
 }
 
 /** The items an `ID_AMBIGUOUS` refusal listed, or undefined for any other failure and for a
@@ -1960,9 +1988,13 @@ export class DispatchApiClient {
   }
 
   /** The signed-in person. `/auth/*` sits outside the `/api/v1` route table the document is
-   *  rendered from, so this one read names its path and its answer itself. */
-  whoAmI(): Promise<AuthenticatedUser> {
-    return this.json<AuthenticatedUser>("/auth/whoami");
+   *  rendered from, so this one read names its path and its answer itself. The origins the
+   *  answer names are the ones every dashboard URL is read against from then on
+   *  (`setDispatchOrigins`); an answer naming none leaves the page's own alone. */
+  async whoAmI(): Promise<AuthenticatedUser> {
+    const user = await this.json<AuthenticatedUser>("/auth/whoami");
+    setDispatchOrigins(user.origins ?? []);
+    return user;
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the
@@ -2052,14 +2084,15 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines',
    *  their own pods' (`person` set) and every service's, whoever approved it, that are unexpired
-   *  or expired with a session still running. */
+   *  or expired with a session still running. A restricted member is answered their own machines'
+   *  alone. */
   getMachineLogins() {
     return this.read("/api/v1/machine-logins", {});
   }
 
   /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
-   *  of the viewer's pods'. Dispatch names the viewer as the person revoking, and every session
-   *  the login enrolled ends with it. */
+   *  of the viewer's pods'; a restricted member revokes only one of their own machines'. Dispatch
+   *  names the viewer as the person revoking, and every session the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
   }

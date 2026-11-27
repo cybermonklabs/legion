@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -124,11 +125,11 @@ func splitAtEachSpace(s string) []string {
 // matches nothing, and the empty bearer matches no value, since none is empty. The HTTP API and
 // the document websocket both authenticate the shared token through it.
 //
-// A bearer matching a value after the first is logged with the request's rightmost
-// X-Forwarded-For address (the hop the load balancer appended; the connection's own address when
-// there is none), its User-Agent and its path, once per address and User-Agent every
-// previousTokenLogWindow, so a rotation can see whether the value on its way out is still in use.
-// The line names the value's position and never a token.
+// A bearer matching a value after the first is logged with the request's caller address
+// (ForwardedAddress: the client Google's load balancer names, the hop the load balancer in front
+// of Dispatch appended, or the connection's own address), its User-Agent and its path, once per
+// address and User-Agent every previousTokenLogWindow, so a rotation can see whether the value on
+// its way out is still in use. The line names the value's position and never a token.
 func MatchesSharedAgentToken(r *http.Request, token string, tokens *SharedAgentTokens) bool {
 	if tokens == nil {
 		return false
@@ -197,10 +198,51 @@ func clipCallerField(field string) string {
 	return strings.ToValidUTF8(field[:previousTokenCallerBytes], "")
 }
 
-// ForwardedAddress is the rightmost X-Forwarded-For entry, the address the load balancer in front
-// of Dispatch saw, or the connection's own address without its port when the header names none.
-// The access log names a request's address with it too (accesslog.Handler).
+// googleLoadBalancerRanges are the addresses Google's external Application Load Balancer reaches
+// its backends from: 35.191.0.0/16 and 130.211.0.0/22 in IPv4 (from which its health checks come
+// too), and its IPv6 proxy range 2600:2d00:1:1::/64. A connection from one of them came through that
+// balancer, which writes X-Forwarded-For as [<what the client sent>,]<client address>,<its own
+// address>, as the secrets broker's edge reads it. Google's IPv6 health-check range,
+// 2600:2d00:1:b029::/64, is left out: a health check sends no X-Forwarded-For, so with or without
+// it such a connection keys on its own address.
+var googleLoadBalancerRanges = []netip.Prefix{
+	netip.MustParsePrefix("35.191.0.0/16"),
+	netip.MustParsePrefix("130.211.0.0/22"),
+	netip.MustParsePrefix("2600:2d00:1:1::/64"),
+}
+
+// ForwardedAddress is the caller's address as Dispatch keys it: the access log's address, the
+// previous-token log's, and the per-address rate-limit bucket the secrets broker's token check
+// keys on. Nothing admits a caller by it: no route grants access by a caller's network address
+// (routes' TestNoRouteGrantsAccessByNetworkAddress). A bound the caller's own header must not
+// pick reads BoundAddress instead, which reads X-Forwarded-For only from a front door
+// DISPATCH_TRUSTED_PROXY_RANGES names. The two readings differ for a peer outside Google's
+// ranges: this one takes the rightmost entry from any such peer, text a caller off the balancer
+// writes itself, which is why no bound a caller must not pick keys on it; it keeps the reading the
+// access log and the broker's bucket have always had, so their keys do not move.
+//
+// A connection from Google's external load balancer (googleLoadBalancerRanges) is read by the rule
+// the broker's edge reads its callers by: the second-to-last entry of the one X-Forwarded-For line,
+// the client address the balancer appends before its own. The last entry is the balancer's own
+// address, the same for every caller, so reading it would key every caller from the internet on
+// one address; anything before the second-to-last is the caller's own text, which it could change
+// to pick its key. A request whose header is not one line of at least two entries with an IP
+// address second to last did not come through the balancer as it writes the header (Google
+// documents the header as one line, and does not say which of several lines it appends to), so its
+// header is ignored and it keys on the connection's own address, the balancer's, where the caller
+// picks nothing. An IPv4 address written as IPv6 keys as the IPv4 address it is.
+//
+// Any other connection keeps the rule Dispatch has always read: the rightmost X-Forwarded-For
+// entry, the address the load balancer in front of Dispatch saw, or the connection's own address
+// without its port when the header names none.
 func ForwardedAddress(r *http.Request) string {
+	peer := peerAddress(r)
+	if fromGoogleLoadBalancer(peer) {
+		if client, ok := balancedClientAddress(r); ok {
+			return client
+		}
+		return peer
+	}
 	forwarded := r.Header.Values("X-Forwarded-For")
 	if len(forwarded) > 0 {
 		last := forwarded[len(forwarded)-1]
@@ -211,8 +253,111 @@ func ForwardedAddress(r *http.Request) string {
 			return address
 		}
 	}
+	return peer
+}
+
+// peerAddress is the connection's own address without its port, or RemoteAddr as it stands when
+// it holds no port.
+func peerAddress(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// BoundAddress is the address a per-address bound keys a caller on, where the caller's own text
+// must not pick the key (the passkey ceremonies' begins, routes.limitPasskeyBegins), and whether
+// the request names one. trusted are the front doors whose X-Forwarded-For Dispatch trusts
+// (cmd/dispatch: DISPATCH_TRUSTED_PROXY_RANGES). A connection from a peer outside trusted keys on
+// its own address, whatever X-Forwarded-For it carries: that header is then the caller's own text.
+// A trusted peer's request carrying more than one X-Forwarded-For line is none a front door
+// forwarded as it writes the header, so it names no address (false). Otherwise a trusted peer is
+// read in one of two ways:
+//   - a peer in Google's external load balancer's ranges (googleLoadBalancerRanges) is read in the
+//     format Google documents, [SUPPLIED,]CLIENT_IP,LOAD_BALANCER_IP, where LOAD_BALANCER_IP is the
+//     address of the balancer's forwarding rule
+//     (https://cloud.google.com/load-balancing/docs/https#x-forwarded-for_header): the client is the
+//     second-to-last entry (balancedClientAddress, as ForwardedAddress reads it), so production
+//     names Google's ranges alone and never its forwarding rule's address;
+//   - any other trusted peer, such as an nginx-style proxy that appends the client last, is read as
+//     the rightmost entry that is not itself in trusted: the hops after it are front doors Dispatch
+//     trusts, and anything before it is the caller's own text.
+//
+// A trusted peer whose header names no such client, or whose client entry is no IP address, keys on
+// its own address, where the caller picks nothing. An IPv4 address written as IPv6 keys as the IPv4
+// address it is.
+func BoundAddress(r *http.Request, trusted []netip.Prefix) (string, bool) {
+	peer := peerAddress(r)
+	if !inRanges(peer, trusted) {
+		return peer, true
+	}
+	lines := r.Header.Values("X-Forwarded-For")
+	if len(lines) > 1 {
+		return "", false
+	}
+	if inRanges(peer, googleLoadBalancerRanges) {
+		if client, ok := balancedClientAddress(r); ok {
+			return client, true
+		}
+		return peer, true
+	}
+	if len(lines) == 0 {
+		return peer, true
+	}
+	hops := strings.Split(lines[0], ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		addr, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			return peer, true
+		}
+		addr = addr.Unmap().WithZone("")
+		if !containedIn(addr, trusted) {
+			return addr.String(), true
+		}
+	}
+	return peer, true
+}
+
+// fromGoogleLoadBalancer reports whether peer, a connection's address without its port, is one of
+// googleLoadBalancerRanges, an IPv4 address written as IPv6 included.
+func fromGoogleLoadBalancer(peer string) bool {
+	return inRanges(peer, googleLoadBalancerRanges)
+}
+
+// inRanges reports whether address, an IP address written as text, is in one of ranges, an IPv4
+// address written as IPv6 included; text that is no IP address is in none.
+func inRanges(address string, ranges []netip.Prefix) bool {
+	addr, err := netip.ParseAddr(address)
+	if err != nil {
+		return false
+	}
+	return containedIn(addr.Unmap(), ranges)
+}
+
+// containedIn reports whether addr is in one of ranges.
+func containedIn(addr netip.Addr, ranges []netip.Prefix) bool {
+	for _, prefix := range ranges {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// balancedClientAddress is the client address Google's load balancer wrote into r's one
+// X-Forwarded-For line, its second-to-last entry, and whether r carries one (ForwardedAddress).
+func balancedClientAddress(r *http.Request) (string, bool) {
+	lines := r.Header.Values("X-Forwarded-For")
+	if len(lines) != 1 {
+		return "", false
+	}
+	hops := strings.Split(lines[0], ",")
+	if len(hops) < 2 {
+		return "", false
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(hops[len(hops)-2]))
+	if err != nil {
+		return "", false
+	}
+	return addr.Unmap().WithZone("").String(), true
 }

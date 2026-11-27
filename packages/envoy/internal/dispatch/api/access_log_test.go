@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -150,11 +151,11 @@ func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
 	logged := captureLog(t)
 	served := directServer(deps)
 	var resolved atomic.Int32
-	stillResolves := func(r *http.Request) error {
+	stillResolves := func(r *http.Request) (model.Actor, bool, error) {
 		defer resolved.Add(1)
 		return served.callerStillResolves(r)
 	}
-	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(stillResolves, func(w http.ResponseWriter, r *http.Request) {
+	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(stillResolves, true, func(w http.ResponseWriter, r *http.Request) {
 		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
 		accesslog.Note(r.Context(), accesslog.KindSession, "session-0123456789abcdef")
 		testwait.Until(t, "ten heartbeats to resolve the socket's caller again (the resolutions returned)", func() (int32, bool) {

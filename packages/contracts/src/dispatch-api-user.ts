@@ -11,6 +11,9 @@ import type { WhoamiAgent, WhoamiUser } from "./dispatch-api.generated";
 export interface AuthenticatedUser {
   readonly kind: "user";
   readonly login: string;
+  /** The origins this Dispatch answers at, the canonical one first; absent where it answers at
+   *  one origin. */
+  readonly origins?: readonly string[];
   /** The decimal id at or below which every event is final (committed or rolled back for good)
    *  when Dispatch answered. Every read the page makes after this answer holds every event at or
    *  below it, so the event feed resumes from it on its first

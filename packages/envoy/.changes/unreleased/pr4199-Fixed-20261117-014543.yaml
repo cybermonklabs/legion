@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  Under a Google Workspace domain, the hourly confirmation that Google refuses no longer signs out
+  a person who signed in again while it ran. It ends the sign-in only while the person's record
+  still holds the refresh token that confirmation read, not only the same Google account.
+time: 2026-11-17T01:45:43.636880177Z
+custom:
+    Issue: pr4199

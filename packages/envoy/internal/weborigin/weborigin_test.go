@@ -174,3 +174,28 @@ func TestGoogleRedirectHostRefusesWhatGoogleRefuses(t *testing.T) {
 		})
 	}
 }
+
+// PasskeyHost is GoogleRedirectHost's rule with a passkey's reason: it takes exactly the hosts
+// GoogleRedirectHost takes, and refuses each one GoogleRedirectHost refuses, saying that no passkey
+// takes it as its relying party and naming no setting and no Google redirect URI.
+func TestPasskeyHostIsGoogleRedirectHostsRuleWithAPasskeysReason(t *testing.T) {
+	for _, row := range []struct{ host, want string }{
+		{"dispatch-outside.example.com", ""},
+		{"dispatch.example.com.np", ""},
+		{"example-outside.example-tailnet.ts.net", ""},
+		{"10.0.0.1", "host 10.0.0.1 is an IP address, which no passkey takes as its relying party, so passkey sign-in at it could not complete: name the origin by a DNS name"},
+		{"dispatch", "host dispatch is a single label, with no top-level domain on the public suffix list, which Dispatch requires of a passkey's relying party, so passkey sign-in at it could not complete"},
+		{"dispatch-outside.example", "host dispatch-outside.example ends in example, no top-level domain on the public suffix list, which Dispatch requires of a passkey's relying party, so passkey sign-in at it could not complete"},
+	} {
+		t.Run(row.host, func(t *testing.T) {
+			passkey, google := weborigin.PasskeyHost(row.host), weborigin.GoogleRedirectHost(row.host)
+			if row.want == "" {
+				require.NoError(t, passkey)
+				require.NoError(t, google)
+				return
+			}
+			require.EqualError(t, passkey, row.want)
+			require.Error(t, google)
+		})
+	}
+}

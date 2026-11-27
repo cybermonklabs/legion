@@ -1,6 +1,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
+import { dispatchOrigins } from "../../api/origins";
 import { keyMayNameIssue, useProjectKeys } from "./project-keys";
 import type { ReferenceLinking } from "./RefLink";
 import {
@@ -70,10 +71,10 @@ export function useTextReferences(
   text: string | readonly string[],
   source?: TextSource
 ): TextReferences {
-  const origin = window.location.origin;
+  const origins = dispatchOrigins();
   // The first reading: it resolves every `dispatch://` reference and dashboard address on its
   // own, and says which keys, question and prefixes the rest waits on.
-  const written = useMemo(() => readText(text, { origin }), [origin, text]);
+  const written = useMemo(() => readText(text, { origins }), [origins, text]);
   const { keys: writtenKeys, prefixes, questions } = written.needs;
 
   // A word shaped like an issue key whose prefix is no project the page holds is asked nothing
@@ -119,8 +120,8 @@ export function useTextReferences(
   });
 
   const facts = useMemo(
-    () => ({ issues, items, origin, questions: askedQuestions }),
-    [askedQuestions, issues, items, origin]
+    () => ({ issues, items, origins, questions: askedQuestions }),
+    [askedQuestions, issues, items, origins]
   );
   const reading: TextReading = useMemo(
     () =>

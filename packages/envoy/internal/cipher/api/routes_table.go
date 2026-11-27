@@ -583,6 +583,18 @@ func routes() []apiRoute {
 		// the caller's word, which does more than take power away: naming the holder lifts the
 		// refusal an earlier revoke recorded for that account, and nothing else.
 		{http.MethodPost, "/v1/person-subjects/revoke", accountAuth(relaysDecisions, (*server).revokePersonSubject)},
+		// Count what the named person holds here that outlives their browser session: their own
+		// machine logins that are not revoked and are unexpired or expired with a session still
+		// running (a service's login they approved is not theirs), their sign-ins on a machine
+		// that are not revoked, the entries of the token exchange's configuration that name them,
+		// and the Kubernetes service accounts BROKER_POD_OPERATORS maps to them
+		// (pod_operator_mappings), whether or not a pod of one holds a live login, since a pod of
+		// such an account logs in as them at any time. Dispatch's server asks it when the person
+		// signs out, and about once an hour after that while it keeps their refresh token, to
+		// decide whether it still keeps that token so that Google's later refusal of them still
+		// holds those credentials. The person is the one the caller names; naming none is 400
+		// PERSON_REQUIRED.
+		{http.MethodGet, "/v1/person-access", accountAuth(relaysDecisions, (*server).personAccess)},
 		// Read the broker's grant log for one closed period, for a quarterly access review:
 		// every audit row between ?since and ?until (RFC 3339, half-open), oldest first, each
 		// naming the session that wrote it, that session's person, the service the broker

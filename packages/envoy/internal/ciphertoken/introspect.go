@@ -138,15 +138,20 @@ func cutOf(answer Introspection) (time.Time, error) {
 // decides.
 func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 	caller := Caller{
-		Session:      answer.Session,
-		Person:       answer.Person,
-		Service:      answer.Service,
-		Projects:     slices.Clone(answer.Projects),
-		ProjectScope: oauthwire.BaseProjectScope(answer.ProjectScope),
-		ReadOnly:     shape == shapeReadOnly,
-		ApproveOnly:  shape == shapeApproveOnly,
-		Cut:          cut,
-		Held:         answer.Held,
+		Session:        answer.Session,
+		Person:         answer.Person,
+		Service:        answer.Service,
+		Projects:       slices.Clone(answer.Projects),
+		ProjectScope:   oauthwire.BaseProjectScope(answer.ProjectScope),
+		ReadOnly:       shape == shapeReadOnly,
+		ApproveOnly:    shape == shapeApproveOnly,
+		Cut:            cut,
+		AccountIssuer:  answer.AccountIssuer,
+		AccountSubject: answer.AccountSubject,
+		Held:           answer.Held,
+	}
+	if answer.CredentialCreatedAt > 0 {
+		caller.CredentialCreatedAt = time.Unix(answer.CredentialCreatedAt, 0).UTC()
 	}
 	if answer.NotHeldUntil > 0 {
 		caller.NotHeldUntil = time.Unix(answer.NotHeldUntil, 0).UTC()

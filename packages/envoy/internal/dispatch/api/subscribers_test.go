@@ -260,7 +260,8 @@ func TestListIssueSubscribersFiltersEnrichesAndSortsByLastSeen(t *testing.T) {
 // A subscriber whose session is no longer live is shown with the last heartbeat the listener still
 // knows for it, which is later than its interest row's updated_at, and with that updated_at when
 // the listener sends none. A live subscriber keeps its session's own last_seen. The list is read
-// straight from the listener, so this asks the handler body with no database behind it.
+// straight from the listener, so this asks the handler body directly, read as the server's own
+// viewer, which sees every subscriber.
 func TestSubscribersShowADeadSessionsLastHeartbeat(t *testing.T) {
 	t.Parallel()
 	const topic = "notifications.dispatch.issue.TEST-1.>"

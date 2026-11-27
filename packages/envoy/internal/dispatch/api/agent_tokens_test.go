@@ -563,3 +563,14 @@ func TestAReadOnlyPersonalTokenRecordsItsLastUse(t *testing.T) {
 		t.Fatalf("resolving the read-only token wrote the last use of the token that writes: %v, then %v", writing, writingAfter)
 	}
 }
+
+// outsideTokenRig is two API servers over one database, as one deployment is before and after its
+// operator stops admitting restricted members: on admits them (its sign-in rule, testOutsideRule,
+// is Deps.RestrictedAdmission) and off does not. The database holds ACC, which alice owns and whose
+// access list names erin, a restricted member, and erin's personal token, which she minted at her
+// browser.
+type outsideTokenRig struct {
+	on, off  http.Handler
+	database *store.Store
+	token    string
+}

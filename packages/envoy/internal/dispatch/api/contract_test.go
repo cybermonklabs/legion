@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/approvetimingtest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -97,7 +98,8 @@ func newContractRig(t *testing.T) *contractRig {
 	cur := policytest.Current(t, local)
 
 	brokerMux := http.NewServeMux()
-	brokerServer := httptest.NewServer(brokerMux)
+	var brokerServer *httptest.Server
+	brokerServer = httptest.NewServer(approvetimingtest.Broker(func() string { return brokerServer.URL }, brokerMux))
 	t.Cleanup(brokerServer.Close)
 
 	issuer := oidctest.New(t)

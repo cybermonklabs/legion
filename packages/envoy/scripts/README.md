@@ -644,11 +644,13 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
-its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packages its
-`DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
-auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
-in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
-anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, then it
+its default table, `./internal/cipher/...`, `./cmd/cipherd/` and `./internal/holdrecord/`, less
+the packages its `DEFAULT_EXCEPT` takes out of them: a race lane package under the broker's tree
+that opens no database, of which there is none today (`DATABASE_SKIPS_PATTERN` in
+`.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says anything
+else). The auth service's `natscallout` stays in that table, and `envoy-go-race` runs it through
+this script under `-race` too. That is one `go test -json -count=1 -timeout 15m` from
+`packages/envoy`, then it
 reads that report. `--var NAME` names a variable the packages need, and repeats; with none it is
 `BROKER_TEST_DATABASE_URL`. A named variable that is unset or empty prints
 `database_skips=UNKNOWN` naming it, and nothing runs.
@@ -686,7 +688,10 @@ stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>
 of the packages other jobs run, and a step limit of its own (`timeout-minutes: 45`) that its
 time budget counts; one go test lets the broker's packages share its `-p` slots with the rest
 of the module, where a step of their own after the unit step waited on `cmd/cipherd` alone.
-`envoy-go-race-api` runs the Dispatch API through it as the second line above.
+`envoy-go-race-api` runs the Dispatch API through it as the second line above, and
+`envoy-go-race` runs the auth service
+(`--var BROKER_TEST_DATABASE_URL --race --timeout 10m ./internal/cipher/natscallout/`) as
+"Race-test the NATS auth service and count its skips".
 `database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
 skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report

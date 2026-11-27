@@ -1,6 +1,6 @@
 ---
 title: Running Dispatch
-description: What the Dispatch server needs, how to run it, its health check, running more than one copy, and its migrations.
+description: What the Dispatch server needs, how to run it, private projects, its health check, running more than one copy, and its migrations.
 sidebar:
   order: 8
 ---
@@ -36,9 +36,9 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | Need | Setting | Notes |
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
-| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
-| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
-| The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
+| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents, which sees only the public projects; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
+| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_PASSKEY=1` lets the people a project names sign in from outside the domain with a passkey, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the organization's other domains, whose addresses no person from outside may hold. [Signing people in](#signing-people-in) covers all of it. |
+| The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. `DISPATCH_OUTSIDE_ORIGIN` is a second address, for people from outside ([People from outside the domain](#people-from-outside-the-domain)). |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
 | An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. |
@@ -116,10 +116,14 @@ that admits a person is Dispatch's own.
 Either way, Dispatch keeps the issuer's refresh token, sealed, and confirms the person with it at
 least hourly: the first request after the hour refreshes the sign-in and applies the same rule to
 the refreshed ID token. A person the rule no longer admits loses every browser session, and so
-does anyone whose refresh token the issuer refuses as expired or revoked. A refresh the issuer
-does not answer, as in an outage at the issuer, signs nobody out: that request is refused with
-`503 SIGNIN_UNAVAILABLE`, and the person's first request after the issuer answers again refreshes
-and goes through. Logout ends Dispatch's session only, not the issuer's.
+does anyone whose refresh token the issuer refuses as expired or revoked. Through the pool,
+Dispatch then forgets the refresh token; with Google directly, it also holds the person's agent
+tokens and broker credentials until they sign in again
+([A person Google refuses](#a-person-google-refuses)). A refresh the issuer does not answer, as in
+an outage at the issuer, signs nobody out: that request is refused with `503 SIGNIN_UNAVAILABLE`,
+and the person's first request after the issuer answers again refreshes and goes through. Logout
+ends Dispatch's session only, not the issuer's; with Google directly, Dispatch can keep the
+refresh token after it, for these checks alone.
 
 Dispatch does not need the issuer to start. It reads the issuer's settings in the background,
 retrying until the issuer answers, and until then a sign-in answers `503 SIGNIN_UNAVAILABLE` while
@@ -131,37 +135,444 @@ A person is their email address, so an address that passes from one account to a
 person to Dispatch. With Google directly, Dispatch also records the Google account (its `sub`,
 which Google never reuses) that signed in to each address: when another account signs in to the
 same address, as when a Workspace admin gives a deleted account's address to a new one, Dispatch
-ends every session of the address before it signs the new account in, and the hourly confirmation
-ends them should the refreshed sign-in name another account. Through a Cognito pool there is no
-such record: the old holder of a reassigned address keeps the sessions they already have until
-their cookie expires, 30 days after it was issued, unless the pool user is removed from
-`DISPATCH_SIGNIN_GROUP` or disabled.
+ends every session of the address and revokes every agent token made under it before it signs
+the new account in, so nothing the old account signed in or made acts as the new one; the new
+account makes its own tokens in Settings. With a secrets broker configured
+(`DISPATCH_AGENT_SECRETS_URL`), whatever member kind the old account's row held, one of your
+people or an account from outside, Dispatch also tells the broker which account it replaced, and the broker
+ends every machine login the old account approved for its own machines, every sign-in it made
+on a machine with `agent-secrets login` and every session it holds on the broker's own approval
+page, whenever it made them, with the tokens issued under them,
+and refuses it any new one, a sign-in with a Google token it got before the address moved
+included. The new account's machines are left alone, however soon after its sign-in they log in.
+If the old account gets the address back while its revocation is still owed, Dispatch drops that
+revocation, so nothing the old account makes after taking the address back is ended, unless a call
+to the broker for it was already under way, and revokes only the account it took the address back
+from.
+Dispatch tries again every 30 seconds until the broker confirms. A broker token names the Google
+account the broker recorded for it, the account that signed in on the machine or approved the
+machine login, and Dispatch holds each token to that account: the new account's own tokens act
+throughout, the old account's are refused from the commit of the new account's sign-in, and a
+token of an account Dispatch does not record for its address acts only once that account has
+signed in to Dispatch. A token from a sign-in or machine login made before the broker recorded
+accounts names none and might be either account's, so Dispatch holds it to when the broker made
+that sign-in or login: made before the new account signed in to Dispatch, or less than five
+minutes after (the broker's clock and Dispatch's are two, and a skew refuses), it is refused for
+good; made later, it acts. A personal token that names no account is held to its own creation
+time the same way. Nothing waits on the broker's revocation for any of this. Deploy the broker
+that serves this before Dispatch, and set `DISPATCH_AGENT_SECRETS_URL` on every Dispatch process:
+a process without it records no revocation, so a replacement it serves is never revoked at the
+broker, where the old account's machine logins would go on reading secrets. A revocation the
+broker never confirms shows on `/metrics`
+(`envoy_dispatch_broker_revocation_oldest_owed_seconds` past a few minutes), one it answered
+`superseded` on `envoy_dispatch_broker_revocations_superseded_total` (below), and
+`envoy-dispatch clear-broker-revocation <email>` lists what is owed and, given the names it lists,
+settles those without the broker, so revoke the old account's machine logins at the broker first.
 
-Moving a deployment from the Cognito pool to a domain needs no session-generation bump: the first
-sign-in under the domain records a subject the address's row did not hold before, which ends
-every session of the address by itself (the same check that ends a reassigned address's sessions,
-above). It still needs the refresh-token step: revoke everyone's refresh tokens at the pool (a
-global sign-out, or disabling the app client), then clear any still stored in plain text —
-`update people set refresh_token = null, confirmed_at = null where refresh_token not like 'v1:%'`
-— before the cutover: domain mode's own retirement sends such a row's token to Google's
-revocation endpoint instead, which cannot revoke a token Google never issued, and logs an ERROR
-every boot until the row is cleared or its person signs in again. A person's own next sign-in
-under the domain overwrites their sealed pool token anyway, but someone who never signs in again
-keeps theirs in `people` indefinitely, still redeemable at the pool until it is revoked there.
+Every block below reaches its database with `psql`, given a URL that holds no password and the
+password in `PGPASSWORD`, so no password is ever an argument of a command, which every user of the
+box can read from `/proc/<pid>/cmdline` while it runs. The URLs are libpq's, while
+`BROKER_DATABASE_URL` is the broker's own, pgx's: a deployment sets `pool_max_conns` on it to size
+the broker's pool, and libpq refuses a URI parameter it does not know (`invalid URI query
+parameter`), so `psql` given that URL reads nothing and the reset
+([After a restore](/legion/dispatch/after-a-restore/)) would print `UNKNOWN: the broker database
+could not be read` for a reason that has nothing to do with the broker. So make each URL once, from
+the server's own with its `pool_` parameters and its password taken out, and read each database's
+password from the terminal (Enter alone for a database that asks none), as the blocks name them,
+`$DISPATCH_PSQL_URL` with `$DISPATCH_PGPASSWORD` and `$BROKER_PSQL_URL` with `$BROKER_PGPASSWORD`:
 
-Moving the other way, from a domain back to the Cognito pool, needs both steps: the group sign-in
-path never records or compares a subject, so nothing ends the domain sessions on its own, and it
-never clears the recorded subject either. Revoke the refresh tokens at Google (remove the
-client's access), then clear them in Dispatch's database, clear the recorded subject along with
-them, and end every browser session,
-`update people set refresh_token = null, confirmed_at = null, sub = null; update user_sessions set generation = generation + 1`,
-and start Dispatch with the new settings. Skipping the session step there leaves a cookie issued
-before the switch valid: the first sign-in under the pool records a fresh confirmation for the
-address, and that cookie's generation still matches. Skipping the `sub` clear leaves a later
-return to domain mode unprotected: the same Google account signing in again finds its own
-`sub` still on the row, so nothing ends sessions a pool-era cookie still held. Everyone then signs
-in again under the new issuer; a refresh token left from the old one would be refused at the
-first hourly confirmation, and is still redeemable at the old issuer until it is revoked there.
+```bash
+psql_url() {
+  case $1 in
+    postgres://*|postgresql://*) ;;
+    *) echo "psql_url: refused: not a postgres:// URL. A keyword/value string (host=... password=...) would put its password on a command line; give the server's URL form" >&2; return 1 ;;
+  esac
+  if printf '%s' "$1" | grep -Eq '^[a-z]+://[^@/?]*/[^@?]*@'; then
+    echo "psql_url: refused: the URL's user part holds an unencoded /, so the password would stay in it; percent-encode the / as %2F" >&2; return 1
+  fi
+  printf '%s' "$1" | sed -E 's/(\?|&)(pool_[a-z_]+|password)=[^&]*/\1/g; s/&&+/\&/g; s/\?&/?/; s/[?&]$//; s|^([a-z]+://[^:/?@]*):[^@/?]*@|\1@|'
+}
+DISPATCH_PSQL_URL=$(psql_url "$DATABASE_URL")
+BROKER_PSQL_URL=$(psql_url "$BROKER_DATABASE_URL")
+[ -n "${DISPATCH_PGPASSWORD+set}" ] || { read -rsp "Dispatch's database password: " DISPATCH_PGPASSWORD; echo >&2; }
+[ -n "${BROKER_PGPASSWORD+set}" ] || { read -rsp "The broker's database password: " BROKER_PGPASSWORD; echo >&2; }
+export DISPATCH_PSQL_URL BROKER_PSQL_URL DISPATCH_PGPASSWORD BROKER_PGPASSWORD
+```
+
+The block is bash's: `read -rsp` prompts for a password without echoing it in bash, and zsh reads
+`-p` as a coprocess instead. Those `pool_` parameters are the only ones the broker's deployment
+adds that libpq does not take; a URL without them and without a password is left as it is. A
+password the environment already holds in `DISPATCH_PGPASSWORD` or `BROKER_PGPASSWORD`, from
+wherever the deployment keeps it, is used as it is, and nothing asks for it. `printf` is the
+shell's own, so the URL reaches `grep` and `sed` on their input and is never an argument either.
+`psql_url` makes no URL and says why for a server's URL whose password it cannot take out: a
+keyword/value string (`host=… password=…`), and a URL whose user part holds an unencoded `/`,
+which libpq and Dispatch's own server read as the end of the host rather than part of the
+password. Write that server's URL in the form it names, and run the block again.
+
+A revocation settled without the broker, by that command or by a statement written by hand, tells
+the broker nothing, and the old account's credentials go on reading secrets there. It also leaves
+the broker refusing the account the address came back to, when the broker had recorded that
+account replaced: a revocation names the account that holds the address, and the broker stops
+refusing that account only when a revocation naming it reaches it. To have the server's loop pay
+it after all, which recovers both, record it again, naming the account the address records now
+as its holder, with the address as Dispatch holds it, the issuer and the replaced account's `sub`:
+
+```sh
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the replaced sub>' <<'SQL'
+begin;
+select generation from user_sessions where login = :'email' for update;
+update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where email = :'email' and issuer = :'issuer' and subject = :'subject';
+commit;
+SQL
+```
+
+(`store.TestARevocationSettledByItselfIsPaidOnceRecordedAgain` runs this block.) The database
+holds a revocation to its writers and refuses every other write, its deletion included (migration
+`20261118152422`): a recording, like this one, names its holder, which must be the account the
+address records, and its session generation, which must be the address's own; a pass's claim
+stamps when it was tried; and only a settlement, like the command's, leaves one unpaid. The block
+locks the address's `user_sessions` row first, so a sign-out at the same moment waits for it,
+rather than moving the generation between the statement's read of it and the database's own
+check, which would refuse the statement.
+
+A machine login's approve or deny made through Dispatch reaches the broker only while its sender
+still holds the address, checked again once the request's body has arrived, however long the
+sender held the body back, so the old account can neither approve a machine login under the address
+nor deny one of the new account's.
+The hourly confirmation ends the sessions should the
+refreshed sign-in name another account. Through a Cognito pool there is no such record: the old
+holder of a reassigned address keeps the sessions they already have until their cookie expires,
+30 days after it was issued, unless the pool user is removed from `DISPATCH_SIGNIN_GROUP` or
+disabled, and keeps their agent tokens until someone revokes them.
+
+The broker refuses an account it was told no longer holds an address until a later revocation
+names that account as the holder, which a sign-in to Dispatch that replaces another account sends,
+and so does the account binding's catch-up of a change written by hand. A statement written by
+hand that sets `people.sub` back to such an account, rather than the account signing in, records
+no revocation itself, but the database keeps the change, as it keeps every change of `sub` that a
+writer other than Dispatch's own sign-in makes, and once the account binding holds the revocation
+loop catches it up as that sign-in would have. Say A held the address and B took it: writing A back
+is caught up by settling every revocation still owed for A, recording the revocation of B naming A
+as its holder, which the loop pays, and revoking the address's personal tokens the binding
+refuses. Until then B's machine logins and sign-ins stay live at the broker, which serves them
+secrets without asking Dispatch, and the broker goes on refusing A; the catch-up waits while a
+build without the binding is in the fleet. To recover at once, by hand, do on Dispatch's database
+what that sign-in would have done, with the address as Dispatch holds it, the issuer and the `sub`
+the statement overwrote: settle every revocation still owed for the account the address records
+now (A), as a sign-in that takes an address back does, so the loop never pays one that would end
+what A holds; then record the revocation of the account the statement replaced (B), naming A as
+its holder, exactly as a sign-in records one. The block locks the address's `user_sessions` row
+first, as the one above does:
+
+```sh
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v email='<address>' -v issuer='https://accounts.google.com' -v subject='<the sub the statement overwrote>' <<'SQL'
+begin;
+select generation from user_sessions where login = :'email' for update;
+update broker_revocations set done_at = now() where email = :'email' and issuer = :'issuer' and subject = (select sub from people where people.email = :'email') and done_at is null;
+insert into broker_revocations (email, issuer, subject, holder_subject, recorded_at, session_generation) values (:'email', :'issuer', :'subject', (select sub from people where people.email = :'email'), clock_timestamp(), (select generation from user_sessions where user_sessions.login = :'email')) on conflict (email, issuer, subject) do update set generation = broker_revocations.generation + 1, holder_subject = excluded.holder_subject, recorded_at = excluded.recorded_at, session_generation = excluded.session_generation, done_at = null;
+commit;
+SQL
+```
+
+The server's loop then pays it: the broker ends B's credentials and, since a revoke naming A as the
+holder deletes its record of A, stops refusing A
+(`store.TestAnAccountWrittenBackByItselfIsRecoveredByRecordingTheSkippedRevocation` runs this
+block). A statement that records an account where the address recorded none overwrote no `sub`;
+the database keeps it as a first recording, and once the binding holds the catch-up revokes the
+address's personal tokens that recorded another account or none and records a revocation of each
+other account, as the first sign-in would have.
+
+A refusal the operator chooses to lift by itself, of an account the address records again, is
+cleared on the broker's database instead; it lifts that refusal and ends nothing, so it is no
+recovery from the write above. First check on Dispatch's database that the address records the
+account (`select sub from people where email = '<address>'`), then delete the broker's record of
+it on the broker's database, with the address in lowercase, the issuer as the broker spells it
+(`https://accounts.google.com`) and the account's `sub`. The broker refuses a delete from that
+table unless the deleting transaction first names the one row it deletes, by its own transaction
+id, in `broker.replaced_subject_delete`, as a JSON array of the transaction id, the address, the
+issuer and the `sub`, so the clear is one transaction that sets that marker for the row the
+operator chose to clear and then deletes it; a delete without the marker is refused:
+
+```sh
+PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person='<address>' -v issuer='https://accounts.google.com' -v subject='<sub>' <<'SQL'
+begin;
+select set_config('broker.replaced_subject_delete', jsonb_build_array(pg_current_xact_id()::text, :'person', :'issuer', :'subject')::text, true);
+delete from replaced_person_subjects where person = :'person' and issuer = :'issuer' and subject = :'subject';
+commit;
+SQL
+```
+
+The account's next sign-in trade at the broker then goes through
+(`store.TestAnOperatorsClearLetsAReplacedAccountTradeAgain` runs this block).
+
+Reset or restore Dispatch's database and the broker's together, never one alone, or replaced
+accounts keep live broker credentials: to reset, drop both, create both empty, and let each server
+migrate its own; to restore, restore both from backups taken at one moment. A Dispatch database
+made again starts every address's session generation over, and one restored from a backup to an
+earlier point holds the lower generations it held then, while a broker database kept holds the
+generations its revokes recorded since. The broker then refuses every approve at such an address
+`403 APPROVER_REPLACED`, as checked before a replacement, and answers every revocation there
+`superseded`, ending nothing. A broker database made again beside a Dispatch database kept has
+forgotten every refusal and every replacement Dispatch already paid, and is recovered like a
+broker database restored alone, with `-infinity` for the backup's moment
+([After a restore](/legion/dispatch/after-a-restore/#after-the-brokers-database-restored-or-made-again-alone)).
+
+`envoy_dispatch_broker_revocations_superseded_total` counts each answer `superseded` the broker
+gives a revocation still owed, which Dispatch leaves owed, so the owed gauges above show it too,
+and logs at ERROR with the address, the replaced account's `sub`, both generations the broker
+compared and the address's generation at Dispatch now; the loop tries it again after its retry
+window. Alert on the counter being above zero (`envoy_dispatch_broker_revocations_superseded_total
+> 0`), not on its `rate()`: it writes no sample until its first count, and any count is a broken
+pair. While the two databases agree, Dispatch's loop never hears that answer for a row still owed.
+It means the broker applied a later replacement at the address than the one the row names: a
+Dispatch database recreated or restored alone, or a generation written by hand at either. Outside
+a reset, run the reset ([After a restore](/legion/dispatch/after-a-restore/)). After one, the
+reset has already ended every credential the row would end and settled every restored debt, so
+settle a later `superseded` row with
+`envoy-dispatch clear-broker-revocation '<address>' '<subject>:<generation>'`, naming it as the
+command's list prints it.
+
+### A person Google refuses
+
+With Google directly (`DISPATCH_SIGNIN_DOMAIN`, with passkey sign-in on or off), a
+person whose sign-in the hourly refresh ends is also **held**: Dispatch refuses their agent tokens,
+and the broker tokens that name them, with `401 MEMBERSHIP_HELD`, and the secrets broker refuses
+each credential that names them, until they sign in to Dispatch again. A hold revokes nothing.
+After the sign-in, every token, machine login and session still within its own lifetime works
+again, at Dispatch at once and at the broker within 40 seconds, with no new token, login or
+approval. When someone reports `MEMBERSHIP_HELD`, tell them to sign in to Dispatch.
+
+Every refusal of the refresh holds: Google refusing the refresh token (`invalid_grant`, whatever
+Google's reason), a refreshed sign-in that names another Google account or another address, one
+whose email Google has not verified, and one the rule no longer admits, such as one of your people
+whose `hd` is no longer the domain. A person from outside the domain signs in with a passkey, not
+with Google ([People from outside the domain](#people-from-outside-the-domain)), so no refresh of
+theirs is refused and none of them is held this way: their tokens follow the access lists at each
+use.
+
+While Google cannot be reached, nobody is held for 24 hours after their last confirmation; after
+that, a person whose refresh still fails is held until a refresh confirms them, and works again
+then with no sign-in. A refresh token Dispatch cannot open (one sealed under a key removed from
+`DISPATCH_SIGNING_KEY`, say) is the same: served for 24 hours after the last confirmation, then
+held until the person signs in again, or the key is back and Google confirms them.
+
+Dispatch checks everyone who has a stored refresh token about once an hour, whether or not they
+use Dispatch: its maintenance, once a minute on one server, refreshes up to 20 of the tokens whose
+last confirmation or attempt is more than an hour old, and logs
+`dispatch: membership pass confirmed=<n> held=<n> unasked=<n> forgotten=<n>` for each
+run that checked one. A request with an agent token whose owner was confirmed more than an hour
+ago refreshes in that request too, which can add up to 2 seconds to it.
+
+**Signing out.** A sign-out ends the person's browser sessions and changes nothing else they hold.
+While they still hold an agent token, a machine login of their own, a sign-in on a machine
+(`agent-secrets login`), an entry of the broker's exchange settings that names them, or a pod
+account the broker's `BROKER_POD_OPERATORS` maps to them, Dispatch keeps their refresh token after
+the sign-out, for these checks alone, so Google's later refusal still holds them; the kept token
+signs nobody in. A pod account counts whether or not one of its pods is logged in, since a pod of
+it can log in as the person at any time. Dispatch forgets the token at the sign-out when they hold
+none of these, and otherwise at the first hourly check after the last one ends. It asks the
+broker at each sign-out and at each such check, and while the broker cannot be asked it keeps the
+token. With no broker configured, it counts agent tokens alone.
+
+**Who is not checked.** A person for whom Dispatch stores no refresh token and records no hold
+keeps their credentials: one who signed out holding nothing that outlives the browser, one whose
+sign-in an earlier release ended, and one who never signed in. At every boot Dispatch logs
+`dispatch: people census checkable=<n> held=<n> uncheckable=<n>`, and `uncheckable` counts those
+people's rows. Read it after the first deploy. A person's next sign-in stores their refresh token,
+and they are checked from then on.
+
+**The broker's part.** The broker refuses a held person's credentials only where its
+`BROKER_PROJECT_ACCESS_URL` and `BROKER_PROJECT_ACCESS_TOKEN_FILE` are set and Dispatch lists the
+broker's account in `DISPATCH_ACCESS_ACCOUNTS`
+([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)). Without the URL the
+broker holds nobody and the Envoy listener serves every broker token; Dispatch still refuses a
+broker token whose person it has recorded as held.
+
+### Changing the Workspace domain
+
+With Google directly, each sign-in and each hourly confirmation records the Workspace domain its
+ID token carried. Dispatch refuses to start when at least one of your people's rows holds a
+refresh token and records a domain, and none records `DISPATCH_SIGNIN_DOMAIN`, compared byte for
+byte: a mistyped domain would hold every member at their next hourly check. The error, logged as
+`dispatch: check the sign-in domain against the people`, names the domain it was given, the
+domains the rows record, and `envoy-dispatch forget-hosted-domains`. Correct the setting to the
+recorded domain the error names. A row records its domain at its next confirmation, so until
+then the check has nothing to compare it with.
+
+For an intended change of domain: stop every Dispatch process; once Google gives the new `hd`,
+run `envoy-dispatch forget-hosted-domains` once; then start every process with the new domain. A
+process that runs with the old domain after Google's change holds each of your people whose
+refresh it runs, and each must then sign in again. If the change also changes your people's
+addresses, each credential that names an old address stays held: issue new ones under the new
+address.
+
+### Ending a person's access
+
+A hold stops a person's credentials only until they sign in again, and nothing ends them by
+itself, so when someone leaves, end what they hold. Behind Identity-Aware Proxy this is also how an
+address created again for someone else is confirmed for its new person
+([Checking people through the Workspace Directory](#checking-people-through-the-workspace-directory)).
+A person holds five kinds of access that outlive the browser, the ones a sign-out asks about:
+
+- **Agent tokens.** Revoke every token of the address on Dispatch's database; each answers
+  `401 TOKEN_REVOKED` from then on.
+- **Machine logins of their own** and **sign-ins on a machine** (`agent-secrets login`), at the
+  broker. Revoke each with the calls the reset's broker block makes
+  ([After a restore](/legion/dispatch/after-a-restore/)), filtered to the person: a machine login
+  as its approver, and a sign-in as its person. A service's machine login the person
+  approved is the service's, and is left.
+- **Exchange entries** that name the person: remove each from the broker's
+  `BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` and `BROKER_VM_EXCHANGE_ACCOUNTS`, and
+  roll the broker's pods.
+- **Pod accounts** that `BROKER_POD_OPERATORS` maps to the person: remove each mapping, and roll
+  the broker's pods. From then on a pod of the account acts for no person, and its login is no
+  longer counted as the person's machine login.
+
+The block does the first two and then prints what the broker still counts for the person
+(`GET /v1/person-access`), with the address as Dispatch holds it and a token of Dispatch's own
+ServiceAccount, kept off every command line as the reset's block keeps it. Each call that fails
+prints `NOT REVOKED <id>` after the broker's answer:
+
+```sh
+(
+umask 077
+set -o pipefail
+person='<address>'
+header=$(mktemp) || exit 1
+trap 'rm -f "$header"' EXIT
+broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
+token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
+printf 'Authorization: Bearer %s\n' "$token" >"$header"
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v email="$person" <<'SQL' || { echo 'NOT REVOKED: the agent tokens'; exit 1; }
+update agent_tokens set revoked_at = now() where canonical_login(owner) = :'email' and revoked_at is null;
+SQL
+signins() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person="$person" <<'SQL'
+select id from person_signins where person = :'person' and revoked_at is null order by id;
+SQL
+}
+logins() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person="$person" <<'SQL'
+select c.id from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and r.approver = :'person' order by c.id;
+SQL
+}
+signins | while read -r id; do
+  curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"person\":\"$person\"}" "$broker_url/v1/person-signins/$id/revoke" || echo "NOT REVOKED $id"
+done
+logins | while read -r id; do
+  curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"approver\":\"$person\"}" "$broker_url/v1/launcher-credentials/$id/revoke-by-approver" || echo "NOT REVOKED $id"
+done
+curl -sS --fail-with-body -w '\n' -G -H @"$header" --data-urlencode "person=$person" "$broker_url/v1/person-access"
+)
+```
+
+Done is an answer whose counts read
+`"machine_logins":0,"signins":0,"exchange_entries":0,"pod_operator_mappings":0`; a count above
+zero is what is left, an exchange entry or a pod mapping to remove or a call the `NOT REVOKED`
+lines name, so fix it and run the block again. A broker database the block cannot read lists
+nothing, so read the last answer, not the absence of `NOT REVOKED`. A machine login revoked as its
+approver also ends every session it enrolled.
+
+### After a restore
+
+A Dispatch database restored or made again alone, a broker database restored or made again alone,
+and a move between the Cognito pool and a domain each have a procedure of their own, on
+[After a restore](/legion/dispatch/after-a-restore/): the five-step reset of every credential a
+person holds, the recovery that tells the broker again what Dispatch settled, and the cutover's
+statements.
+
+### People from outside the domain
+
+Google sign-in admits only accounts of the domain, and only at `DISPATCH_SERVER_URL`. A Google
+account outside the domain is refused there, with a page saying it is not in the domain, whatever
+an access list names, and Dispatch's outside address serves no Google sign-in at all, so the Google
+client's consent screen stays **Internal**. A person from outside the domain is a **restricted
+member**, and signs in with a passkey (below), while a project they are to work on names them: the
+project's owner is that email, or its owner put the email on the project's access list. A group on
+an access list never admits such a person; only the email itself does.
+
+An address on a domain the organization owns is never a restricted member's. The organization's
+domains are `DISPATCH_SIGNIN_DOMAIN` and those `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists,
+comma-separated, such as `example.net,example.org`, each with its subdomains. Write an
+internationalized domain in Unicode, such as `bücher.example`, or as its A-labels,
+`xn--bcher-kva.example`: the two are the same domain, and an address written either way is on it.
+List every other domain the organization owns: then nobody from outside can hold one of your
+people's addresses, even before your person ever signs in. Your own people sign in at an address
+on any of them as before. On a domain the organization owns that the setting does not list, a
+restricted member still never takes the address of one of your people once they have signed in
+with it. A restricted member who held such an address before your person first signed in loses it
+at that first sign-in: Dispatch signs them out and revokes every agent token they made, so none
+of them acts as your person.
+
+Dispatch checks again at least hourly, as for everyone, and signs the person out once no list
+names them, once their address is on a domain the organization owns (including one you add to
+`DISPATCH_SIGNIN_WORKSPACE_DOMAINS` later), or once the deployment admits nobody from outside.
+The sign-in page they then reach says why: that no project's access list names their address any
+more, that their address signs in only as an account of the organization, or that Dispatch no
+longer signs in people from outside the domain. The API's `401 NO_IDENTITY` says the same, as a
+`reason` of `NOT_LISTED`, `WORKSPACE_ADDRESS` or `OUTSIDE_SIGNIN_OFF` beside their address as
+`login`. A person who signs out, or whose sign-in simply expires, is told nothing more, and a
+deployment that never admitted a restricted member answers as it always did.
+
+The agent tokens such a person makes in **Settings → Agent tokens**, and the tokens the secrets
+broker issues to their agents, follow the very rule that admits the person, checked at every
+request rather than hourly: a token stops at once when the deployment admits nobody from outside,
+when its owner's address is on a domain the organization owns (including one you add to
+`DISPATCH_SIGNIN_WORKSPACE_DOMAINS` later), or when no project names its owner any more, and the
+answer is `401 TOKEN_OWNER_NOT_ADMITTED`, saying which. None of these revokes the token, so it
+works again once all hold again; only another account's sign-in to the address revokes the
+Settings tokens, as above, after which each answers `401 TOKEN_REVOKED`. Your own people's tokens
+are not affected.
+
+People from outside reach Dispatch at its second address, `DISPATCH_OUTSIDE_ORIGIN`, such as
+`https://dispatch-outside.example.com`: an `https` address with no path, on another host than
+`DISPATCH_SERVER_URL`. Under Google sign-in its host must be a DNS name, not an IP address, whose
+top-level domain is on the public suffix list, because that host is the relying party of every
+passkey enrolled there, which must be a registrable domain name; Dispatch refuses to start with any
+other. A request to that host is answered as that address, and a write from a page there must come
+from that address. There `/auth/start` and `/auth/callback`, Google's sign-in, answer `404`, with
+passkey sign-in on or off, so the Google client lists no callback of the outside address, only
+`<DISPATCH_SERVER_URL>/auth/callback`. A link to a Dispatch page written on either address opens on
+the address the reader is on.
+
+### People from outside with a passkey
+
+`DISPATCH_SIGNIN_PASSKEY=1` lets a person from outside sign in with a passkey and no Google account
+at all. It needs `DISPATCH_SIGNIN_DOMAIN` and `DISPATCH_OUTSIDE_ORIGIN`: Google signs in your own
+people alone, and a person from outside signs in only at the outside address, where Dispatch serves
+no Google sign-in. So the Google client lists no callback on the outside address, only
+`<DISPATCH_SERVER_URL>/auth/callback`, and its consent screen's audience stays Internal. It also
+needs `DISPATCH_TRUSTED_PROXY_RANGES`, the load balancer's ranges whose `X-Forwarded-For` Dispatch
+reads to limit passkey sign-ins per client address: behind Google's load balancer,
+`35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64`
+([Google's firewall rules](https://cloud.google.com/load-balancing/docs/firewall-rules)). A
+project's owner puts the person's email on the project's access list, then makes an
+invitation link for them on the project's **Access** tab and hands it over however they like. The
+link works once, within 24 hours, for that person only, and making a new one ends the old one. With
+it the person enrolls a passkey on their own device, and from then on signs in with that passkey.
+The owner sees on the Access tab when each passkey was enrolled and who made the link it came
+through, so a link someone else used first shows up there. One owner binds a person from outside:
+a passkey signs its person in to every project whose list names them, so an owner makes a link
+only for a person no other owner's project names, the enrollment checks that again, and no other
+owner can name a person on their list, or be given a project naming them, while a passkey another
+owner's link enrolled stands. The Access tab names the people another owner's project names, and
+offers no link for them; that block clears when the other project's owner takes the person off
+its list, or an operator does. **Reset** ends the person's sign-in, deletes their passkeys,
+revokes the agent tokens they made and the machine logins they approved at the secrets broker,
+ends every link still waiting for them on any project, and keeps them on the list, so they enroll
+again with a new link, under a new account. Taking the person off the last list that names them
+ends their access the same way at once, and so does Dispatch's check, at least hourly, of a person
+no list names any more, so whoever names the address later names a new account. No link is made
+for an address on a domain the organization owns (`DISPATCH_SIGNIN_DOMAIN`, a domain
+`DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, or a subdomain of one), nor for one of your people who
+has signed in with Google. List every domain the organization owns there: a domain left out is not
+the organization's to Dispatch, so an owner can make a link for an address of one of your people
+there before they first sign in with Google, and the passkey enrolled with it keeps signing in as
+that address after your organization removes that person, since no passkey sign-in asks Google.
+While the setting is off, Dispatch refuses every such person's sign-in at their next request,
+telling them Dispatch does not sign them in now, and refuses their agent tokens as above; turned on
+again, their passkeys, sign-ins and tokens work again, so end a person's access for good with
+Reset or by taking them off the lists. The outside address never offers Google sign-in, with
+passkeys on or off.
 
 ## Behind Identity-Aware Proxy
 
@@ -205,6 +616,64 @@ reopens about every ten minutes: the live socket shows nothing of it, and a docu
 as it does after any close the server makes, its sync restoring whatever was in flight. Only an
 assertion IAP signed counts as expired: one IAP's keys no longer verify, or whose person the domain
 no longer admits, is refused, and the socket closes as it does when its person signs out.
+
+### Checking people through the Workspace Directory
+
+IAP keeps no refresh token, so Google's refusal of a refresh cannot reach Dispatch. Instead,
+Dispatch reads each of your people's Workspace accounts through the Directory API (`users.get` for
+the person's address) about once an hour, held and idle people included. An answer that the
+person's own account is active confirms them, releases a hold with no sign-in, and keeps them
+served for 24 hours. An answer that the account is suspended or archived, a `404`, or an answer
+for another address's account (the address made an alias of a colleague's account) holds them:
+their agent tokens and broker tokens are refused `401 MEMBERSHIP_HELD`, and the secrets broker
+refuses their credentials. Any other result changes nothing. A valid IAP assertion releases
+nothing. After 24 hours with no active answer, a person's agent tokens answer
+`503 IDENTITY_UNAVAILABLE`, and their broker tokens `503 BROKER_UNAVAILABLE`, until the Directory
+answers again, so an outage of the Directory longer than a day stops everyone's tokens; a person
+IAP admits for the first time is in that state until their first check.
+
+An address the Workspace deleted and created again for someone else answers with the new
+account. Dispatch's row for the address still belongs to the earlier person, and so does every
+credential that names it, so the new account is confirmed only once the address holds nothing that
+outlives the browser, the same question a sign-out asks: no unrevoked agent token, and at the
+broker no live machine login, no sign-in on a machine, no exchange entry that names it and no pod
+account `BROKER_POD_OPERATORS` maps to it. Until then, or while that question cannot be answered,
+the address stays held. End the earlier person's access
+([Ending a person's access](#ending-a-persons-access)), and the next hourly check confirms the new
+person, with no sign-in and no command. A Dispatch with `DISPATCH_AGENT_SECRETS_URL` unset asks no
+broker and counts agent tokens alone, so there the new account confirms with no check of what the
+earlier person still holds at the broker.
+
+Two settings configure the reads, both required with `DISPATCH_IDENTITY=iap` and refused without
+it: `DISPATCH_DIRECTORY_ACCOUNT`, the email of a service account with no key and no project role,
+on which Dispatch's own workload identity holds `roles/iam.serviceAccountTokenCreator`, so
+Dispatch signs through it and no key leaves Google; and `DISPATCH_DIRECTORY_ADMIN`, the email of
+the Workspace user the reads act as. Enable two Google APIs in the Google Cloud project that holds
+that service account: `iamcredentials.googleapis.com`, whose `signJwt` Dispatch calls on the
+service account, and `admin.googleapis.com`, which serves the Directory's `users.get`. A server
+that cannot build its reader, with no Application Default Credentials say, logs
+`dispatch: build the request identity` and exits at boot. The secrets broker of such a deployment
+sets `BROKER_HOLD_REQUIRES_DEADLINE=true`
+([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)). On `envoy-infra`'s
+`gcp:Dispatch`, set `directoryAccount` and `directoryAdmin` beside `iapAudience`
+(`packages/envoy/infra/README.md`).
+
+Before IAP admits anyone, a Workspace super administrator makes two changes once: give the
+delegated user an administrator role whose only privilege is Users > Read; and, in the Admin
+console under Security, Access and data control, API controls, Manage Domain Wide Delegation,
+authorize the service account's numeric client ID for exactly
+`https://www.googleapis.com/auth/admin.directory.user.readonly`. Google states that the grant can
+take up to 24 hours to take effect. Then run, with the two settings, an active account and a
+suspended, archived or deleted one:
+
+```sh
+envoy-dispatch directory-check --active '<an active login>' --held '<a suspended, archived or deleted login>' --scope-probe https://www.googleapis.com/auth/admin.directory.user
+```
+
+It exits 0 only when the first login is `Active`, the second `Held`, and Google refuses the probe
+scope with `unauthorized_client`, so the grant reads users and gives nothing more; the command's
+section of `packages/envoy/cmd/dispatch/README.md` ("Checking the Directory reads") gives its
+output. A run that fails at the token exchange soon after the grant may pass later.
 
 ## Changing the session key
 
@@ -335,8 +804,144 @@ Sign in, then open **Settings**:
   GitHub again, and two re-listings walk those 28 days a day per pass, about 28 passes in all:
   one of each run's branch and event, and one of each deploy run's creation time, which decides
   the deploy a pull request is credited to.
-- **Agent tokens**: make a token for each agent you run.
-  [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the rest.
+- **Agent tokens**: make a token for each agent you run, listing under **Projects** the projects
+  it works on. [Dispatch for agents](/legion/dispatch/for-agents/#connecting-an-agent) covers the
+  rest.
+
+## Private projects
+
+Every project has one owner and an access list of people and groups, both on the project's
+**Access** tab. A full member sees every public project. A private project is seen only by its
+owner, the people its list names and the full members of the groups it names. A restricted
+member, who signs in from outside the company, sees a project, public or private, only when its
+list names them directly. Every other caller reads a private project, and everything in it, as a
+project that does not exist.
+
+What each credential sees. A credential's list of projects decides only which private projects it
+sees: a private project needs a token that lists it.
+
+- A person at the browser sees every project the rule above lets them see.
+- A full member's agent token, a personal `dsp_` token from Settings or an access token the
+  secrets broker issued, sees every public project its person sees, whatever it lists, and the
+  private projects it lists that its person sees. It reads what belongs to no project as its
+  person does, but for the sessions and roles of private projects it does not see. A token that
+  lists projects is refused a write of the whole deployment, such as a new project, a repository
+  mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`; a broker access token acting as its
+  person is refused it only while some project is private.
+- A restricted member's token, their personal token or one the secrets broker issued for their
+  agent, holds no scope and lists exactly one project; one of theirs that lists none or several
+  acts for nobody, `403 RESTRICTED_MEMBER`. It sees its project if its person sees it, and
+  nothing else. Of what belongs to no project it reads only the people and sessions of that
+  project, its own, and its person's direct conversations with those sessions. Their browser's
+  mint in Settings gives a personal token that shape, and a stored one holding a scope acts with
+  none.
+- A credential that acts for no person, the shared `DISPATCH_AGENT_TOKEN` or a Kubernetes
+  service-account token, sees the public projects and the private projects its list names.
+
+With no private project in the deployment, a full member's token sees every project its person
+sees, whatever it lists.
+
+A restricted member's dashboard holds only what they may read. Their rail shows Inbox, Agents,
+Delivery, their projects and Settings, with no Priorities or Pipeline and no Peek. Delivery shows
+them the pull requests whose issue they see and the deploys that shipped them, with no run's jobs,
+no setup form and no session-groups editor. The Priorities, Pipeline and broadcasts pages answer
+**Page not found**, and Settings shows no Groups and no Delivery timeline. The machine-login page
+is theirs, listing their own machine logins alone: there they approve, at their browser, the device
+login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
+ends for them no other credential. The API refuses them, and every token they make, every read of
+the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
+but for the machine-login calls at their browser, and except that they revoke their own credential
+grants and end their own sign-ins, as a full member does: the secrets broker decides whose each one
+is. The machine-login calls are theirs at their browser alone: through a token of theirs each one,
+the list `GET /api/v1/machine-logins` included, is `403 OAUTH_SCOPE_REQUIRED` where the token lacks
+the call's scopes, as their agent's token does,
+and `403 RESTRICTED_MEMBER` otherwise. The secrets broker holds their agents' tokens to one
+project, which their agents name in `AGENT_SECRETS_PROJECTS`, and a token the broker scoped to
+their person gets no scope at Dispatch. Taking such a person off a project's list ends their tokens
+for it within 325 seconds, since the broker checks every trade against Dispatch. Every removal of
+them from a project's list also has Dispatch revoke all their machine logins at the broker, whatever
+other list still names them, after the removal commits and again until the broker confirms; the
+log line `the secrets broker revoked the machine logins of a restricted member taken off an access
+list` records each. Until it is done, about a minute after the removal (the broker may still commit
+an approve it took before it), their approve of a new machine login is
+`409 MACHINE_LOGIN_REVOCATION_OWED`; a person another list still names then approves a new login
+for the projects that list them.
+
+A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
+a token that does not list it read the private project as missing. A person who sees the project
+makes it in **Settings → Agent tokens**, picking the project under **Projects**, and the daemon
+reads it from the file its `dispatch_token_file` names. The token lists every private project in
+the daemon's `projects`; it sees each public project whatever it lists. Every write of the
+daemon's agents is then attributed to the person who made the token.
+
+A project can be made private only once the deployment names it, in one of two settings.
+`DISPATCH_PRIVATE_PROJECTS` holds, comma-separated, the keys of the projects whose private
+namespace, stores and grants the deployment has made; their switch to private is their full
+switch. `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` holds, in the same form, the keys of the projects it
+makes private before their full switch (below). On a deployment built by `envoy-infra`'s
+`gcp:Dispatch`, the component's `privateProjects` and `privateBeforeFullSwitch` inputs, each a
+list of keys, render them. An entry that is not a project key, the old value `1` included, is
+ignored, and the start logs an ERROR line naming it. With both unset or empty, no project can be
+made private.
+
+The owner switches a project private on its Access tab
+(`PATCH /api/v1/projects/{key}/access` with `{"visibility": "private"}`), and Dispatch checks, in
+this order:
+
+1. With both lists empty, every switch to private is `409 PRIVATE_PROJECTS_OFF`, before anything
+   is read.
+2. A caller who does not see the project is `404 PROJECT_NOT_FOUND`, as for a key no project
+   holds, and one who sees it but does not own it is `403 PROJECT_OWNER_REQUIRED`.
+3. A key neither list names is `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
+4. A store that cannot hold the project private yet is `409 PRIVATE_PROJECTS_INCOMPLETE`, naming
+   what repairs it: each row of the project that has no node naming its project, with the cure
+   the project census prints for it (`envoy-dispatch backfill-graph-store`, or none for a node
+   that names another project, which a person compares with its row),
+   `envoy-dispatch backfill-session-projects` until the sessions' projects are filled, and
+   `envoy-dispatch scrub-access-events` until the stored access events are scrubbed.
+5. Last, for a project's full switch, in the same transaction, Dispatch writes the project's key
+   in the hub's `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold
+   the project's messages back from a token that does not list it. When the hub refuses that write,
+   as a hub without its auth service does, or Dispatch has no bus to write it to, the switch is
+   `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes. This release of Dispatch has no writer
+   of that bucket, so every full switch that passes steps 1 to 4 is
+   `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project takes its full switch until a release carries the
+   writer.
+
+Of these, only the owner check of step 2 applies to a switch to public.
+
+A project private before its full switch is the outside person's project on their first day. Its
+switch to private skips steps 3 and 5: it needs no provisioning and writes no record, while step 4
+still applies. In its own reads Dispatch then hides it from every person and credential that does
+not see it, as any private project, while its namespace, its stores and its bus gate come with its
+full switch. Until then, the project's notifications on the hub reach any agent session that
+subscribes to them. So nobody takes it for a fully switched project, its access carries
+`"private_before_full_switch": true` while it is private, the server logs at INFO, at start, each
+such project as private before its full switch, and `/healthz` says one exists (below). A key both
+settings name takes its full switch. From the apply that adds such a key to
+`DISPATCH_PRIVATE_PROJECTS`, its access, the start's lines and `/healthz` no longer say its project
+is private before its full switch, though that switch has not run.
+
+A project the database holds private that neither list names, because its key was taken off
+the lists or the lists were emptied, stays private. Nothing of it reaches anyone who could not see
+it before, and every change of its visibility but its owner's switch to public is refused.
+Dispatch still starts and serves every other project: it logs an ERROR line naming the project and
+both repairs at start and at every maintenance pass, once a minute, and `/healthz` answers
+`degraded: ["private_project_unprovisioned"]`, naming no project. The owner decides the repair: put the key back on either list, or
+make the project public, from the Access tab or, with the database credential alone and no server
+running if need be, with:
+
+```sh
+envoy-dispatch project-visibility <KEY> public
+```
+
+So to take a key off both lists, make the project public first, and only then remove its key. At
+start Dispatch also logs, at INFO, the listed keys no private project holds yet. With either list, each
+server logs an ERROR line as it starts, and then once an hour, while the store cannot hold a
+private project for one of the reasons of step 4, naming the reason and what repairs it. Every
+response carries `Dispatch-Private-Projects: 1` while either list names a project, the database
+holds a private one, or the server's last read of the database's private projects failed, and
+`Dispatch-Private-Projects: 0` otherwise.
 
 ## Health check
 
@@ -375,6 +980,14 @@ balancer's or Kubernetes' readiness probe at it.
 - `outbox_publisher` is whether this server is the one publishing notifications to NATS now. One
   server publishes at a time, so a healthy server can say `false`, and it always does when NATS is
   turned off. It never decides `ok` or the status.
+- `degraded` lists fixed reasons, as the server's last read found them: it reads every 30 seconds,
+  so a probe adds no read. `private_project_unprovisioned` is there while the database holds a
+  private project that neither list names, and `private_before_full_switch` while it holds a
+  project private before its full switch ([Private projects](#private-projects)). Neither names a
+  project or counts one, because the check answers anyone. The project's key is in the line the
+  server logs at start, so a project made private after the start is named at the next one; an
+  unprovisioned one is named in every maintenance pass too. It is absent when neither holds, and
+  it never decides `ok` or the status.
 
 A check that needs NATS, the bucket or sign-in asserts `nats: true`, `files: true` or `signin: true`
 itself.
@@ -404,17 +1017,20 @@ Each entry is `{"state": …, "at": …, "cause": …}`:
     and `webhook_redelivery` and `ci_reconcile` are `off` without NATS too.
 - `at` is when the newest attempt was recorded, as its pass ended, by the database's clock, in
   RFC 3339 UTC. It is `null` unless the state is `succeeded` or `failed`.
-- `cause` is the text of the first failure of that attempt, at most 1,024 bytes. A longer text is
-  cut, and ends with `… (cut from <n> bytes)`. It is `null` unless the state is `failed`.
+- `cause` is the class of the first failure of that attempt: `status <n>`, the HTTP status GitHub
+  answered, or `no status` for a failure that names none: GitHub never answered, or the read
+  itself failed on an answer it got. It is `null` unless the state is `failed`.
 
 `github` never decides `ok` or the status: a server serves everything but these reads while
 GitHub fails. Each server keeps a copy of the record of attempts in memory, reads it again each
 time any server records an attempt, and answers from that copy, so `github` sends the database
 nothing and waits on nothing.
 
-A cause can name a repository, because a GitHub error carries the address it asked. `/healthz`
-needs no credential, so whoever reaches the server's HTTP port can read the cause. Serve Dispatch
-on a private network.
+The failure's own text can name a repository, because a GitHub error carries the address it
+asked, and `/healthz` needs no credential, so whoever reaches the server's HTTP port can read the
+answer. So `/healthz` answers the class alone. Read the text, at most 1,024 bytes, in the
+database's `github_read_attempts` table: `select read, at, cause from github_read_attempts;`. A
+longer text is cut, and ends with `… (cut from <n> bytes)`.
 
 The delivery intakes also read GitHub, for each webhook event, and have no entry of their own.
 They report through `delivery_reconcile`: the reconcile reads the same pull requests and runs with
@@ -494,7 +1110,12 @@ counts.
 
 ## Metrics
 
-`GET /metrics` needs no credential either, so whoever reaches the server's HTTP port can read it.
+`GET /metrics` needs a credential, as every route but sign-in, `/healthz`, `/livez` and the
+dashboard's own files does: a caller that sees every public project reads it, the deployment's
+shared agent token and a full member's credential that lists projects among them, and a
+restricted member's credential, or one acting for one, is refused `403 DEPLOYMENT_READ_REFUSED`.
+A caller with no credential is refused `401`, whatever
+address or network it comes from.
 It answers in the Prometheus text format with two counters and four gauges.
 `envoy_dispatch_outbox_publish_failures_total` counts each destination of an event publish that
 was not reached, labelled `reason`. `denied` is a publish NATS refused under the server's own
@@ -827,5 +1448,6 @@ already the bound. Each pass then prints a `kind=` line with what it wrote, and 
 
 ## The HTTP API
 
-`GET /api/v1` lists every API route with its method, who may call it, and a description. The
+`GET /api/v1` lists, to any signed-in person or agent credential, every API route with its
+method, who may call it, and a description. The
 [HTTP API reference](/legion/dispatch/reference/api/) is the same list.

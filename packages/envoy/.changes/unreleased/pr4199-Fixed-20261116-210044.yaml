@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A restricted member's personal agent token, and a token the secrets broker issued naming them,
+  are now admitted by the sign-in rule itself rather than by the API's own copy of it, which read
+  only the access lists. So such a token stops, `401 TOKEN_OWNER_NOT_ADMITTED` saying why, whenever
+  the rule would no longer admit its owner, including once the owner's address is on a domain the
+  Workspace owns (`DISPATCH_SIGNIN_DOMAIN` or a domain `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists),
+  while a project's list still names them. A full member's token is unchanged.
+time: 2026-11-16T21:00:44.044741306Z
+custom:
+    Issue: pr4199
