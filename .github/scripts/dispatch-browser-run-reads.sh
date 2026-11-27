@@ -47,6 +47,17 @@
 # A job of this run reads its own attempt, which is the one it is reporting on, so no read in
 # this file uses `filter=all`.
 #
+# Why thirty jobs to a page. The attempt endpoint answers each job with its steps, and a page of
+# 100 of them grew past what GitHub answers in time: at 35b9456b the full lane's merge job failed
+# on attempts 2 and 3 of run 45913688080 (jobs 140248672272 and 140249615054), where
+# `.../attempts/<n>/jobs?per_page=100` answered HTTP 502 on every attempt of the ladder. Read
+# again from a pod on 2026-11-27, `per_page=100` answered 502 after about 11 s on 2 of 2 tries
+# and `per_page=30` answered 200 in about 4.6 s on 2 of 2. At 30 a page, attempts 2
+# and 3 each answered 95 jobs over four pages, of 30, 30, 30 and 5 jobs, and one read of all
+# four pages of attempt 3 took 13.8 s. The route names the size rather than leaving it out: gh
+# adds per_page=100 to a paginated route that names none (gh 2.98.0, addPerPage in cli/cli's
+# pkg/cmd/api), so a route without it would read 100 a page again.
+#
 # Why no grouping is left. Over `filter=all` the filter ended
 # `group_by(.name) | map(max_by(.run_attempt) | …)`, which took the newest attempt of each name
 # because the list held several of them. One attempt's snapshot holds one job per name, so there
@@ -55,13 +66,20 @@
 # Why `--paginate --slurp` and a second `jq` remain. `gh api --paginate --jq` runs the filter
 # once per page, and gh refuses `--slurp` beside `--jq` (`the --slurp option is not supported
 # with --jq or --template`, gh 2.98.0), so the pages are slurped into one array and the filter
-# runs as its own `jq` over that array - which is why the filter opens `.[].jobs[]`. One page is
-# what this endpoint answers today, not a promise: a bigger matrix pages again, and `--paginate`
-# is what keeps that a longer array rather than a short list nothing reports.
+# runs as its own `jq` over that array - which is why the filter opens `.[].jobs[]`. `--paginate`
+# is what reads an attempt of any size whole. Of attempt 2's four pages above, the lane's nine
+# jobs were on pages 1, 3 and 4, and of attempt 3's on pages 2 and 3, so a read of the first
+# page alone would have held one of the nine at most, and reading five would have summed that
+# one job's seconds. gh stops at the first page it is refused, having printed the pages before
+# it, and exits 1; gh_read hands on the stdout of the attempt that succeeded and nothing else, so
+# those pages go with the attempt that printed them, and a read that no attempt took whole is
+# refused below and writes no out-file.
 #
 # The read goes through gh-read.sh's ladder, which the inline read had none of, and each attempt
 # is bounded by `timeout 30`, which the ladder does not bound: a host that accepts the
 # connection and then sends nothing would otherwise hang the step for as long as the job has.
+# The bound holds the whole attempt, every page of it, and the 13.8 s of attempt 3's four pages
+# above is inside it.
 # A read refused after the ladder names the endpoint, which attempt decided the failure - the
 # last one the ladder made - and what that attempt did, what each earlier attempt did where it
 # did something else, how many attempts that was and the run attempt, and says in those words
@@ -187,7 +205,7 @@ case "$mode" in
 
     # This run's own attempt, which is the attempt this job is reporting on.
     route="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-    route="$route/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100"
+    route="$route/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=30"
 
     pages=$(mktemp)
     # One stderr file and one exit status per attempt, and a count of the attempts the ladder
@@ -300,13 +318,20 @@ case "$mode" in
     # they are answered (`2026-11-11T10:22:27Z`) rather than turned into seconds here, so a
     # reader of jobs.json sees what GitHub said; `completed_at` is null for a job that is
     # still running, which this job itself is while it writes this file.
+    #
+    # The filter writes into this read's own work directory, and the out-file takes that file's
+    # place only once jq has succeeded, so a filter that fails leaves no out-file behind. The
+    # readings after this one read a missing file as no list and an empty one as a list: over an
+    # empty file reading three says every leg of this workflow concluded success, and over a
+    # missing one that there is no jobs list, which is what is true.
     jq --arg prefix "$caller / " '[.[].jobs[] | select(.name | startswith($prefix)
           and (ltrimstr($prefix) | test("^(binaries|shard|real|stub|alone|multiprocess|visual|merge)( \\(|$)")))]
       | map({id, name, conclusion, started_at, completed_at,
           leg: ((.name | ltrimstr($prefix)) as $job
             | ($job | capture("^shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
               // (if $job == "alone" or $job == "real" or $job == "stub" then $job else null end))})' \
-      "$pages" > "$out_file"
+      "$pages" > "$work/jobs.json"
+    mv -- "$work/jobs.json" "$out_file"
     ;;
   blobs-refused)
     [ "$#" -eq 1 ] || usage "$@"
@@ -460,7 +485,7 @@ case "$mode" in
     # step is its jq filter, run by hand with the caller whose lane it reads (dispatch-browser
     # for the full lane, dispatch-browser-pr for the pull-request lane):
     #
-    #   gh api repos/cybermonklabs/legion/actions/runs/<id>/attempts/1/jobs?per_page=100 \
+    #   gh api repos/cybermonklabs/legion/actions/runs/<id>/attempts/1/jobs?per_page=30 \
     #     --paginate --slurp > pages.json
     #   jq --arg prefix 'dispatch-browser / ' '<the `jobs` mode's filter, above>' pages.json > jobs.json
     #   .github/scripts/dispatch-browser-run-reads.sh machine-time jobs.json full

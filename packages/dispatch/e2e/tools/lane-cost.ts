@@ -65,11 +65,17 @@
  *  of GitHub's `created` filter, such as `2026-11-20T00:00:00Z..2026-11-20T11:59:59Z`, and the
  *  parts' base sets are joined.
  *
+ *  Each run's jobs are read 30 to a page. The shell reader's head
+ *  (.github/scripts/dispatch-browser-run-reads.sh) records why 100 returned HTTP 502.
+ *  The route names the size because gh defaults to 100 when paginating.
+ *
  *  Every read of GitHub is a `gh api` call that names `repos/cybermonklabs/legion/...` in full,
  *  as the pod's gh, Legion's wrapper, requires. A call that fails stops the reading with the
- *  call, its exit and its stderr, and exit 1. A bad command line prints the usage, and exit 2.
- *  `laneReading`, the part of a reading the jobs give with no read of GitHub, is exported, and
- *  e2e/__tests__/lane-cost.test.ts holds it: it throws a Refusal where the command exits 1.
+ *  call, its exit and its stderr, and exit 1; a page GitHub refuses fails the paginated call it
+ *  is part of, so no reading is taken over part of a run's jobs. A bad command line prints the
+ *  usage, and exit 2. `laneReading`, the part of a reading the jobs give with no read of GitHub,
+ *  is exported, and e2e/__tests__/lane-cost.test.ts holds it: it throws a Refusal where the
+ *  command exits 1.
  */
 import { parseArgs } from "node:util";
 
@@ -98,6 +104,9 @@ const FULL_LANE_JOBS = 7;
 
 /** The fewest rows the merged report of a run of the full lane holds. */
 const FULL_LANE_ROWS = 1000;
+
+/** How many jobs one page of the jobs API holds (this file's head says why). */
+const JOBS_PER_PAGE = 30;
 
 const DATE_OR_TIME = String.raw`\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z)?`;
 const dayPattern = new RegExp(`^${DATE_OR_TIME}(?:\\.\\.${DATE_OR_TIME})?$`, "u");
@@ -229,8 +238,8 @@ function workflowRun(run: string, attempt?: string): WorkflowRun {
 function jobsOf(run: string, attempt?: string): Job[] {
   const where =
     attempt === undefined
-      ? `runs/${run}/jobs?filter=latest&per_page=100`
-      : `runs/${run}/attempts/${attempt}/jobs?per_page=100`;
+      ? `runs/${run}/jobs?filter=latest&per_page=${JOBS_PER_PAGE}`
+      : `runs/${run}/attempts/${attempt}/jobs?per_page=${JOBS_PER_PAGE}`;
   return listing<Job>(
     `repos/${REPO}/actions/${where}`,
     '.jobs[]|select(.name|startswith("dispatch-browser"))'

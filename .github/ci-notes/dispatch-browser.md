@@ -2040,6 +2040,13 @@ three's per-leg merge all grow with those. A job cancelled at this budget posts 
 so the run is red and read again from the jobs API; it cannot pass a verdict it never
 reached.
 
+The job reads each attempt 30 jobs at a time. Run 45913688080 returned HTTP 502 at 100 jobs
+per page and returned all 95 jobs at 30 per page. The read took 13.8 s in a pod on attempt 3,
+inside the 30 s bound for all its pages. The script's head has the measurement.
+.github/scripts/dispatch-browser-run-reads.test.sh checks that the full, pull-request and
+references lanes use jobs from both pages, that both budgets include them, and that a read
+whose later page never succeeds writes no jobs file.
+
 ## Why every leg's blob report is downloaded without merge-multiple, and the two layouts it lands in
 
 Every leg's blob report and row count. A leg's artifact holds a blob-report/ directory, a

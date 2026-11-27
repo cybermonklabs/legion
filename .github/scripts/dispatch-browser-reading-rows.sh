@@ -111,12 +111,16 @@ how_ended() {
 # the script holds the name to this caller and the jobs of this workflow, and maps each
 # blob-producing job to its leg name (`real`, `stub`, `alone` or `shard-N`).
 #
-# The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
+# The route is `.../runs/<id>/attempts/<n>/jobs?per_page=30` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:
 # measured 2026-11-08 on run 42468236584 it answers 276 jobs over three pages, with
-# GitHub answering HTTP 502 on pages 2 and 3, where the attempt endpoint answers 46
-# jobs on one page for each of attempts 1 to 6. Job 128737742196 of that run exited 1
-# on that 502 at 12:58:20Z, with 1291 browser rows and 0 failed.
+# GitHub answering HTTP 502 on pages 2 and 3, where the attempt endpoint answered 46
+# jobs on one page of 100 for each of attempts 1 to 6. Job 128737742196 of that run exited 1
+# on that 502 at 12:58:20Z, with 1291 browser rows and 0 failed. The page is 30 jobs, and
+# every page is followed, because a page of 100 grew past what GitHub answers in time:
+# run 45913688080's merge jobs were answered HTTP 502 on every try at 100 a page, and read
+# again on 2026-11-27 its attempts answered 200 at 30, four pages of 95 jobs (the script's
+# head has the measurement).
 #
 # Nor the default filter, `latest`, which gives the same rows today and is what
 # .github/scripts/ci-ok-report.sh reads: a run re-run while this job is running moves

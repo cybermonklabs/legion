@@ -4,10 +4,11 @@
 # the line that says a blob download could not be completed, and the lane's machine time, summed
 # out of the jobs file the first read wrote.
 #
-# Each case writes the one slurped page a stand-in `gh` answers with - the array of page objects
-# `gh api --paginate --slurp` prints - and how many calls that stand-in refuses first, then runs
-# the real script with the stand-in first on PATH and reads the file it wrote, the arguments the
-# stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
+# Each case writes the attempt's jobs a stand-in `gh` answers with - the list the jobs API holds
+# for the attempt, which the stand-in hands out in pages of the route's size and past the first
+# page only under `--paginate`, as gh does - and how many calls that stand-in refuses first, then
+# runs the real script with the stand-in first on PATH and reads the file it wrote, the arguments
+# the stand-in recorded and the lines the script printed. The ladder's waits are the case's own,
 # `retry_seconds` seconds for the first and twice that for the second, which `fixture` resets to
 # 0. A stand-in `sleep` records each wait the ladder asks for through the `sleep` on PATH, and
 # the cases read those records, not how long the drive took: two cases set the knob to 1 and read
@@ -55,10 +56,26 @@ cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 # The stand-in. It records the whole argument list of every call, one file per call, so a case
 # can hold the route to the attempt endpoint, and answers from the files the case wrote: it
-# refuses its first \`refuse\` calls with \`stderr\` on its own stderr and prints \`page.json\`
-# for the calls after those. A case whose attempts are refused for different reasons writes
-# \`stderr.<n>\` for the n-th call, counting from 0, and that file answers in place of
-# \`stderr\` for that call alone.
+# refuses its first \`refuse\` calls with \`stderr\` on its own stderr and answers the calls after
+# those with \`attempt.json\`, the attempt's jobs, in pages. A case whose attempts are refused for
+# different reasons writes \`stderr.<n>\` for the n-th call, counting from 0, and that file
+# answers in place of \`stderr\` for that call alone.
+#
+# The pages are the ones gh 2.98.0 asks GitHub for and prints (pkg/cmd/api in cli/cli), so a
+# script that does not follow them reads the first page alone, as it would on a runner. A page
+# holds the \`per_page\` the route names; a route that names none gets GitHub's default of 30
+# without \`--paginate\`, and with it the 100 gh adds. Without \`--paginate\` the call prints the
+# first page, one object; with it, every page, one object after another, or one array of them
+# with \`--slurp\`; and \`--slurp\` without \`--paginate\` is refused in gh's own words.
+#
+# A case that writes \`refused-page\` moves the refusal of its refused calls from the first page
+# to the page that file names: such a call prints every page before that one and then, as gh
+# does, the error's body where that page would have been, then its stderr, and exits 1 - a read
+# whose first pages answered and whose later one did not. A refused call that never asks for
+# that page, one that does not follow the pages or whose attempt has fewer, is answered.
+#
+# A case that writes \`body\` gets it printed in place of the pages, with exit 0: an answer gh took
+# whole that holds no jobs list.
 #
 # A case that writes \`kill-wrapper.<n>\` stages, for that call, a wrapper killed during the
 # attempt: the stand-in kills its own grandparent, which is the script's \`bash -c\` wrapper,
@@ -108,15 +125,63 @@ if [ -f "$work/kill-wrapper.\$calls" ]; then
   fi
   exit 1
 fi
-if [ "\$((calls + 1))" -le "\$(cat "$work/refuse")" ]; then
+# refuse_stderr: what a refused call prints on its stderr.
+refuse_stderr() {
   if [ -f "$work/stderr.\$calls" ]; then
     cat "$work/stderr.\$calls" >&2
   else
     cat "$work/stderr" >&2
   fi
+}
+refused_at=0
+if [ "\$((calls + 1))" -le "\$(cat "$work/refuse")" ]; then
+  if [ ! -f "$work/refused-page" ]; then
+    refuse_stderr
+    exit 1
+  fi
+  refused_at=\$(cat "$work/refused-page")
+fi
+if [ -f "$work/body" ]; then
+  cat "$work/body"
+  exit 0
+fi
+paginate=false slurp=false route=
+for arg in "\${@:2}"; do
+  case \$arg in
+    --paginate) paginate=true ;;
+    --slurp) slurp=true ;;
+    -*) ;;
+    *) [ -n "\$route" ] || route=\$arg ;;
+  esac
+done
+if [ "\$slurp" = true ] && [ "\$paginate" = false ]; then
+  echo '\`--paginate\` required when passing \`--slurp\`' >&2
   exit 1
 fi
-cat "$work/page.json"
+per_page=30
+per_page_re='[?&]per_page=([0-9]+)'
+if [[ \$route =~ \$per_page_re ]]; then
+  per_page=\${BASH_REMATCH[1]}
+elif [ "\$paginate" = true ]; then
+  per_page=100
+fi
+# The pages this call asks for: the first alone, or with --paginate every page the attempt
+# fills. A refusal on a page past those is one this call never meets.
+jobs=\$(jq length "$work/attempt.json")
+served=1
+if [ "\$paginate" = true ] && [ "\$jobs" -gt "\$per_page" ]; then
+  served=\$(( (jobs + per_page - 1) / per_page ))
+fi
+[ "\$refused_at" -le "\$served" ] || refused_at=0
+jq -c --argjson per "\$per_page" --argjson served "\$served" --argjson refused "\$refused_at" \
+  --argjson slurp "\$slurp" 'length as \$n | . as \$jobs
+  | [range(0; \$served) | {total_count: \$n, jobs: \$jobs[(. * \$per):((. + 1) * \$per)]}]
+  | if \$refused > 0 then .[:\$refused - 1] + [{message: "Server Error"}] else . end
+  | if \$slurp then . else .[] end' "$work/attempt.json"
+if [ "\$refused_at" -gt 0 ]; then
+  refuse_stderr
+  exit 1
+fi
 GH
 chmod +x "$work/bin/gh"
 
@@ -325,10 +390,10 @@ chmod +x "$work/bin/sleep"
 # under the name Runner.Worker (drive_limited runs the script under it).
 ln -s "$(type -P bash)" "$work/bin/Runner.Worker"
 
-# page <id>|<name>|<conclusion>[|<seconds>]...: the page the stand-in answers with. `--slurp`
-# collects the pages into one array, so the answer is an array of page objects and each holds a
-# `jobs` array. `run_attempt` is in each job because the jobs API puts it there; nothing in the
-# script reads it any more, which is what the entries this writes are held against.
+# page <id>|<name>|<conclusion>[|<seconds>]...: the attempt's jobs, in the order the jobs API
+# lists them, which the stand-in answers in pages of the route's size (its head says how).
+# `run_attempt` is in each job because the jobs API puts it there; nothing in the script reads
+# it any more, which is what the entries this writes are held against.
 #
 # `<seconds>` is how long that job took, and the two timestamps the jobs API answers with are
 # written from it: `started_at` at the fixed epoch below and `completed_at` that many seconds
@@ -338,15 +403,14 @@ ln -s "$(type -P bash)" "$work/bin/Runner.Worker"
 # 2026-11-11T10:22:27Z and completed 10:22:26Z, read 2026-11-11).
 started_epoch=1794392547  # 2026-11-11T10:22:27Z
 page() {
-  jq -n --argjson started "$started_epoch" '[{total_count: ($ARGS.positional | length),
-    jobs: [$ARGS.positional[] | split("|")
+  jq -n --argjson started "$started_epoch" '[$ARGS.positional[] | split("|")
       | {id: (.[0] | tonumber), name: .[1],
          conclusion: (if .[2] == "null" then null else .[2] end),
          started_at: ($started | todateiso8601),
          completed_at: (if (.[3] // "") == "" then null
            else ($started + (.[3] | tonumber) | todateiso8601) end),
-         run_attempt: 2}]}]' \
-    --args "$@" > "$work/page.json"
+         run_attempt: 2}]' \
+    --args "$@" > "$work/attempt.json"
 }
 
 # happy_page: one attempt of a run of this lane, as the jobs API names it. A called workflow's
@@ -382,6 +446,37 @@ happy_page() {
     "28|dispatch-browser-pr / embedder|failure|9999"
 }
 
+# two_page_attempt: an attempt of 40 jobs, which the route's 30 a page answers over two pages,
+# with every lane's jobs on both. That is the shape of run 45913688080, whose attempts 2 and 3
+# answered 95 jobs over four pages of 30 and held the full lane's jobs on three of attempt 2's
+# pages and two of attempt 3's (read 2026-11-27). The first page holds the full lane's binaries
+# job, the pull-request lane's real leg, the references lane's first shard and 27 of ci.yaml's
+# own jobs at 60 s each, which no caller's prefix names; the second holds the rest of each lane.
+# The full lane's jobs are the happy page's and sum to the same 1,750 s, 150 s of them on the
+# first page and 1,600 s on the second, and the pull-request lane's 800 s are 500 s on the first
+# and 300 s on the second, so a read of either page alone sums to a figure no case accepts.
+two_page_attempt() {
+  local -a ci_jobs=()
+  local n
+  for ((n = 1; n <= 27; n++)); do
+    ci_jobs+=("$((100 + n))|test ($n)|success|60")
+  done
+  page "10|dispatch-browser / binaries|success|150" \
+    "19|dispatch-browser-pr / real|failure|500" \
+    "40|dispatch-references / shard (1)|success|157" \
+    "${ci_jobs[@]}" \
+    "11|dispatch-browser / shard (1)|success|600" \
+    "12|dispatch-browser / shard (2)|failure|700" \
+    "13|dispatch-browser / alone|success|200" \
+    "14|dispatch-browser / multiprocess|skipped|-1" \
+    "18|dispatch-browser / visual|failure|100" \
+    "15|dispatch-browser / merge|null" \
+    "27|dispatch-browser-pr / stub|success|300" \
+    "20|dispatch-browser-pr / merge|null" \
+    "41|dispatch-references / shard (2)|success|189" \
+    "42|dispatch-references / merge|null"
+}
+
 # lane_jobs <name>|<conclusion>[|<seconds>]...: a jobs file of the shape the `jobs` mode writes,
 # for the machine-time cases that need a sum the happy page does not give. The case above it
 # drives the two modes one after the other over one page, so that what this writes is held to
@@ -398,20 +493,20 @@ lane_jobs() {
 }
 
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
-# stand-in that refuses that many calls and then answers, and the happy page for the answer. It
-# also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
-# and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
-# an earlier case wrote goes with it, so one case's faults never answer another's call, and so
-# do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log, and the
-# stand-in gh's per-call `kill-wrapper.<n>` files, and the stand-in `sleep`'s call log. The
-# machine-time cases' own two go with them: the jobs file a case wrote for that mode, and the step
-# summary, which is no file at all until a case names one, so a case that does not ask for a
-# summary drives the script with GITHUB_STEP_SUMMARY empty, as a shell that runs it outside
-# Actions has it.
+# stand-in that refuses that many calls, each on its first page, and then answers, and the happy
+# page for the answer. It also puts the ladder's wait back to 0, so a case that does not ask for
+# one waits not at all and the three that do set `retry_seconds` themselves after calling it. Any
+# per-call `stderr.<n>` an earlier case wrote goes with it, so one case's faults never answer
+# another's call, and so do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its
+# own call log, the stand-in gh's per-call `kill-wrapper.<n>` files, its `refused-page` and its
+# `body`, and the stand-in `sleep`'s call log. The machine-time cases' own two go with them: the
+# jobs file a case wrote for that mode, and the step summary, which is no file at all until a case
+# names one, so a case that does not ask for a summary drives the script with GITHUB_STEP_SUMMARY
+# empty, as a shell that runs it outside Actions has it.
 fixture() {
   rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
   rm -f "$work"/stderr.* "$work"/stub-timeout.* "$work"/kill-wrapper.* "$work/jobs.json" \
-    "$work/summary.md"
+    "$work/summary.md" "$work/refused-page" "$work/body"
   mkdir -p "$work/calls" "$work/timeout-calls" "$work/sleep-calls" "$work/rate-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
@@ -515,10 +610,12 @@ check "and so are the other caller's" \
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 
 echo "case: the route is this run's attempt endpoint"
-# The same drive: what the stand-in recorded is what the script asked GitHub for.
+# The same drive: what the stand-in recorded is what the script asked GitHub for. Thirty to a
+# page, named in the route, because a page of 100 answered HTTP 502 on every try for run
+# 45913688080 and a paginated route that names no size reads 100 a page (the script's head).
 check "names this run's attempt" "$(contains "$(args)" "/attempts/$run_attempt/jobs")"
 check "under this repository and run" "$(contains "$(args)" 'repos/o/r/actions/runs/41/')"
-check "a hundred to a page" "$(contains "$(args)" 'jobs?per_page=100')"
+check "thirty to a page" "$(contains "$(args)" 'jobs?per_page=30$')"
 check "and holds no filter=all" "$(is "$(contains "$(args)" 'filter=all')" false)"
 check "slurps the pages, since gh refuses --slurp beside --jq" \
   "$(contains "$(args)" '--paginate --slurp')"
@@ -570,7 +667,7 @@ check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "tried three times" "$(is "$(calls)" 3)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the endpoint it read" \
-  "$(contains "$(error_line)" 'GET repos/o/r/actions/runs/41/attempts/4/jobs?per_page=100')"
+  "$(contains "$(error_line)" 'GET repos/o/r/actions/runs/41/attempts/4/jobs?per_page=30,')"
 check "the status gh last printed" "$(contains "$(error_line)" 'HTTP 502')"
 check "the ladder's attempts and this run attempt" \
   "$(contains "$(error_line)" '3 attempts, all on run attempt 4')"
@@ -815,6 +912,63 @@ check "while the two earlier attempts keep the status they were answered" \
 check "and the attempt the wrapper never finished is still counted" \
   "$(contains "$(error_line)" 'the ladder made 3 attempts')"
 
+echo "case: every attempt answered the first page and was refused the second"
+# A read of two pages whose second GitHub refuses: gh exits 1 at that page, having printed the
+# first and then the error's body in the second's place, so each refused attempt leaves a JSON
+# array on its stdout whose first element is a whole page of this attempt's jobs. No attempt took
+# the read whole, so it is refused as a read refused on its first page is, and that first page
+# reaches no file and no line of the log. A script that read the first page alone would never
+# ask for the second and would pass here, which is what the first check holds.
+fixture 3 "gh: Server Error (HTTP 502)"
+two_page_attempt
+printf '2\n' > "$work/refused-page"
+drive jobs "$work/out.json" "$caller"
+check "fails the step" "$(is "$status" 1)"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+check "tried three times" "$(is "$(calls)" 3)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "naming the route of thirty to a page" \
+  "$(contains "$(error_line)" 'GET repos/o/r/actions/runs/41/attempts/4/jobs?per_page=30,')"
+check "and the status the second page was answered" \
+  "$(contains "$(error_line)" 'attempt 3, which decided the failure, answered HTTP 502')"
+check "while gh's words for each refused page still reach the log" \
+  "$(is "$(grep -c '^gh: Server Error (HTTP 502)$' <<<"$out" || true)" 3)"
+check "and the first page each attempt printed reaches none of it" \
+  "$(is "$(contains "$out" 'dispatch-browser / binaries')" false)"
+
+echo "case: an attempt refused on the second page, and the next attempt answered both"
+# The ladder's next attempt reads the whole list again, and it is that attempt's answer the file
+# holds: the first page the refused attempt printed is no part of it, so every job is written
+# once, and reading five sums the jobs of both pages.
+fixture 1 "gh: Server Error (HTTP 502)"
+two_page_attempt
+printf '2\n' > "$work/refused-page"
+drive jobs "$work/out.json" "$caller"
+check "exits 0" "$(is "$status" 0)"
+check "tried twice" "$(is "$(calls)" 2)"
+check "writes the full lane's seven jobs" "$(is "$(entries)" 7)"
+check "each of them once" "$(is "$(jq -r '[.[].id] | unique | length' "$work/out.json")" 7)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+drive machine-time "$work/out.json" full
+check "and reading five sums the jobs of both pages" \
+  "$(contains "$(notice_line)" 'the full lane cost 1750 s over 5 concluded jobs')"
+
+echo "case: an answer gh took whole that holds no jobs list writes no out-file"
+# gh exits 0 on an answer it took whole, whatever that answer holds, and the filter is then what
+# refuses it. That refusal must leave no file behind: reading three reads an empty jobs file as
+# every leg of this workflow having concluded success, and reading five reads one as a lane with
+# no concluded job, where a missing file is named as missing by both. The answer here is a page
+# that is no JSON at all, such as a proxy in front of GitHub serves with a 200.
+fixture 0
+printf '%s\n' '<html><body>Sign in to continue</body></html>' > "$work/body"
+drive jobs "$work/out.json" "$caller"
+check "fails the step" "$([ "$status" -ne 0 ] && echo true || echo false)"
+check "after one call, an answer gh exited 0 on being no refused attempt" "$(is "$(calls)" 1)"
+check "and writes no out-file" "$(is "$(wrote_out_file)" no)"
+drive machine-time "$work/out.json" full
+check "so reading five names the jobs file as missing" \
+  "$(contains "$(error_line)" "$work/out.json and that file is not there")"
+
 echo "case: refused once, answered on the second attempt"
 fixture 1
 retry_seconds=1
@@ -990,6 +1144,45 @@ check "summing that caller's two concluded jobs against the pull-request lane's 
   "$(contains "$(notice_line)" \
     'the pull-request lane cost 800 s over 2 concluded jobs, this merge job apart, against a budget of 846 s')"
 check "and prints no ::error:: line" "$(is "$(errors)" 0)"
+
+echo "case: an attempt of two pages is read whole, and reading five sums the jobs of both"
+# The attempt's 40 jobs come over two pages of thirty, every lane's jobs on both, and each lane's
+# merge job must read the jobs of both: the full lane's binaries job is on the first page and its
+# legs on the second, the pull-request lane's real leg on the first and its stub leg on the
+# second, the references lane's two shards one on each. The stand-in answers a call that does not
+# follow the pages with the first page alone, as gh does, so a read of one page writes the full
+# lane's binaries job and none of its legs, and reading five sums 150 s over 1 job rather than
+# 1,750 s over 5. A call that drops `--paginate` but keeps `--slurp` is refused, in gh's words.
+fixture 0
+two_page_attempt
+drive jobs "$work/out.json" "$caller"
+check "the jobs mode exits 0" "$(is "$status" 0)"
+check "in one call, which read both pages" "$(is "$(calls)" 1)"
+check "writes the full lane's seven jobs" "$(is "$(entries)" 7)"
+check "its binaries job, from the first page" \
+  "$(is "$(field 10 .name)" 'dispatch-browser / binaries')"
+check "and its two shard legs, from the second" \
+  "$(is "$(field 11 .leg) $(field 12 .leg)" 'shard-1 shard-2')"
+check "and none of ci.yaml's own jobs" \
+  "$(is "$(jq -r '[.[] | select(.id > 100)] | length' "$work/out.json")" 0)"
+drive machine-time "$work/out.json" full
+check "the full lane passes under its budget" "$(is "$status" 0)"
+check "summing the jobs of both pages" \
+  "$(contains "$(notice_line)" \
+    'the full lane cost 1750 s over 5 concluded jobs, this merge job apart, against a budget of 3146 s')"
+drive jobs "$work/out.json" dispatch-browser-pr
+check "the pull-request lane's read exits 0" "$(is "$status" 0)"
+check "writing its real leg from the first page and its stub leg from the second" \
+  "$(is "$(field 19 .leg) $(field 27 .leg)" 'real stub')"
+drive machine-time "$work/out.json" pull-request
+check "and that lane's reading five sums both" \
+  "$(contains "$(notice_line)" \
+    'the pull-request lane cost 800 s over 2 concluded jobs, this merge job apart, against a budget of 846 s')"
+drive jobs "$work/out.json" dispatch-references
+check "the references lane's read exits 0" "$(is "$status" 0)"
+check "writing its three jobs" "$(is "$(entries)" 3)"
+check "its first shard leg from the first page and its second from the second" \
+  "$(is "$(field 40 .leg) $(field 41 .leg)" 'shard-1 shard-2')"
 
 echo "case: each budget bites at its own second"
 # The one case that would catch a budget written one second out, or a `-ge` where the rule is
