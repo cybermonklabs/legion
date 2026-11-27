@@ -2077,6 +2077,8 @@ test("a pointer press on empty space inside a held selection bar keeps the press
     const pressHeld = () => {
       release();
       disarm();
+      // fireEvent: the press is armed by this click and held by `holdHandOff` in the same task,
+      // and user-event waits a task after its click, by which time an unheld press can end.
       act(() => {
         takeOut.focus();
         fireEvent.click(takeOut);
@@ -2084,6 +2086,9 @@ test("a pointer press on empty space inside a held selection bar keeps the press
       release = holdHandOff();
     };
     const pointerClick = (target: HTMLElement) => {
+      // fireEvent: a browser's pointer press as one sequence in one task (down, the focus it
+      // moves, up, then the click), since user-event waits a task between them and the press read
+      // here is one a frame and a task can end.
       act(() => {
         target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
         if (target.hasAttribute("tabindex") || target.tagName === "BUTTON") target.focus();

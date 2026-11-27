@@ -2620,33 +2620,30 @@ describe("board keymap with pointer focus on a scroll box", () => {
       expect(scroller.getAttribute("tabindex")).toBe("-1");
       const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
       const delta = within(board).getByRole("article", { name: "CORE-4 Delta" });
-      const focusScrollerByPointer = () => {
-        act(() => {
-          scroller.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-          scroller.focus();
-          scroller.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-          fireEvent.click(scroller);
-        });
+      // A pointer press on empty space in the scroller: user-event's press moves the focus to the
+      // scroller, as a browser does for a box with `tabindex="-1"`.
+      const focusScrollerByPointer = async () => {
+        await user.click(scroller);
         expect(document.activeElement === scroller).toBe(true);
       };
 
-      focusScrollerByPointer();
+      await focusScrollerByPointer();
       await user.keyboard("j");
       expect(alpha).toHaveFocus();
 
-      focusScrollerByPointer();
+      await focusScrollerByPointer();
       await user.keyboard("k");
       expect(delta).toHaveFocus();
 
-      focusScrollerByPointer();
+      await focusScrollerByPointer();
       await user.keyboard("l");
       expect(alpha).toHaveFocus();
 
-      focusScrollerByPointer();
+      await focusScrollerByPointer();
       await user.keyboard("h");
       expect(delta).toHaveFocus();
 
-      focusScrollerByPointer();
+      await focusScrollerByPointer();
       await user.keyboard("?");
       expect(helpOpened).toBe(1);
     } finally {
@@ -2662,12 +2659,7 @@ describe("board keymap with pointer focus on a scroll box", () => {
       const p0Lane = await screen.findByRole("region", { name: "P0 lane" });
       const scroller = within(p0Lane).getByTestId("board-lane-scroll-container");
       expect(scroller.getAttribute("tabindex")).toBe("-1");
-      act(() => {
-        scroller.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-        scroller.focus();
-        scroller.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-        fireEvent.click(scroller);
-      });
+      await user.click(scroller);
       expect(document.activeElement === scroller).toBe(true);
       await user.keyboard("j");
       expect(within(p0Lane).getByRole("article", { name: "CORE-1 P0 card" })).toHaveFocus();
