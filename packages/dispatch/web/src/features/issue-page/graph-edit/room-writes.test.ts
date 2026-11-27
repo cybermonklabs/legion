@@ -45,7 +45,9 @@ function roomOf(blocks: readonly RoomBlock[]): Room {
     if (words !== undefined) element.insert(0, [new Y.XmlText(words)]);
     return element;
   });
-  server.getXmlFragment("prosemirror").insert(0, elements);
+  // The fragment's own type names string attributes alone, while y-prosemirror keeps a node's
+  // attributes as the node holds them (a heading's `level` is a number).
+  server.getXmlFragment("prosemirror").insert(0, elements as unknown as Y.XmlElement[]);
   return { browser, server };
 }
 
