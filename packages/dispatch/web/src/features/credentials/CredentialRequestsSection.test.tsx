@@ -1,20 +1,22 @@
 import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { CredentialPendingRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { runningAgent } from "./agent-fixture";
 import { CredentialRequestsSection } from "./CredentialRequestsSection";
-import type { CredentialRequests } from "./pending";
+import { type CredentialRequests, useCredentialRequests } from "./pending";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -222,6 +224,38 @@ test("Dismiss on an expired row sends that record's dismissal and reads the list
   }
 });
 
+// Dismiss is held (`aria-disabled`), never disabled, from its press through the read of the list
+// that takes the row away: the dismissal's answer alone does not let it go, so it keeps the focus
+// and the press is still the cause of the row's going (`causedByReader`). Once that read settles
+// the button is let go.
+test("Dismiss stays held and keeps the focus after its dismissal lands, until the list is read again", async () => {
+  const user = userEvent.setup();
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockResolvedValue(undefined);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const reread = Promise.withResolvers<void>();
+  const invalidate = spyOn(client, "invalidateQueries").mockReturnValue(reread.promise);
+  try {
+    renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+    const button = screen.getByRole("button", {
+      name: "Dismiss expired secret request DEEL_API_KEY",
+    });
+    await user.click(button);
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["credential-pending"] })
+    );
+    expect(dismiss.mock.calls).toEqual([["req-9", keyedAttempt]]);
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveFocus();
+
+    await act(async () => reread.resolve());
+    await waitFor(() => expect(button).not.toHaveAttribute("aria-disabled"));
+    expect(button).toHaveFocus();
+  } finally {
+    dismiss.mockRestore();
+  }
+});
+
 // The broker's refusal is shown under the row it names, and the list is read again, since the
 // refusal says the list the page holds is not what the broker holds.
 test("a refused dismissal shows the broker's message and reads the list again", async () => {
@@ -271,6 +305,75 @@ test("a dismissal the reader stopped says it may have been made, not that it fai
     expect(within(row).queryByText("Could not dismiss this request.")).toBeNull();
   } finally {
     realClock();
+    dismiss.mockRestore();
+  }
+});
+
+/** The section over the list it reads itself, as the Inbox draws it (`useCredentialRequests`). */
+function ListedSection(): ReactNode {
+  return <CredentialRequestsSection credentials={useCredentialRequests()} />;
+}
+
+// `DispatchQueryClient` answers the invalidation of the idle list after a dismissal with the
+// list's own fetch, which TanStack pauses while the browser is offline, and no request deadline
+// runs while a fetch is paused. So Dismiss's hold through that read has a timer of its own, the
+// request deadline (`REQUEST_DEADLINE_MS`): Dismiss whose dismissal landed offline is let go
+// then, and the row says the list is not read yet and why. Once the network returns, the list is
+// read and the row goes.
+test("offline, Dismiss whose dismissal landed is let go at the request deadline, and the row says why", async () => {
+  const online = onlineManager.isOnline();
+  const getPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [expiredSecretRow()],
+  });
+  // The dismissal's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const dismissal = Promise.withResolvers<void>();
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockImplementation(() => {
+    getPending.mockResolvedValue({ pending: [] });
+    return dismissal.promise;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ListedSection />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const name = "Dismiss expired secret request DEEL_API_KEY";
+  const button = await screen.findByRole("button", { name });
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    await user.click(button);
+    await tick(0);
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    dismissal.resolve();
+    await tick(1_000);
+    expect(client.getQueryState(["credential-pending"])?.fetchStatus).toBe("paused");
+    expect(button).toHaveAttribute("aria-disabled", "true");
+
+    // The dismissal landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(button).toHaveAttribute("aria-disabled", "true");
+
+    await tick(2_000);
+    expect(button).not.toHaveAttribute("aria-disabled");
+    const row = screen.getByText("DEEL_API_KEY").closest("li") as HTMLElement;
+    expect(within(row).getByText(/^Couldn't load credential requests\./).textContent).toBe(
+      "Couldn't load credential requests. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(screen.queryByRole("button", { name })).toBeNull();
+  } finally {
+    // The section and its reads go before the network returns, so no read paused offline goes on.
+    view.unmount();
+    client.clear();
+    onlineManager.setOnline(online);
+    realClock();
+    getPending.mockRestore();
     dismiss.mockRestore();
   }
 });

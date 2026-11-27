@@ -59,7 +59,8 @@ export interface CredentialRequests {
 
 /** The one reading of the credential-request list. The section that lists the requests, the
  *  Inbox's empty state and every `Needs you` count read it here, so none of them can count a
- *  request another does not show. */
+ *  request another does not show; and a list still `loading` or `failed` is counted by none of
+ *  them, which draw no number until it is `listed`. */
 export function useCredentialRequests(): CredentialRequests {
   const pending = useQuery(credentialPendingQuery());
   if (pending.isPending) return { requests: [], status: "loading" };

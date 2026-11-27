@@ -253,10 +253,7 @@ const FEATURE_FILES = collectFeatureFiles(FEATURES_ROOT).map(
  *  converted since is no failure, so a piece that converts one need not edit this list; the last
  *  piece empties it. */
 const NOT_YET_CONVERTED: ReadonlySet<string> = new Set([
-  "features/credentials/RevocableList.tsx",
   "features/delivery/DeliveryPage.tsx",
-  "features/delivery/MeasuresPanel.tsx",
-  "features/delivery/PipelinePage.tsx",
   "features/delivery/PRList.tsx",
   "features/inbox/fills-viewport.ts",
   "features/inbox/Inbox.tsx",
@@ -275,11 +272,6 @@ const NOT_YET_CONVERTED: ReadonlySet<string> = new Set([
   "features/project/issues-table-rows.tsx",
   "features/project/issues-table-view.ts",
   "features/project/ProjectPage.tsx",
-  "features/settings/AgentTokensSection.tsx",
-  "features/settings/ArchitectureSourcesSection.tsx",
-  "features/settings/LegionDaemonsSection.tsx",
-  "features/settings/ProjectsSection.tsx",
-  "features/steps/StepsTab.tsx",
 ]);
 
 /** The feature files the scans below read: every one but those `NOT_YET_CONVERTED` lists. */
@@ -727,7 +719,7 @@ describe("the shared controls are defined once, under components/", () => {
    *  that holds the `data-control` value it sets: the key in PascalCase is the component's name
    *  and its file's. The table's controls join as the pieces that carry them land. */
   const SHARED_CONTROLS = (
-    ["chip", "controlRow", "displayMenu", "panelTrigger", "searchBox"] as const
+    ["chip", "controlRow", "displayMenu", "panelTrigger", "searchBox", "tableShell"] as const
   ).map((key) => [`${key.charAt(0).toUpperCase()}${key.slice(1)}`, key] as const);
 
   test.each(SHARED_CONTROLS)(

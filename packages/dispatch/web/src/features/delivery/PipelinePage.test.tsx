@@ -11,6 +11,7 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import type {
   DeliveryLeadTimeTiming,
   DeliveryPipelineResponse,
@@ -370,6 +371,18 @@ test("the failing-jobs note names the roll-up the server leaves out only by its 
   view();
   const note = document.querySelector('[data-section="failing-jobs"] p')?.textContent ?? "";
   expect(note).toContain("Every failed job but the roll-up job the settings name");
+});
+
+// Each failing job's row links its last failure's run, so that table's box takes no Tab stop of
+// its own (`TableShell`'s `holdsControls`); the slowest jobs' rows hold no control, so their box
+// keeps the browser's default.
+test("the failing jobs' box takes tabindex -1 for its links, and the slowest jobs' box takes none", () => {
+  view();
+  const box = (section: string) =>
+    document.querySelector(`[data-section="${section}"] ${TABLE_SHELL}`);
+  expect(box("failing-jobs")?.getAttribute("tabindex")).toBe("-1");
+  expect(box("slowest-jobs")).not.toBeNull();
+  expect(box("slowest-jobs")?.hasAttribute("tabindex")).toBe(false);
 });
 
 test("names the shown days in the header", () => {

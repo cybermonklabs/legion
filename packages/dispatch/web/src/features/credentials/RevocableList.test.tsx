@@ -6,8 +6,10 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { TABLE_SHELL } from "../../__tests__/table-shell";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -154,23 +156,23 @@ async function renderSection(section: Section): Promise<HTMLElement> {
 }
 
 for (const section of sections) {
-  test(`${section.heading}: Revoke is disabled while a revoke is out, and enabled once it settles`, async () => {
+  // While the revoke is out Revoke is held (`heldPress`), never `disabled`: a `disabled` button
+  // drops the focus the reader's press left on it to the page's body. The pressed Revoke keeps the
+  // focus, a second press of it sends no second revoke, and it is free once the revoke settles.
+  test(`${section.heading}: Revoke, held while its revoke is out, keeps the focus, and a second press sends nothing`, async () => {
     const user = userEvent.setup();
     const out = Promise.withResolvers<void>();
     const stubs = section.stub(() => out.promise);
     const confirm = spyOn(window, "confirm").mockReturnValue(true);
     try {
       const button = await renderSection(section);
-      await user.click(button);
-      await waitFor(() => expect(stubs.revokeCalls()).toEqual([[section.rowId, keyedAttempt]]));
-      await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(true));
+      await pressHeld(user, button, { name: "Revoke", sent: () => stubs.revokeCalls().length });
+      expect(stubs.revokeCalls()).toEqual([[section.rowId, keyedAttempt]]);
 
-      out.resolve();
+      await act(async () => out.resolve());
       const region = within(screen.getByRole("region", { name: section.heading }));
       await waitFor(() =>
-        expect((region.getByRole("button", { name: "Revoke" }) as HTMLButtonElement).disabled).toBe(
-          false
-        )
+        expect(region.getByRole("button", { name: "Revoke" })).not.toHaveAttribute("aria-disabled")
       );
     } finally {
       cleanup();
@@ -179,7 +181,7 @@ for (const section of sections) {
     }
   });
 
-  test(`${section.heading}: a double press before the button disables sends one revoke`, async () => {
+  test(`${section.heading}: a double press before the button is held sends one revoke`, async () => {
     jest.useFakeTimers();
     const out = Promise.withResolvers<void>();
     const stubs = section.stub(() => out.promise);
@@ -187,11 +189,11 @@ for (const section of sections) {
     try {
       const button = await renderSection(section);
       // Both presses land inside one act, so React re-renders only after both: the second reaches
-      // the handler before the pending revoke disables the button, which only the guard stops.
+      // the handler before the pending revoke holds the button, which only the guard stops.
       act(() => {
         // Two presses in one task: user-event waits between its events, so it cannot make them.
         fireEvent.click(button);
-        // The second press before React re-renders and disables the button.
+        // The second press before React re-renders and holds the button.
         fireEvent.click(button);
       });
       // A mutation calls its function a few microtasks after the click; a timer runs after
@@ -302,4 +304,59 @@ for (const section of sections) {
       stubs.restore();
     }
   });
+
+  // A row's Revoke is the table's one control (`TableShell`'s `holdsControls`), so the table's box
+  // takes no Tab stop of its own while a row draws it; an empty list draws no control, and its box
+  // keeps the browser's default.
+  test(`${section.heading}: the table's box takes tabindex -1 while a row draws Revoke, and none while the list is empty`, async () => {
+    const stubs = section.stub(() => Promise.resolve());
+    try {
+      const revoke = await renderSection(section);
+      expect(revoke.closest(TABLE_SHELL)?.getAttribute("tabindex")).toBe("-1");
+      cleanup();
+      stubs.clearList();
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
+      const empty = await screen.findByText(section.empty);
+      expect(empty.closest(TABLE_SHELL)?.hasAttribute("tabindex")).toBe(false);
+    } finally {
+      cleanup();
+      stubs.restore();
+    }
+  });
 }
+
+// A grant nobody may revoke draws the line that says what ends it where its Revoke would be, so a
+// list of only such grants draws no control, and the table's box keeps the browser's default.
+test("Live grants: a list of grants nobody may revoke leaves the table's box with no tabindex", async () => {
+  const list = spyOn(api, "getCredentialGrants").mockResolvedValue({
+    grants: [
+      {
+        approver: null,
+        created_at: "2026-10-03T12:05:00Z",
+        decided_by: null,
+        enrollment: { kind: "session", operator: "", runtime_id: "box-2", slot: null },
+        expires_at: "2026-10-03T13:05:00Z",
+        grant_id: "grant-2",
+        granted: "automatic",
+        names: ["WORKER_TOKEN"],
+        record_id: null,
+      },
+    ],
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GrantsSection />
+      </QueryClientProvider>
+    );
+    const line = await screen.findByText("Ends with its machine login");
+    expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
+    expect(line.closest(TABLE_SHELL)?.hasAttribute("tabindex")).toBe(false);
+  } finally {
+    cleanup();
+    queryClient.clear();
+    list.mockRestore();
+  }
+});
