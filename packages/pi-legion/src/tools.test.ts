@@ -2589,7 +2589,9 @@ test("the controller stops, retries, suspends and resumes an agent it names by i
         "/legion/v1/agents/resume",
         409,
         "SUSPENDED_BY_OPERATOR",
-        "legion-omp-legion-209-tester is held by the operator's own suspension, which only the operator lifts"
+        "legion-omp-legion-209-tester is held by the operator's own suspension, which only the operator lifts",
+        true,
+        0
       ),
     },
   });
@@ -2655,7 +2657,9 @@ test("the controller asks for the replacement of an issue's pod with its own gra
         "/legion/v1/issues/pod-update",
         409,
         "POD_UPDATE_LIMITED",
-        "the project's pod_update_max_open_rounds (2) holds back the update round of LEGION-209"
+        "the project's pod_update_max_open_rounds (2) holds back the update round of LEGION-209",
+        true,
+        0
       ),
     },
   });
@@ -3144,7 +3148,9 @@ test("resume_agent resumes an agent, resume names no issue, and a paused project
         "/legion/v1/agents/resume",
         409,
         "PROJECT_PAUSED",
-        sentence
+        sentence,
+        true,
+        0
       ),
     },
   });
