@@ -198,7 +198,7 @@ interface LineRow {
   readonly kind: "line";
   readonly line: "ask" | "do" | "file" | "filing" | "failed";
   /** What the row says before the words: "Ask", "Do", "File as a new issue in DEMO", "File as a
-   *  new issue under DEMO-6", "Filing in DEMO…", "Not filed". */
+   *  new issue in DEMO, under DEMO-6", "Filing in DEMO…", "Not filed". */
   readonly label: string;
   readonly words: string;
   readonly select: () => void;
@@ -1288,15 +1288,18 @@ function PaletteDialog({
           };
     lineRows = lineOffered ? [first, askRow] : [first];
   } else if (lineOffered) {
-    // The filing says what it will do: the issue it files under, where the page's issue becomes
-    // the parent (`filingParent`), else the project it files in.
+    // The filing says what it will do: the project it files in, then the issue it files under,
+    // where the page's issue becomes the parent (`filingParent`). Where the chip names no project,
+    // the parent's key names it: an issue's key is its project's key, a hyphen and a number.
     const parent = filingParent(searchText, scope.context.issue ?? "");
+    const fileProject =
+      project === "" && parent !== undefined ? parent.slice(0, parent.lastIndexOf("-")) : project;
     const fileLabel =
-      parent !== undefined
-        ? `File as a new issue under ${parent}`
-        : project === ""
-          ? "File as a new issue"
-          : `File as a new issue in ${project}`;
+      fileProject === ""
+        ? "File as a new issue"
+        : parent === undefined
+          ? `File as a new issue in ${fileProject}`
+          : `File as a new issue in ${fileProject}, under ${parent}`;
     const first: LineRow = {
       id: LINE_OPTION_ID,
       kind: "line",

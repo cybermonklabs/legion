@@ -1290,7 +1290,7 @@ func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
 func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 	for _, said := range []string{
 		"the direct answer in one or two sentences, then at most a short list",
-		"under 120 words unless the person asks for more",
+		"stays concise unless the person asks for more",
 		"Name each item once, by its link alone",
 		"A second link to the same item adds its words to the answer and draws no chip.",
 		"never what it shows, such as an issue's title or status",

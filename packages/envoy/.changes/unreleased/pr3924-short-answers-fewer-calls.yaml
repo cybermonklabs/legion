@@ -11,8 +11,8 @@ body: |-
   and its whole argument schema, within the 32 KiB every tool result keeps to, and a note names a
   tool it left out; a need that is one tool's name answers that tool whole. The preview's three
   lookups had answered 76,767 bytes, which every later model call was given again. The prompt
-  says how an answer reads: the direct answer first, under 120 words unless the person asks for
-  more, each item once by its link alone, beside which it writes only what the bar's chip does not
+  says how an answer reads: the direct answer first, concise unless the person asks for more,
+  each item once by its link alone, beside which it writes only what the bar's chip does not
   show, never the title or the status, no correction of itself, and each value as the issue page
   shows it, a priority as P0 to P3, a time as "2 days ago" from the time now that each model call
   is told, any other value in words rather than raw in parentheses, and an agent session by its

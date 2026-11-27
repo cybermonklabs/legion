@@ -17,4 +17,4 @@ body: |-
   person without its title), is stored as the issue's link, `[DEMO-21](dispatch://DEMO-21)`, where
   a tool result of the run holds it; a key no read of the run returned stays text. The agent's
   prompt names comments and messages in its rule that every fact goes outside the link, and says
-  that each chip's key, status and title count among an answer's 120 words.
+  that the prose never repeats what a chip shows: the issue's key, status and title.

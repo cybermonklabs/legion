@@ -748,9 +748,9 @@ test("Try again files the failed words with the context they were filed with, wh
 });
 
 // The filing line says what it will do (R9, design v3, state 13): over an issue's page the new
-// issue goes under that issue, as the new-issue run files it, and the line names that parent
-// before Enter. A filing line draws no short answer - Enter files the words and answers nothing -
-// and the box's clear button keeps a gap from the words it follows.
+// issue goes under that issue, as the new-issue run files it, and the line names the project and
+// then that parent before Enter. A filing line draws no short answer - Enter files the words and
+// answers nothing - and the box's clear button keeps a gap from the words it follows.
 test("over an issue's page the filing line names the issue it files under, and draws no short answer", async () => {
   const user = userOnFakeClock();
   const bar = renderBar(undefined, undefined, "/issues/LEGION-7");
@@ -759,7 +759,9 @@ test("over an issue's page the filing line names the issue it files under, and d
     act(() => streams[0]?.send({ data: { text: "No answer to that\\." }, event: "text" }));
     decide("file", "dispatch_issue");
     await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "file"));
-    expect(lineWords()).toHaveTextContent(`File as a new issue under LEGION-7: ${FILE_WORDS}`);
+    expect(lineWords()).toHaveTextContent(
+      `File as a new issue in LEGION, under LEGION-7: ${FILE_WORDS}`
+    );
     act(() => streams[0]?.send({ data: { items: 0, words: 4 }, event: "end" }));
     await tick(0);
     expect(screen.queryByTestId("going-answer")).toBeNull();

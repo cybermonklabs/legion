@@ -12,9 +12,10 @@ body: |-
   plan's rows ran, the run's fold line says "applied 3 changes" in place of "proposed a plan". The
   run chip floats over the top of the page, so the page never moves when a run starts
   or ends. A run's fold line names what each block step drew: "drew a table", "drew a chart",
-  "showed a number", and a chart labels each bar with its value. The filing line names the parent
-  the new issue takes ("File as a new issue under DEMO-6") and draws no short answer, and the
-  box's clear button keeps a gap from the words before it. An issue the short answer names twice
+  "showed a number", and a chart labels each bar with its value. The filing line names the project
+  and then the parent the new issue takes ("File as a new issue in DEMO, under DEMO-6") and draws
+  no short answer, and the box's clear button keeps a gap from the words before it. An issue the
+  short answer names twice
   is its chip once, and an item of an issue the text already draws, such as its spec, is no second
   link of its title. A chip is one box on one line that never wraps and takes no underline: a long
   title is cut with "…" and shows whole on hover, and the full stop or comma after a chip stays
