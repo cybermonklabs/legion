@@ -42,7 +42,7 @@
             }
           }
         },
-        "x-auth": "public"
+        "x-auth": "any"
       }
     },
     "/api/v1/agents": {
@@ -12949,7 +12949,7 @@
             }
           }
         },
-        "x-auth": "public"
+        "x-auth": "any"
       }
     },
     "/api/v1/search": {

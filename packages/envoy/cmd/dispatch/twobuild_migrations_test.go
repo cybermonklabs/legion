@@ -106,7 +106,7 @@ func appliedTextRefusal(m pgmigrate.Migration, applied string) string {
 // with want in its output.
 func refusedBoot(t *testing.T, b *twoBuilds, url, binary, which, want string) {
 	t.Helper()
-	options := b.options(nil, nil)
+	options := b.options(nil)
 	options.Binary = binary
 	refused := startDispatchProcessWith(t, url, options)
 	refused.WaitExit(t, which)
@@ -146,10 +146,10 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 	}
 	boot := func(binary, which string) {
 		t.Helper()
-		options := b.options(nil, nil)
+		options := b.options(nil)
 		options.Binary = binary
 		p := startDispatchProcessWith(t, b.databaseURL(t), options)
-		p.waitBooted(t)
+		p.waitHealthy(t)
 		stop(t, p)
 		t.Logf("%s booted and stopped", which)
 	}
@@ -163,10 +163,10 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 		t.Errorf("after N+1 booted, version 1 records %s sha256:%s, applied %q; want the row left as it was", n, c, a)
 	}
 	boot(b.binary, "release N, this tree,")
-	options := b.options(nil, nil)
+	options := b.options(nil)
 	options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
 	previous := startDispatchProcessWith(t, b.databaseURL(t), options)
-	previous.waitBooted(t)
+	previous.waitHealthy(t)
 	stop(t, previous)
 	t.Logf("the %s booted and stopped", b.previousName())
 
@@ -194,17 +194,17 @@ func TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShipped
 	next, files := nextRelease(t, editedMigration, attributionRule)
 
 	lane := laneDatabase(t, "release N, then N+1 editing "+editedMigration+" and "+attributionRule, b.binary, next)
-	options := b.options(nil, nil)
+	options := b.options(nil)
 	options.Binary = b.binary
 	release := startDispatchProcessWith(t, databaseURLOf(t, lane), options)
-	release.waitBooted(t)
+	release.waitHealthy(t)
 	stop(t, release)
 	t.Logf("release N booted over the lane's database (laneDatabase), which N migrated from empty and N+1, editing %s and %s, migrated forward", editedMigration, attributionRule)
 
 	old := storetest.Empty(t)
 	migrateInOrder(t, old, next)
 	// One boot: its refusal names every refused version, so each file's line is read from it.
-	options = b.options(nil, nil)
+	options = b.options(nil)
 	options.Binary = b.binary
 	refused := startDispatchProcessWith(t, old, options)
 	refused.WaitExit(t, "control: release N over a database N+1 migrated from empty")

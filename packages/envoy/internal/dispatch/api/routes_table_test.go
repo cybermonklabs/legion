@@ -553,8 +553,6 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	for _, route := range (&server{}).routes() {
 		t.Run(route.Method+" "+route.Pattern, func(t *testing.T) {
 			switch route.Auth {
-			case authPublic:
-				expectAdmitted(t, route, "anonymous")
 			case authAny:
 				expectRefused(t, route, "anonymous")
 				expectAdmitted(t, route, "cookie")

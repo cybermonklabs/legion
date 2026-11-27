@@ -454,7 +454,7 @@ theirs. The broker keeps the member kind Dispatch last answered for each person,
 Dispatch last answered a full member is served as one while Dispatch does not answer, for at most
 an hour (`projectaccess.KeptAnswerTTL`), on every
 route of this section, and "cannot say" below means a person it last answered a restricted member,
-or of whom it keeps no kind ([Asking Dispatch](/legion/broker/operate/#what-it-depends-on)).
+or of whom it keeps no kind ([Asking Dispatch](/legion/broker/operate/#a-person-dispatch-holds)).
 While Dispatch cannot say what kind of member a person is, those lists leave such rows
 out, the machine-login page and its revoke hold the person to their own logins, so a lost
 machine's login can still be ended there, while a service's login is out of reach there until
@@ -2325,7 +2325,7 @@ alone ([Approvals](#approvals)); the reads of a person's project access and memb
 release and every airlock connection, those for a private project's secrets
 ([A private project's secrets](#a-private-projects-secrets)), and each read of whether Dispatch
 holds the person a credential names
-([What it depends on](/legion/broker/operate/#what-it-depends-on)), are the last
+([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)), are the last
 ([Operating the broker](/legion/broker/operate/)). An approval asks Dispatch again before it is
 written, under a 5-second bound of its own that ends a second before the run does, so a Dispatch
 slow to answer then fails the approval, and the request goes to its person. A run with a verdict

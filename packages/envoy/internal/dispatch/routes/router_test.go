@@ -160,7 +160,8 @@ func (s *memoryPeopleStore) SignIn(_ context.Context, email, refreshToken string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), model.MemberFull
+	person.SignedInAt, person.Held, person.SignedOut = s.clock(), false, false
 	s.people[email] = person
 	return nil
 }
@@ -179,7 +180,8 @@ func (s *memoryPeopleStore) SignInSubject(ctx context.Context, email, subject, r
 		}
 	}
 	person.Subject = subject
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind, person.HostedDomain = refreshToken, s.clock(), kind, hostedDomain
+	person.SignedInAt, person.Held, person.SignedOut = s.clock(), false, false
 	s.people[email] = person
 	return nil
 }
@@ -188,7 +190,10 @@ func (s *memoryPeopleStore) Membership(_ context.Context, email string) (auth.Pe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject}
+	membership := auth.PersonMembership{
+		RefreshToken: person.RefreshToken, Subject: person.Subject, Kind: person.Kind, HostedDomain: person.HostedDomain,
+		Held: person.Held, SignedOut: person.SignedOut, SignedInAt: person.SignedInAt, ReadAt: s.clock(),
+	}
 	if !person.ConfirmedAt.IsZero() {
 		membership.Confirmed, membership.ConfirmedAge = true, s.clock().Sub(person.ConfirmedAt)
 	}
@@ -199,10 +204,10 @@ func (s *memoryPeopleStore) ConfirmSubject(_ context.Context, email, subject, re
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	if person.Subject != subject {
+	if person.Subject != subject || person.RefreshToken != readToken {
 		return nil
 	}
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind, person.HostedDomain = refreshToken, s.clock(), kind, hostedDomain
 	s.people[email] = person
 	return nil
 }
@@ -2012,7 +2017,7 @@ func (s *memoryPeopleStore) EndSubject(ctx context.Context, email, subject, refr
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	if !found || person.Subject != subject {
+	if !found || person.Subject != subject || person.RefreshToken != refreshToken {
 		return false, nil
 	}
 	if s.sessions == nil {
