@@ -981,9 +981,9 @@ test("each id the scratch Dispatch gave a record the world names is written as t
   }
 });
 
-// A staged Job keeps the bundle and the report path the role gave stage-job, and a Job staged with
-// neither has neither.
-test("a staged Job's bundle and report reach the outcome, and a Job staged with neither has neither", () => {
+// A staged Job keeps the staging directory, the bundle and the report path the role gave
+// stage-job, and a Job staged with none has none.
+test("a staged Job's snapshot, bundle and report reach the outcome, and a Job staged with none has none", () => {
   const { dir, write } = syntheticRun();
   write(
     "staging.jsonl",
@@ -993,15 +993,19 @@ test("a staged Job's bundle and report reach the outcome, and a Job staged with 
       files: ["app.ts"],
       job: "build",
       source: "$TMPDIR/stage-a",
+      snapshot: "$TMPDIR/build/snapshot",
       bundle: "$TMPDIR/stage-a/bundle.tar",
       report: "$TMPDIR/reports/build.json",
     })}\n${JSON.stringify({ at: host("700"), tree: "c".repeat(40), files: ["app.ts"], job: "plain" })}\n`
   );
   const staged = writeOutcome(dir).actions.filter((action) => action.kind === "staging");
   expect(staged).toMatchObject([
-    { bundle: "$TMPDIR/stage-a/bundle.tar", report: "$TMPDIR/reports/build.json" },
+    {
+      snapshot: "$TMPDIR/build/snapshot",
+      bundle: "$TMPDIR/stage-a/bundle.tar",
+      report: "$TMPDIR/reports/build.json",
+    },
     { job: "plain" },
   ]);
-  expect(staged[1]).not.toHaveProperty("bundle");
-  expect(staged[1]).not.toHaveProperty("report");
+  for (const field of ["snapshot", "bundle", "report"]) expect(staged[1]).not.toHaveProperty(field);
 });

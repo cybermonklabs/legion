@@ -568,23 +568,35 @@ describe("the carried kinds, the workspace and staging's job and source", () => 
     );
   });
 
-  test("a staging action's bundle and report are optional, and each a text", () => {
+  test("a staging action's snapshot, bundle and report are optional, and each a text", () => {
     const staging = (extra: Record<string, unknown>) => ({
-      kind: "staging",
+      kind: "staging" as const,
       seq: 6,
       at: "2030-01-07T15:05:00Z",
       tree: "a".repeat(40),
       files: ["app.ts"],
       ...extra,
     });
-    for (const extra of [{ bundle: "$TMPDIR/b.tar" }, { report: "$TMPDIR/r.json" }]) {
+    // Each parses as it is written, with no field added: a record written before stage-job took a
+    // staging directory holds a bundle and a report and no snapshot, and means what it meant.
+    for (const extra of [
+      { snapshot: "$TMPDIR/build/snapshot" },
+      { bundle: "$TMPDIR/b.tar" },
+      { report: "$TMPDIR/r.json" },
+      { bundle: "$TMPDIR/b.tar", report: "$TMPDIR/r.json" },
+      { snapshot: "$TMPDIR/build/snapshot", bundle: "$TMPDIR/b.tar", report: "$TMPDIR/r.json" },
+    ]) {
       const file = heldoutJson();
       good(file).actions.push(staging(extra));
-      expect(() => parseHeldoutFile(JSON.stringify(file))).not.toThrow();
+      expect(parseHeldoutFile(JSON.stringify(file)).cases[0]?.traces.good.actions.at(-1)).toEqual(
+        staging(extra)
+      );
     }
-    const blank = heldoutJson();
-    good(blank).actions.push(staging({ report: "" }));
-    expect(() => parseHeldoutFile(JSON.stringify(blank))).toThrow("report");
+    for (const field of ["snapshot", "report"]) {
+      const blank = heldoutJson();
+      good(blank).actions.push(staging({ [field]: "" }));
+      expect(() => parseHeldoutFile(JSON.stringify(blank))).toThrow(field);
+    }
   });
 
   test("the documents are an optional list of a name, a version and a body, each name once", () => {
