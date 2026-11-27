@@ -232,18 +232,21 @@ func TestEveryProjectRouteWritesAnotherPublicProjectsObject(t *testing.T) {
 // not refused PROJECT_SCOPE.
 func TestEveryProjectRouteAnswersAPrivateProjectsObjectAsAMissingOne(t *testing.T) {
 	t.Parallel()
-	rig := newPrivateProjectRig(t, testServerOptions{})
+	tracer := &poolStatements{}
+	rig := newPrivateProjectRig(t, testServerOptions{tracer: tracer})
 	type objects struct {
 		route, method string
 		held          []string
 		missing       string
 	}
 	var filed []objects
-	// The objects are filed while PRIV is public, so that each write below meets objects that
-	// exist, then PRIV is made private.
+	// These probes must refuse without changing state, so every route can use the same complete
+	// set of objects. Create them while PRIV is public. The naming-token pass below keeps fresh
+	// objects per route because its handlers may change them.
+	shared := rig.sweepMake(t, privateTestProject)
 	for _, route := range projectWriteRoutes() {
 		method, pattern, _ := strings.Cut(route, " ")
-		held, missing := rig.sweepMake(t, privateTestProject).targets(pattern)
+		held, missing := shared.targets(pattern)
 		if len(held) == 0 {
 			t.Errorf("%s names no kind of object that the walk knows", route)
 			continue
@@ -251,12 +254,27 @@ func TestEveryProjectRouteAnswersAPrivateProjectsObjectAsAMissingOne(t *testing.
 		filed = append(filed, objects{route, method, held, missing})
 	}
 	rig.makePrivate(t)
+	awaitBackgroundWrites(t, rig.served)
+	awaitSettledDocuments(t, rig.database)
+	// A row-count snapshot misses updates and deletes from uncounted tables. Audit every
+	// statement of each denied request, allowing only its credential's proof insert, and stop
+	// before another route can run on a shared object that a denied handler changed.
+	send := func(route, method, path string) sweepAnswer {
+		t.Helper()
+		from := tracer.count()
+		answer := rig.sweepSend(t, scopedToken, method, path)
+		for _, write := range writesIn(tracer.since(from)) {
+			if write != "insert dpop_proofs" {
+				t.Fatalf("%s at %s made %s for a token that does not name the private project", route, path, write)
+			}
+		}
+		return answer
+	}
 	refused := 0
 	for _, set := range filed {
-		before := rig.written(t)
-		absent := rig.sweepSend(t, scopedToken, set.method, set.missing)
+		absent := send(set.route, set.method, set.missing)
 		for _, path := range set.held {
-			got := rig.sweepSend(t, scopedToken, set.method, path)
+			got := send(set.route, set.method, path)
 			if got.status < http.StatusBadRequest {
 				t.Errorf("%s at %s by a token that does not name the private project: %d, want a refusal", set.route, path, got.status)
 			}
@@ -266,9 +284,6 @@ func TestEveryProjectRouteAnswersAPrivateProjectsObjectAsAMissingOne(t *testing.
 			if got.code == codeProjectScope {
 				refused++
 			}
-		}
-		if after := rig.written(t); after != before {
-			t.Errorf("%s changed %s to %s for a token that does not name the private project", set.route, before, after)
 		}
 	}
 	if refused == 0 {
