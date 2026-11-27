@@ -15,8 +15,8 @@ import { asUser } from "./users";
  * runs, what it runs on, its model, its thinking level, how full its window is and the one
  * question mark that holds the rules the page used to print - on one line at 1440 pixels, with a
  * long directory the one part that shortens. The line under the box says nothing until a press
- * is refused, and at a phone width the row scrolls sideways under a ring and a question mark
- * that keep the box's right edge.
+ * is refused, and at a phone width the row's facts wrap as groups beside a ring and a question
+ * mark that keep the box's right edge.
  *
  * The frames are spelt here as the wire carries them, never imported from the SPA or the
  * contracts, so the file runs unchanged against the commit before the change and each row fails
@@ -106,8 +106,8 @@ function footer(page: Page): Locator {
   return frontLiveView(page).getByTestId("agent-composer-footer");
 }
 
-/** The part of that row that scrolls sideways at a phone width: the ring and the question mark
- *  sit beside it, not in it. */
+/** The facts of that row, which wrap as groups at a phone width: the ring and the question mark
+ *  sit beside them, not in them. */
 function facts(page: Page): Locator {
   return footer(page).getByTestId("agent-composer-facts");
 }
@@ -232,8 +232,8 @@ test("the row under the message box holds the facts and the controls on one line
     for (const part of Object.values(parts)) {
       await expect(part).toBeVisible();
     }
-    // The ring and the question mark sit beside the scrolling facts, not inside them, so they
-    // keep the box's right edge at every width (the phone row below reads that).
+    // The ring and the question mark sit beside the facts, not inside them, so they keep the
+    // box's right edge at every width (the phone row below reads that).
     await expect(facts(page).getByTestId("agent-context-ring")).toHaveCount(0);
     await expect(facts(page).getByTestId("agent-help")).toHaveCount(0);
 
@@ -337,13 +337,12 @@ test("the question mark opens a panel naming what ! does, where a command runs a
   }
 });
 
-// R6. At a phone width the facts are wider than the screen, so they scroll sideways inside the
-// row while the ring and the question mark keep the box's right edge: a reader's thumb finds
-// both wherever the facts have been scrolled to. The page itself never scrolls sideways, at
-// either end of that scroll.
-// SLOW(>=2s): a live view opened on the session's replay at a phone width, then the row scrolled
-// and both edges measured before and after.
-test("at a phone width the row scrolls sideways under a ring and a question mark that keep the right edge @phone @phone-only", async ({
+// R6. At a phone width the facts are wider than one line of the row, so they wrap as groups
+// beside the ring and the question mark, which keep the box's right edge where a reader's thumb
+// finds them. Nothing scrolls sideways: not the facts, not the page.
+// SLOW(>=2s): a live view opened on the session's replay at a phone width, then the row's parts
+// measured.
+test("at a phone width the facts wrap beside a ring and a question mark that keep the right edge @phone @phone-only", async ({
   browser,
 }) => {
   await setLiveSessions([session(PHONE_ID, "Pocket")]);
@@ -354,27 +353,23 @@ test("at a phone width the row scrolls sideways under a ring and a question mark
     await page.goto(livePath(PHONE_ID));
     const row = footer(page);
     await expect(row).toBeVisible();
-    const scroller = facts(page);
+    const wrapped = facts(page);
     const ring = row.getByTestId("agent-context-ring");
     const question = row.getByTestId("agent-help");
 
-    // The facts are wider than the row gives them, which is what makes the row a scroller.
-    expect(await clipped(scroller)).toBe(true);
+    // The facts take more than one line and are cut nowhere: none of them scrolls the row.
+    expect(await clipped(wrapped)).toBe(false);
+    // One line would be as tall as its tallest part, the delivery picker; the facts are taller.
+    const delivery = await boxOf(row.getByTestId("agent-delivery-picker"));
+    const factsBox = await boxOf(wrapped);
+    expect(factsBox.height, "the facts wrapped onto a second line").toBeGreaterThan(
+      delivery.height + 1
+    );
     const rowBox = await boxOf(row);
-    const before = { question: await boxOf(question), ring: await boxOf(ring) };
-    expect(before.question.right).toBeLessThanOrEqual(rowBox.right);
-    expect(before.ring.right).toBeLessThanOrEqual(before.question.left);
-    await assertPageFits(page);
-
-    // Scrolled to the far end of the facts: the delivery mode has gone off the left of the row,
-    // and the ring and the question mark have not moved.
-    await scroller.evaluate((element) => {
-      element.scrollLeft = element.scrollWidth;
-    });
-    await expect.poll(() => scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-    const after = { question: await boxOf(question), ring: await boxOf(ring) };
-    expect(after.ring).toEqual(before.ring);
-    expect(after.question).toEqual(before.question);
+    const drawn = { question: await boxOf(question), ring: await boxOf(ring) };
+    expect(drawn.question.right).toBeLessThanOrEqual(rowBox.right);
+    expect(drawn.ring.right).toBeLessThanOrEqual(drawn.question.left);
+    expect(drawn.ring.left).toBeGreaterThanOrEqual(factsBox.right);
     await assertPageFits(page);
   } finally {
     await context.close();

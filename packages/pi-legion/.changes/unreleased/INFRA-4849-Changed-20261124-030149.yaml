@@ -7,8 +7,6 @@ body: |-
   parked-root walk does not find a `carried-gate-opened` decision.
   `legion-architect` names the backward move that undoes a `CHILD_UNDER_ACCEPTED_PARENT` refusal
   under an accepted root, and that an issue held at `admitted` does not hold a merged issue's close.
-  `legion-architect` and `legion-worker` name, beside `full-ci`, the `lane:` label that
-  `.github/workflows/ci.yaml` names for a held-back CI job.
   `legion-worker` no longer describes what an idle release of the pod keeps: the role prompt says
   it, and the skill's line that the next pod restores unpushed work was false.
 time: 2026-11-24T03:01:49Z
