@@ -21,6 +21,7 @@ import {
   type RoleClaimOutcome,
   taskWasAbandoned,
 } from "./registration-state";
+import { createRoleTopicFollows, type RoleTopicFollows, readRoleTopics } from "./role-topics";
 import type { SessionInbound } from "./session-inbound";
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
@@ -107,6 +108,8 @@ interface HarnessControl {
    *  the session has none, and can wait again after the dial. */
   connect: (dial: () => Promise<SessionInbound>) => Promise<SessionInbound>;
   subscribeTopic: (topic: string, connect: () => Promise<SessionInbound>) => Promise<boolean>;
+  /** The deployment's role topics, as the module reads them; a row that drives them replaces it. */
+  roleTopics: RoleTopicFollows;
 }
 
 interface Harness {
@@ -172,6 +175,12 @@ function createHarness(): Harness {
     // about the wait after the dial replaces this.
     connect: (dial) => dial(),
     subscribeTopic: async () => true,
+    // No deployment names a topic for a role unless a test gives this one topics
+    // (`createRoleTopicFollows`); the module's own rows drive it through the harness.
+    roleTopics: createRoleTopicFollows({
+      roleTopics: readRoleTopics(undefined),
+      follow: () => [],
+    }),
   };
 
   const client: EnvoyClient = {
@@ -216,6 +225,7 @@ function createHarness(): Harness {
       return control.subscribeTopic(topic, connect);
     },
     closeSubjects: (_sessionID, subjects) => closedSubjects.push(...subjects),
+    roleTopics: control.roleTopics,
   });
 
   return {

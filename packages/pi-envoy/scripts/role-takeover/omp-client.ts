@@ -28,6 +28,7 @@
  *   {"id":"3","op":"switch","session":"ses_b","reason":"fork"}
  *   {"id":"4","op":"heartbeat"}
  *   {"id":"5","op":"deliveries"}
+ *   {"id":"6","op":"entries"}
  *
  * `roles` replaces the session's branch with one `envoy-role-claim` entry per element (a string
  * is a claim, null a release), which is what a resumed or forked transcript carries; omitted, the
@@ -37,7 +38,9 @@
  * is under way, as a timer tick does; the smoke reads the pass's own calls at the proxy.
  * `deliveries` answers every message the extension handed the host, in order: each card it showed
  * (`pi.sendMessage`) and each user turn it started (`pi.sendUserMessage`), the two ways an Envoy
- * delivery reaches the session.
+ * delivery reaches the session. `entries` answers the session's branch as the extension wrote it,
+ * each `envoy-role-claim` record among them: a claim this process landed names its own client
+ * instance id, which a caller compares with the one the listener's role lookup names.
  */
 import { appendFileSync } from "node:fs";
 import type { PiApi } from "@legion/pi-shared/pi-types";
@@ -187,6 +190,8 @@ async function run(command: Command): Promise<Record<string, unknown>> {
         deliveries: [...messages],
         turns: userMessages.map((turn) => turn.content),
       };
+    case "entries":
+      return { entries: [...entries] };
     default:
       throw new Error(`unknown op ${command.op}`);
   }

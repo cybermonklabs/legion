@@ -12,6 +12,7 @@ import {
 } from "@legion/envoy-client/transport";
 import type { RoleRegainReason } from "@legion/pi-shared/role-claim-bridge";
 import { createHandBackLedger } from "./hand-back-ledger";
+import type { RoleTopicFollows } from "./role-topics";
 import type { SessionInbound } from "./session-inbound";
 
 /**
@@ -177,11 +178,14 @@ export interface RegistrationStateDeps {
    * staying with the extension, and takes them out of the listener's registry under
    * `sessionID` — the session the hold was under, empty when the module holds none, which the
    * host reads as its own open session. A role's end closes every notice subject a plugin
-   * opened while it was held, and those were registered while the role stood: a notice lane
-   * reaches a session from its own consumer alone, so they leave the session's consumer filter
-   * only by leaving the registry. Best-effort, and never awaited here.
+   * opened while it was held and every topic `roleTopics` followed for it, which were registered
+   * while the role stood: they reach a session from its own consumer alone, so they leave the
+   * session's consumer filter only by leaving the registry. Best-effort, and never awaited here.
    */
   readonly closeSubjects: (sessionID: string, subjects: readonly string[]) => void;
+  /** The topics the deployment names for the held role (`ENVOY_ROLE_TOPICS`): opened each time a
+   *  hold lands here, whichever path took it, and closed when the role ends. */
+  readonly roleTopics: RoleTopicFollows;
 }
 
 /**
@@ -460,14 +464,15 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   let inboundOpenFor = "";
 
   const heldRole = (): string | undefined => claimedRoleTopic?.slice(ROLE_TOPIC_PREFIX.length);
-  const isRoleBound = (subject: string): boolean => roleNoticeSubjects.has(subject);
+  const isRoleBound = (subject: string): boolean =>
+    roleNoticeSubjects.has(subject) || deps.roleTopics.has(subject);
 
   // The session stops holding its role: close the notice subjects it took for it, so a holder
   // another session replaced stops taking the role's wakes, and take them out of the listener's
   // registry with them.
   const endRole = (): void => {
     const held = claimedRoleSessionID ?? "";
-    const closed = [...roleNoticeSubjects];
+    const closed = [...new Set([...roleNoticeSubjects, ...deps.roleTopics.close()])];
     claimedRoleTopic = undefined;
     claimedRoleSessionID = undefined;
     roleEnds += 1;
@@ -480,6 +485,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     // even when its answer is lost: a hold of that session this process abandoned is its own
     // again, and the pass behind this registration sends the release.
     holds.adoptFor(input.sessionID);
+    deps.roleTopics.registered(input.topics);
     return deps
       .client()
       .subscribe({ ...input, clientInstanceID })
@@ -510,6 +516,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     if (movedOff !== undefined) endRole();
     claimedRoleTopic = topic;
     claimedRoleSessionID = sessionID;
+    deps.roleTopics.open(topic.slice(ROLE_TOPIC_PREFIX.length));
     recordClaim?.();
     if (movedOff !== undefined && previousHoldID) {
       await holds.handBackOrAbandon(movedOff, previousHoldID, {
@@ -606,6 +613,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         claimedRoleTopic = hold.topic;
         claimedRoleSessionID = hold.id;
         holdUnconfirmed = true;
+        deps.roleTopics.open(hold.topic.slice(ROLE_TOPIC_PREFIX.length));
         return true;
       });
       // Refused during the last hand-back, or at the break inside it: the restore this task made

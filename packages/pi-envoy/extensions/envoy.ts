@@ -19,7 +19,6 @@ import {
   slackTopicChannel,
   zodSchemaApi,
 } from "@legion/contracts";
-import { goBlankPattern } from "@legion/contracts/go-blank";
 import {
   type AskgateOwner,
   closeStore,
@@ -216,6 +215,7 @@ import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
+import { listenerRoleName } from "../src/listener-role-name";
 import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
@@ -236,6 +236,7 @@ import {
   type TaskHandle,
   taskWasAbandoned,
 } from "../src/registration-state";
+import { createRoleTopicFollows, ROLE_TOPICS_VAR, readRoleTopics } from "../src/role-topics";
 import { scrubbedConsole, scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
 import {
@@ -422,20 +423,6 @@ const sessionRoleLoggedStore = globalThis as unknown as GlobalSessionRoleLogged;
 // rows, as it clears the NATS stand-in above. Production callers never call this.
 export function resetSessionRoleLoggedForTests(): void {
   delete sessionRoleLoggedStore[SESSION_ROLE_LOGGED];
-}
-
-/**
- * A role's name as the listener reads a claim's: with the characters Go's `strings.TrimSpace`
- * takes trimmed from both ends, which is Go's set and not JavaScript's `trim` (`goBlankPattern`
- * says where the two differ).
- */
-function listenerRoleName(role: string): string {
-  const characters = [...role];
-  let start = 0;
-  let end = characters.length;
-  while (start < end && goBlankPattern.test(characters[start] ?? "")) start += 1;
-  while (end > start && goBlankPattern.test(characters[end - 1] ?? "")) end -= 1;
-  return characters.slice(start, end).join("");
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
@@ -2488,16 +2475,18 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // subject.
   const followed = new Set<string>();
 
-  // Follows `topic`; answers whether anything was added, so a caller registers only a change.
-  const follow = (topic: string): boolean => {
-    let added = false;
+  // Follows `topic`; answers each subject it newly followed, so a caller registers only a change
+  // and a role's topics are only those it added (`createRoleTopicFollows`).
+  const followNew = (topic: string): string[] => {
+    const added: string[] = [];
     for (const subject of expandSubscriptionTopics([topic])) {
       if (followed.has(subject)) continue;
       followed.add(subject);
-      added = true;
+      added.push(subject);
     }
     return added;
   };
+  const follow = (topic: string): boolean => followNew(topic).length > 0;
 
   // Stops following `topic`; false when the session did not follow it, so nothing closed.
   const unfollow = (topic: string): boolean => {
@@ -3409,6 +3398,14 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // the environment.
   const sessionRole = listenerRoleName(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
+  // The topics the deployment names for each role (`ENVOY_ROLE_TOPICS`), which the session holding
+  // that role follows for as long as it holds it, however it took it: a launch's role, a Legion
+  // claim, `envoy_role_set`. A pod's launch sets the variable, as it sets the role, so the session
+  // that takes the role after a relaunch follows them again. Read when the instance is created; a
+  // value it refuses is logged here and said at each session start, and no role follows any of it.
+  const roleTopics = readRoleTopics(process.env[ROLE_TOPICS_VAR]);
+  if (roleTopics.error !== undefined) logger.warn(`envoy: ${roleTopics.error}`);
+  const roleTopicFollows = createRoleTopicFollows({ roleTopics, follow: followNew });
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
   // named session's alone, so every other session is refused it, and with no session named every
   // session is. The name is read as the listener reads a claim's (`listenerRoleName`), so a padded
@@ -3499,13 +3496,17 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       const id = held === "" ? sessionID : held;
       if (subjects.length === 0 || id === "") return;
       void active?.client.unsubscribe({ sessionID: id, topics: subjects }).catch((error: unknown) =>
-        logger.warn("envoy: a role's notice subjects were not taken out of the registry", {
-          topics: subjects,
-          sessionID: id,
-          error: messageFor(error),
-        })
+        logger.warn(
+          "envoy: a role's notice subjects or topics were not taken out of the registry",
+          {
+            topics: subjects,
+            sessionID: id,
+            error: messageFor(error),
+          }
+        )
       );
     },
+    roleTopics: roleTopicFollows,
   });
 
   // Follows `topic` unless it served a role that has ended since `snapshot` was taken: a
@@ -3709,6 +3710,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         dropped?.push(...topics);
         if (sessionID !== registeringFor) return;
         const stillFollowed = topics.filter((topic) => followed.delete(topic));
+        // A role's topic the edge refused leaves the role's and is not followed again for it
+        // until the role ends, so `envoy_role_set` no longer names it and no heartbeat sends it.
+        roleTopicFollows.refuse(topics);
         if (stillFollowed.length === 0) return;
         ledgerFollowedChanged().catch((error: unknown) => {
           logger.warn(
@@ -3953,12 +3957,32 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // The topics the newest ledger state names come back too: the listener reaps a dead session's
     // interests after its grace, and the transcript still says what the session followed. A topic
     // it unfollowed is absent from that state. Agent and role subjects are never among them.
+    //
+    // One rule decides each registered or remembered topic, in this order:
+    //  - The role's: a topic the deployment names for a role (`ENVOY_ROLE_TOPICS`) that the
+    //    ledger does not remember as the session's own. A process that ended never closed it
+    //    (`session_shutdown` deregisters, and a kill runs nothing), so the row still holds it. It
+    //    is not followed here: the pass's claim of the role follows it again, and the pass
+    //    unregisters it once the session holds no role that follows it (`roleTopicsLeftOver`).
+    //  - Retired: a Slack topic in the daemon-launched controller.
+    //  - Followed again, so the registration that ends this pass carries it and the session's
+    //    consumer relays what the stream kept for it.
     const registry = await handle.readInterest(sessionID);
     const slackRetired = publishedInterface?.roleClaim.slackRoleOwned === true;
     const registered = registry?.topics ?? [];
-    const retired = slackRetired
-      ? registered.filter((topic) => slackTopicChannel(topic) !== undefined)
-      : [];
+    const remembered = rememberedSubjects(activeSessionContext?.sessionManager.getEntries() ?? []);
+    const own = new Set(remembered);
+    const fate = (topic: string): "role" | "retired" | "follow" =>
+      roleTopics.names(topic) && !own.has(topic)
+        ? "role"
+        : slackRetired && slackTopicChannel(topic) !== undefined
+          ? "retired"
+          : "follow";
+    roleTopicsLeftOver = {
+      session: sessionID,
+      topics: registered.filter((topic) => fate(topic) === "role"),
+    };
+    const retired = registered.filter((topic) => fate(topic) === "retired");
     // A step of this pass, so a pass the host left behind unregisters nothing: the listener keeps
     // the retired topics until the pass the move queued reads the registry itself. The failure is
     // this branch's to name: the step warns under the sentence it is handed.
@@ -3968,17 +3992,17 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         retired,
         "envoy: could not unregister a resumed controller's retired Slack topics"
       );
-    // The newest ledger state's topics (`rememberedTopics`), but a retired Slack topic. They are
-    // followed again, so the registration that ends this pass carries them and the session's
-    // consumer relays what the stream kept for them.
-    const remembered = rememberedSubjects(
-      activeSessionContext?.sessionManager.getEntries() ?? []
-    ).filter((topic) => !(slackRetired && slackTopicChannel(topic) !== undefined));
     for (const topic of new Set([...registered, ...remembered])) {
       if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
-      if (retired.includes(topic)) continue;
+      if (fate(topic) !== "follow") continue;
       await handle.subscribe(topic);
     }
+  };
+  // The role topics a resumed session's registry held that `recoverRegisteredInterests` left to
+  // the role's claim, for the pass that read them to unregister once it has settled the role.
+  let roleTopicsLeftOver: { readonly session: string; readonly topics: readonly string[] } = {
+    session: "",
+    topics: [],
   };
 
   // The newest role claim entry on `branch`, whatever process wrote it: the last one wins, since
@@ -4292,6 +4316,20 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         settleRole(context, host, cause, registration === undefined, move)
       )) ?? false;
     handle.check();
+    // The role topics this session's registry held when it resumed that no role it now holds
+    // followed again: taken out of the row, so its consumer stops relaying them and no later
+    // resume reads them as the session's own.
+    if (roleTopicsLeftOver.session === host) {
+      const leftOver = roleTopicsLeftOver.topics.filter((topic) => !followed.has(topic));
+      roleTopicsLeftOver = { session: "", topics: [] };
+      if (leftOver.length > 0) {
+        await handle.unregisterTopics(
+          host,
+          leftOver,
+          "envoy: could not unregister the role topics of a role this resumed session does not hold"
+        );
+      }
+    }
     // The role move above was the last call for every session this process has left, so each
     // one's key pair and token go now (`leftSessions`), whether or not the move decided, but for
     // a session a delivery still holds (`underWay`), which stays for the next pass. The session
@@ -4335,6 +4373,25 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   let unsettledPredecessor:
     | { readonly host: string; readonly role: string; readonly previous: string }
     | undefined;
+  // A hold that a role move landed followed topics the deployment names for its role
+  // (`ENVOY_ROLE_TOPICS`) that no registration has carried yet: register now, inside the move,
+  // so the session's consumer is filtered on them from the claim on rather than from the next
+  // heartbeat, which can be minutes away. The pass that claimed registered before its claim,
+  // since the listener takes no claim from a session it does not know. A registration that fails
+  // here leaves them followed, and every later registration carries them.
+  const registerRoleTopics = async (handle: TaskHandle, host: string): Promise<void> => {
+    if (!roleTopicFollows.owed()) return;
+    try {
+      await trackRegistration(host, sendRegistration(handle.register));
+    } catch (error) {
+      handle.check();
+      logger.warn("envoy: the held role's topics were not registered; the next heartbeat does it", {
+        role: registrationState.heldRole(),
+        sessionID: host,
+        error: messageFor(error),
+      });
+    }
+  };
 
   // The pass's role move: converge the role this process holds to the one the host session
   // should hold, for that session. It runs in its turn of the role moves, so a move the model or
@@ -4467,6 +4524,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         error: messageFor(error),
       });
     }
+    await registerRoleTopics(handle, host);
     handle.markRoleSettled(host);
     return true;
   };
@@ -4512,6 +4570,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       async (handle) => {
         handle.actFor(targetSessionID);
         await handle.claimRole(role, replaces ? { previousSessionID: replaces } : undefined);
+        await registerRoleTopics(handle, targetSessionID);
         return true;
       },
       (refusal) => {
@@ -4624,6 +4683,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     restoreLocalSessionState(context);
     lastHeard = context.sessionManager.getSessionId();
     if (startNotice !== "") context.ui.notify(`envoy: ${startNotice}`, "warning");
+    if (roleTopics.error !== undefined) context.ui.notify(`envoy: ${roleTopics.error}`, "warning");
     await askgateLoad;
     for (const notice of askgateNotices) context.ui.notify(`envoy: ${notice}`, "warning");
     if (!inbound) return;
@@ -5662,9 +5722,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
                 );
               }
               const claimed = await handle.claimRole(role);
+              await registerRoleTopics(handle, target);
               return {
                 released: moving ? held : undefined,
                 warnings: claimed.claimed ? claimed.warnings : [],
+                following: roleTopicFollows.subjects(),
               };
             },
             (refusal) => {
@@ -5675,20 +5737,31 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           // open one: the tool says so rather than report a role it never took, and says which
           // of the two the listener left behind.
           if (moved === undefined) throw sessionLeftDuringClaim(target, role, claimAdopted);
-          const { released, warnings } = moved;
+          const { released, warnings, following } = moved;
           // The listener's warnings about the claim, each logged where the claim landed
           // (`claimRole`), go to the agent too: a handover of the replaced session it did not make
-          // is something the agent that claimed must know.
+          // is something the agent that claimed must know. So does what this session now follows
+          // of the topics the deployment names for the role, for as long as it holds it, so the
+          // model knows why their messages arrive.
           const held =
             released === undefined
               ? `Now holding role: ${role}`
               : `Now holding role: ${role} (released role ${released})`;
           return toolSuccess(
-            [held, ...warnings.map((warning) => `Listener warning: ${warning}`)].join("\n"),
+            [
+              held,
+              ...(following.length === 0
+                ? []
+                : [
+                    `Following while it holds the role (${ROLE_TOPICS_VAR}): ${following.join(", ")}`,
+                  ]),
+              ...warnings.map((warning) => `Listener warning: ${warning}`),
+            ].join("\n"),
             {
               role,
               ...(released === undefined ? {} : { released }),
               ...(warnings.length === 0 ? {} : { warnings }),
+              ...(following.length === 0 ? {} : { following }),
             }
           );
         }
