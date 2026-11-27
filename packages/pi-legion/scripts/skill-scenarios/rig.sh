@@ -2781,8 +2781,9 @@ run_case_label() {
 cmd_check_stored() {
   [ $# -ge 2 ] || fail "usage: rig.sh check-stored <dir> <job log>..."
   local dir=$1 log line file name run object hex faults joined kase label form want problem fresh
-  local left=0 faulted=0 listed=0 unknown=0 uncovered=0 uncounted=0 status cells cell counts
-  local -A logged=() named=() conflict=() rowstored=() ran=() saw=() seen=() scored=()
+  local left=0 faulted=0 listed=0 unknown=0 uncovered=0 status cells shown cell counts clashing
+  local nocount=0 clashed=0 surplus=0 unrun=0
+  local -A logged=() named=() conflict=() rowstored=() ran=() saw=() seen=() scored=() clash_key=()
   local key outcome
   # A cell line of the Job's own names the case it ran and the count it ran that case to:
   # `scored-job <scenario> <group> <case>, label <label>: ... count <n>[;,]`. A Job runs each case
@@ -2908,19 +2909,48 @@ cmd_check_stored() {
     printf 'checked %s: rig error: %s\n' "$run" "$joined"
     faulted=$((faulted + 1))
   done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
+  # A case whose logs name two counts has no count of its own. One list holds those cases, and
+  # everything below reads it: they are left out of the counts, no cell of them is printed or
+  # counted UNKNOWN, and each says so in its own line. Taking either number, or falling back to
+  # the form's runs, would make the printed cell and the UNKNOWN count depend on the order the
+  # logs were given in, which is what this rule refuses.
+  for key in "${!ran[@]}"; do
+    [ "${saw[$key]}" != "${ran[$key]}" ] || continue
+    clash_key[$key]=1
+  done
   counts=$(
-    for key in "${!ran[@]}"; do printf '%s\t%s\n' "$key" "${ran[$key]}"; done |
+    for key in "${!ran[@]}"; do
+      [ -z "${clash_key[$key]:-}" ] || continue
+      printf '%s\t%s\n' "$key" "${ran[$key]}"
+    done |
       jq -R -s 'split("\n") | map(select(length > 0) | split("\t")) |
         map({key: (.[0] + "\t" + .[1]), value: (.[2] | tonumber)}) | from_entries'
   )
+  clashing=$(
+    for key in "${!clash_key[@]}"; do
+      printf '%s\n' "$key"
+    done |
+      jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {label: .[0], case: .[1]})'
+  )
   cells=$(bun "$here/score.ts" cells "$dir/checked" owner-walk "$counts")
   status=$?
-  [ -z "$cells" ] || printf '%s\n' "$cells"
+  # The cover check below reads every cell cells() made; the reading prints, and counts as
+  # UNKNOWN, only the cells of cases that have one count.
+  shown=$(
+    printf '%s\n' "$cells" | while IFS= read -r cell; do
+      [ -n "$cell" ] || continue
+      jq -e -n --argjson cell "$cell" --argjson clashing "$clashing" \
+        '[$clashing[] | . as $key | select($cell.label == $key.label and ($cell.cell | endswith("/" + $key.case)))] | length > 0' >/dev/null &&
+        continue
+      printf '%s\n' "$cell"
+    done
+  )
+  [ -z "$shown" ] || printf '%s\n' "$shown"
   [ "$status" = 0 ] || return "$status"
   while IFS= read -r cell; do
     [ -n "$cell" ] || continue
     [ "$(jq -r .verdict <<<"$cell")" != UNKNOWN ] || unknown=$((unknown + 1))
-  done <<<"$cells"
+  done <<<"$shown"
   # Every case the Job ran must have a cell. A run reaches no cell when its directory holds no
   # world.json, which every rig error of this check does, and scored_rig_error's runs do too: so a
   # Job none of whose runs reached a cell prints no cell line at all, and counting UNKNOWN cells
@@ -2937,10 +2967,10 @@ cmd_check_stored() {
     [ "$outcome" != scored ] || scored[$key]=$((${scored[$key]:-0} + 1))
     if [ -z "${ran[$key]:-}" ]; then
       echo "UNKNOWN: the Job's logs name no count for $label $kase, so its cell is measured against nothing"
-      uncounted=$((uncounted + 1))
-    elif [ "${saw[$key]}" != "${ran[$key]}" ]; then
-      echo "UNKNOWN: $label $kase: the Job's logs name the counts $(sorted_counts "${saw[$key]}") for it, so no count of its own decides it"
-      uncounted=$((uncounted + 1))
+      nocount=$((nocount + 1))
+    elif [ -n "${clash_key[$key]:-}" ]; then
+      echo "UNKNOWN: $label $kase: the Job's logs name the counts $(sorted_counts "${saw[$key]}") for it, so no count of its own decides it, and no cell of it is read"
+      clashed=$((clashed + 1))
     fi
     # cells() keys a control form's cell by the form, every other by the case.
     jq -e -n --slurpfile cell <(printf '%s\n' "$cells") --arg label "$label" --arg case "$kase" --arg form "$form" \
@@ -2957,16 +2987,19 @@ cmd_check_stored() {
   for key in "${!ran[@]}"; do
     if [ -z "${seen[$key]:-}" ]; then
       echo "UNKNOWN: the Job's logs name the count $(sorted_counts "${saw[$key]}") for ${key/$'\t'/ }, and no run of it is in the download or the logs"
-      uncounted=$((uncounted + 1))
-    elif [ "${saw[$key]}" != "${ran[$key]}" ]; then
+      unrun=$((unrun + 1))
+    elif [ -n "${clash_key[$key]:-}" ]; then
       continue
     elif [ "${scored[$key]:-0}" -gt "${ran[$key]}" ]; then
       echo "UNKNOWN: ${key/$'\t'/ }: the Job's logs name the count ${ran[$key]}, and the store holds ${scored[$key]} scored runs of it, so $((${scored[$key]} - ${ran[$key]})) of them would be dropped"
-      uncounted=$((uncounted + 1))
+      surplus=$((surplus + 1))
     fi
   done
-  if [ "$faulted" != 0 ] || [ "$left" != 0 ] || [ "$unknown" != 0 ] || [ "$uncovered" != 0 ] || [ "$uncounted" != 0 ]; then
-    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, $unknown cells are UNKNOWN at the counts the Job ran, $uncovered runs are in no cell, and $uncounted runs are of a case the logs name no count for"
+  # Each kind of fault is counted by its own name: four of them would otherwise share one
+  # sentence, and a reader of this line could not tell which rule fired.
+  if [ "$faulted" != 0 ] || [ "$left" != 0 ] || [ "$unknown" != 0 ] || [ "$uncovered" != 0 ] ||
+    [ "$nocount" != 0 ] || [ "$clashed" != 0 ] || [ "$surplus" != 0 ] || [ "$unrun" != 0 ]; then
+    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, $unknown cells are UNKNOWN at the counts the Job ran, $uncovered runs are in no cell, $nocount runs are of a case the logs name no count for, $clashed runs are of a case whose logs name two counts, $surplus cases hold scored runs beyond their count, and $unrun cases a cell line names have no run"
     return 1
   fi
 }

@@ -3443,7 +3443,12 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     );
     const work = freshDir("restore-two-rows");
     const differs = restore(work, store.bin);
-    expect({ code: differs.code, stderr: differs.stderr.trim().split("\n").at(-1) }).toEqual({
+    expect({
+      rule: "restore-same-row",
+      code: differs.code,
+      stderr: differs.stderr.trim().split("\n").at(-1),
+    }).toEqual({
+      rule: "restore-same-row",
       code: 1,
       stderr: `skill-scenarios: runs/${run(3)}.tar.gz's row.json is not the row stored beside it`,
     });
@@ -3523,7 +3528,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       code: 1,
       line: `checked ${run(2)}: rig error: ${fault}`,
       // Run 2 is in no cell, but run 1 of its case is, so the case is covered and no run counts here.
-      last: "check-stored: 1 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, and 0 runs are of a case the logs name no count for",
+      last: "check-stored: 1 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 runs are of a case the logs name no count for, 0 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
     const row = JSON.parse(readFileSync(path.join(changed, "checked", run(2), "row.json"), "utf8"));
     expect(row).toEqual({
@@ -3622,9 +3627,11 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     });
     const unstored = check(planted9);
     expect({
+      rule: "no-stored-line",
       code: unstored.code,
       said: unstored.stdout.filter((line) => line.startsWith(`checked ${run(9)}:`)),
     }).toEqual({
+      rule: "no-stored-line",
       code: 1,
       said: [
         `checked ${run(9)}: rig error: runs/${run(9)}.row.json has no stored line in the Job's logs`,
@@ -3718,7 +3725,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         `UNKNOWN: ${run(6)}.row.json in ${extra}/runs is no run's object: it is left out`,
         `UNKNOWN: ${run(7)}.tar.gz in ${extra}/runs is no run's object: it is left out`,
       ],
-      last: "check-stored: 0 of 2 runs are rig errors of the store, 5 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, and 0 runs are of a case the logs name no count for",
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 5 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 runs are of a case the logs name no count for, 0 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
 
     // A pack with no row beside it and no line in any log: its run is named by the pack, and is a
@@ -3766,7 +3773,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         () =>
           "UNKNOWN: the Job's logs name no count for head root-B-claude, so its cell is measured against nothing"
       ),
-      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, and 2 runs are of a case the logs name no count for",
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 2 runs are of a case the logs name no count for, 0 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
 
     // Two logs naming different counts for one case: a contradiction, not a tie the order of the
@@ -3779,31 +3786,49 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       readFileSync(log, "utf8").replace(cellLine("root-B-claude", 2), cellLine("root-B-claude", 1))
     );
     const clash =
-      "UNKNOWN: head root-B-claude: the Job's logs name the counts 1 and 2 for it, so no count of its own decides it";
-    for (const order of [
+      "UNKNOWN: head root-B-claude: the Job's logs name the counts 1 and 2 for it, so no count of its own decides it, and no cell of it is read";
+    // One download read both ways round, and the WHOLE of each reading compared: a row that
+    // compares a subset of the output cannot see a difference outside that subset, and the
+    // printed cell and the UNKNOWN count had been the last log's while the exit was not.
+    const both = download();
+    const orders = [
       [one, log],
       [log, one],
-    ]) {
-      const read = check(download(), ...order);
-      expect({
-        order: order.map((name) => path.basename(name)),
-        code: read.code,
-        said: read.stdout.filter((line) => line.startsWith("UNKNOWN:")),
-      }).toEqual({
-        order: order.map((name) => path.basename(name)),
-        code: 1,
-        said: [clash, clash],
-      });
-    }
+    ].map((order) => check(both, ...order));
+    expect({ rule: "clash-order", code: orders[0]?.code, stderr: orders[0]?.stderr }).toEqual({
+      rule: "clash-order",
+      code: 1,
+      stderr: orders[1]?.stderr,
+    });
+    expect({ rule: "clash-order", stdout: orders[0]?.stdout }).toEqual({
+      rule: "clash-order",
+      stdout: orders[1]?.stdout ?? [],
+    });
+    // No cell of the disagreeing case is read, so no cell line is printed and none is UNKNOWN.
+    expect({
+      rule: "clash-read",
+      code: orders[0]?.code,
+      said: orders[0]?.stdout.filter((line) => line.startsWith("UNKNOWN:")),
+      cells: orders[0]?.stdout.filter((line) => line.startsWith("{")),
+      last: orders[0]?.stdout.at(-1),
+    }).toEqual({
+      rule: "clash-read",
+      code: 1,
+      said: [clash, clash],
+      cells: [],
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 runs are of a case the logs name no count for, 2 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+    });
 
     // Scored runs beyond the count: the cell takes its first `count` scored runs, so the rest
     // would be dropped with nothing said, which is the fault the per-case count exists to stop.
     // Named, not inferred from the exit.
     const low = check(download(), one);
     expect({
+      rule: "surplus",
       code: low.code,
       said: low.stdout.filter((line) => line.includes("would be dropped")),
     }).toEqual({
+      rule: "surplus",
       code: 1,
       said: [
         "UNKNOWN: head root-B-claude: the Job's logs name the count 1, and the store holds 2 scored runs of it, so 1 of them would be dropped",
@@ -3839,10 +3864,11 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     );
     const honest = check(failedFirst, oneScored);
     expect({
+      rule: "scored-only",
       code: honest.code,
       said: honest.stdout.filter((line) => line.startsWith("UNKNOWN:")),
       stderr: honest.stderr.includes(`${run(1)}: no world.json`),
-    }).toEqual({ code: 0, said: [], stderr: true });
+    }).toEqual({ rule: "scored-only", code: 0, said: [], stderr: true });
 
     // A cell line naming a case no run of which is in the download or the logs: measured by
     // nothing, and said so by name.
@@ -3850,9 +3876,11 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     writeFileSync(absent, `${readFileSync(log, "utf8")}${cellLine("child-B-claude", 3)}`);
     const unrun = check(download(), absent);
     expect({
+      rule: "unrun",
       code: unrun.code,
       said: unrun.stdout.filter((line) => line.includes("no run of it is in")),
     }).toEqual({
+      rule: "unrun",
       code: 1,
       said: [
         "UNKNOWN: the Job's logs name the count 3 for head child-B-claude, and no run of it is in the download or the logs",
@@ -3893,9 +3921,11 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     writeFileSync(threeLog, `${readFileSync(log, "utf8")}${storedLines(twoRows, 3)}`);
     const notSame = check(twoRows, threeLog);
     expect({
+      rule: "same-row",
       code: notSame.code,
       said: notSame.stdout.filter((line) => line.startsWith(`checked ${run(3)}:`)),
     }).toEqual({
+      rule: "same-row",
       code: 1,
       said: [
         `checked ${run(3)}: rig error: runs/${run(3)}.tar.gz's row.json is not the row stored beside it`,
@@ -3926,9 +3956,11 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     writeFileSync(noLine, cStored.stdout);
     const cUncounted = check(cDownload, noLine);
     expect({
+      rule: "uncounted",
       code: cUncounted.code,
       said: cUncounted.stdout.filter((line) => line.startsWith("UNKNOWN:")),
     }).toEqual({
+      rule: "uncounted",
       code: 1,
       said: [
         "UNKNOWN: the Job's logs name no count for head root-C-claude, so its cell is measured against nothing",
@@ -3937,7 +3969,13 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     const withLine = path.join(cPod, "cell-line.log");
     writeFileSync(withLine, `${cStored.stdout}${cellLine("root-C-claude", 1)}`);
     const cNamed = check(cDownload, withLine);
-    expect({ code: cNamed.code, first: cNamed.stdout[0], stderr: cNamed.stderr }).toEqual({
+    expect({
+      rule: "uncounted",
+      code: cNamed.code,
+      first: cNamed.stdout[0],
+      stderr: cNamed.stderr,
+    }).toEqual({
+      rule: "uncounted",
       code: 0,
       first: `checked ${cName}: as stored`,
       stderr: "",
@@ -4027,7 +4065,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         () =>
           "UNKNOWN: no cell covers head child-B-claude: its runs are in none, so nothing was measured of it"
       ),
-      last: "check-stored: 0 of 5 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 3 runs are in no cell, and 0 runs are of a case the logs name no count for",
+      last: "check-stored: 0 of 5 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 3 runs are in no cell, 0 runs are of a case the logs name no count for, 0 runs are of a case whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
 
     // A control form's run is covered by its form's cell, not by a cell of its case: cells() keys
@@ -4055,6 +4093,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     });
     const covered = check(controlled, controlLog);
     expect({
+      rule: "control-cell",
       code: covered.code,
       uncovered: covered.stdout.filter((line) => line.startsWith("UNKNOWN: no cell covers")),
       // A control's cell line ends its count with a comma, a case form's with a semicolon: both
@@ -4067,6 +4106,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         .map((line) => JSON.parse(line))
         .map(({ cell, count }) => [cell, count]),
     }).toEqual({
+      rule: "control-cell",
       code: 1,
       uncovered: [],
       uncounted: [],
