@@ -35,14 +35,7 @@ import {
 import { literal } from "./dashboard-support";
 import { documentEditor } from "./editor";
 import { drawer, peekTrigger } from "./inbox-drawer";
-import {
-  backToList,
-  inboxPane,
-  inboxRow,
-  readingView,
-  selectedRow,
-  selectRow,
-} from "./inbox-pane";
+import { backToList, inboxPane, inboxRow, readingView, selectedRow, selectRow } from "./inbox-pane";
 import { inboxAt } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
 import { specBlockRef } from "./issue-layout-seed-text";
