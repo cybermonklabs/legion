@@ -55,6 +55,10 @@ async function recordLeg(root: string, leg: string, blobs: string): Promise<void
     cwd: join(root, "packages/dispatch"),
     env: {
       ...process.env,
+      // `bun test --parallel`, which the package's test script runs, sets JEST_WORKER_ID in its
+      // workers, and Playwright refuses to declare a row while it is set ("Playwright Test needs
+      // to be invoked via 'npx playwright test' and excluded from Jest test runs").
+      JEST_WORKER_ID: undefined,
       PLAYWRIGHT_BLOB_OUTPUT_DIR: own,
       PLAYWRIGHT_BLOB_OUTPUT_NAME: `report-${leg}.zip`,
     },
