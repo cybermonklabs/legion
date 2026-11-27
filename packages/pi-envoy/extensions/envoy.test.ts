@@ -4249,6 +4249,66 @@ describe("envoy OMP extension", () => {
     ]);
   });
 
+  // A claim can land and still hand over none of the messages of the session it replaces, and the
+  // listener says so in the answer's warnings. The agent that ran `envoy_role_set` reads each in
+  // the tool's result, and the log holds each at warn level with the role and the session.
+  test("envoy_role_set logs each of the listener's warnings about the claim and returns them to the agent", async () => {
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const legacy = "controller is the old form of ACME.controller; claim ACME.controller";
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/roles/set") {
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as { readonly role?: string };
+        return response({
+          session_id: "ses_omp",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: [`notifications.role.${body.role ?? ""}`],
+          warnings: [legacy, handover],
+        });
+      }
+      if (url.pathname === "/v1/interests/subscribe") {
+        return response({
+          session_id: "ses_omp",
+          machine_id: "test",
+          dir: "/tmp",
+          topics: ["notifications.agent.ses_omp"],
+          delivery: consumerDelivery("ses_omp", { streamID: TEST_STREAM_ID }),
+        });
+      }
+      if (url.pathname === "/v1/sessions") return response([]);
+      return response({ session_id: "ses_omp", machine_id: "test", dir: "/tmp", topics: [] });
+    };
+    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts");
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext());
+    const roleSet = fixture.tools.find((tool) => tool.name === "envoy_role_set");
+    if (roleSet === undefined) throw new Error("envoy_role_set was not registered");
+    const warnings: { readonly message: string; readonly context?: unknown }[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
+    });
+    const result = await roleSet.execute("", { role: "controller" }).finally(stopSink);
+    expect(result.content[0]?.text).toBe(
+      `Now holding role: controller\nListener warning: ${legacy}\nListener warning: ${handover}`
+    );
+    expect(result.details).toEqual({ role: "controller", warnings: [legacy, handover] });
+    expect(
+      warnings.filter(({ message }) => message === "envoy: the listener warned about a role claim")
+    ).toEqual([
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "controller", sessionID: "ses_omp", warning: legacy },
+      },
+      {
+        message: "envoy: the listener warned about a role claim",
+        context: { role: "controller", sessionID: "ses_omp", warning: handover },
+      },
+    ]);
+  });
+
   // No live session holds the role, so the listener kept the message for one hour and answered
   // 202 with kept_until, the end of that hour. The tool must not read that as a failure, and it
   // tells the sender until when the copy waits and what comes if no session takes it: a message
@@ -7570,6 +7630,51 @@ console.log(JSON.stringify(args));
     expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
   });
 
+  // Contract entry 20261125170509: a Legion claim names the session it replaces, as the daemon's registration
+  // names it, and the bridge sends that session as the claim's `previous_session_id` on a claim
+  // that stays hard (a Legion claim is last-claim-wins), so the listener hands that session's
+  // unread messages to this one. A claim naming none, or an empty one, sends no such key.
+  test("a Legion role claim naming the session it replaces sends it as previous_session_id on a hard claim", async () => {
+    const role = "legion-omp-repo-1-implementer";
+    const roleClaims: Record<string, unknown>[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/roles/set") {
+        roleClaims.push(JSON.parse(init?.body?.toString() ?? "{}") as Record<string, unknown>);
+        return response({
+          session_id: "ses_replacing",
+          machine_id: "test",
+          dir: "/tmp/envoy-omp-test",
+          topics: [`notifications.role.${role}`],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    // A copy of the extension of this test's own, as every row here imports: its module state
+    // starts empty, which a static import shared by the file could not give.
+    const { default: envoyExtension } = await import("./envoy.ts?role-claim-replaces");
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const context = sessionContext("ses_replacing");
+    await fixture.handlers.get("session_start")?.({}, context);
+
+    await claimEnvoyRole("ses_replacing", role, context, "ses_replaced");
+    await claimEnvoyRole("ses_replacing", role, context);
+    await claimEnvoyRole("ses_replacing", role, context, "");
+
+    const instance = expect.any(String);
+    expect(roleClaims).toEqual([
+      {
+        session_id: "ses_replacing",
+        role,
+        previous_session_id: "ses_replaced",
+        client_instance_id: instance,
+      },
+      { session_id: "ses_replacing", role, client_instance_id: instance },
+      { session_id: "ses_replacing", role, client_instance_id: instance },
+    ]);
+  });
+
   // INFRA-771: a session takes its messages from its own consumer, whose filter is the topics it
   // registered, so the controller's notice lane and its Slack mention topics have to be in the
   // registration while it holds the role — on the base they came in on a core subscription this
@@ -8046,6 +8151,8 @@ console.log(JSON.stringify(args));
     const claims: string[] = [];
     // Each claim as `<role>@<session it was sent for>`.
     const claimSessions: string[] = [];
+    // Each claim's `previous_session_id`, `undefined` for a claim that names none.
+    const claimPredecessors: (string | undefined)[] = [];
     const handedBack: string[] = [];
     let gated: { role: string; reached: () => void; release: Promise<void> } | undefined;
     let registered: { session: string; seen: () => void } | undefined;
@@ -8073,6 +8180,9 @@ console.log(JSON.stringify(args));
       | undefined;
     // While positive, each claim fails with a 500 (the client retries a failure once).
     let failingClaims = 0;
+    // While positive, each claim that names a previous session stands and is then answered 503,
+    // as a listener whose handover record did not store answers it (the client retries once).
+    let unstoredHandovers = 0;
     // While positive, each hand-back fails with a 500 before the listener acts on it.
     let failingHandBacks = 0;
     // Runs as the listener takes a hand-back (an unsubscribe), before it answers.
@@ -8111,6 +8221,9 @@ console.log(JSON.stringify(args));
         const claimant = body?.session_id;
         claims.push(claimed);
         claimSessions.push(`${claimed}@${claimant}`);
+        claimPredecessors.push(
+          typeof body?.previous_session_id === "string" ? body.previous_session_id : undefined
+        );
         if (failingClaims > 0) {
           failingClaims -= 1;
           return new Response(JSON.stringify({ error: "listener failed" }), { status: 500 });
@@ -8148,6 +8261,13 @@ console.log(JSON.stringify(args));
         if (typeof body?.client_instance_id === "string") {
           holderInstances.set(claimed, body.client_instance_id);
         } else holderInstances.delete(claimed);
+        if (unstoredHandovers > 0 && typeof body?.previous_session_id === "string") {
+          unstoredHandovers -= 1;
+          return new Response(JSON.stringify({ error: "handover record not stored" }), {
+            status: 503,
+            headers: { "Retry-After": "1" },
+          });
+        }
         return response({
           session_id: claimant,
           machine_id: "test",
@@ -8373,6 +8493,9 @@ console.log(JSON.stringify(args));
     const failClaims = (count: number) => {
       failingClaims = count;
     };
+    const unstoreHandovers = (count: number) => {
+      unstoredHandovers = count;
+    };
     const failHandBacks = (count: number) => {
       failingHandBacks = count;
     };
@@ -8386,6 +8509,7 @@ console.log(JSON.stringify(args));
       roleTool,
       claims,
       claimSessions,
+      claimPredecessors,
       handedBack,
       holders,
       holderInstances,
@@ -8408,6 +8532,7 @@ console.log(JSON.stringify(args));
       gateHandBack,
       holdRegistration,
       failClaims,
+      unstoreHandovers,
       failHandBacks,
       failRoleReads,
       onHandBack: (hook: () => void) => {
@@ -8861,6 +8986,51 @@ console.log(JSON.stringify(args));
     // The start's reclaim was overtaken and continued no one, so the fork names the start itself.
     expect(claimSessions).toEqual(["legion-controller@ses_rs_fork"]);
     expect(holders.get("legion-controller")).toBe("ses_rs_fork");
+  });
+
+  // A soft claim that names its predecessor and is answered 503 stood at the listener, which did
+  // not store its handover record. The next pass names that predecessor again, though the
+  // listener's holder read names this session by then: a claim that named none would leave the
+  // predecessor's unread messages where only it reads them.
+  test("a soft claim answered 503 names the same predecessor again at the next pass", async () => {
+    const {
+      fixture,
+      live,
+      claimPredecessors,
+      holders,
+      started,
+      startReached,
+      releaseStart,
+      unstoreHandovers,
+      tick,
+      nextRegistration,
+    } = await gatedRoleFixture("predecessor-after-503", "ses_p5", {
+      claimAtStart: false,
+      transcriptRole: "legion-controller",
+      holdStart: true,
+    });
+    // As above, the fork overtakes the resumed start and names it, read off the listener's
+    // holder; the claim stands, and both its sends are answered 503.
+    await startReached;
+    unstoreHandovers(2);
+    const forked = fixture.handlers.get("session_switch")?.(
+      { reason: "fork" },
+      live("ses_p5_fork")
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseStart();
+    await started;
+    await forked;
+    expect(claimPredecessors).toEqual(["ses_p5", "ses_p5"]);
+    expect(holders.get("legion-controller")).toBe("ses_p5_fork");
+    const tickRegistered = nextRegistration("ses_p5_fork");
+    tick();
+    await tickRegistered;
+    for (let step = 0; step < 10; step += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(claimPredecessors).toEqual(["ses_p5", "ses_p5", "ses_p5"]);
+    expect(holders.get("legion-controller")).toBe("ses_p5_fork");
   });
 
   // A session can be overtaken at any point of its establishment: before it begins, at its

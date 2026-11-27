@@ -4346,6 +4346,16 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // only its role ends carry a warning.
   let lastHeard = "";
 
+  // The predecessor a soft claim named when the claim threw, for the host session and role it
+  // claimed: a `503` the listener answers when the claim stood but its handover record did not
+  // store, or a failure that left the claim's outcome unknown. The next claim of that role for
+  // that session names it again. Once the claim stands, the listener names this session the role's
+  // holder, so a predecessor read off that holder would name none, and the listener would never
+  // write the handover record that hands this session the predecessor's unread messages.
+  let unsettledPredecessor:
+    | { readonly host: string; readonly role: string; readonly previous: string }
+    | undefined;
+
   // The pass's role move: converge the role this process holds to the one the host session
   // should hold, for that session. It runs in its turn of the role moves, so a move the model or
   // a plugin made meanwhile is in the transcript by then, and it reads nothing until that turn. A
@@ -4433,13 +4443,22 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // holder that is another session is stale (an evicted pod's session the registry still lists
     // as live for minutes) or wrong, and a soft claim would leave the role with it. Every other
     // claim is soft and may supersede this process's own hold of the role, wherever the listener
-    // names it, or else whichever session the host session continues the listener names (a
-    // fork's hold from this process or an earlier one).
+    // names it, or else the predecessor a claim of this role for this session named when it threw
+    // (`unsettledPredecessor`), or else whichever session the host session continues the listener
+    // names (a fork's hold from this process or an earlier one).
     const holdID = registrationState.holdSessionID();
     let supersedes =
       registrationState.heldRole() === desired && holdID !== undefined && holdID !== ""
         ? holdID
         : undefined;
+    if (
+      !launched &&
+      supersedes === undefined &&
+      unsettledPredecessor?.host === host &&
+      unsettledPredecessor.role === desired
+    ) {
+      supersedes = unsettledPredecessor.previous;
+    }
     const lineage = continuedBy(host);
     if (!launched && supersedes === undefined && lineage.length > 1) {
       const holder = await handle.readRoleHolder(desired);
@@ -4450,8 +4469,14 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         desired,
         launched ? {} : { soft: true, previousSessionID: supersedes }
       );
-      if (claimed && unheard) handle.noteNoticesClosed(desired);
+      if (unsettledPredecessor?.host === host && unsettledPredecessor.role === desired) {
+        unsettledPredecessor = undefined;
+      }
+      if (claimed.claimed && unheard) handle.noteNoticesClosed(desired);
     } catch (error) {
+      if (!launched && supersedes !== undefined) {
+        unsettledPredecessor = { host, role: desired, previous: supersedes };
+      }
       // This catch would otherwise swallow a step the handle refused: the check says so instead.
       // A move that was refused decided nothing, and the move or pass that replaced it does.
       // That is not a failure to report.
@@ -4478,8 +4503,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     );
 
   // The bridge's state is read through `legionRoleClaimBridge()` at each use; only the instance
-  // list is this instance's own entry on the object it published into.
-  const claim: LegionRoleClaim = async (targetSessionID, role, callerContext) => {
+  // list is this instance's own entry on the object it published into. `replaces`, the session
+  // the Legion registration says this one replaces, goes out as the claim's `previousSessionID`,
+  // which the listener reads as the session whose unread direct and role messages it hands to
+  // this one. The claim stays a hard one either way: a Legion claim is last-claim-wins.
+  const claim: LegionRoleClaim = async (targetSessionID, role, callerContext, replaces) => {
     const context = callerContext ?? activeSessionContext;
     if (context === undefined || context.sessionManager.getSessionId() !== targetSessionID) {
       throw new Error(`Envoy has no active session for Legion role claim: ${targetSessionID}`);
@@ -4503,7 +4531,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     const claimed = await registrationState.roleMoves.run(
       async (handle) => {
         handle.actFor(targetSessionID);
-        await handle.claimRole(role);
+        await handle.claimRole(role, replaces ? { previousSessionID: replaces } : undefined);
         return true;
       },
       (refusal) => {
@@ -5653,8 +5681,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
                   `This session holds role ${held}, and ${bound.join(", ")} lasts only while it does; envoy_role_set does not move it to ${role}`
                 );
               }
-              await handle.claimRole(role);
-              return { released: moving ? held : undefined };
+              const claimed = await handle.claimRole(role);
+              return {
+                released: moving ? held : undefined,
+                warnings: claimed.claimed ? claimed.warnings : [],
+              };
             },
             (refusal) => {
               claimAdopted = refusal.claimAdopted;
@@ -5664,12 +5695,21 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           // open one: the tool says so rather than report a role it never took, and says which
           // of the two the listener left behind.
           if (moved === undefined) throw sessionLeftDuringClaim(target, role, claimAdopted);
-          const { released } = moved;
-          return toolSuccess(
+          const { released, warnings } = moved;
+          // The listener's warnings about the claim, each logged where the claim landed
+          // (`claimRole`), go to the agent too: a handover of the replaced session it did not make
+          // is something the agent that claimed must know.
+          const held =
             released === undefined
               ? `Now holding role: ${role}`
-              : `Now holding role: ${role} (released role ${released})`,
-            { role, ...(released === undefined ? {} : { released }) }
+              : `Now holding role: ${role} (released role ${released})`;
+          return toolSuccess(
+            [held, ...warnings.map((warning) => `Listener warning: ${warning}`)].join("\n"),
+            {
+              role,
+              ...(released === undefined ? {} : { released }),
+              ...(warnings.length === 0 ? {} : { warnings }),
+            }
           );
         }
         case EnvoyToolOperation.getRole: {
