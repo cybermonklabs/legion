@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // selfHealthTicks is how long a test waits for the self-health monitor to have acted on a missing
@@ -60,11 +61,15 @@ func (a restartAnswer) String() string {
 
 // probeRestart sends method path with body to the listener on port, as callListener does, and
 // answers what came back by deadline, or the failure, which it does not end the test over: a
-// start that has not served yet is a probe that read nothing, which the caller judges.
-func probeRestart(t *testing.T, port int, deadline time.Time, method, path, body string) restartAnswer {
+// start that has not served yet is a probe that read nothing, which the caller judges. The
+// request's context is parent's (testwait.Context) cut to deadline, so it ends at whichever
+// comes first, and probeRestart also answers how long the request had to its end.
+func probeRestart(t *testing.T, parent context.Context, port int, deadline time.Time, method, path, body string) (restartAnswer, time.Duration) {
 	t.Helper()
-	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	ctx, cancel := context.WithDeadline(parent, deadline)
 	defer cancel()
+	end, _ := ctx.Deadline()
+	given := time.Until(end)
 	request, err := http.NewRequestWithContext(ctx, method, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
@@ -75,12 +80,12 @@ func probeRestart(t *testing.T, port int, deadline time.Time, method, path, body
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return restartAnswer{err: err}
+		return restartAnswer{err: err}, given
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(response.Body)
 	if err != nil {
-		return restartAnswer{err: err}
+		return restartAnswer{err: err}, given
 	}
 	answer := restartAnswer{code: response.StatusCode, body: string(raw)}
 	var health struct {
@@ -90,7 +95,7 @@ func probeRestart(t *testing.T, port int, deadline time.Time, method, path, body
 	if json.Unmarshal(raw, &health) == nil {
 		answer.status, answer.missing = health.Status, health.Missing
 	}
-	return answer
+	return answer, given
 }
 
 // requireBucketMissing fails the test unless the server js reaches holds no bucket named bucket.
@@ -182,23 +187,27 @@ func TestACopiedBucketDeletedUnderARunningListenerStaysMissing(t *testing.T) {
 	// bucket logs no such line, and a wait for it would end the test before any of the checks
 	// below ran. Each pass reads the bucket first, so such a start fails there, naming the bucket
 	// it created. Each request is bounded by what is left of the 30 s the start has to answer 503
-	// "waiting" (probeRestart), so a start that never answers fails at that bound rather than at
-	// the test binary's timeout; a request the start does not answer before it first waits - no
-	// answer yet, or a transport error - is a probe that read nothing, and the pass is tried
-	// again; and a start that exits fails the test, naming its exit. Once it has answered
-	// "waiting", it must go on answering it, and refusing a registration 503, for 10 s.
+	// "waiting", or 5 s once it has, and by the test binary's deadline less the margin, since every
+	// request takes its context from testwait.Context (probeRestart); so a start that never answers
+	// fails at that bound rather than at the test binary's timeout. A request the start does not
+	// answer before it first waits - no answer yet, or a transport error - is a probe that read
+	// nothing, and the pass is tried again; a start that exits fails the test, naming its exit.
+	// Once it has answered "waiting", it must go on answering it, and refusing a registration 503,
+	// for 10 s. Each pass logs what it read, so a run says which checks it reached.
 	restarted := startListenerProcess(t, binary, uri, "bucket-deleted-under")
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("the restarted listener's output:\n%s", restarted.Output.String())
 		}
 	})
-	bound := time.Now().Add(30 * time.Second)
-	if deadline, ok := t.Deadline(); ok && deadline.Before(bound) {
+	probes := testwait.Context(t)
+	started := time.Now()
+	bound := started.Add(30 * time.Second)
+	if deadline, ok := probes.Deadline(); ok && deadline.Before(bound) {
 		bound = deadline
 	}
 	var waited time.Time
-	for waited.IsZero() || time.Since(waited) < 10*time.Second {
+	for pass := 1; waited.IsZero() || time.Since(waited) < 10*time.Second; pass++ {
 		requireBucketMissing(t, js, bus.SessionBucket, "while a start waits on it")
 		select {
 		case <-restarted.Exited:
@@ -209,7 +218,7 @@ func TestACopiedBucketDeletedUnderARunningListenerStaysMissing(t *testing.T) {
 		if !waited.IsZero() {
 			limit = time.Now().Add(5 * time.Second)
 		}
-		answer := probeRestart(t, restarted.port, limit, http.MethodGet, "/healthz", "")
+		answer, deadline := probeRestart(t, probes, restarted.port, limit, http.MethodGet, "/healthz", "")
 		waiting := answer.err == nil && answer.code == http.StatusServiceUnavailable && answer.status == "waiting" && slices.Equal(answer.missing, []string{bus.SessionBucket})
 		switch {
 		case waiting && waited.IsZero():
@@ -217,13 +226,19 @@ func TestACopiedBucketDeletedUnderARunningListenerStaysMissing(t *testing.T) {
 		case !waiting && !waited.IsZero():
 			t.Fatalf("/healthz of a start waiting on the bucket = %s, want 503 waiting naming %s", answer, bus.SessionBucket)
 		case !waiting && !time.Now().Before(bound):
-			t.Fatalf("/healthz of the start at its 30 s bound = %s, want 503 waiting naming %s", answer, bus.SessionBucket)
+			t.Fatalf("/healthz of the start at its bound, %s after it began (30 s, or the test binary's deadline less testwait.Margin when that comes first) = %s, want 503 waiting naming %s", bound.Sub(started).Round(time.Millisecond), answer, bus.SessionBucket)
+		case !waiting:
+			t.Logf("restart pass %d, %s after the start: the bucket is missing; /healthz read nothing that is a wait (%s, its deadline %s on); the pass is tried again",
+				pass, time.Since(started).Round(time.Millisecond), answer, deadline.Round(time.Millisecond))
+			time.Sleep(time.Second)
+			continue
 		}
-		if waiting {
-			if refused := probeRestart(t, restarted.port, time.Now().Add(5*time.Second), http.MethodPost, "/v1/interests/subscribe", registration); refused.err != nil || refused.code != http.StatusServiceUnavailable {
-				t.Fatalf("a registration while the start waits on the bucket = %s, want 503", refused)
-			}
+		refused, refusedDeadline := probeRestart(t, probes, restarted.port, time.Now().Add(5*time.Second), http.MethodPost, "/v1/interests/subscribe", registration)
+		if refused.err != nil || refused.code != http.StatusServiceUnavailable {
+			t.Fatalf("a registration while the start waits on the bucket = %s, want 503", refused)
 		}
+		t.Logf("restart pass %d, %s after the start: the bucket is missing; /healthz answered 503 waiting naming %s (its deadline %s on); a registration answered 503 (its deadline %s on)",
+			pass, time.Since(started).Round(time.Millisecond), bus.SessionBucket, deadline.Round(time.Millisecond), refusedDeadline.Round(time.Millisecond))
 		time.Sleep(time.Second)
 	}
 	if output := restarted.Output.String(); !strings.Contains(output, missingBucketLine) {
