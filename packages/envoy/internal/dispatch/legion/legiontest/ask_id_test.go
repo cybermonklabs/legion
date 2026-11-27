@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -25,7 +26,7 @@ import (
 func TestEveryAskTheRigWritesCarriesAnIdDispatchCanRead(t *testing.T) {
 	database := storetest.Open(t)
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	Seed(t, database.Pool, Spec{Project: "LEGION", Trees: 2, Now: now})
+	Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Trees: 2, Now: now})
 
 	rows, err := database.Pool.Query(t.Context(), `
 		select distinct (payload ->> 'id')::uuid::text

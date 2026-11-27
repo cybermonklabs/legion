@@ -265,11 +265,11 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 	{judgedIssueWriter, "the PATCH's write core, whose every write R26 judges: it calls " + issueWritePlanCheck + ", which opens with " + legionStatusGuard + ", before its first write"},
 	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
 	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
-	{"internal/dispatch/delivery/deliverytest/deliverytest.go", "the delivery history fixture: it seeds synthetic issues, with their statuses, into a database that tests and the eval fixture loader (evals/evalfixture) write for a check to count over. It is no _test.go file only because Go cannot share test-only code across packages, " +
+	{"internal/dispatch/delivery/deliveryseed/deliveryseed.go", "the delivery history fixture: it seeds synthetic issues, with their statuses, into a database that tests (through deliverytest.Seed) and the eval fixture loader (evals/evalfixture) write for a check to count over, " +
 		serverImportsNone},
 	{"internal/dispatch/evals/evalfixture/attribution.go", "the eval checks' fixture loader's attribution case: it seeds a synthetic issue, with its status, into a database that tests, its command (cmd) and the bench loader (evals/evalbench) load for a check to read, " +
 		serverImportsNone},
-	{"internal/dispatch/legion/legiontest/legiontest.go", "the Legion history fixture: it seeds synthetic issues, with their statuses and parents, into a database that tests and the two eval loaders (evals/evalfixture, evals/evalbench) write for a check to count over. It is no _test.go file only because Go cannot share test-only code across packages, " +
+	{"internal/dispatch/legion/legionseed/legionseed.go", "the Legion history fixture: it seeds synthetic issues, with their statuses and parents, into a database that tests (through legiontest.Seed) and the two eval loaders (evals/evalfixture, evals/evalbench) write for a check to count over, " +
 		serverImportsNone},
 }
 
@@ -695,14 +695,16 @@ func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"internal/dispatch/delivery/deliverytest/deliverytest.go", true},
+		{"internal/dispatch/delivery/deliveryseed/deliveryseed.go", true},
 		{"internal/dispatch/evals/evalfixture/attribution.go", true},
-		{"internal/dispatch/legion/legiontest/legiontest.go", true},
-		{"internal/dispatch/delivery/deliverytest/other.go", false},
+		{"internal/dispatch/legion/legionseed/legionseed.go", true},
+		{"internal/dispatch/delivery/deliveryseed/other.go", false},
 		{"internal/dispatch/evals/evalfixture/other.go", false},
-		{"internal/dispatch/legion/legiontest/other.go", false},
-		{"internal/dispatch/delivery/deliverytest/", false},
-		{"internal/dispatch/legion/legiontest/legiontest_test.go", false},
+		{"internal/dispatch/legion/legionseed/other.go", false},
+		{"internal/dispatch/delivery/deliveryseed/", false},
+		{"internal/dispatch/legion/legionseed/legionseed_test.go", false},
+		{"internal/dispatch/delivery/deliverytest/deliverytest.go", false},
+		{"internal/dispatch/legion/legiontest/legiontest.go", false},
 	} {
 		if _, allowed := statusLabelsOrParentWriter(check.path); allowed != check.want {
 			t.Errorf("the guard allows %s to write an issue's status, labels or parent: %t, want %t: a fixture seeder is named by its exact file", check.path, allowed, check.want)

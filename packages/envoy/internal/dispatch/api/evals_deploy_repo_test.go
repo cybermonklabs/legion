@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -32,7 +32,7 @@ type deployRepoRig struct {
 	served   *server
 	database *store.Store
 	registry *evals.Store
-	fixture  deliverytest.Fixture
+	fixture  deliveryseed.Fixture
 	projects []string
 	now      time.Time
 	today    time.Time

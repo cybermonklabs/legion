@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -32,7 +33,7 @@ const deliveryOracleTolerance = 1e-9
 type deliveryOracleFixture struct {
 	Head    string `json:"head"`
 	Fixture struct {
-		Spec       deliverytest.Spec `json:"spec"`
+		Spec       deliveryseed.Spec `json:"spec"`
 		Repos      []string          `json:"repos"`
 		DeployRepo string            `json:"deploy_repo"`
 		Summary    string            `json:"summary"`
@@ -212,7 +213,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 // requests every one of which merged before from, by the fixture's own containment
 // (delivery.ContainingRun over every deploy the fixture judged): the deploys the base head's rule
 // counted as shipping none in that window and INFRA-2916's counts as shipping some.
-func deploysShippingOnlyEarlier(fixture deliverytest.Fixture, from, to time.Time) int {
+func deploysShippingOnlyEarlier(fixture deliveryseed.Fixture, from, to time.Time) int {
 	// shipsInWindow holds every deploy that ships a pull request, true where one of them merged in
 	// the window or after it.
 	shipsInWindow := map[int64]bool{}

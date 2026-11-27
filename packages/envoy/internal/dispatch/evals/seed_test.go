@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
@@ -876,7 +877,7 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 	}
 	var recorded struct {
 		Fixture struct {
-			Spec deliverytest.Spec `json:"spec"`
+			Spec deliveryseed.Spec `json:"spec"`
 		} `json:"fixture"`
 	}
 	if err := json.Unmarshal(raw, &recorded); err != nil {

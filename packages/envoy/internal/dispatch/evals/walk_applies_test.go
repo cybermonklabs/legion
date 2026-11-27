@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -19,7 +20,7 @@ func TestADaysPartOfAWalksDeployRunsIsTheDaysOwnRead(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
-	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
+	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 5})
 	settings, err := delivery.GetSettings(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the delivery settings: %v", err)
@@ -61,7 +62,7 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
-	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 8})
+	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 8})
 	settings, err := delivery.GetSettings(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the delivery settings: %v", err)

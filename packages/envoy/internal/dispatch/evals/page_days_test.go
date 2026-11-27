@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -76,7 +77,7 @@ func deliveryDaysOf(report refreshed) []time.Time {
 
 // oneApplyADay is, of each UTC day deliveries' deploy runs started on, the first of its runs that
 // reached production, by run id.
-func oneApplyADay(deliveries deliverytest.Fixture) []int64 {
+func oneApplyADay(deliveries deliveryseed.Fixture) []int64 {
 	starts := map[int64]time.Time{}
 	for _, run := range deliveries.Runs {
 		starts[run.RunID] = measures.Midnight(run.StartedAt)
@@ -101,7 +102,7 @@ func oneApplyADay(deliveries deliverytest.Fixture) []int64 {
 func TestAPageOfManyDaysReadsItsDeployRunsAHandfulOfTimesInOneCommit(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
-	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
+	deliveries := deliverytest.Seed(t, r.database.Pool, deliveryseed.Spec{Days: 30})
 	r.settle(t)
 	runs := oneApplyADay(deliveries)
 	if len(runs) < 20 {
@@ -249,7 +250,7 @@ func TestAPagesDeliveryDaysAreTimed(t *testing.T) {
 		days = parsed
 	}
 	r := newRefresherRig(t)
-	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 5})
+	deliveries := deliverytest.Seed(t, r.database.Pool, deliveryseed.Spec{Days: 5})
 	settings, repo := deliveries.Settings, deliveries.DeployRepo
 	var numbers []int32
 	for _, pr := range deliveries.PullRequests {

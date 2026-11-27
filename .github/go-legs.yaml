@@ -334,6 +334,7 @@ packages/envoy:
       - internal/dispatch/files/filestest
       - internal/dispatch/graphcensus/censustest
       - internal/dispatch/graphstore/graphstoretest
+      - internal/dispatch/legion/legionseed
       - internal/dispatch/legion/legiontest
       - internal/dispatch/legionfacts/independent
       - internal/dispatch/legionfacts/independent/cmd
@@ -464,6 +465,7 @@ packages/envoy:
       - internal/dispatch/store/storetest       # 18 s
       - internal/dispatch/delivery/measures     # 1 s
       - internal/dispatch/delivery/citebody     # 1 s
+      - internal/dispatch/delivery/deliveryseed
       - internal/dispatch/delivery/deliverytest
       - internal/dispatch/store/cmd/connections
       - internal/dispatch/store/searchtest

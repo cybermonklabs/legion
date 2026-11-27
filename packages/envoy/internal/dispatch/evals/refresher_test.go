@@ -15,10 +15,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -27,10 +29,10 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// refresherNow is the moment the refresher's tests run their passes as of: noon of deliverytest's
+// refresherNow is the moment the refresher's tests run their passes as of: noon of deliveryseed's
 // DefaultNow, the UTC day after the delivery history's last, so today holds no delivery input and
 // every series that has begun holds a zero row of today.
-var refresherNow = deliverytest.DefaultNow.Add(12 * time.Hour)
+var refresherNow = deliveryseed.DefaultNow.Add(12 * time.Hour)
 
 // refresherToday is refresherNow's UTC day.
 var refresherToday = measures.Midnight(refresherNow)
@@ -105,12 +107,12 @@ func (r *refresherRig) exec(t *testing.T, what, statement string, args ...any) {
 // DELIVX, ending at today's midnight) and the Legion history of legiontest (project LEGION, six
 // trees ending at the same moment), with LEGION's facts and filings stored as the Legion facts
 // consumer computes and writes them.
-func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legiontest.Fixture) {
+func (r *refresherRig) seedHistories(t *testing.T) (deliveryseed.Fixture, legionseed.Fixture) {
 	t.Helper()
 	ctx, pool := t.Context(), r.database.Pool
-	deliveries := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
-	legion := legiontest.Seed(t, pool, legiontest.Spec{Trees: 6, Now: deliverytest.DefaultNow})
-	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliverytest.DefaultNow)
+	deliveries := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 5})
+	legion := legiontest.Seed(t, pool, legionseed.Spec{Trees: 6, Now: deliveryseed.DefaultNow})
+	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliveryseed.DefaultNow)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", legion.Project, err)
 	}

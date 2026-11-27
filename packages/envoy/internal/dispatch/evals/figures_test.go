@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
@@ -1512,7 +1513,7 @@ func (r *refresherRig) seedLegionDefault(t *testing.T, defaultRepo string) strin
 	project := legion.Project
 	r.exec(t, "give the project a default repository", `update projects set default_repo = $2 where key = $1`, project, defaultRepo)
 	r.exec(t, "give two trees the default repository", `update issues set repo = $2 where key = any($1)`, legion.Roots[:2], defaultRepo)
-	facts, filings, err := legionfacts.ComputeProject(ctx, pool, project, deliverytest.DefaultNow)
+	facts, filings, err := legionfacts.ComputeProject(ctx, pool, project, deliveryseed.DefaultNow)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", project, err)
 	}
@@ -3206,7 +3207,7 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
-	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
+	deliveries := deliverytest.Seed(t, r.database.Pool, deliveryseed.Spec{Days: 30})
 	r.settle(t)
 	ctx, project := t.Context(), deliveries.Project
 	scope, folded, err := readFigureScope(ctx, r.database.Pool, r.build, project)

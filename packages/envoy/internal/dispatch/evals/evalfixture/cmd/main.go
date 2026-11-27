@@ -13,19 +13,19 @@
 //
 // -legion adds to one project and writes its projects row only where it has none, so it combines
 // with the other modes but -base, which writes the same history alone, into a database of the
-// base. -delivery adds to one project too, beside deliverytest's second project; -attribution
+// base. -delivery adds to one project too, beside deliveryseed's second project; -attribution
 // writes three projects, -project, -project+"B" and -project+"C"; and each of the two replaces the
 // one delivery_settings row. After them each project's next issue number is moved past every issue
 // it holds. Every mode but -merge-pr writes into -project, which it requires; -merge-pr names its
 // pull request by repository and number and writes no project's rows, so it needs none:
 //
-//	-legion       legiontest's Legion history, at least -issues finished issues, observed from
+//	-legion       legionseed's Legion history, at least -issues finished issues, observed from
 //	              partway through, and the project's legion_settings row (this head's schema)
 //	-base         the same history into a database of the base, main at the commit this head
 //	              merges (the base evalbench measures); alone
 //	-attribution  k15's case under -project, -project+"B" and -project+"C"; not with -delivery,
 //	              since both write the one delivery_settings row
-//	-delivery     -days days of deliverytest's delivery history, seeded by -seed
+//	-delivery     -days days of deliveryseed's delivery history, seeded by -seed
 //	-merge-pr     <owner>/<repo>#<n>: that pull request merged at -now (k12's one change)
 //
 // Every time is relative to -now, which defaults to this second: two loads with one -now hold

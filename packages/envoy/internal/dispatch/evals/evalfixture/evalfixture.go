@@ -6,9 +6,9 @@
 //
 // The modes:
 //
-//   - Legion (-legion): legiontest's Legion history, at least the asked number of finished issues,
+//   - Legion (-legion): legionseed's Legion history, at least the asked number of finished issues,
 //     with phase, slot and claim observations that start partway through it (LegionSpec), two
-//     drops and a child in design that legiontest's trees lack (observedCases), and the project's
+//     drops and a child in design that legionseed's trees lack (observedCases), and the project's
 //     legion_settings row, which names the project's daemon.
 //     It answers the two day-aligned windows k6 reads (Windows): one that starts before the
 //     project's first observation and one that starts after its first slot and claim
@@ -20,26 +20,26 @@
 //     fixture never writes, so the mode differs from Legion only in the schema it requires of the
 //     database.
 //   - Attribution (-attribution): k15's case of D1 (Attribution).
-//   - Delivery (-delivery): deliverytest's delivery history of the project over the days its
-//     caller names (the command's -days, a week by default), or deliverytest's own default of
-//     120 days (deliverytest.DefaultDays) for a caller that names none.
+//   - Delivery (-delivery): deliveryseed's delivery history of the project over the days its
+//     caller names (the command's -days, a week by default), or deliveryseed's own default of
+//     120 days (deliveryseed.DefaultDays) for a caller that names none.
 //   - MergePR (-merge-pr): one pull request of those rows merged at a given moment, k12's one
 //     change.
 //
 // Legion adds to one project and writes that project's row only where it has none, so it combines
 // with Attribution, Delivery and MergePR; Base writes the same history alone, into a database of
-// the base. Delivery adds to one project too, beside deliverytest's second project, and gives the
+// the base. Delivery adds to one project too, beside deliveryseed's second project, and gives the
 // project the deploy repository as its default repository where it has none; Attribution writes
 // its three projects with their default repositories; and each of the two replaces the one
 // delivery_settings row, so they are not combined with each other. MergePR writes no project's
 // rows.
 //
 // Every time is relative to the moment the caller names (-now), so two loads with one -now hold
-// the same history at the same times. The rows bypass the server's own writers (legiontest's
+// the same history at the same times. The rows bypass the server's own writers (legionseed's
 // events bypass events.Broker.Append), so a page open while they land may need a reload; the
 // refresher reads them on its next pass, as it reads every table. The Legion history's events are
 // dated in the past, so the statement that writes them also nulls the keyword fill's stored
-// reach (legiontest's write), and a serving fill writes their rows with no breach of a reach it
+// reach (legionseed's write), and a serving fill writes their rows with no breach of a reach it
 // stored before them.
 package evalfixture
 
@@ -53,10 +53,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -81,7 +81,7 @@ const (
 
 // LegionTables are the tables the Legion history is written into; main has every one of them at
 // the commit this head merges, with the columns the history writes (delivery_pull_requests the
-// merged pull requests of legiontest.Spec.Merged).
+// merged pull requests of legionseed.Spec.Merged).
 var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_observations", "delivery_pull_requests", "legion_settings"}
 
 // DerivedTables are the tables of this head's Legion evals that this head derives from
@@ -108,23 +108,23 @@ const HeadTable = "eval_days"
 
 // LegionSpec is the Legion history of project the Legion mode writes: enough trees for at least
 // issues finished issues, ending at now, with the older half of the trees unobserved and every
-// observed root waiting for its slot (legiontest.Spec's Unobserved and Queued), finished issues
+// observed root waiting for its slot (legionseed.Spec's Unobserved and Queued), finished issues
 // that waited in `icebox` and in `backlog`, a merged pull request for each issue the merger
 // closes and filings of all four classes (InBacklogOrIcebox, Merged and Filings, what k6 reads),
 // numbered after the offset issue numbers the project has already.
-func LegionSpec(project string, issues int, now time.Time, offset int) legiontest.Spec {
+func LegionSpec(project string, issues int, now time.Time, offset int) legionseed.Spec {
 	if issues <= 0 {
 		issues = DefaultIssues
 	}
-	trees := (issues + legiontest.FinishedPerTree - 1) / legiontest.FinishedPerTree
-	return legiontest.Spec{
+	trees := (issues + legionseed.FinishedPerTree - 1) / legionseed.FinishedPerTree
+	return legionseed.Spec{
 		Project: project, Trees: trees, Now: now.UTC(),
 		Spacing: treeSpacing, Unobserved: trees / 2, Queued: true, IssueOffset: offset,
 		InBacklogOrIcebox: true, Merged: true, Filings: true,
 	}
 }
 
-// observedCases writes into the Legion history legiontest wrote three cases its trees lack, which
+// observedCases writes into the Legion history legionseed wrote three cases its trees lack, which
 // the method texts of the Legion evals state and k6 compares. Two are drops: when the daemon stops
 // reporting an issue, its sampler writes `null` for every field of the issue at one moment, and the
 // phase and the slot the issue held run on through it to the next observation that names a phase.
@@ -137,7 +137,7 @@ func LegionSpec(project string, issues int, now time.Time, offset int) legiontes
 // case is written only where the issue holds, from the case's first hour to its last, the phase,
 // the slot and the claim the case needs, so a history of another shape is refused rather than left
 // without the case.
-func observedCases(ctx context.Context, pool *store.Pool, history legiontest.Fixture) error {
+func observedCases(ctx context.Context, pool *store.Pool, history legionseed.Fixture) error {
 	if len(history.Roots) == 0 {
 		return errors.New("the history holds no tree, so no drop and no child in design can be written into it")
 	}
@@ -252,7 +252,7 @@ type Windows struct {
 // observation, no slot or claim observation or no finished issue, and one whose first finished
 // issue's day starts at or after its first observation, since no window then starts on a day with
 // input before that observation.
-func WindowsOf(history legiontest.Fixture, firstSlot, firstClaim time.Time) (Windows, error) {
+func WindowsOf(history legionseed.Fixture, firstSlot, firstClaim time.Time) (Windows, error) {
 	if history.FirstObserved.IsZero() || history.FirstFinished.IsZero() {
 		return Windows{}, errors.New("the history holds no observation or no finished issue, so no window falls on either side of the first observation")
 	}
@@ -314,9 +314,9 @@ type LegionResult struct {
 	// them (DerivedTables), which no mode writes.
 	Tables            []string `json:"tables"`
 	DerivedByThisHead []string `json:"derived_by_this_head"`
-	// History is the history as legiontest answered it, for a caller that asserts against its
+	// History is the history as legionseed answered it, for a caller that asserts against its
 	// keys.
-	History legiontest.Fixture `json:"-"`
+	History legionseed.Fixture `json:"-"`
 }
 
 // WriteLegion is the Legion mode: LegionSpec's history of project into the database pool is on,
@@ -351,7 +351,7 @@ func writeLegion(ctx context.Context, pool *store.Pool, project string, issues i
 		return LegionResult{}, err
 	}
 	spec := LegionSpec(project, issues, now, offset)
-	history, err := legiontest.Write(ctx, pool, spec)
+	history, err := legionseed.Write(ctx, pool, spec)
 	if err != nil {
 		return LegionResult{}, err
 	}
@@ -370,7 +370,7 @@ func writeLegion(ctx context.Context, pool *store.Pool, project string, issues i
 		return LegionResult{}, err
 	}
 	return LegionResult{
-		Project: project, Issues: len(history.Keys), Finished: spec.Trees * legiontest.FinishedPerTree,
+		Project: project, Issues: len(history.Keys), Finished: spec.Trees * legionseed.FinishedPerTree,
 		Trees: spec.Trees, Unobserved: spec.Unobserved,
 		FirstObserved: history.FirstObserved, FirstSlot: firstSlot, FirstClaim: firstClaim, FirstFinished: history.FirstFinished,
 		From: history.From, To: history.To, Windows: windows,
@@ -378,27 +378,27 @@ func writeLegion(ctx context.Context, pool *store.Pool, project string, issues i
 	}, nil
 }
 
-// DeliveryResult is what the Delivery mode wrote: deliverytest's summary line, its two ends, and
+// DeliveryResult is what the Delivery mode wrote: deliveryseed's summary line, its two ends, and
 // the deploy repository's newest pull request, one a MergePR can take.
 type DeliveryResult struct {
 	Summary string    `json:"summary"`
 	From    time.Time `json:"from"`
 	To      time.Time `json:"to"`
 	Newest  string    `json:"newest_deploy_repository_pull_request"`
-	// Fixture is the history as deliverytest answered it.
-	Fixture deliverytest.Fixture `json:"-"`
+	// Fixture is the history as deliveryseed answered it.
+	Fixture deliveryseed.Fixture `json:"-"`
 }
 
-// WriteDelivery is the Delivery mode: days days of deliverytest's delivery history ending at now
-// (deliverytest.DefaultDays where days is 0 or less), every pull request counted for project
-// (deliverytest.Spec.OneProject), its issues numbered after the ones the project has already, and
+// WriteDelivery is the Delivery mode: days days of deliveryseed's delivery history ending at now
+// (deliveryseed.DefaultDays where days is 0 or less), every pull request counted for project
+// (deliveryseed.Spec.OneProject), its issues numbered after the ones the project has already, and
 // seed its random draws.
 func WriteDelivery(ctx context.Context, pool *store.Pool, project string, days int, seed uint64, now time.Time) (DeliveryResult, error) {
 	offset, err := issueOffset(ctx, pool, project)
 	if err != nil {
 		return DeliveryResult{}, err
 	}
-	written, err := deliverytest.Write(ctx, pool, deliverytest.Spec{
+	written, err := deliveryseed.Write(ctx, pool, deliveryseed.Spec{
 		Project: project, Now: now.UTC(), Days: days, Seed: seed, OneProject: true, IssueOffset: offset,
 	})
 	if err != nil {

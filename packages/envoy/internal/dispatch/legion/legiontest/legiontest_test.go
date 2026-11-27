@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -27,7 +28,7 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 
 	started := time.Now()
-	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
+	fixture := Seed(t, database.Pool, legionseed.Spec{Project: "LEGION", Now: now, AwaitingChildren: true})
 	seeded := time.Since(started)
 
 	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
@@ -140,7 +141,7 @@ func TestEveryFinishedIssueOfATreeTheSamplerNeverSawHasWorkTime(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := t.Context()
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
-	spec := Spec{Project: "UNSEEN", Trees: 4, Unobserved: 2, InBacklogOrIcebox: true, Now: now}
+	spec := legionseed.Spec{Project: "UNSEEN", Trees: 4, Unobserved: 2, InBacklogOrIcebox: true, Now: now}
 	fixture := Seed(t, database.Pool, spec)
 
 	rows, _, err := legionfacts.ComputeProject(ctx, database.Pool, fixture.Project, now)

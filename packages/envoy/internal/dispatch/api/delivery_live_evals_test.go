@@ -19,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -1646,14 +1646,14 @@ type refreshedEvalsPage struct {
 	frame    DeliveryLiveView
 	held     json.RawMessage
 	registry *evals.Store
-	fixture  deliverytest.Fixture
+	fixture  deliveryseed.Fixture
 	now      time.Time
 }
 
 // newRefreshedEvalsPage seeds the history, runs prepare (where it is not nil) on it, refreshes the
 // day rows with a registry over database, or over traced where that is given a tracer, and
 // subscribes the page.
-func newRefreshedEvalsPage(t *testing.T, tracer pgx.QueryTracer, prepare func(database *store.Store, fixture deliverytest.Fixture)) *refreshedEvalsPage {
+func newRefreshedEvalsPage(t *testing.T, tracer pgx.QueryTracer, prepare func(database *store.Store, fixture deliveryseed.Fixture)) *refreshedEvalsPage {
 	t.Helper()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	fixture, windows := seedEvalHistories(t, database, deps, 30)
@@ -1796,8 +1796,8 @@ func TestAPutThatMovesTheDeployRepositoryAndAJudgedJobSendsTheEvalsPageOneDelta(
 // deployRunsInTheSecondRepository is a prepare of newRefreshedEvalsPage: it copies the deploy
 // repository's deploy runs started from the history's thirteenth day on, with their jobs, into the
 // history's second repository, which so holds deploy runs of its own, and sets other to it.
-func deployRunsInTheSecondRepository(t *testing.T, other *string) func(*store.Store, deliverytest.Fixture) {
-	return func(database *store.Store, fixture deliverytest.Fixture) {
+func deployRunsInTheSecondRepository(t *testing.T, other *string) func(*store.Store, deliveryseed.Fixture) {
+	return func(database *store.Store, fixture deliveryseed.Fixture) {
 		*other = fixture.Repos[1]
 		for _, statement := range []string{`
 			insert into delivery_runs
@@ -2198,7 +2198,7 @@ func (f *figureScopeReads) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQu
 func TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute(t *testing.T) {
 	t.Parallel()
 	reads := &figureScopeReads{}
-	page := newRefreshedEvalsPage(t, reads, func(database *store.Store, _ deliverytest.Fixture) {
+	page := newRefreshedEvalsPage(t, reads, func(database *store.Store, _ deliveryseed.Fixture) {
 		leaveAttributionInputsUnread(t, database.Pool)
 	})
 	before := page.route(t)

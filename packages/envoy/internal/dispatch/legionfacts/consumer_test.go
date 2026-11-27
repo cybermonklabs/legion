@@ -11,7 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -107,10 +107,10 @@ func (c *consumer) exec(t *testing.T, what, statement string, args ...any) {
 
 // writeEvent writes one event of the issue at the moment given, as a Legion role's session
 // wrote it: the actor carries the session title the phase-work rule reads
-// (legiontest.SessionActor), so the event is work of that issue.
+// (legionseed.SessionActor), so the event is work of that issue.
 func (c *consumer) writeEvent(t *testing.T, issue, role, kind, payload string, at time.Time) {
 	t.Helper()
-	actor := legiontest.SessionActor(role, issue)
+	actor := legionseed.SessionActor(role, issue)
 	c.exec(t, "write an event of "+issue, `
 		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
 		values ($1, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1),
@@ -876,8 +876,8 @@ func TestAPassHoldsTheFreshnessRequirement(t *testing.T) {
 		what  string
 		trees int
 	}{
-		{"the rig's own population", legiontest.DefaultTrees},
-		{"four times the rig's population", 4 * legiontest.DefaultTrees},
+		{"the rig's own population", legionseed.DefaultTrees},
+		{"four times the rig's population", 4 * legionseed.DefaultTrees},
 	} {
 		t.Run(size.what, func(t *testing.T) {
 			run := newConsumer(t, size.trees)
