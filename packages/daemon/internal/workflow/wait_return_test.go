@@ -12,10 +12,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// returnHeldTask is the task LEGION-208's wait on its children holds for task a's implementer, and
-// returnMerged the sentence with which the return names the child that merged during the wait.
+// returnHeldTask is the task LEGION-208's wait on its children holds for task a's implementer, as a
+// transition composes one, and returnMerged the sentence with which the return names the child that
+// merged during the wait.
 const (
-	returnHeldTask = "Do the held work of task a."
+	returnHeldTask = "Implement LEGION-208. Task: a. Step 1 of 2: implementer. Do the held work of task a."
 	returnMerged   = "These Dispatch children of LEGION-208 merged during the wait: LEGION-209 (pull request #43)"
 )
 
@@ -59,7 +60,9 @@ func returnStart(t *testing.T, busy bool) (record.SuperviseRequest, record.Phase
 	})
 	if busy {
 		assertWaits(t, tasksOf(t, pool, engine, root.Key), "a", atStep(1), record.StepWaitAgent)
-		assertNothingStarted(t, pool, root.Key, "a", atStep(1))
+		if starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 0 {
+			t.Fatalf("the implementer's starts of %s after the return = %+v, want none: agent k does m's step", root.Key, starts)
+		}
 		taskMoves(t, pool, engine, root.Key, "m", TriggerImplementationReady, "")
 		joinsEnd(t, pool, engine, root.Key)
 	}
