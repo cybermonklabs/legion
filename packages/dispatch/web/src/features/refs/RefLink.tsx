@@ -12,7 +12,6 @@ import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
 import { borderDefault } from "../../theme/classes";
 import { isPartyRoute } from "./party-references";
 import { useReferenceHref, useReferenceLabel, useReferenceTarget } from "./reference-target";
-import { REFERENCE_WORDS } from "./reference-words";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -600,8 +599,7 @@ function anchorFormatting(anchor: HTMLAnchorElement, root: HTMLElement): WordsFo
  * Before it clears an anchor, it notes which of the anchor's words a search mark inside it
  * covers (`ReferenceAnchor.marked`, `markedStretches`), so `RefLink` can draw the server's marks
  * again wherever it draws those words. An anchor that becomes its words keeps its own nodes, and
- * with them the marks inside it; the element the portal draws into keeps the words it held as
- * `REFERENCE_WORDS`.
+ * with them the marks inside it.
  *
  * `@legion/proof-editor`'s Markdown link serializer sanitizes a `dispatch://` href to `""`
  * (Milkdown's link sanitizer only allows http/https/mailto/tel/ftp — a document strangers can
@@ -678,7 +676,6 @@ export function collectReferenceAnchors(
       anchor.setAttribute("data-dispatch-ref", reference);
       anchor.replaceChildren();
     }
-    host.setAttribute(REFERENCE_WORDS, text);
     targets.push({
       anchor: host,
       key: `${reference}:${targets.length}`,

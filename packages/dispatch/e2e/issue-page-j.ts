@@ -7,7 +7,7 @@ import { PROJECT } from "./issue-layout-seed-support";
 import { requirementBlockId, specDocument } from "./issue-layout-seed-text";
 import { issuePage } from "./issue-page";
 import { DESKTOP } from "./issue-page-g";
-import { caretInRowBlock, onScreen, openPreset } from "./issue-page-i";
+import { onScreen, openPreset } from "./issue-page-i";
 import { settledScrollTop } from "./mermaid-helpers";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -386,56 +386,6 @@ export async function expectOnScreen(target: Locator, what: string): Promise<voi
     .toBe("on screen");
 }
 
-/** A point on the drawn word `word` of `statement`'s words, in the viewport: 1 px into its second
- *  character, half way down its line; null where the words draw no such word. */
-function drawnWordPoint(
-  statement: Locator,
-  word: string
-): Promise<{ x: number; y: number } | null> {
-  return statement.evaluate((row, wanted) => {
-    const words = row.querySelector("[data-node-words]");
-    if (words === null) return null;
-    const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
-    for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
-      const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
-      if (found < 0) continue;
-      const range = document.createRange();
-      range.setStart(text, found + 1);
-      range.setEnd(text, found + 2);
-      const box = range.getBoundingClientRect();
-      return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
-    }
-    return null;
-  }, word);
-}
-
-/** The word the caret stands in, or the one a point of the page would put it in: the run of
- *  characters that are no space around `offset` in the text of `node`. Read in the page. */
-export function wordAtCaret(
-  page: Page,
-  at: { x: number; y: number } | "selection"
-): Promise<string> {
-  return page.evaluate((point) => {
-    let node: Node | null = null;
-    let offset = 0;
-    if (point === "selection") {
-      const selection = window.getSelection();
-      node = selection?.anchorNode ?? null;
-      offset = selection?.anchorOffset ?? 0;
-    } else {
-      const position = document.caretPositionFromPoint(point.x, point.y);
-      node = position?.offsetNode ?? null;
-      offset = position?.offset ?? 0;
-    }
-    const text = node?.nodeType === Node.TEXT_NODE ? (node.textContent ?? "") : "";
-    let start = offset;
-    let end = offset;
-    while (start > 0 && !/\s/.test(text.charAt(start - 1))) start -= 1;
-    while (end < text.length && !/\s/.test(text.charAt(end))) end += 1;
-    return text.slice(start, end);
-  }, at);
-}
-
 // ---------------------------------------------------------------------------------------------
 // Moves.
 // ---------------------------------------------------------------------------------------------
@@ -490,35 +440,4 @@ export async function wheelPastTop(
     0
   );
   return { box, headsBottom };
-}
-
-/**
- * A turn of the wheel, the reader's own act, brings the word `pressed` of `statement`'s words to
- * the screen's middle; once the page has stopped moving, a press on that word puts the caret of
- * the statement's editor, block `blockId`, in it. A row names what the word stands after in its
- * two failures: `messages.noCaret` where the press puts no caret in the statement's words, and
- * `messages.otherWord` where the caret stands in another word.
- */
-export async function pressWordAfterWheel(
-  page: Page,
-  statement: Locator,
-  blockId: string,
-  pressed: string,
-  messages: { readonly noCaret: string; readonly otherWord: string }
-): Promise<void> {
-  const far = await drawnWordPoint(statement, pressed);
-  expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
-  await turnWheel(page, (far?.y ?? 0) - DESKTOP.height / 2);
-  // `turnWheel` waited until the page stopped moving after the wheel, so one read of the word's
-  // box is where it stands when it is pressed.
-  const at = await drawnWordPoint(statement, pressed);
-  expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
-  const point = at ?? { x: 0, y: 0 };
-  expect(
-    await wordAtCaret(page, point),
-    `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
-  ).toBe(pressed);
-  await page.mouse.click(point.x, point.y);
-  await expect.poll(() => caretInRowBlock(page, blockId), { message: messages.noCaret }).toBe(true);
-  expect(await wordAtCaret(page, "selection"), messages.otherWord).toBe(pressed);
 }
