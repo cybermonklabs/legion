@@ -92,29 +92,45 @@ func BackwardPairs() []string {
 	return slices.Clone(backwardPairs)
 }
 
+// StepPhases is every phase a step of a plan runs as but step itself: the phases of Legion's five
+// step roles (plan.RunsAs), which are Order without retro and merging, the two Legion runs after
+// every line's steps. A role may stand at two steps of one task, so a task's line can hold one of
+// these phases two times and move back from the later to the earlier; retro and merging stand
+// once each, at the end, so neither can.
+func StepPhases() []Phase {
+	return slices.Clone(stepPhases)
+}
+
 // MovePairs is every move the daemon counts, each written "<from>-<to>": BackwardPairs first, in
 // their order, then the 21 forward pairs, each phase of Order paired with every phase after it,
-// then the pairs of step: step to each phase of Order, each phase of Order to step, and step-step.
+// then the pairs of step: step to each phase of Order, each phase of Order to step, and step-step,
+// and last the self-pair of each phase of StepPhases.
 // A task in another order than today's moves back by its own order (workflow's Walk.MovesBack),
 // so the move back of one task, testing to reviewing, is a forward pair of Order. A step of a role
 // the deployment defines runs as step wherever it stands in its task, so a move back may leave or
-// reach step, and one from such a step to an earlier one is step-step, the one pair of a phase
-// with itself. It is the whole vocabulary the readers of a move share: the engine counts a move
+// reach step, and one from such a step to an earlier one is step-step. A role of Legion's own may
+// also stand at two steps, so a move back from the later to the earlier is that phase's self-pair:
+// in `implementer reviewer implementer`, a move back from step 3 to step 1 is
+// implementing-implementing. Those six self-pairs are the only pairs of a phase with itself.
+// It is the whole vocabulary the readers of a move share: the engine counts a move
 // back under its pair, the config loader refuses a hook naming a pair outside it, and the outbox
-// refuses a hook prompt of a move outside it (record.HookPrompt). The answer is a fresh slice.
+// refuses a hook prompt of a move outside it (record.HookPrompt). A pair missing here is not a
+// move the daemon counts but a move that cannot be recorded at all: validateOutboxPayload refuses
+// the hook prompt, which rolls back the whole move, every retry with it. The answer is a fresh
+// slice.
 func MovePairs() []string {
 	return slices.Clone(movePairs)
 }
 
 // IsMovePair says whether from-to is a pair MovePairs holds: two different phases of Order and
-// step, or step-step.
+// step, step-step, or the self-pair of a phase of StepPhases.
 func IsMovePair(from, to Phase) bool {
 	return movePairSet[Pair(from, to)]
 }
 
 // ParsePair reads one "<from>-<to>" pair and answers ok only for a pair MovePairs holds: two
-// different phases of Order and step, or step-step. Phase words hold "_" and never "-", so the
-// one "-" of a pair in the set splits it.
+// different phases of Order and step, step-step, or the self-pair of a phase of StepPhases.
+// Phase words hold "_" and never "-", so the one "-" of a pair in the set splits it.
 func ParsePair(text string) (from, to Phase, ok bool) {
 	if !movePairSet[text] {
 		return "", "", false
@@ -139,8 +155,12 @@ func Pair(from, to Phase) string {
 var backwardPairs = buildBackwardPairs()
 
 // movePairs is built once: backwardPairs, then each phase of Order paired with every phase after
-// it, then step to each phase of Order, each phase of Order to step, and step-step, 57 pairs.
+// it, then step to each phase of Order, each phase of Order to step, step-step, and the self-pair
+// of each phase of StepPhases, 62 pairs.
 var movePairs = buildMovePairs()
+
+// stepPhases is Order without retro and merging: the phases a step of a plan runs as.
+var stepPhases = []Phase{Planning, Implementing, Testing, Reviewing, Accepting}
 
 // movePairSet is movePairs keyed for the lookups ParsePair and IsMovePair make.
 var movePairSet = buildMovePairSet()
@@ -156,7 +176,7 @@ func buildBackwardPairs() []string {
 }
 
 func buildMovePairs() []string {
-	pairs := make([]string, 0, len(Order)*(len(Order)-1)+2*len(Order)+1)
+	pairs := make([]string, 0, len(Order)*(len(Order)-1)+2*len(Order)+1+len(stepPhases))
 	pairs = append(pairs, backwardPairs...)
 	for fromIndex, from := range Order {
 		for _, to := range Order[fromIndex+1:] {
@@ -169,7 +189,11 @@ func buildMovePairs() []string {
 	for _, from := range Order {
 		pairs = append(pairs, Pair(from, Step))
 	}
-	return append(pairs, Pair(Step, Step))
+	pairs = append(pairs, Pair(Step, Step))
+	for _, self := range stepPhases {
+		pairs = append(pairs, Pair(self, self))
+	}
+	return pairs
 }
 
 func buildMovePairSet() map[string]bool {

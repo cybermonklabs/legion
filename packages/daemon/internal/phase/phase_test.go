@@ -134,16 +134,20 @@ func TestADeploymentRoleLeavesTheStepPhase(t *testing.T) {
 }
 
 // MovePairs is every move the daemon counts: each pair of two different phases of Order and step,
-// and step-step. A task in another order than today's moves back by its own order (workflow's
-// Walk.MovesBack), so a move back of one task, testing-reviewing, is a forward pair of Order; a
-// task whose steps name two roles of the deployment runs both as step, so one moves back to the
-// other by step-step. It holds BackwardPairs first, in their order, then the 21 forward pairs of
-// Order, then the pairs of step. No other pair holds one phase two times, and a phase outside
-// Order and step is in no pair.
+// step-step, and the self-pair of each phase a step runs as (StepPhases). A task in another order
+// than today's moves back by its own order (workflow's Walk.MovesBack), so a move back of one
+// task, testing-reviewing, is a forward pair of Order; a task whose steps name two roles of the
+// deployment runs both as step, so one moves back to the other by step-step; and a task that
+// names one of Legion's own roles at two steps, implementer reviewer implementer, moves back from
+// step 3 to step 1 by implementing-implementing. It holds BackwardPairs first, in their order,
+// then the 21 forward pairs of Order, then the pairs of step, then the five self-pairs. Those six
+// self-pairs are the only pairs that hold one phase two times, and a phase outside Order and step
+// is in no pair. Retro and merging stand once at the end of every line, so neither has a
+// self-pair: no line can move back from either to itself.
 func TestMovePairsTakeTheStepPairs(t *testing.T) {
 	pairs := MovePairs()
-	if len(pairs) != 57 {
-		t.Fatalf("MovePairs has %d pairs, want 57: %q", len(pairs), pairs)
+	if len(pairs) != 62 {
+		t.Fatalf("MovePairs has %d pairs, want 62: %q", len(pairs), pairs)
 	}
 	if !slices.Equal(pairs[:21], BackwardPairs()) {
 		t.Fatalf("MovePairs begins %q, want BackwardPairs %q in their order", pairs[:21], BackwardPairs())
@@ -157,10 +161,24 @@ func TestMovePairsTakeTheStepPairs(t *testing.T) {
 	if !slices.Equal(pairs[21:42], forward) {
 		t.Fatalf("MovePairs goes on %q, want the forward pairs %q", pairs[21:42], forward)
 	}
-	for _, pair := range pairs[42:] {
+	for _, pair := range pairs[42:57] {
 		from, to, ok := ParsePair(pair)
 		if !ok || (from != Step && to != Step) || (from != Step && !slices.Contains(Order, from)) || (to != Step && !slices.Contains(Order, to)) {
-			t.Fatalf("MovePairs ends with %q, which is no pair of step and a phase of Order, nor step-step", pair)
+			t.Fatalf("MovePairs holds %q among the pairs of step, which is no pair of step and a phase of Order, nor step-step", pair)
+		}
+	}
+	var selves []string
+	for _, self := range StepPhases() {
+		selves = append(selves, Pair(self, self))
+	}
+	if !slices.Equal(pairs[57:], selves) {
+		t.Fatalf("MovePairs ends with %q, want the self-pair of each phase a step runs as, %q", pairs[57:], selves)
+	}
+	// Retro and merging stand once at the end of every line, so neither is in StepPhases and
+	// neither has a self-pair.
+	for _, phase := range []Phase{Retro, Merging} {
+		if slices.Contains(StepPhases(), phase) || IsMovePair(phase, phase) {
+			t.Fatalf("%s has a self-pair, want none: no line can move back from it to itself", phase)
 		}
 	}
 	seen := map[string]bool{}
@@ -176,7 +194,9 @@ func TestMovePairsTakeTheStepPairs(t *testing.T) {
 	}{
 		{Step, Implementing, true}, {Implementing, Step, true}, {Step, Step, true}, {Step, Merging, true}, {Planning, Step, true},
 		{Testing, Reviewing, true}, {Reviewing, Testing, true}, {Implementing, Planning, true}, {Retro, Merging, true},
-		{Testing, Testing, false}, {Held, Planning, false}, {Merging, Done, false}, {Admitted, Planning, false},
+		{Testing, Testing, true}, {Implementing, Implementing, true}, {Planning, Planning, true}, {Accepting, Accepting, true},
+		{Reviewing, Reviewing, true}, {Retro, Retro, false}, {Merging, Merging, false},
+		{Held, Planning, false}, {Merging, Done, false}, {Admitted, Planning, false},
 		{Step, Held, false}, {Done, Step, false},
 	} {
 		if got := IsMovePair(tc.from, tc.to); got != tc.want {

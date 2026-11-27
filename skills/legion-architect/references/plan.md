@@ -30,7 +30,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
   `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`.
   Under `runtime: kubernetes` it runs in a pod slot named for it, and where the pod has none, step 3 waits for the pod's update round or release.
-  The issue's one pod holds about one slot per step with no key of each role in its tasks that are not stopped, and one per key, and every slot shares the pod's reservation (2 CPU and 8Gi at the defaults).
+  The pod holds one slot per role of the deployment and one per agent name of the plan in force, over every task, stopped ones too (`PlanAgents` reads every `plan_steps` row), and each slot shares the pod's reservation (2 CPU and 8Gi at the defaults).
   A later version's agent names: `skill://legion-architect/references/plan-changes.md`.
 
 ## The roles and their order
