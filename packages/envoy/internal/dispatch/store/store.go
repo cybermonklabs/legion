@@ -239,6 +239,15 @@ func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) err
 			return fmt.Errorf("apply migration %d: %w", migration.Version, err)
 		}
 	}
+	// Leave the request pool with a warm connection, as Open left it before migrations ran: when
+	// the last migration checked is non-transactional, applyNonTransactionalMigration hijacks the
+	// pool's one connection and closes it, so the boot's reads that follow Migrate
+	// (ReadRepoRenames, FillDocumentSearch, FillSessionTitles) would otherwise meet an empty pool
+	// under requestAcquireBound and fail behind a slow dial. Where the last migration was
+	// transactional, the pool already holds an idle connection and Ping reuses it without dialing.
+	if err := s.Pool.pool.Ping(ctx); err != nil {
+		return fmt.Errorf("warm the pool after migrations: %w", err)
+	}
 	return nil
 }
 
