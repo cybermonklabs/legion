@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -84,13 +85,15 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //     claimFailed).
 //   - LEGION-210, held from implementing on its architect's escalation, with a failed implementer
 //     nothing will wake, no architect claim, and a spec whose architect registered a version after
-//     its approval.
+//     its approval. Dispatch corrected its repository from acme/widgets to zeta/tools, and the
+//     pull request it opened before the correction is open on acme/widgets still.
 //   - LEGION-211, a P1 root another tree (LEGION-200) handed over whose own tree has not been
 //     opened, waiting in the line's starting part of its band; its implementer is released in
 //     LEGION-200's tree with two failed sends. It carries a run, so no Dispatch link holds it
 //     (blockers.Exempt).
 //   - LEGION-212, a P0 root a person answered, holding its slot and waiting in the line's returned
-//     part of its band, its spec sent back with changes, a tester retired in its tree.
+//     part of its band, its spec sent back with changes, a tester retired in its tree. Dispatch
+//     named acme/gadgets for it, a change the daemon has not applied.
 //   - LEGION-214, a root whose Legion label is off, so it holds no slot and stands in no live tree.
 //     Its architect registered its spec on its ancestor LEGION-200's version 6 while a person's
 //     approval of that version was still asked for, so the step waits on that open request.
@@ -141,8 +144,9 @@ func populatedRecord(s *seeding) {
 
 	// LEGION-210: held from implementing when its architect escalated the failed implementer
 	// (workflow's retryOrEscalate). A hand-over out of LEGION-200's tree made it a root of its
-	// own, and its promotion cleared the hand-over's mark (admit's promotion).
-	escalated := issue("LEGION-210", "LEGION-210", phase.Held, "in_progress", "zeta/tools", 1, 6)
+	// own, and its promotion cleared the hand-over's mark (admit's promotion). It was recorded on
+	// acme/widgets, which the correction below moves it off.
+	escalated := issue("LEGION-210", "LEGION-210", phase.Held, "in_progress", "acme/widgets", 1, 6)
 	escalated.Hold = &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated}
 
 	// LEGION-211: a root LEGION-200's tree handed over with the phase it ran there (admit's
@@ -213,6 +217,25 @@ func populatedRecord(s *seeding) {
 	// LEGION-217: what Dispatch says of a child of LEGION-208 its architect has not released, which
 	// the daemon keeps no record of (blockers.Mirror writes every issue fact it applies).
 	s.mirrorOnly(mirror("LEGION-217", "backlog", 14, "LEGION-208"))
+	// Dispatch moved LEGION-210 to zeta/tools at 07:40, and the daemon's record followed it
+	// (workflow's ApplyRepositoryChange, record.Store.CorrectIssueRepository): the record keeps the
+	// repository it left and that moment, which `repoBefore` and `repoCorrectedAt` carry.
+	s.in("the correction of LEGION-210's repository", func(ctx context.Context, tx pgx.Tx) error {
+		corrected, err := s.records.CorrectIssueRepository(ctx, tx, "LEGION-210", "zeta/tools", "release/v7.1", "zeta/tools", at(22, 7, 40, 0))
+		if err == nil && !corrected {
+			err = errors.New("the record of LEGION-210 took no correction")
+		}
+		return err
+	})
+	// Dispatch has named acme/gadgets for LEGION-212, and the daemon has not applied it for want of
+	// the review App there (workflow's ApplyRepositoryChange, record.Store.NoteIssueRepositoryChange),
+	// so the issue works acme/widgets still and `repoChangePending` and `repoChangeReason` say what
+	// the change waits on.
+	s.in("the repository change LEGION-212 waits on", func(ctx context.Context, tx pgx.Tx) error {
+		return s.records.NoteIssueRepositoryChange(ctx, tx, "LEGION-212", &record.RepositoryChange{
+			Pending: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets",
+		})
+	})
 	// LEGION-211 is the root a hand-over created at its generation (admit's hand-over,
 	// record.Store.PutHandedOverRoot), carrying its old root's gate.
 	s.in("the hand-over of LEGION-211", func(ctx context.Context, tx pgx.Tx) error {
@@ -311,13 +334,16 @@ func populatedRecord(s *seeding) {
 	// The pull requests as GitHub's last reads left them (workflow's pull request intake,
 	// record.Store.PutPullRequest), each on its issue's branch (claim.IssueBranch) into its
 	// repository's default branch: LEGION-208's merge state a review the repository requires holds;
-	// LEGION-218's unread since the push; LEGION-219's head stood two days, every read since the first
-	// after the approval answered `behind`, the last a minute before this state, and two of the
-	// fence's runs are stamped with the head.
+	// LEGION-210's was opened on acme/widgets before the correction and is open there still, while
+	// the issue works zeta/tools, so no GitHub event of it reaches the issue any longer; LEGION-218's
+	// unread since the push; LEGION-219's head stood two days, every read since the first after the
+	// approval answered `behind`, the last a minute before this state, and two of the fence's runs
+	// are stamped with the head.
 	for _, pr := range []record.PullRequest{
 		{Issue: "LEGION-207", Repo: "acme/widgets", Number: 1239, HeadSHA: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", State: record.PullRequestMerged},
 		{Issue: "LEGION-208", Repo: "acme/widgets", Number: 1247, HeadSHA: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
 			State: record.PullRequestOpen, MergeState: record.MergeStateBlocked},
+		{Issue: "LEGION-210", Repo: "acme/widgets", Number: 1243, HeadSHA: "c4a7f0b36d2e18a95f7b0c43e62d1a8f94b7e305", State: record.PullRequestOpen},
 		{Issue: "LEGION-218", Repo: "acme/widgets", Number: 1251, HeadSHA: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
 			State: record.PullRequestOpen, HeadUpdatedAt: at(22, 8, 58, 40)},
 		{Issue: "LEGION-219", Repo: "zeta/tools", Number: 642, HeadSHA: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",

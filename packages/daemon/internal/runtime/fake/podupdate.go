@@ -15,6 +15,9 @@ import (
 // FailPodDrift makes every later PodDrift return err; nil clears it.
 func (r *Runtime) FailPodDrift(err error) { r.fail("PodDrift", err) }
 
+// FailPodRepository makes every later PodRepository return err; nil clears it.
+func (r *Runtime) FailPodRepository(err error) { r.fail("PodRepository", err) }
+
 // FailReplacePod makes every later ReplacePod return err; nil clears it.
 func (r *Runtime) FailReplacePod(err error) { r.fail("ReplacePod", err) }
 
@@ -108,6 +111,23 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		return nil, nil
 	}
 	return append([]string(nil), r.drift[k.Claim]...), nil
+}
+
+// PodRepository records its call and answers what ScriptPodRepository set for the claim, "" for
+// a claim no call named and for one with no process, as a runtime answers a claim that runs in
+// no place of its own. A claim ScriptPodGone named answers "" too: nothing is read of a pod that
+// is not there, and PodDrift is where that pod is reported gone.
+func (r *Runtime) PodRepository(_ context.Context, k runtime.Known) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "PodRepository", Pod: copyKnown(k)})
+	if err := r.failures["PodRepository"]; err != nil {
+		return "", err
+	}
+	if k.Locator == nil || r.gone[k.Claim] {
+		return "", nil
+	}
+	return r.repository[k.Claim], nil
 }
 
 // IssuePod records its call and answers what ScriptIssuePod set for the issue, followed to the pod

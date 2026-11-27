@@ -1,10 +1,38 @@
 package daemon
 
 import (
+	"context"
+	"log/slog"
+	"strings"
+
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
+
+// launchReadRuntime is a workflow runtime over pool and records whose launch read
+// (issueLaunchRepository) prepares no repository: each of cached is in the cache set, as the read
+// of the live records leaves each repository a live record names, so a launch on one reads GitHub
+// nothing and the read is the record's alone.
+func launchReadRuntime(pool *store.Pool, records record.Store, log *slog.Logger, cached ...string) *workflowRuntime {
+	w := &workflowRuntime{pool: pool, records: records, log: log}
+	held := map[string]ghrepo.Repository{}
+	for _, repo := range cached {
+		held[strings.ToLower(repo)] = ghrepo.MustParse(repo)
+	}
+	w.storeCacheRepositories(held)
+	return w
+}
+
+// launchedRepository is the repository and default branch a launch of key's claims works, as w's
+// launch read answers them (workflowRuntime.issueLaunchRepository), for the tests that read those
+// two and not what a correction left on the record.
+func launchedRepository(ctx context.Context, w *workflowRuntime, key string) (ghrepo.Repository, string, error) {
+	read, err := w.issueLaunchRepository(ctx, key)
+	return read.Repo, read.DefaultBranch, err
+}
 
 // testRepositories serves every repository the daemon tests record issues on, each at main. A
 // repository it does not name is one no preparation has read GitHub for, which the daemon answers
