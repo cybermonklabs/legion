@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"maps"
 	"runtime"
 	"runtime/debug"
@@ -22,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -1277,13 +1275,8 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 // document pushed outside the schema after the fork read renders, and WARNs, as before; a cold
 // repair is already in the room that loads after it committed, so nothing of it is classified.
 func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in its captureWarnings).
+	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
 	const updatedOutside = "updated document outside Proof schema"
-	captureWarnings := func(t *testing.T) *storetest.LockedLog {
-		logs := &storetest.LockedLog{}
-		logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-		return logs
-	}
 	// Every write below repairs a tree outside the Proof schema, which renders no markdown and
 	// has no token for any caller to name (ReplaceText's one exception).
 	replaceWhole := func(service *Service, artifactID string) func(ctx context.Context) error {
