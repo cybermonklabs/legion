@@ -51,11 +51,11 @@ for the second read of the binaries, in the shard, real and alone jobs;
 real jobs; .github/scripts/dispatch-browser-pr-suite.sh for the browser step of the real and
 stub jobs; and .github/scripts/dispatch-browser-embedder.sh for the counting-embedder step of
 the real and alone jobs. The sampler and the PostgreSQL reading stood as a copy in each job's
-own step list until a review read the two together, and so did the embedder's command in the
-real and alone jobs. Two more stood beside them, the Playwright install and the key
-its apt archive cache was restored under: the shard and alone jobs run in the image this repository
-builds now, which carries the three browsers and every host package they need, so both of
-those scripts are gone with the steps that called them (dispatch://INFRA-1443).
+own step list until a review read the two together. Two more scripts stood beside these, the
+Playwright install and the key its apt archive cache was restored under: the shard and alone
+jobs run in the image this repository builds now, which carries the three browsers and every
+host package they need, so both of those scripts are gone with the steps that called them
+(dispatch://INFRA-1443).
 
 The budget rule every job and step of dispatch-browser.yaml follows, this file being where it is written down now
 that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
@@ -1673,12 +1673,9 @@ The package script `e2e:embedder:run` selects those rows on Chromium under
 Chromium already present. It starts its own single-worker stack using PostgreSQL 18 from
 `/usr/lib/postgresql/18/bin` in the job container, not a Docker image or a service.
 
-The step's body in both jobs is .github/scripts/dispatch-browser-embedder.sh, written once for
-[the reason a body two jobs share is a script](#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows):
-the four variables that name the stack's PostgreSQL, its connection limit and the binaries
-job's server and broker, and the command with its output directory. The connection limit is
-the script's argument rather than a key of the step's `env:`, for the reason its head gives.
-Each job keeps its own condition, timeout, working directory and failure upload around the call.
+The step's body in both jobs is .github/scripts/dispatch-browser-embedder.sh, for
+[the reason a body two jobs share is a script](#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
+its head says what it sets and why.
 
 It runs after the main browser step even when that step fails, unless the job is cancelled.
 The first invocation tears down its stacks when it exits. The embedder starts a fresh harness

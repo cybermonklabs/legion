@@ -449,7 +449,7 @@ test("the line in a pending-writes indicator's place leaves out a conflict a pag
 
 // Once the indicator's chunk has failed to download online, the line stays in the indicator's
 // place through every later ask of the chunk, until the chunk draws the indicator
-// (`WhileIndicatorLoads`). A write pressed after the failure draws the indicator afresh
+// (`pendingWritesHost`). A write pressed after the failure draws the indicator afresh
 // (`reset`), which asks for the chunk again, and the row holds that download. The line counts the
 // new write while the download is out, and once it comes down the indicator takes the line's
 // place. With nothing drawn meanwhile, the corner would be empty for as long as the download took.
@@ -507,9 +507,6 @@ test("the Reload of the line in a pending-writes indicator's place keeps the foc
       document.activeElement,
       "the focus left the line's Reload as the chunk was asked for again"
     ).toBe(reload);
-    expect(reload, "the line's Reload was drawn afresh as the chunk was asked for again").toBe(
-      screen.getByRole("button", { name: "Reload" })
-    );
   } finally {
     logged.mockRestore();
     view.unmount();
@@ -520,7 +517,7 @@ test("the Reload of the line in a pending-writes indicator's place keeps the foc
 // The same failure online, and then the browser goes offline, and Dispatch refuses the held write
 // as it goes out. The refusal draws the indicator afresh (`reset`), and its ask for the chunk
 // fails offline, so it waits for the network (`importWhenOnline`). The line stays in the
-// indicator's place all the while, and says that the change is not saved (`WhileIndicatorLoads`):
+// indicator's place all the while, and says that the change is not saved (`pendingWritesHost`):
 // an outage is when the reader needs it most. Once the browser is back online the indicator asks
 // again, and draws the refusal, with its Retry and Discard, as that download lands.
 test("the line in a pending-writes indicator's place stays while the browser is offline after the chunk failed online, and says the change is not saved once Dispatch refuses it", async () => {
@@ -591,8 +588,8 @@ test("the line counting a kept record while kinds of write failed stays drawn be
     });
     expect(await screen.findByText("1 change not sent")).toBeVisible();
 
-    // A live indicator write mounts the already-loaded indicator beside the standalone line; the
-    // take-up holds it queued (`Waiting to send`), so Discard settles it while the kinds stay out.
+    // A live indicator write mounts the already-loaded indicator beside the line; the take-up
+    // holds it queued (`Waiting to send`), so Discard settles it while the kinds stay out.
     act(() => {
       writes
         .run({

@@ -54,7 +54,9 @@ test("a part that renders draws as it is", () => {
 // A chunk under it that fails to download online (`ChunkNotLoaded`) draws what its host names for
 // that, or else the fallback its host names for a render that threw, or nothing when the host
 // names neither: a host that names only `fallback` is never silent when its chunk fails. The
-// pending-writes indicator names a line of its own for that (`features/writes/write-hosts.tsx`).
+// pending-writes host names one of its own for that (`NotLoaded`,
+// `features/writes/write-hosts.tsx`), which draws the indicator's loading fallback and has the
+// line the host draws beside the boundary count the indicator's writes.
 test("a chunk under it that fails to download draws what the host names for that, or else its fallback, or nothing", async () => {
   const NotLoaded = failingChunkComponent();
   const logged = quietConsoleError();

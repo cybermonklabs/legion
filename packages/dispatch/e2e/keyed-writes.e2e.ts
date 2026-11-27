@@ -1538,7 +1538,7 @@ test("a pending-writes indicator whose chunk fails to download online at every a
       changesNotSent(page),
       "the line in the indicator's place did not say the refused change is not saved"
     ).toHaveText("1 change not sent — Not saved");
-    // The line says so while the chunk's next download is still out (`WhileIndicatorLoads`,
+    // The line says so while the chunk's next download is still out (`pendingWritesHost`,
     // `web/src/features/writes/write-hosts.tsx`), and the route counts that download only once it
     // has failed it, so the count is read again until it has.
     await expect
@@ -1602,7 +1602,7 @@ test("a pending-writes indicator whose chunk failed to download online asks for 
 // The refusal draws the indicator afresh (`ChunkBoundary`'s `reset`), and its ask for the chunk
 // fails offline, so it waits for the network (`importWhenOnline`,
 // `web/src/features/shell/chunk-loads.ts`). The line stays in the indicator's place all the while
-// and says that the change is not saved (`WhileIndicatorLoads`,
+// and says that the change is not saved (`pendingWritesHost`,
 // `web/src/features/writes/write-hosts.tsx`): an outage is when the reader needs it most, and a
 // line that went with each later ask of the chunk would leave the corner empty until the network
 // came back. Once it is back, the indicator asks again, and draws the refusal with its Retry and

@@ -1,8 +1,8 @@
 /**
  * A reader's own acts: a key, a press, a wheel and a touch. Any of them ends the page's own
- * placing of the focus, a caret or a selection after a wait (`abortOnReaderAct`): a reader who
- * acts in the wait has put the focus where they want it, and a placing that came after would
- * take it back from there.
+ * placing of the focus, a caret or a selection, or its hold of a row on screen (`holdOnScreen`,
+ * `IssueTree.tsx`), after a wait (`abortOnReaderAct`): a reader who acts in the wait has put the
+ * focus where they want it, and a placing that came after would take it back from there.
  */
 export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
 

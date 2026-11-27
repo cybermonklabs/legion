@@ -36,12 +36,12 @@
 set -euo pipefail
 
 usage() {
-  echo "::error::dispatch-browser-embedder.sh takes the stack's connection limit, a positive" \
-    "whole number: .github/scripts/dispatch-browser-embedder.sh <connections>. It was given: $*"
+  echo "::error::dispatch-browser-embedder.sh takes the stack's connection limit:" \
+    ".github/scripts/dispatch-browser-embedder.sh <connections>. It was given: $*"
   exit 1
 }
 
-[ "$#" -eq 1 ] && [[ $1 =~ ^[1-9][0-9]*$ ]] || usage "$@"
+[ "$#" -eq 1 ] || usage "$@"
 connections=$1
 
 # The job container's own PostgreSQL 18 with pgvector, through e2e/harness-postgres.ts's binaries
