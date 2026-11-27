@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testkernel"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 // OverlayEntries leaves out the empty entries Oh My Pi leaves out.
@@ -118,6 +120,31 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 	// Each time since boot the row reads, its own and a stand-in's mark, is off by less than a tick.
 	const clockSlack = 2 * testexec.ClockTick
 	dir := t.TempDir()
+	// CONTROL ONLY (r63 starve): a machine that keeps the refused Oh My Pi of call 1 waiting for a
+	// CPU after its first act. ctlHogs busy loops run pinned to the last CPU this process may use;
+	// once that Oh My Pi has written its pid, after its first act, the row pins it there too, and it
+	// spins (CPU, no sleep) until it is pinned and for 20 ms of CPU more, so the hogs hold it there.
+	const ctlHogs = 50
+	var ctlSet unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &ctlSet); err != nil {
+		t.Fatalf("CONTROL: read this process's CPUs: %v", err)
+	}
+	ctlCPU := -1
+	for cpu := range 1024 {
+		if ctlSet.IsSet(cpu) {
+			ctlCPU = cpu
+		}
+	}
+	for i := range ctlHogs {
+		hog := exec.Command("taskset", "-c", strconv.Itoa(ctlCPU), "sh", "-c", "while :; do :; done")
+		if err := hog.Start(); err != nil {
+			t.Fatalf("CONTROL: start hog %d: %v", i, err)
+		}
+		t.Cleanup(func() { _ = hog.Process.Kill(); _ = hog.Wait() })
+	}
+	t.Logf("CONTROL: %d busy loops pinned to CPU %d", ctlHogs, ctlCPU)
+	ctlStarve := "case \"$LEGION_TEST_RUN\" in */1) echo $$ >\"$LEGION_TEST_RUN/ctl.pid\"; while [ ! -e \"$LEGION_TEST_RUN/ctl.pinned\" ]; do :; done; " +
+		"read -r cs </proc/self/schedstat; c0=${cs%% *}; while :; do read -r cs </proc/self/schedstat; [ $(( ${cs%% *} - c0 )) -ge 20000000 ] && break; done ;; esac; "
 	omp := filepath.Join(dir, "omp")
 	// Each call's files are in the directory LEGION_TEST_RUN names. The slow file's run waits until
 	// the row releases it or this test process is gone, never on a timer of its own. The refused
@@ -129,7 +156,7 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 		"case \"$PI_CONFIG_FILES\" in\n" +
 		"*slow.yml) trap onslowterm TERM; : >\"$LEGION_TEST_RUN/slow.started\"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.05; done ;;\n" +
 		"*bad.yml) trap onbadterm TERM; if " + alone + "; then " + testkernel.HoldStart(`"$LEGION_TEST_RUN/bad.first"`) + "; fi; " +
-		"echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.ran\"; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; " +
+		"echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.ran\"; if " + alone + "; then " + ctlStarve + "fi; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; " +
 		"if " + alone + "; then " + testexec.MarkNow(`"$LEGION_TEST_RUN/bad.exiting"`) + "; fi; exit 1 ;;\n" +
 		"esac\necho '{\"value\": false}'\n"
 	if err := testexec.WriteFile(omp, []byte(script), 0o755); err != nil {
@@ -174,6 +201,26 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 				_ = os.WriteFile(release, nil, 0o600)
 			}
 		}()
+		if calls == 1 { // CONTROL ONLY: pin call 1's refused Oh My Pi to the hogs' CPU once it has written its pid
+			go func() {
+				pidFile, pinned := filepath.Join(run, "ctl.pid"), filepath.Join(run, "ctl.pinned")
+				for {
+					select {
+					case <-returned:
+						return
+					case <-time.After(time.Millisecond):
+					}
+					raw, err := os.ReadFile(pidFile)
+					if err != nil || !strings.HasSuffix(string(raw), "\n") {
+						continue
+					}
+					out, err := exec.Command("taskset", "-p", "-c", strconv.Itoa(ctlCPU), strings.TrimSpace(string(raw))).CombinedOutput()
+					t.Logf("CONTROL: pinned call 1's refused Oh My Pi (pid %s) to CPU %d: %v %s", strings.TrimSpace(string(raw)), ctlCPU, err, strings.TrimSpace(string(out)))
+					_ = os.WriteFile(pinned, nil, 0o600)
+					return
+				}
+			}()
+		}
 
 		got, err := CheckOverlays(context.Background(), img, []string{slow, bad}, []string{slow, bad})
 		answered := testexec.SinceBoot(t)
