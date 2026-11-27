@@ -722,10 +722,23 @@ bound that the parallel tests' load could make it miss, which the comment names 
 one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
 comment runs alone for no reason, as 46 tests did by 2026-11-25.
 
+## A test in `packages/daemon/internal/workspace` keeps its runner's state local
+
+The package's `TestMain` runs eight parallel tests at once (`workspaceTestParallelism`); an
+explicit `go test -parallel` overrides it. Tests that change the process environment, stderr or a
+package variable stay serial. The stalled-download row also runs alone because it changes
+`downloadWindow`; its sibling rows call `t.Parallel()`.
+
+Each recording runner supplies its own jj identity and tool wrappers to `NewRunnerIn`. The
+GitHub stand-in supplies its own certificate and proxy there too, without changing the process
+environment. Tests share one temporary home: jj stores repository and workspace configuration
+under their own random ids. A test that plants such configuration must use a fresh id. A seeded
+remote is copied from a template built once per default branch; the template itself is not changed.
+
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
-`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+`internal/daemon`, `internal/intake`, `internal/workspace`), a test writes a file it or its program then executes (a
 stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
 (`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
