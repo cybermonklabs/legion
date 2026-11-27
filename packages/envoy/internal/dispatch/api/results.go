@@ -546,8 +546,9 @@ type issueCheckResults struct {
 // The checks of the issue's Verification document in document order, each with what its
 // results are compared with and whether a pass of it stands, and every result recorded
 // against it from any issue, newest first, each with where its commit stands and whether the
-// check's words moved since. An issue with no Verification document has no checks and no
-// error.
+// check's words moved since. Each check names the statements its block serves, as its `serves`
+// attribute writes them (docs.CheckBlockOf). An issue with no Verification document has no checks
+// and no error.
 //
 // A check CI proves carries `ci` too, read from GitHub at each open pull request head, or where
 // none is open at the final head of the merged one that merged last, and its results are the one
@@ -1015,10 +1016,11 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 }
 
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes
-// and its words (typedBlocksIn). trees is the request's own reader, nil for a caller that asked
-// for no tree: each check registers with it, as its text_tree, the markdown typedBlocksIn reads
-// the block's tree from (the rule GET /api/v1/reference-targets reads the same block by), once
-// the slice has stopped growing, since what is registered is a pointer into the row.
+// and the references its `serves` attribute names (docs.CheckBlockOf), and its words
+// (typedBlocksIn). trees is the request's own reader, nil for a caller that asked for no tree:
+// each check registers with it, as its text_tree, the markdown typedBlocksIn reads the block's
+// tree from (the rule GET /api/v1/reference-targets reads the same block by), once the slice has
+// stopped growing, since what is registered is a pointer into the row.
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var contents []string

@@ -8,10 +8,24 @@ import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";
 import { ReferenceHostIs } from "../refs/reference-host";
 import type { TextSource } from "../refs/text-references";
+import { type AgentNames, CachedAuthor } from "./CachedAuthor";
+import { PAGE_QUOTE } from "./reply-quote-page";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
 const quoteClasses = `flex min-w-0 max-w-full items-center border-l-2 pl-2 text-xs ${secondaryButtonBorder} ${textMutedOnCanvas}`;
+
+/** The quote's rule and words, and its link's hover, by the palette its host hands (`palette`),
+ *  which the return for a cached author or the new page's palette draws: `main`'s are
+ *  `quoteClasses` and `linkHoverText`, as on every surface of today's pages, and the new issue
+ *  page's are its own (`PAGE_QUOTE`) on the quote's frame. */
+const TONES = {
+  main: { link: linkHoverText, quote: quoteClasses },
+  page: {
+    link: PAGE_QUOTE.link,
+    quote: `flex min-w-0 max-w-full items-center border-l-2 pl-2 text-xs ${PAGE_QUOTE.rule}`,
+  },
+} as const;
 
 /** The comment or message among `items` (the thread a reply sits in) that `block`, the reply's
  *  `reply_block`, is a block of: its node reads `<kind>/<id>#<block id>`. A comment reply's
@@ -44,6 +58,7 @@ export function passageItem<T extends { readonly id: string }>(
  *  The author is drawn by `AgentName`, whose name links to the agent, so it sits outside the
  *  quote's link, which holds the rest: the body, or with no author the whole line. */
 export function ReplyQuote({
+  agentNames = "live",
   author,
   block,
   className = "",
@@ -51,9 +66,15 @@ export function ReplyQuote({
   edited,
   excerpt,
   excerptTree,
+  palette = "main",
   source,
   to,
 }: {
+  /** How the author is named: `live`, as everywhere, draws `AgentName`, whose session form reads
+   *  the live agent registry and starts the agents poll; `cache` names the author from the
+   *  registry the cache already holds (`useAgentText`) and starts no read, for a caller that
+   *  sends no agents read when it draws (dispatch://INFRA-5702/spec#b-r-reads). */
+  agentNames?: AgentNames;
   author: Actor | undefined;
   /** The block of the parent the reply answers; null or absent when it answers the whole. */
   block?: ReplyBlockWithTrees | null;
@@ -68,6 +89,9 @@ export function ReplyQuote({
   /** The reading Go made of `excerpt`, which the quote draws; absent where the caller holds no
    *  tree for it (a draft quoting a write the server has not stored yet). */
   excerptTree?: DisplayTree;
+  /** The palette the quote draws in (`TONES`): `main`'s, unless its host hands the new issue
+   *  page's. */
+  palette?: keyof typeof TONES;
   /** The record the quoted text is - the parent message or comment, whose own passage a block
    *  quote is (`TextSource`) - so a `#id` in it resolves against that record's document, as it
    *  does where the parent itself is drawn. */
@@ -102,6 +126,37 @@ export function ReplyQuote({
         tree={quotedTree}
       />
     ) : null;
+  // A quote that names its author from the cache, or draws in the new page's palette, is drawn
+  // here, so the return below stays `main`'s, which every surface of today's pages draws.
+  if (agentNames === "cache" || palette === "page") {
+    const tones = TONES[palette];
+    return (
+      <span className={`${tones.quote} gap-1 ${className}`}>
+        {author === undefined ? null : (
+          <span className="min-w-0 truncate">
+            Replying to{" "}
+            {agentNames === "cache" ? (
+              <CachedAuthor actor={author} />
+            ) : (
+              <AgentName actor={author} inline />
+            )}
+            {passage ? "'s passage" : ""}
+            <EditedMark at={edited} deleted={deleted} />
+            {quoted === null ? "" : " "}
+          </span>
+        )}
+        {quoted === null ? null : to === undefined ? (
+          <span className="min-w-0 flex-1">{quoted}</span>
+        ) : (
+          <ReferenceHostIs host="control">
+            <Link className={`min-w-0 flex-1 ${tones.link}`} to={to}>
+              {quoted}
+            </Link>
+          </ReferenceHostIs>
+        )}
+      </span>
+    );
+  }
   return (
     <span className={`${quoteClasses} gap-1 ${className}`}>
       {author === undefined ? null : (

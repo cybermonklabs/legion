@@ -78,10 +78,10 @@ func TestThreadPagesHoldTheirBoundOnTheLargestIssues(t *testing.T) {
 			taken = append(taken, last.took)
 		}
 		slices.Sort(taken)
-		p90 := percentileOfDismissedScale(taken, 0.9)
+		p90 := nearestRank(taken, 0.9)
 		page := readBoundPage(t, target, last.body)
 		t.Logf("%s %s: p50 %.1f ms, p90 %.1f ms, max %.1f ms over %d reads; the first page is %d bytes, its %d rows %d bytes",
-			view.view, view.route, msOf(percentileOfDismissedScale(taken, 0.5)), msOf(p90), msOf(taken[len(taken)-1]),
+			view.view, view.route, msOf(nearestRank(taken, 0.5)), msOf(p90), msOf(taken[len(taken)-1]),
 			boundRuns, len(last.body), len(page.rows), page.rowBytes())
 		if p90 > boundPageBound {
 			t.Errorf("%s: the 90th percentile of %d reads is %.1f ms, want at most %.0f ms", target, boundRuns, msOf(p90), msOf(boundPageBound))

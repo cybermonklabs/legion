@@ -167,7 +167,7 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			       ' issues stating one=' || (select count(distinct key) from stated) ||
 			       ' issues under one, the inheritance counted=' || (select count(distinct key) from members)`},
 		// Priority work in backlog or icebox is an issue there that states a priority no issue above
-		// it carries, as the route reads it (api's advancesOriginTerms): a relation the descent
+		// it carries, as the route reads it (api's priorityBacklogTerms): a relation the descent
 		// reaches from an issue above is carried there already.
 		{"priority faults", `with recursive ` + priorityMemberTerms + `
 			select 'work in flight advancing none=' || (

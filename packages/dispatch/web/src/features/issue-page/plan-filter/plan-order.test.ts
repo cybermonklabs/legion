@@ -3,14 +3,14 @@ import { expect, test } from "bun:test";
 import type { Artifact } from "../../../api/types";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS, type NodeType } from "../page-words";
-import { blockNodeId } from "../tree-drafts";
+import { blockNodeId } from "../statement-rules";
 import { type PlanEntry, planChart, planOrder, writtenOrder } from "./plan-order";
 
 /**
  * The plan's order, read off the edges today's model holds.
  *
  * The nodes are built as `issue-tree.ts` builds them from the plan document's blocks: a task's
- * id is `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`), and its `needs` are its chips,
+ * id is `<slug>#b-<block id>` (`statement-rules.ts`'s `blockNodeId`), and its `needs` are its chips,
  * each naming its target by that target's own `dispatch://` address (`placeBlocks`).
  */
 

@@ -4,7 +4,7 @@ import type { Artifact, IssueDetails } from "../../api/types";
  * Which artifact of the issue each node of the tree belongs to.
  *
  * A node's id is its own address inside the issue: a block of a document is
- * `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`). So the document a row's caret goes
+ * `<slug>#b-<block id>` (`statement-rules.ts`'s `blockNodeId`). So the document a row's caret goes
  * into, and the block inside it, are read from the row's own id and the issue's artifact list,
  * with no further read.
  *

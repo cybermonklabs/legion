@@ -14,15 +14,13 @@ import type {
   MessageRead,
   ReferenceTarget,
 } from "../../api/types";
-import { type PostDeletion, postDeletion } from "../refs/post-marks";
-import type { PublishedReferences, ReferenceNameReading } from "../refs/reference-names";
-import type { DispatchReferenceRoute } from "../refs/routes";
-import { referenceTargetKind } from "../refs/target-id";
+import type { ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
-import { chipWords } from "./node-row-chip";
 import type { GapKind, NodeState, NodeType } from "./page-words";
-import { type Draft, titleReading, treeContext, treeDrafts } from "./tree-drafts";
+import { titleReading } from "./statement-rules";
+import { treeContext } from "./target-naming";
+import { type Draft, treeDrafts } from "./tree-drafts";
 
 /**
  * The issue's node tree, built from the page's reads and nothing else.
@@ -316,7 +314,7 @@ export interface TreeNode {
   readonly source?: TextSource;
   /** How it stands, for a type the model gives a state: one of the states the page has a word
    *  for, so a row draws that word and never the token (`NodeState`, R21). A check reads it as
-   *  the server reads its results (`tree-drafts.ts`'s `checkStanding`); a `check` block of any
+   *  the server reads its results (`statement-rules.ts`'s `checkStanding`); a `check` block of any
    *  document but the issue's Verification document carries none, since it is no check and the
    *  results read never answers for it (`isCheck`). */
   readonly state?: NodeState;
@@ -428,89 +426,6 @@ export interface IssueTreeReads {
   readonly viewer?: string;
 }
 
-/** How many characters a row's first line may hold (R1). */
-export const FIRST_LINE_LIMIT = 100;
-
-/**
- * A leading label: a first word of at most five characters that ends in `.` and holds a digit,
- * as `R1.`, `12.` or `1.2.`. Its dot is read as part of the line and no sentence end, so a line
- * that opens with one runs on to the first sentence end after it (`firstLineOf`). Every place
- * that reads where a line's first sentence ends reads its label by this one rule. It carries no
- * `g` or `y` flag, so `exec` keeps no state between the places that share it.
- */
-export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
-
-/**
- * The node's own text to the first sentence end or `FIRST_LINE_LIMIT` characters, whichever
- * comes first, cut at a word wherever the limit falls near one. A leading label - a first word
- * of at most five characters that ends in `.` and holds a digit, as `R1.`, `12.` or `1.2.` - is
- * part of the line and no sentence end, so a statement's line runs on to the first sentence end
- * after its label. `lead` is the page's own word the line opens with, before the node's own
- * words `text` and none of them - the issue's key before its title (`lineReading`) - which is
- * written before them here and counts towards the limit, and the label is read at the start of
- * `text`: `CORE-1 1. Migrate the table` keeps its `1.`. A line held to the limit that holds no
- * space past its label - one unbroken token, a URL or an identifier - is cut at the limit
- * itself, because there is no word boundary to cut at and the limit is the row's whole budget,
- * and one unit short of it where the limit falls inside a surrogate pair, as `textHead` cuts.
- * `cut` says whether the text carries on past the line, and `sentence` whether the line ends at
- * a sentence end, the first one after any label: the two are what the row draws its ellipsis by
- * (`drawnLine`). A line the limit cut, at a word or at the limit itself, ends at none, whatever
- * its last character: a token cut at the limit may end on a `.`, `!` or `?` of its own, as
- * `x.yyyy` cut after its dot does.
- */
-export function firstLineOf(
-  text: string,
-  lead = ""
-): {
-  readonly cut: boolean;
-  readonly line: string;
-  readonly sentence: boolean;
-} {
-  const own = text.replace(/\s+/gu, " ").trim();
-  const opening = lead === "" ? "" : `${lead} `;
-  const whole = `${opening}${own}`.trimEnd();
-  const head = `${opening}${LEADING_LABEL.exec(own)?.[0] ?? ""}`;
-  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(head.length))?.[0];
-  const first = rest === undefined ? undefined : `${head}${rest}`;
-  if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
-    return { cut: first.length < whole.length, line: first, sentence: true };
-  }
-  if (whole.length <= FIRST_LINE_LIMIT) {
-    return { cut: false, line: whole, sentence: false };
-  }
-  const window = whole.slice(0, FIRST_LINE_LIMIT + 1);
-  const lastSpace = window.lastIndexOf(" ");
-  if (lastSpace > head.length) {
-    return { cut: true, line: window.slice(0, lastSpace), sentence: false };
-  }
-  const last = whole.charCodeAt(FIRST_LINE_LIMIT - 1);
-  const end = last >= 0xd800 && last <= 0xdbff ? FIRST_LINE_LIMIT - 1 : FIRST_LINE_LIMIT;
-  return { cut: true, line: whole.slice(0, end), sentence: false };
-}
-
-/**
- * A first line as a place that draws one line for a node draws it (R1): an ellipsis where the
- * text carries on past a line the cut ended inside a sentence, and none
- * where the line is a whole sentence, whose own mark already ends it - "Thread 1 opens here.…"
- * reads as four dots. What follows a whole sentence is the node's next sentence, which its row
- * or its body holds. Whether the line ends at a sentence end is `firstLineOf`'s `sentence`, and
- * every caller hands it in with the line, since a line cut inside a sentence can end on a `.`,
- * `!` or `?` that ends none: nothing here reads the line's last character to decide it. A line
- * cut just after an ellipsis of the author's own (`wait…`), which `firstLineOf` reads as no
- * sentence end since it often stands inside one, draws no second: `wait……` reads as six dots.
- */
-export function drawnLine({
-  cut,
-  line,
-  sentence,
-}: {
-  readonly cut: boolean;
-  readonly line: string;
-  readonly sentence: boolean;
-}): string {
-  return cut && !sentence && !line.endsWith("…") ? `${line}…` : line;
-}
-
 /** The node's own words as a reader reads them: the words of the server's reading of its text
  *  where its read sent one (`tree`), and its text as stored otherwise; the issue's, its key and
  *  then its title, as Dispatch names an issue everywhere (`assemble`). A bare address stays in
@@ -578,88 +493,10 @@ export function lineReading(node: {
   return block === undefined ? { none: true } : { tree: block };
 }
 
-/** The words a chip draws for a target `name` names (build decision 5): a block's first line, as a
- *  row draws one (R1, `firstLineOf`, `drawnLine`), and any other target's name, each cut to a
- *  chip's room (`chipWords`). The page publishes every name as a link to its target reads it
- *  (R8), so a tie's chip (`NodeRow.tsx`), a block or a document drawn as a chip in a node's words
- *  (`row-references.ts`), the Plan chart's needs and serves (`plan-filter/PlanFilterBody.tsx`)
- *  and a check's "Also under" line (`verification-filter/VerificationFilterBody.tsx`) each cut it
- *  again here, where they draw it, and draw one target alike. */
-export function chipName(route: DispatchReferenceRoute | undefined, name: string): string {
-  const block = route !== undefined && referenceTargetKind(route) === "block";
-  return chipWords(block ? drawnLine(firstLineOf(name)) : name);
-}
-
 /** The issue's whole tree, from the reads it was given. */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const context = treeContext(reads);
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
-}
-
-/**
- * What the page publishes from the targets of the batched reference read (`reads.targets`) for
- * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
- * rule a chip naming the target is named by (`treeContext`), so a link and a chip naming one
- * target never disagree, save that a chip draws the page's word for a whole document in place
- * of its name (`ReferenceNameReading.chipWord`): the chip of each answered target, named by
- * `chipNaming`.
- */
-export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
-  const context = treeContext(reads);
-  return chipNaming((reads.targets ?? []).map((target) => context.chipOf(target.ref)));
-}
-
-/**
- * How the page names each target the batched reference read answered, by the chip naming it
- * (`targetNaming`), under the chip's own reference (`NodeChip.ref`). Each reference is in one of
- * the four - `readings`, `ambiguous`, `gone`, `unnamed` - read from its chip in one walk, so the
- * four cannot disagree, and the marks of a named post are read in the same walk.
- *
- * - **`readings`**: how each target that something answers to now is named, by its address: the
- *   reading of a chip naming it (`NodeChip.reading`), which the store projects.
- * - **`ambiguous`**: the references the read answered ambiguous: each writes short an id two or
- *   more targets carry, so it names none of them, and a chip naming it says so
- *   (`NodeChip.ambiguous`). A surface draws one as its author wrote it and links nothing.
- * - **`gone`**: the references the read answered that nothing answers to now, an ambiguous one
- *   apart, which a surface draws as the words its author wrote (R8) and reads no target for.
- * - **`unnamed`**: the references the read answered with nothing to name them by - another
- *   issue's block it sent no words for - which a surface reads for itself, as a link to the
- *   target does (R8).
- * - **`edited`**: the references among `readings` whose post its author edited, a comment, a
- *   message or a block of either (`NodeChip.editedAt`). A link that draws a published name cuts
- *   it to its own length and then marks it ` · edited`, so no cut takes the mark: a mark
- *   published inside the name would be cut off a long one. A row's link names the post in one
- *   string, marked with `editedName` (`row-references.ts`); the row's chip draws the mark as an
- *   element of its own with `EditedMark`.
- * - **`deleted`**: the references among `readings` whose comment or message its author deleted,
- *   by its delete (`NodeChip.deletedAt`, `deletedBy`), each named in `readings` by its deleted
- *   line. A row's words draw that line in the deleted line's italic and name its actor as the
- *   page names an author, where the published name holds the actor as no registry knows it
- *   (`RowText.tsx`, INFRA-1196's decision 342); every other link draws the published name.
- *
- * Every reference in `edited` and in `deleted` is in `readings`: a target with no name takes no
- * mark, and a block of a deleted post is gone. None is in both `edited` and `deleted`: a deleted
- * post's chip carries no edit.
- */
-export function chipNaming(chips: Iterable<NodeChip>): Omit<PublishedReferences, "asked"> {
-  const ambiguous = new Set<string>();
-  const deleted = new Map<string, PostDeletion>();
-  const edited = new Set<string>();
-  const gone = new Set<string>();
-  const unnamed = new Set<string>();
-  const readings = new Map<string, ReferenceNameReading>();
-  for (const chip of chips) {
-    if (chip.ambiguous === true) ambiguous.add(chip.ref);
-    else if (chip.gone) gone.add(chip.ref);
-    else if (chip.reading === undefined) unnamed.add(chip.ref);
-    else {
-      readings.set(chip.ref, chip.reading);
-      if (chip.editedAt !== undefined) edited.add(chip.ref);
-      const deletion = postDeletion({ deleted_at: chip.deletedAt, deleted_by: chip.deletedBy });
-      if (deletion !== null) deleted.set(chip.ref, deletion);
-    }
-  }
-  return { ambiguous, deleted, edited, gone, readings, unnamed };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

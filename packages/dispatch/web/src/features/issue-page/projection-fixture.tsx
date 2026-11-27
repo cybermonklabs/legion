@@ -13,15 +13,10 @@ import {
   usePublishReferenceNames,
 } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
-import {
-  chipName,
-  chipNaming,
-  type IssueTreeReads,
-  type NodeChip,
-  type TreeNode,
-  targetNaming,
-} from "./issue-tree";
+import { chipName } from "./first-line";
+import type { IssueTreeReads, NodeChip, TreeNode } from "./issue-tree";
 import { lineOrKindWord, useNodeLine } from "./node-line";
+import { chipNaming, targetNaming } from "./target-naming";
 
 /**
  * What the shared reader makes of what the tree holds, read through the code the page's
@@ -97,8 +92,8 @@ export function publishedNames(
 }
 
 /** What the page publishes for `chips`: every chip the batched read answered for, named by the
- *  page's own rule (`issue-tree.ts`'s `chipNaming`, as `targetNaming` names the read's targets),
- *  and every chip's reference as one the page asks for, answered or not yet. */
+ *  page's own rule (`target-naming.ts`'s `chipNaming`, as `targetNaming` names the read's
+ *  targets), and every chip's reference as one the page asks for, answered or not yet. */
 export function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
   return {
     ...chipNaming(chips.filter((chip) => chip.answered)),

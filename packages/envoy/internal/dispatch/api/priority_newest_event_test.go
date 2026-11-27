@@ -1,11 +1,11 @@
-// priority_newest_event_test.go holds the newest event under each priority
-// (priorityNewestEventQuery) to what it reads and to what it answers. It reads the event of
-// last_seq of each member issue through the unique (issue_key, seq) of events, and no other event.
-// Beside the walk over the members it reads every table through an index, and its walk, which is
-// main's, reads issues once and no more shared buffers than main's walk. Its time is main's
-// (mainPriorityNewestEventQuery) where no two writes of an issue overlap. Where a write of an
-// issue began before another write of that issue committed, its time can be earlier, but by less
-// than the time from that start to that commit.
+// priority_newest_event_test.go holds the newest event under each priority, the part of the
+// priorities read's one statement (priorityReadQuery) that reads it (priorityNewestEventCTE), to
+// what it reads and to what it answers. It reads the event of last_seq of each member issue
+// through the unique (issue_key, seq) of events, and no other event, and every read it makes is
+// through an index. The statement's walk, which is main's, reads issues once and no more shared
+// buffers than main's walk. Its time is main's (mainPriorityNewestEventQuery) where no two writes
+// of an issue overlap. Where a write of an issue began before another write of that issue
+// committed, its time can be earlier, but by less than the time from that start to that commit.
 package api
 
 import (
@@ -54,10 +54,10 @@ const mainPriorityNewestEventQuery = `with recursive members_seed as (
 // newestEventWalkCTE names, frozen letter for letter as it stood at that commit. It is the walk
 // that mainPriorityNewestEventQuery is built from, so the buffers the plan test reads off the walk
 // of main's plans (requireWalkWithinMains) are this walk's. Each step joins issues on parent_key,
-// and the planner hashes issues for it from one read of the table. It decides the holds a text of
-// the newest event is put to (requireNewestEventPlan): a text that carries it takes main's walk,
-// and any other text takes a walk of its own, such as the walk keyed through issues_parent_key
-// (priorityNewestEventKeyedWalkQuery) that a reading on production may call for.
+// and the planner hashes issues for it from one read of the table. The plan test
+// (TestThePrioritiesReadWalksIssuesOnceOnTheCorpus) requires it of priorityReadQuery, so the walk
+// holds read the walk the read runs; the walk keyed through issues_parent_key
+// (priorityNewestEventKeyedWalkQuery) is the control both walk holds must fail.
 const mainNewestEventWalk = `members_spread as (
 		select s.key, s.priority, 0 as depth from members_seed s
 		union all
@@ -89,11 +89,13 @@ const (
 // times the member issues the read joins, so a plan that probes the events of every issue before
 // it joins the members runs its probe many more times than a plan that probes once for each
 // member issue (requireOneEventOfEachMember). Most of them have a parent. The planner sizes the
-// walk over the members from the 1,000 rows it plans for every seed (priorityMemberTerms) and from
-// how many issues have a parent, so it plans many more member rows than there are issues: 16,498
-// against 1,029 (PostgreSQL 18.7, 2026-11-24). A plan that probes every issue first is then the
-// cheaper one by its costs. When none of these issues had a parent, the planner probed once for
-// each member row even where the probe named the issue alone, so the check passed such a probe.
+// walk over the members of mainPriorityNewestEventQuery and priorityNewestEventKeyedWalkQuery
+// from the 1,000 rows it plans for the seed those texts read from two arrays (generate_subscripts)
+// and from how many issues have a parent, so it plans many more member rows than there are
+// issues: 16,498 against 1,029 (PostgreSQL 18.7, 2026-11-24). A plan that probes every issue
+// first is then the cheaper one by its costs. When none of these issues had a parent, the planner
+// probed once for each member row even where the probe named the issue alone, so the check passed
+// such a probe.
 const (
 	newestEventBystanderRoots    = 40
 	newestEventBystanderChildren = 24
@@ -208,13 +210,26 @@ func seedNewestEventCorpus(t *testing.T) newestEventCorpus {
 	return corpus
 }
 
-// priorityCorpusSeed reads the relations of a corpus's priorities, served by served, as the read
-// does (readPriorityRelations): the pair of arrays that every statement of the read takes as its
-// seed.
-func priorityCorpusSeed(t *testing.T, served *server, priorities []string) (keys, ids []string) {
+// priorityCorpusSeed reads the relations of a corpus's live priorities as the read's own seed
+// term reads them (members_seed of priorityMemberTerms), in one order: the pair of arrays that
+// main's text and the texts with the walk keyed take as their seed.
+func priorityCorpusSeed(t *testing.T, database *store.Store, priorities []string) (keys, ids []string) {
 	t.Helper()
-	keys, ids, err := served.readPriorityRelations(context.Background(), priorities)
+	rows, err := database.Pool.Query(context.Background(),
+		`with recursive `+priorityMemberTerms+` select key, priority from members_seed order by key, priority`, priorities)
 	if err != nil {
+		t.Fatalf("read the relations of the corpus's priorities: %v", err)
+	}
+	defer rows.Close()
+	keys, ids = []string{}, []string{}
+	for rows.Next() {
+		var key, id string
+		if err := rows.Scan(&key, &id); err != nil {
+			t.Fatalf("read a relation of the corpus's priorities: %v", err)
+		}
+		keys, ids = append(keys, key), append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
 		t.Fatalf("read the relations of the corpus's priorities: %v", err)
 	}
 	return keys, ids
@@ -230,10 +245,10 @@ var newestEventScopes = []struct {
 	{"project " + newestEventProject, []string{newestEventProject}},
 }
 
-// newestEventTimes runs statement, one of the two texts of the newest event under each priority,
-// with the seed and projects of a read, and answers the time of each priority by its id. Neither
-// text orders its rows, and the read keeps them by id (scanPriorityNewestEvents), so the two are
-// compared as sets of rows.
+// newestEventTimes runs statement, main's text or a text with its walk keyed, each of which takes
+// the seed of a read as two arrays, with that seed and the projects of the read, and answers the
+// time of each priority by its id. No text orders its rows, and the read keeps them by id, so
+// the texts are compared as sets of rows.
 func newestEventTimes(t *testing.T, database *store.Store, statement string, seedKeys, seedIDs, projects []string) map[string]time.Time {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), statement, seedKeys, seedIDs, projects)
@@ -262,16 +277,38 @@ func newestEventTimes(t *testing.T, database *store.Store, statement string, see
 	return times
 }
 
+// priorityReadNewestEvents runs the priorities read's statement (priorityReadQuery) over the
+// live priorities and the projects of a read, and answers the time of each priority by its id, as
+// the statement's column of the newest events answers it.
+func priorityReadNewestEvents(t *testing.T, database *store.Store, priorities, projects []string) map[string]time.Time {
+	t.Helper()
+	var answer priorityReadAnswer
+	if err := database.Pool.QueryRow(context.Background(), priorityReadQuery, priorities, projects).Scan(answer.targets()...); err != nil {
+		t.Fatalf("run the priorities read's statement: %v", err)
+	}
+	times := map[string]time.Time{}
+	for _, newest := range answer.newest {
+		if newest.At == nil {
+			t.Fatalf("the priorities read's statement answers %s with no time", newest.Priority)
+		}
+		if _, twice := times[newest.Priority]; twice {
+			t.Fatalf("the priorities read's statement answers %s twice", newest.Priority)
+		}
+		times[newest.Priority] = *newest.At
+	}
+	return times
+}
+
 // TestPriorityNewestEventAnswersMainsTime holds the newest event under each priority to main's
 // time where no two writes of an issue overlap. Over the corpus of seedNewestEventCorpus, whose
-// events rise in time with their seq, priorityNewestEventQuery answers main's (priority, time)
-// rows, read with no project named and with one. The read that the route answers from
-// (readPriorities) carries main's time on each priority, and null where main answers none: a
-// priority whose members have no event, or none in the project named.
+// events rise in time with their seq, the priorities read's statement (priorityReadQuery) answers
+// main's (priority, time) rows, read with no project named and with one. The read that the route
+// answers from (readPriorities) carries main's time on each priority, and null where main answers
+// none: a priority whose members have no event, or none in the project named.
 func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 	t.Parallel()
 	corpus := seedNewestEventCorpus(t)
-	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
+	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.database, corpus.priorities)
 	answered := make([]map[string]time.Time, 0, len(newestEventScopes))
 	for _, scope := range newestEventScopes {
 		want := newestEventTimes(t, corpus.database, mainPriorityNewestEventQuery, seedKeys, seedIDs, scope.projects)
@@ -287,7 +324,7 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 		}
 		answered = append(answered, want)
 
-		got := newestEventTimes(t, corpus.database, priorityNewestEventQuery, seedKeys, seedIDs, scope.projects)
+		got := priorityReadNewestEvents(t, corpus.database, corpus.priorities, scope.projects)
 		if !maps.EqualFunc(got, want, time.Time.Equal) {
 			t.Errorf("the newest event over %s answers\n%v\nwant main's\n%v", scope.name, got, want)
 		}
@@ -323,29 +360,31 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 // plan under: the generic plan that a prepared statement settles on
 // (explaintest.AnalyzedGenericPlan) and the plan made for the values of the read
 // (explaintest.AnalyzedPlanUnder). Each is read with no project named and with one. Sequential
-// scans stay on: with them off, the planner reads a table it would scan whole through the whole
-// of one of its indexes instead, with no index condition, which is the same read under another
-// name, in a plan the server does not run. Each plan of priorityNewestEventQuery
-// (requireNewestEventPlan):
+// scans stay on: with them off, the planner reads a table it would scan whole through the whole of
+// one of its indexes instead, with no index condition, which is the same read under another name,
+// in a plan the server does not run. The corpus is read in three states of each issue's
+// newest-event pair (newestEventStates): as written, with every pair null, which is a deployment
+// before 20261125144002 fills it; after that fill; and with one member issue's pair a seq behind
+// its last_seq, as an append by the release before 20261125143901 leaves it during a roll or
+// after a rollback. In each, the priorities read's statement (priorityReadQuery) answers main's
+// times, and each of its plans:
 //
-//   - reads one event of each member issue it joins (requireOneEventOfEachMember), and not one
-//     for each member row: an issue that advances three priorities is read once. The corpus holds
-//     many more issues with events than member issues, and fewer member issues than member rows
-//     (seedNewestEventCorpus), so a plan that probes the events of every issue before it joins the
-//     members, or that probes once for each member row, reads events more times than the check
-//     permits;
-//   - while its walk over the members is main's (mainNewestEventWalk), reads every table through
-//     an index beside the walk (requireKeyedBesideTheWalk), runs one read of issues in the walk
-//     (requireWalkReadsIssuesOnce), and reads no more shared buffers in the walk than main's walk
-//     reads under the same plan over the same scope (requireWalkWithinMains). Main's walk reads
-//     the whole of issues, with no index condition, but once for the whole walk, where a walk
-//     keyed through issues_parent_key probes the table once for each member row;
-//   - where its walk is any other, reads every table through an index, the walk's read included
-//     (requireEveryScanKeyed).
+//   - reads, in its newest event (newestEventRead), the event of last_seq of exactly the member
+//     issues whose pair does not name it, and no other event (requireNewestEventProbes): every
+//     member issue with an event before the fill, none after it, and the one whose pair is behind
+//     in the third state. Each read is an Index Scan of events_issue_key_seq_key on both its
+//     columns that answers at most one row;
+//   - reads every table through an index in its newest event (requireKeyedBesideTheWalk). The
+//     issues row of each member issue is not the newest event's own read: the statement reads it
+//     once for all its parts (member_issue), from one read of issues joined to the members, in one
+//     scan of issues that runs once (requireMemberIssueReadsIssuesOnce).
 //
-// The same holds are run on the statement with its walk keyed through issues_parent_key
-// (priorityNewestEventKeyedWalkQuery), which takes the second branch, so each branch holds a
-// plan the test reads.
+// The walk the statement holds is held on the corpus of production's counts
+// (TestThePrioritiesReadWalksIssuesOnceOnTheCorpus), where it walks as a deployment's does; on
+// this corpus the planner sizes it from the few relations it holds and scans issues at each step.
+// The newest event alone with its walk keyed through issues_parent_key
+// (priorityNewestEventKeyedWalkQuery) is held to one event of each member issue
+// (requireOneEventOfEachMember) and to an index condition on every scan (requireEveryScanKeyed).
 //
 // Each check must fail a control under each plan over each scope, and the test fails when one
 // passes, since the check would then be one that cannot fail (explaintest.RequireControlFails):
@@ -353,19 +392,17 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 //   - main's text fails the read of events and the reads beside the walk: it joins every event of
 //     every member issue, and its plans read events in a Seq Scan and the members' issues rows
 //     with no index condition, in a Seq Scan or a whole Index Only Scan of issues_pkey;
-//   - the keyed walk fails the two holds of main's walk: it probes issues once for each member
-//     row, and on this corpus those probes read more shared buffers than main's one read of the
-//     table (68 against 42, PostgreSQL 18.7, 2026-11-25);
-//   - priorityNewestEventQuery fails the index condition on every scan, since its walk, main's,
-//     reads issues in a Seq Scan.
+//   - a copy of the statement whose member_issue probes issues_pkey for each member issue
+//     (priorityMemberIssueProbedQuery) fails the one read of issues in member_issue.
+//
+// The control of the index condition on every scan, the statement's walk, which reads issues in a
+// Seq Scan, is held on the corpus of production's counts with the walk holds
+// (TestThePrioritiesReadWalksIssuesOnceOnTheCorpus).
 func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	t.Parallel()
-	if strings.Contains(priorityNewestEventKeyedWalkQuery, mainNewestEventWalk) {
-		t.Fatalf("the statement with its walk keyed (priorityNewestEventKeyedWalkQuery) carries main's walk, so no plan the test reads takes the keyed branch")
-	}
 	corpus := seedNewestEventCorpus(t)
 	settleSpeedCorpus(t, corpus.database)
-	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.served, corpus.priorities)
+	seedKeys, seedIDs := priorityCorpusSeed(t, corpus.database, corpus.priorities)
 	ctx := context.Background()
 	keys := explaintest.NewIndexKeys(corpus.database.Pool)
 	connection, err := corpus.database.Pool.Acquire(ctx)
@@ -374,110 +411,195 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	}
 	defer connection.Release()
 
-	const mains, statement, keyed = 0, 1, 2
-	texts := []struct{ name, statement string }{
-		mains:     {"main's newest event", mainPriorityNewestEventQuery},
-		statement: {"the newest event", priorityNewestEventQuery},
-		keyed:     {"the newest event with its walk keyed", priorityNewestEventKeyedWalkQuery},
-	}
-	for scopeNumber, scope := range newestEventScopes {
-		members := newestEventMemberIssues(t, corpus.database, seedKeys, seedIDs, scope.projects, scope.name)
-		arguments := []any{seedKeys, seedIDs, scope.projects}
-		parameters, literals := benchtime.PreparedArguments(t, "the newest event over "+scope.name, arguments...)
-		plans := []struct {
-			name  string
-			plans []json.RawMessage
-		}{{name: "the generic plan"}, {name: "the plan for its values"}}
-		for textNumber, text := range texts {
-			plans[0].plans = append(plans[0].plans, explaintest.AnalyzedGenericPlan(t, ctx, connection,
-				fmt.Sprintf("newest_event_%d_%d", scopeNumber, textNumber), text.statement, parameters, literals))
-			plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlanUnder(t, ctx, corpus.database.Pool,
-				text.statement, nil, arguments...))
+	const mains, statement, keyed, probed = 0, 1, 2, 3
+	for stateNumber, state := range newestEventStates {
+		if state.setup != nil {
+			state.setup(t, corpus.database)
 		}
-		for _, plan := range plans {
-			subjects := make([]string, len(texts))
-			for textNumber, text := range texts {
-				subjects[textNumber] = fmt.Sprintf("%s under %s over %s", text.name, plan.name, scope.name)
+		for scopeNumber, scope := range newestEventScopes {
+			members := newestEventMemberIssues(t, corpus.database, corpus.priorities, scope.projects, scope.name)
+			over := scope.name + " " + state.name
+			if got, want := priorityReadNewestEvents(t, corpus.database, corpus.priorities, scope.projects),
+				newestEventTimes(t, corpus.database, mainPriorityNewestEventQuery, seedKeys, seedIDs, scope.projects); !maps.EqualFunc(got, want, time.Time.Equal) {
+				t.Errorf("the newest event over %s answers\n%v\nwant main's\n%v", over, got, want)
 			}
-			mainsWalk := newestEventWalkBuffers(t, plan.plans[mains], subjects[mains])
-			if mainsWalk == 0 {
-				t.Fatalf("%s reads no shared buffer in its walk over the members, so the bound on the walk holds nothing:\n%s",
-					subjects[mains], plan.plans[mains])
-			}
-			for _, held := range []int{statement, keyed} {
-				requireNewestEventPlan(t, keys, texts[held].statement, plan.plans[held], subjects[held], members, mainsWalk)
-			}
-
-			for _, control := range []struct {
-				text       int
-				cannotTell string
-				check      func(t testing.TB, plan json.RawMessage, subject string)
+			// Main's text and the keyed walk take the relations as two arrays; the read's statement
+			// takes the live priorities and reads their relations itself.
+			seeded := []any{seedKeys, seedIDs, scope.projects}
+			texts := []struct {
+				name, statement string
+				arguments       []any
 			}{
-				{mains, "a read of every event from one read of a member", func(t testing.TB, plan json.RawMessage, subject string) {
-					requireOneEventOfEachMember(t, keys, plan, subject, members)
-				}},
-				{mains, "a read of a whole table beside the walk from a read through an index", requireKeyedBesideTheWalk},
-				{keyed, "a walk that reads issues for each member row from one that reads it once", requireWalkReadsIssuesOnce},
-				{keyed, "a walk that reads more shared buffers than main's from one that reads no more", func(t testing.TB, plan json.RawMessage, subject string) {
-					requireWalkWithinMains(t, plan, subject, mainsWalk)
-				}},
-				{statement, "a walk that reads the whole of issues from one keyed through an index", requireEveryScanKeyed},
-			} {
-				subject, controlPlan := subjects[control.text], plan.plans[control.text]
-				explaintest.RequireControlFails(t, subject, "a control", control.cannotTell, controlPlan,
-					func(t testing.TB) { control.check(t, controlPlan, subject) })
+				mains:     {"main's newest event", mainPriorityNewestEventQuery, seeded},
+				statement: {"the priorities read's statement", priorityReadQuery, []any{corpus.priorities, scope.projects}},
+				keyed:     {"the newest event with its walk keyed", priorityNewestEventKeyedWalkQuery, seeded},
+				probed:    {"the statement with member_issue probed", priorityMemberIssueProbedQuery(t), []any{corpus.priorities, scope.projects}},
+			}
+			plans := []struct {
+				name  string
+				plans []json.RawMessage
+			}{{name: "the generic plan"}, {name: "the plan for its values"}}
+			for textNumber, text := range texts {
+				parameters, literals := benchtime.PreparedArguments(t, text.name+" over "+over, text.arguments...)
+				plans[0].plans = append(plans[0].plans, explaintest.AnalyzedGenericPlan(t, ctx, connection,
+					fmt.Sprintf("newest_event_%d_%d_%d", stateNumber, scopeNumber, textNumber), text.statement, parameters, literals))
+				plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlanUnder(t, ctx, corpus.database.Pool,
+					text.statement, nil, text.arguments...))
+			}
+			for _, plan := range plans {
+				subjects := make([]string, len(texts))
+				for textNumber, text := range texts {
+					subjects[textNumber] = fmt.Sprintf("%s under %s over %s", text.name, plan.name, over)
+				}
+				requireNewestEventProbes(t, keys, plan.plans[statement], subjects[statement], state.probes(members))
+				requireKeyedBesideTheWalk(t, newestEventRead, plan.plans[statement], subjects[statement])
+				requireMemberIssueReadsIssuesOnce(t, plan.plans[statement], subjects[statement])
+				requireOneEventOfEachMember(t, keys, newestEventRead, plan.plans[keyed], subjects[keyed], members.issues)
+				requireEveryScanKeyed(t, plan.plans[keyed], subjects[keyed])
+
+				for _, control := range []struct {
+					text       int
+					cannotTell string
+					check      func(t testing.TB, plan json.RawMessage, subject string)
+				}{
+					{mains, "a read of every event from one read of a member", func(t testing.TB, plan json.RawMessage, subject string) {
+						requireOneEventOfEachMember(t, keys, mainsNewestEventRead, plan, subject, members.issues)
+					}},
+					{mains, "a read of a whole table beside the walk from a read through an index", func(t testing.TB, plan json.RawMessage, subject string) {
+						requireKeyedBesideTheWalk(t, mainsNewestEventRead, plan, subject)
+					}},
+					{probed, "a member_issue that probes issues_pkey once for each member issue from one that reads issues in one scan", requireMemberIssueReadsIssuesOnce},
+				} {
+					subject, controlPlan := subjects[control.text], plan.plans[control.text]
+					explaintest.RequireControlFails(t, subject, "a control", control.cannotTell, controlPlan,
+						func(t testing.TB) { control.check(t, controlPlan, subject) })
+				}
 			}
 		}
 	}
 }
 
-// newestEventMembersQuery counts, over the seed and projects of a read, the member rows of the
-// newest event under each priority: the distinct (issue, priority) rows of the walk
+// newestEventStates are the three states of the corpus's newest-event pairs that
+// TestPriorityNewestEventReadsOneEventOfEachMember reads the statement in, in order, each made by
+// its setup from the one before: as written, every pair null, where the statement probes the
+// event of each member issue that has one; after 20261125144002's fill (fillNewestEventPairs),
+// where it probes none; and with the pair of one member issue of both scopes - the first by key of
+// project newestEventProject's issues that state a relation and have an event - a seq behind its
+// last_seq, where it probes that one.
+var newestEventStates = []struct {
+	name   string
+	setup  func(t *testing.T, database *store.Store)
+	probes func(members newestEventMembers) int
+}{
+	{"before the fill", nil, func(members newestEventMembers) int { return members.withEvents }},
+	{"after the fill", fillNewestEventPairs, func(newestEventMembers) int { return 0 }},
+	{"with one pair behind its last_seq", func(t *testing.T, database *store.Store) {
+		t.Helper()
+		if _, err := database.Pool.Exec(context.Background(), `update issues set last_event_at_seq = last_seq - 1
+			where key = (
+				select i.key from issues i
+				where i.project_key = '`+newestEventProject+`' and i.last_seq > 0
+					and i.key in (select t.from_id from priority_tuples t)
+				order by i.key collate "C" limit 1
+			)`); err != nil {
+			t.Fatalf("set one member issue's newest-event pair a seq behind its last_seq: %v", err)
+		}
+	}, func(newestEventMembers) int { return 1 }},
+}
+
+// requireNewestEventProbes holds plan, an analyzed plan of the priorities read's statement, to
+// reading in its newest event (newestEventRead) the event of last_seq of want member issues, and
+// no other event: every scan of events there is an Index Scan of newestEventIndex whose Index Cond
+// names issue_key, its first column (IndexKeys.RequireIndexKeyed), and seq, and that answers at
+// most one row each time it runs, and those scans run want times in all. Each failure names
+// subject and prints the plan through t.Errorf.
+func requireNewestEventProbes(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, want int) {
+	t.Helper()
+	plan = newestEventRead(t, plan, subject)
+	loops := newestEventProbeLoops(t, keys, plan, subject)
+	t.Logf("%s reads events %v times in its newest event, want %d", subject, loops, want)
+	if loops != float64(want) {
+		t.Errorf("%s reads events %v times in its newest event, want %d, one for each member issue whose newest-event pair does not name its event of last_seq:\n%s",
+			subject, loops, want, plan)
+	}
+}
+
+// newestEventMembersQuery counts, over the live priorities and projects of a read, the member rows
+// of the newest event under each priority: the distinct (issue, priority) rows of the walk
 // (priorityMemberTerms) whose issue the project filter keeps (priorityProjectFilter). Beside them
 // it counts the member issues of those rows, the distinct issues, which the read joins and
-// probes the events of, and the issues with an event that the project filter keeps, which are
-// what a read that probes the events of every issue probes.
+// probes the events of, those of them that have an event, and the issues with an event that the
+// project filter keeps, which are what a read that probes the events of every issue probes.
 var newestEventMembersQuery = `with recursive ` + priorityMemberTerms + `
 	select
 		(select count(*) from members m join issues i on i.key = m.key where ` + priorityProjectFilter + `),
 		(select count(distinct m.key) from members m join issues i on i.key = m.key where ` + priorityProjectFilter + `),
+		(select count(distinct m.key) from members m join issues i on i.key = m.key where i.last_seq > 0 and ` + priorityProjectFilter + `),
 		(select count(*) from issues i where i.last_seq > 0 and ` + priorityProjectFilter + `)`
 
+// newestEventMembers is what newestEventMembersQuery counts of a read: its member issues, and
+// those of them that have an event.
+type newestEventMembers struct {
+	issues, withEvents int
+}
+
 // newestEventMemberIssues is how many member issues the newest event under each priority joins
-// over the seed and projects of a read, scope (newestEventMembersQuery). It logs them beside the
-// member rows and the issues with an event in the same projects. A corpus whose member issues
-// are as many as its member rows fails the test: there no issue advances two priorities, and the
-// bound on the member issues (requireOneEventOfEachMember) would pass a plan that probes once
-// for each member row.
-func newestEventMemberIssues(t *testing.T, database *store.Store, seedKeys, seedIDs, projects []string, scope string) int {
+// over the live priorities and projects of a read, scope, and how many of them have an event
+// (newestEventMembersQuery). It logs them beside the member rows and the issues with an event in
+// the same projects. A corpus whose member issues are as many as its member rows fails the test:
+// there no issue advances two priorities, and the bound on the member issues
+// (requireOneEventOfEachMember) would pass a plan that probes once for each member row.
+func newestEventMemberIssues(t *testing.T, database *store.Store, priorities, projects []string, scope string) newestEventMembers {
 	t.Helper()
-	var rows, members, issues int
-	if err := database.Pool.QueryRow(context.Background(), newestEventMembersQuery, seedKeys, seedIDs, projects).
-		Scan(&rows, &members, &issues); err != nil {
+	var rows, members, withEvents, issues int
+	if err := database.Pool.QueryRow(context.Background(), newestEventMembersQuery, priorities, projects).
+		Scan(&rows, &members, &withEvents, &issues); err != nil {
 		t.Fatalf("count the member issues over %s: %v", scope, err)
 	}
-	t.Logf("over %s the read joins %d member issues in %d member rows, and %d issues with an event stand in its projects",
-		scope, members, rows, issues)
+	t.Logf("over %s the read joins %d member issues, %d of them with an event, in %d member rows, and %d issues with an event stand in its projects",
+		scope, members, withEvents, rows, issues)
 	if members >= rows {
 		t.Fatalf("over %s the read joins %d member issues in %d member rows, so no issue advances two priorities and the check would pass a probe for each member row",
 			scope, members, rows)
 	}
-	return members
+	return newestEventMembers{issues: members, withEvents: withEvents}
 }
 
-// requireOneEventOfEachMember holds plan, an analyzed plan of a newest event statement, to reading
+// requireOneEventOfEachMember holds plan, an analyzed plan of a text of the newest event, to
+// reading, in its newest event (read: newestEventRead, or mainsNewestEventRead for main's text),
 // one event of each member issue it joins, the member's event of last_seq, and no other event.
-// Every scan of events is an Index Scan of newestEventIndex whose Index Cond names both columns
-// of the index: issue_key, its first (IndexKeys.RequireIndexKeyed), and seq. Each such scan
+// Every scan of events there is an Index Scan of newestEventIndex whose Index Cond names both
+// columns of the index: issue_key, its first (IndexKeys.RequireIndexKeyed), and seq. Each such scan
 // answers at most one row each time it runs, and at least one of them ran, so a plan that read no
 // event shows nothing. A scan of events of any other kind is a read beyond the one event of a
 // member. The scans of events run at most members times in all, the member issues the read joins
 // (newestEventMemberIssues): a plan that probes the events of an issue before it joins the issue
-// to the members probes every issue the project filter keeps, and a plan that probes once for
-// each member row, an (issue, priority) pair, probes an issue once for every priority it
-// advances. Each failure names subject and prints the plan through t.Errorf, which is what a
-// control reads (explaintest.RequireControlFails).
-func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string, members int) {
+// to the members probes every issue the project filter keeps, and a plan that probes once for each
+// member row, an (issue, priority) pair, probes an issue once for every priority it advances. Each
+// failure names subject and prints the plan through t.Errorf, which is what a control reads
+// (explaintest.RequireControlFails).
+func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, read newestEventReadOf, plan json.RawMessage, subject string, members int) {
+	t.Helper()
+	plan = read(t, plan, subject)
+	loops := newestEventProbeLoops(t, keys, plan, subject)
+	if loops == 0 {
+		t.Errorf("%s ran no read of events, so its plan shows nothing of how it reads them:\n%s", subject, plan)
+	}
+	t.Logf("%s reads events %v times in all, for the %d member issues it joins", subject, loops, members)
+	if loops > float64(members) {
+		t.Errorf("%s reads events %v times in all, more than the %d member issues it joins, want at most one read for each member issue:\n%s",
+			subject, loops, members, plan)
+	}
+}
+
+// newestEventProbeLoops is how many times plan, the newest event's own read in an analyzed plan
+// (newestEventRead), reads events, the Actual Loops of its scans of events summed, and it holds
+// each of those scans to reading the one event of last_seq of a member issue: an Index Scan of
+// newestEventIndex whose Index Cond names issue_key, its first column
+// (IndexKeys.RequireIndexKeyed), and seq, answering at most one row each time it runs. Each
+// failure names subject and prints the plan through t.Errorf, which is what a control reads
+// (explaintest.RequireControlFails).
+func newestEventProbeLoops(t testing.TB, keys *explaintest.IndexKeys, plan json.RawMessage, subject string) float64 {
 	t.Helper()
 	keys.RequireIndexKeyed(t, plan, newestEventIndex, subject, explaintest.CondRequired)
 	var loops float64
@@ -499,48 +621,54 @@ func requireOneEventOfEachMember(t testing.TB, keys *explaintest.IndexKeys, plan
 				subject, node.Rows, node, node.Loops, plan)
 		}
 	}
-	if loops == 0 {
-		t.Errorf("%s ran no read of events, so its plan shows nothing of how it reads them:\n%s", subject, plan)
-	}
-	t.Logf("%s reads events %v times in all, for the %d member issues it joins", subject, loops, members)
-	if loops > float64(members) {
-		t.Errorf("%s reads events %v times in all, more than the %d member issues it joins, want at most one read for each member issue:\n%s",
-			subject, loops, members, plan)
-	}
+	return loops
 }
 
-// requireNewestEventPlan holds plan, an analyzed plan of statement, a text of the newest event
-// under each priority, to every hold of TestPriorityNewestEventReadsOneEventOfEachMember: one read
-// of the event of each member issue (requireOneEventOfEachMember), and the holds of its walk over
-// the members, which its text decides. A text that carries main's walk (mainNewestEventWalk)
-// reads every table beside the walk through an index, runs one read of issues in the walk, and
-// reads no more shared buffers in the walk than mainsWalk, those main's walk reads under the same
-// plan over the same scope. A text whose walk is any other reads every table through an index,
-// the walk's read included. members is how many member issues the read joins
-// (newestEventMemberIssues). Each failure names subject and prints the plan.
-func requireNewestEventPlan(t testing.TB, keys *explaintest.IndexKeys, statement string, plan json.RawMessage, subject string, members int, mainsWalk float64) {
+// planSubplan is the one node of plan, an analyzed plan, that begins the subplan named name, with
+// every node under it (planSubplans). A plan that holds no such node, or more than one, fails the
+// test, since what is held of the subplan would then be read off nothing.
+func planSubplan(t testing.TB, plan json.RawMessage, name, subject string) json.RawMessage {
 	t.Helper()
-	requireOneEventOfEachMember(t, keys, plan, subject, members)
-	if !strings.Contains(statement, mainNewestEventWalk) {
-		t.Logf("%s takes a walk over the members other than main's, so every read of it is held to an index condition", subject)
-		requireEveryScanKeyed(t, plan, subject)
-		return
+	subplans := planSubplans(t, plan, name, subject)
+	if len(subplans) != 1 {
+		t.Fatalf("%s holds %d plans of %s, want one:\n%s", subject, len(subplans), name, plan)
 	}
-	t.Logf("%s takes main's walk over the members, so every read beside the walk is held to an index condition, and the walk to one read of issues and to main's shared buffers", subject)
-	requireKeyedBesideTheWalk(t, plan, subject)
-	requireWalkReadsIssuesOnce(t, plan, subject)
-	requireWalkWithinMains(t, plan, subject, mainsWalk)
+	return subplans[0]
 }
 
-// newestEventWalk is the plan of the walk over the members in plan, an analyzed plan of a text of
-// the newest event: the one node that begins the subplan newestEventWalkCTE, with every node
-// under it. The walk is told by its place in the plan rather than by the tables it reads, so a
-// read of issues beside the walk is never taken for the walk's own. A plan that holds no such
-// node, or more than one, fails the test, since what is held of the walk would then be read off
-// nothing.
-func newestEventWalk(t testing.TB, plan json.RawMessage, subject string) json.RawMessage {
+// newestEventReadOf is how a hold finds the newest event's own read in an analyzed plan of a text
+// of the newest event: newestEventRead for a text that reads it in a CTE of its own, as the
+// priorities read's statement and the text with its walk keyed do, and mainsNewestEventRead for
+// main's text, which reads it in its one select.
+type newestEventReadOf func(t testing.TB, plan json.RawMessage, subject string) json.RawMessage
+
+// newestEventRead is the plan of the newest event's own read in plan: the one subplan
+// priorityNewestEventCTE, with every node under it (planSubplan). In the read's statement the
+// second fault's list reads events too (backlogMoveLateral), and that read is not the newest
+// event's. A plan that holds no such subplan, or more than one, fails the test, so a hold never
+// takes a whole plan for the newest event's read.
+func newestEventRead(t testing.TB, plan json.RawMessage, subject string) json.RawMessage {
 	t.Helper()
-	var walks []json.RawMessage
+	return planSubplan(t, plan, priorityNewestEventCTE, subject)
+}
+
+// mainsNewestEventRead is the plan of the newest event's read in plan, an analyzed plan of main's
+// text (mainPriorityNewestEventQuery): the whole plan, since main's text reads the newest event in
+// its one select. A plan that holds a subplan priorityNewestEventCTE is no plan of main's text,
+// and fails the test.
+func mainsNewestEventRead(t testing.TB, plan json.RawMessage, subject string) json.RawMessage {
+	t.Helper()
+	if reads := planSubplans(t, plan, priorityNewestEventCTE, subject); len(reads) > 0 {
+		t.Fatalf("%s holds %d plans of %s, which main's text has none of:\n%s", subject, len(reads), priorityNewestEventCTE, plan)
+	}
+	return plan
+}
+
+// planSubplans is every node of plan, an analyzed plan, that begins the subplan named name, each
+// with every node under it, in the order a walk of the plan meets them.
+func planSubplans(t testing.TB, plan json.RawMessage, name, subject string) []json.RawMessage {
+	t.Helper()
+	var found []json.RawMessage
 	var visit func(node json.RawMessage)
 	visit = func(node json.RawMessage) {
 		var read struct {
@@ -550,80 +678,91 @@ func newestEventWalk(t testing.TB, plan json.RawMessage, subject string) json.Ra
 		if err := json.Unmarshal(node, &read); err != nil {
 			t.Fatalf("decode a node of the plan of %s: %v", subject, err)
 		}
-		if read.SubplanName == newestEventWalkCTE {
-			walks = append(walks, node)
+		if read.SubplanName == name {
+			found = append(found, node)
 		}
 		for _, child := range read.Plans {
 			visit(child)
 		}
 	}
 	visit(plan)
-	if len(walks) != 1 {
-		t.Fatalf("%s holds %d plans of %s, want one:\n%s", subject, len(walks), newestEventWalkCTE, plan)
-	}
-	return walks[0]
+	return found
 }
 
-// newestEventWalkBuffers is the shared buffers, hit plus read, that the walk over the members in
-// plan reads (newestEventWalk): those of the walk's top node, which count every node under it.
-func newestEventWalkBuffers(t testing.TB, plan json.RawMessage, subject string) float64 {
+// requireKeyedBesideTheWalk holds the newest event in plan (read: newestEventRead, or
+// mainsNewestEventRead for main's text) to reading every table through an index beside the walk
+// over the members: each scan that explaintest.ScansWithoutIndexCond names in it is one of the
+// walk's (newestEventWalkCTE), where the walk is under it, as in main's text. The walk's scans are
+// taken out of the read's one for one, so a read beside the walk is still named where the walk
+// reads the same table the same way.
+func requireKeyedBesideTheWalk(t testing.TB, read newestEventReadOf, plan json.RawMessage, subject string) {
 	t.Helper()
-	top := explaintest.Nodes(t, newestEventWalk(t, plan, subject))[0]
-	return top.SharedHitBlocks + top.SharedReadBlocks
-}
-
-// requireKeyedBesideTheWalk holds plan to reading every table through an index beside the walk
-// over the members: each scan that explaintest.ScansWithoutIndexCond names in plan is one of the
-// walk's (newestEventWalk). The walk's scans are taken out of the plan's one for one, so a read
-// beside the walk is still named where the walk reads the same table the same way.
-func requireKeyedBesideTheWalk(t testing.TB, plan json.RawMessage, subject string) {
-	t.Helper()
-	unkeyed := explaintest.ScansWithoutIndexCond(t, plan)
-	for _, scan := range explaintest.ScansWithoutIndexCond(t, newestEventWalk(t, plan, subject)) {
-		if at := slices.Index(unkeyed, scan); at >= 0 {
-			unkeyed = slices.Delete(unkeyed, at, at+1)
+	newest := read(t, plan, subject)
+	unkeyed := explaintest.ScansWithoutIndexCond(t, newest)
+	for _, walk := range planSubplans(t, newest, newestEventWalkCTE, subject) {
+		for _, scan := range explaintest.ScansWithoutIndexCond(t, walk) {
+			if at := slices.Index(unkeyed, scan); at >= 0 {
+				unkeyed = slices.Delete(unkeyed, at, at+1)
+			}
 		}
 	}
 	if len(unkeyed) > 0 {
-		t.Errorf("%s reads %s with no index condition beside its walk over the members (%s), want every read beside the walk through an index:\n%s",
+		t.Errorf("%s reads %s with no index condition in its newest event beside its walk over the members (%s), want every read beside the walk through an index:\n%s",
 			subject, strings.Join(unkeyed, ", "), newestEventWalkCTE, plan)
 	}
 }
 
-// requireWalkReadsIssuesOnce holds the walk over the members in plan (newestEventWalk) to one
-// read of issues: one scan of the table, which runs once. Main's walk hashes issues from that one
-// read and joins each step's members to the hash; a walk that probes issues for each member row
-// runs its scan once for each.
-func requireWalkReadsIssuesOnce(t testing.TB, plan json.RawMessage, subject string) {
+// requireMemberIssueReadsIssuesOnce holds member_issue in plan, an analyzed plan of the
+// priorities read's statement (its subplan priorityMemberIssueCTE, planSubplan), to one read of
+// issues: one scan of the table, which runs once. The statement hashes issues from that one read
+// and joins the members to the hash; a member_issue that probes issues_pkey for each member issue
+// (priorityMemberIssueProbedQuery) runs its scan once for each. The failure names the CTE, the
+// table, and each scan of it with its index and its loops, and prints the plan through t.Errorf,
+// which is what a control reads (explaintest.RequireControlFails).
+func requireMemberIssueReadsIssuesOnce(t testing.TB, plan json.RawMessage, subject string) {
 	t.Helper()
-	var reads []explaintest.Scan
-	for _, scan := range explaintest.Scans(t, newestEventWalk(t, plan, subject)) {
-		if scan.Relation == "issues" {
-			reads = append(reads, scan)
+	var reads []string
+	loops := 0.0
+	for _, scan := range explaintest.Scans(t, planSubplan(t, plan, priorityMemberIssueCTE, subject)) {
+		if scan.Relation != "issues" {
+			continue
 		}
+		through := "no index"
+		if scan.Index != "" {
+			through = scan.Index
+		}
+		reads = append(reads, fmt.Sprintf("a scan of issues through %s that runs %v times", through, scan.Loops))
+		loops += scan.Loops
 	}
-	if len(reads) != 1 {
-		t.Errorf("%s scans issues %d times in its walk over the members (%s), want one scan:\n%s",
-			subject, len(reads), newestEventWalkCTE, plan)
+	if len(reads) != 1 || loops != 1 {
+		t.Errorf("%s reads issues in %s in %d scans, running %v times in all (%s), want one scan of issues that runs once:\n%s",
+			subject, priorityMemberIssueCTE, len(reads), loops, strings.Join(reads, "; "), plan)
 		return
 	}
-	if reads[0].Loops != 1 {
-		t.Errorf("%s runs its scan of issues in its walk over the members (%s) %v times, want once:\n%s",
-			subject, newestEventWalkCTE, reads[0].Loops, plan)
-	}
+	t.Logf("%s reads issues in %s in one scan, %s", subject, priorityMemberIssueCTE, reads[0])
 }
 
-// requireWalkWithinMains holds the walk over the members in plan (newestEventWalk) to reading no
-// more shared buffers, hit plus read, than mainsWalk, those main's walk reads under the same plan
-// over the same scope.
-func requireWalkWithinMains(t testing.TB, plan json.RawMessage, subject string, mainsWalk float64) {
+// priorityMemberIssueProbedQuery is the control of requireMemberIssueReadsIssuesOnce: a copy of
+// the priorities read's statement (priorityReadQuery) whose member_issue reads the issues row of
+// each member issue by a probe of its own, a lateral read keyed on issues_pkey that `offset 0`
+// keeps the planner from flattening into a join, in place of the join of members to issues. It
+// answers the statement's rows, and its member_issue runs its scan of issues once for each member
+// issue. It fails the test where the statement holds no such join to replace.
+func priorityMemberIssueProbedQuery(t testing.TB) string {
 	t.Helper()
-	walk := newestEventWalkBuffers(t, plan, subject)
-	t.Logf("%s reads %v shared buffers in its walk over the members, and main's walk %v", subject, walk, mainsWalk)
-	if walk > mainsWalk {
-		t.Errorf("%s reads %v shared buffers in its walk over the members (%s), more than the %v of main's walk under the same plan, want at most main's:\n%s",
-			subject, walk, newestEventWalkCTE, mainsWalk, plan)
+	joined := `from members m
+		join issues i on i.key = m.key
+		where ` + priorityProjectFilter + `
+		group by i.key
+	), member_event`
+	probed := `from (select distinct key from members) m
+		cross join lateral (select * from issues i where i.key = m.key offset 0) i
+		where ` + priorityProjectFilter + `
+	), member_event`
+	if strings.Count(priorityReadQuery, joined) != 1 {
+		t.Fatalf("the priorities read's statement does not read member_issue as one join of members to issues, so the control that probes issues for each member issue copies no text the read runs:\n%s", priorityReadQuery)
 	}
+	return strings.Replace(priorityReadQuery, joined, probed, 1)
 }
 
 // requireEveryScanKeyed holds plan to reading every table through an index, the walk over the
@@ -670,10 +809,19 @@ func TestPriorityNewestEventIsEarlierOnlyInsideItsBound(t *testing.T) {
 	}
 	copySeededRows(t, database, "projects", seededProjectColumns, [][]any{seededProject(project, len(issues), at)})
 	copySeededRows(t, database, "issues", seededIssueColumns, issues)
-	// The seed the read sends for the relations of the three priorities: each is stated on one
-	// issue, and the third on the root whose child is its second member.
+	// The three priorities: each is stated on one issue, and the third on the root whose child is
+	// its second member. Main's text takes their relations as the seed's two arrays; the read's
+	// statement reads them from the store.
 	seedKeys := []string{one, waits, twoRoot}
 	seedIDs := []string{"overlap-one", "overlap-waits", "overlap-two-members"}
+	nodes, tuples := [][]any{}, [][]any{}
+	for index, id := range seedIDs {
+		nodes = append(nodes, seededPriorityNode(t, id, "Priority "+id, "Work written in overlapping writes.",
+			"alice", fmt.Sprintf("o%02d", index), at))
+		tuples = append(tuples, seededAdvancesTuple(seedKeys[index], id, at))
+	}
+	copySeededRows(t, database, "priority_nodes", seededNodeColumns, nodes)
+	copySeededRows(t, database, "priority_tuples", seededTupleColumns, tuples)
 
 	t.Run("A begins, B appends and commits, then A appends", func(t *testing.T) {
 		a := beginOverlapWrite(t, database)
@@ -845,12 +993,13 @@ func requireOverlap(t *testing.T, first overlapWrite, earlier, later model.Event
 }
 
 // requireNewestInsideBound holds priority's two times to that bound after an overlap. The newest
-// event is wantNew, the created_at of the write that began first and committed last. Main's is
-// wantMain, the created_at of the other write. The newest event is never later than main's, and
-// main's is later by less than bound, the time from that start to that commit.
+// event, which the read's statement answers over the live priorities seedIDs, is wantNew, the
+// created_at of the write that began first and committed last. Main's, over the seed of seedKeys
+// and seedIDs, is wantMain, the created_at of the other write. The newest event is never later
+// than main's, and main's is later by less than bound, the time from that start to that commit.
 func requireNewestInsideBound(t *testing.T, database *store.Store, seedKeys, seedIDs []string, priority string, wantNew, wantMain time.Time, bound time.Duration) {
 	t.Helper()
-	newest, has := newestEventTimes(t, database, priorityNewestEventQuery, seedKeys, seedIDs, []string{})[priority]
+	newest, has := priorityReadNewestEvents(t, database, seedIDs, []string{})[priority]
 	if !has {
 		t.Fatalf("the newest event answers no time for %s", priority)
 	}
