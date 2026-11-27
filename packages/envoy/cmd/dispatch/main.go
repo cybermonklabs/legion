@@ -1036,24 +1036,6 @@ func main() {
 			outboxPublisher.Run(ctx)
 		}()
 	}
-	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
-	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
-	// to embed needs no other wiring change and no person-run step to cover existing content.
-	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
-	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
-	// pacing only its calls - never a live search request's own query embedding, which always
-	// goes straight through the unwrapped client - is what keeps saturating background work from
-	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
-	// comment has the AIMD mechanism and the headroom this leaves). A nil embedder (meaning
-	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
-	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
-	// below; it embeds and drops only while its embedder's identity is the active one, which every
-	// process decides from the live registry rows (embedqueue, active.go), so a process configured
-	// with another embedder than the fleet's leaves the vectors as they are.
-	var backgroundEmbedder embed.Embedder
-	if embedder != nil {
-		backgroundEmbedder = embed.NewRateLimitedEmbedder(embedder)
-	}
 
 	// This process's one shared LISTEN connection. Its name is what makes this process a member:
 	// the other envoy-dispatch processes read it in pg_stat_activity (docs/room_sync.go), and only
@@ -1072,7 +1054,7 @@ func main() {
 		},
 	}
 	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
-	if backgroundEmbedder != nil {
+	if embedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
@@ -1098,7 +1080,23 @@ func main() {
 	textVersionsEventsWake := listenerHub.Wake(api.EventsChannel)
 	textVersionsReleasedWake := listenerHub.Wake(duty.HoldReleasedChannel)
 
-	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
+	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
+	// to embed needs no other wiring change and no person-run step to cover existing content.
+	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
+	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
+	// pacing only its calls - never a live search request's own query embedding, which always
+	// goes straight through the unwrapped client - is what keeps saturating background work from
+	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
+	// comment has the AIMD mechanism and the headroom this leaves). Deps.Paced makes the wrapper
+	// and keeps it as the queue's pace, so the pace's wait renews the queue's claim on the rows it
+	// waits to embed, and a canary that meets an outage backs the pace off. A nil embedder (meaning
+	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
+	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
+	// below; it embeds and drops only while its embedder's identity is the active one, which every
+	// process decides from the live registry rows (embedqueue, active.go), so a process configured
+	// with another embedder than the fleet's leaves the vectors as they are.
+	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: embedder, Wake: embeddingsWake}.Paced())
 	// The block schema the store holds, read again each time a supertag write announces itself.
 	// A read that fails, and a value the install refuses, leaves the installed schema in place
 	// and is read again; a store a newer build migrated is installed at this build's own

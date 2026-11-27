@@ -150,6 +150,7 @@ on:
       - 'packages/envoy/going/agent/*'
       - 'packages/envoy/going/agentwire/**'
       - 'packages/envoy/going/chips/**'
+      - 'packages/envoy/httpoutage/**'
       - 'packages/envoy/internal/buildversion/**'
       - 'packages/envoy/internal/bus/*'
       - 'packages/envoy/internal/bus/signedrecord/**'
