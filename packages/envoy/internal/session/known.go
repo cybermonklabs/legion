@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"sync"
@@ -91,8 +92,11 @@ const (
 // while the session is stopped, so a publish's count judges each record's topics by that rule
 // (cmd/listener's recipientCounts, store.LaneHolders.Keeps).
 //
-// The record holds nothing else, and not the client instance id in particular, which only a role
-// claim's arbitration reads (cmd/listener/role_holder.go), and that reads the live session entry.
+// Beside those it holds the principal the session last registered as (Principal, with
+// PrincipalRecorded), which a role claim that names the session as the one it replaces reads, and
+// the handover passes and successor read that claim's record starts (cmd/listener's handover
+// gate), and nothing else: not the client instance id in particular, which only a role claim's
+// arbitration reads (cmd/listener/role_holder.go), and that reads the live session entry.
 type KnownSession struct {
 	SessionID    string   `json:"session_id"`
 	Title        string   `json:"title"`
@@ -101,6 +105,20 @@ type KnownSession struct {
 	// LastSeen is when the record was last written, in unix milliseconds, as
 	// SessionEntry.UpdatedAt is.
 	LastSeen int64 `json:"last_seen"`
+	// Principal is the principal of the credential the session last registered on
+	// (cmd/listener's requestPrincipal), in the form that names the credential's kind and scope
+	// beside the person or service (internal/ciphertoken's Caller.Principal and
+	// IdentityPrincipal), and empty for a credential that proves none, the shared token and an
+	// open /v1. The registration writes it (RecordRegistrationWithin), and every other write that
+	// carries none keeps the one the bucket holds (RecordWithin, TouchWithin).
+	Principal string `json:"principal,omitempty"`
+	// PrincipalRecorded says Principal is a registration's, none included: every registration of
+	// this build sets it, and every other write keeps it with the principal. A listener of an
+	// earlier build reads a record with both fields unknown and writes one without them, so a
+	// record such a listener rewrote reads as one whose principal nobody knows - not as one that
+	// names none - until the session's next registration through this build, and the handover
+	// gate refuses it.
+	PrincipalRecorded bool `json:"principal_recorded,omitempty"`
 }
 
 // knownSessionKeys are KnownSession's JSON keys; any other key of a stored record is kept beside
@@ -163,10 +181,14 @@ func WithKnownSessionClock(now func() time.Time) KnownSessionsOption {
 //
 // A store whose bucket is not open is the degraded listener: one whose NATS user may not open the
 // bucket keeps the store, which answers nothing and whose writes do nothing, and opens the bucket
-// as soon as an attempt of its own succeeds (repairUntilStopped). A nil *KnownSessions answers the
-// same way, for a listener that could not build a JetStream context at all and for a test that
-// builds the handlers without a store, so every method here is safe on a nil receiver and no call
-// site carries a nil check.
+// as soon as an attempt of its own succeeds (repairUntilStopped). A registration through it
+// records no principal (AdmitRegistration and RecordRegistrationWithin answer
+// ErrKnownSessionsUnavailable), which the registration route admits with a warning, and the claim
+// route refuses every handover while it reads ErrKnownSessionsUnavailable. A nil *KnownSessions
+// answers nothing and writes nothing too, and answers every write nil, a registration's included,
+// for a listener that could not build a JetStream context at all and for a test that builds the
+// handlers without a store, so every method here is safe on a nil receiver and no call site
+// carries a nil check.
 type KnownSessions struct {
 	now func() time.Time
 	log *slog.Logger
@@ -787,6 +809,17 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // watcher has delivered the others' writes, and a write made before that compares an older copy,
 // which costs at most one write of a record the bucket already holds.
 //
+// RecordWithin ignores the record's Principal and PrincipalRecorded, and writes the ones the
+// bucket holds: the routes that write here - an interest change, a role claim's narrowing of the
+// session it took the role from - are no registration and know no principal, which is a
+// registration's alone to write, fenced on its admission (RecordRegistrationWithin). A write that
+// keeps the stored principal reads the record from the bucket's stream leader and writes over that
+// very revision (a compare-and-swap), so a registration another listener wrote a moment before -
+// which this listener's copy may not hold yet - is never written back over with the principal it
+// replaced; a write another one beat reads the leader again, up to knownKeepAttempts times. A
+// leader read that did not answer writes nothing and is the error: the principal this listener's
+// copy names can be one a later registration replaced, and no write may put it back.
+//
 // A record whose encoding is past one NATS message is written in chunks and a manifest naming
 // them (kvchunk.Write), and the chunks of the record it replaces, as this listener's copy holds
 // it, are deleted once it lands; the store's sweep collects what a write that stopped part way
@@ -796,17 +829,39 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // A store whose bucket is not open writes nothing and answers nil, as a nil store does: its
 // reads answer no record either, so nothing it could write would be read.
 func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) error {
-	return s.writeWithin(ctx, record, true)
+	return s.writeWithin(ctx, record, true, nil)
 }
 
-// writeWithin is the write both of this store's write paths make. throttled is RecordWithin's
-// skip of an unchanged record younger than the refresh age; TouchWithin passes false, since a
-// clean stop is one write per session lifetime and the whole point of it is to move last_seen.
+// writeWithin is the write every one of this store's write paths makes. throttled is
+// RecordWithin's skip of an unchanged record younger than the refresh age; TouchWithin passes
+// false, since a clean stop is one write per session lifetime and the whole point of it is to move
+// last_seen. admission is a registration's (RecordRegistrationWithin), whose write is fenced on
+// it and records the record's principal; every other write passes nil, a write that keeps the
+// stored principal: the principal the bucket holds, whatever principal the record carries
+// (RecordWithin, TouchWithin), so no write but a registration's ever writes a principal.
 //
-// No caller fails its request over what this answers: a registration and a subscription change
-// (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the error
-// is for the call site's WARN.
-func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool) error {
+// A write that keeps the stored principal skips an unchanged record on this listener's copy
+// alone, since it changes no principal. A registration's skip is confirmed by its admission,
+// which found the record naming its principal at the bucket's leader (Admission), and by one more
+// leader read that finds the record still at the admission's revision (leaderAt): the copy can
+// be behind a registration of the session as another principal through another listener, made
+// before the admission or after it, and skipping on it alone would answer the registration as
+// recorded while that principal stands as the one the session last registered as. That costs each
+// heartbeat the copy throttles one leader read. A skip the leader does not confirm, or does not
+// answer for, is the registration's compare-and-swap write instead.
+//
+// A registration's write is one compare-and-swap at its admission's revision: a write another one
+// beat writes nothing and is ErrPrincipalUnrecorded (RecordRegistrationWithin). A write that keeps
+// the stored principal reads the record from the bucket's leader, writes the principal the leader
+// holds over that very revision, and reads the leader again after a write another one beat, up to
+// knownKeepAttempts times.
+//
+// No caller but the registration route fails its request over what this answers: a subscription
+// change (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the
+// error is for the call site's WARN. The registration route answers a registration whose write
+// leaves another principal recorded, or wrote nothing over a record written since its admission
+// (ErrPrincipalUnrecorded), with a 503.
+func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled bool, admission *Admission) error {
 	watcher := s.watch()
 	if watcher == nil || record.SessionID == "" {
 		return nil
@@ -817,6 +872,9 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	// neither a registration's record nor a clean stop's drops them: they are the session's, not
 	// this write's. A record the copy does not hold yet carries none, as in the throttle below.
 	held, unknown, holds := s.cachedKeeping(record.SessionID)
+	if admission == nil && holds {
+		record.Principal, record.PrincipalRecorded = held.Principal, held.PrincipalRecorded
+	}
 	record.LastSeen = now.UnixMilli()
 	buf, err := store.EncodeKeeping(record, unknown)
 	if err != nil {
@@ -834,15 +892,65 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		if err != nil {
 			return err
 		}
-		if bytes.Equal(buf, stored) {
+		if bytes.Equal(buf, stored) && (admission == nil || (admission.holds && s.leaderAt(ctx, watcher, record.SessionID, admission.revision))) {
 			return nil
 		}
 	}
 	kv, epoch := watcher.Handle()
+	if admission != nil {
+		written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, unknown, held.stored(), func(value []byte) (uint64, error) {
+			return kv.Update(record.SessionID, value, admission.revision)
+		})
+		if err != nil {
+			return err
+		}
+		if !written.Stored {
+			// The message names no principal: the route answers it to the registering caller.
+			return fmt.Errorf("%w: the known-session record of %s was written since this registration was admitted at its revision %d, and nothing is written over it, so register again", ErrPrincipalUnrecorded, record.SessionID, admission.revision)
+		}
+		return nil
+	}
+	for attempt := 1; ; attempt++ {
+		stored, err := kv.ReadFromLeader(ctx, record.SessionID)
+		if err != nil {
+			return fmt.Errorf("session: keep the principal of the known-session record of %s: %w", record.SessionID, err)
+		}
+		record.Principal, record.PrincipalRecorded = leaderPrincipal(stored)
+		if buf, err = store.EncodeKeeping(record, unknown); err != nil {
+			return err
+		}
+		head := func(value []byte) (uint64, error) {
+			if stored.Kind == bus.LeaderAbsent {
+				return kv.Create(record.SessionID, value)
+			}
+			return kv.Update(record.SessionID, value, stored.Revision)
+		}
+		written, err := s.writeRecord(ctx, watcher, kv, epoch, record, buf, unknown, held.stored(), head)
+		if err != nil {
+			return err
+		}
+		if written.Stored {
+			return nil
+		}
+		// Another write of the record landed between the leader read and this write.
+		if attempt == knownKeepAttempts {
+			return fmt.Errorf("session: the known-session record of %s was written by another write before each of %d writes over the revision the bucket's leader held", record.SessionID, knownKeepAttempts)
+		}
+	}
+}
+
+// writeRecord writes record, encoded as buf, under its session id through kv with head, the write
+// of the record's head - a compare-and-swap, or a put (kvchunk.Write) - and replaced the layout of
+// the record head replaces, and puts a record the bucket stored in the copy, with unknown, the
+// keys of it this build does not name that buf carries (store.EncodeKeeping). A head the bucket
+// refused as a compare-and-swap another write beat stores nothing, and is Written.Stored false
+// with no error.
+func (s *KnownSessions) writeRecord(ctx context.Context, watcher *kvwatch.Watcher, kv bus.KeyValue, epoch uint64, record KnownSession, buf []byte,
+	unknown map[string]json.RawMessage, replaced kvchunk.Layout, head func(value []byte) (uint64, error)) (kvchunk.Written, error) {
 	// A chunked record's manifest carries the record with the topics it can fit in place of its
 	// full list (store.ChunkedRecordView), which a listener of an earlier build reads as this
-	// session: such a listener does not join chunks, and would otherwise know nothing of a session
-	// whose topics outgrew one message.
+	// session: such a listener does not join chunks, and would otherwise know nothing of a
+	// session whose topics outgrew one message.
 	view := func(room int) ([]byte, error) {
 		return store.ChunkedRecordView(room, record.Topics, func(topics []string) ([]byte, error) {
 			seen := record
@@ -850,11 +958,9 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 			return json.Marshal(seen)
 		})
 	}
-	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, view, s.ownLayout(record.SessionID, held.stored()), func(head []byte) (uint64, error) {
-		return kv.Put(record.SessionID, head)
-	}, s.now, s.logger(), knownRecord)
-	if err != nil {
-		return err
+	written, err := kvchunk.Write(ctx, kv, record.SessionID, buf, view, s.ownLayout(record.SessionID, replaced), head, s.now, s.logger(), knownRecord)
+	if err != nil || !written.Stored {
+		return written, err
 	}
 	// Write through, as the session registry's Put does: the next heartbeat then finds this
 	// record whether or not the watcher has delivered it back yet, so the throttle holds from the
@@ -869,13 +975,18 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		s.keepUnknown(record.SessionID, unknown)
 	}
 	s.mu.Unlock()
-	return nil
+	return written, nil
 }
+
+// knownKeepAttempts bounds the writes over the revision the bucket's leader held that a write which
+// keeps the stored principal makes (writeWithin) when another write of the record lands between
+// each one's read of the leader and its own write.
+const knownKeepAttempts = 3
 
 // TouchWithin moves sessionID's record to now, keeping its content, which is what a clean stop
 // writes: the session stopped, and a publish must still count it as a recipient of the topics it
-// followed. A session the store holds no record of writes nothing, since a stop carries no topics
-// of its own to record.
+// followed. Its principal is the one the bucket holds, as RecordWithin keeps it. A session the
+// store holds no record of writes nothing, since a stop carries no topics of its own to record.
 //
 // The write is made whatever the refresh-age throttle would say. A live session rewrites its
 // record at least once per KnownSessionRefreshAge, so at a clean stop the stored record is almost
@@ -890,7 +1001,7 @@ func (s *KnownSessions) TouchWithin(ctx context.Context, sessionID string) error
 	if !ok {
 		return nil
 	}
-	return s.writeWithin(ctx, held.KnownSession, false)
+	return s.writeWithin(ctx, held.KnownSession, false, nil)
 }
 
 // Rewatch moves the cache's watcher and the handle the store writes through to conn

@@ -799,6 +799,39 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 	return Session{}, err
 }
 
+// Successors returns what the listener answers for the sessions that replaced sessionID
+// (listenerwire.SessionSuccessors, GET /v1/sessions/<session_id>/successors): the sessions whose
+// claims named it as the session they replace, to which the listener copies what it had not
+// read, sorted, none for a session nobody replaced, and the principal each of them and sessionID
+// last registered as. A transport failure, a 5xx and a listener outage (listenerwire.Outage: a
+// 408, a 429, a 5xx but 500) are ErrUnavailable, carrying the listener's reason, and
+// ErrUnreachable too where nothing answered or the status came from in front of the listener
+// (unavailableGetStatus): who replaced the session was not read, so a proxy's 408 or 429 reads
+// as "ask again" rather than as "nobody replaced that session". A body that does not decode is
+// ErrUnavailable as well. Any other status is the listener's own answer that it names no
+// successor, an error that is not ErrUnavailable: a listener that predates the route answers its
+// GET 405 through the session delete route, and that listener copies no message to a successor.
+func (c *Client) Successors(ctx context.Context, sessionID string) (listenerwire.SessionSuccessors, error) {
+	route := "/v1/sessions/" + url.PathEscape(sessionID) + "/successors"
+	response, err := c.get(ctx, route, "")
+	if err != nil {
+		return listenerwire.SessionSuccessors{}, err
+	}
+	defer response.Body.Close()
+	switch {
+	case response.StatusCode == http.StatusOK:
+	case listenerwire.Outage(response.StatusCode) || response.StatusCode >= http.StatusInternalServerError:
+		return listenerwire.SessionSuccessors{}, unavailableGetStatus(response, route)
+	default:
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("envoy listener: GET %s returned %d: it names no successor", route, response.StatusCode)
+	}
+	var answer listenerwire.SessionSuccessors
+	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
+	}
+	return answer, nil
+}
+
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the
 // listener holds no record of it: a 404, or a session id the listener refuses as a KV key (a
 // 400 for one outside nats.go's key alphabet or holding an empty token, a 413 for one too

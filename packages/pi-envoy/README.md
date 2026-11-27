@@ -139,6 +139,10 @@ report from its own frame.
 and `summary`) for recovery after an interrupt. `envoy_role_get` returns the current holder and
 last-seen timestamp for a role. `envoy_subscribe` reports listener warnings in both its text and
 details result, including subscriptions whose stream currently has no matching event.
+`envoy_role_set` does the same with the listener's warnings about the claim, one
+`Listener warning:` line each, such as a handover of the replaced session it did not make. Every
+role claim the plugin makes, the tool's, a pass's, a heartbeat's or the Legion plugin's, logs
+each warning of a claim that landed at warn level with the role and the session.
 
 The session's messages come from a durable consumer the listener keeps for it on Envoy's
 notification stream and relays on `notifications.envoy.deliver.<session id>`, which

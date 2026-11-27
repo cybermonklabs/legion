@@ -312,6 +312,57 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}
 	})
 
+	// The claim route's write of a handover record stores only while its subject holds nothing
+	// (WriteHandoverRecord), so a claim made again writes no second record. The resend after a
+	// reconnect cut the first send's answer meets that first send's own copy and is refused, and
+	// the write returns nil all the same: the subject holds the record, which is all the claim
+	// route asks.
+	t.Run("a handover record stored before a reconnect cut its answer is written once", func(t *testing.T) {
+		const role, previous, successor = "unacknowledged-handover", "ses_unacknowledged_replaced", "ses_unacknowledged_successor"
+		subject := bus.HandoverSubject(role, previous, successor)
+		record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: time.Now().UnixMilli()}
+		proxy := testnats.StartProxy(t, uri)
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect through the reply gate: %v", err)
+		}
+		t.Cleanup(reconnecting.Close)
+		proxy.FreezeServerReplies()
+		answered := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			answered <- reconnecting.WriteHandoverRecord(ctx, subject, record)
+		}()
+		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the handover record to be stored before reconnecting",
+			func() bool { return storedOn(t, subject) == 1 })
+		if err := reconnecting.Connection().ForceReconnect(); err != nil {
+			t.Fatalf("force reconnect: %v", err)
+		}
+		proxy.Restore()
+		var got error
+		select {
+		case got = <-answered:
+		case <-time.After(15 * time.Second):
+			t.Fatal("the handover record write interrupted by reconnect did not return")
+		}
+		if got != nil {
+			t.Fatalf("a handover record write the stream stored before the reconnect = %v, want nil: the subject holds the record", got)
+		}
+		if n := storedOn(t, subject); n != 1 {
+			t.Fatalf("the stream holds %d handover records on %s, want the one this call stored", n, subject)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		records, err := client.TakeoverRecords(ctx, role)
+		if err != nil {
+			t.Fatalf("read %s's takeover records: %v", role, err)
+		}
+		if len(records) != 1 || records[0].Subject != subject || records[0].Record != record {
+			t.Fatalf("%s's takeover records read %+v, want this write's %+v on %s", role, records, record, subject)
+		}
+	})
+
 	t.Run("a publish that waits out its deadline for a reconnect sends nothing and is no ErrUnacknowledged", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_reconnecting")
 		server.Stop(t)

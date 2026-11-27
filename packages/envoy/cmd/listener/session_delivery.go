@@ -1124,10 +1124,12 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 // mode, and a listener with no session-consumer connection writes it too; the filter is
 // refollow's, beside this.
 //
-// The rest of the record is the session's entry, as the registration wrote it. A session the
-// registry holds no entry for writes nothing: it is stopped or gone, and a stop keeps the record
-// it had (deleteSessionHandler). A listener whose known-session bucket is not open writes nothing
-// either. A failed write is this WARN and nothing else: the route answers whatever the write did.
+// The rest of the record is the session's entry, as the registration wrote it, and its principal
+// is kept as the registration wrote it, since this write carries none
+// (session.KnownSessions.RecordWithin). A session the registry holds no entry for writes nothing:
+// it is stopped or gone, and a stop keeps the record it had (deleteSessionHandler). A listener
+// whose known-session bucket is not open writes nothing either. A failed write is this WARN and
+// nothing else: the route answers whatever the write did.
 func recordFollowedTopics(ctx context.Context, d *listenerDeps, sessionID string, logger *logging.Logger) {
 	entry, err := d.sessions.Get(sessionID)
 	if err != nil {

@@ -95,6 +95,18 @@ const StringListWireSchema = z
   .nullish()
   .transform((list) => list ?? []);
 
+/**
+ * A granted role claim's answer (`roleSetResponse` in the listener): the claimant's interest row,
+ * and `warnings`, each a sentence the listener says about the claim that its caller must log and,
+ * where an agent asked for the claim, tell the agent. A role named in the old form gets one that
+ * names the new form to claim; a claim that names the session it replaces (`previous_session_id`)
+ * and hands over none of its messages gets one that says so and why: the rule that holds a
+ * handover to one principal refused it, the listener's known-session bucket is not open, or the
+ * listener is an edge listener, which hands over no messages. The listener omits the field
+ * when there are none, and a listener predating it sends none: both read as [].
+ */
+const RoleSetWireSchema = InterestWireSchema.extend({ warnings: StringListWireSchema });
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -680,12 +692,18 @@ export type SetRoleInput = {
    */
   readonly soft?: boolean;
   /**
-   * The session id this claimant continues (a fork or branch mints a new id
-   * in the same process). A soft claim takes the role from that predecessor
-   * only when the predecessor has no live registry entry, when its live entry
-   * carries this client instance's own `clientInstanceID`, or when either
-   * side carries no instance id; a predecessor still live under another
-   * client instance keeps the role. Sent only with `soft`.
+   * On a soft claim, the session id this claimant continues (a fork or branch
+   * mints a new id in the same process): the claim takes the role from that
+   * predecessor only when the predecessor has no live registry entry, when its
+   * live entry carries this client instance's own `clientInstanceID`, or when
+   * either side carries no instance id; a predecessor still live under another
+   * client instance keeps the role.
+   *
+   * On any claim, soft or hard, the session this claim replaces: once the
+   * claim lands and the named session is not live, a listener that supports it
+   * hands that session's unread direct and role messages to this session. A
+   * listener older than that ignores it on a hard claim. Sent whenever it is a
+   * non-empty string.
    */
   readonly previousSessionID?: string;
   /**
@@ -701,8 +719,17 @@ export type SetRoleInput = {
   readonly clientInstanceID?: string;
 };
 
+/**
+ * A claim's result. A granted claim carries the listener's interest row and its `warnings` about
+ * the claim (`RoleSetWireSchema`), [] when it sent none, as an older listener never does; the
+ * warnings are read here alone, never off the interest.
+ */
 export type SetRoleResult =
-  | { readonly claimed: true; readonly interest: Interest }
+  | {
+      readonly claimed: true;
+      readonly interest: Interest;
+      readonly warnings: readonly string[];
+    }
   | { readonly claimed: false; readonly holder: string };
 
 export type ListSessionsInput = {
@@ -998,7 +1025,11 @@ export type EnvoyClient = {
    * (`previousSessionID`) takes the role from it only when that predecessor has no live registry
    * entry, when its live entry carries this client instance's own instance id, or when either
    * side carries no instance id; any other live holder keeps the role and is reported as
-   * `{ claimed: false, holder }`.
+   * `{ claimed: false, holder }`. On any claim, `previousSessionID` also names the session the
+   * claim replaces, whose unread direct and role messages a listener that supports it hands to
+   * this session once the claim lands and that session is not live. A granted claim answers the
+   * listener's warnings about it beside the interest row, such as a handover of that session it
+   * did not make; the caller logs each.
    */
   readonly setRole: (input: SetRoleInput) => Promise<SetRoleResult>;
   readonly getRole: (role: string) => Promise<RoleInfo>;
@@ -1472,13 +1503,17 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     setRole: async (input) => {
       // `soft`, `previous_session_id` and `client_instance_id` are omitted from
       // the wire unless set, so an older listener sees an unchanged hard-claim
-      // request. The claim's own `client_instance_id` is the process it is made
-      // for: the listener records it on the claim, and weighs a claim under the
-      // holder's own session id against the standing claim's. A soft claim
-      // against a live predecessor is still decided by the instance id each
-      // side's registry entry carries (`SubscribeInput.clientInstanceID`).
+      // request from a caller that sets none of them. `previous_session_id` is
+      // sent on a hard claim as well as a soft one: it names the session this
+      // claim replaces, whose unread messages the listener hands over, and a
+      // listener older than that ignores it on a hard claim. The claim's own
+      // `client_instance_id` is the process it is made for: the listener
+      // records it on the claim, and weighs a claim under the holder's own
+      // session id against the standing claim's. A soft claim against a live
+      // predecessor is still decided by the instance id each side's registry
+      // entry carries (`SubscribeInput.clientInstanceID`).
       const soft = input.soft === true;
-      const previous = soft ? (input.previousSessionID ?? "") : "";
+      const previous = input.previousSessionID ?? "";
       const body: {
         session_id: string;
         role: string;
@@ -1513,10 +1548,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         }
         throw error;
       }
-      return {
-        claimed: true,
-        interest: InterestWireSchema.parse(answerJson(raw, "POST", "/v1/roles/set")),
-      };
+      const { warnings, ...interest } = RoleSetWireSchema.parse(
+        answerJson(raw, "POST", "/v1/roles/set")
+      );
+      return { claimed: true, interest, warnings };
     },
     getRole: async (role) =>
       RoleWireSchema.parse(

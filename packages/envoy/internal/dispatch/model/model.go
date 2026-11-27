@@ -150,6 +150,11 @@ type Credential struct {
 	// writes are recorded under its account — and is refused every write under any other
 	// (writeNeedsASignedInPerson).
 	ProjectScope string
+	// Principal is who a broker-issued token acts for, in the form that names its kind and scope
+	// (ciphertoken.Caller.Principal): the one the Envoy listener records a registration on that
+	// token as, which a successor's reply is held to (api's callerPrincipal and
+	// actsForSuccessorPrincipal). Empty for every other credential.
+	Principal string
 	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
 	// nil for every other credential until a later slice sets a personal token's
 	// agent_tokens.projects. Empty is a credential that names none. What a list decides is

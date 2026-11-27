@@ -10,6 +10,7 @@ package session
 import (
 	"context"
 	"log/slog"
+	"unique"
 
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -24,6 +25,10 @@ const knownRecord = "known-session record"
 // layout is held only for a record stored in chunks, nil for one stored whole: the store holds up
 // to a hundred thousand rows, nearly all of them whole, and TestKnownSessionsMemoryForAHundredThousandRecords
 // measured 1,334 bytes a record so, 1,356 with the layout held by value, and 1,324 before chunks.
+// A row's principal is shared with every other row naming the same one (unique.Make), since a
+// few principals register many sessions, and a delivered row's session id shares the bytes of
+// the key the copy holds it under (decodeKnownLocked): with both, a record that names a principal
+// measured 1,323 bytes, and one held with a principal of its own and a session id of its own 1,379.
 type knownRow struct {
 	KnownSession
 	layout *kvchunk.Layout
@@ -31,6 +36,9 @@ type knownRow struct {
 
 // newKnownRow is record as stored in layout.
 func newKnownRow(record KnownSession, layout kvchunk.Layout) knownRow {
+	if record.Principal != "" {
+		record.Principal = unique.Make(record.Principal).Value()
+	}
 	row := knownRow{KnownSession: record}
 	if layout.Chunked() {
 		row.layout = &layout
@@ -63,6 +71,11 @@ func (s *KnownSessions) decodeKnownLocked(entry kvwatch.Entry) (knownRow, bool, 
 		return knownRow{}, false, err
 	}
 	s.keepUnknown(entry.Key, unknown)
+	// The decode allocates the session id afresh, while the copy, its fence and the index already
+	// hold the key's own bytes; a record whose id is its key holds those instead.
+	if record.SessionID == entry.Key {
+		record.SessionID = entry.Key
+	}
 	return newKnownRow(record, layout), true, nil
 }
 
