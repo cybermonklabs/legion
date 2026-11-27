@@ -1,6 +1,10 @@
 package explaintest
 
-import "testing"
+import (
+	"encoding/json"
+	"slices"
+	"testing"
+)
 
 // filteredJoinPlan is PostgreSQL 18.6's `EXPLAIN (ANALYZE, FORMAT JSON)` of a left join that
 // prints both counts this package reads, captured with jit off in a scratch database on the
@@ -198,5 +202,25 @@ func TestNodesReadTheRowsEachFilterRemoved(t *testing.T) {
 		if got[index] != want[index] {
 			t.Errorf("node %d = %+v; want %+v", index, got[index], want[index])
 		}
+	}
+}
+
+// A check that fails a control's plan is the control failing, as it must, and RequireControlFails
+// fails nothing; a check that passes it is one that cannot fail, and RequireControlFails fails
+// that, naming the plan, the control and what the check cannot tell apart.
+func TestRequireControlFailsFailsACheckThatCannotFail(t *testing.T) {
+	plan := json.RawMessage(`{"Node Type": "Result"}`)
+	failing := &controlFailures{TB: t}
+	RequireControlFails(failing, "the read", "the control", "one read from another", plan, func(t testing.TB) {
+		t.Errorf("the read reads events twice:\n%s", plan)
+	})
+	if lines := failing.firstLines(); len(lines) != 0 {
+		t.Errorf("a check that fails the control fails %q, want nothing", lines)
+	}
+	passing := &controlFailures{TB: t}
+	RequireControlFails(passing, "the read", "the control", "one read from another", plan, func(testing.TB) {})
+	want := []string{"the read, the control, passes the check, so the check cannot tell one read from another:"}
+	if lines := passing.firstLines(); !slices.Equal(lines, want) {
+		t.Errorf("a check that passes the control fails %q, want %q", lines, want)
 	}
 }

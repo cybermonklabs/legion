@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -163,20 +164,16 @@ type Source interface {
 	open(repository ghrepo.Repository, bookmark, defaultBranch string) (remote, error)
 }
 
-// issuePod is the state ForIssuePod carries for one Kubernetes issue pod. fetched records that the
-// clone path already fetched GitHub, so the configuration step does not repeat that transfer.
+// issuePod is the state ForIssuePod carries for one Kubernetes issue pod: its source's settings,
+// the repository, the issue's bookmark and the default branch it was admitted against. fetched
+// records that the clone path already fetched GitHub, so the configuration step does not repeat
+// that transfer.
 type issuePod struct {
+	issuePodSource
 	repository ghrepo.Repository
 	bookmark   string
 	defaultRef string
-	token      func() (string, error)
-	cacheURL   string
-	cacheToken string
-	clock      Clock
-	bound      time.Duration
-	log        func(string)
 	fetched    bool
-	defaults   []string
 }
 
 // ForIssuePod reaches GitHub with the mounted provisioning token and, when cacheURL is non-empty,
@@ -230,17 +227,7 @@ func (s issuePodSource) open(repository ghrepo.Repository, bookmark, defaultBran
 	if err != nil {
 		return remote{}, err
 	}
-	r.issue = &issuePod{
-		repository: repository,
-		bookmark:   bookmark,
-		defaultRef: defaultBranch,
-		token:      s.token,
-		cacheURL:   s.cacheURL,
-		cacheToken: s.cacheToken,
-		clock:      s.clock,
-		bound:      s.bound,
-		log:        s.log,
-	}
+	r.issue = &issuePod{issuePodSource: s, repository: repository, bookmark: bookmark, defaultRef: defaultBranch}
 	return r, nil
 }
 
@@ -337,9 +324,10 @@ func GitHubURL(repository ghrepo.Repository) string {
 // ensureRepoClone makes a clone in a temporary sibling, verifies its Jujutsu repository, then
 // renames it into place. A Kubernetes issue pod initializes a Git repository, optionally unpacks
 // the repository cache into its .git directory, and fetches the default and issue refs from GitHub.
-// The tmux runtime keeps its existing GitHub clone behaviour. The size-following steps share one
+// The tmux runtime runs `jj git clone` from GitHub. The size-following steps share one
 // CloneTimeout, counted on clock from the first's start, each given what remains of it
-// (cloneSteps), not the runner's slow-command budget.
+// (cloneSteps), not the runner's slow-command budget; an issue pod's fill starts it afresh once its
+// transfers are done (issuePodClone).
 func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, remote string, source remote) error {
 	jjDir := filepath.Join(cloneDir, ".jj")
 	if exists, err := pathExists(cloneDir); err != nil {
@@ -427,7 +415,7 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 		}
 	}
 
-	bytes, refs, _, err := fetchIssuePod(ctx, run, temporary, source, true)
+	bytes, refs, defaults, err := fetchIssuePod(ctx, run, temporary, source, true)
 	if err != nil {
 		return err
 	}
@@ -443,8 +431,8 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 	if err := steps.runIn(ctx, run, temporary, []string{"jj", "abandon", "@", "--color=never", "-R", temporary}, nil); err != nil {
 		return err
 	}
-	for _, ref := range issue.defaults {
-		track, err := onClone(temporary, "bookmark", "track", originRow(strings.TrimPrefix(ref, "refs/heads/")))
+	for _, branch := range defaults {
+		track, err := onClone(temporary, "bookmark", "track", originRow(branch))
 		if err != nil {
 			return err
 		}
@@ -488,66 +476,67 @@ func logCacheSource(log func(string), stream StreamReport) {
 }
 
 // fetchIssuePod configures origin's persistent narrow refspecs and fetches them without tags.
-// Only a fresh clone drops cache refs outside this issue; kept clones retain their legacy refs.
-func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remote, fresh bool) (int64, int, string, error) {
+// Only a fresh clone drops cache refs outside this issue; kept clones retain their legacy refs. It
+// answers how many bytes the fetch added to the clone's objects, how many of origin's refs it
+// moved (movedRemoteRefs), and the default branches it brought (issuePodDefaults), the one the
+// clone's HEAD names first.
+func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remote, fresh bool) (int64, int, []string, error) {
 	issue := source.issue
 	gitDir := filepath.Join(cloneDir, ".git")
-	request := FetchRequest{Repo: issue.repository, Token: issue.token, Log: issue.log, Clock: issue.clock, Bound: issue.bound}
-	held := &fetchCredential{remote: source, env: merge(source.env, isolatedGitConfig), read: issue.token, held: []string{source.token}}
+	request := FetchRequest{Repo: issue.repository, Log: issue.log, Clock: issue.clock, Bound: issue.bound}
+	held := newFetchCredential(source, issue.token)
 	deadline := issue.clock.Now().Add(request.bound())
 	defaults, err := issuePodDefaults(ctx, run, request, gitDir, issue.defaultRef, held, deadline)
 	if err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
 	if len(defaults) == 0 {
-		return 0, 0, "", fmt.Errorf("GitHub names no default branch for %s", issue.repository)
+		return 0, 0, nil, fmt.Errorf("GitHub names no default branch for %s", issue.repository)
 	}
-	issue.defaults = defaults
-	defaultBranch := strings.TrimPrefix(defaults[0], "refs/heads/")
+	defaultBranch := defaults[0]
 	configured := issuePodRefspecs(defaultBranch, issue.bookmark)
 	fetchRefs := append([]string{}, configured...)
-	for _, ref := range defaults[1:] {
-		name := strings.TrimPrefix(ref, "refs/heads/")
-		fetchRefs = append(fetchRefs, "+"+ref+":refs/remotes/origin/"+name)
+	for _, branch := range defaults[1:] {
+		fetchRefs = append(fetchRefs, "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
 	}
 	if err := configureIssueOrigin(ctx, run, cloneDir, issue.repository, configured); err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
 	before, err := objectsSize(gitDir)
 	if err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
 	refsBefore, err := repositoryRefs(ctx, run, gitDir)
 	if err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
 	argv := slices.Concat(isolatedGit, []string{"--git-dir=" + gitDir, "fetch", "--no-tags", "--prune", "--quiet", GitHubURL(issue.repository)}, fetchRefs)
 	if _, err := transferWithRetries(ctx, run, request, gitHubTransfer{verb: "fetch", argv: argv, dir: cloneDir}, held, deadline); err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
 	after, err := objectsSize(gitDir)
 	if err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
 	refsAfter, err := repositoryRefs(ctx, run, gitDir)
 	if err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
-	if err := setIssueHeads(ctx, run, gitDir, defaultBranch, defaults); err != nil {
-		return 0, 0, "", err
+	if err := setIssueHeads(ctx, run, gitDir, defaults); err != nil {
+		return 0, 0, nil, err
 	}
 	if fresh {
-		if err := keepIssueRefs(ctx, run, gitDir, defaultBranch, defaults, issue.bookmark); err != nil {
-			return 0, 0, "", err
+		if err := keepIssueRefs(ctx, run, gitDir, defaults, issue.bookmark); err != nil {
+			return 0, 0, nil, err
 		}
 	}
 	// origin/HEAD names GitHub's default branch, as a clone leaves it: `jj git init --colocate`
 	// reads it to set the repository's trunk() alias, which without it resolves to the root commit
 	// for a default branch not named main, master or trunk.
 	if _, err := CacheGit(ctx, run, gitDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/"+defaultBranch); err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
-	return after - before, movedRemoteRefs(refsBefore, refsAfter), defaultBranch, nil
+	return after - before, movedRemoteRefs(refsBefore, refsAfter), defaults, nil
 }
 
 // movedRemoteRefs is how many of origin's remote-tracking refs a fetch made, moved or deleted:
@@ -568,7 +557,8 @@ func movedRemoteRefs(before, after map[string]string) int {
 }
 
 // issuePodDefaults reads GitHub's HEAD and keeps the admission-time default when GitHub still
-// advertises it. This lets an unpushed issue start at the branch it was admitted against.
+// advertises it. This lets an unpushed issue start at the branch it was admitted against. It
+// answers their branch names, HEAD's first.
 func issuePodDefaults(ctx context.Context, run Runner, request FetchRequest, gitDir, recordedDefault string, held *fetchCredential, deadline time.Time) ([]string, error) {
 	head, branches, err := remoteRefs(ctx, run, request, gitDir, held, deadline, "refs/heads/*")
 	if err != nil {
@@ -579,11 +569,11 @@ func issuePodDefaults(ctx context.Context, run Runner, request FetchRequest, git
 	}
 	defaults := []string{}
 	if head != "" {
-		defaults = append(defaults, head)
+		defaults = append(defaults, strings.TrimPrefix(head, "refs/heads/"))
 	}
 	recorded := "refs/heads/" + recordedDefault
 	if recordedDefault != "" && branches[recorded] != "" && recorded != head {
-		defaults = append(defaults, recorded)
+		defaults = append(defaults, recordedDefault)
 	}
 	return defaults, nil
 }
@@ -622,32 +612,31 @@ func configureIssueOrigin(ctx context.Context, run Runner, cloneDir string, repo
 	return nil
 }
 
-func setIssueHeads(ctx context.Context, run Runner, gitDir, current string, defaults []string) error {
-	for _, ref := range defaults {
-		branch := strings.TrimPrefix(ref, "refs/heads/")
+// setIssueHeads makes a local branch of each of defaults at origin's, and points HEAD at the
+// first.
+func setIssueHeads(ctx context.Context, run Runner, gitDir string, defaults []string) error {
+	for _, branch := range defaults {
 		if _, err := CacheGit(ctx, run, gitDir, "update-ref", "refs/heads/"+branch, "refs/remotes/origin/"+branch); err != nil {
 			return err
 		}
 	}
-	_, err := CacheGit(ctx, run, gitDir, "symbolic-ref", "HEAD", "refs/heads/"+current)
+	_, err := CacheGit(ctx, run, gitDir, "symbolic-ref", "HEAD", "refs/heads/"+defaults[0])
 	return err
 }
 
-func keepIssueRefs(ctx context.Context, run Runner, gitDir, current string, defaults []string, bookmark string) error {
+// keepIssueRefs deletes every ref of a fresh clone but origin's refs of defaults and of the
+// issue's branches (issueBranch), and the local branch HEAD names, the first of defaults.
+func keepIssueRefs(ctx context.Context, run Runner, gitDir string, defaults []string, bookmark string) error {
 	refs, err := repositoryRefs(ctx, run, gitDir)
 	if err != nil {
 		return err
 	}
-	defaultsByName := map[string]bool{}
-	for _, ref := range defaults {
-		defaultsByName[strings.TrimPrefix(ref, "refs/heads/")] = true
-	}
 	for ref := range refs {
 		keep := false
 		if name, ok := strings.CutPrefix(ref, "refs/remotes/origin/"); ok {
-			keep = defaultsByName[name] || issueBranch(name, bookmark)
+			keep = slices.Contains(defaults, name) || issueBranch(name, bookmark)
 		} else {
-			keep = ref == "refs/heads/"+current
+			keep = ref == "refs/heads/"+defaults[0]
 		}
 		if !keep {
 			if _, err := CacheGit(ctx, run, gitDir, "update-ref", "--no-deref", "-d", ref); err != nil {
@@ -665,23 +654,25 @@ func issueBranch(name, bookmark string) bool {
 	return ok && (rest == "" || rest[0] < '0' || rest[0] > '9')
 }
 
+// groupedBytes is n with its digits grouped in threes by commas: 6,612,345,678.
 func groupedBytes(n int64) string {
-	value := fmt.Sprintf("%d", n)
-	first := len(value) % 3
-	if first == 0 {
-		first = 3
+	digits := strconv.FormatInt(n, 10)
+	grouped := make([]byte, 0, len(digits)+len(digits)/3)
+	for i := range len(digits) {
+		if i > 0 && (len(digits)-i)%3 == 0 && digits[i-1] != '-' {
+			grouped = append(grouped, ',')
+		}
+		grouped = append(grouped, digits[i])
 	}
-	for at := first; at < len(value); at += 4 {
-		value = value[:at] + "," + value[at:]
-	}
-	return value
+	return string(grouped)
 }
 
+// refCount is how many refs a transfer changed, as a count of refs.
 func refCount(n int) string {
 	if n == 1 {
 		return "1 ref"
 	}
-	return fmt.Sprintf("%d refs", n)
+	return strconv.Itoa(n) + " refs"
 }
 
 // cloneSteps is the one CloneTimeout the shared clone's size-following steps share, ending at
@@ -711,9 +702,9 @@ func (s cloneSteps) run(ctx context.Context, run Runner, argv, env []string) err
 // shared CloneTimeout, checked as RunChecked checks its commands; a step with nothing left fails,
 // naming the bound, without running.
 func (s cloneSteps) runIn(ctx context.Context, run Runner, dir string, argv, env []string) error {
-	left := s.deadline.Sub(s.clock.Now())
-	if left <= 0 {
-		return fmt.Errorf("the shared clone's %s bound ran out before %s", s.bound, strings.Join(argv, " "))
+	left, err := remaining(s.clock, s.deadline, "shared clone's", s.bound, strings.Join(argv, " "))
+	if err != nil {
+		return err
 	}
 	result, err := runCommandTimeout(ctx, run, argv, env, dir, left)
 	result.Stderr = s.credential.scrub(result.Stderr)

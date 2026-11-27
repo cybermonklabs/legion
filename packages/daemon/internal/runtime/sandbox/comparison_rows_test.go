@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // The image probe's settings hold a contract below one to be none: the probe refuses 0 and a
@@ -74,7 +74,7 @@ func TestTheKeptPodPluginCheckRefusesAManifestOfAnotherContract(t *testing.T) {
 			dir := t.TempDir()
 			manifest := fmt.Sprintf(`{"name":"@sjawhar/pi-legion","version":%q,"legion":{"daemonApiVersion":%d}}`, plugins.PiLegion, tc.declared)
 			bun := "#!/bin/sh\nmkdir -p node_modules/@sjawhar/pi-legion\nprintf '%s\\n' " + shellQuote(manifest) + " >node_modules/@sjawhar/pi-legion/package.json\n"
-			if err := testexec.WriteFile(filepath.Join(dir, "bun"), []byte(bun), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(dir, "bun"), []byte(bun), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			agentLog := filepath.Join(dir, "agent.log")

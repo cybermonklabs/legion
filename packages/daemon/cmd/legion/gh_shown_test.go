@@ -241,6 +241,7 @@ func ghShownPaths(t *testing.T) map[string]string {
 // itself, run as a pane runs it, with the saved help's stand-in gh, whose own output the help read
 // never prints. A source holding no path at all is refused: the table would test nothing.
 func TestNoRefusalPathPrintsACanary(t *testing.T) {
+	t.Parallel()
 	paths := ghShownPaths(t)
 	if len(paths) == 0 {
 		t.Fatal("UNKNOWN: the source holds no call of ghShown, so this reads no refusal path")
@@ -561,6 +562,7 @@ func formatVerbs(format string) []rune {
 // word, fails here naming its function and its argument. A source holding no such place at all
 // is refused: the walk would have read nothing.
 func TestNoRefusalFormatsAPersonsValueItself(t *testing.T) {
+	t.Parallel()
 	sites := ghFormatSites(t)
 	if len(sites) == 0 {
 		t.Fatal("UNKNOWN: the source holds no strconv.Quote call, no formatted value and no cannotPlace name, so this read nothing")

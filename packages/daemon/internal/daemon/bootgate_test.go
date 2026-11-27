@@ -1191,6 +1191,7 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 // stands. The argument and the value are made-up credentials, as `env NAME=<token>` or a proxy
 // URL with a password would hand one.
 func TestTheLoadProbeQuotesNoWordOfTheLaunchPrefix(t *testing.T) {
+	t.Parallel()
 	const argument, value = "madeUpPrefixArgument0123", "madeUpPrefixValue0123"
 	f := newFakeOmp(t, "yes")
 	gate, _ := gateUnder(t, f, contractCurrent)

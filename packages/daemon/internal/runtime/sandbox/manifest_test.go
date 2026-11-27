@@ -21,9 +21,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -573,7 +573,7 @@ func TestEveryRolesGitAsksItsOwnHelperForGitHubOutsideAnyClone(t *testing.T) {
 	legion := "#!/bin/sh\n[ \"$1 $2\" = 'git-credential get' ] || exit 0\n" +
 		"while read -r line; do case $line in path=*) p=${line#path=} ;; esac; done\n" +
 		"[ -n \"$p\" ] || exit 1\necho username=x-access-token\necho \"password=role-token-for-${p%%/*}\"\n"
-	if err := testexec.WriteFile(filepath.Join(bin, "legion"), []byte(legion), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "legion"), []byte(legion), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	global := filepath.Join(dir, "gitconfig")
@@ -814,7 +814,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	sink := filepath.Join(dir, "ran")
 	recorder := func(name string) string {
 		path := filepath.Join(dir, name)
-		if err := testexec.WriteFile(path, []byte("#!/bin/sh\necho "+name+" >> "+shellprefix.Literal(sink)+"\n"), 0o755); err != nil {
+		if err := execfile.Write(path, []byte("#!/bin/sh\necho "+name+" >> "+shellprefix.Literal(sink)+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
@@ -1993,6 +1993,7 @@ func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 // repository cache's — keeps pod.service_account whatever the controller's key says: the key moves
 // the controller alone.
 func TestTheControllersPodAloneRunsAsTheControllersServiceAccount(t *testing.T) {
+	t.Parallel()
 	resume := controllerSpec(t)
 	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", controllerSession
 	for name, tc := range map[string]struct{ pods, controller, wantController string }{
