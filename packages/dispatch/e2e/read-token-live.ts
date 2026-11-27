@@ -1,6 +1,7 @@
 /** `bun e2e/read-token-live.ts`: the live proof that the read-only tokens a running secrets broker
  *  mints read a running Dispatch and write nothing. Dispatch serves a read-only token on every GET
- *  route it classes as a read (`readClasses`, packages/envoy/internal/dispatch/api/read_classes.go)
+ *  route it classes as a read (each route's Read, in its file under
+ *  packages/envoy/internal/dispatch/api)
  *  and answers it 403 READ_ONLY_TOKEN on every other route and on GET /ws/live. It answers one
  *  that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. Four tokens
  *  show it:

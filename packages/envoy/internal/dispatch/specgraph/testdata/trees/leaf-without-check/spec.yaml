@@ -1,0 +1,6 @@
+---
+type: requirement
+id: a-claim-survives-a-restart
+kind: behavior
+text:
+  - Legion keeps the claim of an issue after the daemon starts again.

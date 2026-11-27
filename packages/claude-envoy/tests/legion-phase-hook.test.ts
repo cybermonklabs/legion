@@ -194,11 +194,18 @@ async function harness(
   }
 }
 
-test("the tool names itself Claude Code's hook endpoint and tells the model not to call it", () => {
+test("the tool is declared under its own name, describes itself with the refusal a model's call gets, and takes the hook events", () => {
   const definition = phaseHookToolDefinition()
   expect(definition.name).toBe(PHASE_HOOK_TOOL_NAME)
-  expect(definition.description).toContain("hook endpoint")
-  expect(definition.description).toContain("Do not call it")
+  expect(definition.description).toBe(PHASE_HOOK_REFUSAL)
+  expect(definition.inputSchema).toMatchObject({
+    properties: {
+      event: {
+        enum: ["Stop", "StopFailure", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit"],
+      },
+    },
+    required: ["event"],
+  })
 })
 
 test("a turn settling on an open phase is blocked once, with the reminder, and the count is recorded before the answer", async () => {

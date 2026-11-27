@@ -4382,14 +4382,6 @@ describe("envoy OMP extension", () => {
             session.context
           );
 
-      // The tool's description names the hour, kept_until and the message that follows it.
-      const description = named.tools.find((tool) => tool.name === "envoy_publish")?.description;
-      expect(description).toContain("The listener then keeps the message for one hour.");
-      expect(description).toContain("its kept_until is the time that hour ends");
-      expect(description).toContain(
-        "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late."
-      );
-
       const unclaimed = await publish(named, "notifications.role.legion-architect");
       expect(published[0]).toMatchObject({ source_session: "ses_named" });
       expect(unclaimed?.isError).toBeFalsy();

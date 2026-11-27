@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -58,6 +60,7 @@ const issueRead = 30 * time.Second
 // A read whose reviews read must stop - ctx ended, or GitHub's rate limit, which the ladder's reads
 // would meet as well - answers false.
 func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string) (bool, error) {
+	ctx = githubrate.WithCaller(ctx, callerPullRequestReads)
 	recorded, err := w.issuePullRequest(ctx, issue)
 	if err != nil || recorded == nil {
 		return false, err

@@ -6274,8 +6274,8 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // the operator's bearer. The session registers with that token and reports ready, at which the
   // daemon writes its start task's value, so it marks the start turn sent just before that report,
   // and reads that value, all before it claims its role. The state it reads first is the daemon's
-  // own while that daemon holds the controller's claim (internal/projection's golden), which the
-  // plugin's client parses. The pod carries no LEGION_CONTROLLER_START_MESSAGE, and the session
+  // own while that daemon holds the controller's claim (internal/daemon's composition test), which
+  // the plugin's client parses. The pod carries no LEGION_CONTROLLER_START_MESSAGE, and the session
   // sends no start message of its own: the start task it takes is its one start message.
   test("a controller the daemon launched registers with its boot token, then reports ready and reads its start task before it claims its role", async () => {
     const markAtReady: EnvoyPluginInterface["startupTurn"][] = [];

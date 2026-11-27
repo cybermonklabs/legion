@@ -843,25 +843,24 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		"controller's own door cannot name the role at all", status, strings.TrimSpace(string(body)))
 
 	// A suspended, a stopped and a failed claim: each runs no Oh My Pi session, so each is told
-	// that a fresh session is what reaches it instead. The suspended one is the operator's own
-	// suspension, which only the operator lifts (cybermonklabs/legion#4065, api's holdSentences):
-	// the operator's door names the fresh session, and the controller's door, which cannot get past
-	// that suspension, names the operator's resume instead, so the two doors differ here.
+	// what starts it again instead. For the stopped and the failed claim that is the fresh session,
+	// through both doors. The suspended claim is the operator's own suspension (`legion claims
+	// suspend`, cybermonklabs/legion#4065), which the controller may not get past: the controller's
+	// door names the operator's resume and no fresh session, since its fresh_session of that agent
+	// is refused SUSPENDED_BY_OPERATOR (api's holdSentences;
+	// TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension), while the operator's door
+	// names the fresh session.
 	implementer := r.token(r.notice, claim.RoleImplementer)
 	r.note("%s", r.legionClaims("suspend", "--claim", string(implementer)))
 	r.await(string(implementer)+" to be suspended", 2*time.Minute, func() bool {
 		return r.claim(implementer).State == string(supervise.StateSuspended)
 	})
-	operatorStatus, operatorBody := compactDoors.operator(r, implementer)
-	r.note("compact at a suspended worker is refused through the operator's door: %q", r.heldRefusal(
-		"compact at a suspended worker, through the operator's door", operatorStatus, operatorBody,
-		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateSuspended), compactNamesFreshSession))
-	controllerStatus, controllerBody := compactDoors.controller(r, r.notice, claim.RoleImplementer)
-	r.note("compact at a suspended worker is refused through the controller's door: %q", r.heldRefusal(
-		"compact at a suspended worker, through the controller's door", controllerStatus, controllerBody,
-		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateSuspended),
-		"held by the operator's own suspension, which only the operator lifts",
-		"`legion claims resume --claim "+string(implementer)+"`"))
+	r.refusedThroughEachDoor("a worker the operator suspended", compactDoors, implementer, r.notice, claim.RoleImplementer,
+		http.StatusConflict, "CLAIM_NOT_RUNNING",
+		[]string{string(supervise.StateSuspended), compactNamesFreshSession},
+		[]string{string(supervise.StateSuspended), "held by the operator's own suspension, which only the operator lifts",
+			"`legion claims resume --claim " + string(implementer) + "`"},
+		"fresh_session")
 
 	// The ladder's planner is finished with: its kept task is answered first, so step 7 can read
 	// what its issue's phase owes a fresh session rather than the task the ladder held.
@@ -1419,6 +1418,24 @@ func (r *claimCompactionLive) refusedThroughBothDoors(what string, doors doorPai
 			doors.operation, what, operator, controller)
 	}
 	r.note("%s at %s is refused %d %s through both doors, word for word: %q", doors.operation, what, status, code, operator)
+}
+
+// refusedThroughEachDoor drives one operation at one claim through both of its doors where the
+// two refusals differ by design: the same status and code through each, each door's own phrases,
+// and none of the controller's naming notToController, which is a door the operator's suspension
+// refuses the controller (api's holdSentences).
+func (r *claimCompactionLive) refusedThroughEachDoor(what string, doors doorPair, token claim.Token,
+	issue string, role claim.Role, status int, code string, operatorPhrases, controllerPhrases []string, notToController string) {
+	r.t.Helper()
+	operatorStatus, operatorBody := doors.operator(r, token)
+	operator := r.heldRefusal(doors.operation+" at "+what+", through the operator's door", operatorStatus, operatorBody, status, code, operatorPhrases...)
+	controllerStatus, controllerBody := doors.controller(r, issue, role)
+	controller := r.heldRefusal(doors.operation+" at "+what+", through the controller's door", controllerStatus, controllerBody, status, code, controllerPhrases...)
+	if strings.Contains(controller, notToController) {
+		r.t.Fatalf("%s at %s: the controller's door names %q, a door the operator's suspension refuses it: %q",
+			doors.operation, what, notToController, controller)
+	}
+	r.note("%s at %s is refused %d %s through each door: the operator's %q, the controller's %q", doors.operation, what, status, code, operator, controller)
 }
 
 // refusedByController drives one request only the controller's door can make and holds its

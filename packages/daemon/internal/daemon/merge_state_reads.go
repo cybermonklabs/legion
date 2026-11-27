@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -389,6 +391,7 @@ var errUnapplied = errors.New("the record did not take GitHub's answer")
 // answers is GitHub's state for the head it read, and the push the record took is itself a fact
 // that asks for a read of the head it left (workflow's askMergeState).
 func (w *workflowRuntime) readMergeState(ctx context.Context, issue string) (record.MergeState, bool, *record.PullRequest, error) {
+	ctx = githubrate.WithCaller(ctx, callerMergeStateReads)
 	_, recorded, err := issueRecord(ctx, w.pool, w.records, issue)
 	if err != nil {
 		return record.MergeStateUnread, false, nil, err

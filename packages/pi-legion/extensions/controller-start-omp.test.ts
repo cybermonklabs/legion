@@ -771,8 +771,9 @@ interface DaemonController {
  * project's Slack channels (none unless `launch` names them), and no
  * LEGION_CONTROLLER_START_MESSAGE, since the controller takes its start message as a task once
  * it reports ready (`give`) — against the controller's stand-in (`serveController`), which
- * answers the daemon's state while the daemon holds the controller's claim (internal/projection's
- * golden), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
+ * answers the daemon's state while the daemon holds the controller's claim
+ * (state-controller-claim.json, which internal/daemon's composition test writes), with `hooks`.
+ * `launch.heartbeatMs` is Envoy's registration heartbeat
  * (ENVOY_HEARTBEAT_MS, 90 s by default), which a case that watches a pass shortens.
  */
 async function startDaemonController(
