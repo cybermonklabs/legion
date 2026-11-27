@@ -660,6 +660,9 @@ describe("replies", () => {
   // its owner, its type and the actor's `kind` and `id` (and `act`, which this actor has none of),
   // so an actor holding an object chain 100,000 deep, past the encoder's recursion and
   // JSON.stringify's, neither throws out of the render nor sends the frame back to the stream.
+  //
+  // The 30 s limit is a hang guard, not a budget: with `objectChainPastTheEncoder` this row took
+  // 3.5 s to 7.2 s in a 2-CPU pod, past bun's unwritten 5,000 ms per-test default.
   test("a Dispatch frame whose actor is an object chain 100,000 deep is taken, its card holding the owner and the type", async () => {
     const event = `{"issue_key":"PRIV-1","type":"comment.created","actor":{"kind":"user","id":"alice","x":${objectChainPastTheEncoder}},"payload":{}}`;
     const payload = JSON.stringify({
@@ -681,7 +684,7 @@ describe("replies", () => {
       actor: { kind: "user", id: "alice" },
     });
     expect(card.envoy.dispatch.actor).not.toHaveProperty("x");
-  });
+  }, 30_000);
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {
     const { delivery, replies } = setup();
