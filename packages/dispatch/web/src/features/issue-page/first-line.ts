@@ -4,13 +4,13 @@ import { chipWords } from "./node-row-chip";
 
 /**
  * The pure rules of a node's one line, which the outline and every place that draws one line of
- * a node read: where its first sentence ends (`firstSentenceLength`), where its first line ends
- * (`firstLineOf`), how it is drawn with its ellipsis (`drawnLine`), and the words a chip names
- * its target by (`chipName`).
+ * a node read (R1): where its first sentence ends (`firstSentenceLength`), where its first line
+ * ends (`firstLineOf`), how it is drawn with its ellipsis (`drawnLine`), and the words a chip
+ * names its target by (`chipName`).
  *
- * They hold no React, make no request, and import nothing of the page's model (`issue-tree.ts`,
- * `tree-drafts.ts`), so a row's text cuts a chip by the one rule the page cuts it by without
- * pulling the model into its import closure.
+ * They hold no React, make no request, and import no code of the tree's model - `tree-drafts.ts`,
+ * `issue-tree.ts`, `useIssueTree.ts` - so a node's words drawn with `RowText` on Dashboard cut a
+ * chip by the one rule the tree cuts it by, without carrying the tree in Dashboard's chunk (R14).
  */
 
 /** How many characters a row's first line may hold (R1). */

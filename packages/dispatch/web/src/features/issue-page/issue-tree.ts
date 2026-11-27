@@ -14,14 +14,14 @@ import type {
   MessageRead,
   ReferenceTarget,
 } from "../../api/types";
-import { type PostDeletion, postDeletion } from "../refs/post-marks";
-import type { PublishedReferences, ReferenceNameReading } from "../refs/reference-names";
+import { storedReading } from "../decision-card/stored-reading";
+import type { ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
-import { storedReading } from "./stored-reading";
-import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
+import { treeContext } from "./target-naming";
+import { type Draft, treeDrafts } from "./tree-drafts";
 
 /**
  * The issue's node tree, built from the page's reads and nothing else.
@@ -315,7 +315,7 @@ export interface TreeNode {
   readonly source?: TextSource;
   /** How it stands, for a type the model gives a state: one of the states the page has a word
    *  for, so a row draws that word and never the token (`NodeState`, R21). A check reads it as
-   *  the server reads its results (`tree-drafts.ts`'s `checkStanding`); a `check` block of any
+   *  the server reads its results (`statement-rules.ts`'s `checkStanding`); a `check` block of any
    *  document but the issue's Verification document carries none, since it is no check and the
    *  results read never answers for it (`isCheck`). */
   readonly state?: NodeState;
@@ -549,72 +549,6 @@ export function firstBlockWordsRaw(reading: DisplayTree): string {
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const context = treeContext(reads);
   return assemble(reads.issue, [...treeDrafts(reads, context).values()], context.chipOf);
-}
-
-/**
- * What the page publishes from the targets of the batched reference read (`reads.targets`) for
- * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
- * rule a chip naming the target is named by (`treeContext`), so a link and a chip naming one
- * target never disagree, save that a chip draws the page's word for a whole document in place
- * of its name (`ReferenceNameReading.chipWord`): the chip of each answered target, named by
- * `chipNaming`.
- */
-export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
-  const context = treeContext(reads);
-  return chipNaming((reads.targets ?? []).map((target) => context.chipOf(target.ref)));
-}
-
-/**
- * How the page names each target the batched reference read answered, by the chip naming it
- * (`targetNaming`), under the chip's own reference (`NodeChip.ref`). Each reference is in one of
- * the four - `readings`, `ambiguous`, `gone`, `unnamed` - read from its chip in one walk, so the
- * four cannot disagree, and the marks of a named post are read in the same walk.
- *
- * - **`readings`**: how each target that something answers to now is named, by its address: the
- *   reading of a chip naming it (`NodeChip.reading`), which the store projects.
- * - **`ambiguous`**: the references the read answered ambiguous: each writes short an id two or
- *   more targets carry, so it names none of them, and a chip naming it says so
- *   (`NodeChip.ambiguous`). A surface draws one as its author wrote it and links nothing.
- * - **`gone`**: the references the read answered that nothing answers to now, an ambiguous one
- *   apart, which a surface draws as the words its author wrote (R8) and reads no target for.
- * - **`unnamed`**: the references the read answered with nothing to name them by - another
- *   issue's block it sent no words for - which a surface reads for itself, as a link to the
- *   target does (R8).
- * - **`edited`**: the references among `readings` whose post its author edited, a comment, a
- *   message or a block of either (`NodeChip.editedAt`). A link that draws a published name cuts
- *   it to its own length and then marks it ` · edited`, so no cut takes the mark: a mark
- *   published inside the name would be cut off a long one. A row's link names the post in one
- *   string, marked with `editedName` (`row-references.ts`); the row's chip draws the mark as an
- *   element of its own with `EditedMark`.
- * - **`deleted`**: the references among `readings` whose comment or message its author deleted,
- *   by its delete (`NodeChip.deletedAt`, `deletedBy`), each named in `readings` by its deleted
- *   line. A row's words draw that line in the deleted line's italic and name its actor as the
- *   page names an author, where the published name holds the actor as no registry knows it
- *   (`RowText.tsx`, INFRA-1196's decision 342); every other link draws the published name.
- *
- * Every reference in `edited` and in `deleted` is in `readings`: a target with no name takes no
- * mark, and a block of a deleted post is gone. None is in both `edited` and `deleted`: a deleted
- * post's chip carries no edit.
- */
-export function chipNaming(chips: Iterable<NodeChip>): Omit<PublishedReferences, "asked"> {
-  const ambiguous = new Set<string>();
-  const deleted = new Map<string, PostDeletion>();
-  const edited = new Set<string>();
-  const gone = new Set<string>();
-  const unnamed = new Set<string>();
-  const readings = new Map<string, ReferenceNameReading>();
-  for (const chip of chips) {
-    if (chip.ambiguous === true) ambiguous.add(chip.ref);
-    else if (chip.gone) gone.add(chip.ref);
-    else if (chip.reading === undefined) unnamed.add(chip.ref);
-    else {
-      readings.set(chip.ref, chip.reading);
-      if (chip.editedAt !== undefined) edited.add(chip.ref);
-      const deletion = postDeletion({ deleted_at: chip.deletedAt, deleted_by: chip.deletedBy });
-      if (deletion !== null) deleted.set(chip.ref, deletion);
-    }
-  }
-  return { ambiguous, deleted, edited, gone, readings, unnamed };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

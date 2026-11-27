@@ -16,6 +16,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { pageStateText } from "../../theme/classes";
+import { blockWords } from "../decision-card/adapters";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../refs/reference-names";
@@ -44,7 +45,7 @@ import { SENTENCE_TABLE } from "./sentence-table";
 import { ContentsSlot } from "./slots/contents";
 import { ProvidersSlot } from "./slots/providers";
 import { specSummary } from "./spec-summary";
-import { blockNodeId, blockWords } from "./tree-drafts";
+import { blockNodeId } from "./statement-rules";
 import { nodeRowSelectorOf } from "./tree-focus";
 
 /**

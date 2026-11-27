@@ -7,6 +7,7 @@ import type {
   IssueDecisions,
 } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
+import { storedReading } from "../../decision-card/stored-reading";
 import type { TextSource } from "../../refs/text-references";
 import { askIdOf, isReading } from "../decisions-filter/decisions-parts";
 import { drawnLine, firstLineOf, firstSentenceLength } from "../first-line";
@@ -14,7 +15,6 @@ import { firstBlockWordsRaw, isStatement, lineWordsRaw, type TreeNode } from "..
 import { chipWords } from "../node-row-chip";
 import { type LineNames, referenceStandIns } from "../one-line";
 import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
-import { storedReading } from "../stored-reading";
 import { nodesInOrder } from "../tree-keys";
 import { statementStandings } from "../verification-filter/statement-state";
 

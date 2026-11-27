@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Page, Request } from "@playwright/test";
+import type { Frame, Page, Request } from "@playwright/test";
 
 import { isLiveSocket, loadsDocument, watchApiRequests, watchTraffic } from "../traffic";
 
@@ -10,21 +10,28 @@ import { isLiveSocket, loadsDocument, watchApiRequests, watchTraffic } from "../
 // that failed it.
 
 /** The frame a stand-in page loads its documents into, which the watchers compare a request's
- *  frame with. */
-const MAIN_FRAME = {};
+ *  frame with. As a page's frame does, it answers `url()` with the URL it last committed: a row
+ *  sets `committed` before it fires `framenavigated` of this frame. */
+const MAIN_FRAME = {
+  committed: "about:blank",
+  url(): string {
+    return this.committed;
+  },
+};
 
-/** A page whose request events the row fires itself: the only part of a page the watchers touch. */
-function eventPage(): { page: Page; emit(event: string, request: Request): void } {
-  const handlers = new Map<string, ((request: Request) => void)[]>();
+/** A page whose request and frame events the row fires itself: the only part of a page the
+ *  watchers touch. */
+function eventPage(): { page: Page; emit(event: string, target: Frame | Request): void } {
+  const handlers = new Map<string, ((target: Frame | Request) => void)[]>();
   const page = {
     mainFrame: () => MAIN_FRAME,
-    on: (event: string, handler: (request: Request) => void) => {
+    on: (event: string, handler: (target: Frame | Request) => void) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
   } as unknown as Page;
   return {
-    emit: (event, request) => {
-      for (const handler of handlers.get(event) ?? []) handler(request);
+    emit: (event, target) => {
+      for (const handler of handlers.get(event) ?? []) handler(target);
     },
     page,
   };
@@ -93,7 +100,8 @@ test("a read still in flight keeps the page from going quiet", () => {
 // A full load of another page ends every request of the page it leaves, and Playwright reports
 // no end for some of them: in a run of the browser suite a watch started on Settings still held
 // three of its reads in flight after a load of an issue, so that issue page never went quiet. A
-// watcher drops what is in flight when a load of a new document into the main frame starts.
+// watcher drops such a read when the main frame commits the new document (`framenavigated` at the
+// URL of the navigation's request), and counts the navigation's own request until it finishes.
 test("a request that a navigation leaves with no answer does not keep the page from going quiet", () => {
   const quiet = watchers.map(([watcher, watch]) => {
     const { emit, page } = eventPage();
@@ -102,6 +110,8 @@ test("a request that a navigation leaves with no answer does not keep the page f
     const load = request("http://127.0.0.1/issues/LAY-3", true);
     emit("request", load);
     const loading = traffic.quietFor(0);
+    MAIN_FRAME.committed = load.url();
+    emit("framenavigated", MAIN_FRAME as unknown as Frame);
     emit("requestfinished", load);
     return { loaded: traffic.quietFor(0), loading, watcher };
   });

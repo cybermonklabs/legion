@@ -1,5 +1,5 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -68,9 +68,9 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       ["{ArrowDown}", "verification"],
       ["{ArrowDown}", "plan"],
       ["{ArrowDown}", "decisions"],
-      ["{ArrowDown}", "conversation"],
+      ["{ArrowDown}", "dashboard"],
       ["{ArrowUp}", "decisions"],
-      ["{Home}", "conversation"],
+      ["{Home}", "dashboard"],
       ["{End}", "decisions"],
       ["{ArrowUp}", "plan"],
     ] as const) {
@@ -293,8 +293,8 @@ function missingReferences(within: HTMLElement): string[] {
 // (`slots/view-row.tsx`), since a count drawn then reads as the real one. The row is drawn all
 // the same, each control with its name alone, and no control points at a signal that is not
 // there. The case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the
-// row of five.
-test("with no signals the row of five draws every view's control with its name alone, and no description names a missing element", () => {
+// row of six.
+test("with no signals the row of six draws every view's control with its name alone, and no description names a missing element", () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
@@ -379,14 +379,14 @@ function signalRoom(
 // (`slots/view-row.tsx`), and a control that grew then moved every control after it under a press
 // aimed at one of them. So each filter control holds its signal's room from its first draw: drawn
 // empty and hidden from assistive technology until the signal is known, with the class that sizes
-// it, which it keeps once the signal is in it. Conversation draws no signal and holds no room.
-// From 1280 px the signal describes its toggle, so no toggle's name changes as it arrives; below
-// 1280 px the one control and each item of its menu are named by the signal beside their name
-// (WCAG 2.5.3), so each is named by its view's name alone before it and by that name first after
-// it. The case draws the row of five at 1440 px (`DESKTOP_WIDTH`) and the one control and its
-// menu at 390 px (`PHONE_WIDTH`).
+// it, which it keeps once the signal is in it. Dashboard and Conversation draw no signal and hold
+// no room. From 1280 px the signal describes its toggle, so no toggle's name changes as it
+// arrives; below 1280 px the one control and each item of its menu are named by the signal beside
+// their name (WCAG 2.5.3), so each is named by its view's name alone before it and by that name
+// first after it. The case draws the row of six at 1440 px (`DESKTOP_WIDTH`) and the one control
+// and its menu at 390 px (`PHONE_WIDTH`).
 test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
-  "before the counts arrive each filter control holds its signal's room, empty and hidden, in the class it keeps once they do, Conversation holds none, and no name changes but by the signal (width %i)",
+  "before the counts arrive each filter control holds its signal's room, empty and hidden, in the class it keeps once they do, Dashboard and Conversation hold none, and no name changes but by the signal (width %i)",
   async (width) => {
     const user = userEvent.setup();
     const restoreMatchMedia = stubViewport(width);
@@ -400,7 +400,7 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
       const row = width === DESKTOP_WIDTH;
       if (!row) await user.click(screen.getByRole("button", { name: PRESET_NAMES.spec }));
       // Each control by what it is and the view it is drawn for, found by `named`, its name: the
-      // row's five toggles, each read in the box it stands in with its signal's label, or the one
+      // row's six toggles, each read in the box it stands in with its signal's label, or the one
       // control, which draws the view that is on, and each item of its menu.
       const controls = (
         named: (preset: Preset) => RegExp | string
@@ -431,7 +431,7 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
       const classes = new Map<string, string>();
       for (const [what, preset, control] of controls((preset) => PRESET_NAMES[preset])) {
         const room = signalRoom(control);
-        if (preset === "conversation") {
+        if (preset === "dashboard" || preset === "conversation") {
           expect(room, `${what} holds a room for a signal it never draws`).toBeNull();
           continue;
         }
@@ -454,7 +454,7 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
         row ? PRESET_NAMES[preset] : new RegExp(`^${PRESET_NAMES[preset]}\\b`)
       )) {
         const room = signalRoom(control);
-        if (preset === "conversation") {
+        if (preset === "dashboard" || preset === "conversation") {
           expect(room, `${what} holds a room for a signal once the counts arrive`).toBeNull();
           continue;
         }
@@ -509,3 +509,60 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
     }
   }
 );
+
+// dispatch://INFRA-5702/spec#b-r-new-page (R2): Dashboard is the first control of the row, in
+// both its shapes, drawn and pressed as every control is: pressing it while it is on returns to
+// Conversation, at Conversation's own address, and Conversation's control opens that address
+// from Dashboard's, the issue's own among them. Dashboard draws no signal: what waits on the
+// reader is counted in the header.
+test("Dashboard is the first control, draws no count, and a press of it while it is on returns to Conversation", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <IssuePresets active="dashboard" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    const dashboard = screen.getByRole("button", { name: PRESET_NAMES.dashboard, pressed: true });
+    expect(
+      within(screen.getByRole("toolbar")).getAllByRole("button")[0],
+      "Dashboard is not the row's first control"
+    ).toBe(dashboard);
+    expect(dashboard.getAttribute("aria-describedby"), "Dashboard is described by a signal").toBe(
+      null
+    );
+    expect(
+      view.container.querySelector('[data-preset-count="dashboard"]'),
+      "Dashboard drew a count"
+    ).toBeNull();
+    await user.click(dashboard);
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "conversation")
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+
+  const restorePhone = stubViewport(PHONE_WIDTH);
+  const phone = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <IssuePresets active="dashboard" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: PRESET_NAMES.dashboard }));
+    expect(screen.getAllByRole("menuitemradio")[0]?.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getAllByRole("menuitemradio")[0]).toBe(menuItem("dashboard"));
+    await user.click(menuItem("conversation"));
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "conversation")
+    );
+  } finally {
+    phone.unmount();
+    restorePhone();
+  }
+});

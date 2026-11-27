@@ -77,7 +77,7 @@ import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
-import { treeContext } from "../tree-drafts";
+import { treeContext } from "../target-naming";
 import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { issueAsksQuery } from "../useIssueTree";

@@ -168,7 +168,7 @@ test("the new issue page draws the whole document in the shipped typeface @phone
     fontRequests.push(request.url());
     fontResponses.push(request.response());
   });
-  await page.goto(`/issues/${issue.key}`);
+  await page.goto(`/issues/${issue.key}/conversation`);
 
   const issuePage = page.locator("[data-issue-page]");
   await expect(issuePage).toBeVisible();
