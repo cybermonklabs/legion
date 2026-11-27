@@ -5,6 +5,9 @@
 // starts the builds' real binaries through multiprocess_harness_test.go's harness.
 // TestTwoBuildsSkipOrDoubleNoMessage checks that no message on any subject is skipped, doubled, or
 // dropped by both while the machine's delivery passes from one build to the other.
+// TestTwoBuildsTheFirstRollFromTheReleasedBuildSkipsOrDoublesNoMessage checks the same of the
+// first roll onto the delivery lease, from the build production runs, which predates the lease,
+// to this one, when ENVOY_LISTENER_OLD_BINARY names that build.
 // TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures checks that while the older
 // build holds the machine's delivery, a session it registered receives a message the newer build
 // publishes on a topic only the newer build's subject captures.
@@ -24,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -194,6 +198,71 @@ func TestTwoBuildsSkipOrDoubleNoMessage(t *testing.T) {
 
 		tbRequireEachOnce(t, publisher, serving)
 	})
+}
+
+// The first roll from the listener build production runs to this one skips or doubles no message
+// on any subject. The old build, from before the delivery lease, is the machine's active pod,
+// delivering from the durable; this build's pod starts as its standby and waits on the old
+// build's push binding of the durable, its /healthz 200 with role "standby" and receive
+// receiveAwaitingBinding's text; a SIGTERM of the old pod hands the machine's delivery to this
+// build. A message is published every tbEvery throughout, on each subject tbTargets names, each to
+// a session of its own, which the old pod registered: each session takes each of its messages
+// exactly once (tbRequireEachOnce).
+//
+// ENVOY_LISTENER_OLD_BINARY names the old build: a listener built from the commit production's
+// dispatch-listener image was built from, which check c-oldbinary of INFRA-557's verification
+// records (production ran cybermonklabs/legion 15338e75, release legion-envoy-v34.21.0, when this
+// row was written). Without it the row skips, naming the variable, so CI's listener-multiprocess
+// job, which sets none, skips it, and a run that skips proves nothing.
+//
+// The row waits for this build's pod to wait on the binding or to be active, and requires the
+// wait only after the each-once check: a build that subscribed beside the old build's binding
+// rather than waiting it out is active at once and has a message delivered twice, and the row is
+// to fail on that doubled message, the fault itself, rather than on the report.
+func TestTwoBuildsTheFirstRollFromTheReleasedBuildSkipsOrDoublesNoMessage(t *testing.T) {
+	old := os.Getenv("ENVOY_LISTENER_OLD_BINARY")
+	if old == "" {
+		t.Skip("ENVOY_LISTENER_OLD_BINARY names no listener built from the commit production's dispatch-listener image was built from")
+	}
+	plain := cmdtest.Build(t, "envoy-listener")
+	uri := mpNATS(t)
+	serving := mpStartNATSSessions(t, uri)
+	targets := tbTargets()
+	oldA := mpStartPod(t, old, uri, "pod-old")
+	mpWaitActive(t, oldA, 30*time.Second)
+	tbRegister(t, oldA, serving, targets)
+	publisher := mpConnectPublisher(t, uri)
+	stop := publisher.everyOn(tbEvery, targets...)
+	time.Sleep(3 * time.Second)
+
+	newB := mpStartPod(t, plain, uri, "pod-new")
+	var code int
+	var health map[string]any
+	waiting := false
+	mpEventually(t, 30*time.Second, newB.instance+" to wait on "+oldA.instance+"'s binding of the durable, or to be active", func() bool {
+		code, health = newB.health()
+		waiting = code == http.StatusOK && health["role"] == "standby" && health["receive"] == receiveAwaitingBinding.String()
+		return waiting || (code == http.StatusOK && health["role"] == "active")
+	})
+	t.Logf("%s with %s running: /healthz %d, status %v, role %v, receive %v",
+		newB.instance, oldA.instance, code, health["status"], health["role"], health["receive"])
+	time.Sleep(5 * time.Second)
+
+	signalled := oldA.Terminate(t)
+	// The old build keeps its binding until its main client's drain, the last part of its stop,
+	// which ends within its stop budget (28 s at 15338e75) of the SIGTERM; this build's wait reads
+	// the durable every durableBindPoll.
+	mpWaitActive(t, newB, 60*time.Second)
+	t.Logf("%s took over %s after %s's SIGTERM", newB.instance, time.Since(signalled).Round(time.Millisecond), oldA.instance)
+	oldA.WaitExit(t, "SIGTERM")
+	time.Sleep(3 * time.Second)
+	stop()
+
+	tbRequireEachOnce(t, publisher, serving)
+	if !waiting {
+		t.Fatalf("%s answered /healthz %d, status %v, role %v, receive %v with %s running; want 200, role standby, receive %q: it did not wait on the old build's binding of the durable",
+			newB.instance, code, health["status"], health["role"], health["receive"], oldA.instance, receiveAwaitingBinding.String())
+	}
 }
 
 // While two builds serve the machine during a roll, the older build delivers a message on a topic
