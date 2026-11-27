@@ -529,6 +529,40 @@ func (head PullRequestHead) storedMergedAt() *time.Time {
 	return nil
 }
 
+// StorePullRequestBaseSHA stores base as the base revision of the open row of repoFull#number
+// that stands at head and stores none: the revision GitHub named for the pull request in a read
+// that found it at that same head (ReadPullRequestRevisions), which is what every other writer of
+// the column stores too (PullRequestHead.BaseSHA). It answers whether it stored one.
+//
+// It writes nothing where the row stores a revision already, where it stands at another head, or
+// where it is no longer open: each of those is a writer's own revision, or a row a write is about
+// to bring to its new head with the revision read beside it, and nothing here may overwrite
+// either. So the pair the row stores is always one read of GitHub's: the head of the read and the
+// base revision of that same read.
+//
+// It is the one write that stores a base revision on a row already keyed, and the check states
+// settler makes it for a row whose candidate former heads it cannot read without one
+// (api/check_states_former_heads.go, verifyFormerHeads): the reconcile's read of the pull request
+// stores the revision too, with the rest of the row, but only within the bound
+// ListStalePullRequestHeads states, and a test handoff waits meanwhile. No trigger of
+// pull_request_heads fires on this column (20261126005340, 20261126005348 and 20261126005345 each
+// name the columns theirs fire on), so the write owes no issue a settle and records no move of the
+// pull request: the settler's own round keeps the obligation that asked for the read and reads
+// again.
+func StorePullRequestBaseSHA(ctx context.Context, db refs.Execer, repoFull string, number int, head, base string) (bool, error) {
+	if head == "" || base == "" {
+		return false, nil
+	}
+	tag, err := db.Exec(ctx, `
+		update pull_request_heads set base_sha = $4
+		where repo = $1 and number = $2 and state = 'open' and head_sha = $3 and base_sha is null`,
+		repoFull, number, head, base)
+	if err != nil {
+		return false, fmt.Errorf("%w: store the base revision of %s#%d: %w", ErrHeadNotStored, repoFull, number, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // citingRowsRejudged is the WITH clause upsertHeadRow's insert starts with. Where no row of the
 // pull request ($1, $2) exists yet (every sub-statement reads the snapshot from before the
 // insert), it sets attribution_rule to 0 on each row credited by source github_issue_link whose

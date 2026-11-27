@@ -130,14 +130,27 @@ func TestAMembershipAnswerAboutABaseRevisionSinceStoredAppliesNothing(t *testing
 	}
 }
 
-// TestARowWithNoStoredBaseRevisionIsReadOnceAWriteStoresOne: #70's row holds no base revision, as
-// a row a release before this one wrote, or one an envelope that named none wrote. The settle has
-// no two revisions to compare, so it asks GitHub nothing about #70: H1 stays a candidate, and the
-// obligation that asked for the read stays, a failure counted, read again after the backoff. Once
-// a write stores the base revision, as the reconcile's read of the pull request does, the next
-// settle compares the stored head with it once: GitHub names H1 there, so k1 is published yes at
-// H1, and no obligation is left.
-func TestARowWithNoStoredBaseRevisionIsReadOnceAWriteStoresOne(t *testing.T) {
+// storedBaseRevision is the base revision #number of the rig's repository stores, "" for a row
+// that stores none.
+func storedBaseRevision(t *testing.T, rig *checkStatesRig, number int) string {
+	t.Helper()
+	var stored string
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select coalesce(base_sha, '') from pull_request_heads where repo = $1 and number = $2`,
+		ciJobRepository, number).Scan(&stored); err != nil {
+		t.Fatalf("read the base revision of #%d: %v", number, err)
+	}
+	return stored
+}
+
+// TestARowWithNoStoredBaseRevisionIsReadAndItsBaseRevisionStored: #70's row holds no base
+// revision, as a row a release before this one wrote, or one an envelope that named none wrote.
+// The settle has no two revisions to compare, so it reads #70 itself once instead of its commits:
+// GitHub names the head the row stores, so the settle stores the base revision GitHub names
+// beside it, which no retry of the candidates' read could ever supply. The candidates wait for a
+// read of their own, with no failure counted, and the settle that follows compares the two stored
+// revisions once: GitHub names H1 there, so k1 is published yes at H1, and no obligation is left.
+func TestARowWithNoStoredBaseRevisionIsReadAndItsBaseRevisionStored(t *testing.T) {
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
 	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
 	storeBaseRevision(t, rig, 70, eachHeadH2, "")
@@ -146,25 +159,27 @@ func TestARowWithNoStoredBaseRevisionIsReadOnceAWriteStoresOne(t *testing.T) {
 	}
 	rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)
 	settleOwed(t, rig)
-	if commits, pulls := rig.github.pullCommitReadsOf(70), rig.github.pullReadsOf(70); commits != 0 || pulls != 0 {
-		t.Fatalf("the settle read #70's commits %d times and #70 itself %d times while its row stores no base revision, want neither", commits, pulls)
+	if commits, pulls := rig.github.pullCommitReadsOf(70), rig.github.pullReadsOf(70); commits != 0 || pulls != 1 {
+		t.Fatalf("the settle read #70's commits %d times and #70 itself %d times while its row stored no base revision, want no read of its commits and one of #70", commits, pulls)
+	}
+	if got := storedBaseRevision(t, rig, 70); got != ciJobBaseSHA {
+		t.Fatalf("#70's row stores the base revision %q after the settle read #70, want %s, the one GitHub names", got, ciJobBaseSHA)
 	}
 	if got := candidatesOf(t, rig); !maps.Equal(got, map[string]bool{eachHeadH1: false}) {
-		t.Fatalf("#70 holds the former heads %v while its row stores no base revision, want H1 unverified still", got)
+		t.Fatalf("#70 holds the former heads %v in the settle that stored the base revision, want H1 unverified still: that settle read no commit", got)
 	}
 	var failures int
 	if err := rig.database.Pool.QueryRow(context.Background(),
 		`select coalesce(max(failures), 0) from check_states_owed where issue_key = $1 and reads_from is not null`, rig.issue).Scan(&failures); err != nil {
 		t.Fatalf("read the marks of %s: %v", rig.issue, err)
 	}
-	if marks := fenceMarksOf(t, rig, rig.issue); len(marks) == 0 || failures < 1 {
-		t.Fatalf("%s keeps the marks %v a handoff waits for, with %d failures, want its obligation kept with a failure counted", rig.issue, marks, failures)
+	if marks := fenceMarksOf(t, rig, rig.issue); len(marks) == 0 || failures != 0 {
+		t.Fatalf("%s keeps the marks %v a handoff waits for, with %d failures, want its obligation kept with no failure counted: the read comes again at once", rig.issue, marks, failures)
 	}
 
-	storeBaseRevision(t, rig, 70, eachHeadH2, ciJobBaseSHA)
 	settleEveryMark(t, rig)
 	if got := stateAt(t, rig, rig.issue, eachHeadH1, "k1"); got != model.PassStandsYes {
-		t.Fatalf("k1 at H1 is published %q once a write stored #70's base revision, want yes", got)
+		t.Fatalf("k1 at H1 is published %q once the settle stored #70's base revision, want yes", got)
 	}
 	if got := rig.github.pullCommitReadsOf(70); got != 1 {
 		t.Fatalf("#70's commits were read %d times, want once", got)
@@ -175,23 +190,29 @@ func TestARowWithNoStoredBaseRevisionIsReadOnceAWriteStoresOne(t *testing.T) {
 }
 
 // TestTheReconcileStoresTheBaseRevisionARowOfTheReleaseBeforeLacks: #70's row holds no base
-// revision, as a row the release before this one wrote, so its candidate H1 is not read and the
-// test handoff waits (answers 503). The delivery reconcile, on its own timer
-// (delivery.Reconcile.Run, ticking here every 100 ms in place of five minutes), re-reads each due
-// open row, the least lately tried first, whatever the delivery settings say
-// (ListStalePullRequestHeads, RefreshPullRequestHead): it stores the base revision GitHub names
-// for #70 with the head and the issue the row had. The mark the settle kept then falls due, the
-// settle compares #70's stored head with that base revision once, publishes k1 yes at H1, and the
-// test handoff is recorded.
+// revision, as a row the release before this one wrote, and GitHub has moved #70 on to H3, which
+// no write has stored. The settle's read of #70 then names another head than the row stores, so it
+// stores no base revision — the revision it read is of the head GitHub holds, not of the row's —
+// and H1 stays unread: the obligation stays, and the test handoff waits (answers 503). The
+// delivery reconcile, on its own timer (delivery.Reconcile.Run, ticking here every 100 ms in place
+// of five minutes), re-reads each due open row, the least lately tried first, whatever the
+// delivery settings say (ListStalePullRequestHeads, RefreshPullRequestHead): it stores the head
+// GitHub names and the base revision beside it, with the issue the row had. The mark the settle
+// kept then falls due, the settle compares those two revisions once, publishes k1 yes at H1, and
+// the test handoff is recorded.
 func TestTheReconcileStoresTheBaseRevisionARowOfTheReleaseBeforeLacks(t *testing.T) {
 	rig := newCheckStatesRig(t, checkStatesTwoChecks)
 	eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
 	storeBaseRevision(t, rig, 70, eachHeadH2, "")
-	rig.github.setPullCommits(70, eachHeadH1, eachHeadH2)
+	rig.github.setPullCommits(70, eachHeadH1, eachHeadH3)
+	rig.github.setPull(70, eachHeadH3, "main", ciJobBaseSHA)
 	rig.github.setPullTitle(70, rig.issue+" A change")
 	settleOwed(t, rig)
 	if got := rig.github.pullCommitReadsOf(70); got != 0 {
 		t.Fatalf("#70's commits were read %d times while its row stores no base revision, want none", got)
+	}
+	if got := storedBaseRevision(t, rig, 70); got != "" {
+		t.Fatalf("#70's row stores the base revision %q after a settle read #70 at a head Dispatch does not store, want none: the revision read is of the head GitHub holds", got)
 	}
 	rig.served.checkStatesSchedule.fenceWait = time.Second
 	wantHandoff(t, rig, "while #70's row stores no base revision and H1 is unread", rig.issue, http.StatusServiceUnavailable)
@@ -216,8 +237,8 @@ func TestTheReconcileStoresTheBaseRevisionARowOfTheReleaseBeforeLacks(t *testing
 	}
 	stop()
 	ciAwait(t, "the reconcile to stop", ran)
-	if baseSHA != ciJobBaseSHA || head != eachHeadH2 || issue != rig.issue {
-		t.Fatalf("#70's row reads base %q, head %s, issue %q once the reconcile ran, want base %s, head H2 and %s", baseSHA, head[:6], issue, ciJobBaseSHA[:6], rig.issue)
+	if baseSHA != ciJobBaseSHA || head != eachHeadH3 || issue != rig.issue {
+		t.Fatalf("#70's row reads base %q, head %s, issue %q once the reconcile ran, want base %s, head H3 and %s", baseSHA, head[:6], issue, ciJobBaseSHA[:6], rig.issue)
 	}
 
 	settleEveryMark(t, rig)

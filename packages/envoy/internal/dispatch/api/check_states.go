@@ -590,7 +590,9 @@ func (p publishedCheckState) sameState(state checkStateAt) bool {
 // and a mark of a lower id can commit after that, so a mark kept in the others' place may be one no
 // handoff waits for, and the marks it waits for would go while the read is unresolved. A read no
 // retry answers (delivery.MembershipUnreadable: no App key, no installation, a token GitHub refuses
-// the repository) keeps no mark, so a test handoff waits for it no longer than the fence's own wait,
+// the repository), of which commits are a pull request's or of the revisions a row that stores no
+// base revision waits for, keeps no mark, so a test handoff waits for it no longer than the
+// fence's own wait,
 // whatever GitHub answers: a candidate of such a pull request stays no former head, and a state
 // published at that commit before stays until a settle reads it. Only the settler writes
 // check_states and check_state_sets, under the issue's lease, so the rows it reads here are the

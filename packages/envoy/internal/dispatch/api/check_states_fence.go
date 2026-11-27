@@ -19,7 +19,8 @@ import (
 // which commits are a pull request's is unresolved, failed for a cause a retry can change or left
 // to another settle, a candidate is no former head, so nothing published replaces the state a
 // reader holds at that commit. A read no retry answers (no App key, no installation, a token
-// GitHub refuses the repository) keeps no mark, so it never holds the handoff. The settle that has
+// GitHub refuses the repository), of a pull request's commits or of the base revision a row of it
+// stores none of, keeps no mark, so it never holds the handoff. The settle that has
 // read each such head, or resolved each such read, deletes the mark. A settle keeps each mark it
 // read for as long as such a read is unresolved, not one in the others' place: a mark can commit
 // after this read of the ids, with an id lower than theirs, and this wait reads only the ids it

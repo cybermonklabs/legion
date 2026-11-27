@@ -51,6 +51,49 @@ func MembershipUnreadable(err error) bool {
 	return errors.Is(err, githubapp.ErrNoAppKey) || RepositoryUnreadable(err)
 }
 
+// PullRequestRevisions is what one read of a pull request tells about where GitHub holds it:
+// Head and Base are the head commit and the base revision GitHub names (head.sha and base.sha),
+// both "" where the read did not answer. Unreadable is whether GitHub cannot answer for the pull
+// request at all and no retry changes that, as CommitMembership.Unreadable is: the deployment has
+// no App key, the App is installed on no installation covering the repository, or GitHub refuses
+// the installation's token the repository (MembershipUnreadable).
+type PullRequestRevisions struct {
+	Head, Base string
+	Unreadable bool
+}
+
+// ReadPullRequestRevisions reads pull request number of repoFull once (GET
+// /repos/{owner}/{repo}/pulls/{number}) and answers the two revisions GitHub names for it, the
+// head and the base revision a comparison of the pull request's own commits is made of
+// (PullRequestMembership). The check states settler reads them where Dispatch stores no base
+// revision for the row, which is every row a writer of the release before migration
+// 20261126005346 left and every row an envelope that names none left: with them it stores the
+// base revision and reads the commits, and with an Unreadable answer it keeps no obligation,
+// since no read of this deployment's will ever store one (api/check_states_former_heads.go,
+// verifyFormerHeads).
+//
+// A failed mint and a failed read both answer the error, with Unreadable set where no retry
+// changes it; a read that names no head or base revision is an error with neither revision and
+// Unreadable false, since another read can answer it.
+func ReadPullRequestRevisions(ctx context.Context, client *githubapp.Client, repoFull string, number int) (PullRequestRevisions, error) {
+	var read PullRequestRevisions
+	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
+	if err != nil {
+		read.Unreadable = MembershipUnreadable(err)
+		return read, err
+	}
+	pull, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
+	if err != nil {
+		read.Unreadable = MembershipUnreadable(err)
+		return read, err
+	}
+	if pull.Head.SHA == "" || pull.Base.SHA == "" {
+		return read, fmt.Errorf("the read of %s#%d names no head or base revision", repoFull, number)
+	}
+	read.Head, read.Base = pull.Head.SHA, pull.Base.SHA
+	return read, nil
+}
+
 // PullRequestMembership tells, for each of candidates, whether it is a commit of pull request
 // number of repoFull standing at head onto the base revision base, the two revisions Dispatch
 // stores for it: a commit head holds and base does not, the set `git log base..head`. The check

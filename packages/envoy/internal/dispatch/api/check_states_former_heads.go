@@ -154,14 +154,17 @@ const formerHeadsReadClaim = time.Minute
 // formerHeadsReads is what verifyFormerHeads made of the candidates of an issue's open pull
 // requests. unverified is true where a read GitHub did not answer left a candidate undecided and a
 // retry can change that (not delivery.MembershipUnreadable), where GitHub's read of the pull
-// request names another head or base revision than the row stores, or where the row stores no base
-// revision: a read made again at once is refused the same
+// request names another head or base revision than the row stores, and where the row stores no
+// base revision and the read of the pull request that would supply one neither answered it nor
+// was refused for a cause no retry fixes: a read made again at once is refused the same
 // way until a write stores the revisions, so all wait the failure backoff; pending where another
-// settle's claim holds a pull request's read, or where an answer applied nothing because what it
-// was read about moved before it was applied (a claim run out or taken over, a lifecycle ended, a
-// head or a base revision stored anew, a candidate replaced), which a read made again at once can
-// apply, so a later read decides those candidates. verifications counts the logical reads, one for
-// each pull request whose candidates were read, and requests the requests to GitHub those reads
+// settle's claim holds a pull request's read, where this settle stored the base revision the row
+// lacked, which the read made again at once compares, or where an answer applied nothing because
+// what it was read about moved before it was applied (a claim run out or taken over, a lifecycle
+// ended, a head or a base revision stored anew, a candidate replaced), which a read made again at
+// once can apply, so a later read decides those candidates. verifications counts the logical
+// reads, one for each pull request whose candidates were read, or whose revisions were read where
+// its row stored no base revision, and requests the requests to GitHub those reads
 // sent: a read of several pages, a page asked again or a comparison is one verification and
 // several requests.
 type formerHeadsReads struct {
@@ -214,8 +217,17 @@ type formerHeadsReads struct {
 // stopped mid-read holds no pull request for long. The read goes by the name of the pull
 // request's row formerHeadsHeld picks, its canonical name where it has one, which is GitHub's
 // route to it, and compares that row's head with its base revision. A row that stores no base
-// revision, as a writer of the release before this one left it, is not read: the reconcile's read
-// of the pull request stores one. The reconcile tries that read within the bound
+// revision, as a writer of the release before this one left it and as an envelope that names none
+// leaves it, has no two revisions to compare, so the settle reads the pull request itself instead
+// (delivery.ReadPullRequestRevisions) and stores the base revision GitHub names for it, where that
+// read finds it at the head the row stores (delivery.StorePullRequestBaseSHA): pending answers
+// true, and the read made a minimum gap on compares the two revisions the row holds then. Where
+// that read is refused for a cause no retry fixes (delivery.MembershipUnreadable), no mark waits
+// for it, as for a membership read refused the same way: no read of this deployment's can ever
+// store the base revision, so the candidates stay as they are and no test handoff waits for them.
+// Where it fails otherwise, or finds GitHub at another head than the row stores, the candidates
+// are unverified, read again after the failure backoff, and a write of the row stores the
+// revisions meanwhile: the reconcile's read of the pull request does, within the bound
 // delivery.ListStalePullRequestHeads states: of n rows due in its first selection, the open rows
 // due and the merged rows no read has reached (the merged rows a rule older than the build's
 // judged take only the room those leave, at most delivery.RejudgedHeadsPerPass), each is tried
@@ -231,8 +243,7 @@ type formerHeadsReads struct {
 // a try whose stamp's call times out or loses its connection may still commit the stamp with no
 // read, at a moment the reconcile never learns, so the bound counts no pass with such a stamp and
 // holds again only once the stamp has settled, and while such stamps recur no number of passes
-// bounds the row's read; the stamp stores no base revision. Until a read stores a base revision
-// the candidates stay unverified.
+// bounds the row's read; the stamp stores no base revision.
 // A read of the pull request that finds GitHub at another head or base revision than the row
 // stores decides nothing either (delivery.CommitMembership.Stale): GitHub moved it on where no
 // write has stored it yet. Both are unverified, read again after the failure backoff, since a read
@@ -303,12 +314,17 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 		claim.candidates = slices.DeleteFunc(claim.candidates, func(sha string) bool { return !slices.Contains(needed, sha) })
 		unstored := claim.head == "" || claim.base == ""
 		var membership delivery.CommitMembership
+		var revisions delivery.PullRequestRevisions
 		var readErr error
 		var sent int64
-		if len(claim.candidates) > 0 && !unstored {
+		if len(claim.candidates) > 0 {
 			bounded, cancel := ciReadBound(ctx)
 			counted, requests := githubreads.CountRequests(bounded)
-			membership, readErr = delivery.PullRequestMembership(counted, c.server.deps.GitHub, held.repo, held.number, claim.head, claim.base, claim.candidates)
+			if unstored {
+				revisions, readErr = delivery.ReadPullRequestRevisions(counted, c.server.deps.GitHub, held.repo, held.number)
+			} else {
+				membership, readErr = delivery.PullRequestMembership(counted, c.server.deps.GitHub, held.repo, held.number, claim.head, claim.base, claim.candidates)
+			}
 			cancel()
 			sent = requests.Load()
 			reads.verifications++
@@ -333,6 +349,18 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 		if len(claim.candidates) == 0 {
 			continue
 		}
+		// The base revision this settle stored for a row that stored none: GitHub's, from the read
+		// above, and only where that read found the pull request at the head the row stores, so the
+		// pair the row holds is one read's. It is stored after the answer, which the stored
+		// revision would otherwise leave applying nothing (the claim's snapshot names it).
+		var storedBase bool
+		if unstored && readErr == nil && revisions.Head == claim.head {
+			stored, err := delivery.StorePullRequestBaseSHA(ctx, pool, held.repo, held.number, claim.head, revisions.Base)
+			if err != nil {
+				return reads, err
+			}
+			storedBase = stored
+		}
 		attrs := []any{"issue", issue, "repo", held.repo, "number", held.number, "head", claim.head, "base", claim.base,
 			"kept", kept, "dropped", dropped, "unknown", len(membership.Unknown), "owed_elsewhere", owedElsewhere,
 			"complete", membership.Complete, "pages", membership.Pages, "pull_reads", membership.PullReads,
@@ -342,10 +370,23 @@ func (c *checkStatesSettler) verifyFormerHeads(ctx context.Context, issue string
 			reads.pending = true
 			slog.Info("dispatch: check states applied nothing of an answer about the candidate former heads of a pull request that moved since its read",
 				attrs...)
+		case unstored && revisions.Unreadable:
+			// No retry changes the answer, so no mark waits for it, as for a membership read no
+			// retry answers below: no read of this deployment's can ever store the base revision
+			// the row lacks, so the candidates stay no former heads until a later settle reads
+			// them once access or configuration returns.
+			slog.Warn("dispatch: check states cannot read the base revision a pull request's row lacks, and no retry changes that: no mark waits for the read",
+				append(attrs, "error", readErr)...)
+		case unstored && storedBase:
+			// The base revision is stored now, so a read made again at once compares the two
+			// revisions the row holds: the mark waits a minimum gap, with no failure counted.
+			reads.pending = true
+			slog.Info("dispatch: check states stored the base revision a pull request's row lacked, and reads its candidate former heads next",
+				append(attrs, "base_read", revisions.Base)...)
 		case unstored:
 			reads.unverified = true
-			slog.Info("dispatch: check states left the candidate former heads of a pull request unread until Dispatch stores its head and base revision",
-				attrs...)
+			slog.Warn("dispatch: check states left the candidate former heads of a pull request unread until a write stores the base revision its row lacks",
+				append(attrs, "base_read", revisions.Base, "head_read", revisions.Head, "error", readErr)...)
 		case membership.Stale:
 			reads.unverified = true
 			slog.Info("dispatch: check states left the candidate former heads of a pull request undecided: GitHub names another head or base revision than Dispatch stores",

@@ -30,15 +30,19 @@ body: |-
     stores whatever GitHub's pull request stands at while it is read, and no read by the pull
     request's number or a branch's name decides a commit; a read of the pull request first only
     tells whether GitHub has moved it on from those revisions, and then decides nothing (only an
-    answer about a commit drops it; any failed read keeps the commits it would have decided, and
+    answer about a commit drops it; a failed read a retry can change (a `404`, a `5xx`, a rate
+    limit, a bound that ended) keeps the commits it would have decided, and
     the settle keeps every obligation it read that asked for the read, each mark with
     `check_states_owed.reads_from`, due after the backoff, which the `test` handoff's fence waits
     for, so the backoff never releases the fence while a commit that may be a former head is
     undecided, and a mark that commits after a handoff began, with a lower id than those it waits
-    for, never stands in for them; a claim another settle holds and an answer whose claim,
+    for, never stands in for them; a read no retry changes (`delivery.MembershipUnreadable`: no
+    App key, no installation, a repository GitHub refuses the installation's token) keeps no mark
+    at all, so it holds no `test` handoff, and the candidates wait for the settle that any later
+    write owes; a claim another settle holds and an answer whose claim,
     lifecycle or snapshot moved since the read keep them the same way, due a second on, a pull
-    request GitHub moved to a head or a base revision no write has stored yet and a row that stores
-    no base revision after the backoff, and any settle of the issue that resolves the read deletes
+    request GitHub moved to a head or a base revision no write has stored yet after the backoff,
+    and any settle of the issue that resolves the read deletes
     them), one read for a pull request whichever issue it moves to, since a settle claims the read
     by the pull request's identity
     (`pull_request_former_heads_claim`, `pull_request_former_heads_reads`) and a settle of another
@@ -56,8 +60,15 @@ body: |-
     stores beside the branch's name (`pull_request_heads.base_sha`, migration `20261126005346`,
     from GitHub's `base.sha` in a read of the pull request and from the listener's new `base_sha`
     field of the `pull_request` envelope), since a base branch moves with no change of its name;
-    a row with none, written before this release or by an envelope without the field, is not read
-    until a write stores one, which the reconcile's read of each open pull request does: of n rows
+    a row with none, written before this release or by an envelope without the field, has no two
+    commits to compare, so the settle reads the pull request itself and stores the base revision
+    GitHub names, where that read finds it at the head the row stores
+    (`delivery.ReadPullRequestRevisions`, `delivery.StorePullRequestBaseSHA`, that column alone,
+    which no trigger of the table fires on), and the settle after it, a second on with no failure
+    counted, compares the two revisions the row holds then; where that read is refused for a cause
+    no retry changes it keeps no mark, as a refused read of the commits does, and where it fails
+    otherwise or finds GitHub at another head the candidates wait after the backoff for a write of
+    the row, which the reconcile's read of each open pull request makes: of n rows
     due in its first selection, the open rows due and the merged rows no read has reached (the
     merged rows of an older attribution rule take only the room those leave, at most 50 a pass),
     it tries each within ceil(n/200) passes that try their whole batch, each stamp acknowledged,
