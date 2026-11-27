@@ -63,6 +63,55 @@ func TestAnIssuerSetChecksATokenByTheIssuerItNames(t *testing.T) {
 	}
 }
 
+// A set of a list of audiences (NewIssuerSetFor) takes from every issuer a token of any listed
+// audience, and refuses each issuer's token of an audience the list does not hold as ErrAudience:
+// one list serves every issuer of the set. An empty list builds no set.
+func TestAnIssuerSetOfAListTakesEachListedAudienceFromEveryIssuer(t *testing.T) {
+	first, second := oidctest.New(t), oidctest.New(t)
+	firstKey, secondKey := first.PublishKey(t, "signing-key"), second.PublishKey(t, "signing-key")
+	issuers := []NamedIssuer{{Name: "first", URL: first.URL()}, {Name: "second", URL: second.URL()}}
+	audiences := []string{testAudience, "second-audience"}
+	set, err := NewIssuerSetFor(issuers, audiences, 0)
+	if err != nil {
+		t.Fatalf("NewIssuerSetFor: %v", err)
+	}
+	// The set keeps no reference to the caller's list.
+	audiences[1] = "changed-after"
+	ctx := context.Background()
+	for _, row := range []struct {
+		name     string
+		issuer   *oidctest.Issuer
+		key      *oidctest.Key
+		audience string
+		want     error
+	}{
+		{"the first issuer's token of the first listed audience", first, firstKey, testAudience, nil},
+		{"the first issuer's token of the second listed audience", first, firstKey, "second-audience", nil},
+		{"the second issuer's token of the first listed audience", second, secondKey, testAudience, nil},
+		{"the second issuer's token of the second listed audience", second, secondKey, "second-audience", nil},
+		{"the second issuer's token of an audience the list does not hold", second, secondKey, "another-audience", ErrAudience},
+		{"the second issuer's token of the audience changed after the set was built", second, secondKey, "changed-after", ErrAudience},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			claims, issuer, err := set.VerifyClaims(ctx, row.issuer.Mint(t, row.key, row.issuer.Claims(testSubject, row.audience)))
+			if row.want != nil {
+				if !errors.Is(err, row.want) || issuer.URL != row.issuer.URL() {
+					t.Fatalf("VerifyClaims = %+v, %v; want %v from that issuer", issuer, err, row.want)
+				}
+				return
+			}
+			if err != nil || claims.Subject != testSubject || issuer.URL != row.issuer.URL() || !slices.Equal(claims.Audience, []string{row.audience}) {
+				t.Fatalf("VerifyClaims = %+v, %+v, %v; want %s of %s from that issuer", claims, issuer, err, testSubject, row.audience)
+			}
+		})
+	}
+	for _, empty := range [][]string{nil, {}} {
+		if set, err := NewIssuerSetFor(issuers, empty, 0); err == nil || set != nil {
+			t.Errorf("NewIssuerSetFor(%#v) = %v, %v; want no set and an error", empty, set, err)
+		}
+	}
+}
+
 // A token whose iss no issuer of the set names is ErrIssuer, the error of a token of another
 // issuer, and reads nothing: no issuer of the set is asked anything for it.
 func TestAnIssuerSetRefusesATokenOfAnIssuerItDoesNotName(t *testing.T) {

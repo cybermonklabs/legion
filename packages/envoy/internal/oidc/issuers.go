@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 )
@@ -35,7 +36,8 @@ func IssuerName(issuers []NamedIssuer, url *string) (name string, ok bool) {
 	return "", false
 }
 
-// IssuerSet verifies tokens of several issuers for one audience, such as the projected
+// IssuerSet verifies tokens of several issuers for one audience, or for any of one list of
+// audiences that serves every issuer of the set (NewIssuerSetFor), such as the projected
 // ServiceAccount tokens of several Kubernetes clusters, each its own issuer. It reads a token's iss
 // without trusting it and gives the token to that issuer's verifier alone, so a token of one
 // issuer never makes another's verifier read its keys. Each issuer is a LazyVerifier, read when
@@ -57,11 +59,29 @@ type issuerEntry struct {
 // configuration that names them refuses a repeated one; a token naming a URL twice listed goes to
 // the first.
 func NewIssuerSet(issuers []NamedIssuer, audience string, failureSpacing time.Duration) *IssuerSet {
+	return newIssuerSet(issuers, []string{audience}, failureSpacing)
+}
+
+// NewIssuerSetFor is NewIssuerSet for tokens each of issuers issues to any of audiences, one list
+// that serves every issuer of the set: a token of any listed audience is taken from any issuer,
+// and each token is judged by the listed audience it carries, as a Verifier of that list judges
+// it (NewWithKeysFor). The caller passes one or more audiences and none of them twice; an empty
+// list is refused here, as NewWithKeysFor refuses it. The set keeps no reference to audiences.
+func NewIssuerSetFor(issuers []NamedIssuer, audiences []string, failureSpacing time.Duration) (*IssuerSet, error) {
+	if len(audiences) == 0 {
+		return nil, errNoAudience
+	}
+	return newIssuerSet(issuers, slices.Clone(audiences), failureSpacing), nil
+}
+
+// newIssuerSet is the set NewIssuerSet and NewIssuerSetFor return, of audiences, which holds one
+// or more.
+func newIssuerSet(issuers []NamedIssuer, audiences []string, failureSpacing time.Duration) *IssuerSet {
 	set := &IssuerSet{entries: make([]issuerEntry, 0, len(issuers))}
 	for _, issuer := range issuers {
 		set.entries = append(set.entries, issuerEntry{
 			issuer:   issuer,
-			verifier: newLazyVerifier(issuer.URL, audience, failureSpacing),
+			verifier: newLazyVerifier(issuer.URL, audiences, failureSpacing),
 		})
 	}
 	return set

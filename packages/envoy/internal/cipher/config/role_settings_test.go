@@ -123,7 +123,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_VM_EXCHANGE_ACCOUNTS":     givesNone("a Google account's person and project"),
 	"BROKER_VM_EXCHANGE_JOB_ACCOUNTS": givesNone("a Google account's projects"),
 	"BROKER_K8S_OIDC_ISSUER":          givesNone("an issuer"),
-	"BROKER_K8S_OIDC_AUDIENCE":        givesNone("an audience"),
+	"BROKER_K8S_OIDC_AUDIENCE":        givesNone("audiences"),
 	"BROKER_SERVICE_LOGINS":           givesARole("BROKER_SERVICE_LOGINS does not name it"),
 
 	"BROKER_API_ACCOUNTS":             givesARole("a BROKER_API_ACCOUNTS entry names it"),

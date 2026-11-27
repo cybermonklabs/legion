@@ -1833,13 +1833,13 @@ type keysFunc func(ctx context.Context, issuer string) (*oidc.Keys, error)
 // verifiers are what one boot's discovery of the token issuers the broker trusts produced: the
 // verifiers, and the key sets the RFC 8693 exchange resolves a subject token's own key against.
 type verifiers struct {
-	// Pod verifies a pod's enrollment token and a service's login token, each against the issuer
-	// of BROKER_K8S_OIDC_ISSUER that its iss names, and refuses a token of any other issuer as
-	// oidc.ErrIssuer. Each issuer is read in the background, and until one is, its tokens are
-	// oidc.ErrIssuerUnavailable, as is a token whose key the broker cannot read; it logs once when
-	// a read issuer's tokens start to be answered so, and once when an issuer that could not be
-	// read, at the boot or since, can be read again (loggedIssuers). Nil on a broker told about no
-	// cluster.
+	// Pod verifies a pod's enrollment token and a service's login token, of any audience
+	// BROKER_K8S_OIDC_AUDIENCE lists, each against the issuer of BROKER_K8S_OIDC_ISSUER that its
+	// iss names, and refuses a token of any other issuer as oidc.ErrIssuer. Each issuer is read in
+	// the background, and until one is, its tokens are oidc.ErrIssuerUnavailable, as is a token
+	// whose key the broker cannot read; it logs once when a read issuer's tokens start to be
+	// answered so, and once when an issuer that could not be read, at the boot or since, can be
+	// read again (loggedIssuers). Nil on a broker told about no cluster.
 	Pod enroll.PodVerifier
 	// Clusters is the issuer set Pod reads, logged (loggedIssuers), through which a verifier of
 	// the clusters' tokens for another audience reads each issuer's keys (loggedIssuers.audience),
@@ -1870,15 +1870,16 @@ type verifiers struct {
 // sources the RFC 8693 exchange resolves a subject token's own key against. keysFor, issuerKeys in
 // production, reads Google's key set.
 //
-// The clusters' issuers (BROKER_K8S_OIDC_ISSUER, for BROKER_K8S_OIDC_AUDIENCE) are one verifier,
-// an oidc.IssuerSet, for both a pod's enrollment token and a service's login token. It tries each
-// issuer once, all at the same time (loggedIssuers.boot), and logs one line for each, naming it and
-// whether it was read; then it reads, in the background until ctx ends, each one it could not
-// (loggedIssuers.run). It logs one more line for such an issuer when it can be read, written once
-// by whichever comes first, that read or a token of the issuer that verifies. None of them refuses
-// the boot: until an issuer is read, its tokens are answered 503, and so is a token whose key the
-// broker cannot read, which loggedIssuers logs once for each issuer that goes unread, not once for
-// each token.
+// The clusters' issuers (BROKER_K8S_OIDC_ISSUER, for every audience BROKER_K8S_OIDC_AUDIENCE
+// lists, one list that serves each issuer it names) are one verifier, an oidc.IssuerSet, for both
+// a pod's enrollment token and a service's login token, which are the clusters' projected tokens
+// of those audiences. It tries each issuer once, all at the same time (loggedIssuers.boot), and
+// logs one line for each, naming it and whether it was read; then it reads, in the background
+// until ctx ends, each one it could not (loggedIssuers.run). It logs one more line for such an
+// issuer when it can be read, written once by whichever comes first, that read or a token of the
+// issuer that verifies. None of them refuses the boot: until an issuer is read, its tokens are
+// answered 503, and so is a token whose key the broker cannot read, which loggedIssuers logs once
+// for each issuer that goes unread, not once for each token.
 //
 // The exchange's cluster issuers (BROKER_EXCHANGE_K8S_ISSUER) are issuers of that same set, and
 // the exchange reads each one's keys through it (IssuerSet.Key), with the same background read,
@@ -1899,7 +1900,10 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		// The token login gives a token answered 503 its address's request back, so while an
 		// issuer's key set cannot be read, this spacing and not that bucket is what holds a
 		// flood of the issuer's tokens to one read of its key set in 5 seconds.
-		issuers := oidc.NewIssuerSet(cfg.K8sOIDCIssuers, cfg.K8sOIDCAudience, oidc.DefaultKeysFailureSpacing)
+		issuers, err := oidc.NewIssuerSetFor(cfg.K8sOIDCIssuers, cfg.K8sOIDCAudiences, oidc.DefaultKeysFailureSpacing)
+		if err != nil {
+			return verifiers{}, err
+		}
 		logged := newLoggedIssuers(issuers, cfg.K8sOIDCIssuers)
 		logged.boot(ctx)
 		go logged.run(ctx)

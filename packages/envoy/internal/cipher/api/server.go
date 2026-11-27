@@ -52,7 +52,8 @@ type Deps struct {
 	// such a caller — its name, its powers and every refusal — is the Kubernetes caller's.
 	GoogleAPIAccounts map[string]Account
 	// AccountTokens verifies those callers' projected ServiceAccount tokens, against the same
-	// Kubernetes issuers and audience a pod enrolls with (cmd/cipherd passes the one verifier it
+	// Kubernetes issuers and audiences a pod enrolls with, any audience BROKER_K8S_OIDC_AUDIENCE
+	// lists from any issuer BROKER_K8S_OIDC_ISSUER names (cmd/cipherd passes the one verifier it
 	// builds), each token against the issuer it names. Nil is a broker that trusts no Kubernetes
 	// issuer, where no Kubernetes caller authenticates.
 	AccountTokens enroll.PodVerifier
@@ -74,12 +75,12 @@ type Deps struct {
 	PodRegistrars PodRegistrars
 	// PodRegistrationTokens verifies a registration's pod token at
 	// BROKER_POD_REGISTRATION_AUDIENCE, each token against the issuer of BROKER_K8S_OIDC_ISSUER its
-	// iss names, through the keys of the issuer set Enroll.Pod verifies the broker's own audience
-	// with (cmd/cipherd builds it on that set, loggedIssuers.audience), so a token of an issuer the
-	// broker cannot read is oidc.ErrIssuerUnavailable through either. Only POST
-	// /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no other route accepts a
-	// token of that audience. Nil is a broker with no such audience, whose registration route
-	// accepts the broker's own audience alone.
+	// iss names, through the keys of the issuer set Enroll.Pod verifies the audiences
+	// BROKER_K8S_OIDC_AUDIENCE lists with (cmd/cipherd builds it on that set,
+	// loggedIssuers.audience), so a token of an issuer the broker cannot read is
+	// oidc.ErrIssuerUnavailable through either. Only POST /v1/oauth/exchange/pod-sessions reads it,
+	// beside Enroll.Pod, so no other route accepts a token of that audience. Nil is a broker with
+	// no such audience, whose registration route accepts the listed audiences alone.
 	PodRegistrationTokens enroll.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).

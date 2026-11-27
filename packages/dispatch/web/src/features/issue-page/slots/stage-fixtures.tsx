@@ -14,11 +14,12 @@ import {
 
 import { ApiError, api } from "../../../api/client";
 import type { IssueDetails } from "../../../api/types";
+import { KEY } from "../../decision-card/decision-fixture";
 import { MarginProvider } from "../../margin/margin-context";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import type { Preset } from "../page-words";
 import { FAILED_READ_RETRY } from "./failed-read-line";

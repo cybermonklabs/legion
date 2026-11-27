@@ -182,19 +182,20 @@ type LazyVerifier struct {
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
 // discovery document is read by Discover, by Run, or by the first Verify or Key.
 func NewLazyVerifier(issuer, audience string) *LazyVerifier {
-	return newLazyVerifier(issuer, audience, DefaultKeysFailureSpacing)
+	return newLazyVerifier(issuer, []string{audience}, DefaultKeysFailureSpacing)
 }
 
-// newLazyVerifier is NewLazyVerifier with failureSpacing as its key set's FailureSpacing, for an
-// IssuerSet whose caller chooses the spacing (NewIssuerSet).
-func newLazyVerifier(issuer, audience string, failureSpacing time.Duration) *LazyVerifier {
+// newLazyVerifier is NewLazyVerifier for tokens issuer issues to any of audiences, which holds
+// one or more (newWithKeys), with failureSpacing as its key set's FailureSpacing, for an
+// IssuerSet whose caller chooses the spacing and the audiences (NewIssuerSet, NewIssuerSetFor).
+func newLazyVerifier(issuer string, audiences []string, failureSpacing time.Duration) *LazyVerifier {
 	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		keys, err := NewKeys(ctx, issuer)
 		if err != nil {
 			return nil, err
 		}
 		keys.FailureSpacing = failureSpacing
-		return NewWithKeys(issuer, audience, keys), nil
+		return newWithKeys(issuer, audiences, keys), nil
 	})}
 }
 
