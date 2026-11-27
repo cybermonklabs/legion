@@ -645,6 +645,7 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 			Err: errors.New("the issue's Sandbox runs no live pod, so no process can read the workspace on its volume")}
 		if ownedBy(pod, s.UID) {
 			taken.PodUID = string(pod.UID)
+			taken.Repository = fetchRepositoryName(pod)
 		}
 		return taken
 	}
@@ -652,7 +653,7 @@ func (r *Runtime) launchTaken(ctx context.Context, l launch, s *sandbox, pod *co
 		return nil
 	}
 	taken := &runtime.TakenPod{Operation: uuid.NewString(), Claim: l.spec.Claim, Issue: l.spec.Issue, PodUID: string(pod.UID), Why: took,
-		Act: runtime.PodAct(string(pod.UID))}
+		Act: runtime.PodAct(string(pod.UID)), Repository: fetchRepositoryName(pod)}
 	if replacement != "" && ownsVolume {
 		// The launch deletes the Sandbox, and the volume with it, over the Sandbox's own pod, which
 		// goes with them (runtime.TakenPod.WithPod).

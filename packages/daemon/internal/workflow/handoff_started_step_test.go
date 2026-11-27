@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A new run clears its issue's generation alone (record.Store.ClearGeneration, as Engine.NewRun
+// A new run clears its issue's generation alone (Engine.ClearGeneration, as Engine.NewRun
 // does): no record holds a tree to clear (R22 of dispatch://INFRA-3320), so "cleared issue" is the
 // one clear a started step outlives.
 func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
@@ -36,7 +36,7 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 			seedPhase(t, pool, row)
 			if which == "cleared issue" {
 				seedRecord(t, pool, func(tx pgx.Tx) error {
-					return record.NewStore().ClearGeneration(t.Context(), tx, issue.Key, time.Now())
+					return engine.ClearGeneration(t.Context(), tx, issue, time.Now())
 				})
 				issue.Generation++
 				seedIssue(t, pool, issue)

@@ -450,8 +450,11 @@ func TestClearGenerationTakesTheToldRowsWithTheGate(t *testing.T) {
 		return len(rows)
 	}
 
+	// The clear runs forget over what it is owed before it deletes the gates; nothing is kept here,
+	// so the forget has nothing to delete.
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.ClearGeneration(ctx, tx, child.Key, at))
+		_, err := records.ClearGeneration(ctx, tx, child, forgetNothing)
+		must(t, err)
 	})
 	if got := count(root.Key, root.Key, child.Key); got != 2 {
 		t.Fatalf("the told rows of %s after its child's clear = %d, want the root's two left", root.Key, got)
@@ -463,7 +466,8 @@ func TestClearGenerationTakesTheToldRowsWithTheGate(t *testing.T) {
 		t.Fatalf("the told rows of %s after its holder row is forgotten = %d, want its architect's row alone", root.Key, got)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.ClearGeneration(ctx, tx, root.Key, at))
+		_, err := records.ClearGeneration(ctx, tx, root, forgetNothing)
+		must(t, err)
 	})
 	if got := count(root.Key, root.Key, child.Key); got != 0 {
 		t.Fatalf("the told rows of %s after its own clear = %d, want none: they went with the gate", root.Key, got)

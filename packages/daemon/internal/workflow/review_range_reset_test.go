@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // clockReads sets engine's clock to at for every fact it applies from here on. The test engine's
@@ -29,13 +28,17 @@ func clockReads(engine *Engine, at time.Time) {
 }
 
 // clearsTheGeneration is a new run's clear of LEGION-208's generation at at: the engine's clock
-// reads at from here on, and the issue's generation is cleared (record.Store.ClearGeneration), as
-// the new run clears it (Engine.NewRun).
+// reads at from here on, and the issue's generation is cleared (Engine.ClearGeneration), as the
+// new run clears it (Engine.NewRun).
 func clearsTheGeneration(t *testing.T, pool *pgxpool.Pool, engine *Engine, at time.Time) {
 	t.Helper()
 	clockReads(engine, at)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().ClearGeneration(ctx, tx, "LEGION-208", at)
+		issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
+		if err != nil {
+			return err
+		}
+		return engine.ClearGeneration(ctx, tx, *issue, at)
 	})
 }
 

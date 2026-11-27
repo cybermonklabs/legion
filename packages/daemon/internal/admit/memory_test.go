@@ -227,9 +227,9 @@ func TestATreeOfAProjectThatDeclaresNothingIsRecordedAtTheMemoryExperiment(t *te
 
 // An issue is drawn once, at its first start, and everything that happens to it afterwards keeps
 // every answer byte for byte: a close and a new run (a new generation), the clearing of that
-// generation's facts (record.Store.ClearGeneration), and the start that run makes, which opens no
-// new lifecycle. Each of those passes runs under modes the operator has since changed and a source
-// that fails the test when it is read, so a second draw would be loud.
+// generation's facts (workflow.Engine.ClearGeneration), and the start that run makes, which opens
+// no new lifecycle. Each of those passes runs under modes the operator has since changed and a
+// source that fails the test when it is read, so a second draw would be loud.
 func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -273,8 +273,9 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	}
 
 	// Clearing the generation's facts is not the issue's experiments' business either.
+	cleared := issue(t, pool, root)
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().ClearGeneration(ctx, tx, root, fixedNow); err != nil {
+		if err := engine.ClearGeneration(ctx, tx, cleared, fixedNow); err != nil {
 			t.Fatalf("clear the issue's generation: %v", err)
 		}
 	})

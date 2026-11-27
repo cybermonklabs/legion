@@ -109,10 +109,11 @@ type outbox struct {
 	dispatchProject string
 	stateDir        string
 	// gatedSteps are the design-gate steps the project gates (gates.design), which a root
-	// architect's catch-up this runner writes states (a child's catch-up states none) and whose
-	// kept approval pair a root architect's start task names (workflow.QueueCatchUp). A test that
-	// builds the runner by hand leaves it nil, which newOutbox reads as the shipped list, the one
-	// step spec.
+	// architect's catch-up this runner writes or delivers states (workflow.QueueCatchUp,
+	// workflow.TreeCatchUp; a child's catch-up states none) and whose kept approval pair a root
+	// architect's start task names. A test that builds the runner by hand and leaves it nil holds
+	// the list of a deployment that gates no step: the single step spec, which no person approves
+	// (record.RequiredSteps).
 	gatedSteps []record.DesignStep
 	log        *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
@@ -2554,7 +2555,8 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // for this notice — the claim has failed or retired, or this daemon does not supervise it — the
 // row finishes undelivered with one log line. So does a row whose architect cannot be resolved
 // from the record (errNoticeUnroutable), which holds back no later notice either, and, before any
-// publish, a catch-up while its issue is out of the workflow by its status or its phase
+// publish, a changes request the person's approval followed while it waited (changesSuperseded),
+// and a catch-up while its issue is out of the workflow by its status or its phase
 // (record.InWorkflow), whose next launch writes a fresh one. A person's spec decision in a notice
 // that finishes undelivered because nobody will hold the role goes to the controller instead
 // (parkDecision), and so does a notice of the issue pod's disk (tellControllerOfKeptPod).
@@ -2568,8 +2570,9 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // answer reaches the policy only from a listener of the deployed, older build, until that
 // rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
-// catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
-// publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
+// catch-up a newer ready dropped, or a changes request a clear of its generation dropped,
+// errNoticeRowGone) is found gone in the tree's snapshot and finishes without a publish, and so
+// does a catch-up a newer one superseded (catchUpSuperseded, read against the
 // row's own issue as the snapshot holds it and its architect's claim as it runs now): the re-hold
 // reads the claim from memory and writes its copy outside ApplyFact's lock, so it can lose the
 // race to a ready and commit an older copy after the fresh catch-up. A catch-up that publishes
@@ -2654,6 +2657,37 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 
 // deliverNotice is the notice executor's own work: routing the notice, publishing it, and settling
 // what a catch-up that will never publish named. Its endings are notice's to read.
+//
+// A changes request the person's approval followed finishes first, with nothing published and
+// one line that names the approved version (stillOwed's changesSuperseded): the workflow
+// asked when it queued the notice (workflow's tellChanges), but a row waits here while its
+// architect's pod is released or relaunching, and a copy a listener's report queued again
+// (reholdNotice) comes through here too, so the delivery asks again on every attempt. It comes
+// before the routing because nothing after it can make the request the person's word again: a
+// released pod is not woken for it (wakeForDelivery), a later notice of the same architect, the
+// approval's own design-approved notice among them, is not held behind it (earlierNoticeFor),
+// and a tree whose architect stopped with it would not relay it to the controller either
+// (parkDecision also asks workflow.NoticeSuperseded). One window is left: an approval that commits
+// between that read and the publish, which reaches the architect after the request it answered.
+//
+// A catch-up is published as the issues its architect owns stand at this delivery, not as they
+// stood when the row was queued: the delivery's one read of the chains composes it again for the
+// row's own issue (readNoticeTree, workflow.TreeCatchUp: the issue and every issue under it on the
+// Dispatch chain), and its record half (record.CatchUpTree) is replaced whole with what
+// that read states, as the notice's Reason is, so a gate registered or an issue added while the
+// row waited reaches the architect with the catch-up (dispatch://INFRA-2819). The Reason keeps in
+// front of it the sentence of what the architect's last process ended that the row was queued
+// with (record.CatchUp.Relaunch), which stays the row's. Decided is written again in that read
+// from the decisions the row claimed, each asked of the gates as they stand then
+// (workflow.SupersedingApproval), so a decision that stopped being the person's word while the row
+// waited is not named. The order is the fence's: whether a newer catch-up supersedes this one
+// (catchUpSuperseded) is read on the payload as the row holds it, before anything is replaced,
+// because the fence compares the row's Generation and Launch with the row's issue and its
+// architect's claim as they are now, and a payload composed from the issue now would compare the
+// issue with itself and never be superseded. So Generation and Launch stay the row's. So does
+// Kept: the row's own queueing claimed those decisions for this row (workflow.EnqueueNaming), and
+// the settling that follows the publish (settleTold, supersededKept) is keyed to what the row
+// claimed, not to what a read at delivery would name.
 func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
 	if r.notices == nil {
 		return errors.New("notice executor has no Envoy publisher")
@@ -2661,9 +2695,15 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if r.supervisor == nil {
 		return errors.New("notice executor has no claim supervisor")
 	}
-	issue, snapshot, err := r.readNoticeTree(ctx, row)
+	issue, snapshot, recomposed, err := r.readNoticeTree(ctx, row, payload)
 	if errors.Is(err, errNoticeRowGone) {
 		r.log.Info("outbox notice finished without publishing: its row was deleted under its lease", "row", row.ID, "kind", payload.Kind, "issue", row.Issue)
+		return nil
+	}
+	var superseded changesSuperseded
+	if errors.As(err, &superseded) {
+		r.log.Info("outbox changes request finished without publishing: the person's approval followed it", "row", row.ID, "issue", row.Issue,
+			"version", payload.Version, "approved", superseded.approved)
 		return nil
 	}
 	if errors.Is(err, errNoticeUnroutable) {
@@ -2707,6 +2747,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"status", issue.Status, "phase", issue.Phase, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
+		delivered := *payload.CatchUp
+		delivered.CatchUpTree, delivered.Decided = recomposed.tree, recomposed.decided
+		payload.CatchUp, payload.Reason = &delivered, recomposed.reason
 	}
 	// The architect whose stop_task stopped the task is answered by its own call, so a
 	// task-stopped notice that names it finishes here, and the one the issue's notices reach is
@@ -3203,9 +3246,44 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // run finishes unpublished at run's fence check (fencedHere, outlived), before this is reached. A
 // row keyed by the project, or by an issue the daemon records nothing of, names the first fence
 // and is never late.
+//
+// A relay of a person's changes request (record.ChangesRequest) is asked first whether its
+// publish is still owed (stillOwed): the relay asked when it wrote the row (parkDecision), but the
+// row waits here for as long as no session holds the controller's claim, and an approval that
+// lands meanwhile would reach the controller as a request to act on. The read asks of the
+// decision the row carries (record.RelayParkedDecision). A row deleted under its lease, which is
+// what a clear of its generation does to a request the person's approval followed, and a request
+// the approval followed each finish with nothing published and one line, the second naming the
+// approved version. A request a clear found standing keeps its row while the clear deletes its
+// gates, so that row is asked of the gates as they stand when it runs. One window is left, as in
+// deliverNotice: an approval that commits between that read and the publish, which reaches the
+// controller after the request it answered. Every other notice, a kept decision of any other
+// kind among them, is published as it is, with no read.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
+	}
+	if _, asks := record.ChangesRequest(payload); asks {
+		read := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+		err := store.TransactWith(ctx, r.pool, read, func(ctx context.Context, tx pgx.Tx) error {
+			return r.stillOwed(ctx, tx, row, payload)
+		})
+		args := []any{"row", row.ID, "issue", row.Issue, "root", payload.Root, "ref", payload.Ref,
+			"version", payload.Version}
+		var superseded changesSuperseded
+		switch {
+		case errors.Is(err, errNoticeRowGone):
+			r.log.Info("outbox relayed changes request finished without publishing: "+
+				"its row was deleted under its lease", args...)
+			return nil
+		case errors.As(err, &superseded):
+			r.log.Info("outbox relayed changes request finished without publishing: "+
+				"the person's approval followed it", append(args, "approved", superseded.approved)...)
+			return nil
+		case err != nil:
+			return fmt.Errorf("read whether the changes request relayed for %s is still the "+
+				"person's word: %w", row.Issue, err)
+		}
 	}
 	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
@@ -3679,10 +3757,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// queued for news alone: startNews.roundNamed): the one place each prompt is composed reads
 		// it there, and gives a reviewer's task of a row that lacks it, which only a row of the
 		// release before this one can be, those sentences naming no commit and no entry
-		// (supervise's Delivery.message). The news the task carries travels the same way
-		// (supervise.Delivery.News): the task is the start's own text and the news after it, the
-		// round's two sentences after the news where the task names them (renderNews), the send
-		// renders that news again from the record (the daemon's designNews), and the write
+		// (supervise's Delivery.message). A resume task of an answered root carries no text of its
+		// own, and the wait it answers instead (supervise.Delivery.Resume): it is queued with the
+		// news its start carries as its whole text, empty where it carries none, and at each send
+		// its text is written from the record as it stands then (the daemon's rootTask), with that
+		// news rendered after it (narrowedNews). The news the task carries travels the
+		// same way (supervise.Delivery.News): the task is the start's own text and the news after
+		// it, the round's two sentences after the news where the task names them (renderNews), the
+		// send renders that news again from the record (the daemon's designNews), and the write
 		// recording the turn's confirmation makes what the prompt of that turn carried the
 		// delivery's credit, which the write recording the turn's result folds into the told rows
 		// (supervise.Delivery.Carried, the claim store's settleDesignNews). A start queued for news
@@ -3693,15 +3775,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// gives way to a start of an entry, whose own task carries that same news (supervise's
 		// Machine.supersedes), so the start that StartedBy is told of below reads it too.
 		var task *supervise.RequestDeliver
-		if payload.Task != "" || payload.News {
+		if payload.Task != "" || payload.Awaiting != nil || payload.News {
 			kept, err := keptJSON(payload.Kept)
+			if err != nil {
+				return err
+			}
+			resume, err := resumeJSON(payload.Awaiting)
 			if err != nil {
 				return err
 			}
 			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Resume: resume,
+				News: news.news, NewsOnly: payload.News}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim

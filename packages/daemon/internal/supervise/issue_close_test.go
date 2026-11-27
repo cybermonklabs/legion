@@ -147,7 +147,7 @@ func TestAReopenedClaimResumesTheSessionItKept(t *testing.T) {
 
 	h.wantState(StateLaunching)
 	h.wantCalls("Resume", 1)
-	if last := h.rt.Calls()[len(h.rt.Calls())-1]; last.Method != "Resume" || last.Spec.ResumeSessionFile != sessionFile {
+	if last := h.lastStartCall(); last.Method != "Resume" || last.Spec.ResumeSessionFile != sessionFile {
 		t.Errorf("the relaunch was %s %+v, want a resume of %s", last.Method, last.Spec, sessionFile)
 	}
 	if built := h.specs.last(t); built.Session != session || built.SessionFile != sessionFile {

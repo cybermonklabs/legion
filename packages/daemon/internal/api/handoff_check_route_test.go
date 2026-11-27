@@ -27,9 +27,10 @@ import (
 // newWorkflowHarness serves the daemon's routes with the workflow of cfg deciding every fact they
 // apply, over a real Postgres and the GitHub stand-in a completing implementer reads, behind the
 // Mirror that writes each route's reads of Dispatch into the copy, as the daemon's own chain does
-// (daemon/workflow.go). It answers the engine the test applies its own facts with — a settlement,
-// a status a person set, a failed claim — and the recorder of every fact the routes applied. Each
-// of configure sets an option of the server first, such as a test's seam.
+// (daemon/workflow.go), and with the workflow's own table of which role works each phase
+// (workflow.RoleFor), as the daemon wires it. It answers the engine the test applies its own facts
+// with — a settlement, a status a person set, a failed claim — and the recorder of every fact the
+// routes applied. Each of configure sets an option of the server first, such as a test's seam.
 func newWorkflowHarness(t *testing.T, cfg workflow.Config, configure ...func(*Options)) (*harness, *workflow.Engine, *factRecorder) {
 	t.Helper()
 	h := newHarness(t)
@@ -42,7 +43,7 @@ func newWorkflowHarness(t *testing.T, cfg workflow.Config, configure ...func(*Op
 		Steps:      cfg.Steps,
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{blockers.NewMirror(records, testDispatchProject), engine, facts}, Dispatch: h.handoffs,
+		Handlers: []intake.Handler{blockers.NewMirror(records, testDispatchProject), engine, facts}, Dispatch: h.handoffs, RoleFor: workflow.RoleFor,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
 	}
 	for _, set := range configure {

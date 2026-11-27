@@ -303,10 +303,12 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // assignmentPlanContract's row), no `intakeGiveUps` (withoutIntakeGiveUps,
 // intakeGiveUpsContract's row), no issue's `podHold` (withoutPodHold, podHoldContract's row), no
 // root's `treeRuns` and no gated steps of a root a step of which stands on an ancestor's basis
-// (withoutGateBasis, gateBasisContract's row), the three other rows of stateNarrowings above the
-// contract it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no
-// claim view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row),
-// no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row) and no
+// (withoutGateBasis, gateBasisContract's row), no issue's `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason` (withoutRepositoryCorrection,
+// repositoryCorrectionContract's row), the three other rows of stateNarrowings above the contract
+// it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no claim
+// view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row), no
+// `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row) and no
 // `daemon.convertedAt` (withoutConvertedAt, chainContract's row), and every other key as a caller
 // at shapedAnswersContract is served it, since no other row of stateNarrowings stands between
 // shapedAnswersContract and repositoriesLiveContract.

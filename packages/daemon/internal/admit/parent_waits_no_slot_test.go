@@ -51,6 +51,12 @@ func pnMerged(child string, number int) string {
 	return fmt.Sprintf("%s (pull request #%d)", child, number)
 }
 
+// pnImplementHandoffRead is the command the tester's task names for the implementer's handoff at
+// version 2, the version its completion held. The test asserts what the task's Handoff sentence
+// names and keeps none of its words: workflow's TestTheHandoffLineExtractIsTheSentenceTheTaskWrites
+// holds those.
+const pnImplementHandoffRead = "dispatch handoff-read --issue LEGION-300 --phase implement --version 2"
+
 // pnChildMerged records child, a child of parent in parent's tree, as a child that ran and merged
 // leaves the daemon's record and Dispatch: its record at done, its pull request number merged, and
 // Dispatch showing it done at sequence 2.
@@ -784,7 +790,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 		work := starts[0].task
 		for _, want := range []string{"Phase: testing.", "start of testing", wait.Reason, pnMergedChildren(spParent, pnMerged(spChild, 51)),
-			"Handoff: implement version 2 (dispatch handoff-read --issue LEGION-300 --phase implement --version 2)."} {
+			pnImplementHandoffRead} {
 			if !strings.Contains(work, want) {
 				t.Fatalf("the tester's task = %q, want it to say %q", work, want)
 			}
@@ -949,7 +955,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		work := starts[0].task
 		for _, want := range []string{"Phase: testing.", "start of testing", wait.Reason,
 			pnMergedChildren(spParent, pnMerged(spChild, 51), pnMerged(late, 54)) + ".",
-			"Handoff: implement version 2 (dispatch handoff-read --issue LEGION-300 --phase implement --version 2)."} {
+			pnImplementHandoffRead} {
 			if !strings.Contains(work, want) {
 				t.Fatalf("the tester's task = %q, want it to say %q", work, want)
 			}

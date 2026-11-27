@@ -618,7 +618,7 @@ func (w *workflowRuntime) finishHandOver(ctx context.Context, tx pgx.Tx, issue r
 		return err
 	}
 	if !carry {
-		return w.records.ClearGeneration(ctx, tx, issue.Key, now)
+		return w.engine.ClearGeneration(ctx, tx, issue, now)
 	}
 	if err := w.records.CarryPlan(ctx, tx, issue.Key, oldGeneration, issue.Generation, true); err != nil {
 		return fmt.Errorf("carry the plan of %s into its new generation: %w", issue.Key, err)

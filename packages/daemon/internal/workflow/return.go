@@ -474,7 +474,7 @@ func (e *Engine) tellAbove(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // It clears the issue's own run and nothing of another issue's (R17 of dispatch://INFRA-3320): the
 // held start, the hold, the wait on a person and the close Dispatch refused go with the run that
 // ended, so does the mark that the run stood in a phase (record.Issue.TakenBack, decision 19), and
-// the generation's facts are cleared (record.Store.ClearGeneration): a merged or closed pull
+// the generation's facts are cleared (Engine.ClearGeneration): a merged or closed pull
 // request, the rounds of
 // an open one, the design gate and the recorded handoffs. A person's approval of a version the
 // issue's document has since moved past is kept first (keepStaleApproval, R3), so the new run's
@@ -514,7 +514,7 @@ func (e *Engine) NewRun(ctx context.Context, tx pgx.Tx, issue record.Issue, fact
 	if err := e.leaveTaskOfRun(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.store.ClearGeneration(ctx, tx, issue.Key, e.now()); err != nil {
+	if err := e.ClearGeneration(ctx, tx, issue, e.now()); err != nil {
 		return err
 	}
 	run := observedIssue(issue, fact)
@@ -579,7 +579,7 @@ func (e *Engine) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string) e
 		}
 		if approved := gate.ApprovedByPerson(); approved != nil && approved.Version < gate.LatestVersion {
 			return e.store.KeepReadmittedApproval(ctx, tx, key, record.KeptApproval{
-				Step: step, Approved: approved.Version, Latest: gate.LatestVersion})
+				Step: step, Artifact: gate.ArtifactID, Approved: approved.Version, Latest: gate.LatestVersion})
 		}
 	}
 	if unregistered {

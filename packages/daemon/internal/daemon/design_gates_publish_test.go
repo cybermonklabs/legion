@@ -449,9 +449,10 @@ func TestDesignGatesPublishSaysWhetherEachRowHoldsItsTree(t *testing.T) {
 }
 
 // Every path that empties an issue's design gates queues one publication of the empty set for each
-// issue it emptied (record.Postgres.clearGates): those rows recorded a document until the delete,
-// and Dispatch holds the set they recorded until something tells it otherwise. The delete names
-// the issue it emptied, so an issue that held no gate row costs Dispatch no write.
+// issue it emptied (record's clearGates names them, and workflow's publishEmptied queues each
+// through the engine's store): those rows recorded a document until the delete, and Dispatch
+// holds the set they recorded until something tells it otherwise. The delete names the issue it
+// emptied, so an issue that held no gate row costs Dispatch no write.
 //
 // The delete is a new run's (workflow.Engine.NewRun), which clears the run's facts of its own
 // issue and of no other (R17 of dispatch://INFRA-3320; decision 8 of dispatch://INFRA-4730): it is

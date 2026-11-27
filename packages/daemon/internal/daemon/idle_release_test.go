@@ -308,6 +308,14 @@ func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
 	// (record.NewFencedRow), read through records.
 	w := &workflowRuntime{pool: pool, records: records, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
+	// The repository hold reads what the daemon's own attach wires it to read
+	// (attachIdleRelease): the pod through the runtime the supervisor holds, and the record
+	// through the workflow's own read of it. The rig's pod names the repository its record holds,
+	// as a Sandbox pod names the one its fetch cloned (runtime.Runtime.PodRepository), so it is on
+	// that repository until a test says otherwise (idleRig.podBuiltFrom).
+	rt.ScriptPodRepository(token, issue.Repo)
+	s := &supervision{log: quietLogger(), supervisor: sup, plan: plan{recordedRepository: recordedRepositoryOf(w.recordedIssue)}}
+	w.idleRepositoryDrifted = s.podRepositoryDrifted
 	return &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: issue, token: token, machine: machine}
 }

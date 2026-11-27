@@ -19,9 +19,10 @@ import (
 )
 
 // releaseBeforeMigrations are this release's own migrations, the ones main, the release before the
-// one that stores no tree, does not carry. A store migrated with every migration but these is the
-// store main leaves.
-var releaseBeforeMigrations = []int{20261122154644, 20261122154645, 20261126035722}
+// one that stores no tree, does not carry, as `comm` reads the up.sql files of this tree against
+// those of main's tip (45f6e9d3 at the last forward merge). A store migrated with every migration
+// but these is the store main leaves.
+var releaseBeforeMigrations = []int{20261122154644, 20261122154645, 20261126035722, 20261127104032}
 
 // oldestReleaseNewest is the newest migration that legion-v22.16.2, the oldest release a project's
 // daemon runs before the upgrade, holds: 20261119003157_conflict_reads_and_merge_forward, the last
@@ -29,14 +30,18 @@ var releaseBeforeMigrations = []int{20261122154644, 20261122154645, 202611260357
 const oldestReleaseNewest = 20261119003157
 
 // oldestReleaseLacksBelowItsNewest are the migrations dated below oldestReleaseNewest that
-// legion-v22.16.2 does not hold, since each merged to main after that release: 20261114064234 and
-// 20261114232555 (INFRA-4728's design-gate basis and awaiting_children), 20261115060739
-// (claim_suspended_by_controller), 20261115121838 (drop_controller_wakes_for_nothing) and
-// 20261117034837 (issue_plans). A forward merge of main can bring in a migration dated below that
-// release's newest, since a migration keeps the date it was written under however late it merges,
-// so at each such merge this list is checked against the up.sql files that
-// `git show legion-v22.16.2:packages/daemon/internal/store/migrations/` lists.
-var oldestReleaseLacksBelowItsNewest = []int{20261114064234, 20261114232555, 20261115060739, 20261115121838, 20261117034837}
+// legion-v22.16.2 does not hold, since each merged to main after that release: 20261112012123 and
+// 20261112215432 (dispatch://INFRA-3136's issue_repository_correction and delivery_resume, of
+// cybermonklabs/legion#3712), 20261114064234 and 20261114232555 (INFRA-4728's design-gate basis
+// and awaiting_children), 20261115060739 (claim_suspended_by_controller), 20261115121838
+// (drop_controller_wakes_for_nothing), 20261117034837 (issue_plans) and 20261118073048
+// (dispatch://INFRA-3136's phase_entry_awaiting, of cybermonklabs/legion#3712). A forward merge
+// of main can bring in a migration dated below that release's newest, since a migration keeps the
+// date it was written under however late it merges, so at each such merge this list is checked
+// against the up.sql files that `git show legion-v22.16.2:packages/daemon/internal/store/migrations/`
+// lists.
+var oldestReleaseLacksBelowItsNewest = []int{20261112012123, 20261112215432, 20261114064234, 20261114232555, 20261115060739,
+	20261115121838, 20261117034837, 20261118073048}
 
 // oldestReleaseMigrations are the migrations that legion-v22.16.2 does not carry: every embedded
 // migration above its newest (oldestReleaseNewest), this release's own among them, and the ones

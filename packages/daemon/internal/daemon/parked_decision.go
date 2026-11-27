@@ -54,6 +54,14 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // with no record, or replaced since), or handled before under the same key, by an earlier run or
 // another row carrying the same notice, whose own line said what became of it. The line is a hook
 // of the transaction, so it is logged once the transaction has committed.
+//
+// A decision that is no longer the person's word is not relayed: the gates of the issue it was
+// made on, as the record holds them now, are asked (workflow.NoticeSuperseded), and the
+// controller is not told to act on a review the person's own approval took the place of, nor on
+// an approval the gate no longer holds. The same read of the gates says whether a newer changes
+// request replaced it (workflow.ChangesSuperseded). The relay carries the notice's facts of the
+// review (record.RelayParkedDecision), so the publish of a relayed changes request asks again
+// of the same decision (controllerNotice).
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
@@ -62,6 +70,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
 	outcome, fresh, recorded, replaced := record.RelayNone, false, false, false
+	var superseded *workflow.Supersession
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		store.OnCommit(ctx, func() {
 			switch {
@@ -69,6 +78,12 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 				r.log.Info("outbox parked decision handled before under this key", args...)
 			case !recorded:
 				r.log.Info("outbox parked decision not relayed: its root has no record", args...)
+			case superseded != nil && superseded.By == nil:
+				r.log.Info("outbox parked decision not relayed: the gate no longer holds the approval it reports",
+					append(args, "version", notice.Version)...)
+			case superseded != nil:
+				r.log.Info("outbox parked decision not relayed: the person's approval followed it",
+					append(args, "version", notice.Version, "approved", superseded.By.Version)...)
 			case replaced:
 				r.log.Info("outbox parked decision not relayed: a newer changes request of its document replaced it", append(args, "ref", notice.Ref, "version", notice.Version)...)
 			case outcome == record.RelaySent:
@@ -93,17 +108,33 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			return err
 		}
 		recorded = true
+		gates, err := r.records.GatesOf(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if superseded = workflow.NoticeSuperseded(gates, r.gatedSteps, issue, notice, decision); superseded != nil {
+			return nil
+		}
 		if decision == record.DecisionDesignChangesRequested {
-			gates, err := r.records.GatesOf(ctx, tx, issue)
-			if err != nil {
-				return err
-			}
 			if replaced = workflow.ChangesSuperseded(gates, issue, notice); replaced {
 				return nil
 			}
 		}
+		// The decision is kept at Dispatch's mark of the review it reports (record.Notice.Review),
+		// so a later approval is weighed against it by Dispatch's order and not by this clock;
+		// this clock places it only where the notice carries no time of the review (one an
+		// earlier release queued, or a Dispatch event that gave none). It is kept with the
+		// document reviewed and its version (record.Notice.Artifact and Version), as its relay
+		// carries them, so the kept decision and the relay are asked the same question of the
+		// same review.
+		at := notice.Review.At
+		if at.IsZero() {
+			at = now
+		}
 		outcome, err = record.RelayParkedDecision(ctx, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq,
+				Artifact: notice.Artifact, Version: notice.Version},
+			notice, r.gatedSteps)
 		return err
 	}); err != nil {
 		return fmt.Errorf("send the controller the decision %s carried on %s: %w", key, issue, err)

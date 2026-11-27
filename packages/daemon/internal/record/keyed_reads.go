@@ -146,8 +146,9 @@ func (s *Postgres) UnclaimedKeptOf(ctx context.Context, tx pgx.Tx, root string, 
 		return nil, KeptApproval{}, err
 	}
 	var approval KeptApproval
-	err = tx.QueryRow(ctx, `select step, approved_version, latest_version from readmitted_approvals
-		where issue = $1 and `+keptCountsFor("readmitted_approvals", "$1"), root).Scan(&approval.Step, &approval.Approved, &approval.Latest)
+	err = tx.QueryRow(ctx, `select step, artifact, approved_version, latest_version from readmitted_approvals
+		where issue = $1 and `+keptCountsFor("readmitted_approvals", "$1"), root).Scan(&approval.Step, &approval.Artifact,
+		&approval.Approved, &approval.Latest)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, KeptApproval{}, fmt.Errorf("read the approval kept for %s: %w", root, err)
 	}
@@ -157,7 +158,8 @@ func (s *Postgres) UnclaimedKeptOf(ctx context.Context, tx pgx.Tx, root string, 
 // parkedDecisionsOf is every decision of members, or only those root's start or catch-up may name
 // (keptCountsFor), newest first, ties by ref.
 func parkedDecisionsOf(ctx context.Context, tx pgx.Tx, root string, members []string, nameable bool) ([]ParkedDecision, error) {
-	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at, coalesce(kept.claimed_by, 0),
+	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at,
+		coalesce(kept.seq, 0), kept.artifact, coalesce(kept.version, 0), coalesce(kept.claimed_by, 0),
 		coalesce(kept.held_by_claim, ''), coalesce(kept.held_by_delivery, '')
 		from parked_decisions kept
 		where kept.issue = any($1) and (not $2 or (`+keptCountsFor("kept", "$3")+`)) order by kept.at desc, kept.ref`,
@@ -167,8 +169,9 @@ func parkedDecisionsOf(ctx context.Context, tx pgx.Tx, root string, members []st
 	}
 	decisions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ParkedDecision, error) {
 		var decision ParkedDecision
-		err := row.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At,
-			&decision.ClaimedBy, &decision.HeldBy.Claim, &decision.HeldBy.Delivery)
+		err := row.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor,
+			&decision.At, &decision.Seq, &decision.Artifact, &decision.Version, &decision.ClaimedBy,
+			&decision.HeldBy.Claim, &decision.HeldBy.Delivery)
 		return decision, err
 	})
 	if err != nil {
