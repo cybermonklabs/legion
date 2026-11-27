@@ -212,6 +212,7 @@ func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
 // count is the runs below it. The fault is a read that takes the task line for a run, which fails
 // the first row.
 func TestVariantPlacePassesOverTheLineOfAPlansTask(t *testing.T) {
+	t.Parallel()
 	const (
 		run     = "default 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed"
 		variant = "Experiment planning: variant b."
