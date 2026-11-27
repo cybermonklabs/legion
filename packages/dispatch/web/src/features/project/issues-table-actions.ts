@@ -1,10 +1,5 @@
-import {
-  type MutationKey,
-  useIsMutating,
-  useMutationState,
-  useQueryClient,
-} from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type MutationKey, useMutationState, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import {
   ApiError,
@@ -228,7 +223,13 @@ export function useIssueTableActions({
     [recoveryKey]
   );
   const waitsName = useMemo<MutationKey>(() => ["issues-table-wait", recoveryKey], [recoveryKey]);
-  const actionsHeld = useIsMutating({ exact: true, mutationKey: actionsName });
+  // The actions the cache holds under the listing's name, read from the cache, which tells its
+  // listeners at once (`cache.subscribe`, as `usePendingKeyedPress` reads a press). TanStack tells
+  // `useIsMutating` a timer later, a task after the bound that ends an action's list read has drawn
+  // why in the notice, so a List drawn again that read it would hold its controls a task past it.
+  const actionsHeld = useSyncExternalStore(client.getMutationCache().subscribe, () =>
+    client.isMutating({ exact: true, mutationKey: actionsName })
+  );
   /** The actions out of the listing: this List's own, from the render each press makes, and
    *  those the cache holds, which a List drawn again counts though none is its own. */
   const out = Math.max(running, actionsHeld);

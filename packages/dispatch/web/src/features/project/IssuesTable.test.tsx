@@ -4,8 +4,9 @@ import { act, render, renderHook, screen, waitFor, within } from "@testing-libra
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ComponentProps, ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { holdNotifications } from "../../__tests__/commits";
 import { drawnSize } from "../../__tests__/control-size";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { FootFloat } from "../../__tests__/foot-float";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldAnswers } from "../../__tests__/held-answers";
@@ -3737,6 +3738,81 @@ test("the line a Start next's list read the bound ended adds goes as the next St
     expect(startNext).not.toHaveAttribute("aria-disabled");
     expect(screen.queryByRole("alert")).toBeNull();
   } finally {
+    realClock();
+  }
+});
+
+// A List drawn again while an action's list read is out holds its controls by that read's hold and
+// by the action as the mutation cache holds it (`useIssueTableActions`), since no press of its own
+// made the action. The request deadline ends the hold and draws why in the notice in one change of
+// the hold's store, and the cache lets the action go a few turns after: Start next lets go in that
+// same task, so a press of it once the notice says why starts the next action. A browser tells
+// TanStack's observers a timer later (`holdNotifications`), so the row holds those notifications
+// back. The list read starts as the write lands, before the clock moves, so one jump of the
+// deadline lands on the bound's own timer, and only microtasks run after it.
+test("a List drawn again while an action's list read is out lets Start next go in the task the notice says why at the request deadline", async () => {
+  // Each write's answer, held until the row gives it, so what it sets off runs in `act`.
+  const { answers, next } = heldAnswers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => next() as never);
+  restores.push(() => send.mockRestore());
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { drawAgain, listing } = table(
+    [
+      issue("CORE-1", { labels: ["legion"], rank: "B" }),
+      issue("CORE-2", { labels: ["legion"], rank: "C" }),
+    ],
+    "",
+    { client }
+  );
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  // The first list read after the write, held until the row answers it.
+  const listed = listing.getMockImplementation();
+  const reread = Promise.withResolvers<void>();
+  let reading = false;
+  listing.mockImplementationOnce(async (...args) => {
+    reading = true;
+    await reread.promise;
+    if (listed === undefined) throw new Error("the list read has no answer");
+    return listed(...args);
+  });
+  const startNextOf = () =>
+    within(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).getByRole("button", {
+      name: "Start next",
+    });
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    await user.click(startNextOf());
+    await tick(0);
+    await act(async () => answers[0]?.(savedIssue("CORE-2")));
+    expect(reading).toBe(true);
+    drawAgain();
+    await settle();
+    expect(startNextOf()).toHaveAttribute("aria-disabled", "true");
+
+    const notifications = holdNotifications();
+    try {
+      await act(async () => {
+        jest.advanceTimersByTime(REQUEST_DEADLINE_MS);
+        await settle();
+      });
+      expect(screen.getByRole("alert").textContent).toBe(
+        "CORE-2 “Work CORE-2” now starts next. Could not load issues. Dispatch did not answer within 30 seconds."
+      );
+      expect(startNextOf(), "the notice said why while Start next was held").not.toHaveAttribute(
+        "aria-disabled"
+      );
+      await user.click(startNextOf());
+    } finally {
+      notifications.tell();
+    }
+    await tick(0);
+    expect(send).toHaveBeenCalledTimes(2);
+    await act(async () => answers[1]?.(savedIssue("CORE-2")));
+    await tick(0);
+  } finally {
+    // The held read settles inside `act`, whatever the row reached.
+    await act(async () => reread.resolve());
     realClock();
   }
 });
