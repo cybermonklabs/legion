@@ -2,11 +2,13 @@ package intake
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
@@ -288,5 +290,84 @@ func TestStatusChangedAfterRefusesAnEventItCannotDecode(t *testing.T) {
 	_, err := statusChangedAfter([]json.RawMessage{approvalLogEvent(9), payloadlessLogEvent(10, "issue.updated")}, 9)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("statusChangedAfter error = %v, want one containing %q", err, want)
+	}
+}
+
+// The transition that left an issue at a status, as Dispatch showed it at a sequence, is the
+// newest issue event at or below that sequence whose status differs from the issue event before
+// it, or the first issue event: its sequence, the status before it, its session by the decoder's
+// rule (none for a person or the daemon's own session) and its time. A rename, a link and an event
+// of another kind (a comment, a document version) keep the status and name no writer, and an event
+// past the sequence moves nothing. A log that proves no writer answers sequence 0: no issue event
+// at or below the sequence, the newest one at another status, or a transition that names no actor
+// kind. The captured events are read so too: the daemon's own set-back of a session's close, and
+// the controller's close after the daemon's backlog.
+func TestStatusTransitionAtIsTheNewestChangeAtOrBelowTheSequence(t *testing.T) {
+	t.Parallel()
+	at := func(second int) time.Time { return time.Date(2026, 10, 14, 17, 0, second, 0, time.UTC) }
+	captured := func(raw string) time.Time {
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			t.Fatalf("parse %s: %v", raw, err)
+		}
+		return parsed
+	}
+	byAgent := func(seq int, typ, status string) json.RawMessage {
+		return logEvent(seq, typ, "session", fmt.Sprintf(`{"key":"LEGION-755","status":%q,"title":"child","labels":[]}`, status))
+	}
+	comment := logEvent(5, "comment.created", "user", `{"id":"c-1","body":"Looks right."}`)
+	agentsTodo := []json.RawMessage{statusLogEvent(1, "issue.created", "triage", "child"), statusLogEvent(3, "issue.updated", "backlog", "child"),
+		byAgent(4, "issue.updated", "todo")}
+	for _, tc := range []struct {
+		name   string
+		events []json.RawMessage
+		seq    int64
+		status string
+		want   StatusTransition
+	}{
+		{name: "an agent's todo, a comment and a person's rename after it",
+			events: append(append(agentsTodo[:3:3], comment), statusLogEvent(6, "issue.updated", "todo", "the child, renamed")), seq: 6, status: "todo",
+			want: StatusTransition{Seq: 4, StatusBefore: "backlog", Session: "session-1", At: at(4)}},
+		{name: "a person's todo after the agent's was moved back",
+			events: append(agentsTodo[:3:3], statusLogEvent(5, "issue.updated", "backlog", "child"), statusLogEvent(6, "issue.updated", "todo", "child")),
+			seq:    6, status: "todo", want: StatusTransition{Seq: 6, StatusBefore: "backlog", At: at(6)}},
+		{name: "a move past the sequence", events: append(agentsTodo[:3:3], statusLogEvent(5, "issue.updated", "backlog", "child")), seq: 4, status: "todo",
+			want: StatusTransition{Seq: 4, StatusBefore: "backlog", Session: "session-1", At: at(4)}},
+		{name: "an issue created at its status", events: []json.RawMessage{byAgent(1, "issue.created", "todo"), comment}, seq: 5, status: "todo",
+			want: StatusTransition{Seq: 1, Session: "session-1", At: at(1)}},
+		{name: "no issue event at or below the sequence", events: []json.RawMessage{comment, statusLogEvent(6, "issue.updated", "todo", "child")}, seq: 5, status: "todo"},
+		{name: "the newest issue event at another status", events: agentsTodo[:2], seq: 4, status: "todo"},
+		{name: "a transition that names no actor kind", events: []json.RawMessage{statusLogEvent(1, "issue.created", "backlog", "child"),
+			json.RawMessage(`{"id":2,"issue_key":"LEGION-755","seq":2,"type":"issue.updated","actor":{},"notify":true,"payload":{"key":"LEGION-755","status":"todo","labels":[]}}`)},
+			seq: 2, status: "todo"},
+		{name: "an empty log", seq: 9, status: "todo"},
+		{name: "the daemon's set-back of the controller's close", events: readDispatchEvents(t, "acme-2766-after-21.json"), seq: 27, status: "todo",
+			want: StatusTransition{Seq: 24, StatusBefore: "done", At: captured("2026-11-16T02:19:16.35313Z")}},
+		{name: "the daemon's backlog over an architect's close", events: readDispatchEvents(t, "acme-3021-after-11.json"), seq: 16, status: "backlog",
+			want: StatusTransition{Seq: 14, StatusBefore: "done", At: captured("2026-11-12T01:11:42.456955Z")}},
+		{name: "the controller's close after the daemon's backlog", events: readDispatchEvents(t, "acme-3021-after-11.json"), seq: 17, status: "done",
+			want: StatusTransition{Seq: 17, StatusBefore: "backlog", Session: capturedController, At: captured("2026-11-15T00:44:38.16699Z")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := StatusTransitionAt(tc.events, tc.seq, tc.status)
+			if err != nil {
+				t.Fatalf("StatusTransitionAt: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("StatusTransitionAt(%d, %s) = %+v, want %+v", tc.seq, tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+// A log the daemon cannot read up to the sequence cannot say who wrote the status:
+// StatusTransitionAt returns the walk's error, so no preparation starts a child on it.
+func TestStatusTransitionAtRefusesAnEventItCannotDecode(t *testing.T) {
+	t.Parallel()
+	const want = "decode Dispatch issue payload of event 2 of 2"
+	_, err := StatusTransitionAt([]json.RawMessage{statusLogEvent(1, "issue.created", "backlog", "child"), payloadlessLogEvent(2, "issue.updated")}, 2, "todo")
+	var unreadable *dispatch.EventLogError
+	if err == nil || !strings.Contains(err.Error(), want) || !errors.As(err, &unreadable) {
+		t.Fatalf("StatusTransitionAt error = %v, want a *dispatch.EventLogError containing %q", err, want)
 	}
 }

@@ -19,11 +19,14 @@ import (
 // R19 of dispatch://INFRA-3320 and the architect's ruling
 // (dispatch://INFRA-4730/comment/ada915ba-c94a-4876-8d6e-6cc1a1423f32): a todo on a child the
 // daemon has not recorded under a parent in Legion's work starts the child only when a person or
-// the daemon's own release_children wrote it. A todo written by the parent's implementer, whose
-// session holds a claim on the child's Dispatch chain, records nothing and starts nothing; until
-// the repair is removed (dispatch://INFRA-4733), it queues a set-back to the status Dispatch
-// showed before the write at the write's sequence and logs one line, or logs and queues no row
-// when Dispatch showed no status before it.
+// the daemon's own release_children wrote it, the writer being the transition of Dispatch's event
+// log that wrote the todo (intake.DispatchIssue.Transition) where the preparation read one. A todo
+// written by the parent's implementer, whose session holds a claim on the child's Dispatch chain,
+// records nothing and starts nothing; until the repair is removed (dispatch://INFRA-4733), it
+// queues a set-back to the status Dispatch showed before the write at the write's sequence and
+// logs one line, once however often the todo is read again, or logs and queues no row when
+// Dispatch showed no status before it. A person's later todo starts the child whatever actor the
+// fact's own event names, and a todo no transition proves starts nothing and queues nothing.
 func TestUnrecordedChildTodoByWriter(t *testing.T) {
 	const parent, implementer = "LEGION-650", "ses-parent-implementer"
 	agent := ownerClaim{tree: parent, issue: parent, role: claim.RoleImplementer, session: implementer, state: supervise.StateWorking}
@@ -35,9 +38,15 @@ func TestUnrecordedChildTodoByWriter(t *testing.T) {
 		admission := newAdmission(t, 3, slog.New(slog.NewTextHandler(&logs, nil)))
 		seedRunning(t, pool, parent, "")
 		seedSessionClaims(t, pool, agent)
+		written := &intake.StatusTransition{Seq: 4, StatusBefore: "backlog", Session: implementer}
 		applyMirrored(t, pool, admission, "implementer-todo", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 4,
-			Type: "issue.updated", Status: "todo", StatusBefore: "backlog", Title: child, Parent: parent, Rank: child, ActorSession: implementer}, admission.engine)
+			Type: "issue.updated", Status: "todo", Title: child, Parent: parent, Rank: child, ActorSession: implementer, Transition: written}, admission.engine)
 		tick(t, pool, admission, "after-implementer-todo")
+		// A person's rename after the todo: Dispatch's view at its sequence, whose writer is still the
+		// implementer's todo.
+		applyMirrored(t, pool, admission, "person-rename", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 5,
+			Status: "todo", Title: child + " renamed", Parent: parent, Rank: child, Observed: true, Transition: written}, admission.engine)
+		tick(t, pool, admission, "after-person-rename")
 
 		assertNotStarted(t, pool, child)
 		if stored := maybeIssue(t, pool, child); stored != nil {
@@ -52,6 +61,50 @@ func TestUnrecordedChildTodoByWriter(t *testing.T) {
 		}
 		if lines := strings.Count(logs.String(), "sets it back"); lines != 1 {
 			t.Errorf("set-back log lines = %d, want 1:\n%s", lines, logs.String())
+		}
+	})
+
+	t.Run("a person writes todo after the implementer", func(t *testing.T) {
+		const child = "LEGION-655"
+		pool := migratedPool(t)
+		admission := quiet(t, 3)
+		seedRunning(t, pool, parent, "")
+		seedSessionClaims(t, pool, agent)
+		applyMirrored(t, pool, admission, "person-todo-after-agent", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 7,
+			Type: "issue.updated", Status: "todo", Title: child, Parent: parent, Rank: child, ActorSession: implementer,
+			Transition: &intake.StatusTransition{Seq: 6, StatusBefore: "backlog"}}, admission.engine)
+		tick(t, pool, admission, "after-person-todo-after-agent")
+
+		if stored := maybeIssue(t, pool, child); stored == nil || !record.InLegionsWork(*stored) || stored.Phase == phase.Admitted {
+			t.Errorf("%s after a person's todo = %+v, want it recorded and started in Legion's work", child, stored)
+		}
+		for _, write := range payloadsOf[record.StatusWrite](rowsFor(effects(t, pool), child)) {
+			if write.Kind == record.ReassertStatusRow {
+				t.Errorf("%s has the set-back %+v queued, want none over a person's todo", child, write)
+			}
+		}
+	})
+
+	t.Run("a todo whose writer nothing proves", func(t *testing.T) {
+		const child = "LEGION-656"
+		pool := migratedPool(t)
+		var logs bytes.Buffer
+		admission := newAdmission(t, 3, slog.New(slog.NewTextHandler(&logs, nil)))
+		seedRunning(t, pool, parent, "")
+		seedSessionClaims(t, pool, agent)
+		applyMirrored(t, pool, admission, "unproved-todo", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 3,
+			Status: "todo", Title: child, Parent: parent, Rank: child, Observed: true, Transition: &intake.StatusTransition{}}, admission.engine)
+		tick(t, pool, admission, "after-unproved-todo")
+
+		assertNotStarted(t, pool, child)
+		if stored := maybeIssue(t, pool, child); stored != nil {
+			t.Errorf("%s after a todo no transition proves = %+v, want nothing recorded", child, stored)
+		}
+		if got := payloadsOf[record.StatusWrite](rowsFor(effects(t, pool), child)); len(got) != 0 {
+			t.Errorf("status writes queued for %s = %+v, want none: no write is known to undo", child, got)
+		}
+		if lines := strings.Count(logs.String(), "proves no writer"); lines != 1 {
+			t.Errorf("no-writer log lines = %d, want 1:\n%s", lines, logs.String())
 		}
 	})
 

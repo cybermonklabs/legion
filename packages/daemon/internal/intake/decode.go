@@ -290,14 +290,25 @@ func (e dispatchEvent) mark() record.EventMark {
 
 // daemonActor says whether the daemon made the event: its actor is the session the daemon writes
 // every Dispatch status and message of the event's issue under (dispatch.DaemonSession). It is the
-// one statement of that rule, which the decoder (DispatchIssue.DaemonActor) and the set-back's
-// check (StatusChange.DaemonActor) both read. Each reads only issues of the daemon's own project:
-// the decoder skips another project's events (decodeDispatchIssueEvent), and the outbox sets back
-// only its own project's issues. So the session of the event's issue is the session of the
-// daemon's own project, the one its writes name with dispatch_token_broker off and the one its
-// broker token proves with it on (dispatch.WritesAs).
+// one statement of that rule, which the decoder (DispatchIssue.DaemonActor), the set-back's check
+// (StatusChange.DaemonActor) and the walk of an issue's event log (actorSession) read. Each reads
+// only issues of the daemon's own project: the decoder skips another project's events
+// (decodeDispatchIssueEvent), and the outbox sets back and the preparation reads the log of only
+// its own project's issues. So the session of the event's issue is the session of the daemon's own
+// project, the one its writes name with dispatch_token_broker off and the one its broker token
+// proves with it on (dispatch.WritesAs).
 func (e dispatchEvent) daemonActor() bool {
 	return e.Actor.Kind == "session" && e.Actor.ID == dispatch.DaemonSession(e.IssueKey)
+}
+
+// actorSession is the session that made the event, other than the daemon's own (daemonActor): ""
+// for the daemon, a person, Dispatch itself and an actor of no kind. The decoder
+// (DispatchIssue.ActorSession) and the walk of an issue's event log (issueEvent.Session) read it.
+func (e dispatchEvent) actorSession() string {
+	if e.Actor.Kind == "session" && !e.daemonActor() {
+		return e.Actor.ID
+	}
+	return ""
 }
 
 // decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
@@ -421,16 +432,11 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			}
 			parent = *issue.Parent
 		}
-		actorSession := ""
-		daemonActor := event.daemonActor()
-		if event.Actor.Kind == "session" && !daemonActor {
-			actorSession = event.Actor.ID
-		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
 			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
 			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
-			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
+			ActorSession: event.actorSession(), DaemonActor: event.daemonActor(), ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown, At: event.CreatedAt.UTC()}, nil
 	}
 	switch event.Type {

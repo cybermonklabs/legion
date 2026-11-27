@@ -1998,7 +1998,8 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 // decision (R16 of dispatch://INFRA-3320): a listing that names a child the event stream has not
 // applied puts that child in the copy under its parent first, so the parent, at accepting, goes no
 // further: the boot's pass sets it waiting on that open child, it takes no sign_off while the
-// child is open and it starts nothing, though no event of the child has reached the daemon.
+// child is open and it starts nothing, though no event of the child has reached the daemon. The
+// child's event log shows the person whose todo the boot reads for its admission.
 func TestABootDecidesWithAChildTheStreamHasNotApplied(t *testing.T) {
 	t.Parallel()
 	const parent, child = "CAPTURE-1", "CAPTURE-2"
@@ -2008,7 +2009,7 @@ func TestABootDecidesWithAChildTheStreamHasNotApplied(t *testing.T) {
 	listedChild["parent"] = parent
 	w := copyRuntime(t, pool, &copyBoard{listing: []map[string]any{
 		boardSummary(parent, "needs_review", 4, []string{"legion"}, "A"), listedChild,
-	}}, 1)
+	}, logs: map[string][]map[string]any{child: {boardStatusEvent(child, "todo", 5)}}}, 1)
 	w.consumers = bootClaimConsumers(t, pool)
 	seedTickIssue(t, pool, record.Issue{
 		Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "CAPTURE",

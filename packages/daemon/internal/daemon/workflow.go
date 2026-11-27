@@ -1666,9 +1666,11 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 
 // prepareListing reads, before any transaction, what admission's pass needs of each summary of
 // issues that keep keeps (every one, where keep is nil): what admission reads of a todo issue's
-// repository, and who set the label of a labelled triage root the workflow does not record, read
-// against the records read once (listingRecords). Each listed issue's fact carries that
-// repository, or that setter, to admission, so the transaction that applies them performs no I/O.
+// repository, who set the label of a labelled triage root the workflow does not record, and who
+// wrote the todo of an unrecorded todo child whose parent can stand in Legion's work when the pass
+// reaches it (listedParentAtWork), read against the records read once (listingRecords). Each
+// listed issue's fact carries that repository, setter or transition to admission, so the
+// transaction that applies them performs no I/O.
 func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) (preparedListing, error) {
 	var records map[string]*record.Issue
 	var err error
@@ -1686,6 +1688,11 @@ func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.
 		// scope feeds the copy of Dispatch's issues, the claims the boot releases, and the boot
 		// refill's check of which keys the listing holds.
 		prepared.scope = append(prepared.scope, summary)
+	}
+	// shown is the scope by key, for the walk up an unrecorded todo child's parents, read once the
+	// listing holds such a child.
+	var shown map[string]intake.DispatchIssue
+	for _, summary := range prepared.scope {
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
 		if (fact.Status == "todo" || labelledTriageRoot) && records == nil {
@@ -1695,6 +1702,25 @@ func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.
 		}
 		switch {
 		case fact.Status == "todo":
+			// The listing carries no actor, so who wrote an unrecorded child's todo is read from its
+			// log as an event's is (childTransition), with the triage root's rule below for a log
+			// the daemon cannot read: that child alone is left out, and any other failed read fails
+			// the listing.
+			if records[summary.Key] == nil && fact.ChildTodo() {
+				if shown == nil {
+					shown = make(map[string]intake.DispatchIssue, len(prepared.scope))
+					for _, listed := range prepared.scope {
+						shown[listed.Key] = intake.ListedIssue(listed)
+					}
+				}
+				fact.Transition, err = w.childTransition(ctx, fact, listedParentAtWork(records, shown, fact.Parent))
+				if w.leftOutUnreadable(summary.Key, err) {
+					continue
+				}
+				if err != nil {
+					return preparedListing{}, fmt.Errorf("prepare who wrote the todo of %s for admission: %w", summary.Key, err)
+				}
+			}
 			repository, err := w.prepareListed(ctx, records, fact, boot)
 			if err != nil {
 				return preparedListing{}, fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
@@ -1725,12 +1751,9 @@ func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.
 			// person moves the issue out of triage or takes the label off, after which the next
 			// attempt reads no log for it. An event that still shows the issue an unrecorded
 			// labelled triage root reads the log again, and its preparation fails the same way. A
-			// move to todo reads no log, and admission takes the root.
+			// root's move to todo reads no log, and admission takes the root.
 			fact.LabelSetter, err = w.labelSetter(ctx, summary.Key)
-			var unreadable *dispatch.EventLogError
-			if errors.As(err, &unreadable) {
-				w.log.Error("workflow: the listing leaves out of admission an issue whose Dispatch event log cannot be read",
-					"issue", summary.Key, "event", unreadable.Event, "seq", unreadable.Seq, "error", err)
+			if w.leftOutUnreadable(summary.Key, err) {
 				continue
 			}
 			if err != nil {
@@ -1740,6 +1763,43 @@ func (w *workflowRuntime) prepareListing(ctx context.Context, issues []dispatch.
 		prepared.listed = append(prepared.listed, fact)
 	}
 	return prepared, nil
+}
+
+// leftOutUnreadable says whether err is a Dispatch event log of key the daemon cannot read, a
+// *dispatch.EventLogError (prepareListing says when), and then logs the one line that leaves key
+// out of admission's decision.
+func (w *workflowRuntime) leftOutUnreadable(key string, err error) bool {
+	var unreadable *dispatch.EventLogError
+	if !errors.As(err, &unreadable) {
+		return false
+	}
+	w.log.Error("workflow: the listing leaves out of admission an issue whose Dispatch event log cannot be read",
+		"issue", key, "event", unreadable.Event, "seq", unreadable.Seq, "error", err)
+	return true
+}
+
+// listedParentAtWork says whether parent, the parent of an unrecorded todo child of a listing, can
+// stand in Legion's work when admission's pass over the listing reaches the child, read from
+// records and from shown, the listing's scope by key: recorded in Legion's work, or recorded and
+// listed at a status of work the pass may return it to, or unrecorded and listed todo, which the
+// pass records first (admit's parentsFirst), as a root handed to Legion or as a child whose own
+// parent can, up to record.MaxChainLinks issues above the child.
+func listedParentAtWork(records map[string]*record.Issue, shown map[string]intake.DispatchIssue, parent string) bool {
+	for range record.MaxChainLinks {
+		listed, inListing := shown[parent]
+		if recorded := records[parent]; recorded != nil {
+			return record.InLegionsWork(*recorded) || inListing && record.InWorkStatus(listed.Status)
+		}
+		if !inListing || listed.Status != "todo" {
+			return false
+		}
+		above := record.InProjectParent(listed.Key, listed.Parent)
+		if above == "" {
+			return listed.HandedOver
+		}
+		parent = above
+	}
+	return false
 }
 
 // dispatchPositions reads the notification stream's own current position (target), then the

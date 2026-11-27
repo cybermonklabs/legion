@@ -2545,26 +2545,36 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 // every delivery, so the intake gives the event up at its bound. A recorded root a person moved
 // back to triage is never queued again, so its log is not read.
 //
-// An unrecorded child whose delivered event writes todo under a parent by a session
-// (intake.DispatchIssue.SessionTodoUnderParent) also has its Dispatch event log read when
-// Dispatch's view still stands at that event's own sequence, for the status Dispatch showed before
-// it (statusBefore, intake.DispatchIssue.StatusBefore): the workflow sets an agent's todo back to
-// that status, at the write's sequence, rather than starting the child (workflow's
-// sessionTodoOnChild). A failed or undecodable log read fails the preparation naming the issue, so
-// the event is delivered again.
+// An unrecorded todo child under a parent of its project (intake.DispatchIssue.ChildTodo) also has
+// the transition that left it todo read, at the sequence Dispatch's view stands at, from its
+// Dispatch event log (childTransition, intake.DispatchIssue.Transition): the workflow starts such a
+// child only on a person's or the daemon's own todo, and sets an agent's back to the status before
+// it, at the transition's own sequence (workflow's sessionTodoOnChild). The delivered event's actor
+// decides nothing, since a comment or a rename after the todo raises the sequence Dispatch's view
+// stands at, and the event that reaches the daemon can be that rename. A failed or undecodable log
+// read fails the preparation naming the issue, so the event is delivered again.
 func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
-	return w.prepareIssue(ctx, issue, true)
+	return w.prepareIssue(ctx, issue, true, true)
 }
 
-// prepareObserved readies release_children's todo child, already observed as Dispatch's issue
-// detail shows it now (intake.ObservedIssue), as prepareRepository readies an event's.
+// prepareObserved readies a view whose writer the daemon knows, already observed as Dispatch's
+// issue detail shows it now (intake.ObservedIssue), as prepareRepository readies an event's, and
+// reads no transition: release_children's todo child, which the architect's release starts, and
+// Dispatch's answer to the daemon's own status write (the outbox's applyOwnWrite).
 func (w *workflowRuntime) prepareObserved(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
-	return w.prepareIssue(ctx, issue, false)
+	return w.prepareIssue(ctx, issue, false, false)
+}
+
+// prepareReread readies the chain re-read's view of an issue (rereadChain) as prepareRepository
+// readies an event's, transition and all: no event of the issue names who wrote what it shows.
+func (w *workflowRuntime) prepareReread(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
+	return w.prepareIssue(ctx, issue, false, true)
 }
 
 // prepareIssue is prepareRepository, preparing an admission event from Dispatch's current view
-// only when observe is set: release_children's child is that view already.
-func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.DispatchIssue, observe bool) (intake.DispatchIssue, error) {
+// only when observe is set, as the view of release_children's child and the chain re-read's are
+// already, and reading an unrecorded todo child's transition only when attribute is set.
+func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.DispatchIssue, observe, attribute bool) (intake.DispatchIssue, error) {
 	recorded, err := w.recordOf(ctx, issue.Key)
 	if err != nil {
 		return issue, err
@@ -2580,8 +2590,8 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 		}
 		return w.prepareUnrecorded(ctx, issue, false)
 	}
-	delivered := issue.Seq
 	if observe {
+		delivered := issue.Seq
 		now, err := w.dispatch.GetIssue(ctx, issue.Key)
 		if err != nil {
 			return issue, fmt.Errorf("read %s from Dispatch before applying its admission event %d: %w", issue.Key, delivered, err)
@@ -2592,10 +2602,14 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 			issue.Priority, issue.Resolved = event.Priority, event.Resolved
 		}
 		issue.Seq, issue.Delivered = max(delivered, issue.Seq), &event
-		if event.SessionTodoUnderParent() && issue.Seq == delivered {
-			if event.StatusBefore, err = w.statusBefore(ctx, event.Key, delivered); err != nil {
-				return issue, err
-			}
+	}
+	if attribute && issue.ChildTodo() {
+		parent, err := w.recordOf(ctx, issue.Parent)
+		if err != nil {
+			return issue, err
+		}
+		if issue.Transition, err = w.childTransition(ctx, issue, parent != nil && record.InLegionsWork(*parent)); err != nil {
+			return issue, err
 		}
 	}
 	return w.prepareUnrecorded(ctx, issue, false)
@@ -2621,20 +2635,31 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 	return setter, nil
 }
 
-// statusBefore is the status Dispatch showed for key before the event at seq, by
-// intake.StatusBeforeOf's rule. It reads the issue's whole Dispatch event log from sequence 0, in
-// one paged read, outside the fact lock. A failed or undecodable read fails with an error naming
-// key, so the event is delivered again rather than applied without the status it came from.
-func (w *workflowRuntime) statusBefore(ctx context.Context, key string, seq int64) (string, error) {
-	events, err := w.dispatch.EventsAfter(ctx, key, 0)
-	if err != nil {
-		return "", fmt.Errorf("read the event log of %s from Dispatch for its status before %d: %w", key, seq, err)
+// childTransition is the transition that left issue, an unrecorded todo child under a parent of
+// its project (intake.DispatchIssue.ChildTodo), at its status as Dispatch showed it at its sequence
+// (intake.StatusTransitionAt), which the event, re-read and listing preparations all read for its
+// admission (intake.DispatchIssue.Transition). Only a child whose parent can stand in Legion's work
+// when its fact applies (parentAtWork) can start (workflow's recordChildUnderParentAtWork), so only
+// its log is read: one paged read of the whole log from sequence 0, outside the fact lock. Any
+// other child carries a transition of sequence 0, no writer known, which starts nothing should its
+// parent enter Legion's work before the fact applies. A read that fails is an error that wraps the
+// client's, which can be a *dispatch.EventLogError for a page it cannot read or a Dispatch
+// refusal, and a log that does not decode is one that wraps the walk's *dispatch.EventLogError;
+// each names the key, and none comes with a transition, so no caller starts a child on a log it
+// could not read.
+func (w *workflowRuntime) childTransition(ctx context.Context, issue intake.DispatchIssue, parentAtWork bool) (*intake.StatusTransition, error) {
+	if !parentAtWork {
+		return &intake.StatusTransition{}, nil
 	}
-	status, err := intake.StatusBeforeOf(events, seq)
+	events, err := w.dispatch.EventsAfter(ctx, issue.Key, 0)
 	if err != nil {
-		return "", fmt.Errorf("read the status of %s before %d from its event log: %w", key, seq, err)
+		return nil, fmt.Errorf("read the event log of %s from Dispatch for who wrote its %s: %w", issue.Key, issue.Status, err)
 	}
-	return status, nil
+	transition, err := intake.StatusTransitionAt(events, issue.Seq, issue.Status)
+	if err != nil {
+		return nil, fmt.Errorf("read who wrote the %s of %s from its event log: %w", issue.Status, issue.Key, err)
+	}
+	return &transition, nil
 }
 
 // prepareArtifact readies a Dispatch review event before it is applied (intake's

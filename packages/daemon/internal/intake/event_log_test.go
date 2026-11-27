@@ -5,12 +5,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The walk gives the log's issue events (issue.created, issue.updated and issue.closed) in the
-// log's order, each with its sequence, type, actor kind, status and labels, and passes over every
-// other event. A loop that stops early leaves the later events undecoded, so an event the walk
-// cannot decode after the stop is no error.
+// log's order, each with its sequence, type, actor kind, the session that made it by the decoder's
+// rule (a session's, and none for a person), Dispatch's time of it, status and labels, and passes
+// over every other event. A loop that stops early leaves the later events undecoded, so an event
+// the walk cannot decode after the stop is no error.
 func TestWalkIssueEventsGivesEachIssueEventAndPassesOverTheRest(t *testing.T) {
 	t.Parallel()
 	events := []json.RawMessage{
@@ -27,10 +29,11 @@ func TestWalkIssueEventsGivesEachIssueEventAndPassesOverTheRest(t *testing.T) {
 		}
 		got = append(got, event)
 	}
+	at := func(second int) time.Time { return time.Date(2026, 10, 14, 17, 0, second, 0, time.UTC) }
 	want := []issueEvent{
-		{Seq: 1, Type: "issue.created", ActorKind: "user", Status: "triage", Labels: []string{}},
-		{Seq: 3, Type: "issue.updated", ActorKind: "session", Status: "triage", Labels: []string{"legion"}},
-		{Seq: 5, Type: "issue.closed", ActorKind: "user", Status: "done", Labels: []string{"legion"}},
+		{Seq: 1, Type: "issue.created", ActorKind: "user", At: at(1), Status: "triage", Labels: []string{}},
+		{Seq: 3, Type: "issue.updated", ActorKind: "session", Session: "session-1", At: at(3), Status: "triage", Labels: []string{"legion"}},
+		{Seq: 5, Type: "issue.closed", ActorKind: "user", At: at(5), Status: "done", Labels: []string{"legion"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("walkIssueEvents gave %#v, want %#v", got, want)

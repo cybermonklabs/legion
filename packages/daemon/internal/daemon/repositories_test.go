@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -249,6 +250,27 @@ func (d *repositoryDispatch) detailReads(key string) int {
 		}
 	}
 	return count
+}
+
+// EventsAfter serves the Dispatch event log of each issue d shows, by its detail (issues) or its
+// listing (listed): one issue event at the issue's sequence, by which a person left the issue at
+// the status shown and with no label, so the daemon reads a person's todo on each todo child it
+// shows (intake.StatusTransitionAt), and no one's label. An issue d shows nothing of has the
+// embedded Dispatch's empty log.
+func (d *repositoryDispatch) EventsAfter(_ context.Context, key string, after int64) ([]json.RawMessage, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	status, seq := "", int64(0)
+	if issue, named := d.issues[key]; named {
+		status, seq = issue.Status, issue.LastSeq
+	} else if at := slices.IndexFunc(d.listed, func(summary dispatch.IssueSummary) bool { return summary.Key == key }); at >= 0 {
+		status, seq = d.listed[at].Status, d.listed[at].LastSeq
+	}
+	if seq <= after {
+		return nil, nil
+	}
+	return []json.RawMessage{json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"type":"issue.updated","actor":{"kind":"user","id":"a-person"},"notify":true,"payload":{"key":%q,"status":%q,"labels":[]}}`,
+		seq, key, seq, key, status))}, nil
 }
 
 // The preparation of the repositories the records name bounds each installation read by

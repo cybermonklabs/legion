@@ -111,10 +111,11 @@ func (w *workflowRuntime) rereadDue(ctx context.Context, pending map[string]*cha
 // (intake.ControllerTick.Observed, blockers.Mirror): each link's reading in one fact, before the
 // issue's own, so the copy holds the chain when the issue's own reading is decided. That one is
 // applied as Dispatch's view of the issue (intake.ObservedIssue), readied as an event of it is
-// (prepareObserved), through every handler: for an issue the daemon records nothing of, it is
-// the admission event that decides it on the chain now known; for a recorded one, a reading of
-// the copy alone (intake's settleObserved). Each reading writes only what is newer than the copy
-// holds (record.PutDispatchIssue).
+// (prepareReread), through every handler: for an issue the daemon records nothing of, it is the
+// admission event that decides it on the chain now known, an unrecorded todo child by the
+// transition that wrote its todo, read from its event log as an event's preparation reads it; for
+// a recorded one, a reading of the copy alone (intake's settleObserved). Each reading writes only
+// what is newer than the copy holds (record.PutDispatchIssue).
 func (w *workflowRuntime) rereadChain(ctx context.Context, key string, reread *chainReread) (bool, error) {
 	var read []dispatch.Issue
 	seen := map[string]bool{}
@@ -169,7 +170,7 @@ func (w *workflowRuntime) applyChainReadings(ctx context.Context, key string, re
 			return fmt.Errorf("apply the re-read of the chain of %s: %w", key, err)
 		}
 	}
-	prepared, err := w.prepareObserved(ctx, intake.ObservedIssue(read[0]))
+	prepared, err := w.prepareReread(ctx, intake.ObservedIssue(read[0]))
 	if err != nil {
 		return fmt.Errorf("prepare the re-read of %s: %w", key, err)
 	}

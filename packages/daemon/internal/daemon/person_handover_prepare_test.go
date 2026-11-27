@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -611,70 +613,135 @@ func TestARepositoryRecoveryLeavesOutAnUnreadableEventLogAndFailsOnARefusal(t *t
 	}
 }
 
-// issueStatusLogEvent is one issue event of key's Dispatch event log at seq leaving the issue at
-// status, as EventsAfter serves it.
-func issueStatusLogEvent(key string, seq int, typ, status string) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"type":%q,"actor":{"kind":"user","id":"user-1"},"notify":true,"payload":{"key":%q,"status":%q,"title":%q,"labels":[]}}`,
-		seq, key, seq, typ, key, status, key))
+// issueWriteLogEvent is one issue event of key's Dispatch event log at seq leaving the issue at
+// status, written by actor at that second past 2026-11-26T17:00 (writtenAt), as EventsAfter serves
+// it.
+func issueWriteLogEvent(key string, seq int, typ, status string, actor dispatch.Actor) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"type":%q,"actor":{"kind":%q,"id":%q},"notify":true,"created_at":"2026-11-26T17:00:%02dZ","payload":{"key":%q,"status":%q,"title":%q,"labels":[]}}`,
+		seq, key, seq, typ, actor.Kind, actor.ID, seq, key, status, key))
 }
 
-// A session's todo event on an unrecorded issue under a parent has its Dispatch event log read in
-// one read when Dispatch's view still stands at the event's own sequence, setting Delivered's
-// StatusBefore to the status of the newest issue event below the event's sequence ("" where none
-// exists, as for an issue created at todo, passing over non-issue events such as comments). No
-// other event reads the log — a person's todo, a session's todo on a root, a session's non-todo,
-// a recorded child, or a view Dispatch has moved past — and a failed or undecodable log read fails
-// the preparation naming the issue.
-func TestPrepareIssueReadsStatusBeforeASessionsTodoOnAnUnrecordedChild(t *testing.T) {
+// writtenAt is the time issueWriteLogEvent gives the event at seq.
+func writtenAt(seq int) time.Time { return time.Date(2026, 11, 26, 17, 0, seq, 0, time.UTC) }
+
+// An unrecorded todo child under a parent in Legion's work is prepared with who wrote its todo
+// (intake.DispatchIssue.Transition), read in one read of its Dispatch event log at the sequence
+// Dispatch's view stands at: the newest issue event at or below it that changed the status, with
+// its session (none for a person or the daemon's own session), its time and the status before it.
+// The delivered event's actor decides nothing: a person's rename after an agent's todo, and a
+// comment that takes the view past the agent's own event, leave the agent the writer, and a later
+// move replaces it. The chain re-read's view (prepareReread) is read as an event's preparation
+// reads it. A child under a parent out of Legion's work, or under a parent the daemon does not
+// record, reads no log and carries a transition of no writer, and so does one whose log proves
+// none: no issue event at the view's sequence, one at another status, or a transition that names
+// no actor kind. A recorded child, a root, a child Dispatch shows at another status now, an event
+// of another status, and release_children's view (prepareObserved) read no log and carry no
+// transition. A failed or undecodable read fails the preparation naming the issue.
+func TestPrepareIssueReadsWhoWroteTheTodoOfAnUnrecordedChild(t *testing.T) {
 	t.Parallel()
-	const parent, key, session = "LEGION-700", "LEGION-765", "ses-parent-implementer"
-	sessionTodo := intake.DispatchIssue{Key: key, Seq: 3, Type: "issue.updated", Status: "todo", Title: key, Parent: parent, Rank: "B",
-		ActorSession: session, ResolvedRepo: "acme/widgets"}
-	commentAt := func(seq int) json.RawMessage {
+	const parent, key, agent = "LEGION-700", "LEGION-765", "ses-parent-implementer"
+	person, session, daemon := dispatch.Actor{Kind: "user", ID: "user-1"}, dispatch.Actor{Kind: "session", ID: agent},
+		dispatch.Actor{Kind: "session", ID: dispatch.DaemonSession(key)}
+	comment := func(seq int) json.RawMessage {
 		return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":%q,"seq":%d,"type":"comment.created","actor":{"kind":"user","id":"user-1"},"notify":true,"payload":{"body":"note"}}`,
 			seq, key, seq))
 	}
+	// event is the event the consumer delivers at seq, of a todo under the parent by session ("" for
+	// a person), or by the daemon itself.
+	event := func(seq int64, session string, byDaemon bool) intake.DispatchIssue {
+		return intake.DispatchIssue{Key: key, Seq: seq, Type: "issue.updated", Status: "todo", Title: key, Parent: parent, Rank: "B",
+			ActorSession: session, DaemonActor: byDaemon, ResolvedRepo: "acme/widgets"}
+	}
+	// agentsTodo is the log of a child a person filed in triage and moved to the backlog, and the
+	// parent's implementer then moved to todo, at 4.
+	agentsTodo := []json.RawMessage{issueWriteLogEvent(key, 1, "issue.created", "triage", person), comment(2),
+		issueWriteLogEvent(key, 3, "issue.updated", "backlog", person), issueWriteLogEvent(key, 4, "issue.updated", "todo", session)}
+	byTheAgent := &intake.StatusTransition{Seq: 4, StatusBefore: "backlog", Session: agent, At: writtenAt(4)}
+	noWriter := &intake.StatusTransition{}
+	ctx := context.Background()
+	consumed := func(w *workflowRuntime, delivered intake.DispatchIssue, _ dispatch.Issue) (intake.DispatchIssue, error) {
+		return w.prepareRepository(ctx, delivered)
+	}
+	reread := func(w *workflowRuntime, _ intake.DispatchIssue, shown dispatch.Issue) (intake.DispatchIssue, error) {
+		return w.prepareReread(ctx, intake.ObservedIssue(shown))
+	}
+	released := func(w *workflowRuntime, _ intake.DispatchIssue, shown dispatch.Issue) (intake.DispatchIssue, error) {
+		return w.prepareObserved(ctx, intake.ObservedIssue(shown))
+	}
 	pool := isolatedOutboxPool(t)
 	for _, tc := range []struct {
-		name     string
-		event    func(intake.DispatchIssue) intake.DispatchIssue
-		viewSeq  int64
-		recorded bool
-		logs     []json.RawMessage
-		logErr   error
-		reads    int
-		want     string
-		fails    string
+		name      string
+		prepare   func(*workflowRuntime, intake.DispatchIssue, dispatch.Issue) (intake.DispatchIssue, error)
+		delivered intake.DispatchIssue
+		// shownStatus ("" for todo) and shownSeq are the child as Dispatch's detail shows it now.
+		shownStatus string
+		shownSeq    int64
+		// parentStatus is the status of the parent's record ("" for in_progress, in Legion's work),
+		// and unrecordedParent says the daemon records no parent.
+		parentStatus     string
+		unrecordedParent bool
+		recorded, root   bool
+		logs             []json.RawMessage
+		logErr           error
+		reads            int
+		want             *intake.StatusTransition
+		fails            string
 	}{
-		{name: "session todo over backlog after a comment", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3,
-			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "triage"), issueStatusLogEvent(key, 2, "issue.updated", "backlog"),
-				commentAt(2), issueStatusLogEvent(key, 3, "issue.updated", "todo")},
-			reads: 1, want: "backlog"},
-		{name: "session todo over icebox", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3,
-			logs:  []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "icebox"), issueStatusLogEvent(key, 3, "issue.updated", "todo")},
-			reads: 1, want: "icebox"},
-		{name: "session created at todo, no prior status", event: func(i intake.DispatchIssue) intake.DispatchIssue { i.Seq, i.Type = 1, "issue.created"; return i }, viewSeq: 1,
-			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "todo")}, reads: 1, want: ""},
-		{name: "view moved past the event reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 4,
-			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "backlog")}},
-		{name: "person todo reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { i.ActorSession = ""; return i }, viewSeq: 3,
-			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "backlog")}},
-		{name: "session todo on a root reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { i.Parent, i.HandedOver = "", true; return i }, viewSeq: 3,
-			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "backlog")}},
-		{name: "session backlog on a child reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { i.Status = "backlog"; return i }, viewSeq: 3,
-			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "triage")}},
-		{name: "recorded child reads no log", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3, recorded: true,
-			logs: []json.RawMessage{issueStatusLogEvent(key, 1, "issue.created", "backlog")}},
-		{name: "failed log read fails preparation", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3,
+		{name: "a person's rename after an agent's todo", prepare: consumed, delivered: event(5, "", false), shownSeq: 5,
+			logs: append(slices.Clone(agentsTodo), issueWriteLogEvent(key, 5, "issue.updated", "todo", person)), reads: 1, want: byTheAgent},
+		{name: "the agent's own todo, with a comment after it", prepare: consumed, delivered: event(4, agent, false), shownSeq: 5,
+			logs: append(slices.Clone(agentsTodo), comment(5)), reads: 1, want: byTheAgent},
+		{name: "the agent's todo at the view's own sequence", prepare: consumed, delivered: event(4, agent, false), shownSeq: 4,
+			logs: agentsTodo, reads: 1, want: byTheAgent},
+		{name: "an agent's todo over icebox", prepare: consumed, delivered: event(3, agent, false), shownSeq: 3,
+			logs:  []json.RawMessage{issueWriteLogEvent(key, 1, "issue.created", "icebox", person), issueWriteLogEvent(key, 3, "issue.updated", "todo", session)},
+			reads: 1, want: &intake.StatusTransition{Seq: 3, StatusBefore: "icebox", Session: agent, At: writtenAt(3)}},
+		{name: "a person's todo after the agent's was set back", prepare: consumed, delivered: event(6, "", false), shownSeq: 6,
+			logs: append(slices.Clone(agentsTodo), issueWriteLogEvent(key, 5, "issue.updated", "backlog", daemon),
+				issueWriteLogEvent(key, 6, "issue.updated", "todo", person)),
+			reads: 1, want: &intake.StatusTransition{Seq: 6, StatusBefore: "backlog", At: writtenAt(6)}},
+		{name: "the daemon's own todo, release_children's write", prepare: consumed, delivered: event(2, "", true), shownSeq: 2,
+			logs:  []json.RawMessage{issueWriteLogEvent(key, 1, "issue.created", "backlog", person), issueWriteLogEvent(key, 2, "issue.updated", "todo", daemon)},
+			reads: 1, want: &intake.StatusTransition{Seq: 2, StatusBefore: "backlog", At: writtenAt(2)}},
+		{name: "an agent's todo that created the child", prepare: consumed, delivered: event(1, agent, false), shownSeq: 2,
+			logs:  []json.RawMessage{issueWriteLogEvent(key, 1, "issue.created", "todo", session), comment(2)},
+			reads: 1, want: &intake.StatusTransition{Seq: 1, Session: agent, At: writtenAt(1)}},
+		{name: "the chain re-read of the agent's todo", prepare: reread, shownSeq: 5,
+			logs: append(slices.Clone(agentsTodo), comment(5)), reads: 1, want: byTheAgent},
+		{name: "a parent out of Legion's work reads no log", prepare: consumed, delivered: event(4, agent, false), shownSeq: 4, parentStatus: "backlog",
+			logs: agentsTodo, want: noWriter},
+		{name: "a parent the daemon does not record reads no log", prepare: consumed, delivered: event(4, agent, false), shownSeq: 4, unrecordedParent: true,
+			logs: agentsTodo, want: noWriter},
+		{name: "a log with no issue event at the view's sequence proves no writer", prepare: consumed, delivered: event(4, agent, false), shownSeq: 4,
+			logs: []json.RawMessage{comment(1)}, reads: 1, want: noWriter},
+		{name: "a log that leaves the child at another status proves no writer", prepare: consumed, delivered: event(1, agent, false), shownSeq: 1,
+			logs: []json.RawMessage{issueWriteLogEvent(key, 1, "issue.created", "backlog", person)}, reads: 1, want: noWriter},
+		{name: "a transition that names no actor kind proves no writer", prepare: consumed, delivered: event(2, "", false), shownSeq: 2,
+			logs:  []json.RawMessage{issueWriteLogEvent(key, 1, "issue.created", "backlog", person), issueWriteLogEvent(key, 2, "issue.updated", "todo", dispatch.Actor{})},
+			reads: 1, want: noWriter},
+		{name: "a recorded child reads no log", prepare: consumed, delivered: event(4, agent, false), shownSeq: 4, recorded: true, logs: agentsTodo},
+		{name: "a root reads no log", prepare: consumed, delivered: event(4, agent, false), shownSeq: 4, root: true, logs: agentsTodo},
+		{name: "a child Dispatch shows on the backlog now reads no log", prepare: consumed, delivered: event(4, agent, false), shownStatus: "backlog", shownSeq: 5,
+			logs: agentsTodo},
+		{name: "an agent's backlog on a child reads no log", prepare: consumed, delivered: func() intake.DispatchIssue {
+			backlog := event(3, agent, false)
+			backlog.Status = "backlog"
+			return backlog
+		}(), shownStatus: "backlog", shownSeq: 3, logs: agentsTodo},
+		{name: "release_children's view reads no log", prepare: released, shownSeq: 4, logs: agentsTodo},
+		{name: "a failed log read fails the preparation", prepare: consumed, delivered: event(4, agent, false), shownSeq: 4,
 			logErr: errors.New("Dispatch is restarting"), reads: 1, fails: "Dispatch is restarting"},
-		{name: "undecodable log fails preparation", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i }, viewSeq: 3,
+		{name: "an undecodable log fails the preparation", prepare: consumed, delivered: event(4, agent, false), shownSeq: 4,
 			logs: []json.RawMessage{json.RawMessage(`{not json`)}, reads: 1, fails: "decode Dispatch event 1 of 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := pool.Exec(context.Background(), "delete from issues"); err != nil {
+			if _, err := pool.Exec(ctx, "delete from issues"); err != nil {
 				t.Fatalf("clear the recorded issues: %v", err)
 			}
 			records := record.NewStore()
+			if !tc.unrecordedParent {
+				putOutboxIssue(t, pool, records, recordedOn(parent, cmp.Or(tc.parentStatus, "in_progress")))
+			}
 			if tc.recorded {
 				putOutboxIssue(t, pool, records, recordedOn(key, "backlog"))
 			}
@@ -682,30 +749,34 @@ func TestPrepareIssueReadsStatusBeforeASessionsTodoOnAnUnrecordedChild(t *testin
 			repos.fill(ghrepo.MustParse("acme/widgets"))
 			branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 			branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
-			shown := dispatch.Issue{Key: key, Status: "todo", Title: key, Parent: new(parent), Rank: "B", ResolvedRepo: "acme/widgets", LastSeq: tc.viewSeq}
+			shown := dispatch.Issue{Key: key, Status: cmp.Or(tc.shownStatus, "todo"), Title: key, Parent: new(parent), Rank: "B", ResolvedRepo: "acme/widgets", LastSeq: tc.shownSeq}
+			delivered := tc.delivered
+			if tc.root {
+				shown.Parent, shown.HandedOver = nil, true
+				delivered.Parent, delivered.HandedOver = "", true
+			}
 			client := &eventLogDispatch{logs: map[string][]json.RawMessage{key: tc.logs}, logErrs: map[string]error{key: tc.logErr}}
 			client.issues = map[string]dispatch.Issue{key: shown}
 			w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, defaultBranches: branches, log: quietLogger()}
 
-			got, err := w.prepareRepository(context.Background(), tc.event(sessionTodo))
+			got, err := tc.prepare(w, delivered, shown)
 			if tc.fails != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.fails) || !strings.Contains(err.Error(), key) {
-					t.Fatalf("prepareRepository = %#v, %v; want the failed read to fail the preparation, naming %s and %q", got, err, key, tc.fails)
+					t.Fatalf("the preparation = %#v, %v; want the failed read to fail it, naming %s and %q", got, err, key, tc.fails)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("prepareRepository: %v", err)
+				t.Fatalf("the preparation: %v", err)
 			}
 			if client.logReads[key] != tc.reads {
 				t.Fatalf("the event log of %s was read %d times, want %d", key, client.logReads[key], tc.reads)
 			}
-			gotBefore := got.StatusBefore
-			if got.Delivered != nil {
-				gotBefore = got.Delivered.StatusBefore
-			}
-			if gotBefore != tc.want {
-				t.Fatalf("StatusBefore = %q, want %q", gotBefore, tc.want)
+			switch {
+			case tc.want == nil && got.Transition != nil:
+				t.Fatalf("the prepared fact carries the transition %+v, want none", *got.Transition)
+			case tc.want != nil && (got.Transition == nil || *got.Transition != *tc.want):
+				t.Fatalf("the prepared fact carries the transition %+v, want %+v", got.Transition, *tc.want)
 			}
 		})
 	}

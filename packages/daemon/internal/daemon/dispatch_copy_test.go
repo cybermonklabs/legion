@@ -279,13 +279,15 @@ func copyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, slots int) *w
 }
 
 // copyBoard is Dispatch as a copyRuntime reads it, through the daemon's own client: the calls
-// every boot makes (servedBootCall), the project's listing, and each issue it serves by key, to a
+// every boot makes (servedBootCall), the project's listing, each issue it serves by key, to a
 // read of that issue and to the daemon's status write on it, which it answers with the issue as
-// the write leaves it. A test fills it before the runtime reads it and never changes it after.
-// Any other request fails the test.
+// the write leaves it, and the event log of each issue logs names, paged after a sequence as
+// Dispatch pages it. A test fills it before the runtime reads it and never changes it after. Any
+// other request fails the test.
 type copyBoard struct {
 	listing []map[string]any
 	issues  map[string]map[string]any
+	logs    map[string][]map[string]any
 }
 
 func (b *copyBoard) serve(t *testing.T) http.HandlerFunc {
@@ -294,10 +296,23 @@ func (b *copyBoard) serve(t *testing.T) http.HandlerFunc {
 			return
 		}
 		key := strings.TrimPrefix(r.URL.Path, "/api/v1/issues/")
+		logged, hasLog := b.logs[strings.TrimSuffix(key, "/events")]
 		var body any
 		switch issue := b.issues[key]; {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			body = b.listing
+		case r.Method == http.MethodGet && strings.HasSuffix(key, "/events") && hasLog:
+			after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+			if err != nil {
+				t.Errorf("read the sequence the daemon reads %s after: %v", key, err)
+			}
+			page := []map[string]any{}
+			for _, event := range logged {
+				if event["seq"].(int64) > after {
+					page = append(page, event)
+				}
+			}
+			body = page
 		case r.Method == http.MethodGet && issue != nil:
 			body = issue
 		case r.Method == http.MethodPatch && issue != nil:
@@ -320,6 +335,14 @@ func (b *copyBoard) serve(t *testing.T) http.HandlerFunc {
 			t.Errorf("write %s: %v", r.URL.Path, err)
 		}
 	}
+}
+
+// boardStatusEvent is the issue event of key at seq by which a person left it at status, as
+// Dispatch's event log serves it (copyBoard.logs).
+func boardStatusEvent(key, status string, seq int64) map[string]any {
+	return map[string]any{"id": seq, "issue_key": key, "seq": seq, "type": "issue.updated", "notify": true,
+		"actor": map[string]string{"kind": "user", "id": "a-person"}, "created_at": "2026-11-26T12:00:00Z",
+		"payload": map[string]any{"key": key, "status": status, "labels": []string{}}}
 }
 
 // boardSummary is key as Dispatch's listing serves it (model.IssueSummary) at seq: in status,

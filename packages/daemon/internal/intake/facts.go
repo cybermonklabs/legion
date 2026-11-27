@@ -142,23 +142,36 @@ type DispatchIssue struct {
 	// Only "user" has admission queue a person's handover (a todo through the outbox); every other
 	// value, "" included, keeps today's `triage` wake of the controller.
 	LabelSetter string
-	// StatusBefore is the status Dispatch showed before this event: the status of the newest issue
-	// event of the issue's Dispatch event log at a sequence below the event's own
-	// (StatusBeforeOf). The daemon's preparation reads it from that log, outside the fact lock,
-	// only for a session's todo under a parent (SessionTodoUnderParent) on an issue it does not
-	// record, whose view stands at the event's own sequence (settleObserved carries it there),
-	// since the workflow sets such a todo back to it where the session is an agent of the child's
-	// tree (workflow's sessionTodoOnChild). It is "" for every other fact, and where the log holds
-	// no issue event below the event's sequence: an issue created at todo.
-	StatusBefore string
+	// Transition is the change of the issue's Dispatch status that left it at Status, read from the
+	// issue's Dispatch event log at or below Seq (StatusTransitionAt), for the one fact whose writer
+	// decides whether it starts: an unrecorded todo child under a parent of its project
+	// (ChildTodo), which the workflow starts only on a person's or the daemon's own todo (workflow's
+	// sessionTodoOnChild). The daemon's preparation sets it, outside the fact lock, on such a child
+	// as an event, the chain re-read, the boot listing or a recovery listing prepares it: read from
+	// the log where the child's parent can stand in Legion's work when the fact applies, and of
+	// sequence 0, no writer known, where it cannot or the log proves none. Nil for every other
+	// fact, whose writer is its own event's (StatusWriter): a decoded event, and the views whose
+	// writer the daemon knows, release_children's and Dispatch's answer to its own status write.
+	Transition *StatusTransition
 }
 
-// SessionTodoUnderParent says whether the fact is a session's todo on an issue under a Dispatch
-// parent: the one kind of event of an unrecorded issue whose StatusBefore the prepare stage reads,
-// and the workflow then judges (workflow's sessionTodoOnChild), so the two sides test one
-// predicate.
-func (i DispatchIssue) SessionTodoUnderParent() bool {
-	return i.Status == "todo" && i.Parent != "" && i.ActorSession != ""
+// ChildTodo says whether the fact shows todo on an issue under a Dispatch parent of its own
+// project: the one kind of fact of an unrecorded issue whose status transition the preparation
+// reads (Transition), and the workflow then judges (workflow's recordChildUnderParentAtWork), so
+// the two sides test one predicate. A parent of another project ends the chain: the issue is a
+// root.
+func (i DispatchIssue) ChildTodo() bool {
+	return i.Status == "todo" && record.InProjectParent(i.Key, i.Parent) != ""
+}
+
+// StatusWriter is who wrote the status the fact shows, and whether that is known: the transition
+// the preparation read (Transition), known where it has a sequence, and otherwise the fact's own
+// event, its session, sequence and time, with no status known before it.
+func (i DispatchIssue) StatusWriter() (StatusTransition, bool) {
+	if i.Transition != nil {
+		return *i.Transition, i.Transition.Seq > 0
+	}
+	return StatusTransition{Seq: i.Seq, Session: i.ActorSession, At: i.At}, true
 }
 
 // LabelledTriageRoot says whether the fact shows a root (no Dispatch parent) in triage that
@@ -2646,12 +2659,12 @@ func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []s
 // re-read and a listing take Dispatch's last sequence of the issue, which a comment, a document
 // edit, an ask or a claim raises too, and none of those reaches the handlers as an issue fact.
 //
-// A view of an unrecorded issue that stands at the sequence of the event it was prepared in place
-// of shows the state that event wrote, Dispatch having run no further, so it carries that event's
-// writer: its session (ActorSession), its time (At) and the status Dispatch showed before it
-// (StatusBefore), by which the workflow judges a session's todo on a child (workflow's
-// sessionTodoOnChild). A view Dispatch has run past carries none of them, since no one event wrote
-// what it shows.
+// A view of an unrecorded issue carries no writer of the event it was prepared in place of, at
+// that event's sequence or past it: a comment, a rename or a re-read raises the sequence a view
+// stands at, and the event's actor is no proof of who wrote the status the view shows. The
+// preparation reads that writer from Dispatch's event log onto the view itself (Transition), and
+// the view keeps it here, so the workflow judges a child's todo by the transition that wrote it
+// (workflow's sessionTodoOnChild), never by the actor of the newest event.
 func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, error) {
 	issue, ok := fact.(DispatchIssue)
 	if !ok || !issue.Observed {
@@ -2670,9 +2683,6 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 		}
 		if applied > issue.Seq {
 			return nil, false, nil
-		}
-		if delivered := issue.Delivered; delivered != nil && delivered.Seq == issue.Seq {
-			issue.ActorSession, issue.At, issue.StatusBefore = delivered.ActorSession, delivered.At, delivered.StatusBefore
 		}
 		issue.Observed, issue.Delivered = false, nil
 		return issue, true, nil
