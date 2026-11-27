@@ -35,6 +35,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
@@ -266,7 +267,9 @@ func (p Pool) create(ctx context.Context, csr []byte) (*x509.Certificate, []*x50
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ask the pool: %w", err)
+		// net/http's error can quote what the pool sent, and names the URL with its user
+		// information and query: redact.Unanswered names the request by the URL asked, without.
+		return nil, nil, fmt.Errorf("ask the pool: %w", redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	answer, err := io.ReadAll(io.LimitReader(response.Body, maxIntermediateAnswer+1))

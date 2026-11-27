@@ -190,6 +190,59 @@ func requireSays(t *testing.T, log, want string) {
 	t.Errorf("no failed request's line says %q:\n%s", want, log)
 }
 
+// TestAPoolRequestThatGotNoAnswerPrintsNoCredentialItCarried: a request that got no answer it
+// could read prints as redact.Unanswered names it, by the URL asked with no user information or
+// query, and a failure net/http quotes the answering party's words in by its class. Each case's
+// twin is net/http's own text of the same failure, which holds a credential the request carried.
+// Captures proxy.intermediate-unanswered/<case>.
+func TestAPoolRequestThatGotNoAnswerPrintsNoCredentialItCarried(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// endpoint is the stand-in's endpoint, credentials and all, where net/http's own text of
+		// the failure (plainFailure) holds holds.
+		endpoint func(t *testing.T) string
+		holds    string
+		says     string
+	}{
+		{
+			name:     "dropped",
+			endpoint: func(t *testing.T) string { return credentialedEndpoint(t, newAbortingServer(t).URL) },
+			holds:    wordsQueryKey, // net/http's error names the URL with its query
+			says:     "/ca/v1/" + testPoolName + `/certificates": EOF`,
+		},
+		{
+			name: "malformed-status",
+			endpoint: func(t *testing.T) string {
+				// A status line with no space, which net/http quotes whole as a malformed response.
+				return credentialedEndpoint(t, rawPool(t, func(r *http.Request) string {
+					return "HTTP/1.1-" + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") + "\r\n\r\n"
+				}))
+			},
+			holds: wordsBearer,
+			says:  "/ca/v1/" + testPoolName + `/certificates": the request failed`,
+		},
+		{
+			name: "location-unparsed",
+			endpoint: func(t *testing.T) string {
+				return credentialedEndpoint(t, rawPool(t, func(r *http.Request) string {
+					return "HTTP/1.1 302 Found\r\nLocation: /%zz/" + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") + "\r\nContent-Length: 0\r\n\r\n"
+				}))
+			},
+			holds: wordsBearer,
+			says:  "the answer was a redirect whose Location does not parse",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			line := firstFailure(t, bearerPool(c.endpoint(t)))
+			redacttest.RequireNoPiece(t, "proxy.intermediate-unanswered/"+c.name, line, wordsCredentials...)
+			requireSays(t, line, c.says)
+		})
+		t.Run(c.name+"-twin", func(t *testing.T) {
+			requireHolds(t, "net/http's own text", plainFailure(t, c.endpoint(t)), c.holds)
+		})
+	}
+}
+
 // TestThePoolRequestGoesToTheResourceJoinedOntoTheEndpoint: the certificates resource is joined
 // onto the endpoint's path (urljoin.Join), the endpoint's query kept ahead of the request's own and
 // its fragment dropped, and each segment of the pool's name escaped, where main appended the path
