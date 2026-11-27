@@ -25,7 +25,7 @@ func textVersionsLiteral(cut time.Time) string {
 // A foreign key locks the table it names, and every table a keyword version names holds rows, so
 // neither of the two tables carries one.
 func TestTheKeywordTableHasNoForeignKey(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -55,7 +55,7 @@ func TestTheKeywordTableHasNoForeignKey(t *testing.T) {
 // holds no row in either table once the table's migration has run over it.
 func TestNoMigrationWritesAKeywordVersion(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, searchTextVersionsVersion-1)
 	seedCoreWithADefaultAssignee(t, store)
 	if _, err := store.Pool.Exec(ctx, `
@@ -106,7 +106,7 @@ func TestNoMigrationWritesAKeywordVersion(t *testing.T) {
 
 // The relation's columns, their types and their order are what its readers build on.
 func TestTheKeywordRelationAnswersTheContractColumns(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -19,7 +18,7 @@ const deliveryDeployedEventVersion = 114
 // a shipping run arrives.
 func TestMigrationStampsThePullRequestsAlreadyShipped(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, deliveryDeployedEventVersion-1)
 	merged := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	// One statement per Exec: pgx's extended protocol refuses several statements in one

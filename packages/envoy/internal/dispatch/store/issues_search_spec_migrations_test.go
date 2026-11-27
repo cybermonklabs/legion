@@ -78,7 +78,7 @@ func rankIssue(t *testing.T, ctx context.Context, store *Store, key, query strin
 // rather than at the title's.
 func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeIssuesSearchSpec)
 	const spec = "The rhumb lines of the Tyrrhenian portolan cross at Capo Testa.\n"
 	key := seedIssueWithSpec(t, ctx, store, 1, "Tide tables for the equinox", spec)

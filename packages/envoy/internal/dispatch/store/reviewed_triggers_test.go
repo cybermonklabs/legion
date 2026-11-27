@@ -33,7 +33,7 @@ const reviewedBlockSchemaChanged = "\nbegin\n  perform pg_notify('dispatch_block
 // text. The control changes the function's body in the test's own database, as a later migration
 // could, and the same comparison must then name it.
 func TestTheReviewedTriggersAreTheOnesTheStoreHolds(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

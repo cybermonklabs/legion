@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 )
 
@@ -15,7 +14,7 @@ const artifactDocumentRolesVersion = 20261102110000
 // picture, and another issue document each keep null.
 func TestMigrationGivesStoredIssueDocumentsTheirRole(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, artifactDocumentRolesVersion-1)
 	for _, seed := range []string{
 		`insert into projects (key, name) values ('TEST', 'Test')`,

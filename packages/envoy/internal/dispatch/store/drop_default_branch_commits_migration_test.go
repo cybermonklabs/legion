@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 )
 
@@ -13,7 +12,7 @@ const dropDefaultBranchCommitsVersion = 20261110004829
 // gone after the migration, and branch_commits, the table that took its work, keeps its rows.
 func TestMigrationDropsTheDefaultBranchCommits(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, dropDefaultBranchCommitsVersion-1)
 
 	// The negative control of the check below, inside this one run: the table is here at the

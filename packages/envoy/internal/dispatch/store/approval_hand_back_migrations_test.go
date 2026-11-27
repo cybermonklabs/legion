@@ -43,7 +43,7 @@ func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 // one transaction inserts are ordered as they were written.
 func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 63)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');

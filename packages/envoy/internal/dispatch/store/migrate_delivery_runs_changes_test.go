@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 )
 
@@ -14,7 +13,7 @@ const deliveryRunsChangesVersion = 102
 // a concluded run, and a run inserted after it reads false.
 func TestARunWrittenAfterTheMigrationStartsIncomplete(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, deliveryRunsChangesVersion-1)
 	insert := `
 		insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, url)

@@ -43,7 +43,7 @@ func withCheck(census string) fstest.MapFS {
 func migratedToOne(t *testing.T) (*Store, string) {
 	t.Helper()
 	store := openEmptyTestStore(t)
-	if err := store.migrate(context.Background(), censusBase); err != nil {
+	if err := store.migrate(migrationContext(t), censusBase); err != nil {
 		t.Fatalf("migrate to 0001: %v", err)
 	}
 	return store, store.Pool.Config().ConnString()

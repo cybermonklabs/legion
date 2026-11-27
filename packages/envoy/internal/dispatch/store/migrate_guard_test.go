@@ -88,7 +88,7 @@ func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := migrationContext(t)
 			store := openEmptyTestStore(t)
 
 			err := store.migrate(ctx, tc.set)

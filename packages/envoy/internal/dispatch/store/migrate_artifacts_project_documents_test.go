@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 )
 
@@ -15,7 +14,7 @@ const artifactsProjectDocumentsVersion = 91
 // project document, under the predicate the copy lookups use.
 func TestMigrationIndexesAProjectsUnlinkedDocuments(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, artifactsProjectDocumentsVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');

@@ -62,7 +62,7 @@ func architectureState(t *testing.T, store *Store) string {
 // deleting a source deletes its components and their edges.
 func TestMigrationKeepsAProjectsOneSourceAndItsComponents(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, architectureSourcesPerRepoVersion-1)
 	seedSingleSourceProject(t, store)
 	before := architectureState(t, store)
@@ -138,7 +138,7 @@ func TestMigrationKeepsAProjectsOneSourceAndItsComponents(t *testing.T) {
 // components count nothing, and the migration then refuses to apply over it.
 func TestCensusCountsAComponentWhoseProjectHasNoSource(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, architectureSourcesPerRepoVersion-1)
 	seedSingleSourceProject(t, store)
 	if got := censusCount(t, store, architectureSourcesPerRepoVersion); got != 0 {

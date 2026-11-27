@@ -22,7 +22,7 @@ const embeddingsPendingSinceVersion = 118
 // unchanged text leaves both.
 func TestMigrationAddsPendingSince(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, embeddingsPendingSinceVersion-1)
 	waitingSince := time.Now().Add(-2 * time.Hour).Truncate(time.Microsecond)
 	if _, err := store.Pool.Exec(ctx, `
@@ -106,7 +106,7 @@ func readPendingSince(t *testing.T, store *Store, kind, id string) (time.Time, *
 // checkpoint table, rows and all, is gone after the next version.
 func TestMigrationDropsTheBackfillCheckpoints(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, embeddingsPendingSinceVersion)
 	if _, err := store.Pool.Exec(ctx, `insert into embeddings_backfill_progress (kind, last_id, done) values ('issue', 'X-9', true)`); err != nil {
 		t.Fatalf("seed a checkpoint: %v", err)

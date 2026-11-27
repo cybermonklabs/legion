@@ -225,7 +225,7 @@ func TestTheBlockIndexTriggersOweWhatAnyBuildWrites(t *testing.T) {
 // else. A row a trigger already owed before the seed ran keeps its enqueued_at.
 func TestTheBlockGrammarSeedOwesOlderText(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeBlockGraph)
 	seedBlockIndexIssue(t, store)
 	doc := insertReturningID(t, store, `

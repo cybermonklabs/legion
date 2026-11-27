@@ -24,7 +24,7 @@ const agentTokenScopesP0Version = 20261126005333
 // table still refuses p0.
 func TestTheP0MigrationKeepsEveryStoredTokensScopesAndTakesP0(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, agentTokenScopesP0Version-1)
 	stored := map[string][]string{
 		"person":             {"person"},

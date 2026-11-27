@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -18,7 +17,7 @@ const artifactReviewsEventSeqVersion = 120
 // table it locks; and a sequence below 1 is refused all the same.
 func TestMigrationAddsTheReviewsEventSequence(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, artifactReviewsEventSeqVersion-1)
 	var artifactID string
 	for _, seed := range []string{

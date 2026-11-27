@@ -164,7 +164,7 @@ func TestAnOlderBuildsWriteLeavesTheItemOwed(t *testing.T) {
 // owes its kind (an older build's write during the migrations), each gets an owed state row.
 func TestTheItemBlockMigrationsOweEveryStoredItem(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeItemBlocks)
 	seedBlockIndexIssue(t, store)
 	insertComment := func(body string) string {

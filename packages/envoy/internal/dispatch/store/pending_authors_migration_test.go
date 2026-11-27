@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 )
 
@@ -11,7 +10,7 @@ import (
 // author per writing update.
 func TestMigrate0084KeepsEveryOwedSettlementAndStartsWithNoPendingAuthors(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 83)
 	var artifactID string
 	if err := store.Pool.QueryRow(ctx, `

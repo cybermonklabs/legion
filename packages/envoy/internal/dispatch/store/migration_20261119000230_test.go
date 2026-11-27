@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 )
 
@@ -57,7 +56,7 @@ const headIssueRepoRead = issueRepoTerms + `
 // appends no event.
 func TestTheDefaultRepositoryMigrationKeepsEveryResolvedRepositoryAndThePassWritesTheNewName(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, projectsDefaultRepoVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values

@@ -332,7 +332,7 @@ func explainWithoutSeqScan(t *testing.T, store *Store, query string, setup ...st
 // view casts it on every row and one bad anchor would break every to=artifact read.
 func TestMigrate0032RefusesNonUUIDAnchorArtifactIDs(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 31)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');

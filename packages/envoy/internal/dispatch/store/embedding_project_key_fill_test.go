@@ -135,7 +135,7 @@ func fillProgressEvery(t *testing.T, every time.Duration) {
 func openFillTestStore(t *testing.T, issues int) (*Store, int64) {
 	t.Helper()
 	database := openEmptyTestStore(t)
-	if err := database.Migrate(context.Background()); err != nil {
+	if err := database.Migrate(migrationContext(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return database, seedUnlabelledEmbeddings(t, database, issues)

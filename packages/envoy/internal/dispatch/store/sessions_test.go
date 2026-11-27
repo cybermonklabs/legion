@@ -1,12 +1,11 @@
 package store
 
 import (
-	"context"
 	"testing"
 )
 
 func TestPgSessionStoreAdvancesGenerationOnRevocation(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	database := openTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

@@ -14,7 +14,7 @@ import (
 // lexemes are those of the opening its bounded vector indexes.
 func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 87)
 	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name) values ('CORE', 'Core')`); err != nil {
 		t.Fatalf("seed project: %v", err)

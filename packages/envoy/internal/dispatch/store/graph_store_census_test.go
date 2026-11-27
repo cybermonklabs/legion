@@ -201,7 +201,7 @@ func graphTuplesIndexState(t *testing.T, store *Store) (oid uint32, valid bool) 
 // not. It reads pg_event_trigger at the end instead, since an enabled DDL event trigger is what
 // would void this exemption.
 func TestAnIndexIsStillPossibleOnceTheLogPassesTheCensusLimit(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, graphStoreVersion)
 	if got := schemaVersion(t, store); got != graphStoreVersion {

@@ -22,7 +22,7 @@ const repoProjectsDefaultVersion = 113
 // TestMigrationLetsAnIssueNameAnyRepository proves that.
 func TestMigrationAddsADefaultMappingAndTheIssueRepository(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core'), ('OTHER', 'Other');
@@ -89,7 +89,7 @@ func censusCount(t *testing.T, store *Store, version int) int64 {
 // and applies nothing.
 func TestMigrationRefusesAnIssueMoreThan32LinksBelowItsRoot(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	seedChain(t, store, "DEEP", 34) // DEEP-34 is 33 links below DEEP-1
 	if got := censusCount(t, store, repoProjectsDefaultVersion); got != 1 {
@@ -124,7 +124,7 @@ func TestMigrationRefusesAnIssueMoreThan32LinksBelowItsRoot(t *testing.T) {
 // answers 0 and the migration applies.
 func TestMigrationAppliesOverAChain32LinksDeep(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	seedChain(t, store, "EDGE", 33) // EDGE-33 is 32 links below EDGE-1
 	if got := censusCount(t, store, repoProjectsDefaultVersion); got != 0 {

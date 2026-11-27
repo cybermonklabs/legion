@@ -159,7 +159,7 @@ func TestAnOlderBuildsWriteLeavesTheAskBlocksOwed(t *testing.T) {
 // it (an older build's write during the migrations), each gets an owed state row.
 func TestTheAskBlockMigrationsOweEveryStoredAsk(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeAskBlocks)
 	seedBlockIndexIssue(t, store)
 	insertAsk := func(question string) string {

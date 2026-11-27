@@ -111,7 +111,7 @@ func writeRefsGrammarFixture(t *testing.T, store *Store) refsGrammarFixture {
 // mention is indexed from, are owed nothing.
 func TestTheRefsGrammarSeedOwesTextStoredBeforeIt(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeRefsGrammar)
 	fixture := writeRefsGrammarFixture(t, store)
 
@@ -133,7 +133,7 @@ func TestTheRefsGrammarSeedOwesTextStoredBeforeIt(t *testing.T) {
 // and rewrites none.
 func TestTheRefsGrammarSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, lastRefsGrammarTrigger)
 	fixture := writeRefsGrammarFixture(t, store)
 	owed := readOwedSources(t, store)

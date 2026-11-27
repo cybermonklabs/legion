@@ -48,7 +48,7 @@ func insertReturningID(t *testing.T, store *Store, query string, args ...any) st
 // project (an agent conversation's file) has no page to open, so neither makes a row.
 func TestUserThreadsSeedStartsReadAndTriggersKeepEachRow(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeUserThreads)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
@@ -173,7 +173,7 @@ func TestUserThreadsSeedStartsReadAndTriggersKeepEachRow(t *testing.T) {
 // the reply, and starts read like every thread the seed meets.
 func TestUserThreadsSeedMergesWithRowsTheTriggerWrote(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeUserThreads+1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
@@ -207,7 +207,7 @@ func TestUserThreadsSeedMergesWithRowsTheTriggerWrote(t *testing.T) {
 // names the reply.
 func TestUserThreadsCatchUpCountsAReplyTheSeedRaced(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeUserThreads)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
@@ -263,7 +263,7 @@ func TestUserThreadsCatchUpCountsAReplyTheSeedRaced(t *testing.T) {
 // participant's row unread, the asker's included, naming the ask, and leaves the answerer's read.
 func TestUserThreadsCountAnAnswerAsAWrite(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeUserThreads)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
@@ -314,7 +314,7 @@ func TestUserThreadsCountAnAnswerAsAWrite(t *testing.T) {
 // steps. A message 65 deep belongs to its first reply's thread, not the root's, in both.
 func TestUserThreadsSeedStopsTheMessageWalkWhereTheTriggerDoes(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeUserThreads)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');

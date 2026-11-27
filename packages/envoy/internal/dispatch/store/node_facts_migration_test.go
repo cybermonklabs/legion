@@ -139,7 +139,7 @@ func TestTheWrittenVersionTriggerRecordsWhatAnyBuildInserts(t *testing.T) {
 // null.
 func TestTheWrittenVersionBackfillFillsOlderRows(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeNodeFacts)
 	_, doc := seedNodeFactsDocuments(t, store)
 	if _, err := store.Pool.Exec(ctx, `
@@ -207,7 +207,7 @@ func TestTheWrittenVersionBackfillFillsOlderRows(t *testing.T) {
 // null: when it was made or last changed was never recorded.
 func TestComponentFactsSeedEveryComponentUnrecorded(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, beforeNodeFacts)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core'), ('OPS', 'Operations');

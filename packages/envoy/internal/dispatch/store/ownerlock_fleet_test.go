@@ -43,7 +43,7 @@ func (f fleetOwners) all() []Owner { return []Owner{f.project, f.issueA, f.issue
 func openFleetStore(t *testing.T) (*Store, fleetOwners) {
 	t.Helper()
 	s := openEmptyTestStore(t)
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

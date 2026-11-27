@@ -65,6 +65,23 @@ func openEmptyTestStore(t *testing.T) *Store {
 	return store
 }
 
+// migrationContext is the context a store-package test's own migration runs under: the test
+// binary's deadline (testdb.ConnectEnd) carrying pgmigrate.DeadlineRetryPolicy, so a migration
+// whose lock a peer runner or autovacuum holds under the parallel suite waits for it rather than
+// failing after the production policy's fixed span (INFRA-3904). The template/suite builders
+// (migrateAbove, migratedToOne) and the ordinary full-migrate tests use it. The lock- and
+// bound-asserting tests keep context.Background() instead, so they measure the production policy.
+// Its deadline is cancelled when t ends.
+func migrationContext(t testing.TB) context.Context {
+	ctx := context.Background()
+	if end, bounded := testdb.ConnectEnd(t); bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, end)
+		t.Cleanup(cancel)
+	}
+	return pgmigrate.WithRetryPolicy(ctx, pgmigrate.DeadlineRetryPolicy())
+}
+
 func randomDatabaseSuffix(t *testing.T) string {
 	t.Helper()
 	var bytes [8]byte
@@ -173,7 +190,7 @@ func TestScannedTimestampsCarryUTCWhateverTheHostZone(t *testing.T) {
 
 func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("first migrate: %v", err)
@@ -641,7 +658,7 @@ func auditTwoMigrations(t *testing.T, first, second string) error {
 
 func TestMigrateSkipsVersionRecordedOutsideTheRunner(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 7)
 	// Production recorded version 8 from Go (the one-time legacy document
 	// conversion) before 0008_legacy_documents.up.sql existed.
@@ -677,7 +694,7 @@ func TestMigrateSkipsVersionRecordedOutsideTheRunner(t *testing.T) {
 // the default ran, and set_config gave the search_path the value it returned.
 func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	set := fstest.MapFS{
 		"migrations/0001_other_versions.up.sql": {Data: []byte(`create schema other_1792;
@@ -763,7 +780,7 @@ func connectForTest(t *testing.T, ctx context.Context, store *Store) *pgx.Conn {
 // and the leak schema.
 func TestMigrateResetsSessionSettingsAMigrationLeftOnThePooledConnection(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	const poolSize = 4
 	store := openIsolatedStoreWithPool(t, poolSize)
 	schema := "leak_" + randomDatabaseSuffix(t)
@@ -834,7 +851,7 @@ func TestMigrateResetsSessionSettingsAMigrationLeftOnThePooledConnection(t *test
 // server statement that DISCARD ALL dropped while pgx's cache still holds it.
 func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	const poolSize = 4
 	store := openIsolatedStoreWithPool(t, poolSize)
 	set := fstest.MapFS{
@@ -1036,7 +1053,7 @@ func migrateThrough(t *testing.T, store *Store, maxVersion int) {
 // history every time a test moves a database forward.
 func migrateAbove(t *testing.T, store *Store, after, maxVersion int) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	migrations := shippedMigrations(t)
 	// The runner's own table (prepareVersionTable), bigint and identity columns included: a test
 	// that created the table as an integer would make the runner widen it, which is not what these
@@ -1273,7 +1290,7 @@ func seedGraphAt0007(t *testing.T, store *Store) string {
 
 func TestMigrate0015BackfillsIssueRanksByProjectCreationOrder(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 13)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core'), ('OPS', 'Operations');
@@ -1329,7 +1346,7 @@ func TestMigrate0015BackfillsIssueRanksByProjectCreationOrder(t *testing.T) {
 
 func TestMigrate0009BackfillsProjectAndRefKeyFrom0007(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 7)
 	seedGraphAt0007(t, store)
 
@@ -1383,7 +1400,7 @@ func TestMigrate0009BackfillsProjectAndRefKeyFrom0007(t *testing.T) {
 
 func TestMigrate0009DropsMalformedArtifactReferences(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 7)
 	commentID := seedGraphAt0007(t, store)
 	const malformed = "CORE-2/diagram-png``"
@@ -1418,7 +1435,7 @@ func TestMigrate0009DropsMalformedArtifactReferences(t *testing.T) {
 
 func TestMigrateMarksLegacyNonNotifyingEventsPublished(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, latestVersion)
 	// A database that stopped at the notify-only outbox: forget the backfill, then record
 	// an event of the kind that outbox never published.
@@ -1461,7 +1478,7 @@ func TestMigrateMarksLegacyNonNotifyingEventsPublished(t *testing.T) {
 // keeps any later writer from putting a null back.
 func TestMigrate0031RewritesNullAskOptionsToEmptyArrays(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 30)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
@@ -1505,7 +1522,7 @@ func TestMigrate0031RewritesNullAskOptionsToEmptyArrays(t *testing.T) {
 // that carried the old kind, and the check constraint refuses any new action row.
 func TestMigrate0035FoldsActionAsksIntoQuestions(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, 34)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
@@ -1991,7 +2008,7 @@ const legionCurrentVersion = 20261117022936
 // after it moves a field's row only where the row it inserts is newer than the one held.
 func TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, legionCurrentVersion-1)
 	hour := func(hours int) time.Time { return time.Date(2026, 11, 16, hours, 0, 0, 0, time.UTC) }
 	observe := func(issue, field, value string, at time.Time) {

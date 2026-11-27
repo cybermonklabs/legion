@@ -20,7 +20,7 @@ const ownerFallback = "operator@example.com"
 // owner from the operator's setting; and a project created afterwards takes its default assignee
 // as it is inserted. Then no project is without an owner.
 func TestEveryProjectHasAnOwner(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if err := store.migrate(ctx, migrationsThrough(t, projectAccessVersion-1)); err != nil {
 		t.Fatalf("migrate through %d: %v", projectAccessVersion-1, err)
@@ -67,7 +67,7 @@ func TestEveryProjectHasAnOwner(t *testing.T) {
 // member, because an owner is always a full member. The refusal names no person's email, neither
 // the default assignees' nor the setting's, since the boot writes it to its log.
 func TestTheBootNamesEveryProjectItCannotGiveAnOwner(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	for _, setting := range []struct{ name, fallback string }{
 		{"no setting", ""},
 		{"a setting that names nobody who signed in", "nobody@example.com"},
@@ -182,7 +182,7 @@ func TestAnInsertWithNoOwnerTakesTheDefaultAssignee(t *testing.T) {
 func openMigratedProjectStore(t *testing.T) *Store {
 	t.Helper()
 	store := openEmptyTestStore(t)
-	if err := store.Migrate(context.Background()); err != nil {
+	if err := store.Migrate(migrationContext(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return store

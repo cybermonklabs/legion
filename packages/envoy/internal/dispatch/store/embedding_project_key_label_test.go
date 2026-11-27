@@ -11,7 +11,7 @@ import (
 // meaningProjectScope).
 func openLabelTestStore(t *testing.T) *Store {
 	t.Helper()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

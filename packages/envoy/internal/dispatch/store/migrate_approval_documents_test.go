@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 )
 
@@ -15,7 +14,7 @@ const asksApprovalDocumentsVersion = 20261102110100
 // reader finds the list and the rebuilt check admits the row.
 func TestMigrationGivesApprovalAsksTheirDocumentList(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, asksApprovalDocumentsVersion-1)
 	const artifactID = "11111111-1111-4111-8111-111111111111"
 	for _, seed := range []string{

@@ -22,7 +22,7 @@ const deliveryDropProductionJobNameVersion = 111
 // write naming the dropped column (a task older than the release that added 0109) is refused.
 func TestMigrationDropsTheProductionJobName(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, deliveryDropProductionJobNameVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into delivery_settings (deploy_repo, deploy_workflow_path, production_job_names, production_apply_step_name, pr_checks_workflow_path, updated_by)

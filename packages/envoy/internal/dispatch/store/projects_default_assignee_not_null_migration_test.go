@@ -17,7 +17,7 @@ const projectsDefaultAssigneeNotNullVersion = 20261111210103
 // After it, the column refuses a project with no default.
 func TestTheDefaultAssigneeBackfillFillsEveryProject(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openMigratedTestStore(t, projectsDefaultAssigneeNotNullVersion-1)
 	seedProjectsOfEveryKind(t, store)
 

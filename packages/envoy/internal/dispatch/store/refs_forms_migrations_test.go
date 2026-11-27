@@ -66,7 +66,7 @@ func assertOwedForms(t *testing.T, store *Store, want ...owedSource) map[owedSou
 // image's version and a direct message, which no mention is indexed from, are owed nothing, and
 // no `scope` row is written: these forms change no `#id`.
 func TestTheRefsFormsSeedOwesTextStoredBeforeIt(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, beforeRefsForms)
 	seedCoreWithADefaultAssignee(t, store)
@@ -87,7 +87,7 @@ func TestTheRefsFormsSeedOwesTextStoredBeforeIt(t *testing.T) {
 // its trigger and keeps the enqueued_at that write gave it: the seed adds the rows it finds missing
 // and rewrites none.
 func TestTheRefsFormsSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, lastRefsFormsTrigger)
 	seedCoreWithADefaultAssignee(t, store)
@@ -121,7 +121,7 @@ func TestTheRefsFormsSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 // `scope` row either, since these forms change no `#id` - beyond the ask itself, whose
 // block_artifact_id is a column its index reads.
 func TestTheRefsFormsTriggersOweWhatAnyBuildWrites(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -249,7 +249,7 @@ func TestTheRefsFormsTriggersOweWhatAnyBuildWrites(t *testing.T) {
 // source is passed over rather than refused; a delete that removes nothing owes nothing; and a row
 // already owed keeps its enqueued_at.
 func TestTheRefsFormsDeleteTriggerOwesEverySourceADeleteTouches(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -316,7 +316,7 @@ func TestTheRefsFormsDeleteTriggerOwesEverySourceADeleteTouches(t *testing.T) {
 // past a cursor bounds that index scan with the cursor (an index condition, not a filter), so a
 // pass deep into the backlog starts where the last one ended rather than reading every row before.
 func TestTheRefsFormsDrainReadsItsIndexInOrder(t *testing.T) {
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

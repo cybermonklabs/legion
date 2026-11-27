@@ -115,7 +115,7 @@ func databaseFromBeforeTheWidening(t *testing.T, store *Store) {
 // either order.
 func TestMigrateAppliesAMigrationThatArrivedBelowOneAlreadyApplied(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if err := store.migrate(ctx, oooSet(oooNumbered, oooT2)); err != nil {
 		t.Fatalf("migrate the set T2 merged into: %v", err)
@@ -151,7 +151,7 @@ func TestMigrateAppliesAMigrationThatArrivedBelowOneAlreadyApplied(t *testing.T)
 // version order, so it ends where the database that took them one merge at a time ended.
 func TestMigrateAppliesBothTimestampedMigrationsOnceOnAFreshDatabase(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if err := store.migrate(ctx, oooSet(oooNumbered, oooT1, oooT2)); err != nil {
 		t.Fatalf("migrate a fresh database: %v", err)
@@ -168,7 +168,7 @@ func TestMigrateAppliesBothTimestampedMigrationsOnceOnAFreshDatabase(t *testing.
 // timestamped one; a boot after that finds it widened and alters nothing.
 func TestMigrateWidensAnIntegerVersionColumnAndRecordsATimestamp(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	databaseFromBeforeTheWidening(t, store)
 
@@ -226,7 +226,7 @@ func versionColumnType(t *testing.T, store *Store) string {
 // deploy's first boot of this change widens under.
 func TestHealthyAnswersAcrossTheWideningOfTheVersionColumn(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	databaseFromBeforeTheWidening(t, store)
 	if got, err := store.Pool.Healthy(ctx); err != nil || got != int(oooVersion(t, oooNumbered)) {
@@ -255,7 +255,7 @@ func TestHealthyAnswersAcrossTheWideningOfTheVersionColumn(t *testing.T) {
 // process reads it cast.
 func TestMigrateWithNoTimestampedMigrationKeepsThePreviousReleasesHealthProbeAnswering(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	databaseFromBeforeTheWidening(t, store)
 	// One connection of a separate pool, as the previous release's health probe holds one, with

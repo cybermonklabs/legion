@@ -43,7 +43,7 @@ func TestEveryMigrationLeavesANewDatabaseHoldingBtreeGin(t *testing.T) {
 // or dropped it and created it again, would change the version this test reads.
 func TestTheMigrationsKeepTheVersionOfABtreeGinCreatedBeforeThem(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx := migrationContext(t)
 	store := openEmptyTestStore(t)
 	if _, err := store.Pool.Exec(ctx, `create extension btree_gin version '1.0'`); err != nil {
 		t.Fatalf("create btree_gin 1.0 before any migration runs: %v", err)
