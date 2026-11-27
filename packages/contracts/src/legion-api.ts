@@ -15,10 +15,18 @@ import {
  * Go owns this wire shape: `packages/daemon/internal/api` (`state.go`, `operator.go`) and the
  * claim wire in `packages/daemon/internal/claim/wire.go` are the source of truth, and every
  * schema here mirrors them field for field. The two are pinned to each other by
- * `packages/contracts/fixtures/daemon-api/*.json`, written by the Go golden tests
- * (`go test ./internal/api/ -update`, and `go test ./internal/projection/ -update` for
- * `state-controller-claim.json`) and parsed here by `legion-api.test.ts` — no generator runs in
- * either direction, so a Go field added without its line below fails that test.
+ * `packages/contracts/fixtures/daemon-api/*.json`, which Go's tests write and `legion-api.test.ts`
+ * parses. internal/daemon's `TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds` writes the
+ * six state fixtures (`state.json`, `state-paused.json`, `state-stage3.json`,
+ * `state-operator-claim.json`, `state-last-pause.json` and `state-controller-claim.json`) from
+ * the daemon's own state source over a seeded database. internal/api's
+ * `TestStateNarrowedRepositoriesGolden` and `TestIssueRecordGolden` write
+ * `state-narrowed-repositories.json` and `issue-record.json` from `state.json`, internal/config's
+ * golden writes `stall-defaults.json`, and internal/api's other goldens write the rest.
+ * `apifixture.StateFixturesRewrite` is the two commands that rewrite
+ * the state fixtures and every fixture internal/api writes from `state.json`, in the order they
+ * must run. No generator runs in either direction, so a Go field added without its line below
+ * fails that test.
  *
  * Reached as `@legion/contracts/legion-api`, never from the barrel.
  */
@@ -561,7 +569,6 @@ const legionGatedStepView = z.object({
 const legionSlotView = z.object({
   index: z.number().int().nonnegative().optional(),
   admittedAt: timestamp.optional(),
-  lentTo: issueKey.optional(),
 });
 
 /** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
@@ -1066,9 +1073,9 @@ const daemonInfo = z.object({
  * what the narrowing exists to prevent, since the plugin that body is narrowed for reads the
  * state with a strict schema and refuses the whole of it for one key it does not name. Such a
  * caller is told nothing here and the daemon's own log names its narrowing instead, which is why
- * a body carrying no mark says only that the daemon narrowed it or that it is the state as
- * internal/projection answered it, never that the daemon is older than this plugin: the boot gate
- * and `legion probe-image` refuse that pair. */
+ * a body carrying no mark says only that the daemon narrowed it or that it is a state fixture
+ * internal/daemon's composition test wrote with the route's marks taken off, never that the
+ * daemon is older than this plugin: the boot gate and `legion probe-image` refuse that pair. */
 const legionContract = z.object({
   daemon: z.number().int().positive().optional(),
   caller: z.number().int().positive().optional(),
@@ -1227,7 +1234,6 @@ const legionAdmission = z.object({
   trees: z.array(issueKey).optional(),
   blocked: z.array(legionBlockedIssue).optional(),
   held: z.array(legionHeldIssue).optional(),
-  free: z.number().int().nonnegative().optional(),
 });
 
 /** `api.ControllerLocator` — the record of the session registered as the project's controller: the
@@ -1564,7 +1570,8 @@ const legionPaused = z.object({
  * the route strips it for a caller below 75, read the same way, since a reader before 75 refuses
  * the key (`api.stateFor`, `withoutContractMark`). A caller that states no contract and whose
  * pod's claims record none, or that the daemon can place in no pod, is served the mark, and the
- * shapes `internal/projection` answers before the route marks them carry none either.
+ * state fixtures carry none either, since internal/daemon's composition test writes them with the
+ * route's marks taken off.
  * `paused` is the project's open pause, with the claims whose stop it still waits on and the rows
  * it holds, and `lastPause` is its newest ended pause, with when and by whom it was ended
  * (contract 178). The daemon writes each only where there is one: `paused` while the project is
@@ -2754,7 +2761,6 @@ const ISSUE_RECORD_READS = [
   "slot",
   "slot.index",
   "slot.admittedAt",
-  "slot.lentTo",
 ] as const;
 
 /**
