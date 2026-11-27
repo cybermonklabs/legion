@@ -23,7 +23,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { HEADS_SCENARIOS } from "./heads-scenarios";
-import { parseSession, toolResults } from "./transcript";
+import { parsedSession, toolResults } from "./transcript";
 
 /** A line that states what Dispatch computes from the results: the check's answer, the count of
  * heads that read yes, the line of a head, the pull request line under it, or the fields that hold
@@ -177,7 +177,7 @@ export function scanTranscripts(runDir: string): Scan {
   let apiCalls = 0;
   let first = "";
   for (const file of files) {
-    const entries = parseSession(file);
+    const entries = parsedSession(file);
     const texts = [
       ...toolResults(entries),
       ...entries.flatMap((entry) =>

@@ -28,7 +28,7 @@ A child carrying part of this issue's requirement proves it with its own check w
 
 Read the plan beside the spec. Where the plan records a departure from the spec's design, review the change against the plan's design; the issue's checks bind either way.
 
-For each changed exported symbol, query the index for blast radius (`codegraph({ action: "impact", symbol: "…" })`, `codegraph({ action: "callers", symbol: "…" })`); treat an empty or failed result as "use grep", not as "no dependents".
+For each changed exported symbol, ask the `codegraph` tool for its blast radius, and grep only for what it does not answer: `write` to `xd://codegraph` the content `{"action":"impact","symbol":"<name>"}`, and the same with `"action":"callers"`.
 
 Where the diff touches a surface the Security Guidelines in `skill://thermonuclear-deep-review` list, answer their rows yourself, and cite the pair's report when the pair ran at that head. An inline finding from those guidelines keeps its `Security[<tag>]:` prefix.
 

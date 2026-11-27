@@ -2,8 +2,8 @@
 // left there. DISPATCH_E2E_PORT names the server, which e2e/api.ts addresses. e2e/api.ts addresses
 // PLAYWRIGHT_BASE_URL instead, with E2E_AGENT_TOKEN as its bearer, whenever it is set, so seed.ts
 // refuses to run while either is set. Each mode is also an exported function, which seed.test.ts
-// calls against a stubbed fetch. The two heads modes live in heads-world.ts, and the requests both
-// files make as the agent bearer in seed-requests.ts.
+// calls against a stubbed fetch. The two heads modes live in heads-world.ts, and the requests
+// seed.ts, heads-world.ts and owner-walk-seed.ts make as the agent bearer in seed-dispatch.ts.
 //
 //   seed.ts project                        project LWEVAL, which each run's own issue is filed in;
 //                                          the world of every scenario but brainstorm
@@ -94,16 +94,17 @@
 //                                          events go out on the NATS DISPATCH_E2E_NATS_URLS names,
 //                                          and the case's results and handoff records are recorded;
 //                                          adds the records and each body's line of k1 to <file>
+//   seed.ts owner-walk <file> <kind> <answer>
+//                                          owner-walk's world under LWEVAL, for an owner of <kind>
+//                                          (root or child), from the run's recorded plans answer
+//                                          <answer> (owner-walk-seed.ts ownerWalkIssues)
+//   seed.ts capture-scored <file> <run dir>
+//                                          the world's Dispatch records after a scored run, as
+//                                          captured.json in <run dir> (owner-walk-seed.ts
+//                                          captureScored)
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type {
-  Actor,
-  ArtifactBlock,
-  Ask,
-  AskOption,
-  Handoff,
-  HandoffSummary,
-} from "@legion/contracts";
+import type { Actor, ArtifactBlock, Ask, AskOption } from "@legion/contracts";
 import { z } from "zod";
 import {
   answerAsk,
@@ -128,8 +129,9 @@ import {
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { headsEvents, headsIssue, headsWorld } from "./heads-world";
+import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
-import { agentGet, agentPost, IMPLEMENTER } from "./seed-requests";
+import { agentPost, APPROVE, handoffsOf, IMPLEMENTER, PERSON } from "./seed-dispatch";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -154,10 +156,7 @@ const TesterFixture = z.object({
   issue: z.string(),
   implement: z.object({ id: z.string(), version: z.number().int() }).optional(),
 });
-/** The person who files the run's issue, posts the source's input and answers every ask. */
-const PERSON = "alice";
-/** Dispatch's approval answer (packages/envoy/internal/dispatch/docs/approval_review.go). */
-const APPROVE = "Approve";
+
 /** How long spec-rewrite waits for Dispatch's settlement to open the old spec's ask blocks as asks
  * (it settles a seeded document 2 s after the issue is created), and how often it looks. */
 const BLOCK_ASKS_WAIT_MS = 30_000;
@@ -703,16 +702,10 @@ export async function implementHandoff(
 }
 
 /** `capture-handoffs <file> <run dir>`: every handoff record of the run's issue, the seeded
- * implement record among them, newest first as `GET …/handoffs` lists them, each read whole by id
- * (`GET /api/v1/handoffs/{id}`) for its body. */
+ * implement record among them, newest first, each with its body (handoffsOf). */
 export async function captureHandoffs(file: string, runDir: string): Promise<void> {
   const { issue } = TesterFixture.parse(JSON.parse(readFileSync(file, "utf8")));
-  const summaries = await agentGet<HandoffSummary[]>(
-    `/api/v1/issues/${encodeURIComponent(issue)}/handoffs`
-  );
-  const records: Handoff[] = [];
-  for (const summary of summaries)
-    records.push(await agentGet<Handoff>(`/api/v1/handoffs/${encodeURIComponent(summary.id)}`));
+  const records = await handoffsOf(issue);
   writeFileSync(path.join(runDir, "handoffs.json"), `${JSON.stringify(records)}\n`);
   console.log(`captured ${issue}: ${records.length} handoff records`);
 }
@@ -914,7 +907,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <reviewer-own-head <sibling-fails|ci-only|no-implementer|no-tester>|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail <reviewer|tester|architect>> | heads-events <file> <heads file> <the same scenario>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <reviewer-own-head <sibling-fails|ci-only|no-implementer|no-tester>|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail <reviewer|tester|architect>> | heads-events <file> <heads file> <the same scenario> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -965,7 +958,17 @@ async function main(argv: string[]): Promise<boolean> {
     const world = headsWorld(third, argv[4]);
     if (world === undefined || second === undefined) return false;
     await headsEvents(file, second, world);
-  } else return false;
+  } else if (
+    command === "owner-walk" &&
+    file !== undefined &&
+    second !== undefined &&
+    third !== undefined &&
+    n === 4
+  )
+    await ownerWalkIssues(file, second, third);
+  else if (command === "capture-scored" && file !== undefined && second !== undefined && n === 3)
+    await captureScored(file, second);
+  else return false;
   return true;
 }
 

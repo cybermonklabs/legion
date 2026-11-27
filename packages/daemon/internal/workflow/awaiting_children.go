@@ -102,16 +102,18 @@ type childrenHold struct {
 //     notice the start would have sent (R10);
 //   - tells the role whose phase the move ends, where there is one, that its phase ended
 //     and no task of it follows (record.PhaseEnded into awaiting_children);
-//   - and, where the merge forward it drops had not landed (record.MergeForward.Landed empty),
-//     tells the role it was asked of (record.MergeForward.Asked, the implementer for an ask that
-//     names none) of it, named with its head and its base, and of what to do with a merge of it
-//     begun or not (R10): in the phase-ended message where the phase the move ends is that role's,
-//     and otherwise in one role message on that role's topic
+//   - and, where the merge forward it drops is the open ask of the head (openAsk: not landed, on
+//     a pull request that is open) and the implementer was not told it is no longer its work
+//     (record.MergeForward.Withdrawn), tells the role it was asked of (record.MergeForward.Asked,
+//     the implementer for an ask that names none) of it, named with its head and its base, and
+//     of what to do with a merge of it begun or not (R10): in the phase-ended message where the
+//     phase the move ends is that role's, and otherwise in one role message on that role's topic
 //     (record.DroppedMergeForward.RoleMessageBody), addressed as mergeForward addresses its ask
 //     (addressRoles). The phase-ended message of any other worker carries it too, and tells that
 //     worker to write and push nothing more, since the role asked may be merging in the
-//     workspace they share (record.PhaseEnded.Message). A merge forward that landed is dropped
-//     with no word of it.
+//     workspace they share (record.PhaseEnded.Message). A merge forward that landed, one on a
+//     pull request that closed, and one withdrawn are dropped with no word of it: a role told to
+//     merge nothing for the head, or a pull request that takes no push, leaves no merge to finish.
 //
 // A released role gets nothing of that role message, which the outbox ends with no publish and no
 // wake as it ends every role message to a released role (the daemon's outbox.roleMessage).
@@ -164,15 +166,19 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	// no task's line, classify.MergeForwardStands), and the return asks for none: a conflict still there fails the
 	// tester's merge with the base, and the implementer merges forward once GitHub reads the pull
 	// request CONFLICTING (R10). The merge forward the clear drops is named to the role it was
-	// asked of where it had not landed: the implementer for an ask made before merging, and the
-	// merger for one made in merging that a move back out of merging left in the record.
-	cleared, err := e.clearMergeForward(ctx, tx, issue.Key)
+	// asked of where it was the open ask of the head (openAsk) and not withdrawn, as withdrawnBy
+	// reads it: the implementer for an ask made before merging, and the merger for one made in
+	// merging that a move back out of merging left in the record. The phase the issue stands in does
+	// not decide it, as it decides owedTo, since a merger moved back may still be at work on it.
+	before, err := e.clearMergeForward(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
 	var dropped *record.DroppedMergeForward
-	if cleared != nil && cleared.Landed == "" {
-		dropped = &record.DroppedMergeForward{Head: cleared.Head, Base: cleared.Base, Role: cleared.Asked()}
+	if before != nil {
+		if asked, open := openAsk(*before); open && !asked.Withdrawn {
+			dropped = &record.DroppedMergeForward{Head: asked.Head, Base: asked.Base, Role: asked.Asked()}
+		}
 	}
 	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
@@ -277,7 +283,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.nameMoveEnd(ctx, w, issue, trigger, to, handoff); err != nil {
 		return err
 	}
-	replaced := noticeFor(trigger, issue.Phase, to, handoff, reason)
+	replaced := noticeFor(trigger, issue, issue.Phase, to, handoff, reason)
 	moved := issue
 	if err := e.moveTask(ctx, tx, &moved, &w, to, record.TaskRunning); err != nil {
 		return err

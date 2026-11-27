@@ -1,4 +1,5 @@
 import {
+  BUS_UNANSWERED_PREFIX,
   DELIVERY_DUPLICATE_WINDOW_HOURS,
   type Envelope,
   EnvelopeSchema,
@@ -96,6 +97,18 @@ const StringListWireSchema = z
   .nullish()
   .transform((list) => list ?? []);
 
+/**
+ * A granted role claim's answer (`roleSetResponse` in the listener): the claimant's interest row,
+ * and `warnings`, each a sentence the listener says about the claim that its caller must log and,
+ * where an agent asked for the claim, tell the agent. A role named in the old form gets one that
+ * names the new form to claim; a claim that names the session it replaces (`previous_session_id`)
+ * and hands over none of its messages gets one that says so and why: the rule that holds a
+ * handover to one principal refused it, the listener's known-session bucket is not open, or the
+ * listener is an edge listener, which hands over no messages. The listener omits the field
+ * when there are none, and a listener predating it sends none: both read as [].
+ */
+const RoleSetWireSchema = InterestWireSchema.extend({ warnings: StringListWireSchema });
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -103,7 +116,8 @@ const SessionWireSchema = z.object({
   // listener it last registered through. The session's owner is the listener its stored
   // subscription names (the one store.Registry.Match fans its topics out on), else the one on
   // machine_id; the owner relays the session's consumer, and any other listener leaves inbox
-  // messages to it silently (session.HandleAgentResult.OwnedElsewhere). No delivery reads host.
+  // messages to it silently (session.AgentOwnedElsewhere), since a wake it reported would be one
+  // more report for each listener that does not own the session. No delivery reads host.
   // Optional here only for a listener predating the field — the live listener always fills it in,
   // falling back to machine_id itself (session.SessionEntry.HostOrMachine).
   host: z.string().optional(),
@@ -212,18 +226,21 @@ const ErrorWireSchema = z.object({
  * `recipient`, `recipient_state`, `state` and `last_seen` are a send's
  * (`listenerwire.SendResponse`). `recipient_state` is the target's registry state and
  * stays the strict three-value enum every deployed plugin parses. `state` is what the listener's
- * connection check found: `connected`, or `stopped` when no plugin of the target holds its relay
- * subject, so the message waits on the session's topic. It is read as a string rather than a
- * closed pair, as this file reads a delivery answer's `reason`, so a word a later listener adds
- * still parses: only `stopped` is stopped, and anything else is the connected reading every
- * release gave before the state existed. `duplicate` says the listener already stored another
- * request's copy of a send under this target and idempotency key, or of a publish under this
- * idempotency key (a topic publish, or a role send's forward to its holder), so this one stored
- * nothing new; a current listener then answers the stored copy's envelope where it is this
- * caller's own, and otherwise the key-taken answer (`KeyTakenWireSchema`) to a request that names
- * it or the envelope it built for the repeat to one that does not, and an older listener the
- * envelope it built for the repeat. Absent reads as false, and an older listener's publish answer
- * never carries it.
+ * connection check found: `connected`; `stopped` when no plugin of the target holds its relay
+ * subject, so the message waits on the session's topic; or `no_receiver` when the target runs but
+ * advertises no delivery mode, as a Claude Code terminal does while no mod is connected to it, so
+ * nothing takes the message into its conversation now. A `no_receiver` answer names no
+ * `recipient_state`. `state` is read as a string rather than a closed list, as this file reads a
+ * delivery answer's `reason`, so a word a later listener adds still parses: only `stopped` and
+ * `no_receiver` are read as themselves, and anything else is the connected reading every release
+ * gave before the state existed. `duplicate` says the listener already stored another request's
+ * copy of a send under this target and idempotency key, or of a publish under this idempotency
+ * key (a topic publish, or a role send's forward to its holder), so this one stored nothing new;
+ * a current listener then answers the stored copy's envelope where it is this caller's own, and
+ * otherwise the key-taken answer (`KeyTakenWireSchema`) to a request that names it or the
+ * envelope it built for the repeat to one that does not, and an older listener the envelope it
+ * built for the repeat. Absent reads as false, and an older listener's publish answer never
+ * carries it.
  *
  * `holder` and `holder_state` are a role publish's, under the two names every role answer uses
  * (`listenerwire.PublishResponse`). A publish to a topic the stream captures stores one copy that
@@ -356,6 +373,17 @@ export type EnvoyClientConfig = {
    * loopback listener that asks for none.
    */
   readonly credential?: RequestCredential | undefined;
+  /**
+   * The host's reading that its session's stop has begun (R24 of dispatch://INFRA-3589): the
+   * stop gate. It is read before each attempt and before each retry, and once it answers true a
+   * call of the session's registration or role state is refused before anything is sent
+   * (`STOP_GATE`). A call none of whose attempts was sent throws `EnvoyStoppingError`. A call
+   * whose retry the gate refuses after an earlier attempt was sent ends with that attempt's own
+   * outcome, as a call whose retries ran out does: that attempt may have landed. An attempt
+   * already sent is not cancelled, and its answer is read as any answer is. Unset, the session
+   * never reads as stopping.
+   */
+  readonly stopping?: () => boolean;
 };
 
 export type Interest = z.infer<typeof InterestWireSchema>;
@@ -680,12 +708,18 @@ export type SetRoleInput = {
    */
   readonly soft?: boolean;
   /**
-   * The session id this claimant continues (a fork or branch mints a new id
-   * in the same process). A soft claim takes the role from that predecessor
-   * only when the predecessor has no live registry entry, when its live entry
-   * carries this client instance's own `clientInstanceID`, or when either
-   * side carries no instance id; a predecessor still live under another
-   * client instance keeps the role. Sent only with `soft`.
+   * On a soft claim, the session id this claimant continues (a fork or branch
+   * mints a new id in the same process): the claim takes the role from that
+   * predecessor only when the predecessor has no live registry entry, when its
+   * live entry carries this client instance's own `clientInstanceID`, or when
+   * either side carries no instance id; a predecessor still live under another
+   * client instance keeps the role.
+   *
+   * On any claim, soft or hard, the session this claim replaces: once the
+   * claim lands and the named session is not live, a listener that supports it
+   * hands that session's unread direct and role messages to this session. A
+   * listener older than that ignores it on a hard claim. Sent whenever it is a
+   * non-empty string.
    */
   readonly previousSessionID?: string;
   /**
@@ -701,8 +735,17 @@ export type SetRoleInput = {
   readonly clientInstanceID?: string;
 };
 
+/**
+ * A claim's result. A granted claim carries the listener's interest row and its `warnings` about
+ * the claim (`RoleSetWireSchema`), [] when it sent none, as an older listener never does; the
+ * warnings are read here alone, never off the interest.
+ */
 export type SetRoleResult =
-  | { readonly claimed: true; readonly interest: Interest }
+  | {
+      readonly claimed: true;
+      readonly interest: Interest;
+      readonly warnings: readonly string[];
+    }
   | { readonly claimed: false; readonly holder: string };
 
 export type ListSessionsInput = {
@@ -716,26 +759,44 @@ export type ListSessionsInput = {
 /**
  * What the listener's connection check found for a send's target: `connected`, a plugin of that
  * session holds its relay subject now; `stopped`, none does, so the message waits on the
- * session's topic. Beside the registry state (`SessionState`) rather than a fourth value of it:
- * a session stays live or unresponsive by the age of its last registration whatever this says,
- * and keeps its claims.
+ * session's topic; `no_receiver`, a plugin holds it but the session advertises no delivery mode,
+ * as a Claude Code terminal does while no mod is connected to it, so nothing takes the message
+ * into its conversation now. Beside the registry state (`SessionState`) rather than a fourth value
+ * of it: a session stays live or unresponsive by the age of its last registration whatever this
+ * says, and keeps its claims.
  */
-export type ConnectionState = "connected" | "stopped";
+export type ConnectionState = "connected" | "stopped" | "no_receiver";
+
+/**
+ * A send's target as the listener found it. A `no_receiver` target has no `recipientState`: the
+ * listener names none for it, because its registry state would read `live` while no message
+ * reaches its conversation.
+ */
+export type SendTargetState =
+  | {
+      /** The recipient's state as the listener resolved it; `live` from a listener that names
+       *  none. A message to an unresponsive recipient is stored and reaches it when it answers
+       *  again. */
+      readonly recipientState: SessionState;
+      /**
+       * What the target was when the listener stored the message. `stopped` means the message
+       * waits on the session's topic for the stream's 72 hours and reaches it if it runs again in
+       * that time. A listener that answers no state reads as `connected`, which is what every
+       * release meant before the state existed.
+       */
+      readonly state: Exclude<ConnectionState, "no_receiver">;
+    }
+  | {
+      readonly recipientState?: undefined;
+      /** The session runs but takes no message into its conversation now. The message is stored,
+       *  and it reaches the session if the session takes messages within the stream's 72 hours. */
+      readonly state: "no_receiver";
+    };
 
 export type SendResult = {
   readonly envelope: Envelope;
   readonly recipient: string;
   readonly confirmed: boolean;
-  /** The recipient's state as the listener resolved it; `live` from a listener that names none.
-   *  A message to an unresponsive recipient is stored and reaches it when it answers again. */
-  readonly recipientState: SessionState;
-  /**
-   * What the target was when the listener stored the message. `stopped` means the message waits
-   * on the session's topic for the stream's 72 hours and reaches it if it runs again in that
-   * time. A listener that answers no state reads as `connected`, which is what every release
-   * meant before the state existed.
-   */
-  readonly state: ConnectionState;
   /** The recipient's last registration in epoch milliseconds, which the listener sends beside an
    *  unresponsive or a stopped recipient's state so the sender can say since when it has been
    *  silent. Absent when the listener knows none, and from a listener predating the field. */
@@ -744,7 +805,7 @@ export type SendResult = {
   readonly duplicate: boolean;
   /** Never set on a delivered send: see {@link KeyTakenResult}. */
   readonly keyTaken?: undefined;
-};
+} & SendTargetState;
 
 export type PublishResult = {
   readonly envelope: Envelope;
@@ -917,6 +978,27 @@ export class EnvoyApiError extends Error {
   }
 }
 
+/**
+ * Whether `error` is the listener's bus-outage answer: an `EnvoyApiError` with status 503 whose
+ * message begins with `BUS_UNANSWERED_PREFIX` (`@legion/contracts`, the literal the listener's
+ * `busUnansweredPrefix` is generated from). The message after the prefix names the call the
+ * bus did not answer, and says `bus: NATS is reconnecting` when NATS was reconnecting. The work
+ * the listener did before that call can have landed: an unsubscribe gets this answer after it
+ * wrote the session's record, when only the update of the consumer's filter met the reconnect.
+ * A registration (`subscribe`) or a removal (`unsubscribe`) that got this answer on an attempt
+ * fails with it, also where a later attempt got no answer or a 5xx that names no reason
+ * (`busUnansweredStands`), so this reads true for it. Every other call throws the error of its
+ * last attempt alone, so a first attempt that got this answer and a retry that failed another way
+ * reads false here.
+ */
+export function isBusUnanswered(error: unknown): boolean {
+  return (
+    error instanceof EnvoyApiError &&
+    error.details.status === 503 &&
+    error.message.startsWith(BUS_UNANSWERED_PREFIX)
+  );
+}
+
 /** The listener's own test of whether a send's dedupe key lets the stream and hosts drop a repeat. */
 const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
 
@@ -998,12 +1080,88 @@ export type EnvoyClient = {
    * (`previousSessionID`) takes the role from it only when that predecessor has no live registry
    * entry, when its live entry carries this client instance's own instance id, or when either
    * side carries no instance id; any other live holder keeps the role and is reported as
-   * `{ claimed: false, holder }`.
+   * `{ claimed: false, holder }`. On any claim, `previousSessionID` also names the session the
+   * claim replaces, whose unread direct and role messages a listener that supports it hands to
+   * this session once the claim lands and that session is not live. A granted claim answers the
+   * listener's warnings about it beside the interest row, such as a handover of that session it
+   * did not make; the caller logs each.
    */
   readonly setRole: (input: SetRoleInput) => Promise<SetRoleResult>;
   readonly getRole: (role: string) => Promise<RoleInfo>;
   readonly listSessions: (input?: ListSessionsInput) => Promise<readonly SessionInfo[]>;
 };
+
+/**
+ * A call this client makes: one of `EnvoyClient`'s, or `handBack`, the stop's release of one role
+ * hold (`stopHandBack`), which only a host's stop makes (R24 of dispatch://INFRA-3589).
+ */
+export type EnvoyCall = keyof EnvoyClient | "handBack";
+
+/**
+ * The stop gate's one list (R24 of dispatch://INFRA-3589): what becomes of each call once the
+ * host's stop has begun (`EnvoyClientConfig.stopping`). Every call of the session's registration
+ * and role state is refused: a registration and a heartbeat (`subscribe`), a removal of topics
+ * (`unsubscribe`), a read of the session's registry entry (`getInterest`), a role claim, transfer
+ * or re-assertion (`setRole`) and a role read (`getRole`). These calls are sent: the stop's own
+ * (its DELETE, `unregisterSession`, and, from a host whose stop hands its roles back, the
+ * hand-back of each role hold, `stopHandBack`), the session's own content (`send`, `publish`: a
+ * message the model asked for before or as the stop began, which is worse lost than sent), and
+ * the list of sessions (`listSessions`), which changes nothing at the listener. A call added to
+ * the client must be named here, or the client does not compile.
+ */
+const STOP_GATE: { readonly [Call in EnvoyCall]: "refused" | "sent" } = {
+  subscribe: "refused",
+  unsubscribe: "refused",
+  getInterest: "refused",
+  setRole: "refused",
+  getRole: "refused",
+  unregisterSession: "sent",
+  handBack: "sent",
+  send: "sent",
+  publish: "sent",
+  listSessions: "sent",
+};
+
+/**
+ * A call the stop gate refused (`STOP_GATE`) before any attempt of it was sent: the host's stop
+ * had begun (`EnvoyClientConfig.stopping`), so the listener acted on no attempt of the call. An
+ * attempt that reached no route of the listener (`RequestOptions.onNotSent`) counts as not sent,
+ * and so does one the listener answered with the `503` that says it sent nothing
+ * (`EnvoyApiError.notSent`), which reached the listener and stored nothing. A call an
+ * earlier attempt of which was sent never throws this: when the gate refuses its retry, it throws
+ * that attempt's own error, as a call whose retries ran out does, since that attempt may have
+ * landed. A caller tells this refusal apart by its class (`instanceof EnvoyStoppingError`);
+ * `call` names the call.
+ */
+export class EnvoyStoppingError extends Error {
+  override readonly name = "EnvoyStoppingError";
+
+  constructor(
+    readonly call: EnvoyCall,
+    method: string,
+    url: string
+  ) {
+    super(
+      `this session is stopping, so it sends the listener nothing: ${method} ${url} was not sent`
+    );
+  }
+}
+
+/** The gate-free hand-back of each client `createEnvoyClient` made (`stopHandBack`). */
+const handBacks = new WeakMap<EnvoyClient, (input: UnsubscribeInput) => Promise<void>>();
+
+/**
+ * The stop's release of one role hold on `client` (R24 of dispatch://INFRA-3589): the removal of
+ * the role's topic, naming the process that held it (`UnsubscribeInput.clientInstanceID`), which
+ * the client's stop gate lets through. Only a host's stop calls it, and only a host whose stop
+ * hands its roles back: the Envoy entry's stop hands back each hold, and claude-envoy's stop
+ * hands back none (`@legion/pi-shared/role-claim-stopping`). The stop's DELETE is
+ * `EnvoyClient.unregisterSession`, which the gate never refuses. A client `createEnvoyClient`
+ * did not make has no gate, so its hand-back is its own `unsubscribe`.
+ */
+export function stopHandBack(client: EnvoyClient): (input: UnsubscribeInput) => Promise<void> {
+  return handBacks.get(client) ?? ((input) => client.unsubscribe(input));
+}
 
 type RequestOptions = {
   readonly timeoutMs?: number;
@@ -1023,6 +1181,20 @@ type RequestOptions = {
   /** Called as each attempt starts, so a caller can say how many it made. */
   readonly onAttempt?: () => void;
   /**
+   * Whether an attempt's bus-outage 503 (`isBusUnanswered`) is the call's error when a later
+   * attempt gets no answer, sends nothing or gets a 5xx that names no reason. A registration and
+   * a removal set it. The listener may have done part of the call before that 503: a
+   * registration's consumer may exist though its record was not written, and a removal may have
+   * freed the claim or written the record. A retry that then got no answer tells nothing more, so
+   * the caller is told of the 503: the session is told that the registration is not recorded for
+   * certain (`inboundUnavailable`), and a removal is warned as one that may already have landed.
+   * A later attempt's refusal is still the call's error: a 4xx, and a 5xx that names a reason (a
+   * registration's `no_grant`, `consumer_limit` or `consumer_error` 503), since the listener
+   * answered the call itself. Every other call throws what its last attempt got, because its
+   * callers read that: a send's unconfirmed error names it.
+   */
+  readonly busUnansweredStands?: boolean;
+  /**
    * The session this call acts for, where its body names one the listener binds to the
    * credential: a subscribe, an unsubscribe, a deregistration, a role claim, and a
    * send's or a publish's `source_session`. The listener answers 403 to a body naming a session
@@ -1039,12 +1211,14 @@ type RequestOptions = {
   readonly readsKeyTaken?: boolean;
 };
 
-/** One attempt's outcome: the listener's status and body; no answer, and why; or nothing that
- *  reached a route of the listener, and why (`RequestOptions.onNotSent`). */
+/** One attempt's outcome: the listener's status and body; no answer, and why; nothing that
+ *  reached a route of the listener, and why (`RequestOptions.onNotSent`); or nothing sent,
+ *  because the stop gate refused the attempt (`STOP_GATE`). */
 type AttemptOutcome =
   | { readonly response: Response; readonly body: string }
   | { readonly unanswered: unknown }
-  | { readonly notSent: unknown };
+  | { readonly notSent: unknown }
+  | { readonly stopping: true };
 
 /**
  * The one place the client's call timing resolves: a configuration names a per-attempt timeout
@@ -1102,8 +1276,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     url: string,
     init: RequestInit,
     deadlineMs: number,
-    actingSession: string | undefined
+    actingSession: string | undefined,
+    refusedByStop: () => boolean
   ): Promise<AttemptOutcome> => {
+    // The stop gate, read before the attempt starts and again after its credential's wait, the
+    // last wait before the request is sent. Both reads are synchronous, so the request still
+    // leaves in the turn a bearer's headers are taken in.
+    if (refusedByStop()) return { stopping: true };
     let response: Response;
     // What a credential that could not mint said, where one could not. A listener that asks for
     // no credential answers the same with or without one, so a broker that is down or refused
@@ -1134,6 +1313,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // Only the attempt's own deadline leaves nothing to send: the attempt sent nothing, and
       // fails in the credential's own words (a pending registration names its session).
       if (unminted !== undefined && deadline.aborted) return { notSent: unminted };
+      if (refusedByStop()) return { stopping: true };
       sent.note(presented);
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       // No call follows a redirect: the listener answers none, so a 3xx is something in its
@@ -1181,85 +1361,109 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   };
 
   const request = async (
+    call: EnvoyCall,
     path: string,
     init: RequestInit,
     options: RequestOptions = {}
   ): Promise<string> => {
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
+    // Whether the stop gate refuses this call once the host's stop has begun (`STOP_GATE`), read
+    // at each attempt, a retry's included.
+    const gated = STOP_GATE[call] === "refused";
+    const refusedByStop = (): boolean => gated && config.stopping?.() === true;
+    // The last bus-outage 503 an attempt got, where the caller asked for it (`busUnansweredStands`).
+    let busUnanswered: EnvoyApiError | undefined;
+    // Whether an attempt reached the listener, answered or not: one the listener may have acted
+    // on. A `notSent` attempt reached no route of it, and the listener's word that an attempt sent
+    // nothing (`EnvoyApiError.notSent`) says it did not act on that one.
+    let sent = false;
     // Whether an earlier attempt got no answer, a 5xx or a 408, after which the listener may have
     // acted on the call: a later answer that it sent nothing then speaks for that attempt alone.
     let unanswered = false;
+    // What the call throws where no attempt follows the last failed one: the error that attempt
+    // ends the call with, as each branch below says.
+    let lastEnd: (() => unknown) | undefined;
     for (let attempt = 0; attempt < tries; attempt += 1) {
       options.onAttempt?.();
       const outcome = await attemptOnce(
         url,
         init,
         options.timeoutMs ?? timeoutMs,
-        options.actingSession
+        options.actingSession,
+        refusedByStop
       );
+      if ("stopping" in outcome) {
+        // A retry the gate refused after an attempt was sent ends the call as its retries running
+        // out would: that attempt may have landed, so its own outcome is the call's answer. Only
+        // a call none of whose attempts was sent says it was not sent.
+        if (sent && lastEnd !== undefined) throw lastEnd();
+        throw new EnvoyStoppingError(call, init.method ?? "GET", shown(url));
+      }
+      let end: () => unknown;
       if ("unanswered" in outcome) {
         unanswered = true;
         options.onUnanswered?.();
-        if (attempt + 1 < tries) {
-          await waitForRetry(retryDelayMs);
-          continue;
-        }
-        throw outcome.unanswered;
-      }
-      if ("notSent" in outcome) {
-        if (attempt + 1 < tries) {
-          await waitForRetry(retryDelayMs);
-          continue;
-        }
-        options.onNotSent?.();
-        throw outcome.notSent;
-      }
-      const { response, body } = outcome;
-      if (response.ok) return body;
+        sent = true;
+        end = () => busUnanswered ?? outcome.unanswered;
+      } else if ("notSent" in outcome) {
+        end = () => {
+          options.onNotSent?.();
+          return busUnanswered ?? outcome.notSent;
+        };
+      } else {
+        const { response, body } = outcome;
+        if (response.ok) return body;
 
-      // A body that is not the listener's error JSON was written by something in its place, which
-      // can echo the request back: the error names it in one redacted line with the tokens this
-      // client presents, and a redirect, which is never followed (`attemptOnce`), by the origin it
-      // pointed at (`EnvoyApiError`).
-      const redacted = tokens();
-      const error = new EnvoyApiError(
-        {
-          method: init.method ?? "GET",
-          url: shown(url),
-          status: response.status,
-          responseBody: body,
-        },
-        {
-          tokens: redacted,
-          redirectTo: redirectOrigin(response, url, redacted),
-          afterUnanswered: unanswered,
-        }
-      );
-      // An attempt answered with a 5xx or a 408 is sent again (`mayHaveReachedServer`). The listener
-      // writes no 408, so one is a hop's timeout, and a hop can count it after it forwarded the whole
-      // request. Such an attempt may have reached the listener, which may have acted on it
-      // (`onUnanswered`), except the listener's 503 that says nothing was sent (`notSent`), which is
-      // sent again under the same key but is no attempt the listener may have acted on. A 429 is not
-      // sent again: the listener's 429 is `sender_rate_limited`, its answer to this message, whose
-      // sentence the agent reads to decide when to send it again. Any other 4xx is its answer too.
-      if (mayHaveReachedServer(response.status)) {
+        // A body that is not the listener's error JSON was written by something in its place,
+        // which can echo the request back: the error names it in one redacted line with the
+        // tokens this client presents, and a redirect, which is never followed (`attemptOnce`),
+        // by the origin it pointed at (`EnvoyApiError`).
+        const redacted = tokens();
+        const error = new EnvoyApiError(
+          {
+            method: init.method ?? "GET",
+            url: shown(url),
+            status: response.status,
+            responseBody: body,
+          },
+          {
+            tokens: redacted,
+            redirectTo: redirectOrigin(response, url, redacted),
+            afterUnanswered: unanswered,
+          }
+        );
+        // An attempt answered with a 5xx or a 408 is sent again (`mayHaveReachedServer`). The
+        // listener writes no 408, so one is a hop's timeout, and a hop can count it after it
+        // forwarded the whole request. Such an attempt may have reached the listener, which may
+        // have acted on it (`onUnanswered`), except the listener's 503 that says nothing was sent
+        // (`notSent`), which is sent again under the same key but is no attempt the listener may
+        // have acted on. A 429 is not sent again: the listener's 429 is `sender_rate_limited`, its
+        // answer to this message, whose sentence the agent reads to decide when to send it again.
+        // Any other 4xx is its answer too.
+        if (!mayHaveReachedServer(response.status)) throw error;
         if (!error.notSent) {
           unanswered = true;
           options.onUnanswered?.();
+          sent = true;
         }
-        if (attempt + 1 < tries) {
-          await waitForRetry(retryDelayMs);
-          continue;
-        }
+        if (options.busUnansweredStands === true && isBusUnanswered(error)) busUnanswered = error;
+        // A 5xx that names a reason is the listener's refusal of the call, which stands.
+        end = () => (error.reason === undefined ? (busUnanswered ?? error) : error);
       }
-      throw error;
+      lastEnd = end;
+      if (attempt + 1 < tries) {
+        await waitForRetry(retryDelayMs);
+        continue;
+      }
+      throw end();
     }
     throw new Error("Envoy request exhausted retries");
   };
 
-  const post = (path: string, body: object, options?: RequestOptions) =>
+  const post = (call: EnvoyCall, path: string, body: object, options?: RequestOptions) =>
     request(
+      call,
       path,
       {
         method: "POST",
@@ -1304,41 +1508,56 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     plugin_version: input.plugin.version,
   });
 
-  return {
+  // A removal of topics from the session's registry entry: the session's own (`unsubscribe`),
+  // which the stop gate refuses once the stop has begun, and the stop's hand-back of a role hold
+  // (`stopHandBack`), which it lets through.
+  const removeTopics = async (
+    call: "unsubscribe" | "handBack",
+    input: UnsubscribeInput
+  ): Promise<void> => {
+    await post(
+      call,
+      "/v1/interests/unsubscribe",
+      {
+        session_id: input.sessionID,
+        topics: expandSubscriptionTopics(input.topics),
+        // The process handing the interests back, omitted when the caller names none so an
+        // older listener sees an unchanged body. The listener frees the role claims naming
+        // this process and no others, and forces none.
+        ...(input.clientInstanceID === undefined
+          ? {}
+          : { client_instance_id: input.clientInstanceID }),
+      },
+      // A removal an attempt of which got the bus-outage 503 fails with that answer where a
+      // later attempt gets no answer or a 5xx that names no reason (`busUnansweredStands`): the
+      // listener may already have freed the claim or written the record.
+      { actingSession: input.sessionID, busUnansweredStands: true }
+    );
+  };
+
+  const client: EnvoyClient = {
     subscribe: async (input) =>
       parseSubscribeAnswer(
         answerJson(
           await post(
+            "subscribe",
             "/v1/interests/subscribe",
             subscribeBody(input),
             // Every call below whose body names the session it acts for presents that session's
-            // own credential, since the listener binds a broker token's session to it.
-            { actingSession: input.sessionID }
+            // own credential, since the listener binds a broker token's session to it. A
+            // registration an attempt of which got the bus-outage 503 fails with that answer where
+            // a later attempt gets no answer or a 5xx that names no reason (`busUnansweredStands`).
+            { actingSession: input.sessionID, busUnansweredStands: true }
           ),
           "POST",
           "/v1/interests/subscribe"
         )
       ),
-    unsubscribe: async (input) => {
-      await post(
-        "/v1/interests/unsubscribe",
-        {
-          session_id: input.sessionID,
-          topics: expandSubscriptionTopics(input.topics),
-          // The process handing the interests back, omitted when the caller names none so an
-          // older listener sees an unchanged body. The listener frees the role claims naming
-          // this process and no others, and forces none.
-          ...(input.clientInstanceID === undefined
-            ? {}
-            : { client_instance_id: input.clientInstanceID }),
-        },
-        { actingSession: input.sessionID }
-      );
-    },
+    unsubscribe: (input) => removeTopics("unsubscribe", input),
     getInterest: async (sessionID) =>
       InterestWireSchema.parse(
         answerJson(
-          await request(`/v1/interests/${sessionID}`, {}),
+          await request("getInterest", `/v1/interests/${sessionID}`, {}),
           "GET",
           `/v1/interests/${sessionID}`
         )
@@ -1361,6 +1580,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       let response: z.infer<typeof EnvelopeResponseSchema>;
       try {
         const answer = await post(
+          "send",
           "/v1/messages/send",
           {
             source: input.source ?? "agent",
@@ -1399,22 +1619,31 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         if (refused && !unanswered) throw error;
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, made, error);
       }
-      return {
+      const stored = {
         envelope: response,
         recipient: response.recipient ?? input.targetSessionID,
         confirmed: response.recipient !== undefined,
-        recipientState: response.recipient_state ?? "live",
-        // Only `stopped` is stopped: an answer with no state is an older listener's, and a word
-        // this build does not know says nothing about the target that is worth acting on.
-        state: response.state === "stopped" ? "stopped" : "connected",
         ...lastSeenOf(response.last_seen),
         duplicate: response.duplicate === true,
+      };
+      // A no_receiver target runs but takes no message into its conversation now. The listener
+      // names no registry state for it, and this reads none in: `live` would say the message
+      // reaches it.
+      if (response.state === "no_receiver") return { ...stored, state: "no_receiver" };
+      return {
+        ...stored,
+        recipientState: response.recipient_state ?? "live",
+        // Only `stopped` and `no_receiver` are read as themselves: an answer with no state is an
+        // older listener's, and a word this build does not know says nothing about the target
+        // that is worth acting on.
+        state: response.state === "stopped" ? "stopped" : "connected",
       };
     },
     publish: async (input) => {
       const idempotencyKey = input.idempotencyKey ?? crypto.randomUUID();
       const raw = answerJson(
         await post(
+          "publish",
           "/v1/messages/publish",
           {
             source: input.source ?? "agent",
@@ -1459,6 +1688,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           ? ""
           : `?client_instance_id=${encodeURIComponent(input.clientInstanceID)}`;
       await request(
+        "unregisterSession",
         `/v1/sessions/${encodeURIComponent(input.sessionID)}${query}`,
         { method: "DELETE" },
         {
@@ -1472,13 +1702,17 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     setRole: async (input) => {
       // `soft`, `previous_session_id` and `client_instance_id` are omitted from
       // the wire unless set, so an older listener sees an unchanged hard-claim
-      // request. The claim's own `client_instance_id` is the process it is made
-      // for: the listener records it on the claim, and weighs a claim under the
-      // holder's own session id against the standing claim's. A soft claim
-      // against a live predecessor is still decided by the instance id each
-      // side's registry entry carries (`SubscribeInput.clientInstanceID`).
+      // request from a caller that sets none of them. `previous_session_id` is
+      // sent on a hard claim as well as a soft one: it names the session this
+      // claim replaces, whose unread messages the listener hands over, and a
+      // listener older than that ignores it on a hard claim. The claim's own
+      // `client_instance_id` is the process it is made for: the listener
+      // records it on the claim, and weighs a claim under the holder's own
+      // session id against the standing claim's. A soft claim against a live
+      // predecessor is still decided by the instance id each side's registry
+      // entry carries (`SubscribeInput.clientInstanceID`).
       const soft = input.soft === true;
-      const previous = soft ? (input.previousSessionID ?? "") : "";
+      const previous = input.previousSessionID ?? "";
       const body: {
         session_id: string;
         role: string;
@@ -1496,7 +1730,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       };
       let raw: string;
       try {
-        raw = await post("/v1/roles/set", body, { actingSession: input.sessionID });
+        raw = await post("setRole", "/v1/roles/set", body, { actingSession: input.sessionID });
       } catch (error) {
         // A soft claim refused by a live holder is an outcome, not a failure:
         // the listener answers 409 with the holder's id.
@@ -1513,15 +1747,15 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         }
         throw error;
       }
-      return {
-        claimed: true,
-        interest: InterestWireSchema.parse(answerJson(raw, "POST", "/v1/roles/set")),
-      };
+      const { warnings, ...interest } = RoleSetWireSchema.parse(
+        answerJson(raw, "POST", "/v1/roles/set")
+      );
+      return { claimed: true, interest, warnings };
     },
     getRole: async (role) =>
       RoleWireSchema.parse(
         answerJson(
-          await request(`/v1/roles/${encodeURIComponent(role)}`, { method: "GET" }),
+          await request("getRole", `/v1/roles/${encodeURIComponent(role)}`, { method: "GET" }),
           "GET",
           `/v1/roles/${encodeURIComponent(role)}`
         )
@@ -1533,10 +1767,16 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       if (input.include !== undefined) search.set("include", input.include);
       const query = search.size === 0 ? "" : `?${search.toString()}`;
       return SessionWireSchema.array().parse(
-        answerJson(await request(`/v1/sessions${query}`, {}), "GET", `/v1/sessions${query}`)
+        answerJson(
+          await request("listSessions", `/v1/sessions${query}`, {}),
+          "GET",
+          `/v1/sessions${query}`
+        )
       );
     },
   };
+  handBacks.set(client, (input) => removeTopics("handBack", input));
+  return client;
 }
 
 function waitForRetry(delayMs: number): Promise<void> {

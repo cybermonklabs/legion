@@ -187,12 +187,24 @@ type GitHubApps struct {
 const missingDispatchTokenFile = "dispatch_token_file is required when dispatch_url is configured"
 
 var (
-	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
 	// slackChannelPattern is a Slack channel id: C for a public channel, G for a private one, then
 	// capital letters and digits. It is one NATS subject token of the mention topic the controller
 	// subscribes to (notifications.slack.<team>.<channel>.mention), so nothing else is taken.
 	slackChannelPattern = regexp.MustCompile(`^[CG][A-Z0-9]+$`)
 )
+
+// CheckProjectKey refuses a `project` that is no Dispatch project key in the one shape the
+// contract takes for one (claim.IsProjectKey, claim.ProjectKeyPattern), naming the key. The
+// daemon's project is the key its state events, its Dispatch writes and its role topics are named
+// by, so a key the contract refuses would let the daemon migrate its store and mint its App tokens
+// and then fail at its first state event; the loader refuses it first (resolve), and so does the
+// boot's own first read of a configuration it was handed (internal/daemon's readBoot).
+func CheckProjectKey(project string) error {
+	if claim.IsProjectKey(project) {
+		return nil
+	}
+	return fmt.Errorf("project %q is no Dispatch project key: it must match %s, a capital letter and then one to nine capital letters or digits", project, claim.ProjectKeyPattern)
+}
 
 // readProjects is `projects`, and the warnings its projects raise (Config.Warnings), in file
 // order: a key a project still sets that the daemon no longer reads is warned about, never
@@ -208,11 +220,11 @@ func readProjects(value *yaml.Node, key string) (map[string]Project, []string, e
 	for index := 0; index+1 < len(value.Content); index += 2 {
 		keyNode, entryNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
-		if keyNode.Kind != yaml.ScalarNode || !projectKeyPattern.MatchString(name) {
+		if keyNode.Kind != yaml.ScalarNode || !claim.IsProjectKey(name) {
 			if keyNode.Kind != yaml.ScalarNode || !keyShape(name) {
-				return nil, nil, fmt.Errorf("%s: a project's key must match ^[A-Z][A-Z0-9]*$", unknownKeyAt(keyNode, key))
+				return nil, nil, fmt.Errorf("%s: a project's key must match %s", unknownKeyAt(keyNode, key), claim.ProjectKeyPattern)
 			}
-			return nil, nil, fmt.Errorf(`%s key %q must match ^[A-Z][A-Z0-9]*$`, key, name)
+			return nil, nil, fmt.Errorf(`%s key %q must match %s`, key, name, claim.ProjectKeyPattern)
 		}
 		if _, exists := projects[name]; exists {
 			return nil, nil, fmt.Errorf("%s names %s twice", key, name)
@@ -327,9 +339,9 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 
 // readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
 // plan's grammar (plan.ParseSteps). The loader holds the list to the checks a plan of the one
-// task `default` with those steps passes (plan.Supported, then plan.Validate against Legion's own
-// roles), and refuses an empty list, so the steps a task with none runs are steps this release
-// carries out. A refusal names the key, then gives every reason of both checks.
+// task `default` with those steps passes against Legion's own roles (plan.Refusals), and refuses
+// an empty list, so the steps a task with none runs are steps this release carries out. A refusal
+// names the key, then gives every reason of both checks.
 func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	words, err := readStrings(value, key)
 	if err != nil {
@@ -350,7 +362,7 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 		steps = append(steps, parsed[0])
 	}
 	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	refusals := plan.Refusals(task, plan.Deployment{Roles: plan.BuiltinRoles()})
 	if len(refusals) > 0 {
 		reasons := make([]string, len(refusals))
 		for i, refusal := range refusals {

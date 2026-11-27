@@ -1,12 +1,12 @@
-// results_token_test.go holds Dispatch to its results list: a results token - one the secrets
-// broker minted from a result entry for one CI run, the scope results alone beside the project
-// scope results, a person, one project and the run - reaches the routes resultsScopeRoutes names
-// and nothing else. Every other row of the table and GET /ws/live answer it 403
-// RESULTS_ONLY_TOKEN before the route's handler, before the sign-in check and before its
-// Idempotency-Key is read (refuseLimitedToken). The walks send the read-only walks' probes
-// (readOnlyWalkToken.probe) with this token and this list (limitedToken), each under a key of its
-// row's own (limitedProbe); the read-only token is held to the read class instead
-// (read_only_token_test.go).
+// results_token_test.go holds Dispatch to the routes a results token may call: a results token -
+// one the secrets broker minted from a result entry for one CI run, the scope results alone
+// beside the project scope results, a person, one project and the run - reaches the routes whose
+// declarations state ResultsScope (routeDecl.ResultsScope) and nothing else. Every other row of
+// the table and GET /ws/live answer it 403 RESULTS_ONLY_TOKEN before the route's handler, before
+// the sign-in check and before its Idempotency-Key is read (refuseLimitedToken). The walks send
+// the read-only walks' probes (readOnlyWalkToken.probe) with this token and the routes it may
+// call (limitedToken), each under a key of its row's own (limitedProbe); the read-only token is
+// held to the read class instead (read_only_token_test.go).
 package api
 
 import (
@@ -56,21 +56,22 @@ type limitedAnswer struct {
 	code   string
 }
 
-// limitedToken is a broker token Dispatch serves on a list of its own beside the route table and
-// answers 403 on every other row and on GET /ws/live, before the row's handler: a results token
-// (resultsScopeRoutes), which refuseLimitedToken holds to its list. The two walks below take one.
+// limitedToken is a broker token Dispatch serves on the routes whose declarations state a mark of
+// its own and answers 403 on every other row and on GET /ws/live, before the row's handler: a
+// results token (routeDecl.ResultsScope), which refuseLimitedToken holds to those routes. The two
+// walks below take one.
 type limitedToken struct {
 	// kind names the token in a failure: "a results token".
 	kind string
 	// answer is what the broker answers for the token, bound to the caller's key.
 	answer func(jkt string) ciphertoken.Introspection
-	// list is the routes the token may call, by "<method> <pattern>"; listed reads the mark
-	// routes() stamps from it onto a row.
-	list   []string
+	// listed reads the mark a route's declaration states for the token, which routes() answers
+	// on the row.
 	listed func(apiRoute) bool
 	// refusal is the code every other row answers the token with, under 403 and no challenge.
 	refusal string
-	// listAnswers is what each listed row answers the mounted walk.
+	// listAnswers is what each listed row answers the mounted walk, by "<method> <pattern>": the
+	// walks hold the rows that carry the mark to exactly these.
 	listAnswers map[string]limitedAnswer
 	// seed prepares the rig's store, so a listed row's chain reaches its handler.
 	seed func(t *testing.T, rig *brokerTokenRig)
@@ -98,7 +99,6 @@ func resultsLimitedToken() limitedToken {
 	return limitedToken{
 		kind:    "a results token",
 		answer:  func(jkt string) ciphertoken.Introspection { return resultsOnlyToken(jkt, resultsTokenProject) },
-		list:    resultsScopeRoutes,
 		listed:  func(route apiRoute) bool { return route.ResultsScope },
 		refusal: codeResultsOnlyToken,
 		listAnswers: map[string]limitedAnswer{
@@ -185,8 +185,8 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
-	if listed != len(token.list) {
-		t.Fatalf("%d rows carry the mark of the list of %s, want the list's %d (%v)", listed, token.kind, len(token.list), token.list)
+	if listed != len(token.listAnswers) {
+		t.Fatalf("%d rows carry the mark of %s, want the %d the walk names (%v)", listed, token.kind, len(token.listAnswers), token.listAnswers)
 	}
 	t.Logf("walked %d rows of the table (test hooks in) and GET %s with %s: %d listed, %d refused, every refusal %s",
 		walked, liveSocketPattern, token.kind, listed, walked-listed+1, token.refusal)
@@ -252,20 +252,16 @@ func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) 
 	walkTheMountedServerWith(t, resultsLimitedToken())
 }
 
-// TestRegisterRefusesAResultsListOfNoMountedRow: a results list naming a route nothing serves
-// reads as though it opened a route that is not there, so Register refuses it and names the
-// route. It replaces the package's list for its length, so it is not parallel.
-func TestRegisterRefusesAResultsListOfNoMountedRow(t *testing.T) {
-	// Not parallel: it swaps the package variable resultsScopeRoutes, which every server a test of
-	// the package builds registers.
-	kept := resultsScopeRoutes
-	t.Cleanup(func() { resultsScopeRoutes = kept })
-	if refusal := registerRefusal(t); refusal != "" {
-		t.Fatalf("api.Register refused the results list as it stands: %s", refusal)
-	}
-	const name = "POST /api/v1/projects/{key}/results/no-such-route"
-	resultsScopeRoutes = []string{name}
-	if refusal := registerRefusal(t); !strings.Contains(refusal, "results list") || !strings.Contains(refusal, name) {
-		t.Fatalf("api.Register with %s on the results list refused %q, want a refusal of the results list naming it", name, refusal)
+// TestTheResultsRefusalNamesEveryResultsRoute: the words of 403 RESULTS_ONLY_TOKEN are built from
+// the declarations at run time (resultsOnlyRefusal), so they name each route that states
+// ResultsScope, the issue's and the project's, and the day a route states it they name that one
+// too.
+func TestTheResultsRefusalNamesEveryResultsRoute(t *testing.T) {
+	t.Parallel()
+	refusal := resultsOnlyRefusal()
+	for name := range resultsLimitedToken().listAnswers {
+		if !strings.Contains(refusal, name) {
+			t.Errorf("the results token's refusal %q does not name %s, a route it may call", refusal, name)
+		}
 	}
 }

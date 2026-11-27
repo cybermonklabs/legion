@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  BUS_UNANSWERED_PREFIX,
   type Envelope,
   EnvelopeSchema,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
@@ -18,7 +19,13 @@ import { createConsumerDelivery, RelayHeader, type RelayReply } from "../consume
 import { DedupeIdentitySchema, renderInbound } from "../delivery";
 import { createDeliveryLedger, type FailureNotice } from "../delivery-ledger";
 import { subscriptionRemovedTopics } from "../dispatch-subscribe";
+import {
+  type InboundOutageKind,
+  inboundUnavailable,
+  inboundUnavailableNoticeText,
+} from "../inbound-outage";
 import { machineID } from "../machine";
+import { registerWithRelay } from "../relay-registration";
 import type { TmuxPlace } from "../tmux-place";
 import {
   publishConfirmationText,
@@ -30,6 +37,7 @@ import {
   type DeliveryAnswer,
   EnvoyApiError,
   EnvoySendUnconfirmedError,
+  isBusUnanswered,
   type KeyTakenResult,
   mayActOnRoleRecord,
   newClientInstanceID,
@@ -752,6 +760,47 @@ describe("EnvoyClient", () => {
     expect(connected.lastSeen).toBeUndefined();
   });
 
+  // A Claude Code terminal with no mod runs and holds its relay subject, but advertises no
+  // delivery mode. The listener answers no_receiver and names no registry state for it, and the
+  // result reads none in: a default of live would say the message reaches the conversation.
+  test("a send to a target with no conversation receiver reads no_receiver and no registry state", async () => {
+    const recorded = recordFetch([
+      jsonResponse({
+        event_id: "event-no-receiver",
+        source: "agent",
+        source_event_id: "agent.ses_sender.event-no-receiver",
+        source_session: "ses_sender",
+        topic: "notifications.agent.ses_terminal",
+        dedupe_key: "agent.ses_terminal.event-no-receiver",
+        issued_at: 1,
+        payload_summary: "hello",
+        trace_id: "trace-no-receiver",
+        recipient: "ses_terminal",
+        state: "no_receiver",
+        last_seen: 1_762_075_200_000,
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = delivered(
+      await client.send({
+        sourceSessionID: "ses_sender",
+        targetSessionID: "ses_terminal",
+        message: "hello",
+      })
+    );
+
+    expect(result.state).toBe("no_receiver");
+    expect(result.recipientState).toBeUndefined();
+    expect("recipientState" in result).toBe(false);
+    expect(result).toMatchObject({
+      recipient: "ses_terminal",
+      confirmed: true,
+      lastSeen: 1_762_075_200_000,
+      duplicate: false,
+    });
+  });
+
   test("a send a listener of an earlier release answers no state for reads as connected", async () => {
     const recorded = recordFetch([
       jsonResponse({
@@ -1108,15 +1157,51 @@ describe("EnvoyClient", () => {
 
     const result = await client.setRole({ sessionID: "ses_sender", role: "controller" });
 
+    // The answer carries no warnings, as no answer of a listener predating the field does: [].
     expect(result).toEqual({
       claimed: true,
       interest: expect.objectContaining({ topics: ["notifications.role.controller"] }),
+      warnings: [],
     });
     // A hard claim sends no `soft` field, so an older listener sees an
     // unchanged request.
     expect(await recorded.requests[0]?.json()).toEqual({
       session_id: "ses_sender",
       role: "controller",
+    });
+  });
+
+  test("a granted claim answers the listener's warnings beside the interest, never inside it", async () => {
+    const handover =
+      "no message of ses_old is handed over to this session: the claim's credential and ses_old's last registration name different principals";
+    const edge =
+      "this edge listener hands over no messages: the unread messages of ses_old stay on its own subject, and a claim through a shared listener hands them to this session";
+    const recorded = recordFetch([
+      jsonResponse({
+        session_id: "ses_new",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.controller"],
+        warnings: [handover, edge],
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.setRole({
+      sessionID: "ses_new",
+      role: "controller",
+      previousSessionID: "ses_old",
+    });
+
+    expect(result).toEqual({
+      claimed: true,
+      interest: {
+        session_id: "ses_new",
+        machine_id: "host-a",
+        dir: "/work",
+        topics: ["notifications.role.controller"],
+      },
+      warnings: [handover, edge],
     });
   });
 
@@ -1143,9 +1228,14 @@ describe("EnvoyClient", () => {
     });
   });
 
-  test("previous_session_id is sent with a soft claim and dropped from a hard one", async () => {
+  test("previous_session_id is sent with a soft claim and a hard one, and only when it names a session", async () => {
     const interest = { session_id: "ses_child", machine_id: "host-a", dir: "/work", topics: [] };
-    const recorded = recordFetch([jsonResponse(interest), jsonResponse(interest)]);
+    const recorded = recordFetch([
+      jsonResponse(interest),
+      jsonResponse(interest),
+      jsonResponse(interest),
+      jsonResponse(interest),
+    ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
     await client.setRole({
@@ -1159,6 +1249,8 @@ describe("EnvoyClient", () => {
       role: "controller",
       previousSessionID: "ses_parent",
     });
+    await client.setRole({ sessionID: "ses_child", role: "controller" });
+    await client.setRole({ sessionID: "ses_child", role: "controller", previousSessionID: "" });
 
     expect(await recorded.requests[0]?.json()).toEqual({
       session_id: "ses_child",
@@ -1166,9 +1258,19 @@ describe("EnvoyClient", () => {
       soft: true,
       previous_session_id: "ses_parent",
     });
-    // A hard claim is last-claim-wins already; the predecessor is meaningless
-    // and stays off the wire.
+    // A hard claim names the session it replaces too, whose unread messages the listener hands
+    // to the claimant; a listener older than that reads it on a soft claim alone.
     expect(await recorded.requests[1]?.json()).toEqual({
+      session_id: "ses_child",
+      role: "controller",
+      previous_session_id: "ses_parent",
+    });
+    // No predecessor, or an empty one, leaves the key off the wire.
+    expect(await recorded.requests[2]?.json()).toEqual({
+      session_id: "ses_child",
+      role: "controller",
+    });
+    expect(await recorded.requests[3]?.json()).toEqual({
       session_id: "ses_child",
       role: "controller",
     });
@@ -1626,6 +1728,225 @@ describe("EnvoyClient", () => {
         responseBody: "invalid role",
       })
     );
+  });
+
+  // The listener answers a request its message bus did not answer 503 under one prefix
+  // (`BUS_UNANSWERED_PREFIX`, which the listener's `busUnansweredPrefix` is generated from). A
+  // caller tells that answer apart by both, since the starting gate's 503 and a 500 mean other
+  // things.
+  test("isBusUnanswered is true only for a 503 whose error begins with the bus-outage prefix", () => {
+    const answer = (status: number, error: string) =>
+      new EnvoyApiError({
+        method: "POST",
+        url: "http://listener/v1/interests/unsubscribe",
+        status,
+        responseBody: JSON.stringify({ error }),
+      });
+    const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_a's session consumer: bus: NATS is reconnecting`;
+
+    expect(isBusUnanswered(answer(503, outage))).toBe(true);
+    expect(isBusUnanswered(answer(503, "service starting"))).toBe(false);
+    expect(isBusUnanswered(answer(500, outage))).toBe(false);
+    expect(isBusUnanswered(new Error(outage))).toBe(false);
+  });
+
+  // Finding 7 of the read-ahead at 73c124fe (dispatch://INFRA-3589, R26): the listener answers a
+  // registration whose known-session record did not land with its bus-outage 503, and its route
+  // may take 4.5 s, so the client's retry can then time out. The retry may have landed, and a
+  // retry that got no answer says nothing more. So the registration fails with that 503: the
+  // outage report holds it, and words it as a registration that is not recorded for certain. A
+  // refusal on the retry is still that refusal: a 4xx, and a 503 that names a reason (C1 of the
+  // second read-ahead), which says the listener can give the session no consumer.
+  describe("a registration whose first attempt got the bus-outage 503", () => {
+    const UNRECORDED = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ses_sender: context deadline exceeded`;
+    const BOUND = 60_000;
+
+    /** A listener that answers each registration's first attempt with the bus-outage 503 and
+     *  its retry with `retry`, and one session's outage report on a clock the row moves. */
+    function registrations(retry: () => Promise<Response>) {
+      let calls = 0;
+      let clock = 0;
+      const told: string[] = [];
+      const kinds: InboundOutageKind[] = [];
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: async () => {
+          calls += 1;
+          if (calls % 2 === 1) return Response.json({ error: UNRECORDED }, { status: 503 });
+          return retry();
+        },
+      });
+      const outage = inboundUnavailable(
+        ({ kind, why }) => {
+          told.push(why);
+          kinds.push(kind);
+        },
+        { now: () => clock, firstOpenBoundMs: BOUND }
+      );
+      return {
+        told,
+        kinds,
+        calls: () => calls,
+        at: (ms: number) => {
+          clock = ms;
+        },
+        register: () =>
+          registerWithRelay({
+            relay: {
+              setFollowed: () => undefined,
+              unfollow: () => undefined,
+              registration: () => DELIVERY_REQUEST,
+            },
+            ownAgentSubject: "notifications.agent.ses_sender",
+            followed: () => [],
+            outage,
+            send: (topics, delivery) =>
+              client.subscribe({
+                sessionID: "ses_sender",
+                directory: "/work",
+                topics,
+                port: 0,
+                title: "",
+                driving: false,
+                delivery,
+                plugin: PLUGIN,
+              }),
+            answered: () => undefined,
+            drop: () => undefined,
+            log: () => undefined,
+          }),
+      };
+    }
+
+    test("a retry that gets no answer fails with that 503, which is held and told as not recorded for certain", async () => {
+      const session = registrations(() => {
+        // What AbortSignal.timeout raises when the listener holds the request past the deadline.
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      });
+
+      const failure = await session.register().catch((thrown: unknown) => thrown);
+      expect(session.calls()).toBe(2);
+      expect(isBusUnanswered(failure)).toBe(true);
+      expect((failure as Error).message).toBe(UNRECORDED);
+      session.at(BOUND - 1);
+      await expect(session.register()).rejects.toThrow(UNRECORDED);
+      // Inside the bound the session is told nothing: its consumer may still deliver.
+      expect(session.told).toEqual([]);
+
+      session.at(BOUND);
+      await expect(session.register()).rejects.toThrow(UNRECORDED);
+      expect(session.calls()).toBe(6);
+      expect(session.told).toEqual([UNRECORDED]);
+      expect(session.kinds).toEqual(["unrecorded"]);
+      const notice = inboundUnavailableNoticeText({ kind: "unrecorded", why: UNRECORDED });
+      expect(notice).toContain("This session's registration is not recorded for certain");
+      // The refusal rows below show both words in the notice of a refused registration.
+      expect(notice).not.toContain("no durable consumer");
+      expect(notice).not.toContain("receives none");
+    });
+
+    // The listener's own refusals of a registration's consumer, each a 503 that names its reason
+    // (`session_delivery.go`): the session receives nothing, so it is told at once.
+    test.each([
+      [
+        "consumer_limit",
+        "the ENVOY_NOTIFICATIONS stream holds as many consumers as its max_consumers allows, so it can give ses_sender none and that session receives nothing: raise the stream's max_consumers",
+      ],
+      [
+        "no_grant",
+        "this listener may not manage session consumers, so it can give ses_sender none",
+      ],
+      ["consumer_error", "the session consumer of ses_sender could not be read or created"],
+    ] as const)("a retry the listener refuses with its %s 503 fails with that refusal, told at once", async (reason, error) => {
+      const session = registrations(async () => Response.json({ error, reason }, { status: 503 }));
+
+      const failure = await session.register().catch((thrown: unknown) => thrown);
+
+      expect(session.calls()).toBe(2);
+      expect(isBusUnanswered(failure)).toBe(false);
+      expect(failure).toMatchObject({ reason, details: { status: 503 } });
+      expect(session.told).toEqual([`${error} (reason: ${reason})`]);
+      expect(session.kinds).toEqual(["refused"]);
+      const refusedNotice = inboundUnavailableNoticeText({
+        kind: "refused",
+        why: session.told[0] ?? "",
+      });
+      expect(refusedNotice).toContain("no durable consumer");
+      expect(refusedNotice).toContain("receives none");
+    });
+
+    test("a retry the listener refuses with a 4xx fails with that refusal, told at once", async () => {
+      const refusal =
+        "ses_sender asked for no session consumer: a session receives only what its own consumer holds, so register with delivery.consumer true";
+      const session = registrations(async () =>
+        Response.json({ error: refusal, reason: "not_requested" }, { status: 409 })
+      );
+
+      const failure = await session.register().catch((thrown: unknown) => thrown);
+
+      expect(session.calls()).toBe(2);
+      expect(isBusUnanswered(failure)).toBe(false);
+      expect((failure as EnvoyApiError).details.status).toBe(409);
+      expect(session.told).toEqual([`${refusal} (reason: not_requested)`]);
+    });
+
+    // Only a registration and a removal fail with an earlier attempt's 503. A send names what its
+    // last attempt got, since that is what its unconfirmed error says.
+    test("a send whose retry gets no answer still names the retry's failure", async () => {
+      let calls = 0;
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: async () => {
+          calls += 1;
+          if (calls === 1) return Response.json({ error: UNRECORDED }, { status: 503 });
+          throw new DOMException("The operation timed out.", "TimeoutError");
+        },
+      });
+
+      const error = await client
+        .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+        .catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(EnvoySendUnconfirmedError);
+      expect((error as Error).message).toContain(
+        "the listener did not answer (POST http://listener/v1/messages/send got no answer: TimeoutError"
+      );
+    });
+  });
+
+  // The class of finding 7, in a removal: the listener frees the claim and writes the record
+  // before it sets the consumer's filter, so its bus-outage 503 can come after the removal
+  // landed. A retry that then got no answer or a 5xx that names no reason says nothing more. So
+  // the removal fails with that 503, and each caller warns that the removal may already have
+  // landed (`isBusUnanswered`), never that it did not happen.
+  test.each([
+    [
+      "times out",
+      () => {
+        // What AbortSignal.timeout raises when the listener holds the request past the deadline.
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    ],
+    ["gets a 5xx that names no reason", async () => new Response("bad gateway", { status: 502 })],
+  ] as const)("an unsubscribe whose first attempt got the bus-outage 503 and whose retry %s fails with that 503", async (_name, retry) => {
+    const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_sender's session consumer: bus: NATS is reconnecting`;
+    let calls = 0;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: async () => {
+        calls += 1;
+        if (calls === 1) return Response.json({ error: outage }, { status: 503 });
+        return retry();
+      },
+    });
+
+    const failure = await client
+      .unsubscribe({ sessionID: "ses_sender", topics: ["notifications.role.reviewer"] })
+      .catch((thrown: unknown) => thrown);
+
+    expect(calls).toBe(2);
+    expect(isBusUnanswered(failure)).toBe(true);
+    expect((failure as Error).message).toBe(outage);
   });
 
   test("retries one 503 response and keeps the direct-send recipient", async () => {

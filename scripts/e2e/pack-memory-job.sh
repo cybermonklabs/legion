@@ -3,20 +3,19 @@
 # c-handoff-head-read-memory, c-shim-adoption-memory and c-budget-under-gvisor, and the Job's
 # halves of c-pack-window-config and c-release-source. One Kubernetes Job, on the worker image the
 # caller names by digest, under gVisor, makes a large repository's clone and jj workspace with
-# the image's own code (`legion workspace-init cache`, `fetch` and `provision`) on a disk volume,
-# as an issue pod's are made, and measures the memory of git and jj there: each git row with the
-# role's own git settings and with git's defaults forced, its fetch from GitHub of the newer
-# commits of the default branch into a clone that lacks them, each jj row of R3 to R5 with the
-# image's jj and with jj 0.45.1-sami.20260910-043938, the control, and R10's rows with the
-# released jj at each JJ_PACK_MAPPED_LIMIT budget and with jj 0.46.0-sami.20261008-234600, their
-# control, each on a copy of its own. Each copy's describedArgs, the shim's, runs right after an
-# unmeasured `git fetch` of every branch head of the feed into that copy's shared clone, as
-# remote-tracking refs it does not hold, and an unmeasured `git commit` in its workspace, with
-# both dates fixed, so describedArgs imports new refs and a new HEAD, as a role's jj does once
-# git has fetched new branches into the shared clone and committed; its adoptionArgs runs right
-# after a second such commit, so it imports a new HEAD too. It reads the image's `git
-# config --system` and `jj --version` too. The implementer runs it at the head it measures, and
-# the tester runs it again at the head it tests, so this recipe is the one both read.
+# the image's own code (`legion workspace-init cache` and `provision`) on a disk volume, as an
+# issue pod's are made, and measures the memory of git and jj there: each git row with the role's
+# own git settings and with git's defaults forced, its fetch from GitHub of the newer commits of
+# the default branch into a clone that lacks them, each jj row of R3 to R5 with the image's jj and
+# with jj 0.45.1-sami.20260910-043938, the control, and R10's rows with the released jj at each
+# JJ_PACK_MAPPED_LIMIT budget and with jj 0.46.0-sami.20261008-234600, their control, each on a
+# copy of its own. Each copy's describedArgs, the shim's, runs right after an unmeasured `git fetch`
+# of the provisioned clone's heads into that copy's clone as remote-tracking refs it does not hold,
+# and an unmeasured `git commit` in its workspace, with both dates fixed, so describedArgs imports
+# new refs and a new HEAD, as a role's jj does after git fetched a named branch and committed; its
+# adoptionArgs runs right after a second such commit, so it imports a new HEAD too. It reads the
+# image's `git config --system` and `jj --version` too. The implementer runs it at the head it
+# measures, and the tester runs it again at the head it tests, so this recipe is the one both read.
 #
 # It is three files: this harness, which renders the Job, creates it and reads its verdict;
 # `pack-memory-probe.sh` beside it, the text the Job runs inside the image, whose header says what
@@ -390,7 +389,7 @@ done
 workload=""
 run_label=""
 
-# shellcheck disable=SC2317 # the EXIT trap below is what runs it
+# shellcheck disable=SC2317,SC2329 # the EXIT trap below is what runs it
 cleanup() {
   status=$?
   trap - EXIT INT TERM HUP

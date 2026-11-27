@@ -141,11 +141,15 @@ const includeUnresponsive = "?include=" + StateUnresponsive
 // its record 200 with that state rather than 404.
 const includeUnresponsiveAndStopped = includeUnresponsive + "," + StateStopped
 
-// SendStateConnected and SendStateStopped are the two values a send's answer puts in `state`
-// (cmd/listener, sendHandler), beside the recipient_state the registry's age gives. Connected
-// means the session's relay subscriber answered the listener's probe or kept silent; stopped
-// means no subscriber holds the session, or the listener knows it only by its record, so the
-// message is stored for the session's own consumer and reaches it when it runs again.
+// SendStateConnected and SendStateStopped are two of the three values a send's answer puts in
+// `state` (cmd/listener, sendHandler), beside the recipient_state the registry's age gives.
+// Connected means the session's relay subscriber answered the listener's probe or kept silent;
+// stopped means no subscriber holds the session, or the listener knows it only by its record, so
+// the message is stored for the session's own consumer and reaches it when it runs again. The
+// third, no_receiver, means the probe passed but the session advertises no delivery mode, as a
+// Claude Code terminal does while no mod is connected to it; that answer names no
+// recipient_state. Only a send whose payload names no delivery mode can get it, and Dispatch
+// reads it as it reads connected: only stopped is queued.
 const (
 	SendStateConnected = "connected"
 	SendStateStopped   = "stopped"
@@ -260,8 +264,9 @@ type SendInput struct {
 // JetStream discarded, where it is older; the answer does not say which, so a caller reads no
 // envelope id from a duplicate.
 //
-// State is what the target was when the listener stored the message, SendStateConnected or
-// SendStateStopped. A listener that predates the field answers none, which reads as a connected
+// State is what the target was when the listener stored the message: SendStateConnected,
+// SendStateStopped, or the listener's no_receiver for a running session that advertises no
+// delivery mode. A listener that predates the field answers none, which reads as a connected
 // target. A send for a role that the listener kept on the role's kept lane, because the role's
 // claim named another session than the target when the send arrived, answers no State, and
 // EnvelopeID names the copy the lane holds: the message reaches the session that holds the role,
@@ -736,6 +741,39 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 		return Session{}, noRoleHolderError{reason: err.Error()}
 	}
 	return Session{}, err
+}
+
+// Successors returns what the listener answers for the sessions that replaced sessionID
+// (listenerwire.SessionSuccessors, GET /v1/sessions/<session_id>/successors): the sessions whose
+// claims named it as the session they replace, to which the listener copies what it had not
+// read, sorted, none for a session nobody replaced, and the principal each of them and sessionID
+// last registered as. A transport failure, a 5xx and a listener outage (listenerwire.Outage: a
+// 408, a 429, a 5xx but 500) are ErrUnavailable, carrying the listener's reason, and
+// ErrUnreachable too where nothing answered or the status came from in front of the listener
+// (unavailableGetStatus): who replaced the session was not read, so a proxy's 408 or 429 reads
+// as "ask again" rather than as "nobody replaced that session". A body that does not decode is
+// ErrUnavailable as well. Any other status is the listener's own answer that it names no
+// successor, an error that is not ErrUnavailable: a listener that predates the route answers its
+// GET 405 through the session delete route, and that listener copies no message to a successor.
+func (c *Client) Successors(ctx context.Context, sessionID string) (listenerwire.SessionSuccessors, error) {
+	route := "/v1/sessions/" + url.PathEscape(sessionID) + "/successors"
+	response, err := c.get(ctx, route, "")
+	if err != nil {
+		return listenerwire.SessionSuccessors{}, err
+	}
+	defer response.Body.Close()
+	switch {
+	case response.StatusCode == http.StatusOK:
+	case listenerwire.Outage(response.StatusCode) || response.StatusCode >= http.StatusInternalServerError:
+		return listenerwire.SessionSuccessors{}, unavailableGetStatus(response, route)
+	default:
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("envoy listener: GET %s returned %d: it names no successor", route, response.StatusCode)
+	}
+	var answer listenerwire.SessionSuccessors
+	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
+	}
+	return answer, nil
 }
 
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the

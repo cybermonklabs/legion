@@ -3,7 +3,7 @@ package api
 // spec_results.go is the route a CI job writes the result of a check of the spec files with,
 // POST /api/v1/projects/{key}/results, and the read beside it (R12 of the spec). The job holds a
 // results token the secrets broker minted for its run (ciphertoken.Caller.ResultsOnly), and this
-// route is one of the two routes that token reaches (resultsScopeRoutes), beside
+// route is one of the two routes that token reaches (routeDecl.ResultsScope), beside
 // POST /api/v1/issues/{key}/results. Dispatch takes who wrote the result and what it is for from
 // that token, from GitHub and from the spec files at the run's commit; the body says only what
 // the job observed. The recorder of a result is the run, and no person: the broker's result entry

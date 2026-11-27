@@ -220,7 +220,10 @@ func main() {
 	// with no "value" is one created without a value, which the broker refuses as no-current-value;
 	// one with a "deleted_at" (RFC 3339) is scheduled for deletion, which the broker no longer lists.
 	// Its "kms_key_id" names the agent-secrets key as the selected store configures it:
-	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager.
+	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager. Under
+	// gcp-secret-manager each secret's "name" is its resource name, projects/<number>/secrets/<id>,
+	// and is the source a request freezes, as Secret Manager answers it; under aws-secrets-manager
+	// the source is the ARN the file's stand-in gives the name.
 	fakeSecrets := os.Getenv("BROKER_FAKE_SECRETS_FILE")
 	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, fakeSecrets))
 	fatal(refuseHTTPEdgeURLsInProduction(cfg.EdgeURL, cfg.EdgeMachineLoginURL, fakeSecrets))
@@ -375,9 +378,15 @@ func main() {
 		fatal(err)
 		// The file's kms_key_id names the agent-secrets key as the selected store configures it.
 		// Under gcp-secret-manager this is still the AWS store over the file, holding the Cloud KMS
-		// key name where it would hold an ARN: names follow Secrets Manager's rules and a source
-		// is a local ARN, which only a local run sees.
+		// key name where it would hold an ARN, and names follow Secrets Manager's rules; but a
+		// source is the secret's resource name, as Secret Manager answers it (secrets.ResourceNamed),
+		// so what a request freezes, and what BROKER_SECRETS_SECOND_PREFIX compares, has the form
+		// it has on Secret Manager. Under aws-secrets-manager a source is a local ARN, which only a
+		// local run sees.
 		secretStore, credentials = secrets.AWS{Client: local, KMS: local, KeyARN: cfg.SecretsKMSKey}, "fake secrets file"
+		if cfg.SecretsStore == secrets.StoreGCP {
+			secretStore = secrets.ResourceNamed(secretStore)
+		}
 	case cfg.SecretsStore == secrets.StoreGCP:
 		client, err := secrets.NewGCPClient(ctx)
 		fatal(err)
@@ -1556,6 +1565,9 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
+		// The grant re-checks read both prefixes, the second one a store move leaves or reaches
+		// (BROKER_SECRETS_SECOND_PREFIX), and nothing else of the broker reads the second.
+		SecretsPrefix: cfg.SecretsPrefix, SecondPrefix: cfg.SecretsSecondPrefix,
 		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,

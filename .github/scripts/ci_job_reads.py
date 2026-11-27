@@ -48,7 +48,7 @@ glob or the path instead, which a grep resolves. at()'s third argument, and a ga
 is the workflow file
 that holds the job's steps, and it is the job's own called file (job_file): ci.yaml's job of
 each gated id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, which holds the
-steps, or, for the half of a split job SHARED_FILE names, the file of the other half. The one
+steps, or, for a job SHARED_FILE names, the file of the job it maps to. The one
 gate whose steps are elsewhere names its file itself: ci.yaml's docs job calls
 docs-site.yaml, whose job carries an id of its own, so that gate stays on ci.yaml, the file its
 own job id is in, and cites docs-site.yaml's build job (at_docs). The Read lists of the jobs
@@ -93,16 +93,17 @@ BROWSER_NIGHTLY = ".github/workflows/dispatch-browser-nightly.yaml"
 BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
 
-# The halves of a job that was split so a pull request runs one and the merge queue the other,
-# each the job whose steps are in the other's called file, mapped to that other job. A split puts
-# both jobs in one file because ci.yaml already calls as many reusable workflows as
-# .github/scripts/check-workflow-files.sh allows it
+# Each job whose steps are in another job's called file, mapped to that other job: the halves of
+# a job that was split so a pull request runs one and the merge queue the other, and envoy-refill,
+# a job of its own that shares envoy-e2e-local's file. Two jobs share a file because ci.yaml
+# already calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
 # of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).
 SHARED_FILE = {
     "tooling-checks": "test",
     "pi-legion-build": "pi-legion",
     "envoy-infra-build": "envoy-infra-go",
+    "envoy-refill": "envoy-e2e-local",
 }
 
 
@@ -1531,6 +1532,19 @@ LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
 LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
+# The route adopter, cmd/dispatch-route-adopt, runs its rows under git and under jj, so
+# envoy-go-skips installs jj (./.github/actions/install-jj) and tests the package in a step of its
+# own with -v, which names each row in the log: a leg's go test -json report names no test that
+# passed, so a jj row that skipped would read as green there. The rows that need jj fail rather
+# than skip on GitHub Actions without it. As with the packages above, that step's package list
+# and the package's `elsewhere` line in .github/go-legs.yaml (hold_envoy_legs) are built from this
+# one list. The tool is deleted once the branches open when routes moved into files have adopted,
+# and this list and its step with it.
+ADOPTER_PACKAGES = ["cmd/dispatch-route-adopt"]
+ADOPTER_STEP = "Test the route adopter under git and jj"
+ADOPTER_PKGS = [f"./{p}/" for p in ADOPTER_PACKAGES]
+ADOPTER_TEXT = "go test -count=1 -v -timeout 4m " + " ".join(ADOPTER_PKGS)
+
 # The packages whose skips envoy-go's unit step counts: each leg runs its packages through
 # packages/envoy/scripts/database-skips.sh --count-table, one `go test -json`, and the script
 # counts the skips of the packages of its default table (DEFAULT_PACKAGES there) among them: the
@@ -1689,8 +1703,9 @@ def hold_envoy_legs(entry: dict, root=ENVOY) -> None:
     race legs' packages whose skips the unit legs count (database_skips_table), so each of those
     runs plain, where it is counted, and no other runs twice; and `elsewhere` is exactly the
     packages other jobs' steps are built here to run, each with that job: envoy-go-natslive's
-    integration suite, the text checks and envoy-go-build's (NOTE_AND_SPEC_PACKAGES,
-    LISTENERWIRE_PACKAGES). With go_legs.py's own check, every package of the module then runs
+    integration suite, the text checks, envoy-go-build's (NOTE_AND_SPEC_PACKAGES,
+    LISTENERWIRE_PACKAGES) and envoy-go-skips' route adopter (ADOPTER_PACKAGES). With go_legs.py's
+    own check, every package of the module then runs
     once in the job it is built for, and every package of the counter's table in a plain leg,
     which counts its skips. check-ci-filters.sh imports this table in the changes and ci-filters
     jobs, so a refusal here fails the run that brings the entry, the pull request that adds a
@@ -1738,6 +1753,7 @@ def hold_envoy_legs(entry: dict, root=ENVOY) -> None:
                         f"twice")
     elsewhere = {ENVOY_INTEGRATION_PACKAGE: ENVOY_NATSLIVE_JOB, TEXT_CHECK_PACKAGE: "text-checks"}
     elsewhere.update({p: "envoy-go-build" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES})
+    elsewhere.update({p: ENVOY_SKIPS_JOB for p in ADOPTER_PACKAGES})
     if (entry.get(go_legs.ELSEWHERE) or {}) != elsewhere:
         problems.append(f"it runs packages elsewhere as {entry.get(go_legs.ELSEWHERE)}, and the packages other jobs' "
                         f"steps are built here to run are {elsewhere}")
@@ -2441,6 +2457,7 @@ BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
 SPEC_GUARD_STEP = "Check that no CI file of this repository compares the spec files"
+TC_LINKS_STEP = "Check no command or self-starting test binary links testcontainers-go"
 ACTIONLINT_STEP = "Check every workflow file with actionlint"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"

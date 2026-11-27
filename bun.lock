@@ -162,6 +162,7 @@
         "msw": "3.0.4",
         "typescript": "^5",
         "vite": "^5",
+        "yaml": "2.9.0",
       },
     },
     "packages/envoy-client": {

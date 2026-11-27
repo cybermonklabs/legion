@@ -13,7 +13,7 @@ import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { quietCheck, scanTranscripts, stateLines } from "./hidden-proof";
 import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
-import { parseSession } from "./transcript";
+import { parsedSession } from "./transcript";
 
 // The rows that run hidden-proof.ts as a process of its own take longer than bun's 5 s default on a
 // loaded machine, so each test and hook gets the limit test-limit.ts computes from the bounds of
@@ -203,7 +203,7 @@ function run(sessions: Record<string, string[]>, calls: string[] = []): string {
 
 test("the transcript decoder reads a file the hidden proof scans", () => {
   const dir = run({ "decoder.jsonl": [TEXT_AFTER] });
-  const entries = parseSession(path.join(dir, "sessions", "decoder.jsonl"));
+  const entries = parsedSession(path.join(dir, "sessions", "decoder.jsonl"));
   expect(entries).toHaveLength(2);
   expect(entries[0]?.type).toBe("session");
   expect(entries[1]?.message?.role).toBe("toolResult");

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,9 +18,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// A pod whose workspace-init ended non-zero is Gone for every role, and says so: no launcher could
-// have started in it. The mapping classifies it a failed init, whatever the exit code, which is
-// what keeps it out of ends() and so out of the displaced reading.
+// A pod whose workspace-init ended non-zero past its restart grace (initRestartGrace) is Gone for
+// every role, and says so: no launcher could have started in it. The mapping classifies it a failed
+// init, whatever the exit code, which is what keeps it out of ends() and so out of the displaced
+// reading. An end inside the grace is the pod still provisioning
+// (TestAWorkspaceInitsFirstThreeRestartsAreStartingAndItsFourthIsAFailure).
 func TestRestartingInitFailureIsGoneForEveryRole(t *testing.T) {
 	t.Parallel()
 	for _, waiting := range []bool{false, true} {
@@ -29,7 +32,7 @@ func TestRestartingInitFailureIsGoneForEveryRole(t *testing.T) {
 			g.update(g.pod(loc.Sandbox.Name), func(p *corev1.Pod) {
 				p.Status.Phase = corev1.PodPending
 				failed := &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}
-				status := corev1.ContainerStatus{Name: initContainer}
+				status := corev1.ContainerStatus{Name: initContainer, RestartCount: initRestartGrace + 1}
 				if waiting {
 					status.State.Waiting = &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}
 					status.LastTerminationState.Terminated = failed
@@ -53,6 +56,8 @@ func TestRestartingInitFailureIsGoneForEveryRole(t *testing.T) {
 	}
 }
 
+// A relaunch replaces a pod whose workspace-init keeps failing past its restart grace
+// (initRestartGrace): no launcher can start in it.
 func TestRelaunchReplacesAPodWhoseInitKeepsFailing(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -62,7 +67,7 @@ func TestRelaunchReplacesAPodWhoseInitKeepsFailing(t *testing.T) {
 	}
 	g.update(g.pod(old.Sandbox.Name), func(p *corev1.Pod) {
 		p.Status.Phase = corev1.PodPending
-		p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: initContainer,
+		p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: initContainer, RestartCount: initRestartGrace + 1,
 			State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
 			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
 		}}
@@ -77,19 +82,19 @@ func TestRelaunchReplacesAPodWhoseInitKeepsFailing(t *testing.T) {
 }
 
 // An issue whose microVM pod keeps its volume (keptVolume) keeps one claim across its pods. So a
-// fault on that volume that fails an init container fails every later pod of the issue too. The
-// issue's next launch therefore resets the volume when an init container failed, as failedInit
-// reads it, for a cause local to the volume (localInitFailure). The launch deletes the Sandbox and
-// the claim that it owns. It creates a Sandbox with a new uid in its place before it writes the
-// Secrets and sets the Sandbox Running. It logs one line that names the issue, the claim and the
-// init container. When the update round's ReplacePod or the release took that pod down first, the
-// next launch reads no pod. So each of them writes the reset mark (volumeResetAnnotation) on the
-// Sandbox in the patch that suspends it, and the launch resets on the mark. The Sandbox that the
-// reset creates carries no mark. Every other failure replaces the pod and keeps the Sandbox and its
-// volume, as at main: an exit for a cause outside the volume (workspace.InitExitOutsideVolume), a
-// usage error (workspace.InitExitUsage), an OOMKilled end, an end in a pod that is being deleted or
-// that the kubelet ended itself, and a workspace-fetch that its grace still restarts. A Sandbox with
-// an ephemeral volume has its pod replaced and no Sandbox created, as at main.
+// fault on that volume that fails workspace-init fails every later pod of the issue too. The issue's
+// next launch therefore resets the volume when workspace-init failed, as failedInit reads it, for a
+// cause local to the volume (localInitFailure). The launch deletes the Sandbox and the claim that it
+// owns. It creates a Sandbox with a new uid in its place before it writes the Secrets and sets the
+// Sandbox Running. It logs one line that names the issue, the claim and workspace-init. When the
+// update round's ReplacePod or the release took that pod down first, the next launch reads no pod.
+// So each of them writes the reset mark (volumeResetAnnotation) on the Sandbox in the patch that
+// suspends it, and the launch resets on the mark. The Sandbox that the reset creates carries no
+// mark. Every other failure replaces the pod and keeps the Sandbox and its volume, as at main: an
+// exit for a cause outside the volume (workspace.InitExitOutsideVolume), a usage error
+// (workspace.InitExitUsage), an OOMKilled end, an end in a pod that is being deleted or that the
+// kubelet ended itself, and workspace-init while its grace still restarts. A Sandbox with an
+// ephemeral volume has its pod replaced and no Sandbox created, as at main.
 func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	t.Parallel()
 	name, claimName := SandboxName(workerToken), IssueClaimName(workerToken)
@@ -270,8 +275,9 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: code, Reason: "Error"}},
 		}
 	}
-	fetched := ended(fetchContainer, 0, 0, "Completed")
-	initFailed := ended(initContainer, 0, 1, "Error")
+	// initFailed is workspace-init ended 1 past its restart grace, which is the pod's death: an end
+	// inside the grace, in a Pending pod, is the pod still provisioning (startingAgain).
+	initFailed := ended(initContainer, initRestartGrace+1, 1, "Error")
 	// status sets the pod's phase and its init containers' statuses.
 	status := func(phase corev1.PodPhase, statuses ...corev1.ContainerStatus) func(*corev1.Pod) {
 		return func(p *corev1.Pod) {
@@ -291,13 +297,13 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		name, container string
 		edit            func(*corev1.Pod)
 	}{
-		{"workspace-init ended 1", initContainer, status(corev1.PodPending, fetched, initFailed)},
-		{"workspace-fetch failed with 1 past its restart grace", fetchContainer,
-			status(corev1.PodPending, restarting(fetchContainer, fetchRestartGrace+1, 1))},
+		{"workspace-init ended 1", initContainer, status(corev1.PodPending, initFailed)},
+		{"workspace-init failed with 1 past its restart grace", initContainer,
+			status(corev1.PodPending, restarting(initContainer, initRestartGrace+1, 1))},
 		// The kubelet's end of a container it lost is exit 137 with the reason ContainerStatusUnknown,
 		// which keeps the volume (TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost). The rule
 		// reads the reason, so an exit 137 with the reason Error resets the volume.
-		{"workspace-init ended 137 with the reason Error", initContainer, status(corev1.PodPending, fetched, ended(initContainer, 0, 137, "Error"))},
+		{"workspace-init ended 137 with the reason Error", initContainer, status(corev1.PodPending, ended(initContainer, initRestartGrace+1, 137, "Error"))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &logBuffer{}
@@ -308,10 +314,10 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		})
 	}
 
-	t.Run("workspace-fetch ended 3 past its restart grace", func(t *testing.T) {
+	t.Run("workspace-init ended 3 past its restart grace", func(t *testing.T) {
 		log := &logBuffer{}
 		g, old, before := launched(t, kept, log)
-		fail(t, g, status(corev1.PodPending, restarting(fetchContainer, fetchRestartGrace+1, workspace.InitExitOutsideVolume)))
+		fail(t, g, status(corev1.PodPending, restarting(initContainer, initRestartGrace+1, workspace.InitExitOutsideVolume)))
 		keeps(t, g, log, next(t, g), before, old.Sandbox.PodUID, true)
 	})
 
@@ -319,7 +325,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		t.Run("workspace-init ended 1, and "+down.name+" took the pod down", func(t *testing.T) {
 			log := &logBuffer{}
 			g, old, _ := launched(t, kept, log)
-			fail(t, g, status(corev1.PodPending, fetched, initFailed))
+			fail(t, g, status(corev1.PodPending, initFailed))
 			g.clearActions()
 			down.act(t, g, old)
 			bodies := patches(g)
@@ -348,7 +354,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	// launch, which reads no pod, resets the volume on it.
 	t.Run("workspace-init ended 1 under a Sandbox already Suspended, and the launch stopped before its delete", func(t *testing.T) {
 		first, old, _ := launched(t, kept, &logBuffer{})
-		fail(t, first, status(corev1.PodPending, fetched, initFailed))
+		fail(t, first, status(corev1.PodPending, initFailed))
 		g, _ := first.suspendedCopy(name, withOptions(kept), withTestBootTimeout())
 		before := g.sandbox(name)
 		g.eventually("the pod store to hold the failed pod", func() bool { return g.r.storedPod(name) != nil })
@@ -398,7 +404,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		edit   func(*corev1.Pod)
 		resets bool
 	}{
-		{"workspace-init ended 1 in the pod of a launch that failed after its Running patch", status(corev1.PodPending, fetched, initFailed), true},
+		{"workspace-init ended 1 in the pod of a launch that failed after its Running patch", status(corev1.PodPending, initFailed), true},
 		{"the init containers passed in the pod of a launch that failed after its Running patch", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -459,7 +465,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	t.Run("workspace-init ended 2", func(t *testing.T) {
 		log := &logBuffer{}
 		g, old, before := launched(t, kept, log)
-		fail(t, g, status(corev1.PodPending, fetched, ended(initContainer, 0, workspace.InitExitUsage, "Error")))
+		fail(t, g, status(corev1.PodPending, ended(initContainer, initRestartGrace+1, workspace.InitExitUsage, "Error")))
 		keeps(t, g, log, next(t, g), before, old.Sandbox.PodUID, true)
 	})
 
@@ -473,19 +479,23 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		deleting bool
 		edit     func(*corev1.Pod)
 	}{
-		{"being deleted, workspace-init ended 1", true, deleting(status(corev1.PodPending, fetched, initFailed))},
-		{"being deleted and Failed, workspace-fetch ended 137", true, deleting(status(corev1.PodFailed, ended(fetchContainer, 1, 137, "Error")))},
+		{"being deleted, workspace-init ended 1", true, deleting(status(corev1.PodPending, initFailed))},
+		{"being deleted and Failed, workspace-init ended 137", true, deleting(status(corev1.PodFailed, ended(initContainer, 1, 137, "Error")))},
 		{"evicted by the kubelet for its storage, workspace-init ended 1", false, func(p *corev1.Pod) {
 			p.Status = corev1.PodStatus{
-				Phase: corev1.PodFailed, Reason: "Evicted", Message: "Pod ephemeral local storage usage exceeds the total limit of containers 50Gi. ",
-				InitContainerStatuses: []corev1.ContainerStatus{fetched, initFailed},
+				Phase:                 corev1.PodFailed,
+				Reason:                "Evicted",
+				Message:               "Pod ephemeral local storage usage exceeds the total limit of containers 50Gi. ",
+				InitContainerStatuses: []corev1.ContainerStatus{initFailed},
 			}
 		}},
 		{"terminated by the kubelet for a node shutdown, workspace-init ended 1", false, func(p *corev1.Pod) {
 			p.Status = corev1.PodStatus{
-				Phase: corev1.PodFailed, Reason: "Terminated", Message: "Pod was terminated in response to imminent node shutdown.",
+				Phase:                 corev1.PodFailed,
+				Reason:                "Terminated",
+				Message:               "Pod was terminated in response to imminent node shutdown.",
 				Conditions:            []corev1.PodCondition{{Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue, Reason: "TerminationByKubelet"}},
-				InitContainerStatuses: []corev1.ContainerStatus{fetched, initFailed},
+				InitContainerStatuses: []corev1.ContainerStatus{initFailed},
 			}
 		}},
 	} {
@@ -529,7 +539,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 			p.Status = corev1.PodStatus{
 				Phase:                 corev1.PodFailed,
 				Conditions:            []corev1.PodCondition{{Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue, Reason: "DeletionByTaintManager"}},
-				InitContainerStatuses: []corev1.ContainerStatus{fetched, initFailed},
+				InitContainerStatuses: []corev1.ContainerStatus{initFailed},
 			}
 		})
 		before := g.sandbox(name)
@@ -539,18 +549,18 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	t.Run("workspace-init ended OOMKilled", func(t *testing.T) {
 		log := &logBuffer{}
 		g, old, before := launched(t, kept, log)
-		fail(t, g, status(corev1.PodPending, fetched, ended(initContainer, 0, 137, "OOMKilled")))
+		fail(t, g, status(corev1.PodPending, ended(initContainer, initRestartGrace+1, 137, "OOMKilled")))
 		keeps(t, g, log, next(t, g), before, old.Sandbox.PodUID, true)
 	})
 
-	t.Run("workspace-fetch failed inside its restart grace while the pod is Pending", func(t *testing.T) {
+	t.Run("workspace-init failed inside its restart grace while the pod is Pending", func(t *testing.T) {
 		log := &logBuffer{}
 		g, old, before := launched(t, kept, log)
-		fail(t, g, status(corev1.PodPending, restarting(fetchContainer, 1, 1)))
+		fail(t, g, status(corev1.PodPending, restarting(initContainer, 1, 1)))
 		loc := next(t, g)
 		keeps(t, g, log, loc, before, old.Sandbox.PodUID, false)
 		if loc.Sandbox.PodUID != old.Sandbox.PodUID {
-			t.Fatalf("the launch replaced the pod %s with %s, want it kept: its fetch is still provisioning", old.Sandbox.PodUID, loc.Sandbox.PodUID)
+			t.Fatalf("the launch replaced the pod %s with %s, want it kept: workspace-init is still provisioning", old.Sandbox.PodUID, loc.Sandbox.PodUID)
 		}
 	})
 
@@ -560,11 +570,13 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		if len(before.Spec.VolumeClaimTemplates) != 0 {
 			t.Fatalf("the Sandbox built with keep_volume off owns %+v, or this case proves nothing", before.Spec.VolumeClaimTemplates)
 		}
-		fail(t, g, status(corev1.PodPending, fetched, initFailed))
+		fail(t, g, status(corev1.PodPending, initFailed))
 		keeps(t, g, log, next(t, g), before, old.Sandbox.PodUID, true)
 	})
 }
 
+// A launch whose new pod's workspace-init fails past its restart grace (initRestartGrace) returns at
+// once, without waiting out the launcher's bound, and the supervisor reads the failed init.
 func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -579,7 +591,7 @@ func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T
 	name := SandboxName(workerToken)
 	g.eventually("the new Pending pod", func() bool { return g.pod(name) != nil })
 	g.update(g.pod(name), func(p *corev1.Pod) {
-		p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: initContainer,
+		p.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: initContainer, RestartCount: initRestartGrace + 1,
 			State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
 			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
 		}}
@@ -594,31 +606,31 @@ func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T
 	}
 }
 
-// The kubelet restarts a failed init container by itself under restartPolicy Always, and a
-// workspace-fetch that comes back carries on with the feed its own pod's disk already holds. So
-// each of its first three restarts is the pod still provisioning — to failedInit, which an
-// observation reads a pod's death out of, and to provisioning, which a launch's wait reads a pod
-// coming up by, alike — and the fourth restart is the pod's death. workspace-init is given no such
-// grace, and neither is a fetch in a pod that has already failed, where nothing is started again.
-// Reading a restart as a death threw away a download that was still arriving and launched the
-// issue again into the same wait (INFRA-495).
-func TestAFetchsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *testing.T) {
+// The kubelet restarts workspace-init by itself under restartPolicy Always. Its first three
+// restarts keep a clone already renamed into place and retry the transfer delta, so each is the pod
+// still provisioning — to failedInit, which an observation reads a pod's death out of, and to
+// provisioning, which a launch's wait reads a pod coming up by, alike — and the fourth restart is
+// the pod's death. An always-failing refusal pays up to four attempts under the kubelet's back-off;
+// the retry cost is worth avoiding a new clone after a transient transfer failure. A restart in a
+// pod that has already failed is not provisioning, and nor is one in a pod that is being deleted:
+// such a pod stays Pending while it terminates, and a launch that read it as coming up would wait
+// out its whole provisioning bound on a pod that is going away.
+func TestAWorkspaceInitsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name       string
-		container  string
 		restarts   int32
 		terminated bool
 		phase      corev1.PodPhase
+		deleting   bool
 		dead       bool
 	}{
-		{name: "a fetch that just ended, before the kubelet restarts it", container: fetchContainer, terminated: true},
-		{name: "a fetch's first restart", container: fetchContainer, restarts: 1},
-		{name: "a fetch's third restart", container: fetchContainer, restarts: 3},
-		{name: "a fetch's fourth restart", container: fetchContainer, restarts: 4, dead: true},
-		{name: "a fetch restarting in a pod that has failed", container: fetchContainer, restarts: 1, phase: corev1.PodFailed, dead: true},
-		{name: "workspace-init's first failure", container: initContainer, terminated: true, dead: true},
-		{name: "workspace-init restarting", container: initContainer, restarts: 1, dead: true},
+		{name: "workspace-init just ended, before the kubelet restarts it", terminated: true},
+		{name: "workspace-init's first restart", restarts: 1},
+		{name: "workspace-init's third restart", restarts: 3},
+		{name: "workspace-init's fourth restart", restarts: 4, dead: true},
+		{name: "workspace-init restarting in a pod that has failed", restarts: 1, phase: corev1.PodFailed, dead: true},
+		{name: "workspace-init restarting in a pod that is being deleted", restarts: 1, deleting: true, dead: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			phase := corev1.PodPending
@@ -626,7 +638,7 @@ func TestAFetchsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *testing.T
 				phase = tc.phase
 			}
 			ended := &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}
-			status := corev1.ContainerStatus{Name: tc.container, RestartCount: tc.restarts}
+			status := corev1.ContainerStatus{Name: initContainer, RestartCount: tc.restarts}
 			if tc.terminated {
 				status.State.Terminated = ended
 			} else {
@@ -634,17 +646,44 @@ func TestAFetchsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *testing.T
 				status.LastTerminationState.Terminated = ended
 			}
 			pod := &corev1.Pod{Status: corev1.PodStatus{Phase: phase, InitContainerStatuses: []corev1.ContainerStatus{status}}}
+			if tc.deleting {
+				deleting := metav1.NewTime(time.Now())
+				pod.DeletionTimestamp = &deleting
+			}
 
 			named, failed := failedInit(pod)
 			if (failed != nil) != tc.dead {
 				t.Errorf("failedInit = %q, %+v; want the pod dead %t", named, failed, tc.dead)
 			}
-			if tc.dead && named != tc.container {
-				t.Errorf("failedInit named %q, want the pod's %s", named, tc.container)
+			if tc.dead && named != initContainer {
+				t.Errorf("failedInit named %q, want the pod's %s", named, initContainer)
 			}
 			if got := provisioning(pod); got == tc.dead {
-				t.Errorf("provisioning = %t while failedInit reads the pod dead %t: the two readings of %s disagree", got, tc.dead, tc.container)
+				t.Errorf("provisioning = %t while failedInit reads the pod dead %t: the two readings of %s disagree", got, tc.dead, initContainer)
 			}
 		})
+	}
+}
+
+// A pod being deleted whose workspace-init is still Running is coming up no longer. The kubelet
+// leaves exactly that status on a pod of a lost node while it waits in Terminating, and a launch
+// that read it as coming up would wait out its boot timeout and its whole ProvisionBound on a pod
+// that is going away. It has a test of its own because the restart table above holds every row to
+// dead or provisioning, and this pod is neither: nothing of it has ended, so failedInit reads no
+// failure.
+func TestAPodBeingDeletedIsNotProvisioningWhileItsInitContainerRuns(t *testing.T) {
+	t.Parallel()
+	running := corev1.ContainerStatus{Name: initContainer, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}
+	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{running}}}
+	if !provisioning(pod) {
+		t.Fatal("provisioning = false for a Pending pod whose workspace-init runs, want true: the control for the row below")
+	}
+	deleting := metav1.NewTime(time.Now())
+	pod.DeletionTimestamp = &deleting
+	if provisioning(pod) {
+		t.Error("provisioning = true for a pod being deleted whose workspace-init runs, want false: a launch would wait out its whole bound on it")
+	}
+	if named, failed := failedInit(pod); failed != nil {
+		t.Errorf("failedInit = %q, %+v for a pod whose workspace-init has not ended, want none", named, failed)
 	}
 }

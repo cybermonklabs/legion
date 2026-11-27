@@ -131,6 +131,21 @@ export const MAX_ISSUE_PAGE_LIMIT = 250;
 export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
 
 /**
+ * The most threads one page of an issue's threads holds: `limit` is 1 to this on
+ * `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity`. Generated into Go as
+ * `contracts.MaxThreadPageLimit`, which the server enforces.
+ */
+export const MAX_THREAD_PAGE_LIMIT = 100;
+
+/**
+ * The page size of `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity` when a caller names no `limit`.
+ * Generated into Go as `contracts.DefaultThreadPageLimit`.
+ */
+export const DEFAULT_THREAD_PAGE_LIMIT = 20;
+
+/**
  * How many of an issue's events `dispatch_read` lists, the newest ones, when it names neither
  * `events` nor `all_events`: what `DispatchClient.read` returns by default.
  */
@@ -367,7 +382,7 @@ export const SPEC_CHECK_OBSERVED_END =
 /**
  * The code of the `403` for a request by an approve-only token - the token the secrets broker
  * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
- * `approve` alone - to a route Dispatch's approve list (`approveScopeRoutes`) does not name, and
+ * `approve` alone - to a route whose declaration does not state `ApproveOnly`, and
  * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
  * recorded. No sign-in and no other scope makes the request possible for that token.
  */

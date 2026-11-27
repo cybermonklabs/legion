@@ -40,15 +40,24 @@ func holding(t *testing.T, deps Deps) *Outbox {
 }
 
 // holdRow writes the publisher hold's row naming holder, lapsing an hour from now on the database's
-// clock.
+// clock (writePublisherHold).
 func holdRow(t *testing.T, database *store.Store, holder uuid.UUID) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + interval '1 hour')
-		on conflict (name) do update set holder = excluded.holder, expires_at = excluded.expires_at
-	`, publisherHold, holder); err != nil {
+	if err := writePublisherHold(context.Background(), database, holder); err != nil {
 		t.Fatalf("write the publisher hold's row: %v", err)
 	}
+}
+
+// writePublisherHold writes the publisher hold's row naming holder, lapsing an hour from now on the
+// database's clock, as duty's takeHold writes it, and answers the write's error: a test makes its
+// own outbox the holder with it (holdRow), and another process the holder - a takeover - with a
+// fresh holder.
+func writePublisherHold(ctx context.Context, database *store.Store, holder uuid.UUID) error {
+	_, err := database.Pool.Exec(ctx, `
+		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + interval '1 hour')
+		on conflict (name) do update set holder = excluded.holder, expires_at = excluded.expires_at
+	`, publisherHold, holder)
+	return err
 }
 
 // holdingProcess is the process the publisher hold's row names, whatever its lease says: the
@@ -670,6 +679,73 @@ func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T)
 			for _, event := range written {
 				if publishedAt(t, database, event.ID) == nil {
 					t.Fatalf("event %d is not published after the retry", event.ID)
+				}
+			}
+		})
+	}
+}
+
+// In one batch, an owner's send to a session waits for the owner's earlier topic send
+// (chainSend.after). A topic send that NATS refuses for good ends that wait, as a topic send that
+// reached the topic family does. NATS refused the envelope and then its stand-in
+// (standInEnvelope), and the outbox never sends that subject again, so nothing of it can reach the
+// session after the later event. The earlier events are agents' messages, which go to the topic
+// family alone. The last is a person's message, which goes to the topic family and to S's own
+// subject. All of them are due in one scan's batch, and NATS refuses every envelope to the topic
+// family. That one scan sends the last event to S and publishes every event. Each event records
+// the topic subject in its refused_destinations and not in its published_destinations. With two
+// earlier events, the session send waits on the second one's topic send, which goes only after
+// NATS refused the first one's.
+func TestASendToASessionGoesOnPastARefusedTopicSendOfItsBatch(t *testing.T) {
+	const topic = "notifications.dispatch.issue.T-1.message.created"
+	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
+	session := contracts.LegacyAgentSubject("S")
+	for _, earlier := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d earlier events", earlier), func(t *testing.T) {
+			ctx := store.WithTransactionTracking(context.Background())
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			seedIssue(t, database, "T-1", new("session:S"))
+			write := func(actor model.Actor, body string) model.Event {
+				return appendEvent(t, database, broker, model.Event{
+					IssueKey: new("T-1"), Type: "message.created", Actor: actor,
+					Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
+				})
+			}
+			var written []model.Event
+			for index := range earlier {
+				written = append(written, write(agent, fmt.Sprintf("earlier %d, by an agent", index+1)))
+			}
+			last := write(person, "last, by a person")
+			written = append(written, last)
+			publisher := &refusingPublisher{refuse: topic, attempts: map[string]int{}}
+			holding(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker})).scan(ctx, unfenced{})
+
+			attempts, sent := publisher.snapshot()
+			if attempts[topic] != 2*len(written) {
+				t.Errorf("the topic family was attempted %d times, want %d: each event's envelope, then its stand-in",
+					attempts[topic], 2*len(written))
+			}
+			if !slices.Equal(sent, []string{session}) {
+				t.Fatalf("NATS took %v, want the last event's send to %s alone: a topic send NATS refused for good still held the session send back",
+					sent, session)
+			}
+			for _, event := range written {
+				row := readRefusedRow(t, database, event.ID)
+				if row.publishedAt == nil || row.attempts != 0 || row.nextAttempt != nil || row.failure != nil {
+					t.Errorf("event %d has published_at %v, attempt_count %d, next_attempt_at %v and publish_error %s, want it published by the one scan: set, 0, none and none",
+						event.ID, row.publishedAt, row.attempts, row.nextAttempt, publishFailure(row.failure))
+				}
+				reason, stored := row.refused[topic]
+				if !stored || len(row.refused) != 1 || !strings.Contains(reason, bus.ErrTooLarge.Error()) {
+					t.Errorf("event %d has refused_destinations %v, want %s alone, with the refusal", event.ID, row.refused, topic)
+				}
+				want := []string{}
+				if event.ID == last.ID {
+					want = []string{session}
+				}
+				if !slices.Equal(row.destinations, want) {
+					t.Errorf("event %d has published_destinations %v, want %v", event.ID, row.destinations, want)
 				}
 			}
 		})

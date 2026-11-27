@@ -15,9 +15,10 @@
 #      the release this checkout's worker.Dockerfile names (ARG JJ_TOOL, which the harness passes
 #      as PACK_MEMORY_JJ_TOOL_VERSION). R10's released jj is the image's own: the binary its jj
 #      wrapper runs, /usr/local/bin/jj, so a later pin needs no change here.
-#   3. `legion workspace-init cache` in the background, `workspace-init fetch` from it, and
-#      `workspace-init provision`, which looks jj up on PATH once (cmd/legion/workspace_init.go,
-#      workspaceProcess.tools) and so runs every jj command of its own through the measuring jj this
+#   3. `legion workspace-init cache` in the background, then `workspace-init provision` from it
+#      with the repository cache URL and token. Provisioning looks jj up on PATH once
+#      (cmd/legion/workspace_init.go, workspaceProcess.tools) and so runs every jj command of its
+#      own through the measuring jj this
 #      probe puts first on PATH: one RESULT line each, with its argv, peak and wall time.
 #   4. Under the role's own GIT_CONFIG block, which the harness put on this container, the four
 #      pack settings at command scope, with the clone's local value beside each.
@@ -25,7 +26,7 @@
 #      block unset, GIT_CONFIG_NOSYSTEM=1 and four -c values): in the workspace, `git log
 #      --first-parent -- <walk file>`, `git status` and a push of a new commit to a `git daemon`
 #      started before any measured command and outside every measured tree, which serves a bare
-#      copy of the feed; and a fetch from GitHub of the newer commits of the clone's own default
+#      copy of the clone; and a fetch from GitHub of the newer commits of the clone's own default
 #      branch into a clone that lacks them. K is the smallest step of a fixed ladder, 4096, 6400,
 #      8192 and 12800 first-parent commits back from the branch's tip in the workspace's clone,
 #      for which `git rev-list --objects --no-object-names <tip>~K..<tip>` take 100 MiB on the
@@ -42,10 +43,9 @@
 #      the original's `du -s`
 #      come first, and the run stops when the volume cannot hold every copy and one fresh root. A
 #      copy hardlinks the clone's objects/pack/* from the original, since git never writes a pack
-#      in place, and copies every other file with `cp -a`, objects/info/alternates among them, so a
-#      copy of a clone provisioning made with `git clone --shared` reads the feed's objects through
-#      the same alternates as the original; then its workspace's .git is pointed at
-#      its own clone and `git worktree repair` run in it. Each workspace's `git rev-parse
+#      in place, and copies every other file with `cp -a`; provisioning writes the clone's own
+#      object store. Then its workspace's .git is pointed at its own clone and `git worktree repair`
+#      run in it. Each workspace's `git rev-parse
 #      --git-common-dir` must name its own clone's .git, and jj 0.45.1 must read its copied store
 #      (`op log`, exit 0 and no `Reindexing`); the run stops otherwise. Each R10 copy's jj reads
 #      its store the same way, and a copy whose jj cannot runs none of R10's role commands; its
@@ -53,17 +53,16 @@
 #   7. On the original and the 0.45.1 copy, the same edits to the walk file and to a file of another
 #      directory, with JJ_TIMESTAMP and JJ_OP_TIMESTAMP fixed and JJ_RANDOMNESS_SEED fixed per
 #      command, then `jj diff`, `jj diff --name-only`, a commit made with `git commit` and pushed
-#      with `git push`, handoff-record.ts's STANDING read, the fetch of the feed's heads, a commit,
-#      the shim's describedArgs, a second commit and the shim's adoptionArgs as
+#      with `git push`, handoff-record.ts's STANDING read, the fetch of the source clone's heads, a
+#      commit, the shim's describedArgs, a second commit and the shim's adoptionArgs as
 #      packages/daemon/internal/shim/commands.go builds them: with the image's jj,
 #      JJ_PACK_MAPPED_LIMIT unset, on the original, with jj 0.45.1 on its copy. The fetch is one
-#      unmeasured `git fetch --no-tags <the feed> +refs/heads/*:refs/remotes/feed/*` into the copy's
-#      shared clone, by the setup git and outside every measured tree: every branch head of the feed
-#      as a remote-tracking ref the clone does not hold, since the clone, made from the feed, holds
-#      each as origin's. The clone holds their objects, so the fetch writes refs and no pack, which
-#      it prints; its setup verdict holds when it exits 0 and writes at least one ref the clone did
-#      not hold. Each commit, by the setup git too, appends one line to a file, the walk file before
-#      describedArgs and third_file, of a third top-level directory, before adoptionArgs, and
+#      unmeasured `git fetch --no-tags <the source clone> +refs/heads/*:refs/remotes/source/*` into
+#      the copy's clone, by the setup git and outside every measured tree. The source clone's heads
+#      become remote-tracking refs the copy did not hold, so the fetch writes refs and no pack,
+#      which it prints; its setup verdict holds when it exits 0 and writes at least one ref the copy
+#      did not hold. Each commit, by the setup git too, appends one line to a file, the walk file
+#      before describedArgs and third_file, of a third top-level directory, before adoptionArgs, and
 #      commits it with `git add` and `git commit`, as the handoff commit is made, with the probe's
 #      identity and both of git's dates fixed; its setup verdict holds when HEAD moved to it, a
 #      child of the HEAD before. The two copies' commits before each command differ only in their
@@ -72,33 +71,32 @@
 #      describedArgs, the next command, imports the new refs and the new HEAD at its start and
 #      snapshots against that HEAD's tree, and adoptionArgs, the command after the second commit,
 #      imports that one's HEAD the same way and reads the old tree of third_file's directory from
-#      the pack, as jj does in a workspace colocated with git, which a workspace whose .git is a
-#      worktree of the clone is: what a role's jj does once git has fetched new branches into the
-#      shared clone and committed in the workspace. That import makes the new working-copy commit
-#      under the command's own identity, so the adopter is @'s author already when the measured
-#      adoptionArgs's metaedit runs, which then changes nothing. The author is shown on an
-#      unmeasured run instead, after the measured one and outside every measured tree: `jj new` as
-#      the probe, @'s author read with --ignore-working-copy, the same adoptionArgs argv as the
-#      adopter, @'s author read again, and `jj op log -n1`'s description. c-shim-adoption-memory's
-#      author verdict holds when @'s author was the probe's before that adoptionArgs and is the
-#      adopter's after it, and the operation is metaedit's, `edit commit metadata for commit <id>`.
+#      the pack, as jj does in a workspace colocated with git. That import makes the new
+#      working-copy commit under the command's own identity, so the adopter is @'s author already
+#      when the measured adoptionArgs's metaedit runs, which then changes nothing. The author is
+#      shown on an unmeasured run instead, after the measured one and outside every measured tree:
+#      `jj new` as the probe, @'s author read with --ignore-working-copy, the same adoptionArgs
+#      argv as the adopter, @'s author read again, and `jj op log -n1`'s description.
+#      c-shim-adoption-memory's author verdict holds when @'s author was the probe's before that
+#      adoptionArgs and is the adopter's after it, and the operation is metaedit's,
+#      `edit commit metadata for commit <id>`.
 #   8. R3 to R5's verdicts.
 #   9. R10's role commands on each R10 copy, with its jj and budget, JJ_TIMESTAMP and
 #      JJ_OP_TIMESTAMP fixed, and a JJ_RANDOMNESS_SEED for each command, the same on every copy:
-#      `jj --ignore-working-copy file list -r @-`, the STANDING read, step 7's fetch of the feed's
-#      heads and its two commits, describedArgs, adoptionArgs, `jj new`, `jj diff` after the same
-#      edits in two directories, and `jj --ignore-working-copy log -r '::@-' -- <walk file>`. The
+#      `jj --ignore-working-copy file list -r @-`, the STANDING read, step 7's fetch of the source
+#      clone's heads and its two commits, describedArgs, adoptionArgs, `jj new`, `jj diff` after
+#      the same edits in two directories, and `jj --ignore-working-copy log -r '::@-' -- <walk
+#      file>`.
 #      five copies' HEADs are one commit before the commits, so each commit is one id on all five,
 #      which a verdict checks, and each released row's stdout can equal its control's.
-#  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a plain
-#      `git clone --no-checkout` of the feed, its packs hardlinked into the clone's own object
-#      store, where provisioning's clone is `git clone --shared` and reads them from the feed
-#      through alternates, then every jj command the measuring
-#      jj recorded for the original's provision, in its order and with its argv, run with that jj
-#      and budget. Each path of the original root in an argv is rewritten to the fresh root, and
-#      provisioning's temporary clone (<clone>.clone-<digits>, which it renames into place once
-#      the clone is made) is named as the clone it becomes, which the fresh clone already is. The
-#      root is removed once its rows are read.
+#  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a
+#      plain `git clone --no-checkout` of the provisioned clone, its packs hardlinked into the fresh
+#      clone's own object store, then every jj command the measuring jj recorded for the original's
+#      provision, in its order and with its argv, run with that jj and budget. Each path of the
+#      original root in an argv is rewritten to the fresh root, and provisioning's temporary clone
+#      (<clone>.clone-<digits>, which it renames into place once the clone is made) is named as the
+#      clone it becomes, which the fresh clone already is. The root is removed once its rows are
+#      read.
 #  11. R10's verdicts, each beside one summary RESULT line for its command and budget.
 #
 # Every measured command runs under pack-memory-peak.py beside this file, which prints one
@@ -214,9 +212,9 @@ adopter_name='Pack Memory Adopter'
 adopter_email=adopter@example.invalid
 
 # The remote of the refs the fetch before each describedArgs writes, one for each branch head of
-# the feed: a remote the clone does not hold, since the clone, made from the feed, holds each of
-# those heads as origin's already.
-feed_remote=feed
+# the source clone: a remote the copy does not hold, since the provisioned clone holds the default
+# branch as origin's already.
+source_remote=source
 
 # R10: the four JJ_PACK_MAPPED_LIMIT budgets, each in KiB; one chunk of the chunked mapping; the
 # 32 MiB the pack figure's bound allows beyond the budget and the chunks; the 128 MiB the derived
@@ -262,7 +260,7 @@ expected+=(
   "c-release-source image jj version"
   "setup git daemon"
   "setup cache ready"
-  "setup fetch"
+  "setup cache-backed provision"
   "setup provision"
   "setup walk file"
   "setup image workspace's git common dir"
@@ -282,7 +280,7 @@ for copy in "${copies[@]}"; do
   expected+=("setup $copy jj reads the copied store")
 done
 for copy in image control; do
-  expected+=("setup $copy fetch of the feed's heads" "setup $copy commit before describedArgs" "setup $copy commit before adoptionArgs")
+  expected+=("setup $copy fetch of the source clone's heads" "setup $copy commit before describedArgs" "setup $copy commit before adoptionArgs")
 done
 expected+=("setup image and control commits before describedArgs" "setup image and control commits before adoptionArgs")
 expected+=(
@@ -307,7 +305,7 @@ expected+=(
   "c-shim-adoption-memory author control"
 )
 for copy in "${r10_copies[@]}"; do
-  expected+=("setup $copy fetch of the feed's heads" "setup $copy commit before describedArgs" "setup $copy commit before adoptionArgs")
+  expected+=("setup $copy fetch of the source clone's heads" "setup $copy commit before describedArgs" "setup $copy commit before adoptionArgs")
 done
 expected+=("setup r10 copies' commit id before describedArgs" "setup r10 copies' commit id before adoptionArgs")
 for copy in "${r10_copies[@]}"; do
@@ -968,15 +966,14 @@ else
 fi
 
 # --------------------------------------------------------------------------------------------
-# 3. The cache, fetch and provision of the image's own code, and the git daemon the pushes go to.
+# 3. Cache-backed provisioning by the image's own code, and the git daemon the pushes go to.
 # --------------------------------------------------------------------------------------------
 daemon_dir=$scratch/daemon
 github_url=https://github.com/$repo
 
 root=$scratch/legion
-feed=$scratch/feed
-feed_repo=$feed/$owner/$name.git
 clone=$root/repos/github.com/$owner/$name
+source_repo=$clone/.git
 ws=$root/workspaces/$owner/$name/${issue,,}
 default_branch=""
 if going; then
@@ -986,13 +983,13 @@ if going; then
   mkdir -p "$secrets" "$scratch/cache"
   chmod 0700 "$secrets"
   # The provisioning token is a throwaway: a public repository's clone and fetch never send it.
-  # The bearer the cache checks on /tar is a random one the fetch below presents.
+  # The bearer the cache checks on /tar is a random one provisioning presents.
   od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$secrets/provision-token"
   od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$secrets/cache-token"
   chmod 0600 "$secrets/provision-token" "$secrets/cache-token"
   started=$SECONDS
-  # --refresh is a day so no refresh of its own runs while the fetch below reads it; the cache is
-  # stopped once the fetch is done.
+  # --refresh is a day so no refresh of its own runs while the provision below reads the cache; it
+  # stays up until that provision finishes.
   LEGION_PROVISION_TOKEN_FILE=$secrets/provision-token LEGION_REPOSITORY_CACHE_TOKEN_FILE=$secrets/cache-token \
     setsid legion workspace-init cache --repo "$repo" --root "$scratch/cache" --listen "$cache_listen" --refresh 24h \
     > "$scratch/logs/cache.log" 2>&1 < /dev/null &
@@ -1000,7 +997,7 @@ if going; then
   health=""
   while :; do
     if health=$(curl -fsS --max-time 10 "http://$cache_listen/healthz" 2> /dev/null) &&
-      [ "$(jq -r .ready <<< "$health" 2> /dev/null)" = true ]; then
+      [ "$(jq -r .ready <<< "$health" 2> /dev/null)" = true ] && [ "$(jq -r '.defaultBranchOnly // false' <<< "$health" 2> /dev/null)" = true ]; then
       break
     fi
     health=""
@@ -1016,66 +1013,18 @@ if going; then
   done
   tail -n 20 "$scratch/logs/cache.log"
   if [ -n "$health" ]; then
-    verdict "setup cache ready" pass "ready after $((SECONDS - started)) s: $health" "/healthz answers ready"
+    if default_branch=$(setup_git --git-dir="$scratch/cache/$owner/$name.git" symbolic-ref --short HEAD 2>&1); then
+      verdict "setup cache ready" pass "ready after $((SECONDS - started)) s: $health" "/healthz answers ready and defaultBranchOnly"
+    else
+      verdict "setup cache ready" fail "default branch: $default_branch" "/healthz answers ready and defaultBranchOnly"
+      stop "the repository cache named no default branch"
+    fi
   else
-    verdict "setup cache ready" fail "no ready answer" "/healthz answers ready"
+    verdict "setup cache ready" fail "no ready answer" "/healthz answers ready and defaultBranchOnly"
     stop "the repository cache never answered ready"
   fi
 fi
 
-if going; then
-  echo
-  say "== legion workspace-init fetch --repo $repo --feed $feed --cache-url http://$cache_listen"
-  started=$SECONDS
-  LEGION_PROVISION_TOKEN_FILE=$secrets/provision-token LEGION_REPOSITORY_CACHE_TOKEN_FILE=$secrets/cache-token \
-    legion workspace-init fetch --repo "$repo" --feed "$feed" --cache-url "http://$cache_listen" \
-    > "$scratch/logs/fetch.log" 2>&1 < /dev/null
-  status=$?
-  cat "$scratch/logs/fetch.log"
-  echo "exit $status in $((SECONDS - started)) s"
-  # The feed must have come from the cache, as an issue pod's does, and not from GitHub alone.
-  from_cache=$(grep -c 'from the repository cache' "$scratch/logs/fetch.log")
-  if [ "$status" -eq 0 ] && [ "$from_cache" -gt 0 ]; then
-    verdict "setup fetch" pass "exit 0, filled from the repository cache" "exit 0, filled from the repository cache"
-  else
-    verdict "setup fetch" fail "exit $status, $from_cache lines naming the repository cache" "exit 0, filled from the repository cache"
-    stop "workspace-init fetch did not fill the feed from the cache"
-  fi
-  # The cache has done its part: stopped, it holds no memory of the pod's while the rows run.
-  stop_background
-fi
-
-if going; then
-  echo
-  say "== the git daemon, outside every measured tree, serving a bare copy of the feed to the push rows"
-  default_branch=$(setup_git --git-dir="$feed_repo" symbolic-ref --short HEAD 2>&1)
-  echo "the default branch, as the feed's HEAD names it: $default_branch"
-  daemon_ok=0
-  mkdir -p "$daemon_dir"
-  if setup_git clone --bare --local --quiet "$feed_repo" "$daemon_dir/feed.git" > "$scratch/logs/feed-copy.log" 2>&1; then
-    setsid env -u GIT_CONFIG_COUNT /usr/bin/git daemon --export-all --enable=receive-pack --informative-errors \
-      --reuseaddr --listen=127.0.0.1 --port="$daemon_port" --base-path="$daemon_dir" \
-      > "$scratch/logs/git-daemon.log" 2>&1 < /dev/null &
-    daemon_pid=$!
-    for _ in $(seq 1 60); do
-      if setup_git ls-remote "git://127.0.0.1:$daemon_port/feed.git" HEAD > /dev/null 2>&1; then
-        daemon_ok=1
-        daemon_tree=(--daemon "$daemon_pid")
-        break
-      fi
-      sleep 1
-    done
-  else
-    cat "$scratch/logs/feed-copy.log"
-  fi
-  served=$(setup_git ls-remote "git://127.0.0.1:$daemon_port/feed.git" HEAD 2>&1 | head -n 1)
-  if [ "$daemon_ok" -eq 1 ]; then
-    verdict "setup git daemon" pass "serving the feed's HEAD: $served" "the daemon serves the feed's copy"
-  else
-    verdict "setup git daemon" fail "${served:-nothing}" "the daemon serves the feed's copy"
-    tail -n 20 "$scratch/logs/git-daemon.log"
-  fi
-fi
 
 if going; then
   echo
@@ -1122,12 +1071,22 @@ SH
   chmod 0755 "$here/bin/jj"
   before=$(wc -l < "$results")
   started=$SECONDS
-  (cd "$root" && PATH=$here/bin:$PATH legion workspace-init provision --issue "$issue" --repo "$repo" \
-    --default-branch "$default_branch" --root "$root" --credential-helper '!legion git-credential' --feed "$feed") \
+  (cd "$root" && PATH=$here/bin:$PATH TMPDIR=/tmp LEGION_PROVISION_TOKEN_FILE=$secrets/provision-token \
+    LEGION_REPOSITORY_CACHE_URL="http://$cache_listen" LEGION_REPOSITORY_CACHE_TOKEN_FILE=$secrets/cache-token \
+    legion workspace-init provision --issue "$issue" --repo "$repo" --default-branch "$default_branch" \
+    --root "$root" --credential-helper '!legion git-credential') \
     > "$scratch/logs/provision.log" 2>&1 < /dev/null
   status=$?
   cat "$scratch/logs/provision.log"
   echo "exit $status in $((SECONDS - started)) s"
+  cache_success_re="^workspace-init: [1-9][0-9,]* bytes from the repository cache http://${cache_listen//./\\.} in [0-9a-zµ.]+, its history verified in [0-9a-zµ.]+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs?\)$"
+  from_cache=$(grep -cE "$cache_success_re" "$scratch/logs/provision.log")
+  if [ "$status" -eq 0 ] && [ "$from_cache" -gt 0 ]; then
+    verdict "setup cache-backed provision" pass "exit 0, filled the clone from the repository cache" "exit 0, filled the clone from the repository cache"
+  else
+    verdict "setup cache-backed provision" fail "exit $status, $from_cache cache-stream success lines" "exit 0, filled the clone from the repository cache"
+    stop "workspace-init provision did not fill the clone from the cache"
+  fi
   tail -n +"$((before + 1))" "$results" | sed 's/^/RESULT /'
   provisioned=$(wc -l < "$results")
   if [ "$status" -eq 0 ] && [ -d "$ws" ] && [ "$provisioned" -gt "$before" ]; then
@@ -1135,6 +1094,39 @@ SH
   else
     verdict "setup provision" fail "exit $status, $((provisioned - before)) jj commands measured" "exit 0, the workspace, its jj commands measured"
     stop "workspace-init provision made no workspace"
+  fi
+fi
+
+if going; then
+  # Provisioning has read the cache. The later rows use its clone's own object store, not a second
+  # repository on the Job volume.
+  stop_background
+  echo
+  say "== the git daemon, outside every measured tree, serving a bare copy of the clone to the push rows"
+  daemon_ok=0
+  mkdir -p "$daemon_dir"
+  if setup_git clone --bare --local --quiet "$source_repo" "$daemon_dir/source.git" > "$scratch/logs/source-copy.log" 2>&1; then
+    setsid env -u GIT_CONFIG_COUNT /usr/bin/git daemon --export-all --enable=receive-pack --informative-errors \
+      --reuseaddr --listen=127.0.0.1 --port="$daemon_port" --base-path="$daemon_dir" \
+      > "$scratch/logs/git-daemon.log" 2>&1 < /dev/null &
+    daemon_pid=$!
+    for _ in $(seq 1 60); do
+      if setup_git ls-remote "git://127.0.0.1:$daemon_port/source.git" HEAD > /dev/null 2>&1; then
+        daemon_ok=1
+        daemon_tree=(--daemon "$daemon_pid")
+        break
+      fi
+      sleep 1
+    done
+  else
+    cat "$scratch/logs/source-copy.log"
+  fi
+  served=$(setup_git ls-remote "git://127.0.0.1:$daemon_port/source.git" HEAD 2>&1 | head -n 1)
+  if [ "$daemon_ok" -eq 1 ]; then
+    verdict "setup git daemon" pass "serving the clone's HEAD: $served" "the daemon serves the clone's copy"
+  else
+    verdict "setup git daemon" fail "${served:-nothing}" "the daemon serves the clone's copy"
+    tail -n 20 "$scratch/logs/git-daemon.log"
   fi
 fi
 
@@ -1148,8 +1140,8 @@ if going; then
     tracked=$(setup_git -C "$ws" ls-files --error-unmatch -- "$walk_file" 2>&1)
     same "setup walk file" "$tracked" "$walk_file"
     # A role pushes to origin, so the leak guard reads only what origin's remote-tracking refs do
-    # not hold. The push rows go there too, with origin's push URL the daemon's copy of the feed.
-    setup_git --git-dir="$clone/.git" config remote.origin.pushurl "git://127.0.0.1:$daemon_port/feed.git"
+    # not hold. The push rows go there too, with origin's push URL the daemon's copy of the clone.
+    setup_git --git-dir="$clone/.git" config remote.origin.pushurl "git://127.0.0.1:$daemon_port/source.git"
   else
     stop "the workspace's git common dir is not its own clone's .git"
   fi
@@ -1486,23 +1478,22 @@ edit_two_dirs() {
   printf 'pack-memory probe: an edit the jj rows snapshot\n' >> "$1/$second_file"
 }
 
-# fetch_feed_heads <copy> <clone>: the unmeasured fetch each copy's describedArgs follows. The setup
-# git fetches, outside every measured tree, every branch head of the feed the clone was made from
-# into the copy's shared clone, as refs of feed_remote, which the clone does not hold: it holds
-# origin's already, at the same tips. So the jj command after it imports new refs at its start, as
-# a role's jj does once git has fetched new branches into the shared clone. The clone holds the
-# feed's objects, so the fetch should write refs and no object, and the probe prints what it wrote.
-# Its setup verdict holds when it exits 0 and writes at least one ref the clone did not hold.
-fetch_feed_heads() {
+# fetch_source_heads <copy> <clone>: the unmeasured fetch each copy's describedArgs follows. The
+# setup git fetches the provisioned clone's branch heads into the copy's clone as refs of
+# source_remote, which the copy does not hold. The jj command after it imports those new refs at its
+# start, as a role's jj does after git fetched a named branch. The source clone holds the objects, so
+# the fetch should write refs and no object, and the probe prints what it wrote. Its setup verdict
+# holds when it exits 0 and writes at least one ref the copy did not hold.
+fetch_source_heads() {
   local copy=$1 git_dir=$2/.git refs_before refs_after brought count packs_before new_packs loose_before loose_after status
-  echo "the fetch of the feed's heads into the $copy clone, as refs/remotes/$feed_remote/*, unmeasured:"
+  echo "the fetch of the source clone's heads into the $copy clone, as refs/remotes/$source_remote/*, unmeasured:"
   refs_before=$(setup_git --git-dir="$git_dir" for-each-ref --format='%(refname) %(objectname)' | sort)
   packs_before=$(find "$git_dir/objects/pack" -maxdepth 1 -name '*.pack' | sort)
   loose_before=$(setup_git --git-dir="$git_dir" count-objects -v 2>&1 | awk '$1 == "count:" { print $2 }')
   setup_git -c gc.auto=0 -c maintenance.auto=false --git-dir="$git_dir" fetch --no-tags --no-write-fetch-head --quiet \
-    "$feed_repo" "+refs/heads/*:refs/remotes/$feed_remote/*" > "$scratch/logs/$copy-feed-heads.log" 2>&1
+    "$source_repo" "+refs/heads/*:refs/remotes/$source_remote/*" > "$scratch/logs/$copy-source-heads.log" 2>&1
   status=$?
-  cat "$scratch/logs/$copy-feed-heads.log"
+  cat "$scratch/logs/$copy-source-heads.log"
   refs_after=$(setup_git --git-dir="$git_dir" for-each-ref --format='%(refname) %(objectname)' | sort)
   brought=$(comm -13 <(echo "$refs_before") <(echo "$refs_after"))
   count=$(grep -c . <<< "$brought")
@@ -1516,9 +1507,9 @@ fetch_feed_heads() {
     echo "it wrote objects: packs [${new_packs:-none}]; loose objects $loose_before before, $loose_after after"
   fi
   if [ "$status" -eq 0 ] && [ "$count" -gt 0 ]; then
-    verdict "setup $copy fetch of the feed's heads" pass "exit 0, $count refs the clone did not hold" "exit 0, at least one ref the clone did not hold"
+    verdict "setup $copy fetch of the source clone's heads" pass "exit 0, $count refs the clone did not hold" "exit 0, at least one ref the clone did not hold"
   else
-    verdict "setup $copy fetch of the feed's heads" fail "exit $status, $count refs the clone did not hold" "exit 0, at least one ref the clone did not hold"
+    verdict "setup $copy fetch of the source clone's heads" fail "exit $status, $count refs the clone did not hold" "exit 0, at least one ref the clone did not hold"
   fi
 }
 
@@ -1561,15 +1552,15 @@ commit_before() {
 }
 
 # shim_rows <copy> <workspace> <jj> <clone> <seed> [sampler options…]: the shim's adoption on one
-# copy, as steps 7 and 9 both run it: the fetch of the feed's heads, a commit, describedArgs, a
-# second commit and adoptionArgs, each of the shim's two commands measured as the adopter, with
-# the caller's sampler options first and JJ_RANDOMNESS_SEED <seed> for describedArgs and
-# <seed> + 1 for adoptionArgs.
+# copy, as steps 7 and 9 both run it: the fetch of the source clone's heads, a commit,
+# describedArgs, a second commit and adoptionArgs, each of the shim's two commands measured as the
+# adopter, with the caller's sampler options first and JJ_RANDOMNESS_SEED <seed> for describedArgs
+# and <seed> + 1 for adoptionArgs.
 shim_rows() {
   local copy=$1 dir=$2 jj=$3 shared=$4 seed=$5
   local -a adopter=(--env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email")
   shift 5
-  fetch_feed_heads "$copy" "$shared"
+  fetch_source_heads "$copy" "$shared"
   commit_before "$copy" "$dir" describedArgs "$walk_file"
   measure "$copy-described" "$@" --env "JJ_RANDOMNESS_SEED=$seed" "${adopter[@]}" \
     -- "$jj" "${described_args[@]}" -R "$dir"
@@ -1770,15 +1761,15 @@ fresh_path() {
   rewritten=${text//"$root"/"$fresh"}
 }
 
-# r10_provision <copy>: a fresh root, a `git clone --no-checkout` of the feed whose packs are the
-# feed's own hardlinked, then the original provision's jj commands as the measuring jj recorded
+# r10_provision <copy>: a fresh root, a `git clone --no-checkout` of the provisioned clone whose
+# packs are hardlinked, then the original provision's jj commands as the measuring jj recorded
 # them, each with this copy's jj and budget, in its order, in its working directory and with its
 # argv, both rewritten to the fresh root. Each runs as provisioning runs it: without the role's
-# GIT_CONFIG block, which provisioning strips. Its origin is the feed itself, which the original's
-# fetch reached through provisioning's insteadOf. A step that fails ends the replay, since every
-# later step rests on it, and the root is removed once its rows are read.
+# GIT_CONFIG block, which provisioning strips. Its origin is GitHub, and each fresh clone below
+# copies the provisioned clone's local objects. A step that fails ends the replay, since every later
+# step rests on it, and the root is removed once its rows are read.
 r10_provision() {
-  local copy=$1 jj=${copy_jj[$1]} step label cwd n=0 status i feed_inodes fresh_inodes
+  local copy=$1 jj=${copy_jj[$1]} step label cwd n=0 status i source_inodes fresh_inodes
   local -a limit=() argv
   [ -z "${copy_budget[$copy]:-}" ] || limit=(--env "JJ_PACK_MAPPED_LIMIT=${copy_budget[$copy]}")
   echo
@@ -1786,16 +1777,16 @@ r10_provision() {
   cd "$scratch" || return
   rm -rf "$fresh"
   mkdir -p "${fresh_clone%/*}" "$fresh/workspaces/$owner/$name"
-  if ! setup_git clone --quiet --no-checkout "$feed_repo" "$fresh_clone" > "$scratch/logs/$copy-fresh-clone.log" 2>&1; then
-    verdict "setup $copy fresh root" fail "$(tail -n 3 "$scratch/logs/$copy-fresh-clone.log")" "a git clone --no-checkout of the feed, its packs hardlinked"
+  if ! setup_git clone --quiet --no-checkout "$source_repo" "$fresh_clone" > "$scratch/logs/$copy-fresh-clone.log" 2>&1; then
+    verdict "setup $copy fresh root" fail "$(tail -n 3 "$scratch/logs/$copy-fresh-clone.log")" "a git clone --no-checkout of the source clone, its packs hardlinked"
     rm -rf "$fresh"
     return
   fi
-  feed_inodes=$(stat -c %i "$feed_repo/objects/pack"/*.pack 2> /dev/null | sort | tr '\n' ' ')
+  source_inodes=$(stat -c %i "$source_repo/objects/pack"/*.pack 2> /dev/null | sort | tr '\n' ' ')
   fresh_inodes=$(stat -c %i "$fresh_clone/.git/objects/pack"/*.pack 2> /dev/null | sort | tr '\n' ' ')
-  same "setup $copy fresh root" "a git clone --no-checkout of the feed, its packs' inodes ${fresh_inodes% }" \
-    "a git clone --no-checkout of the feed, its packs' inodes ${feed_inodes% }"
-  if [ "$fresh_inodes" != "$feed_inodes" ]; then
+  same "setup $copy fresh root" "a git clone --no-checkout of the source clone, its packs' inodes ${fresh_inodes% }" \
+    "a git clone --no-checkout of the source clone, its packs' inodes ${source_inodes% }"
+  if [ "$fresh_inodes" != "$source_inodes" ]; then
     rm -rf "$fresh"
     return
   fi
