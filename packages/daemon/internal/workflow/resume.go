@@ -124,7 +124,9 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, fact intake.DaemonBooted
 // closes one whose last open linked pull request merged or went. An issue that left the workflow
 // meanwhile is skipped (D10: a done issue is never reopened by its links), and an issue whose
 // record already applied a Dispatch event newer than the boot's read keeps that newer event's
-// links. A boot that read none (fact.Links nil) changes nothing.
+// links. The issues' links are taken in the order of their keys, so an issue that took a link from
+// another while the daemon was down can be taken before the issue that held it, and takes the link
+// from that issue (takeLinks). A boot that read none (fact.Links nil) changes nothing.
 func (e *Engine) takeBootLinks(ctx context.Context, tx pgx.Tx, fact intake.DaemonBooted) error {
 	if fact.Links == nil {
 		return nil

@@ -714,10 +714,8 @@ func pullRequestLink(url string) (PullRequestLink, bool) {
 	if part == nil || part[2] == "." || part[2] == ".." {
 		return PullRequestLink{}, false
 	}
-	number, err := strconv.Atoi(part[3])
-	if err != nil {
-		return PullRequestLink{}, false
-	}
+	// pullRequestURL takes nine digits at most, which every int holds, so Atoi cannot fail.
+	number, _ := strconv.Atoi(part[3])
 	return PullRequestLink{Repo: strings.ToLower(part[1] + "/" + part[2]), Number: number}, true
 }
 

@@ -44,6 +44,23 @@ func sameLink(link record.PullRequestLink) func(record.PullRequestLink) bool {
 // requests are the issue's, never where its work stands, so a link to a done issue reopens nothing
 // (D10).
 //
+// A link that came may be a link another issue held: Dispatch lets one URL link one issue alone
+// (EXTERNAL_LINK_TAKEN), so that issue's link went in Dispatch before this one came, and the
+// replace moves the link's row to issue, untold and taken. The two issues' events can reach the
+// record in either order, and the boot takes the issues' links in the order of their keys
+// (takeBootLinks), so the issue that held the link may not have let it go yet. It lets it go here,
+// before this issue's link is added, as the removal of its link would (linkRemoved): the pull
+// request leaves its set and its row goes, unless a task's branch of that issue holds it, where it
+// stays that issue's and this issue's link is refused as that issue's (linkAdded); and that issue's
+// close is judged again, as the removal would judge it, since the link may have held it alone. Its
+// own event that drops the link then finds it gone and changes nothing. Where both issues still
+// name the pull request, by two spellings of one URL or through an event of the other issue that
+// came late, the record follows the event it applied last, and the next event of either moves the
+// link again. The link another issue holds is read under the name this link carries alone
+// (record.Store.PullRequestLinkOf), the key the replace moves a row by: a link of the other issue
+// under the other name of a configured pair (ghrepo.Under) is a link the replace leaves to it, and
+// the pull request stays the issue's that recorded it first (linkAdded, pullRequestLinkRead).
+//
 // When queueReads is true, a new link whose row the record does not hold yet, and any link held
 // refused as unserved or unreadable when the issue's links change (decision 8), queues a
 // PullRequestLinkRead row to read the pull request from GitHub in its own repository. At boot
@@ -58,15 +75,23 @@ func (e *Engine) takeLinks(ctx context.Context, tx pgx.Tx, issue record.Issue, l
 	for at, link := range links {
 		given[at] = record.PullRequestLink{Issue: issue.Key, Repo: link.Repo, Number: link.Number}
 	}
-	var removed, added []record.PullRequestLink
+	var removed, added, moved []record.PullRequestLink
 	for _, link := range before {
 		if !slices.ContainsFunc(given, sameLink(link)) {
 			removed = append(removed, link)
 		}
 	}
 	for _, link := range given {
-		if !slices.ContainsFunc(before, sameLink(link)) {
-			added = append(added, link)
+		if slices.ContainsFunc(before, sameLink(link)) {
+			continue
+		}
+		added = append(added, link)
+		held, err := e.store.PullRequestLinkOf(ctx, tx, link.Repo, link.Number)
+		if err != nil {
+			return false, err
+		}
+		if held != nil {
+			moved = append(moved, *held)
 		}
 	}
 	if len(removed) > 0 || len(added) > 0 {
@@ -82,6 +107,23 @@ func (e *Engine) takeLinks(ctx context.Context, tx pgx.Tx, issue record.Issue, l
 	}
 	for _, link := range removed {
 		if err := e.linkRemoved(ctx, tx, issue, link); err != nil {
+			return false, err
+		}
+	}
+	for _, link := range moved {
+		holder, err := e.store.Issue(ctx, tx, link.Issue)
+		if err != nil {
+			return false, err
+		}
+		if holder == nil {
+			continue
+		}
+		if err := e.linkRemoved(ctx, tx, *holder, link); err != nil {
+			return false, err
+		}
+		name := prName(link.Repo, link.Number)
+		e.logOnCommit(ctx, "workflow: a link of an issue to a pull request moved to another issue", "from", holder.Key, "to", issue.Key, "pullRequest", name)
+		if _, err := e.judgeClose(ctx, tx, holder.Key, nil, fmt.Sprintf("its link of %s moved to %s", name, issue.Key)); err != nil {
 			return false, err
 		}
 	}
@@ -125,14 +167,15 @@ func (e *Engine) linkedRow(ctx context.Context, tx pgx.Tx, repo string, number i
 }
 
 // linkRemoved is the removal of link, a link of issue to a pull request that Dispatch no longer
-// shows (dispatch://INFRA-5910 decision 18): the link's row has gone (takeLinks). A pull request
-// that no task's branch holds in the issue's repository leaves the issue's set with its link
-// (D2), so its row goes too, whether it is open or merged: no fact of it moves the issue after.
-// A pull request on a task's branch keeps its row and stays in the set, as the task's own or as
-// another pull request of the task (decision 5), which the stack's close then reaches at the
-// issue's last merge (decision 11). A production check its merge opened stays open and runs: a
-// check is the issue's, not the pull request's. A link the daemon refused as a fork's or as another
-// issue's held no row of the issue, and its removal deletes nothing.
+// shows, or that another issue now links in its place (dispatch://INFRA-5910 decision 18): the
+// link's row has gone, or moved to that other issue (takeLinks). A pull request that no task's
+// branch holds in the issue's repository leaves the issue's set with its link (D2), so its row goes
+// too, whether it is open or merged: no fact of it moves the issue after. A pull request on a
+// task's branch keeps its row and stays in the set, as the task's own or as another pull request of
+// the task (decision 5), which the stack's close then reaches at the issue's last merge (decision
+// 11). A production check its merge opened stays open and runs: a check is the issue's, not the
+// pull request's. A link the daemon refused as a fork's or as another issue's held no row of the
+// issue, and its removal deletes nothing.
 func (e *Engine) linkRemoved(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink) error {
 	pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
 	if err != nil || pr == nil || pr.Issue != issue.Key {
@@ -156,11 +199,12 @@ func (e *Engine) linkRemoved(ctx context.Context, tx pgx.Tx, issue record.Issue,
 }
 
 // linkAdded is link, a link of issue to a pull request that the record did not hold for issue
-// before the event that names it (takeLinks). A pull request the record holds for another issue
-// stays with that issue, and the link is refused (refuseLink, record.LinkRefusedOtherIssue,
-// dispatch://INFRA-5910 decision 8): a pull request belongs to one issue, and the issue column of
-// its row never moves. A pull request the record holds for issue already, a task's, is in its set
-// now as linked too. One the record holds no row of is a link whose read is owed.
+// before the event that names it (takeLinks), once an issue that held the link before has let it
+// go (linkRemoved). A pull request the record still holds for another issue stays with that issue,
+// and the link is refused (refuseLink, record.LinkRefusedOtherIssue, dispatch://INFRA-5910
+// decision 8): a pull request belongs to one issue, and the issue column of its row never moves. A
+// pull request the record holds for issue already, a task's, is in its set now as linked too. One
+// the record holds no row of is a link whose read is owed.
 func (e *Engine) linkAdded(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink, queueRead bool) error {
 	pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
 	if err != nil {
@@ -277,7 +321,10 @@ func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // once read it holds it only while its pull request is open. So the close is judged again
 // (judgeClose, decision 9), as each fact judges it that changes the set; the facts linkReadOf
 // applies judge it themselves where they change it (merged, and closed through the read of the
-// branches that it queues, pullRequestBranchRead).
+// branches that it queues, pullRequestBranchRead). A read that takes back a refusal of a pull
+// request the record holds merged or closed, and shows it as the record holds it, judges the close
+// itself: the link held the close while it was refused and holds it no longer, and linkReadOf
+// applies no fact of the pull request that would judge it.
 func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake.PullRequestLinkReadDone) (intake.Result, error) {
 	link, err := e.linkOf(ctx, tx, fact.Repo, fact.Number)
 	if err != nil {
@@ -325,6 +372,14 @@ func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake
 		}
 	}
 	if recorded != nil {
+		if link.Refused != "" && recorded.State != record.PullRequestOpen && fact.State == recorded.State {
+			var merge *record.PullRequest
+			if recorded.State == record.PullRequestMerged {
+				merge = recorded
+			}
+			_, err := e.judgeClose(ctx, tx, issue.Key, merge, fmt.Sprintf("its linked %s, held refused as %s, is read %s", name, link.Refused, recorded.State))
+			return intake.Result{}, err
+		}
 		return e.linkReadOf(ctx, tx, fact, *recorded)
 	}
 	// The row keeps GitHub's own spelling of the repository where the read showed it (the head's, in

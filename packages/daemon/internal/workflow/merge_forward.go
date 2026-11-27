@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -95,7 +94,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	for _, to := range addressed {
 		role := to.role
 		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Claim: to.token, Step: steps[role], Head: pr.HeadSHA, Base: pr.Base,
-			Phase: at, Repo: otherRepo(issue, pr.Repo), PullRequest: pr.Number, Why: why}); err != nil {
+			Phase: at, Repo: pr.Repo, PullRequest: pr.Number, Why: why}); err != nil {
 			return err
 		}
 	}
@@ -643,17 +642,7 @@ func (e *Engine) tellRole(ctx context.Context, tx pgx.Tx, issue record.Issue, pr
 // askAgain.
 func mergeForwardMessageOf(issue record.Issue, pr record.PullRequest, role claim.Role, token claim.Token, step record.MergeForwardStep, why record.ConflictWhy) record.MergeForwardMessage {
 	return record.MergeForwardMessage{Role: role, Claim: token, Step: step, Head: pr.MergeForward.Head, Base: pr.MergeForward.Base,
-		Phase: record.StandsAt(issue), Repo: otherRepo(issue, pr.Repo), PullRequest: pr.Number, Why: why}
-}
-
-// otherRepo is repo when it names a repository other than issue's own, and "" otherwise: an empty
-// Repo on an outbox payload names the issue's own repository (RepoOf), so same-repository rows
-// keep the minimal wire shape that the release before also decodes.
-func otherRepo(issue record.Issue, repo string) string {
-	if strings.EqualFold(repo, issue.GitHubRepo) {
-		return ""
-	}
-	return repo
+		Phase: record.StandsAt(issue), Repo: pr.Repo, PullRequest: pr.Number, Why: why}
 }
 
 // holdStartedWorker holds the worker that has just started in the phase issue stands at, where
@@ -797,7 +786,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 			step = record.MergeForwardReview
 		}
 		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Claim: to.token, Step: step, Head: asked.Head, Landed: pr.HeadSHA,
-			Base: asked.Base, Phase: at, Repo: otherRepo(issue, pr.Repo), PullRequest: pr.Number, Why: asked.Why}); err != nil {
+			Base: asked.Base, Phase: at, Repo: pr.Repo, PullRequest: pr.Number, Why: asked.Why}); err != nil {
 			return err
 		}
 	}

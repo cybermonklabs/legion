@@ -193,10 +193,10 @@ func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, 
 		t.Fatalf("the record's merge forward = %+v, want %s onto main asked of the %s in %s for %s, not landed", asked, conflictHead, asker, at, why)
 	}
 	want := []record.MergeForwardMessage{{Role: asker, Claim: seededClaim(t, at, asker), Step: record.MergeForwardAsk,
-		Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}}
+		Head: conflictHead, Base: "main", Phase: at, Repo: "sjawhar/legion", PullRequest: 42, Why: why}}
 	if hold != "" {
 		want = append(want, record.MergeForwardMessage{Role: hold, Claim: seededClaim(t, at, hold), Step: record.MergeForwardHold, Head: conflictHead,
-			Base: "main", Phase: at, PullRequest: 42, Why: why})
+			Base: "main", Phase: at, Repo: "sjawhar/legion", PullRequest: 42, Why: why})
 	}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("merge-forward messages %+v, want %+v", got, want)
@@ -513,7 +513,7 @@ func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testin
 			t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 		}
 		hold := record.MergeForwardMessage{Role: claim.RoleMerger, Claim: seededClaim(t, phase.Merging, claim.RoleMerger), Step: record.MergeForwardHold,
-			Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictCheckNotGreen}
+			Head: conflictHead, Base: "main", Phase: phase.Merging, Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictCheckNotGreen}
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, []record.MergeForwardMessage{hold}) {
 			t.Fatalf("the move into merging queued %+v, want the merger's one hold %+v and no ask", got, hold)
 		}
@@ -524,7 +524,7 @@ func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testin
 		landsMergeForward(t, pool)
 		landed := func(role claim.Role, step record.MergeForwardStep) record.MergeForwardMessage {
 			return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, phase.Merging, role), Step: step, Head: conflictHead, Landed: forwardHead,
-				Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictCheckNotGreen}
+				Base: "main", Phase: phase.Merging, Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictCheckNotGreen}
 		}
 		want := []record.MergeForwardMessage{hold, landed(claim.RoleMerger, record.MergeForwardLanded), landed(claim.RoleReviewer, record.MergeForwardReview)}
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
@@ -584,7 +584,7 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 		t.Fatal("the move into merging started no merger")
 	}
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Claim: seededClaim(t, phase.Merging, claim.RoleMerger), Step: record.MergeForwardAsk,
-		Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
+		Head: conflictHead, Base: "main", Phase: phase.Merging, Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictMergeNext}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, []record.MergeForwardMessage{ask}) {
 		t.Fatalf("merge-forward messages %+v after the move into merging, want the one ask to the merger %+v", got, ask)
 	}
@@ -596,7 +596,7 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 	landsMergeForward(t, pool)
 	landed := func(role claim.Role, step record.MergeForwardStep) record.MergeForwardMessage {
 		return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, phase.Merging, role), Step: step, Head: conflictHead, Landed: forwardHead,
-			Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
+			Base: "main", Phase: phase.Merging, Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictMergeNext}
 	}
 	want := []record.MergeForwardMessage{ask, landed(claim.RoleMerger, record.MergeForwardLanded), landed(claim.RoleReviewer, record.MergeForwardReview)}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
@@ -832,7 +832,7 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 		}
 		asked := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
 			return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, at, role), Step: step, Head: conflictHead, Base: "main", Phase: at,
-				PullRequest: 42, Why: record.ConflictCheckNotGreen}
+				Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictCheckNotGreen}
 		}
 		want := []record.MergeForwardMessage{asked(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing),
 			asked(claim.RoleImplementer, record.MergeForwardAsk, phase.Testing), asked(claim.RoleTester, record.MergeForwardHold, phase.Testing)}
@@ -1078,7 +1078,7 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
 		return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, at, role), Step: step, Head: conflictHead, Landed: forwardHead,
-			Base: "main", Phase: at, PullRequest: 42, Why: record.ConflictMergeNext}
+			Base: "main", Phase: at, Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictMergeNext}
 	}
 	for _, tc := range []struct {
 		at     phase.Phase
@@ -1512,7 +1512,7 @@ func TestAConflictKeepsPhaseSendsARetroCompletionAtAReplacedHeadToTheCurrentHead
 		t.Fatalf("after retro's completion at %s the issue is in %s, want merging", forwardHead, got)
 	}
 	want := []record.MergeForwardMessage{{Role: claim.RoleMerger, Claim: seededClaim(t, phase.Merging, claim.RoleMerger), Step: record.MergeForwardAsk,
-		Head: forwardHead, Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}}
+		Head: forwardHead, Base: "main", Phase: phase.Merging, Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictMergeNext}}
 	if got := mergeForwardMessages(t, pool)[asked:]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the move into merging queued %+v, want the merger's one ask %+v", got, want)
 	}

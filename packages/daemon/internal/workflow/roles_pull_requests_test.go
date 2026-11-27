@@ -180,6 +180,10 @@ func decisionOf(t *testing.T, pool *pgxpool.Pool, repo string, number int, state
 //   - the merger's task names each open pull request of its scope, and asks it to merge one whose
 //     approval stands; a pull request linked after the review, with no approval standing, is named
 //     and not asked to merge;
+//   - a review the round refuses at the head the record holds (the reviewer's review-App review
+//     whose footer names another head) keeps its refusal on the row of the linked pull request, for
+//     the stuck notice to name, and writes nothing on sjawhar/legion#43, another pull request on
+//     a's branch that the issue does not link, which no round judges;
 //   - a CI settlement of the linked pull request wakes the released worker of the scope task's step
 //     (wakeOnSettlement);
 //   - a plan of two tasks a and b, each merging by itself, where the linked pull request is worked
@@ -188,10 +192,11 @@ func decisionOf(t *testing.T, pool *pgxpool.Pool, repo string, number int, state
 //
 // The faults it catches: the decision held on the reviewer's row for one pull request, under which
 // the first approval, of either pull request, moves the issue on and the request for changes on the
-// second finds it gone; the merger's task that names its task's pull request alone; and a push to
+// second finds it gone; the merger's task that names its task's pull request alone; a push to
 // a linked head that leaves the decision of the head before it on the linked pull request's row
 // (its control: the synchronize and the push writing the row with its decision as it was, under
-// which the approval of head-6990 is still held after the push).
+// which the approval of head-6990 is still held after the push); and a refusal written on a pull
+// request no round judges, which nothing reads or clears.
 func TestEachOpenPullRequestIsReviewedAndMerged(t *testing.T) {
 	t.Parallel()
 	approveOwn := personsReview("sjawhar/legion", 42, "head-a", "approved", 1)
@@ -283,6 +288,34 @@ func TestEachOpenPullRequestIsReviewedAndMerged(t *testing.T) {
 		resumed := resumeOf(t, pool, engine, root.Key, "a")
 		if want := "acme/deploy#7001 (linked on the issue; no approval stands at its head, so do not merge it)"; !strings.Contains(resumed, want) {
 			t.Fatalf("the merger's task after the late link = %q, want it to hold %q", resumed, want)
+		}
+	})
+
+	t.Run("a refused review is kept on a linked pull request and on no unlinked one", func(t *testing.T) {
+		t.Parallel()
+		pool, engine, apply, root := reviewingWithLink(t)
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 43,
+			Branch: "legion/LEGION-208", Base: "legion/LEGION-208-ci-base", HeadSHA: "head-43", Failing: []string{}})
+		var reviewer claim.Token
+		onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) (err error) {
+			reviewer, _, err = engine.reviewersClaim(ctx, tx, issue)
+			return err
+		})
+		seedClaimSession(t, pool, reviewer, "ses-reviewer")
+		// refused is the reviewer's approval of pull request number of repo at head, whose footer
+		// names headTwo, a head neither pull request stands at (refusesRound).
+		refused := func(repo string, number int, head string, id int64) intake.PullRequestReview {
+			return intake.PullRequestReview{Repo: repo, Number: number, ID: id, State: "approved", CommitID: head, Author: testReviewApp,
+				Body: reviewBody("ship it", headTwo), SubmittedAt: time.Date(2026, 11, 17, 9, int(id), 0, 0, time.UTC)}
+		}
+		mustSpend(t, "the refused review of sjawhar/legion#43", apply("refused-43", refused("sjawhar/legion", 43, "head-43", 5)))
+		if pr := pullRequestOf(t, pool, "sjawhar/legion", 43); pr == nil || pr.ReviewDecision != nil {
+			t.Fatalf("after the refused review of sjawhar/legion#43, which the issue does not link, it is %+v, want no decision: no round judges it", pr)
+		}
+		mustSpend(t, "the refused review of "+linkedPR, apply("refused-linked", refused(deployLink.Repo, deployLink.Number, "head-6990", 6)))
+		if pr := pullRequestOf(t, pool, deployLink.Repo, deployLink.Number); pr == nil || pr.ReviewDecision == nil || pr.ReviewDecision.State != "" ||
+			!strings.Contains(pr.ReviewDecision.Refused, "footer names "+headTwo) {
+			t.Fatalf("after the refused review of %s it is %+v, want no decision and the refusal kept for the stuck notice", linkedPR, pr)
 		}
 	})
 

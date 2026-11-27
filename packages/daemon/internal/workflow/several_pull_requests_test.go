@@ -448,10 +448,15 @@ func TestAnIssueWithTwoPullRequestsClosesAtTheLastMerge(t *testing.T) {
 // close too, and is told once, at the read that refused it, with its own way out beside the removal
 // of its link: install the App that is missing there, or make the pull request readable to
 // Legion's Apps; the merge and a second read tell nothing more, and the removal closes the issue.
+// A link held unreadable whose pull request the record holds merged already holds the close until
+// a read takes the refusal back: that read finds the pull request merged as the record holds it, so
+// it applies no fact of the pull request's own, which would judge the close (linkReadOf), and the
+// issue closes at that read.
 //
 // The faults it catches: the notice sent at each pass, under which the sweep sends a second; the
-// notice left out, under which the merge sends none; and a refusal told without the removal of its
-// link as a way out.
+// notice left out, under which the merge sends none; a refusal told without the removal of its
+// link as a way out; and a read that takes back a refusal and judges nothing, under which the
+// issue waits in merging for the next boot.
 func TestAnOpenLinkedPullRequestThatHoldsTheCloseIsToldOnce(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -504,4 +509,22 @@ func TestAnOpenLinkedPullRequestThatHoldsTheCloseIsToldOnce(t *testing.T) {
 			closedDone(t, pool, root.Key, "the removal of the link")
 		})
 	}
+
+	t.Run("a link held unreadable whose pull request merged closes the issue at the read that takes the refusal back", func(t *testing.T) {
+		t.Parallel()
+		pool := migratedPool(t)
+		root := stepRoot(t, pool, phase.Merging)
+		seedTasksAt(t, pool, root.Key, root.Generation, taskAt{id: "a", state: record.TaskRunning, place: atMerge, number: 42, merges: true})
+		apply := applyFacts(t, pool, noCheckEngine())
+		merged := linkRead(root.Key, deployLink.Repo, deployLink.Number, record.PullRequestMerged, "fix/deploy")
+		mustSpend(t, "the link of "+linkedPR, apply("linked", linkEvent(t, pool, root.Key, "", 2, deployLink)))
+		mustSpend(t, "the read of "+linkedPR+", merged", apply("read-merged", merged))
+		mustSpend(t, "the read GitHub answers 404", apply("read-404",
+			intake.PullRequestLinkReadDone{Issue: root.Key, Repo: deployLink.Repo, Number: deployLink.Number, NotFound: true}))
+		mustSpend(t, "the merge of #42", apply("merged-42", mergedFact(42, "a")))
+		stillOpen(t, pool, root.Key, phase.Merging, "the merge of #42")
+		holdToldOnce(t, pool, root.Key, linkedPR, "the merge of #42")
+		mustSpend(t, "the read again, merged", apply("read-merged-again", merged))
+		closedDone(t, pool, root.Key, "the read that takes the refusal back")
+	})
 }

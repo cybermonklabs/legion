@@ -675,8 +675,8 @@ func TestAnAskOwedToAClaimThatExitedIsSentAgainAtItsRelaunch(t *testing.T) {
 // testing and the tester still held; then the operator's retry relaunches the implementer, the
 // ready of its new launch queues the ask once, carrying that launch and naming the implementer's
 // claim, as every merge-forward message names the claim of its role's step (workflow's askAgain,
-// record.WorkerClaim), and leaves the record's ask told the launch before until the row's
-// delivery, and the tester is still held.
+// record.WorkerClaim), and the repository of its pull request, and leaves the record's ask told
+// the launch before until the row's delivery, and the tester is still held.
 func (r *freshSessionRig) relaunchSendsTheOwedAskOnce(ended string) {
 	r.t.Helper()
 	retired := r.machine.Claim()
@@ -704,7 +704,7 @@ func (r *freshSessionRig) relaunchSendsTheOwedAskOnce(ended string) {
 	launch := r.machine.Claim().Generation
 
 	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Claim: r.implementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
-		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: launch}}
+		Phase: phase.Testing, Repo: "acme/widgets", PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: launch}}
 	if asks := r.queuedMergeForwards(); !slices.Equal(asks, want) {
 		r.t.Errorf("after the ready of the implementer's launch %d the outbox holds the merge-forward messages %+v, want %+v", launch, asks, want)
 	}

@@ -921,12 +921,13 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		}
 	}
 	// refused is why a review the round's rules otherwise count was refused the round at the head
-	// the record holds now (RefusedAtThisHead). It is kept on the reviewer's row below, since nothing
-	// else would say why the round has no decision. A refusal that stands at every head
-	// (RefusedAtEveryHead) leaves none: a stranger's review is no decision the round lost, and the
-	// round is undecided the way one nobody reviewed is. Nor does a review that waits for the
-	// reviewer's session (RefusedWhileNoSession): no rule of the round counts it yet, and the read
-	// that judges it again by the session recorded then either takes it or refuses it afresh.
+	// the record holds now (RefusedAtThisHead). It is kept below with the decision of the pull
+	// request the review is of, since nothing else would say why the round has no decision. A
+	// refusal that stands at every head (RefusedAtEveryHead) leaves none: a stranger's review is no
+	// decision the round lost, and the round is undecided the way one nobody reviewed is. Nor does a
+	// review that waits for the reviewer's session (RefusedWhileNoSession): no rule of the round
+	// counts it yet, and the read that judges it again by the session recorded then either takes it
+	// or refuses it afresh.
 	refused := ""
 	if decides {
 		if refusal := e.RefusesRound(fact, *pr, reviewerSession); refusal.Reason != "" {
@@ -952,10 +953,13 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		// The stuck notice of a round nothing decided is built from the record when the reviewer
 		// completes (reviewRound, stuckUndecided), which is after the refused review arrived, so
 		// the refusal is kept with the decision of the pull request it is of for it to name: on the
-		// reviewer's row for the task's own, on its own row for another. It is written only where
-		// that holds no deciding decision, so a refusal reaching a round an approval already
-		// decided cannot erase it, and it lives with that decision, which every entry into
-		// reviewing clears (clearHandoff): no later round inherits the refusal of an earlier one.
+		// reviewer's row for the task's own, on its own row for one the issue links, which the round
+		// judges beside it (scopePullRequests). Another pull request on the task's branch that the
+		// issue does not link is in no round, and nothing would read or clear a refusal on its row
+		// (clearLinkedDecisions), so none is kept there. It is written only where that holds no
+		// deciding decision, so a refusal reaching a round an approval already decided cannot erase
+		// it, and it lives with that decision, which every entry into reviewing clears
+		// (clearHandoff): no later round inherits the refusal of an earlier one.
 		switch {
 		case refused == "":
 		case own && (reviewer.Decision == nil || reviewer.Decision.State == ""):
@@ -963,7 +967,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 			if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 				return intake.Result{}, err
 			}
-		case !own && (pr.ReviewDecision == nil || pr.ReviewDecision.State == ""):
+		case !own && pr.Linked && (pr.ReviewDecision == nil || pr.ReviewDecision.State == ""):
 			pr.ReviewDecision = &record.ReviewDecision{Refused: refused}
 			if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 				return intake.Result{}, err

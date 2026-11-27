@@ -27,27 +27,30 @@ import (
 // merge-forward message names the claim of its role's step (addressRoles), and each step of these
 // issues is worked by its role's first agent, whose claim is the role's own token (stepToken), so
 // the hold names the claim seededClaim gives, as the implementer's ask does (implementerAsked).
+// Every merge-forward message names the repository of its pull request, #42 of sjawhar/legion here,
+// the issue's own (record.MergeForwardMessage.Repo).
 func heldIn(t *testing.T, role claim.Role, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
 	t.Helper()
 	return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, at, role), Step: record.MergeForwardHold, Head: conflictHead, Base: "main",
-		Phase: at, PullRequest: 42, Why: why}
+		Phase: at, Repo: "sjawhar/legion", PullRequest: 42, Why: why}
 }
 
 // withdrawnIn is the implementer's withdrawal of the merge forward of conflictHead onto main, told
 // while the issue stands at at, for why: the message that the merge is no longer its work. It names
-// the claim of the implementer's step, as heldIn's hold does.
+// the claim of the implementer's step and the pull request's repository, as heldIn's hold does.
 func withdrawnIn(t *testing.T, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
 	t.Helper()
 	return record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: seededClaim(t, at, claim.RoleImplementer), Step: record.MergeForwardWithdrawn,
-		Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}
+		Head: conflictHead, Base: "main", Phase: at, Repo: "sjawhar/legion", PullRequest: 42, Why: why}
 }
 
 // mergerAsked is the merger's ask of the merge forward of conflictHead onto main in merging, where
-// the merge comes next. It names the claim of the merger's step, as heldIn's hold does.
+// the merge comes next. It names the claim of the merger's step and the pull request's repository,
+// as heldIn's hold does.
 func mergerAsked(t *testing.T) record.MergeForwardMessage {
 	t.Helper()
 	return record.MergeForwardMessage{Role: claim.RoleMerger, Claim: seededClaim(t, phase.Merging, claim.RoleMerger), Step: record.MergeForwardAsk,
-		Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}
+		Head: conflictHead, Base: "main", Phase: phase.Merging, Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictMergeNext}
 }
 
 // approvesConflictHead is the reviewer's approval of conflictHead, a minute before the first read

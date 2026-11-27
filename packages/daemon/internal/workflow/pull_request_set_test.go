@@ -79,14 +79,22 @@ func planRoot(t *testing.T, pool *pgxpool.Pool) record.Issue {
 //   - a pull request linked after the retro began joins the set;
 //   - a removed link takes its pull request out of the set and deletes its row, open or merged, and
 //     keeps the row of one on a task's branch, which stays in the set as the task's;
+//   - a link that moves from one issue to another (LEGION-208, in merging, whose open linked
+//     acme/deploy#6990 alone holds its close, and then LEGION-207, which links it in its place),
+//     in either order of the two issues' events and at a boot that reads the links of each issue
+//     in the order of their keys, LEGION-207 first: the pull request is LEGION-207's, linked and
+//     taken, and in its set, LEGION-208 links nothing, and LEGION-208's close is judged, so it
+//     closes;
 //   - an event that names no links changes none.
 //
 // The faults it catches: a set taken from the branch name or the body, which fails the rows of the
 // linked pull request of another repository and of the unlinked one; a set that keeps a removed
 // task's pull request, or that drops a linked one with the task, which fails the removed task's
 // row; a set that takes a fork's pull request; a link that moves another issue's row; a set read
-// once and never again, which fails the row of the link after the retro began; and links unknown
-// read as links none, which fails the last row.
+// once and never again, which fails the row of the link after the retro began; a moved link
+// refused as the issue's that held it, whose close nothing judges again, which fails the rows of
+// the move where LEGION-207's link comes first and at the boot; and links unknown read as links
+// none, which fails the last row.
 func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 	t.Parallel()
 	const status = "in_progress"
@@ -262,6 +270,91 @@ func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 			t.Errorf("after its link went #44 is %+v, want a's, unlinked", pr)
 		}
 		assertSet(t, pool, root.Key, "the removal of a's pull request's link", "sjawhar/legion#44")
+	})
+
+	// moving is the move of acme/deploy#6990 from one issue to another: LEGION-208, in merging, its
+	// task's #42 merged and its close held by the open #6990 it links alone; and LEGION-207, a root
+	// in testing, which links nothing yet. Its key comes before LEGION-208's, so a boot takes its
+	// links first (takeBootLinks).
+	moving := func(t *testing.T) (*pgxpool.Pool, func(string, intake.Fact) intake.Result, record.Issue, record.Issue) {
+		t.Helper()
+		pool := migratedPool(t)
+		holder := stepRoot(t, pool, phase.Merging)
+		seedTasksAt(t, pool, holder.Key, holder.Generation, taskAt{id: "a", state: record.TaskRunning, place: atMerge, number: 42, merges: true})
+		apply := applyFacts(t, pool, noCheckEngine())
+		linkDeploy(t, pool, apply, holder.Key, "", 2, "fix/deploy")
+		mustSpend(t, "the merge of #42", apply("merged-42", mergedFact(42, "a")))
+		stillOpen(t, pool, holder.Key, phase.Merging, "the merge of #42")
+		taker := record.Issue{Key: "LEGION-207", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-207",
+			Project: "LEGION", Title: "another root", Phase: phase.Testing, Generation: 1, Status: status, Rank: "T", LastDispatchSeq: 1}
+		seedIssue(t, pool, taker)
+		seedTreeLifecycle(t, pool, taker.Key)
+		return pool, apply, holder, taker
+	}
+	// takes is LEGION-207's event at seq that names its links whole: links.
+	takes := func(taker record.Issue, seq int64, links ...intake.PullRequestLink) intake.DispatchIssue {
+		event := linksOf(taker.Key, seq, status, links...)
+		event.Title, event.Rank = taker.Title, taker.Rank
+		return event
+	}
+	// moved fails unless acme/deploy#6990 moved from holder to taker: taker links it, taken, and
+	// holds it in its set as read for it, holder links nothing and stands closed, its close judged
+	// again once the link that held it alone went, and nobody was told of a refusal.
+	moved := func(t *testing.T, pool *pgxpool.Pool, holder, taker record.Issue, after string) {
+		t.Helper()
+		closedDone(t, pool, holder.Key, after)
+		if links := storedLinks(t, pool, holder.Key); len(links) != 0 {
+			t.Errorf("after %s the links of %s are %+v, want none", after, holder.Key, links)
+		}
+		if links := storedLinks(t, pool, taker.Key); len(links) != 1 || links[0].Number != 6990 || links[0].Refused != "" {
+			t.Errorf("after %s the links of %s are %+v, want acme/deploy#6990 taken", after, taker.Key, links)
+		}
+		if pr := pullRequestOf(t, pool, "acme/deploy", 6990); pr == nil || pr.Issue != taker.Key || !pr.Linked || pr.State != record.PullRequestOpen {
+			t.Errorf("after %s acme/deploy#6990 is %+v, want it open and linked by %s", after, pr, taker.Key)
+		}
+		assertSet(t, pool, taker.Key, after, "acme/deploy#6990")
+		if told := noticesOf(t, pool, taker.Key, "pr-link-refused"); len(told) != 0 {
+			t.Errorf("after %s %s was told the refusals %+v, want none: the link moved to it", after, taker.Key, told)
+		}
+	}
+	// takerRead is the daemon's read of #6990 for LEGION-207, open on fix/deploy: the read its new
+	// link queues, and the boot's read of LEGION-207's links.
+	takerRead := func(taker record.Issue) intake.PullRequestLinkReadDone {
+		return linkRead(taker.Key, "acme/deploy", 6990, record.PullRequestOpen, "fix/deploy")
+	}
+
+	for _, takerFirst := range []bool{false, true} {
+		first := "LEGION-208's removal"
+		if takerFirst {
+			first = "LEGION-207's link"
+		}
+		t.Run("a link moved to another issue, "+first+" first", func(t *testing.T) {
+			pool, apply, holder, taker := moving(t)
+			let := func() {
+				mustSpend(t, "the removal of LEGION-208's link", apply("unlinked-208", linkEvent(t, pool, holder.Key, "", 3)))
+			}
+			take := func() {
+				mustSpend(t, "the link of LEGION-207", apply("linked-207", takes(taker, 2, deploy(6990))))
+			}
+			if takerFirst {
+				take()
+				closedDone(t, pool, holder.Key, "LEGION-207's link")
+				let()
+			} else {
+				let()
+				take()
+			}
+			mustSpend(t, "the read of #6990 for LEGION-207", apply("read-207", takerRead(taker)))
+			moved(t, pool, holder, taker, "the move")
+		})
+	}
+
+	t.Run("a link moved to another issue while the daemon was down", func(t *testing.T) {
+		pool, apply, holder, taker := moving(t)
+		mustSpend(t, "the boot", apply("boot", intake.DaemonBooted{Boot: 1, Links: &intake.BootLinks{
+			Issues: map[string]intake.IssueLinks{holder.Key: {Seq: 3}, taker.Key: {Seq: 2, Links: []intake.PullRequestLink{deploy(6990)}}},
+			Reads:  []intake.PullRequestLinkReadDone{takerRead(taker)}}}))
+		moved(t, pool, holder, taker, "the boot")
 	})
 
 	t.Run("an event that names no links changes none", func(t *testing.T) {

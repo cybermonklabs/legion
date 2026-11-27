@@ -2,7 +2,7 @@ detail-acme-5768.json is Dispatch's answer to the detail read of an issue that l
 requests (GET /api/v1/issues/<KEY>, which HTTPClient.GetIssue reads): ACME-5768, whose
 external_links name https://github.com/acme/widgets/pull/5481, in the issue's own repository, and
 https://github.com/acme/deploy/pull/6990, in another.
-It is the body of the boot's read of an issue's links (step 8 of the plan of dispatch://INFRA-5910), and no test reads it yet.
+It is the body of the boot's read of an issue's links (step 8 of the plan of dispatch://INFRA-5910), and TestTheClientReadsTheLinksOfAnIssueFromItsDetail (links_test.go) reads it through HTTPClient.GetIssue.
 
 It is real: the answer of one GET, read on 2026-11-27 with the deployment's Dispatch token, <KEY> being the issue's key in that deployment:
 
