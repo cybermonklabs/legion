@@ -7,6 +7,10 @@ import {
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
   type LegionControllerRegistration,
+  LegionDefectReportRequest,
+  LegionDefectReportResponse,
+  LegionDefectWithdrawRequest,
+  LegionDefectWithdrawResponse,
   LegionEmptyResponse,
   LegionErrorResponse,
   LegionFreshSessionResponse,
@@ -304,6 +308,18 @@ export interface LegionDaemonClient {
   readonly signOff: (
     input: z.input<typeof LegionSignOffRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** A phase worker's or the owning architect's `report_defect` (the defect-calls entry): a defect
+   * in the merged change of an issue, at the head it was seen at. It moves no phase. The answer is
+   * the defect's id, whether the daemon recorded it, found it the same as one it holds or joined it
+   * to one, and the generation of the change that will carry it. */
+  readonly reportDefect: (
+    input: z.input<typeof LegionDefectReportRequest>
+  ) => Promise<z.output<typeof LegionDefectReportResponse>>;
+  /** The owning architect's `withdraw_defect` (the defect-calls entry): it takes back a defect by
+   * its id, saying why. The answer is the defect's id and its state, `withdrawn`. */
+  readonly withdrawDefect: (
+    input: z.input<typeof LegionDefectWithdrawRequest>
+  ) => Promise<z.output<typeof LegionDefectWithdrawResponse>>;
   readonly rootClose: (
     input: z.input<typeof LegionRootCloseRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
@@ -862,6 +878,20 @@ export function createLegionDaemonClient(
       post("/legion/v1/phase/retry", LegionPhaseRetryRequest, LegionEmptyResponse, input),
     signOff: (input) =>
       post("/legion/v1/signoff", LegionSignOffRequest, LegionEmptyResponse, input),
+    reportDefect: (input) =>
+      post(
+        "/legion/v1/defects/report",
+        LegionDefectReportRequest,
+        LegionDefectReportResponse,
+        input
+      ),
+    withdrawDefect: (input) =>
+      post(
+        "/legion/v1/defects/withdraw",
+        LegionDefectWithdrawRequest,
+        LegionDefectWithdrawResponse,
+        input
+      ),
     rootClose: (input) =>
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
     childRerun: (input) =>

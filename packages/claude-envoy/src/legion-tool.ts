@@ -27,14 +27,18 @@ const BUILD = pluginBuildOf(pkg, import.meta.dir)
 export const LEGION_TOOL_NAME = "legion"
 
 /** The tool as `tools/list` declares it: one object schema, `op` choosing one of the phase ops
- * (`@legion/pi-shared/legion-phase-ops`), the operations a phase worker gets. */
+ * (`@legion/pi-shared/legion-phase-ops`), the operations a phase worker gets, `report_defect`
+ * among them. */
 export function legionToolDefinition() {
   return {
     name: LEGION_TOOL_NAME,
     description: legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
+      after:
+        PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.reportDefect +
+        PHASE_OP_SENTENCES.readBuild,
     }),
     inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
   }

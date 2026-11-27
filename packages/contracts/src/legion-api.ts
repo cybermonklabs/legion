@@ -63,9 +63,12 @@ export const LegionInstant = timestamp.regex(
  * or `accepting` as the first step of its walk after the implementer's (`testing` on the default
  * steps) unless its pull request merged meanwhile. `accepting` is the architect's acceptance,
  * where the issue's task places its `acceptance:owner` step (in the default steps, between the
- * reviewer's approval and retro): no worker runs it. The merger merges in `merging`, and the
- * daemon closes the issue when it reads that merge (`done`); the production check after the close
- * is no phase (`check` on the issue record). */
+ * reviewer's approval and retro): no worker runs it. The merger merges in `merging`, and an issue
+ * whose work merged waits in `verifying` (the defect-calls entry) for what its close waits on
+ * (`closeWait` on the issue record): its checks, its production check, the issues beneath it,
+ * its open children and its open defects. The daemon closes the issue (`done`) once nothing is
+ * left; the production check after the close is no phase (`check` on the issue record). A caller
+ * whose contract is below the entry is served `merging` in place of `verifying`. */
 export const LEGION_WORKFLOW_PHASES = [
   "admitted",
   "awaiting_person",
@@ -77,6 +80,7 @@ export const LEGION_WORKFLOW_PHASES = [
   "accepting",
   "retro",
   "merging",
+  "verifying",
   "integrating",
   "done",
   "held",
@@ -822,6 +826,70 @@ const legionPodHold = z.object({
   detail: nonEmptyString.optional(),
 });
 
+/** One issue a close waits for (`closeWait.beneath` and `closeWait.openChildren`): its key, its
+ * status and since when it holds the close. */
+const legionCloseWaitIssue = z.object({
+  key: issueKey.optional(),
+  status: nonEmptyString.optional(),
+  since: timestamp.optional(),
+});
+
+/** `api.CloseWaitView` — what the close of an issue in `verifying` waits for (the defect-calls
+ * entry), each item with since when it stands: since when the close waits; each issue beneath it
+ * still in the workflow and each open Dispatch child; each check of its Verification document
+ * whose state is no pass, with its `when` and Dispatch's answer and reason; the production check
+ * where it holds the close, with the generation and merge commit it is of and its outcome or its
+ * next look; each open defect reported of the merged change, with its kind, the role that reported
+ * it, its text, the head it was seen at and the check it is about; how many next changes the issue
+ * has started; the checks a person must approve since the approved version; and why the newest
+ * read of Dispatch's states does not count. Each word is a string and not an enum, so a state, an
+ * answer, a cause or a kind a later daemon adds is read rather than refused, and the reader takes
+ * every member as optional, since no plugin code reads them (LEGION_ANSWER_READS). */
+const legionCloseWait = z.object({
+  since: timestamp.optional(),
+  beneath: z.array(legionCloseWaitIssue).optional(),
+  openChildren: z.array(legionCloseWaitIssue).optional(),
+  checks: z
+    .array(
+      z.object({
+        id: nonEmptyString.optional(),
+        when: nonEmptyString.optional(),
+        answer: nonEmptyString.optional(),
+        reason: nonEmptyString.optional(),
+        since: timestamp.optional(),
+      })
+    )
+    .optional(),
+  production: z
+    .object({
+      state: nonEmptyString.optional(),
+      generation: z.number().int().nonnegative().optional(),
+      merge: nonEmptyString.optional(),
+      outcome: nonEmptyString.optional(),
+      nextLookAt: timestamp.optional(),
+      since: timestamp.optional(),
+    })
+    .optional(),
+  defects: z
+    .array(
+      z.object({
+        id: nonEmptyString.optional(),
+        kind: nonEmptyString.optional(),
+        role: nonEmptyString.optional(),
+        text: nonEmptyString.optional(),
+        head: nonEmptyString.optional(),
+        check: nonEmptyString.optional(),
+        since: timestamp.optional(),
+      })
+    )
+    .optional(),
+  nextChanges: z.number().int().nonnegative().optional(),
+  unapproved: z
+    .object({ checks: z.array(nonEmptyString).optional(), since: timestamp.optional() })
+    .optional(),
+  unread: z.object({ cause: nonEmptyString.optional(), since: timestamp.optional() }).optional(),
+});
+
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
@@ -1038,6 +1106,11 @@ const legionIssue = z.object({
    * and a caller whose plugin declares a contract below 246 is served every issue without it
    * (the daemon's `withoutPodHold`), which is why a reader takes it as optional. */
   podHold: legionPodHold.optional(),
+  /** What the close of an issue in `verifying` waits for (the defect-calls entry,
+   * `legionCloseWait`): present only on an issue whose close waits, and absent from every issue of
+   * the body the route serves a caller below the entry, which is why a reader takes it as
+   * optional. */
+  closeWait: legionCloseWait.optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
@@ -2700,6 +2773,54 @@ export const LegionTaskStopRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   task: nonEmptyString,
+});
+
+/** `api.DefectReportRequest`, report_defect (the defect-calls entry): a defect in the merged change
+ * of `issue`, `defect` being what is wrong with its evidence, `head` the 40-character lower-case
+ * head of the pull request when the role saw it, and `check` the block id of the issue's check the
+ * defect is about, where it is about one. The implementer in retro, the merger in merging and the
+ * owning architect send it; it moves no phase and completes nothing. The daemon refuses a report
+ * before the issue's last step (`DEFECT_BEFORE_LAST_STEP`), from another role
+ * (`DEFECT_CALLER_NOT_ALLOWED`), with no text, one too long or one that holds a decision block
+ * (`DEFECT_TEXT_REQUIRED`, `DEFECT_TEXT_TOO_LONG`, `DEFECT_TEXT_DECISION_BLOCK`), with no head
+ * (`DEFECT_HEAD_REQUIRED`), and on an issue that closed or a tree that lingers
+ * (`DEFECT_ISSUE_CLOSED`, `TREE_LINGERING`). */
+export const LegionDefectReportRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+  defect: nonEmptyString,
+  head: nonEmptyString,
+  check: nonEmptyString.optional(),
+});
+
+/** `api.DefectReportResponse`: the defect's id as a decimal string, whether the daemon `recorded`
+ * it, found it the `same` as one it holds, or `joined` it to one, and `nextChange`, the generation
+ * of the change that will carry it. The `legion` tool's report_defect hands the answer to its
+ * agent whole, which is no read, so every field is optional (`LEGION_ANSWER_READS`) and `state` is
+ * a string, not an enum: a word a later daemon adds is read rather than refused. */
+export const LegionDefectReportResponse = z.object({
+  defect: nonEmptyString.optional(),
+  state: nonEmptyString.optional(),
+  nextChange: z.number().int().positive().optional(),
+});
+
+/** `api.DefectWithdrawRequest`, withdraw_defect (the defect-calls entry): the owning architect
+ * takes back the defect `defect`, by the id report_defect answered, of `issue`, saying why. The
+ * daemon refuses it from any other caller (`DEFECT_WITHDRAW_NOT_OWNER`), for a defect it does
+ * not hold (`DEFECT_NOT_FOUND`), for a check's own defect (`DEFECT_IS_A_CHECK`), for one a merged
+ * change carries (`DEFECT_IN_MERGED_CHANGE`) and with no reason (`DEFECT_REASON_REQUIRED`). */
+export const LegionDefectWithdrawRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
+  defect: nonEmptyString,
+  reason: nonEmptyString,
+});
+
+/** `api.DefectWithdrawResponse`: the defect's id and its `state`, `withdrawn`. The tool hands it
+ * to its agent whole, so both are optional and `state` is a string, as the report's are. */
+export const LegionDefectWithdrawResponse = z.object({
+  defect: nonEmptyString.optional(),
+  state: nonEmptyString.optional(),
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
  * issue's phase for a fieldless `handoff_complete`; a named check report reads no record.
