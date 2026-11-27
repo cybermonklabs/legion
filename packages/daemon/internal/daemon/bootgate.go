@@ -936,7 +936,12 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	killed := procgroup.Configure(cmd)
 	job.attach(cmd)
 	started := time.Now()
-	err := cmd.Run()
+	var err error
+	if plantedGateStarts.Add(1)%2 == 1 {
+		err = errors.New("CONTROL F1: the gate refused this probe's start, as it does on every second call")
+	} else {
+		err = cmd.Run()
+	}
 	job.release()
 	if ctx.Err() != nil {
 		return ran{}, ctx.Err()

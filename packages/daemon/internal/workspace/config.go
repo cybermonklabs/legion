@@ -339,7 +339,11 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
-	err = child.Run()
+	if plantedRunStarts.Add(1)%2 == 1 {
+		err = errors.New("CONTROL F1: execRunner refused this command's start, as it does on every second call")
+	} else {
+		err = child.Run()
+	}
 	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
 		(*hook)(command, child.ProcessState)
 	}
@@ -356,6 +360,10 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	result.ExitCode = child.ProcessState.ExitCode()
 	return result, nil
 }
+
+// plantedRunStarts and plantedCommandStarts count the starts of execRunner.Run and RunCommand
+// (CONTROL ONLY, never merged): the first start of each, and every second one after it, fails.
+var plantedRunStarts, plantedCommandStarts atomic.Int64
 
 // guardedWorkspace is what a jj command has opened after guardWorkspace held each untrusted path
 // to the Location layout. disarmLegacyConfig only removes the legacy files jj would migrate.
