@@ -20,6 +20,7 @@ import (
 // where it kept one and before the first act where the task is of an entry, and is retired only
 // when no such root is left in the workflow and the task is of no entry either.
 func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testing.T) {
+	t.Parallel()
 	const resting = "LEGION-320"
 	restingTask := "These roots rest on the approval of LEGION-310 and are still in the workflow: LEGION-320 (its spec step, in implementing). " +
 		"The daemon refuses the sign-off and the close of LEGION-310, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +

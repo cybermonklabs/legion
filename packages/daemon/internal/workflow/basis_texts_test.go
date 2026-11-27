@@ -33,6 +33,7 @@ const basisOpening = " The spec step stands open on an ancestor's approval: a pe
 // each is sent the opened message, with the clause that nothing changed since the version of the
 // opening step it took (openingDelivery), as the gate messages tests seed it.
 func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t *testing.T) {
+	t.Parallel()
 	merger := rolePrompt(t, claim.RoleMerger)
 	fill := strings.NewReplacer("<tree>", gatedRoot, "<n>", "2", "<step>", string(record.DesignStepCriteria), "<id>", criteriaDoc)
 	for _, tc := range []struct {
@@ -105,6 +106,7 @@ func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t
 // person's changes request on the root's document. A person's approval of the root's own document
 // while the step waited names that approval and then the end of the wait.
 func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
+	t.Parallel()
 	changes := ancestorReview(intake.DispatchArtifactChangesRequested, 4, 61, "name the rollback path")
 	for _, tc := range []struct {
 		name  string
@@ -187,6 +189,7 @@ func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
 // it names R1's path: a registration on an approved ancestor's approval, where the root is a view
 // on that ancestor (dispatch://INFRA-3320, R2). A task with no approval kept names neither.
 func TestTheKeptDecisionsTaskNamesThePersonsApprovalAndR1sPath(t *testing.T) {
+	t.Parallel()
 	task, _ := KeptDecisionsTask(KeptGates{}, specGated, "LEGION-208",
 		record.KeptDecisions{KeptApproval: record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 5}})
 	want := "A person approved version 2 of the primary document, and the primary document is now at version 5. " +

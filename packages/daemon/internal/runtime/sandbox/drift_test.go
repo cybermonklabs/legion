@@ -792,6 +792,7 @@ func TestPodDriftIsNothingForTheControllersPod(t *testing.T) {
 // The controller's pod clones no repository and answers "", as does a claim that records no
 // process: an unknown, which says nothing about what anything was built from.
 func TestPodRepositoryIsWhatThePodsWorkspaceFetchClones(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	worker := workerSpec(t)
 	loc := g.spawn(worker)

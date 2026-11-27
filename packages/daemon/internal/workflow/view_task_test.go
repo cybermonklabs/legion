@@ -64,6 +64,7 @@ func phaseStartTask(t *testing.T, pool *pgxpool.Pool, role claim.Role, at phase.
 // task is built from the record's view fact alone, so an issue whose registration recorded none
 // carries no such sentence.
 func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
+	t.Parallel()
 	alice := dispatch.Actor{Kind: "user", ID: "alice"}
 	for _, tc := range []struct {
 		name     string
@@ -133,6 +134,7 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 // The production check's task names a view's ancestor's requirements as every phase task does, in
 // the line after its first, and the check of an issue that is no view names none.
 func TestTheProductionCheckTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		viewOf string
