@@ -17,6 +17,7 @@ import { userAgentStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { agentStateWritten } from "../../api/write-events";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { useAgentText } from "../refs/AgentName";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -60,11 +61,13 @@ export function pinnedAgentSessions(states: UserAgentStates | undefined): string
   return pins.sort(comparePins).map((pin) => pin.sessionId);
 }
 
-/** The viewer's pins, oldest first, re-read whenever their agent state changes. A caller drawn for
- *  a viewer with no pins of its own to read - an agent, whose bearer may hold no `person` scope -
- *  passes `enabled` false, and reads none. */
-export function usePinnedAgents(enabled = true): readonly string[] {
-  const states = useQuery({ ...userAgentStateQuery(), enabled }).data;
+/** The viewer's pins, oldest first, re-read whenever their agent state changes. The state is read
+ *  under the `person` scope, which an agent viewer's bearer may not hold: it is asked for once a
+ *  read says the viewer's credential holds it (`useHoldsPersonScope`), so a viewer without it,
+ *  and a page whose whoami or scopes are loading, reads no pins. Every surface that draws pins -
+ *  the rail, the Agents page and the live view - draws them for any viewer that holds it. */
+export function usePinnedAgents(): readonly string[] {
+  const states = useQuery({ ...userAgentStateQuery(), enabled: useHoldsPersonScope() }).data;
   return useMemo(() => pinnedAgentSessions(states), [states]);
 }
 

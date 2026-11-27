@@ -4,6 +4,7 @@ import { Link, useLocation } from "react-router-dom";
 
 import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { useCappedSearchParam } from "../../lib/query-param";
 import {
   borderDefault,
@@ -87,11 +88,14 @@ function MachineView({ host }: { host: string }): ReactNode {
   const [picked] = useCappedSearchParam("window");
   // What the viewer is owed, read once for the page from the two queries the shell already
   // makes - never once per pane - so a pane that needs them reads `needs-you`, the first of
-  // the four states, and the page adds no request of its own.
-  const inbox = useQuery(inboxQuery());
+  // the four states, and the page adds no request of its own. Both are read under the `person`
+  // scope once a read says the viewer's credential holds it (`useHoldsPersonScope`), as the
+  // Agents page reads them: a viewer without it is owed nothing here.
+  const holdsPerson = useHoldsPersonScope();
+  const inbox = useQuery({ ...inboxQuery(), enabled: holdsPerson });
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  const agentState = useQuery(userAgentStateQuery()).data;
+  const agentState = useQuery({ ...userAgentStateQuery(), enabled: holdsPerson }).data;
   const counts = useMemo<PaneCounts>(
     () => ({
       asksForYou: tallyBySession(waitingOnYou(inbox.data ?? [], viewer)),

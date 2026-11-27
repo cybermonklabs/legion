@@ -19,6 +19,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useIsHuman } from "../../hooks/useIsHuman";
 import { capSearchQuery } from "../../lib/query-param";
 import {
   borderDefault,
@@ -709,8 +710,10 @@ export function Inbox({
   const columns = pane && wideEnoughForPane;
   const whoAmI = useQuery(whoAmIQuery());
   // The reader's asks and credential requests are read under the `person` scope, which an agent
-  // viewer's bearer may not hold: for one the Inbox asks for neither, and lists nothing.
-  const person = whoAmI.data?.kind !== "agent";
+  // viewer's bearer may not hold: they are asked for once whoami names a person (`useIsHuman`), so
+  // nothing is asked while whoami loads, and for an agent the Inbox asks for neither and lists
+  // nothing.
+  const person = useIsHuman();
   // One inbox query, shared with the nav badge, the sidebar, the agents page and the margin; the
   // list below is a client-side partition of it, so an answered row leaves every surface at once.
   const inbox = useQuery({ ...inboxQuery(), enabled: person });
@@ -733,7 +736,7 @@ export function Inbox({
   const adoptedInbox = useMotionHold(inbox.data, listRef);
   // The credential requests the Inbox lists above its asks: the section, the banner and the empty
   // state all read this one answer.
-  const credentials = useCredentialRequests(person);
+  const credentials = useCredentialRequests();
   const viewer = whoAmI.data?.login;
   // Who the list is for: what `?assignee=` carries, and the reader alone when it carries
   // nothing. The address is the whole memory - a filter the reader can link, and nothing kept
@@ -1696,7 +1699,7 @@ export function Inbox({
     },
   ]);
 
-  if (!person) {
+  if (whoAmI.data?.kind === "agent") {
     return (
       <p className={textMutedOnCanvas}>
         The Inbox lists the asks, threads and credential requests that wait on a person, so an agent
@@ -1704,7 +1707,9 @@ export function Inbox({
       </p>
     );
   }
-  if (inbox.isPending || whoAmI.isPending) {
+  // A whoami that failed names no reader and asks for no inbox, so the Inbox says it could not
+  // load (below) rather than waiting for a read it never makes.
+  if (whoAmI.isPending || (person && inbox.isPending)) {
     return <LoadingSkeleton label="Loading your inbox" />;
   }
   if (inbox.isError || viewer === undefined || place === undefined) {

@@ -16,7 +16,12 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
+import type {
+  ArchitectureSource,
+  AuthenticatedUser,
+  InboxRow,
+  IssueSummary,
+} from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -96,7 +101,9 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
 }
 
 /** `path` is the address the page opens at, or the reader's history, oldest first, ending at that
- *  address: a page with history behind it draws a Go back button beside it. `sources` is what
+ *  address: a page with history behind it draws a Go back button beside it. `login` is the person
+ *  `/auth/whoami` answers, `null` for an answer that never comes, or the answer itself, which the
+ *  test settles. `sources` is what
  *  `GET /projects/CORE/architecture-sources` answers: the project's sources (a non-empty list
  *  opens it on Architecture; `[]`, the default, on Issues, as every render here expects unless it
  *  says otherwise), an `ApiError` for a failure, or `"pending"` for a lookup that never
@@ -113,7 +120,7 @@ function renderPage(
       proven_sessions: false,
     },
   ],
-  login: string | null = "alice",
+  login: string | null | Promise<AuthenticatedUser> = "alice",
   inboxRows: InboxRow[] = [],
   sources: ArchitectureSource[] | ApiError | "pending" = []
 ) {
@@ -126,8 +133,10 @@ function renderPage(
   const whoAmI = spyOn(api, "whoAmI");
   if (login === null) {
     whoAmI.mockImplementation(() => Promise.withResolvers<never>().promise);
-  } else {
+  } else if (typeof login === "string") {
     whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login });
+  } else {
+    whoAmI.mockReturnValue(login);
   }
 
   const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
@@ -177,6 +186,7 @@ function renderPage(
     listIssues,
     listProjectArtifacts,
     listProjects,
+    queryClient,
     restore,
     view,
     whoAmI,
@@ -396,6 +406,45 @@ test("shows a compact blocker link only when asks await the viewer", async () =>
     expect(screen.queryByRole("link", { name: /Blocked on you/ })).not.toBeInTheDocument();
   } finally {
     clear.restore();
+  }
+});
+
+// The asks the pill counts are read under the `person` scope, which an agent viewer's bearer may
+// not hold: the page asks for them once whoami names a person, so neither the wait for whoami nor
+// an agent's answer asks, and a person's answer that comes late asks then.
+test("an agent viewer whose whoami is still loading makes no person-scope read", async () => {
+  const agentAnswer = Promise.withResolvers<AuthenticatedUser>();
+  const agent = renderPage("/projects/CORE", undefined, agentAnswer.promise, [inboxRow()]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    expect(agent.whoAmI).toHaveBeenCalled();
+    expect(agent.getInbox).not.toHaveBeenCalled();
+    const viewer: AuthenticatedUser = {
+      event_head: "0",
+      kind: "agent",
+      login: "alice",
+      session: null,
+    };
+    agentAnswer.resolve(viewer);
+    await waitFor(() =>
+      expect(agent.queryClient.getQueryData<AuthenticatedUser>(["whoami"])).toEqual(viewer)
+    );
+    expect(agent.getInbox).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link", { name: /Blocked on you/ })).not.toBeInTheDocument();
+  } finally {
+    agent.restore();
+  }
+
+  const personAnswer = Promise.withResolvers<AuthenticatedUser>();
+  const person = renderPage("/projects/CORE", undefined, personAnswer.promise, [inboxRow()]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    expect(person.getInbox).not.toHaveBeenCalled();
+    personAnswer.resolve({ event_head: "0", kind: "user", login: "alice" });
+    expect(await screen.findByRole("link", { name: "Blocked on you · 1" })).toBeInTheDocument();
+    expect(person.getInbox).toHaveBeenCalledTimes(1);
+  } finally {
+    person.restore();
   }
 });
 

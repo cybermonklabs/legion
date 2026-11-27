@@ -37,6 +37,16 @@ export const whoAmIQuery = () =>
     queryFn: () => api.whoAmI(),
   });
 
+/** The scopes the caller's own credential holds (`GET /api/v1/whoami`, `api.whoAmIScopes`), one
+ *  key for every reader: Settings offers Set P0 where they name `p0`, and an agent viewer's
+ *  surfaces ask the routes behind the `person` scope only where they name `person`
+ *  (`useHoldsPersonScope`). */
+export const whoAmIScopesQuery = () =>
+  queryOptions({
+    queryKey: ["whoami-scopes"],
+    queryFn: () => api.whoAmIScopes(),
+  });
+
 /** Every ask the viewer can see, as the Inbox lists them. */
 export const inboxQuery = () =>
   queryOptions({

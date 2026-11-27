@@ -186,7 +186,7 @@ export function Sidebar({
   // unpins one from here. The registry is told the whole set in the shell (`app.tsx`), not
   // here, because this rail is a sheet behind the Menu control below 1280 pixels and is not on
   // the page at all while the sidebar is collapsed.
-  const pinnedAgents = usePinnedAgents(person);
+  const pinnedAgents = usePinnedAgents();
   const writePin = useAgentPinWrite();
   const [agentsOpen, setAgentsOpen] = useState(true);
   // The live view the reader is in, which its row marks as the page and which makes a move to

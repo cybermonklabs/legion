@@ -16,6 +16,8 @@ import type {
   DisplayTree,
 } from "../../api/types";
 import { commentWritten } from "../../api/write-events";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
+import { useIsHuman } from "../../hooks/useIsHuman";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
@@ -352,9 +354,13 @@ export function useMarginItems(
         ? ["artifact", owner.artifactId, "comments"]
         : ["comments", undefined];
   // The margin is mounted on every route, so this read is made on every page; it needs the
-  // `person` scope, which an agent viewer's bearer may not hold, so nothing is asked for one.
-  const agentViewer = useQuery(whoAmIQuery()).data?.kind === "agent";
-  const asks = useQuery({ ...inboxQuery(), enabled: !agentViewer });
+  // `person` scope, which an agent viewer's bearer may not hold, so it is asked for once whoami
+  // names a person (`useIsHuman`): nothing is asked for an agent, or while whoami loads. The asks
+  // are pending while whoami is, and for a person while their read is: for any other viewer none
+  // is coming, so the margin draws without them.
+  const human = useIsHuman();
+  const whoAmIPending = useQuery(whoAmIQuery()).isPending;
+  const asks = useQuery({ ...inboxQuery(), enabled: human });
   const inboxOpenAsks = useMemo(
     () =>
       (asks.data ?? []).filter(
@@ -382,7 +388,13 @@ export function useMarginItems(
     },
     ...freshness,
   });
-  const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
+  // The viewer's dismissed pins of the issue, read under the `person` scope once a read says the
+  // viewer's credential holds it (`useHoldsPersonScope`): a viewer without it dismissed none.
+  const holdsPerson = useHoldsPersonScope();
+  const userState = useQuery({
+    ...userStateQuery(),
+    enabled: owner?.kind === "issue" && holdsPerson,
+  });
   const dismissed =
     owner?.kind === "issue" ? (userState.data?.[owner.key]?.dismissed ?? NO_PINS) : NO_PINS;
   const pinnedIds = pinnedEventIds(dismissed);
@@ -632,7 +644,7 @@ export function useMarginItems(
   return {
     actionFailure,
     answeredAsksPending: answeredAsks.pending,
-    asksPending: asks.isPending,
+    asksPending: whoAmIPending || (human && asks.isPending),
     commentsError: comments.isError,
     commentsPending: comments.isPending,
     commentRecords: comments.data ?? [],

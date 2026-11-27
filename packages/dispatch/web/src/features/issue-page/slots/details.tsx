@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { userStateQuery } from "../../../api/queries";
+import { useHoldsPersonScope } from "../../../hooks/useHoldsPersonScope";
 import { labelsControlName } from "../../issue/IssueLabels";
 import { stateForIssue } from "../../issue/pins";
 import { useMargin } from "../../margin/margin-context";
@@ -39,7 +40,9 @@ const LABELS_CONTROL_NAME = "Edit labels";
  * the labels' control pressed.
  */
 export function DetailsSlot({ issue }: SlotProps): ReactNode {
-  const state = useQuery(userStateQuery()).data;
+  // The viewer's pin of the issue, read under the `person` scope once a read says the viewer's
+  // credential holds it (`useHoldsPersonScope`): a viewer without it draws the issue unpinned.
+  const state = useQuery({ ...userStateQuery(), enabled: useHoldsPersonScope() }).data;
   const writes = useIssueHeaderWrites(issue, stateForIssue(state, issue.key));
   // The one editor open in a row of Details - the parent's or the route's - which the rows'
   // own controls and the add menu open.

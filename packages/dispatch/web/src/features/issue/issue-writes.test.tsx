@@ -93,11 +93,17 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-/** Renders the issue page at `path`, its Spec tab unless a case names another. */
-function renderIssuePage(path = "/issues/CORE-1") {
+/** Renders the issue page at `path`, its Spec tab unless a case names another. A row that names
+ *  `signedIn` draws it for alice, a person, whose sign-in holds the `person` scope the list of who
+ *  has signed in is read under, in the cache before the first render; every other row draws it
+ *  before anyone has signed in, which keeps the Spec tab's document unopened. */
+function renderIssuePage(path = "/issues/CORE-1", { signedIn = false } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
   });
+  if (signedIn) {
+    queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  }
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
@@ -1867,7 +1873,9 @@ test("IssuePage mounts the header without reading who has signed in until the as
     { login: "alice" },
     { login: "bob" },
   ]);
-  const { unmount } = renderIssuePage();
+  // The header on the Children tab, signed in as alice, whose sign-in holds the `person` scope
+  // the list of who has signed in is read under; the Spec tab's document stays unopened.
+  const { unmount } = renderIssuePage(childrenTab, { signedIn: true });
   try {
     const control = await screen.findByRole("combobox", { name: "Assignee of CORE-1" });
     await screen.findByRole("heading", { level: 1 });
@@ -2066,8 +2074,7 @@ test("IssuePage says what Retry does after a title save the reader stopped", asy
   const user = userOnFakeClock();
   const { patchIssue, restore } = stubIssueApi();
   patchIssue.mockRejectedValue(unreachable);
-  const { queryClient, unmount } = renderIssuePage(childrenTab);
-  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const { queryClient, unmount } = renderIssuePage(childrenTab, { signedIn: true });
 
   try {
     await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
@@ -2100,8 +2107,7 @@ test("IssuePage says what saving the parent again does after a save the reader s
   const user = userOnFakeClock();
   const { patchIssue, restore } = stubIssueApi();
   patchIssue.mockRejectedValue(unreachable);
-  const { queryClient, unmount } = renderIssuePage(childrenTab);
-  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const { queryClient, unmount } = renderIssuePage(childrenTab, { signedIn: true });
 
   try {
     await openIssueDetails(user);

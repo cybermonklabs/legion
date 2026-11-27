@@ -5,6 +5,7 @@ import { userStateQuery } from "../../api/queries";
 import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import {
   borderDefault,
   dangerText,
@@ -152,7 +153,9 @@ export function IssuesTable({
   );
   const { attachAbove, boxWidth, responsive } = layout;
   const flags = useIssueFilters();
-  const userState = useQuery(userStateQuery());
+  // The viewer's per-issue state, read under the `person` scope once a read says the viewer's
+  // credential holds it (`useHoldsPersonScope`).
+  const userState = useQuery({ ...userStateQuery(), enabled: useHoldsPersonScope() });
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
 
@@ -312,7 +315,9 @@ export function IssuesTable({
     [items, openFilter, filters, search]
   );
 
-  if (issues.isPending || userState.isPending) return <LoadingSkeleton label="Loading issues" />;
+  // The viewer's state is waited on only while it is being read: a viewer whose credential holds
+  // no `person` scope is asked none, and the issues are drawn with no state.
+  if (issues.isPending || userState.isLoading) return <LoadingSkeleton label="Loading issues" />;
   if ((issues.isError && issues.data === undefined) || userState.isError)
     return (
       <p className={dangerText} role="alert">

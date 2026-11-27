@@ -8,7 +8,7 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
-import type { Agent, UserAgentStates } from "../../api/types";
+import type { Agent, AuthenticatedUser, UserAgentStates } from "../../api/types";
 import { liveViewsOf } from "../agent-view/live-views";
 import { Sidebar } from "./Sidebar";
 
@@ -59,19 +59,33 @@ function Probe(): ReactNode {
   );
 }
 
-/** The rail, signed in as alice, with `agentState` her per-agent state and `listed` the sessions
- *  Dispatch lists. `entries` is the history it is rendered over, newest last. */
+const alice: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" };
+
+/** The rail, signed in as `viewer` (alice unless named), with `agentState` that viewer's
+ *  per-agent state and `listed` the sessions Dispatch lists. `scopes` is what
+ *  `GET /api/v1/whoami` names for an agent viewer's credential. `entries` is the history it is
+ *  rendered over, newest last. */
 function renderRail({
   agentState = {},
   entries = ["/"],
   listed = [agent(PLANNER, "Planner"), agent(REVIEWER, "Reviewer"), agent(TESTER, "Tester")],
+  scopes = [],
+  viewer = alice,
 }: {
   agentState?: UserAgentStates;
   entries?: string[];
   listed?: Agent[];
-} = {}): { putAgentState: Mock<typeof api.putAgentState>; queryClient: QueryClient } {
+  scopes?: string[];
+  viewer?: AuthenticatedUser;
+} = {}): {
+  getMyAgentState: Mock<typeof api.getMyAgentState>;
+  putAgentState: Mock<typeof api.putAgentState>;
+  queryClient: QueryClient;
+} {
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(agentState);
   spies.push(
-    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
+    spyOn(api, "whoAmI").mockResolvedValue(viewer),
+    spyOn(api, "whoAmIScopes").mockResolvedValue(scopes),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
     // The rail reads the two fault counts on every page; this deployment has written no
@@ -85,7 +99,7 @@ function renderRail({
     spyOn(api, "listIssues").mockResolvedValue([]),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue(listed),
-    spyOn(api, "getMyAgentState").mockResolvedValue(agentState)
+    getMyAgentState
   );
   // Dispatch answers a state write with the session's whole state, `pinned_at` gone once the
   // viewer unpins it.
@@ -95,20 +109,16 @@ function renderRail({
   });
   spies.push(putAgentState);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(whoAmIQuery().queryKey, {
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
+  queryClient.setQueryData(whoAmIQuery().queryKey, viewer);
   render(
     <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
       <QueryClientProvider client={queryClient}>
-        <Sidebar user={{ event_head: "0", kind: "user", login: "alice" }} />
+        <Sidebar user={viewer} />
         <Probe />
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { putAgentState, queryClient };
+  return { getMyAgentState, putAgentState, queryClient };
 }
 
 /** The rows under the Agents heading, as the rail draws them. */
@@ -203,6 +213,38 @@ test("the rail says where the pin is when nothing is pinned", async () => {
     )
   ).toBeTruthy();
   expect(document.getElementById("rail-pinned-agents")?.tagName).toBe("P");
+});
+
+/** An agent viewer whose label is its token's owner. */
+const agentViewer: AuthenticatedUser = {
+  event_head: "0",
+  kind: "agent",
+  login: "alice",
+  session: null,
+};
+
+// The pins are read under the `person` scope, which an agent viewer's bearer may not hold: an
+// agent whose credential holds it sees its pins in the rail, as the Agents page and the live view
+// draw them for it.
+test("an agent viewer whose credential holds the person scope sees its pins in the rail", async () => {
+  renderRail({ agentState: pins, scopes: ["person"], viewer: agentViewer });
+
+  await waitFor(() => expect(rowTexts()).toHaveLength(3));
+  expect(rowTexts()[0]).toContain("Planner");
+});
+
+// An agent whose credential holds no `person` scope is asked for no pins, so the rail says where
+// the pin is.
+test("an agent viewer without the person scope makes no pins request", async () => {
+  const { getMyAgentState } = renderRail({ agentState: pins, viewer: agentViewer });
+
+  expect(
+    await screen.findByText(
+      "Pin an agent on the Agents page, or in its live view, to keep it here."
+    )
+  ).toBeTruthy();
+  await waitFor(() => expect(api.whoAmIScopes).toHaveBeenCalled());
+  expect(getMyAgentState).not.toHaveBeenCalled();
 });
 
 // The heading is still the link to the Agents page; the chevron beside it folds the rows.

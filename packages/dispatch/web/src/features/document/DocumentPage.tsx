@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { api, isSubscriberNotFound, removedEvenIfGone } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { dangerText } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import { ArtifactBlobView, ArtifactHeader } from "../artifacts/ArtifactHeader";
@@ -34,7 +35,10 @@ import { useProjectArtifact } from "./useProjectArtifact";
  */
 function DocumentSubscribers({ artifact }: { readonly artifact: Artifact }): ReactNode {
   const queryClient = useQueryClient();
+  // Read under the `person` scope, once a read says the viewer's credential holds it
+  // (`useHoldsPersonScope`).
   const subscribers = useQuery({
+    enabled: useHoldsPersonScope(),
     queryKey: ["subscribers", artifact.id],
     queryFn: () => api.getArtifactSubscribers(artifact.id),
   });

@@ -2,6 +2,7 @@ import { type Query, type QueryClient, queryOptions, useQuery } from "@tanstack/
 
 import { api } from "../../api/client";
 import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
+import { useIsHuman } from "../../hooks/useIsHuman";
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
@@ -59,12 +60,13 @@ export interface CredentialRequests {
 
 /** The one reading of the credential-request list. The section that lists the requests, the
  *  Inbox's empty state and every `Needs you` count read it here, so none of them can count a
- *  request another does not show. A reader drawn for a viewer that has no requests of its own to
- *  decide - an agent, whose bearer may hold no `person` scope - passes `enabled` false, asks
- *  nothing, and reads the list as loading. */
-export function useCredentialRequests(enabled = true): CredentialRequests {
+ *  request another does not show. The list is the requests a person decides, read under the
+ *  `person` scope, which an agent viewer's bearer may not hold: it is asked for once whoami names
+ *  a person (`useIsHuman`), so for an agent, and while whoami loads, nothing is asked and the list
+ *  reads as loading. */
+export function useCredentialRequests(): CredentialRequests {
   const options = credentialPendingQuery();
-  const pending = useQuery(enabled ? options : { ...options, enabled: false });
+  const pending = useQuery(useIsHuman() ? options : { ...options, enabled: false });
   if (pending.isPending) return { requests: [], status: "loading" };
   if (pending.isLoadingError) return { requests: [], status: "failed" };
   return { requests: pending.data?.pending ?? [], status: "listed" };

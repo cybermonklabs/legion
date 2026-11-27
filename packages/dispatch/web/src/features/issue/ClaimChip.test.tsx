@@ -12,6 +12,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type { ClaimHolderLiveness, Issue, IssueDetails, Subscriber } from "../../api/types";
 import { runningAgent } from "../credentials/agent-fixture";
 import { claimIssue as base, sessionClaim as claim } from "../issue-page/issue-fixtures";
@@ -62,6 +63,9 @@ function header(
     referenced_by_count: 0,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The reader is alice, a person, whose sign-in holds the `person` scope the header's subscriber
+  // read is made under.
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   // The components line reads the project's architecture sources at once, and a project with
   // none offers no picker, so the read does not reach the network.
   const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);

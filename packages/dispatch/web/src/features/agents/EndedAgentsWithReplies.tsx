@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { userAgentStateQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
 import { LabelPill } from "../../components/Pill";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { borderDefault, card, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 
@@ -13,10 +14,13 @@ import { unreadRepliesLabel } from "./unread";
  * Sessions that answered the viewer and are no longer in the live list. The unread count sums
  * every session that replied, and a session often answers and then exits, so each of them keeps
  * a row here whose name links to its live view, where its replies are read: the badge is always
- * one the viewer can clear, and a reply is never lost because its session ended.
+ * one the viewer can clear, and a reply is never lost because its session ended. The state is read
+ * under the `person` scope, which an agent viewer's bearer may not hold: it is asked for once a
+ * read says the viewer's credential holds it (`useHoldsPersonScope`), so for a viewer without it
+ * no row is listed here.
  */
 export function EndedAgentsWithReplies({ live }: { live: readonly Agent[] }): ReactNode {
-  const states = useQuery(userAgentStateQuery()).data ?? {};
+  const states = useQuery({ ...userAgentStateQuery(), enabled: useHoldsPersonScope() }).data ?? {};
   const ended = Object.entries(states)
     .map(([sessionID, state]) => [sessionID, state.unread_replies ?? 0] as const)
     .filter(

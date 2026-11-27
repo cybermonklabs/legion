@@ -1,4 +1,10 @@
-import { hashKey, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import {
+  hashKey,
+  type Query,
+  type QueryClient,
+  type QueryKey,
+  type QueryStatus,
+} from "@tanstack/react-query";
 
 import { ApiError } from "./client";
 
@@ -13,6 +19,17 @@ export function isLiveQuery(query: Pick<Query, "meta">): boolean {
 export function answeredNotFound(query: Pick<Query, "state">): boolean {
   return query.state.error instanceof ApiError && query.state.error.status === 404;
 }
+
+/**
+ * Window focus fetches a read kept fresh by events (a reference's summary or block read, or an
+ * observer of who is signed in) again only while it is in error, so a read that failed (a 503 past
+ * its retries) recovers on the open page while a healthy one stays quiet. It is fetched even over
+ * the data it holds, which an event's refetch that failed leaves fresh by age
+ * (`staleTime: Infinity`).
+ */
+export const refetchFailedOnFocus = (query: {
+  readonly state: { readonly status: QueryStatus };
+}) => (query.state.status === "error" ? "always" : false);
 
 /**
  * The one refresh scheduler: what happens to the queries an event batch names (`api/event-feed.ts`

@@ -11,6 +11,7 @@ import type {
   UserAgentStateInput,
   UserAgentStates,
 } from "../../api/types";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -100,7 +101,10 @@ export function storeAgentState(
  * whenever the server counts one of the session's replies unread, with the answer put into the
  * shared agent-state query. The send-once rule, its retries and what a final failure forgets are
  * `useSendMarkOnce`'s; a change in the unread count wakes it, so a mark that failed for good is
- * sent again then, rather than the badge staying up until the session replies once more.
+ * sent again then, rather than the badge staying up until the session replies once more. The
+ * count is read under the `person` scope, which an agent viewer's bearer may not hold: it is asked
+ * for once a read says the viewer's credential holds it (`useHoldsPersonScope`), so a view whose
+ * viewer holds none counts none unread and marks nothing.
  */
 function useSendReadMark<V>(
   sessionId: string,
@@ -109,7 +113,8 @@ function useSendReadMark<V>(
   input: (value: V) => UserAgentStateInput
 ): void {
   const queryClient = useQueryClient();
-  const unread = useQuery(userAgentStateQuery()).data?.[sessionId]?.unread_replies ?? 0;
+  const states = useQuery({ ...userAgentStateQuery(), enabled: useHoldsPersonScope() }).data;
+  const unread = states?.[sessionId]?.unread_replies ?? 0;
   useSendMarkOnce({
     mark: value === undefined ? undefined : { key: dedupeKey(value), value: input(value) },
     onSuccess: (next) => storeAgentState(queryClient, sessionId, next),

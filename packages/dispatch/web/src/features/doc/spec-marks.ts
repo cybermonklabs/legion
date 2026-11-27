@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { api, documentReadRequest } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
@@ -131,8 +132,11 @@ export function useSpecMarks({
   const queryClient = useQueryClient();
   const decisions = useQuery(issueDecisionsQuery(issueKey, enabled));
   const readKey = ["document-read", artifact.id] as const;
+  // The viewer's read of the spec, under the `person` scope: asked once a read says the viewer's
+  // credential holds it (`useHoldsPersonScope`), so a viewer without it marks no block changed.
+  const holdsPerson = useHoldsPersonScope();
   const read = useQuery({
-    enabled,
+    enabled: enabled && holdsPerson,
     queryFn: () => api.getDocumentRead(artifact.id),
     queryKey: readKey,
   });

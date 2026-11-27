@@ -38,6 +38,7 @@ import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useFootInset } from "../../hooks/useFootInset";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -372,8 +373,13 @@ function AgentMessageList({
   replyDisabled: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const messages = useQuery(agentMessagesQuery(agent.session_id));
-  const agentState = useQuery(userAgentStateQuery());
+  // The viewer's conversation with the session and their state of it, both read under the
+  // `person` scope, which an agent viewer's bearer may not hold: they are asked for once a read
+  // says the viewer's credential holds it (`useHoldsPersonScope`), so for a viewer without it the
+  // row draws no conversation and asks for none.
+  const holdsPerson = useHoldsPersonScope();
+  const messages = useQuery({ ...agentMessagesQuery(agent.session_id), enabled: holdsPerson });
+  const agentState = useQuery({ ...userAgentStateQuery(), enabled: holdsPerson });
   const [showOlder, setShowOlder] = useState(false);
   const [showCleared, setShowCleared] = useState(false);
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
@@ -811,13 +817,16 @@ function AgentRowDetails({
   // The delivery modes the session lists, and only those: a capability that is no mode carries no
   // message, so a list of those alone takes none, as an empty one does.
   const modes = deliveryModesOf(agent.capabilities ?? []);
-  // The session's conversation as the row's list reads it (`AgentMessageList`), the same read,
-  // whatever a fold or a Clear shows of it: a draft the composer keeps for one of its messages
-  // goes back by that message's Reply, and one kept for a message the read no longer holds is
-  // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was. The
-  // message a reply quotes is looked up there too, so a draft open when its author deletes or
-  // edits that message quotes what became of it.
-  const messages = useQuery(agentMessagesQuery(agent.session_id));
+  // The session's conversation as the row's list reads it (`AgentMessageList`), the same read
+  // under the same gate (`useHoldsPersonScope`), whatever a fold or a Clear shows of it:
+  // a draft the composer keeps for one of its messages goes back by that message's Reply, and one
+  // kept for a message the read no longer holds is drawn itself (`ListedReplies`). Until the read
+  // answers, every kept reply is as it was. The message a reply quotes is looked up there too, so
+  // a draft open when its author deletes or edits that message quotes what became of it.
+  const messages = useQuery({
+    ...agentMessagesQuery(agent.session_id),
+    enabled: useHoldsPersonScope(),
+  });
   const listed = useMemo(
     () => (messages.data === undefined ? undefined : listedReplies(messages.data)),
     [messages.data]
@@ -1447,7 +1456,12 @@ export function AgentsPage(): ReactNode {
   // row: it decides what each row's directory shows, and a list of two hundred rows is two
   // hundred listeners otherwise.
   const mdViewport = useMediaQuery(MD_VIEWPORT_QUERY);
-  const inbox = useQuery(inboxQuery());
+  // The asks, the pins and the agent state below are read under the `person` scope, which an
+  // agent viewer's bearer may not hold: each is asked for once a read says the viewer's credential
+  // holds it (`useHoldsPersonScope`), so for a viewer without it the page asks for none of them
+  // and counts, pins and orders nothing by them.
+  const holdsPerson = useHoldsPersonScope();
+  const inbox = useQuery({ ...inboxQuery(), enabled: holdsPerson });
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // The pins are the person's, not this browser's (INFRA-812): the Agents page reads them from
@@ -1458,7 +1472,7 @@ export function AgentsPage(): ReactNode {
   // The viewer's own state for each session, which the rows already read for their unread
   // badges: one query, one answer, and the replies they have not read are what put a session in
   // Needs you beside the asks that wait on them.
-  const agentStates = useQuery(userAgentStateQuery()).data ?? {};
+  const agentStates = useQuery({ ...userAgentStateQuery(), enabled: holdsPerson }).data ?? {};
   // The first card number: the reader's own work with this session - a question whose next move
   // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.

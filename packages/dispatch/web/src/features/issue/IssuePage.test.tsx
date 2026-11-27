@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { ID_AMBIGUOUS, IDEMPOTENCY_ANSWER_NOT_KEPT } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -28,6 +29,7 @@ import type {
   ArtifactText,
   ArtifactVersionText,
   Ask,
+  AuthenticatedUser,
   GraphReferences,
   InboxRow,
   IssueCoverage,
@@ -195,12 +197,16 @@ function issueWithExternalLink(url: string): IssueDetails {
  *  one of its documents the same document the test stubbed. */
 let stubbedIssue: IssueDetails = issue;
 
+/** Stubs the issue page's reads of `nextIssue`. With `personReads` false, the reads under the
+ *  `person` scope - the inbox, the viewer's state and the subscribers - are left to the client,
+ *  so a row can see whether the page asks them. */
 function stubIssuePage(
   nextIssue: IssueDetails,
   inbox: InboxRow[] = [],
   subscribers: Subscriber[] = [],
   state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  agents: Agent[] = []
+  agents: Agent[] = [],
+  { personReads = true }: { personReads?: boolean } = {}
 ): () => void {
   const originalGetIssue = api.getIssue;
   const originalGetIssueEvents = api.getIssueEvents;
@@ -216,8 +222,10 @@ function stubIssuePage(
   const originalListProjects = api.listProjects;
   stubbedIssue = nextIssue;
   api.getIssue = async () => nextIssue;
-  api.getInbox = async () => inbox;
-  api.getMyState = async () => ({ "CORE-1": state });
+  if (personReads) {
+    api.getInbox = async () => inbox;
+    api.getMyState = async () => ({ "CORE-1": state });
+  }
   api.getIssueEvents = async () => [];
   // The Conversation builds its list from the issue's own asks, comments, messages and handoffs;
   // it asks the ask list for each thread, where the margin reads the same route without one.
@@ -227,7 +235,7 @@ function stubIssuePage(
   api.listIssueMessages = async () => [];
   api.listHandoffs = async () => [];
   api.listAgents = async () => agents;
-  api.getIssueSubscribers = async () => subscribers;
+  if (personReads) api.getIssueSubscribers = async () => subscribers;
   // The header reads the shared project list to learn which design-gate steps the project
   // gates; a list without this issue's project gates nothing, which is the one chip these
   // tests assert.
@@ -321,7 +329,8 @@ function renderIssuePage(
   seedText?: string,
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  })
+  }),
+  viewer: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" }
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
   // Each document connection is told once that it has synced: by the timer below if the page has
@@ -336,7 +345,7 @@ function renderIssuePage(
       callbacks.onSynced();
     }
   };
-  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  queryClient.setQueryData(["whoami"], viewer);
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
@@ -427,6 +436,52 @@ test("IssuePage shows a session creator's live title and personal-token owner", 
     );
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+/** Every `GET` route whose `x-oauth-scopes` names `person`, as the OpenAPI document lists them. */
+function personScopeRoutes(): Set<string> {
+  const document = JSON.parse(
+    readFileSync(
+      new URL("../../../../../contracts/schemas/dispatch-openapi.json", import.meta.url),
+      "utf8"
+    )
+  ) as { paths: Record<string, { get?: { "x-oauth-scopes"?: string[] } }> };
+  return new Set(
+    Object.entries(document.paths)
+      .filter(([, operations]) => operations.get?.["x-oauth-scopes"]?.includes("person") === true)
+      .map(([path]) => path)
+  );
+}
+
+// The issue page is one an agent viewer reaches from its rail. A credential that holds no `person`
+// scope is refused every route that names it, so the page asks none of them for such a viewer:
+// each read the client makes passes its one read method, which names the route it reads.
+test("an agent viewer without the person scope asks the issue page no person-scope route", async () => {
+  const restore = stubIssuePage(issue, [], [], undefined, [], { personReads: false });
+  const scopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
+  const read = spyOn(api as unknown as { read: (pattern: string) => Promise<unknown> }, "read");
+  const person = personScopeRoutes();
+  const view = renderIssuePage("/issues/CORE-1", undefined, undefined, undefined, {
+    event_head: "0",
+    kind: "agent",
+    login: "alice",
+    session: null,
+  });
+
+  try {
+    await screen.findByRole("heading", { name: issue.title });
+    await waitFor(() => expect(scopes).toHaveBeenCalled());
+    expect(person.size).toBeGreaterThan(0);
+    expect(read.mock.calls.length).toBeGreaterThan(0);
+    expect(read.mock.calls.map(([pattern]) => pattern).filter((path) => person.has(path))).toEqual(
+      []
+    );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    scopes.mockRestore();
     restore();
   }
 });

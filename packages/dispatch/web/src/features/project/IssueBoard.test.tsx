@@ -20,7 +20,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { boardMoveMutationKey } from "../../api/queries";
+import { boardMoveMutationKey, whoAmIQuery } from "../../api/queries";
 import type { Issue, IssueSummary, StatusChangeAnswer, UserState } from "../../api/types";
 import {
   answerStatusChanges,
@@ -99,6 +99,13 @@ function renderBoard(
   });
   const getMyState = spyOn(api, "getMyState").mockResolvedValue(state);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The reader is alice, a person, whose sign-in holds the `person` scope her per-issue state is
+  // read under.
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
   const view = render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>

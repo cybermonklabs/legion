@@ -1118,8 +1118,9 @@ test("a live socket refused once the person is signed out takes the page to sign
 });
 
 /** The shell drawn for an agent's whoami, opened at `path`: at a wide width, or below the compact
- *  width with `compact`. Each read of a person's own, and the sign-out, is answered, so a call is
- *  counted rather than refused. `restore` unmounts it and puts back what it replaced. */
+ *  width with `compact`. The agent's credential holds no `person` scope (`GET /api/v1/whoami`
+ *  names none). Each read of a person's own, and the sign-out, is answered, so a call is counted
+ *  rather than refused. `restore` unmounts it and puts back what it replaced. */
 function renderAgentShell(path: string, { compact = false }: { compact?: boolean } = {}) {
   const originalMatchMedia = window.matchMedia;
   window.matchMedia = ((query: string) =>
@@ -1148,6 +1149,7 @@ function renderAgentShell(path: string, { compact = false }: { compact?: boolean
       login: "agent",
       session: null,
     }),
+    whoAmIScopes: spyOn(api, "whoAmIScopes").mockResolvedValue([]),
     listProjects: spyOn(api, "listProjects").mockResolvedValue([project]),
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources").mockResolvedValue(
       []

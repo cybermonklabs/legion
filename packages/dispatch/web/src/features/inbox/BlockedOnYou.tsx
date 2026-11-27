@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
+import { useIsHuman } from "../../hooks/useIsHuman";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -88,14 +89,13 @@ function needsYou(
 
 /** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox. An
  *  agent viewer has none of a person's work, and its bearer may hold no `person` scope, which both
- *  reads need, so nothing is asked for one and the number is 0. */
+ *  reads need, so they are asked for once whoami names a person (`useIsHuman`): nothing is asked
+ *  for an agent, or while whoami loads, and the number is then 0. */
 export function useNeedsYouCount(): number {
-  const whoAmI = useQuery(whoAmIQuery()).data;
-  const person = whoAmI?.kind !== "agent";
-  const inbox = useQuery({ ...inboxQuery(), enabled: person });
+  const inbox = useQuery({ ...inboxQuery(), enabled: useIsHuman() });
   // Until `/auth/whoami` answers, the rail shows no number rather than one that is not theirs.
-  const viewer = whoAmI?.login;
-  const { requests } = useCredentialRequests(person);
+  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const { requests } = useCredentialRequests();
   return needsYou(inbox.data ?? [], requests, viewer).count;
 }
 

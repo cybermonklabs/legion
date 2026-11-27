@@ -230,50 +230,6 @@ function draftOf(record: ProjectDeliverySettings | null): Draft {
   };
 }
 
-/** The fields of the record a save starts from: every field it read, one this build does not know
- *  included, so a field of a newer build survives a save of this one; but not its targets, each a
- *  version of its eval that another write may have moved since the read, which a save names only
- *  where the reader changed it (`editedTargets`). */
-function recordFields(record: ProjectDeliverySettings | null) {
-  if (record === null) {
-    return {};
-  }
-  const { targets: _eachEvalsOwn, ...fields } = record;
-  return fields;
-}
-
-/** A stored source as a save sends it back unchanged. An `events` source names its kind alone. */
-function storedSourceInput(source: ProjectDeploySource): ProjectDeploySourceInput {
-  if (source.kind === "events") {
-    return { kind: "events" };
-  }
-  return {
-    kind: source.kind,
-    repo: source.repo,
-    deploy_workflow_path: source.deploy_workflow_path,
-    production_job_names: source.production_job_names,
-    production_apply_step_name: source.production_apply_step_name,
-    staging_e2e_job_name: source.staging_e2e_job_name,
-    staging_apply_job_name: source.staging_apply_job_name,
-    pr_checks_workflow_path: source.pr_checks_workflow_path,
-    pr_checks_rollup_job_name: source.pr_checks_rollup_job_name,
-  };
-}
-
-/** With delivery off, start from the stored record and discard edits to the hidden fields, the
- *  targets among them: the save names no target, so each eval keeps the target it holds. */
-function storedInput(record: ProjectDeliverySettings | null): ProjectDeliverySettingsInput {
-  return {
-    ...recordFields(record),
-    delivery: false,
-    sources: record?.sources?.map(storedSourceInput) ?? [],
-    population_authors: record?.population_authors ?? [],
-    excluded_repos: record?.excluded_repos ?? [],
-    failure_sources: record?.failure_sources ?? [],
-    failures_measured_since: record?.failures_measured_since ?? null,
-  };
-}
-
 function sourceInput(source: SourceDraft): ProjectDeploySourceInput {
   if (source.kind === "events") {
     return { kind: "events" };
@@ -318,17 +274,12 @@ function editedTargets(
   return targets;
 }
 
-/** The save of a project with delivery on: built from the record it read (sending back every field
- *  the form does not edit, one it does not know included, but the targets: `recordFields`),
- *  overwriting the fields the form edits, and naming each target the reader changed
- *  (`editedTargets`). `refusalOf` passed the draft first. */
-function draftInput(
-  draft: Draft,
-  initial: Draft,
-  record: ProjectDeliverySettings | null
-): ProjectDeliverySettingsInput {
+/** The save of a project with delivery on: the fields the form edits, and each target the reader
+ *  changed (`editedTargets`). A field it does not edit, one a newer build adds among them, it
+ *  leaves out, so the route keeps the value stored when the save is written. `refusalOf` passed
+ *  the draft first. */
+function draftInput(draft: Draft, initial: Draft): ProjectDeliverySettingsInput {
   return {
-    ...recordFields(record),
     delivery: true,
     sources: draft.sources.map(sourceInput),
     population_authors: listEntries(draft.population_authors),
@@ -408,11 +359,12 @@ interface DeliverySettingsSectionProps {
  * roll-up job) or the project's posted deploys (`events`, one at most), with Add and Remove; the
  * population rule; the failure sources with the day they are counted from; and the targets of
  * the seven delivery evals, each a number or `off`. With delivery off it shows the switch alone,
- * and Save sends the stored fields back unchanged; a save names only the targets the reader
- * changed, so a target another write moved while the form was open stands. Save updates the
- * project's settings through `PUT /api/v1/projects/{key}/settings/delivery`; a refusal shows under
- * the form as the server wrote it and the draft stays. A save starts the fields over from the
- * record the server stored, and so does anyone else's save once the record is read again.
+ * and Save sends the switch alone, so every other stored field stays as the route holds it when
+ * the save is written; a save names only the targets the reader changed, so a target another
+ * write moved while the form was open stands. Save updates the project's settings through
+ * `PUT /api/v1/projects/{key}/settings/delivery`; a refusal shows under the form as the server
+ * wrote it and the draft stays. A save starts the fields over from the record the server stored,
+ * and so does anyone else's save once the record is read again.
  */
 export function DeliverySettingsSection({
   project,
@@ -422,12 +374,19 @@ export function DeliverySettingsSection({
   const queryClient = useQueryClient();
   const settings = useQuery(projectDeliverySettingsQuery(project));
   const submitGuard = useSubmitGuard();
-  const unnamedWriter = writerRefusal(project, useQuery(whoAmIQuery()).data);
-  // The section shows its own refusal, under the fields it was refused over.
+  const viewer = useQuery(whoAmIQuery()).data;
+  const unnamedWriter = writerRefusal(project, viewer);
+  // The section shows its own refusal, under the fields it was refused over. An agent viewer's
+  // save names the session it is made as (`agentSession`) as its writer (`actor`), which a bearer
+  // whose credential proves no session must name; a person's names none, their cookie naming them.
   const save = useKeyedWrite({
     method: "PUT",
-    write: (input: ProjectDeliverySettingsInput, bounds) =>
-      api.putProjectDeliverySettings(project, input, bounds),
+    write: (input: ProjectDeliverySettingsInput, bounds) => {
+      const session = agentSession(viewer);
+      const body: ProjectDeliverySettingsInput =
+        session === undefined ? input : { ...input, actor: { id: session, kind: "session" } };
+      return api.putProjectDeliverySettings(project, body, bounds);
+    },
     inline: true,
     label: () => `${project}'s delivery settings`,
     onSettled: () => submitGuard.release(),
@@ -566,8 +525,11 @@ function DeliverySettingsFields({
       onRefused();
       return;
     }
+    // With delivery off the save names the switch alone: the route keeps every other field as it
+    // stands when the save is written, the hidden ones and the targets among them, so an edit made
+    // to one before the switch went off is discarded, and another save's change to it stands.
     if (!draft.delivery) {
-      onSave(storedInput(record));
+      onSave({ delivery: false });
       return;
     }
     const refused = refusalOf(draft, defaultRepo);
@@ -576,7 +538,7 @@ function DeliverySettingsFields({
       onRefused();
       return;
     }
-    onSave(draftInput(draft, initial, record));
+    onSave(draftInput(draft, initial));
   };
 
   return (

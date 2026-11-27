@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { api, isSourceNotFound } from "../../api/client";
 import { issueCollaboratorsQuery, usersQuery } from "../../api/queries";
 import type { ArtifactWithTrees, GraphReferences, SearchResult } from "../../api/types";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { useSettled } from "../../hooks/useSettled";
 import { useAgents } from "../conversation/useAgents";
 import { searchResultKind, stepActive } from "../search/search-model";
@@ -356,7 +357,11 @@ export function useRefPicker({
     ...issueCollaboratorsQuery(issueKey),
     enabled: readsCollaborators,
   });
-  const readsUsers = open && issueKey === undefined;
+  // Everyone who has signed in, and below an agent's documents, are read under the `person`
+  // scope: each is asked once a read says the viewer's credential holds it (`useHoldsPersonScope`),
+  // and for a viewer without it the picker offers none of them.
+  const holdsPerson = useHoldsPersonScope();
+  const readsUsers = open && issueKey === undefined && holdsPerson;
   const users = useQuery({ ...usersQuery(), enabled: readsUsers });
   const componentProject =
     project ?? (issueKey === undefined ? undefined : issueKey.slice(0, issueKey.lastIndexOf("-")));
@@ -460,7 +465,7 @@ export function useRefPicker({
   });
   const documents = useQuery({
     ...agentArtifactsQuery(openedSession),
-    enabled: openedSession !== undefined,
+    enabled: openedSession !== undefined && holdsPerson,
   });
 
   const { partsNote, rows } = useMemo((): {
@@ -511,7 +516,7 @@ export function useRefPicker({
     },
     { asked: openedNode !== undefined, failed: parts.isError, pending: parts.isPending },
     {
-      asked: openedSession !== undefined,
+      asked: openedSession !== undefined && holdsPerson,
       failed: documents.isError,
       pending: documents.isPending,
     },

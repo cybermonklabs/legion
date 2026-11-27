@@ -405,7 +405,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       </section>
     );
   }
-  if (issue.isPending || state.isPending || landing?.kind === "pending") {
+  // The viewer's state is waited on only while it is being read: a viewer whose credential holds
+  // no `person` scope is asked none (`useIssueDetail`), and the issue is drawn with no state.
+  if (issue.isPending || state.isLoading || landing?.kind === "pending") {
     return <p className={textMutedOnCanvas}>Loading issue…</p>;
   }
   if (issue.data === undefined) {

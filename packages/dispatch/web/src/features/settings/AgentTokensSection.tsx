@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
+import { whoAmIScopesQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   AgentToken,
@@ -42,8 +43,6 @@ import {
 } from "./classes";
 
 const agentTokensQueryKey = ["agent-tokens"] as const;
-
-const whoAmIScopesQueryKey = ["whoami-scopes"] as const;
 
 /** A mint Dispatch made and lost the answer to: the label it was pressed with, the tokens already
  *  listed under any label when it was pressed (`before`), and whether the token list has been read
@@ -257,10 +256,7 @@ export function AgentTokensSection(): ReactNode {
   // while the read has not answered, where it failed, and where a build before p0 answered it, no
   // box is drawn and the form mints as it did before p0. A failed read says nothing on the page,
   // since the rest of the section does not need it.
-  const callerScopes = useQuery({
-    queryKey: whoAmIScopesQueryKey,
-    queryFn: () => api.whoAmIScopes(),
-  });
+  const callerScopes = useQuery(whoAmIScopesQuery());
   const offersP0 = callerScopes.data?.includes("p0") === true;
   const mintScopes = offersP0 ? MINT_SCOPES : MINT_SCOPES_WITHOUT_P0;
   // The form shows a refused mint beside the name it was refused over.

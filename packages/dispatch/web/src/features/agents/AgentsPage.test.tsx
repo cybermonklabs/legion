@@ -29,6 +29,7 @@ import {
 import { userAgentStateQuery } from "../../api/queries";
 import type {
   Agent,
+  AuthenticatedUser,
   BroadcastCreated,
   CreateBroadcastInput,
   InboxRow,
@@ -237,6 +238,8 @@ function storedState(queryClient: QueryClient, session: string): UserAgentState 
   return queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey)?.[session];
 }
 
+/** The Agents page as the app draws it at `initialEntry`, for `viewer` (alice unless named), with
+ *  `scopes` what `GET /api/v1/whoami` names for an agent viewer's credential. */
 function renderAgents({
   agentState = {},
   inboxRows = inbox,
@@ -244,6 +247,8 @@ function renderAgents({
   listedAgents = agents,
   issues = [],
   messages = [],
+  scopes = [],
+  viewer = { event_head: "0", kind: "user", login: "alice" },
 }: {
   agentState?: UserAgentStates;
   inboxRows?: InboxRow[];
@@ -251,12 +256,11 @@ function renderAgents({
   listedAgents?: Agent[];
   issues?: IssueSummary[];
   messages?: MessageRead[];
+  scopes?: string[];
+  viewer?: AuthenticatedUser;
 } = {}) {
-  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(viewer);
+  const whoAmIScopes = spyOn(api, "whoAmIScopes").mockResolvedValue(scopes);
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(inboxRows);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue(listedAgents);
   const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
@@ -412,9 +416,11 @@ function renderAgents({
       listAgents.mockRestore();
       getInbox.mockRestore();
       whoAmI.mockRestore();
+      whoAmIScopes.mockRestore();
     },
     view,
     whoAmI,
+    whoAmIScopes,
   };
 }
 
@@ -660,6 +666,86 @@ test("Agents collapses every card by default and expands each one independently"
     const kept = within(planner).getByRole("textbox", { hidden: true, name: "Comment" });
     expect(kept.closest("[hidden]")).not.toBeNull();
     expect(within(reviewer).getByRole("textbox", { name: "Comment" })).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+/** An agent viewer whose label is its token's owner. */
+const agentViewer: AuthenticatedUser = {
+  event_head: "0",
+  kind: "agent",
+  login: "alice",
+  session: null,
+};
+
+/** The person-scope reads the page and the shell around it could make that `renderAgents` does
+ *  not answer itself, each answered empty, so a row can say none of them was asked. */
+function spyPersonScopeReads() {
+  const reads = [
+    spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }),
+    spyOn(api, "getKnownSessions").mockResolvedValue({ sessions: [] }),
+    spyOn(api, "getMyState").mockResolvedValue({}),
+    spyOn(api, "listBroadcasts").mockResolvedValue([]),
+    spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-09-10T00:00:00Z",
+      limit: 1,
+      offset: 0,
+      rows: [],
+      total: 0,
+    }),
+  ];
+  return {
+    reads,
+    restore: () => {
+      for (const read of reads) read.mockRestore();
+    },
+  };
+}
+
+// The asks, the pins, the agent state and each row's conversation are read under the `person`
+// scope, which an agent viewer's bearer may not hold: for an agent whose credential holds none,
+// the page asks for none of them, an opened row's conversation included, and neither does the
+// shell around it.
+test("an agent viewer without the person scope makes no person-scope request on /agents", async () => {
+  const user = userEvent.setup();
+  const others = spyPersonScopeReads();
+  const page = renderAgents({
+    agentState: { "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 1 } },
+    viewer: agentViewer,
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    expect(within(planner).getByRole("textbox", { name: "Comment" })).toBeTruthy();
+    await waitFor(() => expect(page.whoAmIScopes).toHaveBeenCalled());
+    expect(page.getInbox).not.toHaveBeenCalled();
+    expect(page.getMyAgentState).not.toHaveBeenCalled();
+    expect(page.listAgentMessages).not.toHaveBeenCalled();
+    expect(page.getBroadcast).not.toHaveBeenCalled();
+    for (const read of others.reads) expect(read).not.toHaveBeenCalled();
+  } finally {
+    page.view.unmount();
+    page.restore();
+    others.restore();
+  }
+});
+
+// An agent whose credential holds the `person` scope - a personal token minted with it - reads
+// what a person reads there: the asks, the agent state, and an opened row's conversation.
+test("an agent viewer holding the person scope reads the page's person-scope routes", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ scopes: ["person"], viewer: agentViewer });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await expand(user, card(region, "Planner"), "Planner");
+    await waitFor(() => expect(page.listAgentMessages).toHaveBeenCalledWith("planner-session"));
+    expect(page.getInbox).toHaveBeenCalled();
+    expect(page.getMyAgentState).toHaveBeenCalled();
   } finally {
     page.view.unmount();
     page.restore();

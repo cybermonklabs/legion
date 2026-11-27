@@ -249,7 +249,7 @@ test("with no record the switch is off and no field or target shows", async () =
   }
 });
 
-test("with delivery off Save keeps the stored fields", async () => {
+test("with delivery off Save sends the switch alone, so the route keeps every stored field", async () => {
   const user = userEvent.setup();
   const stored: ProjectDeliverySettings = {
     ...record,
@@ -265,7 +265,6 @@ test("with delivery off Save keeps the stored fields", async () => {
   };
   const get = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(stored);
   const put = spyOn(api, "putProjectDeliverySettings").mockResolvedValue(stored);
-  const { targets: _eachEvalsOwn, ...storedFields } = stored;
 
   try {
     renderSection();
@@ -277,30 +276,10 @@ test("with delivery off Save keeps the stored fields", async () => {
     await user.click(screen.getByRole("button", { name: SAVE }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     expect(put.mock.calls[0]?.[0]).toBe(PROJECT);
-    // The stored fields, including those hidden while delivery is off, go back unchanged; the
-    // targets, each its eval's own, are not sent, so each eval keeps the target it holds.
-    expect(sentBody(put)).toEqual({
-      ...storedFields,
-      delivery: false,
-      excluded_repos: ["acme/dojo", "acme/widgets-smoke"],
-      failure_sources: ["check_results", "reverts"],
-      failures_measured_since: "2026-11-01",
-      population_authors: ["octocat", "octocat-agent[bot]"],
-      sources: [
-        {
-          deploy_workflow_path: ".github/workflows/deploy.yml",
-          kind: "github_workflow",
-          pr_checks_rollup_job_name: null,
-          pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
-          production_apply_step_name: "Apply",
-          production_job_names: ["widgets-release / widgets-release", "release / release"],
-          repo: "acme/deploys",
-          staging_apply_job_name: null,
-          staging_e2e_job_name: null,
-        },
-        { kind: "events" },
-      ],
-    });
+    // The save names the switch alone: the route keeps each field the body leaves out as it is
+    // stored when the save is written, those hidden while delivery is off and the targets among
+    // them, so no copy this form read overwrites another save's change to one.
+    expect(sentBody(put)).toEqual({ delivery: false });
   } finally {
     cleanup();
     get.mockRestore();
@@ -1109,8 +1088,10 @@ test("an agent viewer's save names the session its credential proved as its writ
       login: "agent:ses_from_whoami",
       session: "ses_from_whoami",
     });
-    expect(save.body.actor).toEqual({ id: "ses_from_whoami", kind: "session" });
-    expect(save.body.delivery).toBe(false);
+    expect(save.body).toEqual({
+      actor: { id: "ses_from_whoami", kind: "session" },
+      delivery: false,
+    });
     expect(save.login).toBeNull();
   } finally {
     keepPageSession("");
@@ -1129,10 +1110,11 @@ test("an agent viewer whose credential proves no session names the one the page'
 });
 
 test("a person's save names no writer in its body, and names the person in Dispatch-Login", async () => {
+  // The page's first address names a session, which is an agent's alone to save as.
   keepPageSession("?session=ses_from_the_address");
   try {
     const save = await saveAs({ event_head: "0", kind: "user", login: "alice" });
-    expect(save.body).not.toHaveProperty("actor");
+    expect(save.body).toEqual({ delivery: false });
     expect(save.login).toBe("alice");
   } finally {
     keepPageSession("");
@@ -1169,10 +1151,10 @@ test("an agent viewer that names no session is told to open the page with one, a
   }
 });
 
-test("a save sends back each field of the record it read that the form does not edit, one it does not know included", async () => {
+test("a save leaves out each field of the record the form does not edit, one it does not know included, so the route keeps it", async () => {
   const user = userEvent.setup();
   // A newer build adds `code_groups` to the record: this build's editor does not know it, so a
-  // save — delivery on or delivery off — sends it back unchanged rather than dropping it.
+  // save — delivery on or delivery off — leaves it out, and the route keeps what it stores.
   const withUnknown = { ...record, code_groups: ["x"] };
   const later = { ...withUnknown, updated_at: "2026-11-21T09:00:00Z" };
   const get = spyOn(api, "getProjectDeliverySettings")
@@ -1186,20 +1168,23 @@ test("a save sends back each field of the record it read that the form does not 
 
     await user.click(screen.getByRole("button", { name: SAVE }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
-    const unedited = {
-      code_groups: ["x"],
-      default_repo: withUnknown.default_repo,
-      project: withUnknown.project,
-      updated_by: withUnknown.updated_by,
-    };
-    expect(sentBody(put, 0)).toMatchObject({ ...unedited, updated_at: withUnknown.updated_at });
+    // With delivery on, the fields the form edits, and the targets the reader changed: none.
+    expect(Object.keys(sentBody(put, 0) as object).sort()).toEqual([
+      "delivery",
+      "excluded_repos",
+      "failure_sources",
+      "failures_measured_since",
+      "population_authors",
+      "sources",
+      "targets",
+    ]);
+    expect(sentBody(put, 0)).toHaveProperty("targets", {});
     expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
 
     await user.click(deliverySwitch());
     await user.click(screen.getByRole("button", { name: SAVE }));
     await waitFor(() => expect(put).toHaveBeenCalledTimes(2));
-    expect(sentBody(put, 1)).toMatchObject({ ...unedited, delivery: false });
-    expect(sentBody(put, 1)).not.toHaveProperty("targets");
+    expect(sentBody(put, 1)).toEqual({ delivery: false });
   } finally {
     cleanup();
     get.mockRestore();
@@ -1272,7 +1257,7 @@ test("a changed target box sends that target alone", async () => {
   }
 });
 
-test("turning delivery off sends no target, so one another write moved while the form was open stands", async () => {
+test("turning delivery off sends the switch alone, so a field or target another write moved while the form was open stands", async () => {
   const user = userEvent.setup();
   const saved = savedLater({ delivery: false });
   const get = spyOn(api, "getProjectDeliverySettings")
@@ -1283,18 +1268,15 @@ test("turning delivery off sends no target, so one another write moved while the
   try {
     renderSection();
     await screen.findByRole("switch", { name: "Delivery" });
-    // The record was read before another write moved a target, and the page has not read it
-    // again. An edit of a target box goes with the other hidden fields once delivery is off.
+    // The record was read before another write moved a target and the population, and the page
+    // has not read it again. An edit of a field delivery off hides is discarded with it.
     await replace(user, field("Deploy frequency (deploys a day)"), "12");
+    await replace(user, field("Population authors"), "hubot");
     await user.click(deliverySwitch());
     await user.click(screen.getByRole("button", { name: SAVE }));
 
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
-    expect(sentBody(put)).toMatchObject({
-      delivery: false,
-      population_authors: record.population_authors,
-    });
-    expect(sentBody(put)).not.toHaveProperty("targets");
+    expect(sentBody(put)).toEqual({ delivery: false });
     expect(await screen.findByRole("status")).toHaveTextContent("Delivery settings saved");
   } finally {
     cleanup();

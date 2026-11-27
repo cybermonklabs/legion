@@ -4,6 +4,7 @@ import { type ReactNode, useState } from "react";
 import { api, issueStateRequest } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
 import type { UserState } from "../../api/types";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { stateForIssue } from "../issue/pins";
 import { useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
@@ -23,11 +24,15 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * one Dispatch refuses is sent again once the stored mark changes. It names its issue, so an
  * answer that lands after the reader moved on is put where it belongs. It is drawn with no view
  * on and no document open alone (`slots/foot.tsx`): a view is a part of the conversation, and
- * its end is not the conversation's.
+ * its end is not the conversation's. The mark and the state it is read against are the person's
+ * (`me/state`, the `person` scope, which an agent viewer's bearer may not hold): both wait for a
+ * read that says the viewer's credential holds it (`useHoldsPersonScope`), and a viewer without
+ * it reads and marks nothing.
  */
 export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
   const queryClient = useQueryClient();
-  const state = useQuery(userStateQuery());
+  const holdsPerson = useHoldsPersonScope();
+  const state = useQuery({ ...userStateQuery(), enabled: holdsPerson });
   const lastReadSeq = stateForIssue(state.data, issueKey).last_read_seq;
   // The issue's head: what a dwell on the end marks read.
   const head = useQuery({
@@ -70,7 +75,7 @@ export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
       })),
     request: (mark: { issueKey: string; seq: number }) =>
       issueStateRequest(mark.issueKey, { last_read_seq: mark.seq }),
-    shouldSend: read !== undefined && read.seq > lastReadSeq,
+    shouldSend: holdsPerson && read !== undefined && read.seq > lastReadSeq,
     target: `read:issue:${issueKey}`,
     wake: lastReadSeq,
   });

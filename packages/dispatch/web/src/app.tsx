@@ -686,7 +686,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
   // on the page while the sidebar is collapsed or its sheet is closed. An agent viewer has none.
   const liveViews = useLiveViews();
-  const pinnedAgents = usePinnedAgents(person);
+  const pinnedAgents = usePinnedAgents();
   useEffect(() => {
     liveViews.setPinned(pinnedAgents);
   }, [liveViews, pinnedAgents]);

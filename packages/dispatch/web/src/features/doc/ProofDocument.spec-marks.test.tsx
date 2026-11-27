@@ -10,6 +10,7 @@ import {
 } from "../../__tests__/proof-document";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type {
   Artifact,
   ArtifactBlock,
@@ -164,12 +165,24 @@ function stubReads(readVersion: number | null) {
   };
 }
 
+/** The document's client, for alice, the person the document is drawn for, whose sign-in holds the
+ *  `person` scope her read mark is read and written under. */
+function aliceClient() {
+  const queryClient = createQueryClient();
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  return queryClient;
+}
+
 test("the Spec tab marks stale and changed blocks through the editor, names the changed sections, then records the version it shows", async () => {
   jest.useFakeTimers();
   const reads = stubReads(2);
   const { editors, sync, view } = renderProofDocument({
     document: spec,
-    queryClient: createQueryClient(),
+    queryClient: aliceClient(),
   });
   const screen = within(view.container);
 
@@ -219,7 +232,7 @@ test("with no read version the Spec tab shows no line and marks no changed block
   const reads = stubReads(null);
   const { editors, sync, view } = renderProofDocument({
     document: spec,
-    queryClient: createQueryClient(),
+    queryClient: aliceClient(),
   });
   const screen = within(view.container);
 
@@ -257,7 +270,7 @@ test("a read of the read mark asked before the mark landed does not bring back t
     .mockReturnValueOnce(before.promise);
   const marked = Promise.withResolvers<DocumentRead>();
   reads.putRead.mockImplementationOnce(() => marked.promise);
-  const queryClient = createQueryClient();
+  const queryClient = aliceClient();
   const first = renderProofDocument({ document: spec, queryClient });
 
   try {
