@@ -1057,6 +1057,20 @@ func (r *personHandoverRig) pendingRegistered(run basisRun, ask string, told boo
 		run.basisVersion, standing, run.parent.Key, told)
 }
 
+// pendingBasisEndBound is how long pendingEnded waits for the daemon to end a step's wait on an
+// ancestor's request after the act that ends it, above which the act is taken never to have
+// reached the step. It is a ceiling on an event whose arrival this rig has measured, not a span
+// standing in for one: in the run this bound comes from, the daemon's cue and its verdict are 8 to
+// 30 ms apart in every case that ended (its own log, daemon-go-race (leg 3) job 140311446907 at
+// #5660's f1db1daf), so a minute is two thousand times the event's own time and no load this rig
+// meets comes near it. It exists because the binary's deadline is the wrong ceiling for this one
+// wait: in that run the daemon applied no Dispatch event at all for 29 minutes, the wait ran
+// 1,729.51 s to testwait's margin, and the binary's alarm then failed 47 other top-level tests
+// and 9 subtests that were still running. This bound makes that failure cost a minute and name
+// itself; it does not fix the cause, which is the open question of why the daemon applied no
+// event (the row in dispatch://INFRA-3904/artifact/found-rows-md).
+const pendingBasisEndBound = time.Minute
+
 // restingRegistration is the sentence of the resting-root notice that tells P's architect of the
 // pending registration of run's root on P's request ask (workflow's tellRegisteredBasis), and
 // whether a notice is that one.
@@ -1081,7 +1095,7 @@ func restingRegistration(run basisRun, ask string) (string, func(record.Notice) 
 func (r *personHandoverRig) pendingEnded(run basisRun, ask, act string, told bool, standing phase.Phase) {
 	t := r.t
 	t.Helper()
-	state, body := settled(t, r.d, "end the wait of "+run.root.Key+" on "+ask, func(s api.State) bool {
+	state, body := settledWithin(t, r.d, pendingBasisEndBound, "end the wait of "+run.root.Key+" on "+ask, func(s api.State) bool {
 		step := stepOf(s, run.root.Key)
 		return step.Status != api.GatedStepPendingOnBasis && step.Status != api.GatedStepUnregistered
 	})
