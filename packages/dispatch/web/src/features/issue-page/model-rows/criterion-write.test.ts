@@ -562,6 +562,37 @@ test("a conversation node of another issue offers no Write a criterion", () => {
   expect(criterionTakenBy(borrowed, KEY, undefined)).toBe(false);
 });
 
+// Dispatch takes a criterion only under a comment or a message that still stands, so one its
+// author deleted offers no Write a criterion, as it offers no Reply (`replyItemOf`), and the
+// writer takes no aim at it: `criterionUnder` sets nothing where `criterionItemOf` answers none.
+test("a comment or message its author deleted offers no Write a criterion", () => {
+  const offering: RoomFacts = { converted: true, issueKey: KEY, tree: TREE, viewOf: null };
+  const deletedAt = "2026-11-05T12:00:00Z";
+  const by = { id: "bob", kind: "user" } as const;
+  for (const standing of [
+    treeNode({ author: by, id: "comment-1", reference: PARENT, text: TEXT, type: "comment" }),
+    treeNode({
+      author: by,
+      id: "message-1",
+      reference: `dispatch://${KEY}/message/message-1`,
+      text: TEXT,
+      type: "message",
+    }),
+  ]) {
+    // The row of a deleted post as the tree read draws it: the deleted line for its words.
+    const deleted: TreeNode = {
+      ...standing,
+      deletedAt,
+      deletedBy: by,
+      text: `Deleted by bob · ${deletedAt}`,
+    };
+    expect(criterionTakenBy(standing, KEY, offering), standing.id).toBe(true);
+    expect(criterionItemOf(standing), standing.id).toBeDefined();
+    expect(criterionTakenBy(deleted, KEY, offering), deleted.id).toBe(false);
+    expect(criterionItemOf(deleted), deleted.id).toBeUndefined();
+  }
+});
+
 test("a send carries the tree's edits route and one insert at the end", async () => {
   const markdown = criterionMarkdown(PARENT, TEXT);
   const route = `/api/v1/artifacts/${TREE}/edits`;

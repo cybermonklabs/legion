@@ -65,7 +65,7 @@ export interface OutlineWriter {
   /** Sets the line to write a criterion under `node`, an ask, a comment or a message
    *  (`criterionItemOf`), and puts the caret in it: it ends the reply, the statement, the
    *  answer and the edit, and setting any of them, or `clear`, ends it. A node that is none of
-   *  those sets nothing. */
+   *  those, and a comment or a message its author deleted, sets nothing. */
   readonly criterionUnder: (node: TreeNode) => void;
   /** Asks the outline to take the reader to what a write from the line just landed
    *  (`Landing`), once its read has drawn it. */
@@ -119,10 +119,10 @@ export interface OutlineWriter {
    *  line. Once it is carried every aim takes effect again, and a line that mounts again over
    *  that send writes on the issue. */
   readonly statement: StatementTarget | undefined;
-  /** Whether `node` carries the act that writes a criterion under it: an ask, a comment or a
-   *  message (`criterionItemOf`) whose own address names this issue, on an issue whose tree
-   *  read answers a tree and no `view_of` (`criterionOffered`). False for every node while the
-   *  cache holds no tree read of the issue (`useRoomFacts`). */
+  /** Whether `node` carries the act that writes a criterion under it: an ask, or a comment or a
+   *  message its author did not delete (`criterionItemOf`), whose own address names this issue,
+   *  on an issue whose tree read answers a tree and no `view_of` (`criterionOffered`). False for
+   *  every node while the cache holds no tree read of the issue (`useRoomFacts`). */
   readonly takesCriterion: (node: TreeNode) => boolean;
   /** Picks `label` of the options of the answer the writer holds (`answer`), or lets it go. */
   readonly toggle: (label: string) => void;
@@ -703,15 +703,20 @@ export interface CriterionItem extends Pick<TreeNode, "author"> {
 /** The node a criterion can be written under, where `node` is one: an item of the conversation
  *  (`conversationItem`), as a row that takes a Reply is, with the address that names it, and
  *  its author where it carries one. Undefined for every other node - a statement, a check, a
- *  decision, the issue itself - and for one with no such address. Whether the act is offered on
- *  it is the writer's (`OutlineWriter.takesCriterion`), which also asks that the address names
- *  this issue and that the issue takes a criterion (`criterionOffered`). */
+ *  decision, the issue itself - for one with no such address, and for a comment or a message
+ *  its author deleted (`deletedAt`), which takes no Reply either (`replyItemOf`). Whether the
+ *  act is offered on it is the writer's (`OutlineWriter.takesCriterion`), which also asks that
+ *  the address names this issue and that the issue takes a criterion (`criterionOffered`). */
 export function criterionItemOf(
-  node: Pick<TreeNode, "author" | "id" | "reference" | "type">
+  node: Pick<TreeNode, "author" | "deletedAt" | "id" | "reference" | "type">
 ): CriterionItem | undefined {
   const item = conversationItem(node);
   const address = node.reference;
   if (item === undefined || address === undefined) return undefined;
+  // Dispatch takes a criterion only under a comment or a message that still stands, so it
+  // refuses one under a deleted post (400, which `criterionAnswer` in
+  // `model-rows/criterion-write.ts` reads as "not written"), as it refuses a reply to it.
+  if (node.deletedAt !== undefined) return undefined;
   return {
     address,
     ...(node.author === undefined ? {} : { author: node.author }),
@@ -726,7 +731,7 @@ export function criterionItemOf(
  *  No facts - an issue whose tree read the cache does not hold - offer it on no node. The writer
  *  answers it for each row (`OutlineWriter.takesCriterion`). */
 export function criterionTakenBy(
-  node: Pick<TreeNode, "author" | "id" | "reference" | "type">,
+  node: Pick<TreeNode, "author" | "deletedAt" | "id" | "reference" | "type">,
   issueKey: string,
   facts: RoomFacts | undefined
 ): boolean {
