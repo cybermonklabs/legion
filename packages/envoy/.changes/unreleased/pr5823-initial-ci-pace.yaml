@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  CI reconciliation honors an explicitly configured request pace below 100 ms on the first
+  pass and when no REST work is expected. The Dispatch executable keeps its 500 ms ceiling.
+time: 2026-11-27T10:14:32Z
+custom:
+    Issue: INFRA-3862
