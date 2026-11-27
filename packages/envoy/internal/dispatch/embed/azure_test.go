@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/testport"
@@ -245,20 +248,30 @@ func TestAzureEmbedRefusesMoreThanTheBatchLimit(t *testing.T) {
 	}
 }
 
-// TestAzureEmbedClassifiesStatuses: 429 and 503 are throttles, every other failure is not, and
-// each error names the status and Azure's error code but never the key or the texts.
+// TestAzureEmbedClassifiesStatuses: a 429 and a 503 are throttles; a 408 and every other 5xx are
+// outages, which IsOutage marks and IsThrottled does not (embedqueue still bisects and confirms
+// them with its canary, since one may be a text Azure fails on every time); every other failure
+// is neither; and each error names the status and Azure's error code but never the key or the
+// texts.
 func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 	for _, tc := range []struct {
 		status    int
 		code      string
 		throttled bool
+		outage    bool
 	}{
-		{http.StatusTooManyRequests, "RateLimitReached", true},
-		{http.StatusServiceUnavailable, "ServiceUnavailable", true},
-		{http.StatusBadRequest, "InvalidRequest", false},
-		{http.StatusUnauthorized, "PermissionDenied", false},
-		{http.StatusNotFound, "DeploymentNotFound", false},
-		{http.StatusInternalServerError, "InternalServerError", false},
+		{http.StatusTooManyRequests, "RateLimitReached", true, false},
+		{http.StatusServiceUnavailable, "ServiceUnavailable", true, false},
+		{http.StatusRequestTimeout, "Timeout", false, true},
+		{http.StatusInternalServerError, "InternalServerError", false, true},
+		{http.StatusNotImplemented, "NotImplemented", false, true},
+		{http.StatusBadGateway, "BadGateway", false, true},
+		{http.StatusGatewayTimeout, "Timeout", false, true},
+		{http.StatusHTTPVersionNotSupported, "HTTPVersionNotSupported", false, true},
+		{http.StatusBadRequest, "InvalidRequest", false, false},
+		{http.StatusUnauthorized, "PermissionDenied", false, false},
+		{http.StatusNotFound, "DeploymentNotFound", false, false},
+		{http.StatusConflict, "Conflict", false, false},
 	} {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -274,6 +287,9 @@ func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 			if got := IsThrottled(err); got != tc.throttled {
 				t.Errorf("IsThrottled(%v) = %v, want %v", err, got, tc.throttled)
 			}
+			if got := IsOutage(err); got != tc.outage {
+				t.Errorf("IsOutage(%v) = %v, want %v", err, got, tc.outage)
+			}
 			text := err.Error()
 			if !strings.Contains(text, http.StatusText(tc.status)) || !strings.Contains(text, tc.code) {
 				t.Errorf("error %q does not name status %d and code %s", text, tc.status, tc.code)
@@ -285,6 +301,8 @@ func TestAzureEmbedClassifiesStatuses(t *testing.T) {
 	}
 }
 
+// An error body that names no code, such as a gateway's page, still names the status, and a 502
+// is an outage, not a throttle.
 func TestAzureEmbedNamesTheStatusOfAnErrorWithoutACode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -292,8 +310,8 @@ func TestAzureEmbedNamesTheStatusOfAnErrorWithoutACode(t *testing.T) {
 	}))
 	defer server.Close()
 	_, err := testAzureClient(t, server, AzureConfig{}).Embed(context.Background(), []string{"x"}, InputDocument)
-	if err == nil || !strings.Contains(err.Error(), "502") || IsThrottled(err) {
-		t.Fatalf("Embed error = %v, want an unthrottled error naming HTTP 502", err)
+	if err == nil || !strings.Contains(err.Error(), "502") || IsThrottled(err) || !IsOutage(err) {
+		t.Fatalf("Embed error = %v, want an outage, unthrottled, naming HTTP 502", err)
 	}
 }
 
@@ -508,5 +526,81 @@ func TestNewAzureLeavesTheCallersClientAlone(t *testing.T) {
 	}
 	if caller.CheckRedirect != nil {
 		t.Error("NewAzure wrote CheckRedirect onto the caller's own client, want it set on a copy")
+	}
+}
+
+// hangingServer answers no request: each handler reads the request whole, so net/http watches its
+// connection and ends the request's context when the client gives up, and waits for that or for
+// the test's end, which releases it before the server closes.
+func hangingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	ended := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-ended:
+		}
+	}))
+	t.Cleanup(func() {
+		close(ended)
+		server.Close()
+	})
+	return server
+}
+
+// A call to Azure that runs out of time while its caller still waits - here the HTTP client's own
+// timeout - is an outage (IsOutage) and no throttle: Azure did not answer in time. A call whose
+// caller's own context ended first is neither: the caller left, which says nothing of Azure.
+func TestAzureEmbedMarksACallThatRanOutOfTimeAnOutage(t *testing.T) {
+	t.Run("the client's timeout", func(t *testing.T) {
+		server := hangingServer(t)
+		server.Client().Timeout = 100 * time.Millisecond
+		_, err := testAzureClient(t, server, AzureConfig{}).Embed(context.Background(), []string{"x"}, InputDocument)
+		if err == nil || !IsOutage(err) || IsThrottled(err) {
+			t.Fatalf("Embed error = %v (outage %v, throttled %v), want an outage and no throttle", err, IsOutage(err), IsThrottled(err))
+		}
+	})
+	t.Run("the caller's own deadline", func(t *testing.T) {
+		server := hangingServer(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		_, err := testAzureClient(t, server, AzureConfig{}).Embed(ctx, []string{"x"}, InputDocument)
+		if !errors.Is(err, context.DeadlineExceeded) || IsOutage(err) {
+			t.Fatalf("Embed error = %v (outage %v), want the caller's context.DeadlineExceeded and no outage", err, IsOutage(err))
+		}
+	})
+}
+
+// timedOutError is a network error that names itself a timeout, as net/http's client timeout does.
+type timedOutError struct{}
+
+func (timedOutError) Error() string   { return "simulated: i/o timeout" }
+func (timedOutError) Timeout() bool   { return true }
+func (timedOutError) Temporary() bool { return true }
+
+// timedOut reads a deadline or a network timeout, wrapped or not, as a call that ran out of time,
+// and nothing else; and nothing at all once the caller's own context has ended.
+func TestTimedOutIsADeadlineOrATimeoutWhileTheCallerWaits(t *testing.T) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{"a deadline", context.Background(), fmt.Errorf("embed: azure embeddings: %w", context.DeadlineExceeded), true},
+		{"a network timeout", context.Background(), fmt.Errorf("embed: bedrock invoke model: %w", timedOutError{}), true},
+		{"another failure", context.Background(), errors.New("embed: azure embeddings: connection refused"), false},
+		{"a cancellation", context.Background(), context.Canceled, false},
+		{"no failure", context.Background(), nil, false},
+		{"a deadline after the caller left", ended, context.DeadlineExceeded, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := timedOut(tc.ctx, tc.err); got != tc.want {
+				t.Errorf("timedOut(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
