@@ -36,7 +36,8 @@ func TestReapExitedReapsOrphans(t *testing.T) {
 		pidFile, release := filepath.Join(dir, "pid"), filepath.Join(dir, "release")
 		// The grandchild runs until the release, or until this helper is gone, never for a span
 		// of its own. Its paths reach it as arguments.
-		orphan := fmt.Sprintf(`echo $$ >"$1.tmp" && mv "$1.tmp" "$1"; while [ ! -e "$2" ] && kill -0 %d 2>/dev/null; do sleep 0.01; done`, os.Getpid())
+		// CONTROL: the orphan stalls 1.5 s before it exits, standing in for a loaded machine.
+		orphan := fmt.Sprintf(`echo $$ >"$1.tmp" && mv "$1.tmp" "$1"; while [ ! -e "$2" ] && kill -0 %d 2>/dev/null; do sleep 0.01; done; sleep 1.5`, os.Getpid())
 		// Run returns once the grandchild's parent has exited, which hands the grandchild to
 		// this subreaper.
 		if err := exec.Command("/bin/sh", "-c", `/bin/sh -c "$1" sh "$2" "$3" & exit 0`, "sh", orphan, pidFile, release).Run(); err != nil {
