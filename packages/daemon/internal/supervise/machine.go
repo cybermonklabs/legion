@@ -379,9 +379,9 @@ type Claim struct {
 	// which is what keeps a raise of that relaunch after a restart from charging it again
 	// (deathLaunchFailureCharged). A report that finds that death's process running while the
 	// relaunch waits drops the relaunch and clears this with it (dropOutlivedRelaunch): no
-	// relaunch of a failure is in flight any more. The drop gives back the launch failure that
-	// relaunch was charged, while this still says it is counted, in place of the ready the
-	// relaunched agent would have given (wake.chargedLaunchFailure).
+	// relaunch of a failure is in flight any more. Where the kept agent is already up, the drop
+	// also sets the launch failures to 0, standing in for the ready of the relaunch it dropped, so
+	// the two go together there as at a ready.
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
@@ -4539,10 +4539,12 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 // and no other launch waiting over the same process (judge). The mark goes on the wake the raise
 // parked, read as a wake this call put on the machine, so a raise that the lifecycle recheck
 // refused marks none, and nor does one whose launch ran at once and started its process. A launch
-// that ran at once and then parked at its issue pod's gate (askPod) is marked: the park is a wake
-// this call put on the machine, and it is the death's relaunch waiting, for its pod's start
-// rather than its turn. No report drops it: that launch let the dead process go, and the death's
-// charge with it (letGo), so the fence drops every later report of that process.
+// that ran at once and then waits after its try's write is marked too, since that wait is a wake
+// this call put on the machine, and it is the death's relaunch waiting: a try parked at its issue
+// pod's gate (askPod) waits for its pod's start, and a try the project's pause met after its write
+// (pauseHeldTry) waits behind the pause's gate for the pause to end. No report drops either: that
+// launch let the dead process go, and the death's charge with it (letGo), so the fence drops every
+// later report of that process.
 func (m *Machine) relaunchDeath(raise func() error) error {
 	before := m.wake
 	err := raise()
@@ -5339,10 +5341,10 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 //
 // What the death charged stays counted, as for any death: the Death the decision counted
 // (chargeDeath) until the work it was counted against ends, and the launch failure its relaunch
-// charged (Budgets.LaunchFailures) until the next ready clears it, or until a report drops that
-// relaunch while it waits (dropOutlivedRelaunch), which gives that one launch failure back. The
-// cause that relaunch left pending goes with the drop too, since no relaunch of a failure is then
-// in flight.
+// charged (Budgets.LaunchFailures) until the next ready clears it. Where a report drops that
+// relaunch while it waits over an agent already up (dropOutlivedRelaunch), the drop stands in for
+// the relaunch's ready and sets the launch failures to 0 as that ready would. The cause that
+// relaunch left pending goes with the drop too, since no relaunch of a failure is then in flight.
 func (m *Machine) reportedProcess(observation runtime.Observation) (cleared, delivery bool) {
 	switch processReadOf(observation.Kind) {
 	case ProcessGone:

@@ -39,17 +39,19 @@ func sendsWhole(t *testing.T, h *harness, want string, do ...Event) {
 // death put an earlier launch's untold record aside, TestAFalseDeathErasesNoEarlierEndStillUntold's
 // rows whose relaunch waits hold that the report puts that record back, untold, in its own words.
 // In every row the report clears the cause the death's relaunch left pending, in memory and in the
-// store (dropOutlivedRelaunch): the relaunch it named never launched. It gives back the one launch
-// failure that relaunch was charged, which the relaunched agent's ready would have cleared
-// (wake.chargedLaunchFailure; TestADroppedDeathRelaunchGivesBackItsOneLaunchFailure).
+// store (dropOutlivedRelaunch): the relaunch it named never launched. Over an agent already up it
+// sets the launch failures to 0, standing in for the ready of the relaunch it dropped; a process
+// still coming up keeps its count, which its own ready then sets to 0
+// (TestADroppedDeathRelaunchResetsTheLaunchFailuresAsItsReadyWould).
 //
 // The negative controls: judge's order as it was, reportedProcess run before the launchWaits
 // guard and the wake left standing, fails every row, the claim still holding the relaunch; judge
 // dropping only a relaunch the pacing holds fails the pause's row the same way; relaunchDeath
 // marking no wake as the death's relaunch fails every row the same way; dropOutlivedRelaunch
-// leaving the gate's stop posted fails the pause's row at that stop; and dropOutlivedRelaunch
-// leaving the cause pending fails every row at its check of it, as dropOutlivedRelaunch without
-// its give-back fails every row at its count.
+// leaving the gate's stop posted fails the pause's row at that stop; dropOutlivedRelaunch leaving
+// the cause pending fails every row at its check of it; dropOutlivedRelaunch without its reset
+// fails every row of an agent already up at its count; and the reset made whatever the kept
+// agent's state fails the row of a process still coming up at its count after the report.
 func TestASweepReportThatFindsTheProcessRunningDropsTheWaitingRelaunchOfItsDeath(t *testing.T) {
 	const task, next = "implement the plan", "the next task"
 	// parked is the place in the pacing the death's relaunch waits at.
@@ -63,9 +65,9 @@ func TestASweepReportThatFindsTheProcessRunningDropsTheWaitingRelaunchOfItsDeath
 	// report is the sweep's report of the process running, the agent still in any turn it is in.
 	// It fails unless the claim held the death's one launch failure and died pending before it,
 	// and unless the report dropped the relaunch and ended the death, with that cause cleared and
-	// that launch failure given back, in the claim and in the store, its record told by no
+	// failures launch failures left, in the claim and in the store, its record told by no
 	// delivery.
-	report := func(t *testing.T, h *harness) {
+	report := func(t *testing.T, h *harness, failures int) {
 		t.Helper()
 		if c := h.claim(); c.Budgets.LaunchFailures != 1 || c.PendingCause != CauseDied {
 			t.Fatalf("the death's relaunch left %d launch failures and %q pending, want its one charge and %q", c.Budgets.LaunchFailures,
@@ -86,16 +88,16 @@ func TestASweepReportThatFindsTheProcessRunningDropsTheWaitingRelaunchOfItsDeath
 				t.Fatalf("%s holds deathCharged=%v over the record %+v, want the death over and its record told by no delivery",
 					whose, c.DeathCharged, e)
 			}
-			if c.Budgets.LaunchFailures != 0 || c.PendingCause != "" {
-				t.Fatalf("%s holds %d launch failures and %q pending after the sweep found the process running, want the relaunch's launch failure given back and nothing pending",
-					whose, c.Budgets.LaunchFailures, c.PendingCause)
+			if c.Budgets.LaunchFailures != failures || c.PendingCause != "" {
+				t.Fatalf("%s holds %d launch failures and %q pending after the sweep found the process running, want %d and nothing pending",
+					whose, c.Budgets.LaunchFailures, c.PendingCause, failures)
 			}
 		}
 	}
 	// running is report over a relaunch the pacing holds, and fails unless its place was given up.
-	running := func(t *testing.T, h *harness, place *wakepace.Place) {
+	running := func(t *testing.T, h *harness, place *wakepace.Place, failures int) {
 		t.Helper()
-		report(t, h)
+		report(t, h, failures)
 		if _, out := place.Let(); out || !place.Estimate().IsZero() {
 			t.Fatal("the dropped relaunch still holds its place in the pacing, want the place given up")
 		}
@@ -123,7 +125,7 @@ func TestASweepReportThatFindsTheProcessRunningDropsTheWaitingRelaunchOfItsDeath
 			}
 			place := parked(t, h)
 			starts, due := h.starts(h.token), place.Estimate()
-			running(t, h, place)
+			running(t, h, place, 0)
 			sentAgain(t, h)
 			h.advance(due.Sub(h.clock.Now()) + wakeInterval)
 			h.wantStarts(h.token, starts)
@@ -144,7 +146,7 @@ func TestASweepReportThatFindsTheProcessRunningDropsTheWaitingRelaunchOfItsDeath
 			t.Fatal("the death's relaunch is not held by the pause's gate with the gate's stop posted, want both")
 		}
 		starts := h.starts(h.token)
-		report(t, h)
+		report(t, h, 0)
 		if h.armed(TimerPause) {
 			t.Fatal("the gate's stop of the claim is still posted, want it given up with the dropped relaunch")
 		}
@@ -158,7 +160,7 @@ func TestASweepReportThatFindsTheProcessRunningDropsTheWaitingRelaunchOfItsDeath
 		sendsWhole(t, h, sentAgainTask+task, StreamTurnEnd{Claim: h.token})
 		sendsWhole(t, h, next, StreamTurnStart{Claim: h.token}, StreamTurnEnd{Claim: h.token}, RequestDeliver{Claim: h.token, Task: next})
 	})
-	t.Run("a process still coming up", func(t *testing.T) {
+	t.Run("a process still coming up, which keeps its count until its own ready", func(t *testing.T) {
 		h := pacedHarness(t, wakeRate)
 		h.reach(StateRegistered)
 		queueAhead(h, 1)
@@ -167,10 +169,16 @@ func TestASweepReportThatFindsTheProcessRunningDropsTheWaitingRelaunchOfItsDeath
 		if h.armed(TimerRegistration) {
 			t.Fatal("the park left the registration deadline of the process its relaunch replaces armed, want it disarmed")
 		}
-		running(t, h, place)
+		running(t, h, place, 1)
 		h.wantState(StateRegistered)
 		if !h.armed(TimerRegistration) {
 			t.Fatal("no registration deadline watches the process the dropped relaunch kept, want it armed again")
+		}
+		h.ready()
+		for whose, c := range map[string]Claim{"the claim": h.claim(), "the store": h.store.load(h.token)} {
+			if c.Budgets.LaunchFailures != 0 {
+				t.Fatalf("%s holds %d launch failures after the kept agent's ready, want 0: its own ready resets them", whose, c.Budgets.LaunchFailures)
+			}
 		}
 	})
 }
@@ -504,21 +512,20 @@ func TestATaskSentAgainKeepsItsSentenceUntilATurnRunsItToItsResult(t *testing.T)
 }
 
 // The drop of a death's waiting relaunch by a report that finds the process running clears only a
-// cause that relaunch left pending (dropOutlivedRelaunch, Claim.PendingCause), and gives back only
-// a launch failure that relaunch was charged (wake.chargedLaunchFailure). A death of a ready claim
-// holding nothing charged its relaunch's launch failure and recorded died pending, so the drop
-// clears the cause and gives the launch failure back. The end of a start by Oh My Pi's own lookup
-// that never registered is one the policy charges nothing (endOutcome, Charges): its relaunch
-// recorded no cause and was charged no launch failure, and the cause pending is the earlier
-// death's that this start is the relaunch of, so the drop leaves it, with that death's launch
-// failure.
+// cause that relaunch left pending (dropOutlivedRelaunch, Claim.PendingCause). A death of a ready
+// claim holding nothing charged its relaunch's launch failure and recorded died pending, so the
+// drop clears the cause, and sets the launch failures to 0 over the agent already up, as the
+// dropped relaunch's ready would. The end of a start by Oh My Pi's own lookup that never
+// registered is one the policy charges nothing (endOutcome, Charges): its relaunch recorded no
+// cause, and the cause pending is the earlier death's that this start is the relaunch of, so the
+// drop leaves it, and the start, still coming up, keeps that death's launch failure until its own
+// ready.
 //
 // The negative controls: dropOutlivedRelaunch leaving the cause pending fails the first row (and
 // every row of TestASweepReportThatFindsTheProcessRunningDropsTheWaitingRelaunchOfItsDeath), and
 // dropOutlivedRelaunch clearing died pending whatever the policy says of the end fails the second;
-// dropOutlivedRelaunch without its give-back fails the first row at its count after the report,
-// and the give-back read off died pending alone, not off the wake's record of its charge, fails
-// the second, the earlier death's launch failure given back.
+// dropOutlivedRelaunch without its reset fails the first row at its count after the report, and
+// the reset made whatever the kept agent's state fails the second.
 func TestADroppedDeathRelaunchClearsOnlyTheCauseItsDeathLeftPending(t *testing.T) {
 	// pending fails unless the claim and the store each count failures launch failures and hold
 	// cause pending.
@@ -575,30 +582,44 @@ func TestADroppedDeathRelaunchClearsOnlyTheCauseItsDeathLeftPending(t *testing.T
 	})
 }
 
-// A report that finds the process running while the relaunch of the death it ends waits drops
-// that relaunch, and gives back the one launch failure the relaunch was charged, and nothing else
-// (dropOutlivedRelaunch, wake.chargedLaunchFailure,
-// dispatch://INFRA-1117/comment/beaf0ee7-ee68-497d-8f29-00f7f61b3a82): had the relaunch run, its
-// agent's ready would have cleared it, and the agent kept in its place, already up, says no ready
-// that clears anything (reready). So three false deaths of an idle claim that holds nothing, each
-// overruled by the sweep while its relaunch waits behind another claim's wake, leave the claim
-// idle over its one process with no launch failure, no death and no cause pending, in the claim
-// and in the store, where each death would otherwise leave one more launch failure counted and
-// the third would fail the claim at launch_failure_limit.
+// A report that finds an agent already up running while the relaunch of the death it ends waits
+// drops that relaunch and sets the launch failures to 0, standing in for the ready of the launch
+// it dropped (dropOutlivedRelaunch,
+// dispatch://INFRA-1117/comment/ef5d798e-5e76-4e5a-92ef-616545f4567c): on main that relaunch would
+// have run and its agent's ready set them to 0, where the agent kept in its place, already up, says
+// no ready that resets anything (reready). So three false deaths of an idle claim that holds
+// nothing, each overruled by the sweep while its relaunch waits behind another claim's wake, leave
+// the claim idle over its one process with no launch failure, no death and no cause pending, in
+// the claim and in the store, where each death would otherwise leave one more launch failure
+// counted and the third would fail the claim at launch_failure_limit. The reset reads no raise, so
+// a restart reaches it whether the boot's replay charges the death's launch failure or finds it
+// counted where a write while the relaunch waited stored it beside died pending
+// (deathLaunchFailureCharged); a ready from the process while the relaunch waits has reset the
+// count already; and a launch failure left over from before the false death, which a running read
+// kept as main keeps it (TestARunningVerdictBeforeTheBootsReplayGivesNothingBackAsMainDoes), goes
+// with the death's own, as main's ready of the dropped relaunch would take both.
 //
-// The wake is memory only, and a restart reaches the give-back all the same: the boot's replay
-// raises the relaunch again (RecordedDeath), and the wake it parks carries the launch failure, as
-// the replay charges it where the store held none of it, or finds it counted where a write while
-// the relaunch waited carried it into the store beside died pending (deathLaunchFailureCharged).
-// A ready from the process while the relaunch waits, as an agent still coming up gives one, has
-// cleared the launch failure and the cause pending already, so the drop gives nothing back.
+// The roll edge is the reviewer's trace at 6b60c510
+// (dispatch://INFRA-1117/artifact/roll-edge-trace-md): a claim recording a session and no file
+// holds n launch failures with died pending, as the earlier release stored them, and the fence
+// refuses the registration of the process that release started, which marks its end charged
+// nothing (markRollEdge). Its false death behind another claim's wave decides the death and parks
+// an uncharged relaunch (relaunchAfterFailure); a restart loses the mark; the boot's replay reads
+// the end as a charged death, finds its charge in died pending and charges nothing; the process
+// registers again, refused, which marks its end charged nothing again; and the sweep finds it
+// running. That process has sent no ready, and can send none: a ready needs a registration the
+// fence took (StateRegistered), and that registration records the session's file (register), after
+// which the end of the process is read as a death the policy charges (processOutcome), not the
+// uncharged end the trace's death is. So the trace reaches only a kept agent still coming up, and
+// the drop leaves the count at n, never below 0 in any write the store takes, and a second cycle
+// of the same steps leaves it there; a kept agent that sent a ready is the other rows'.
 //
-// The negative controls: dropOutlivedRelaunch without its give-back fails every row but the
-// ready's, at its count after the first report; relaunchAfterFailure recording no launch failure
-// on its wake fails every row, at the wake; the wake recording only a launch failure its own raise
-// charged fails the row whose replay found the charge stored, at the wake; and the give-back
-// without its guard of died pending fails the ready's row, the count below zero.
-func TestADroppedDeathRelaunchGivesBackItsOneLaunchFailure(t *testing.T) {
+// The negative controls: dropOutlivedRelaunch without its reset fails every row but the ready's
+// and the roll edge's, at its count after the first report; the one-decrement give-back in its
+// place, read off died pending, fails the leftover row at its count, 1 where 0, and the roll
+// edge's at its first cycle, 0 where n; and the reset made whatever the kept agent's state fails
+// the roll edge's at its first count after the report.
+func TestADroppedDeathRelaunchResetsTheLaunchFailuresAsItsReadyWould(t *testing.T) {
 	// counts fails unless the claim, and the store where stored is, count failures launch failures
 	// and no death, with cause pending.
 	counts := func(t *testing.T, h *harness, when string, stored bool, failures int, cause FailureCause) {
@@ -614,16 +635,16 @@ func TestADroppedDeathRelaunchGivesBackItsOneLaunchFailure(t *testing.T) {
 			}
 		}
 	}
-	// carries fails unless the claim holds the death's relaunch waiting in the pacing, marked as
-	// the death's and as carrying the launch failure counted for it.
-	carries := func(t *testing.T, h *harness) {
+	// marked fails unless the claim holds the death's relaunch waiting in the pacing, marked as
+	// the death's.
+	marked := func(t *testing.T, h *harness) {
 		t.Helper()
 		h.wantWaitingWake(WakeLaunch)
 		h.m.mu.Lock()
-		marked, charged := h.m.wake.deathRelaunch, h.m.wake.chargedLaunchFailure
+		death := h.m.wake.deathRelaunch
 		h.m.mu.Unlock()
-		if !marked || !charged {
-			t.Fatalf("the death's waiting relaunch is marked as the death's %v and carries its launch failure %v, want both", marked, charged)
+		if !death {
+			t.Fatal("the death's waiting relaunch is not marked as the death's, want it marked")
 		}
 	}
 	// overruled is the sweep's report of the process running, which fails unless it drops the
@@ -657,7 +678,7 @@ func TestADroppedDeathRelaunchGivesBackItsOneLaunchFailure(t *testing.T) {
 					h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
 					counts(t, h, fmt.Sprintf("after the boot's replay of death %d", death), false, 1, CauseDied)
 				}
-				carries(t, h)
+				marked(t, h)
 				overruled(t, h)
 				h.wantState(StateIdle)
 				counts(t, h, fmt.Sprintf("after the report of death %d", death), true, 0, "")
@@ -677,7 +698,7 @@ func TestADroppedDeathRelaunchGivesBackItsOneLaunchFailure(t *testing.T) {
 			restartBehindAWave(t, h)
 			h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
 			counts(t, h, "after the boot's replay", false, 1, CauseDied)
-			carries(t, h)
+			marked(t, h)
 			overruled(t, h)
 			counts(t, h, "after the report", true, 0, "")
 		})
@@ -689,28 +710,97 @@ func TestADroppedDeathRelaunchGivesBackItsOneLaunchFailure(t *testing.T) {
 		counts(t, h, "after the death", false, 1, CauseDied)
 		h.ready()
 		counts(t, h, "after the ready", true, 0, "")
-		carries(t, h)
+		marked(t, h)
 		overruled(t, h)
 		h.wantState(StateReady)
 		counts(t, h, "after the report", true, 0, "")
 	})
+	t.Run("a launch failure left over from an earlier death a running read ended, then a false death", func(t *testing.T) {
+		h := pacedHarness(t, wakeRate)
+		h.reach(StateIdle)
+		// The earlier death's relaunch is refused at its turn by the lifecycle recheck, so its
+		// charge stays with no wake to drop, and a read finds the process running.
+		queueAhead(h, 1)
+		store := &unansweredCheckLaunchStore{memStore: h.store}
+		h.m.deps.Store = store
+		h.observe(runtime.Gone)
+		waiting := h.wantWaitingWake(WakeLaunch)
+		store.failing = true
+		h.advance(waiting.At.Sub(h.clock.Now()))
+		h.m.deps.Store = h.store
+		if held := h.m.View().WakeWaiting; held != nil || !h.claim().DeathCharged {
+			t.Fatalf("the refused turn left wake %+v and deathCharged=%v, want no wake over the death decided", held, h.claim().DeathCharged)
+		}
+		readRunning(t, h)
+		counts(t, h, "after the running read", true, 1, CauseDied)
+		queueAhead(h, 1)
+		h.observe(runtime.Gone)
+		counts(t, h, "after the false death", false, 2, CauseDied)
+		marked(t, h)
+		overruled(t, h)
+		h.wantState(StateIdle)
+		counts(t, h, "after the report", true, 0, "")
+	})
+	t.Run("the roll edge: an earlier release's process the fence refuses, its uncharged false death, a restart and the boot's replay, twice",
+		func(t *testing.T) {
+			const n = 1
+			c := byIDClaim(StateLaunching, 3)
+			c.Budgets.LaunchFailures, c.PendingCause = n, CauseDied
+			r := newByIDRig(t, c, func(h *harness) {
+				h.pace = pacedDeps(wakeRate)
+				h.pace(&h.deps)
+			})
+			var negative []Budgets
+			r.store.onPut = func(c Claim) {
+				if c.Budgets.LaunchFailures < 0 {
+					negative = append(negative, c.Budgets)
+				}
+			}
+			// refused is the registration of the earlier release's process on its older contract,
+			// which the fence refuses and which marks the end of that process charged nothing.
+			refused := func(t *testing.T) {
+				t.Helper()
+				if err := r.registerAs(otherSession, otherSessionFile, r.olderContract()); !errors.Is(err, claim.SameAgentRefusal) {
+					t.Fatalf("the registration on contract %d = %v, want the same-agent refusal", r.olderContract(), err)
+				}
+			}
+			r.connect()
+			refused(t)
+			for cycle := 1; cycle <= 2; cycle++ {
+				queueAhead(r.harness, 1)
+				r.observe(runtime.Gone)
+				if s := r.store.load(r.token); !s.DeathCharged || s.Budgets != (Budgets{LaunchFailures: n}) || s.PendingCause != CauseDied {
+					t.Fatalf("cycle %d: the store holds %+v with %q pending and deathCharged=%v after the uncharged death, want the death decided over %d launch failures and died pending",
+						cycle, s.Budgets, s.PendingCause, s.DeathCharged, n)
+				}
+				restartBehindAWave(t, r.harness)
+				r.must(RecordedDeath{Claim: r.token, Generation: r.claim().Generation})
+				counts(t, r.harness, fmt.Sprintf("after the boot's replay of cycle %d", cycle), false, n, CauseDied)
+				marked(t, r.harness)
+				refused(t)
+				overruled(t, r.harness)
+				counts(t, r.harness, fmt.Sprintf("after the report of cycle %d", cycle), true, n, CauseDied)
+			}
+			if len(negative) > 0 {
+				t.Fatalf("the claim was written counting %+v, want no write below 0: the store's check refuses it", negative)
+			}
+		})
 }
 
 // A running verdict, a read at a caller's request (ReadProcess) or the sweep's report, that comes
 // after a restart and before the boot's replay of a decided death gives nothing back, as main
 // gives nothing back there (dispatch://INFRA-1117/comment/3859c597-2267-417b-a57d-be9738fdfebc).
 // The verdict ends the death (reportedProcess), so the replay finds no death decided and raises no
-// relaunch (relaunchRecordedDeath); no wake holds the relaunch the restart lost, so no drop gives
-// its launch failure back (dropOutlivedRelaunch). The launch failure a task's write stored while
-// that relaunch waited stays counted, with died pending, in the claim and in the store, until the
-// next ready clears both, and nothing starts: what main counts and starts in the same order.
+// relaunch (relaunchRecordedDeath); no wake holds the relaunch the restart lost, so no drop stands
+// in for its ready (dropOutlivedRelaunch). The launch failure a task's write stored while that
+// relaunch waited stays counted, with died pending, in the claim and in the store, until the next
+// ready clears both, and nothing starts: what main counts and starts in the same order.
 //
 // It pins main's behaviour, which no line of this change touches, so it has no negative control
 // of this change. A regression would have to change relaunchRecordedDeath's first case, which
-// returns over a claim whose running verdict cleared Claim.DeathCharged, or give a launch failure
-// back where no wake carries it: a budget write in reportedProcess, ReadProcess or
-// relaunchRecordedDeath, which TestOutcomeSourceHoldsThePolicyAtItsSites refuses unless
-// budgetGiveBacks lists it.
+// returns over a claim whose running verdict cleared Claim.DeathCharged, or write the count where
+// no wake is dropped: a budget write in reportedProcess, ReadProcess or relaunchRecordedDeath,
+// which TestOutcomeSourceHoldsThePolicyAtItsSites refuses unless budgetResets lists it.
 func TestARunningVerdictBeforeTheBootsReplayGivesNothingBackAsMainDoes(t *testing.T) {
 	// counts fails unless the claim and the store each count one launch failure and no death,
 	// with died pending and no death decided.

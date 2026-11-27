@@ -13,8 +13,10 @@ import (
 //
 //   - LaunchFailures: launches that never became a working agent — a spawn or resume the runtime
 //     refused, a process that died, one whose agent never registered or registered and never said
-//     it was ready. Reset only by the agent's ready: a registration alone proves nothing about the
-//     next launch.
+//     it was ready. Reset by the agent's ready: a registration alone proves nothing about the
+//     next launch. A report that finds an agent already up running, while the relaunch of the
+//     death it ends waits, drops that relaunch and resets the count as the relaunch's own ready
+//     would have (dropOutlivedRelaunch).
 //   - Deaths: processes that died after their agent was ready with work outstanding — a pending
 //     task, or a turn the agent had begun and not ended, whether or not a task was behind it
 //     (chargeDeath). The relaunch reaches ready again whatever killed the last process, so ready
@@ -190,12 +192,6 @@ var FailureCauses = []FailureCause{
 // takes it, and nil for every caller but the boot's replay of a recorded death
 // (RecordedDeath.Place). The retry of a refused relaunch passes nil: it is raised anew, so it
 // takes a place afresh.
-//
-// The wake its launch parks records that this relaunch's launch failure is in the count
-// (wake.chargedLaunchFailure), charged by this raise or by an earlier raise of the same death's
-// relaunch (deathLaunchFailureCharged): a report that finds the process running while a death's
-// relaunch waits drops that wake and gives the launch failure back (dropOutlivedRelaunch). It is
-// read as a wake the launch put on the machine, as relaunchDeath reads its mark.
 func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string, place *wakepace.Place) error {
 	if !Charges(o) {
 		return m.launchAfter(ctx, false, false, false, place, ending)
@@ -218,12 +214,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 	if spent {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	before := m.wake
-	err := m.launchAfter(ctx, true, false, false, place, ending)
-	if w := m.wake; w != nil && w != before {
-		w.chargedLaunchFailure = true
-	}
-	return err
+	return m.launchAfter(ctx, true, false, false, place, ending)
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of

@@ -85,10 +85,10 @@ func (w *outsideWalk) check() {
 		w.fail("the claim carries budgets %+v (%+v stored), want no prompt failure for a process reported gone",
 			c.Budgets, stored.Budgets)
 	case sent != w.quietPrompts:
-		w.fail("the claim was sent %+v while no read found its process running, want nothing sent to a process reported gone",
+		w.fail("the claim was sent %+v while no running verdict, a read's or a sweep's, found its process running, want nothing sent to a process reported gone",
 			h.prompts()[w.quietPrompts:])
 	case c.Budgets.PromptFailures != w.quietFailures:
-		w.fail("the claim carries budgets %+v, want no prompt failure charged while no read found its process running", c.Budgets)
+		w.fail("the claim carries budgets %+v, want no prompt failure charged while no running verdict, a read's or a sweep's, found its process running", c.Budgets)
 	case c.ProcessGone && h.armed(TimerTurn):
 		w.fail("TimerTurn is armed over a process reported gone, want it disarmed")
 	case !w.lost && !w.diedFirst && (budgets != Budgets{} || storedBudgets != Budgets{}):
@@ -106,9 +106,9 @@ func (w *outsideWalk) check() {
 		(w.judgedCause == endDisplaced && !c.recordedDisplaced() || w.judgedCause == endFromOutside && !c.recordedFromOutside()):
 		w.fail("the claim's record %+v is not typed as the judgement that first judged the launch, %q", e, w.judgedCause)
 	case w.judgedAfterRead && e.Generation == w.generation && e.Told && e.ToldBy == "":
-		w.fail("the claim's record %+v of the end judged after a read is told by no delivery, want it told to the relaunched role", e)
+		w.fail("the claim's record %+v of the end judged after a running verdict, a read's or a sweep's, is told by no delivery, want it told to the relaunched role", e)
 	case w.alive && (e.Tells() && e.Generation == w.generation || stored.EndedWork.Tells() && stored.EndedWork.Generation == w.generation):
-		w.fail("the claim's record %+v (%+v stored) tells while the process a read found running lives, want no end told that did not happen",
+		w.fail("the claim's record %+v (%+v stored) tells while the process a running verdict found running lives, want no end told that did not happen",
 			e, stored.EndedWork)
 	case e.Tells() && w.toldOutlived(e.Cause) != "" || stored.EndedWork.Tells() && w.toldOutlived(stored.EndedWork.Cause) != "":
 		w.fail("the claim's record %+v (%+v stored) tells the death a running verdict ended, want no end told that did not happen",
@@ -141,15 +141,15 @@ func (w *outsideWalk) check() {
 		switch {
 		case !w.alive:
 		case w.earlierCause != "" && !w.earlierTold && !earlier:
-			w.fail("the process a read found running was sent %q, want the earlier launch's end it was never told told first: a false death erases nothing",
+			w.fail("the process a running verdict found running was sent %q, want the earlier launch's end it was never told told first: a false death erases nothing",
 				p.Message)
 		case tellsEnd(p.Message) && !earlier:
-			w.fail("the process a read found running was sent %q, want no end told to a process that has not ended", p.Message)
+			w.fail("the process a running verdict found running was sent %q, want no end told to a process that has not ended", p.Message)
 		case p.DeliveryID == w.sentAgain && p.Message != sentAgainTask+owedTask && !behind:
-			w.fail("the task the death took back went again to the process a read found running as %q, want it behind the one sentence of a task sent again",
+			w.fail("the task the death took back went again to the process a running verdict found running as %q, want it behind the one sentence of a task sent again",
 				p.Message)
 		case p.DeliveryID != w.sentAgain && strings.Contains(p.Message, sentAgainTask):
-			w.fail("the process a read found running was sent %q, want the sentence of a task sent again in front of the task the death took back alone",
+			w.fail("the process a running verdict found running was sent %q, want the sentence of a task sent again in front of the task the death took back alone",
 				p.Message)
 		}
 	}
@@ -192,7 +192,8 @@ func beyond(b, base Budgets) Budgets {
 // that died judged (judgedDeath), deathRetyped holds while the claim records that launch, and no
 // step logs a line of an end continued uncharged from outside the pod. The relaunch lets that
 // process go, which ends the watch, a restart starts it again from the claim it restores, and a
-// read that finds the process running ends it (readRunning).
+// running verdict, a read's or a sweep's, that finds the process running ends it (readRunning,
+// sweepRunning).
 func (w *outsideWalk) deathStands() string {
 	held, lines := w.death, continuedLines(w.h)
 	logged := lines > w.continued

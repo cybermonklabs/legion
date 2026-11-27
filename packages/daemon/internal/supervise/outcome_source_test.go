@@ -33,9 +33,8 @@ import (
 // words but the refusal itself — none in this package, the stream or the runtime, and none in the
 // bridge but its constant and the refusal it writes; every charge names a declared member; and no
 // function but a charge function writes a budget counter except to set it back, to zero or to one
-// attempt short of its limit (budgetResets names each that may), or to give back by one the count
-// a charge made for a launch that never came (budgetGiveBacks names each that may). Delete a check
-// here when the compiler comes to hold it.
+// attempt short of its limit (budgetResets names each that may). Delete a check here when the
+// compiler comes to hold it.
 //
 // The negative control of the check c-the-outcome-is-not-a-string, in dispatch://INFRA-3136's
 // verification.md, names each shape of a match this test claims to find, and
@@ -191,7 +190,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 		}
 	})
 
-	t.Run("no function but a charge function, a reset or a give-back writes a budget counter", func(t *testing.T) {
+	t.Run("no function but a charge function or a reset writes a budget counter", func(t *testing.T) {
 		counters := src.budgetCounters(t)
 		wrote := map[string]bool{}
 		for _, file := range src.files {
@@ -209,12 +208,8 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 						if !write.reset {
 							t.Errorf("%s writes a budget counter other than back down: %s may only set the counters back, to zero or to one attempt short of each spent limit (Budgets.OneAttemptLeft), and a charge is the charge functions' alone, which ask the policy (Charges)", where, fn.Name.Name)
 						}
-					case budgetGiveBacks[fn.Name.Name] != "":
-						if !write.oneDown {
-							t.Errorf("%s writes a budget counter other than one down: %s may only give back one count by a decrement, and a charge is the charge functions' alone, which ask the policy (Charges)", where, fn.Name.Name)
-						}
 					default:
-						t.Errorf("%s writes a budget counter: only the charge functions (%s) count against a budget, each asking the policy (Charges), only the resets listed in budgetResets set one back down, and only the give-backs listed in budgetGiveBacks take one down by one", where, strings.Join(chargeFunctions, ", "))
+						t.Errorf("%s writes a budget counter: only the charge functions (%s) count against a budget, each asking the policy (Charges), and only the resets listed in budgetResets set one back down", where, strings.Join(chargeFunctions, ", "))
 					}
 				}
 			}
@@ -222,11 +217,6 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 		for name := range budgetResets {
 			if !wrote[name] {
 				t.Errorf("budgetResets lists %s, which writes no budget counter: remove it", name)
-			}
-		}
-		for name := range budgetGiveBacks {
-			if !wrote[name] {
-				t.Errorf("budgetGiveBacks lists %s, which writes no budget counter: remove it", name)
 			}
 		}
 		for _, name := range chargeFunctions {
@@ -246,18 +236,12 @@ var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFail
 // takes each spent counter to one short of its limit and keeps every other. A reset is the end of
 // what a budget measures, which is no event the policy is asked about.
 var budgetResets = map[string]string{
-	"confirmCarrying": "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
-	"ready":           "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
-	"turnEnded":       "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
-	"retirePending":   "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
-	"retry":           "an operator's retry of a failed claim starts every budget again from nothing, or with one attempt left of each budget the failure spent (RequestRetry, Budgets.OneAttemptLeft)",
-}
-
-// budgetGiveBacks are the functions besides the charge functions and the resets that may write a
-// budget counter, and each may only take one count back by a decrement: the count a charge
-// function made for a launch that never came, which no ready can now clear.
-var budgetGiveBacks = map[string]string{
-	"dropOutlivedRelaunch": "a report that finds the process running drops the death's waiting relaunch and gives back the one launch failure that relaunch was charged, in place of the ready the relaunched agent would have given (Budgets, LaunchFailures; wake.chargedLaunchFailure)",
+	"confirmCarrying":      "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
+	"ready":                "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
+	"dropOutlivedRelaunch": "a report that finds an agent already up running drops the death's waiting relaunch and resets the launch failures, standing in for that relaunch's ready, which would have reset them (Budgets, LaunchFailures)",
+	"turnEnded":            "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
+	"retirePending":        "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
+	"retry":                "an operator's retry of a failed claim starts every budget again from nothing, or with one attempt left of each budget the failure spent (RequestRetry, Budgets.OneAttemptLeft)",
 }
 
 // The packages this test reads, by import path.
@@ -292,13 +276,11 @@ func (s *goSource) budgetCounters(t *testing.T) map[types.Object]bool {
 	return counters
 }
 
-// budgetWrite is one statement writing a budget counter: target is what it writes, reset whether
-// it sets the counters back down by plain assignment (lowers), and oneDown whether it takes the
-// counter down by one, a decrement.
+// budgetWrite is one statement writing a budget counter: target is what it writes, and reset
+// whether it sets the counters back down by plain assignment (lowers).
 type budgetWrite struct {
-	target  ast.Expr
-	reset   bool
-	oneDown bool
+	target ast.Expr
+	reset  bool
 }
 
 // budgetWrites is every write in body, function literals included, of a budget counter: an
@@ -326,7 +308,7 @@ func (s *goSource) budgetWrites(body *ast.BlockStmt, counters map[types.Object]b
 		switch node := node.(type) {
 		case *ast.IncDecStmt:
 			if writes(node.X) {
-				found = append(found, budgetWrite{target: node.X, oneDown: node.Tok == gotoken.DEC})
+				found = append(found, budgetWrite{target: node.X})
 			}
 		case *ast.AssignStmt:
 			for i, target := range node.Lhs {

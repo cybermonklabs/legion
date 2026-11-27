@@ -20,6 +20,7 @@ package supervise
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -205,18 +206,6 @@ type wake struct {
 	// other launch still owes the live process what it was raised for, and keeps its turn. It is
 	// memory only, as the wake is: the boot's replay raises the death's relaunch again, marked.
 	deathRelaunch bool
-	// chargedLaunchFailure is whether the claim's count holds the one launch failure the relaunch
-	// this wake holds was charged (Budgets.LaunchFailures, relaunchAfterFailure): charged by the
-	// raise that parked it, or by an earlier raise of the same death's relaunch, whose wake a
-	// restart lost and whose charge the store kept beside died pending (deathLaunchFailureCharged).
-	// A report that finds the process running and drops the death's relaunch gives that one launch
-	// failure back (dropOutlivedRelaunch,
-	// dispatch://INFRA-1117/comment/beaf0ee7-ee68-497d-8f29-00f7f61b3a82): had the relaunch run,
-	// its agent's ready would have cleared it, and the process kept in its place comes to no such
-	// ready, since a ready from an agent already up resets nothing (reready). It is memory only, as
-	// deathRelaunch is: the boot's replay raises the relaunch again, and the wake that raise parks
-	// carries it again, whether the replay charges the launch failure or finds it counted already.
-	chargedLaunchFailure bool
 	// paid is whether this launch's let-out, once a pause's gate holds it, runs it with no place
 	// of its own (letOutHeldLaunch): the launch has had its turn from the pacing already. The
 	// pacing let its place out, which a pause then met at its turn (reserveWake, wakeNow), an
@@ -754,13 +743,23 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // flight any more. Only a cause that relaunch recorded goes, read as died over an end the policy
 // charges (processOutcome, Charges): an end it charges nothing recorded none, and the cause pending
 // is the earlier failure's that this process is the relaunch of. The Death the death counted
-// stays counted, as for any death (chargeDeath). The one launch failure the relaunch was charged
-// goes back with it (wake.chargedLaunchFailure,
-// dispatch://INFRA-1117/comment/beaf0ee7-ee68-497d-8f29-00f7f61b3a82), in place of the ready the
-// relaunched agent would have given, and nothing else goes back: the claim counts after the drop
-// the launch failures it counted before the death. It goes back only while died pending still
-// says it is counted, since a ready that came from the process while the relaunch waited cleared
-// both.
+// stays counted, as main counts it (chargeDeath).
+//
+// The drop stands in for the ready of the launch it dropped
+// (dispatch://INFRA-1117/comment/ef5d798e-5e76-4e5a-92ef-616545f4567c): on main that launch would
+// have run, and its agent's ready would have set the launch failures to 0 (ready), and the process
+// the claim keeps is that healthy launch. So where the kept agent is already up, having said it is
+// ready (ready, working or idle, no state of unready), the drop sets the launch failures to 0 as
+// that ready would, and touches no other count. It reads no raise: whichever raise charged the
+// death's launch failure — the one that parked this wake, or an earlier one whose wake a restart
+// lost or whose turn the lifecycle recheck refused, its charge kept in memory or in the store
+// (deathLaunchFailureCharged) — and whatever the claim counted before the death, the count reads
+// what that ready would have left, and never less than 0. A kept agent still coming up, registered
+// and not yet ready, keeps its count
+// (dispatch://INFRA-1117/comment/031e8074-69aa-43c2-bcbc-bb0430dc1190): main resets only at a
+// ready, and that agent's own ready resets it when it comes, a full ready (ready), not the one a
+// kept agent already up gives again, which resets nothing (reready).
+//
 // The wake goes off the machine and gives up what held it: its place in the pacing
 // (placeTimer), the turn it would have taken going to the wake behind it, or the gate's own stop
 // of the claim for the pause (TimerPause, pauseStopDue), which the gate posted because the launch
@@ -781,8 +780,8 @@ func (m *Machine) dropOutlivedRelaunch() {
 	m.disarm(TimerWake)
 	m.disarm(TimerPause)
 	m.wake = nil
-	if waiting.chargedLaunchFailure && m.claim.PendingCause == CauseDied {
-		m.claim.Budgets.LaunchFailures--
+	if !slices.Contains(unready, m.claim.State) {
+		m.claim.Budgets.LaunchFailures = 0
 	}
 	if m.claim.PendingCause == CauseDied && Charges(m.processOutcome(runtime.OutcomeProcessDied)) {
 		m.claim.PendingCause = ""

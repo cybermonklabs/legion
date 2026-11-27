@@ -104,10 +104,11 @@ const (
 //     relaunch is never placed as a charged death's (outsideEndQueued). And once the claim holds
 //     a death of the ended launch that died judged (judgedDeath), decided or recorded with its
 //     take-back refused, that first judgement stands for as long as the claim holds that launch,
-//     or until a read finds the process running: the claim never reads as an end from outside
-//     the pod, a paced wake it holds waits in the first queue, no step logs a line of an end
-//     continued uncharged (continuedFromOutsideLine), and the relaunch tells the role nothing of
-//     an end from outside the pod (deathRetyped, outsideWalk.deathStands, outsideWalk.relaunch).
+//     or until a running verdict, a read's or a sweep's, finds the process running: the claim
+//     never reads as an end from outside the pod, a paced wake it holds waits in the first
+//     queue, no step logs a line of an end continued uncharged (continuedFromOutsideLine), and
+//     the relaunch tells the role nothing of an end from outside the pod (deathRetyped,
+//     outsideWalk.deathStands, outsideWalk.relaunch).
 //     Once the claim holds displaced's record of the ended launch (recordedDisplaced), that
 //     first judgement stands for as long as the claim holds that launch: no report reaches died,
 //     the claim never holds a death died judged, a paced wake it holds waits in the second queue,
@@ -196,13 +197,14 @@ const (
 //
 // The test fails unless some seed walks each of the orders the walk was given for them: the
 // running read, the late acknowledgement over a gone process, a report read neither way over
-// displaced's record, an idle turn end, a turn start of the task sent again after a read, a
-// suspension held for a turn, an operator's suspension that lands where it arrives, after a read,
-// a displacement, a death and an end from outside the pod, a read over the earlier launch's death
-// still untold, the task sent again behind that death's words, and the sweep's report of the
-// process running, and unless some sweep report lands while a death's relaunch waits in the
-// pacing, while any launch waits, ready or idle, in a turn and after a restart; it logs how many
-// seeds walk each, and how many sweep reports land at each of those points.
+// displaced's record, an idle turn end, a turn start of the task sent again after a running
+// verdict, a suspension held for a turn, an operator's suspension that lands where it arrives,
+// after a running verdict, a displacement, a death and an end from outside the pod, a running
+// verdict over the earlier launch's death still untold, the task sent again behind that death's
+// words, and the sweep's report of the process running, and unless some sweep report lands while
+// a death's relaunch waits in the pacing, while any launch waits, ready or idle, in a turn and
+// after a restart; it logs how many seeds walk each, and how many sweep reports land at each of
+// those points.
 func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
 	var reads, acks, displacedReports, turnEnds, turnStarts, held, suspended, earlierReads, earlierSentAgain, sweeps int
 	var liveEnds [3]int
@@ -225,7 +227,7 @@ func TestAnEndFromOutsideHoldsItsInvariantsInRandomOrders(t *testing.T) {
 			}
 		})
 	}
-	t.Logf("seeds that walk a running read: %d; a late acknowledgement over a gone process: %d; a report read neither way over displaced's record: %d; an idle turn end: %d; a turn start after a read: %d; a suspension held for a turn: %d; an operator's suspension landing: %d; after a read, a displacement: %d, a death: %d, an end from outside the pod: %d; a read over an earlier launch's end still untold: %d; the task sent again behind that end's words: %d; the sweep's report of the process running: %d",
+	t.Logf("seeds that walk a running read: %d; a late acknowledgement over a gone process: %d; a report read neither way over displaced's record: %d; an idle turn end: %d; a turn start after a running verdict: %d; a suspension held for a turn: %d; an operator's suspension landing: %d; after a running verdict, a displacement: %d, a death: %d, an end from outside the pod: %d; a running verdict over an earlier launch's end still untold: %d; the task sent again behind that end's words: %d; the sweep's report of the process running: %d",
 		reads, acks, displacedReports, turnEnds, turnStarts, held, suspended, liveEnds[0], liveEnds[1], liveEnds[2], earlierReads, earlierSentAgain, sweeps)
 	t.Logf("sweep reports of the process running while a death's relaunch waits in the pacing: %d; while any launch waits: %d; ready or idle: %d; in a turn: %d; after a restart: %d",
 		sweepsAt[0], sweepsAt[1], sweepsAt[2], sweepsAt[3], sweepsAt[4])
@@ -324,26 +326,27 @@ type outsideWalk struct {
 	// ending is whether the step running is an end of the process (outsideWalk.step), cutAts the
 	// moments (EndedWork.At) of the records that may tell a turn cut off (invariant 7),
 	// judgedCause the cause of the end that first judged the ended launch, "" while none stands,
-	// readEnded whether the last read ended a death the claim held the record of, and
-	// judgedAfterRead whether the judgement came over that record (invariant 8).
+	// readEnded whether the last running verdict, a read's or a sweep's, ended a death the claim
+	// held the record of, and judgedAfterRead whether the judgement came over that record
+	// (invariant 8).
 	ending                     bool
 	cutAts                     map[int64]bool
 	judgedCause                string
 	readEnded, judgedAfterRead bool
-	// cutSince is whether an end has cut off a turn since the walk began, or since the last read
-	// that found the process running, which ends the death that read found and every turn that
-	// death named (reportedProcess): a role is told a turn was interrupted only after such an end
-	// (outsideWalk.relaunch).
+	// cutSince is whether an end has cut off a turn since the walk began, or since the last
+	// running verdict, a read's or a sweep's, which ends the death that verdict found and every
+	// turn that death named (reportedProcess): a role is told a turn was interrupted only after
+	// such an end (outsideWalk.relaunch).
 	cutSince bool
 	// quietPrompts and quietFailures are how many prompts the claim had been sent and how many
 	// prompt failures it carried when the walk last held its process not running, which no step
-	// adds to until a read finds it running again (invariant 6); closing is whether the relaunch's
-	// ready has begun, which sends the relaunched process its task.
+	// adds to until a running verdict finds it running again (invariant 6); closing is whether the
+	// relaunch's ready has begun, which sends the relaunched process its task.
 	quietPrompts, quietFailures int
 	closing                     bool
 	// dying is how many lines died had written for the claim when its displacement watch began
-	// (displacementStands): a death died judged before a read found the process running wrote
-	// them, and no report after the displacement may add one.
+	// (displacementStands): a death died judged before a running verdict found the process running
+	// wrote them, and no report after the displacement may add one.
 	dying int
 	// path is the path a process a running verdict found running takes (live), 0 until it is
 	// drawn.
