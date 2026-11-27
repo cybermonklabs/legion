@@ -1,10 +1,8 @@
 kind: Fixed
 body: |-
     handoff_complete sends check_opened_at to report a production check's look, without
-    reading the issue's state or finding a handoff first. Its shared successful-call helper
-    leaves phase input open after a report, closes it after a step completion or backward
-    move, and marks an update answered without closing the phase. The plugin speaks the
-    daemon API contract entry 20261125181543 (look-names-its-check).
+    reading the issue's state or finding a handoff first. The plugin speaks the daemon API
+    contract entry 20261125181543 (look-names-its-check).
 time: 2026-11-24T21:48:49Z
 custom:
     Issue: pr5463

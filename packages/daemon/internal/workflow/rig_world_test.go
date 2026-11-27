@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -290,7 +291,7 @@ func rigWorld(t *testing.T, req rigWorldRequest) rigWorldAnswer {
 	engine.cfg.Project = req.Project
 	engine.cfg.Steps = config.Gates{}.Steps()
 	engine.cfg.Repositories = fixedRepositories{served: map[string]string{req.Repository: req.DefaultBranch}}
-	engine.cfg.WorkspaceDir = func(record.Issue) string { return req.Workspace }
+	engine.cfg.WorkspaceDir = func(string, ghrepo.Repository) string { return req.Workspace }
 
 	for i, issue := range req.Issues {
 		at := phase.Admitted
