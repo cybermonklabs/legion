@@ -18,8 +18,10 @@ import (
 // entry whose port is no number, which net/url cannot parse and the bus names by its class alone.
 // In at-authority, a "?", a "/" and a "#" written into an entry's user information end its
 // authority there, so the host url.Parse reads is the probe's user, password or token, and an "@"
-// stands past the authority. The twin shows each list as written holds every marker. Captures
-// natscallout.hub-hosts/<case>.
+// stands past the authority. The bus refuses such a list before it dials, naming the first such
+// entry by its position alone (natsurl.Check), and the connect error names each of the three by
+// BROKER_NATS_URLS and the clean entry by its host. The twin shows each list as written holds
+// every marker. Captures natscallout.hub-hosts/<case>.
 func TestAConnectErrorNamesTheHubWithNoCredentialItsURLsCarry(t *testing.T) {
 	credentialed := func(hostport string) string {
 		return "nats://" + redacttest.User + ":" + redacttest.Password + "@" + hostport + "/?access" + "_token=" + redacttest.Token
@@ -36,7 +38,7 @@ func TestAConnectErrorNamesTheHubWithNoCredentialItsURLsCarry(t *testing.T) {
 			"nats://" + redacttest.Password + "/x@127.0.0.1:5",
 			"nats://" + redacttest.Token + "#x@127.0.0.1:6",
 			"ws://127.0.0.1:7",
-		}, []string{"connect to BROKER_NATS_URLS,BROKER_NATS_URLS,BROKER_NATS_URLS,127.0.0.1:7: ", "mixing of websocket"}},
+		}, []string{"connect to BROKER_NATS_URLS,BROKER_NATS_URLS,BROKER_NATS_URLS,127.0.0.1:7: ", `bus: NATS server URL 1 of 4 cannot be read: an "@" stands after its host`}},
 	}
 	t.Run("twin", func(t *testing.T) {
 		for _, c := range cases {
