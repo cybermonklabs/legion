@@ -34,6 +34,7 @@ import {
   node,
   openAsk,
   READER,
+  SPEC_DOCUMENT,
   shaped,
   specRef,
   statement,
@@ -1126,6 +1127,9 @@ async function decisionsRows(): Promise<void> {
   client.setQueryData(["decisions", KEY], decisionsRead(made));
   client.setQueryData(["asks", KEY, "thread"], []);
   client.setQueryData(["comments", KEY], []);
+  // The spec's blocks, the one document of the issue its decisions stand in, which the view
+  // reads (`decisions-entries.ts`): none, so the rows make no request for them.
+  client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], []);
   const issue = issueDetails();
   const root = issueTree(children);
   const published = publishedTree(root);

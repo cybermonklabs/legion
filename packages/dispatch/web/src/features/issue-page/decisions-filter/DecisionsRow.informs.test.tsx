@@ -23,6 +23,7 @@ import {
   issueTree,
   KEY,
   READER,
+  SPEC_DOCUMENT,
   shaped,
   specRef,
   statement,
@@ -97,6 +98,9 @@ test("a decision's row holds its informs line while the statements it shaped are
   );
   client.setQueryData(["asks", KEY, "thread"], []);
   client.setQueryData(["comments", KEY], []);
+  // The spec's blocks, the one document of the issue its decisions stand in, which the view
+  // reads (`decisions-entries.ts`): none, so the row makes no request for them.
+  client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], []);
   const view = render(body(client, NAMES_OUT));
   try {
     const row = view.container.querySelector<HTMLElement>(
