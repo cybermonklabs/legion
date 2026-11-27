@@ -217,13 +217,15 @@ func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t
 	t.Logf("the refusal: %+v", refusal)
 }
 
-// requireStoppedSessionKnown registers sessionID's wide topics of tokenBytes letters each, stops
-// it cleanly and removes its interest row, as the reaper does for a session gone that long, so the
-// known-session record is the one store left that knows it. It then sends to the session and
-// publishes on a topic its wildcard covers, and requires the send to be stored for it (200,
-// stopped) rather than refused 404, the publish to count it as a recipient that is not connected,
-// and the record to hold every topic registered. Every one of the three is read and logged before
-// any is judged, so a run that fails names all three answers.
+// requireStoppedSessionKnown registers sessionID's wide topics of tokenBytes letters each, and a
+// team topic beside them, stops it cleanly and removes its interest row, as the reaper does for a
+// session gone that long, so the known-session record is the one store left that knows it. It then
+// sends to the session and publishes on the team topic, and requires the send to be stored for it
+// (200, stopped) rather than refused 404, the publish to count it as a recipient that is not
+// connected, and the record to hold every topic registered. The publish is on a team topic because
+// the publish route refuses a `notifications.dispatch.` topic, which Dispatch alone publishes. Every
+// one of the three is read and logged before any is judged, so a run that fails names all three
+// answers.
 //
 // The registration is the case's setup, and it is given the time left before the test binary's
 // deadline (budgetsUntilTheDeadline) in place of its 3.5 s: the known-session record is its last
@@ -232,11 +234,11 @@ func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t
 // failed on a send answered 404 for a session it had just registered.
 func requireStoppedSessionKnown(t *testing.T, sessionID string, tokenBytes int) {
 	t.Helper()
-	const topic = "notifications.dispatch.issue.K-0.counted"
+	const topic = "notifications.team.counted"
 	rig := newRecipientRig(t)
 	budgetsUntilTheDeadline(t, rig.deps)
 	topics := wideTopics(300, tokenBytes, "legion-controller")
-	topics = topics[:len(topics)-1] // no role lane: the session holds no role
+	topics = append(topics[:len(topics)-1], topic) // no role lane: the session holds no role
 	rig.register(t, recipientSender, []string{topic})
 	rig.knownSessionRig.register(t, sessionID, map[string]any{"topics": topics})
 	rig.stop(t, sessionID)

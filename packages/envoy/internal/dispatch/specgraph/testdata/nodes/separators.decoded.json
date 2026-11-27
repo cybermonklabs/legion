@@ -1,0 +1,8 @@
+[
+  {
+    "type": "term",
+    "id": "separators",
+    "name": "separators term",
+    "definition": ["a\u2028b", "c\u2029d", "e\u0085f"]
+  }
+]

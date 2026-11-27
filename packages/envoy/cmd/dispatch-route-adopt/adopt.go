@@ -23,7 +23,7 @@ const routesFixture = "testdata/routes.txt"
 
 // oldNames are the declarations the new layout removed: a line of package api that still names
 // one was written against the old layout.
-var oldNames = regexp.MustCompile(`\b(writeClasses|idRoutes|routeScopes|readScopeRoutes|routeShapes|routeRow|withIDRoute|scopedRoutesNotMounted|shapedRoutesNotMounted|readRoutesNotMountedAsGET|routeIndexGolden)\b`)
+var oldNames = regexp.MustCompile(`\b(writeClasses|idRoutes|routeScopes|readScopeRoutes|approveScopeRoutes|readClasses|routeShapes|routeRow|withIDRoute|scopedRoutesNotMounted|shapedRoutesNotMounted|readRoutesNotMountedAsGET|routesNotMounted|routeIndexGolden)\b`)
 
 // adoptReport is what one run did and what it leaves for the person.
 type adoptReport struct {
@@ -352,7 +352,8 @@ func sharedCodeChange(repo gitRepo, name string, base, branch tree) (string, err
 }
 
 // sharedCode is an old-layout file with every moved entry cut out: the elements of the side maps
-// and of readScopeRoutes, the rows of routes() and the test hooks' rows, each list left as {…}.
+// and of the two key lists, readScopeRoutes and approveScopeRoutes, the rows of routes() and the
+// test hooks' rows, each list left as {…}.
 func sharedCode(name string, content []byte) (string, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, name, content, parser.ParseComments|parser.SkipObjectResolution)
@@ -362,7 +363,7 @@ func sharedCode(name string, content []byte) (string, error) {
 	type cut struct{ from, to int }
 	var cuts []cut
 	offset := func(pos token.Pos) int { return fset.Position(pos).Offset }
-	for _, mapName := range []string{writeClassesName, idRoutesName, routeScopesName, readScopeRoutesName, routeShapesName} {
+	for _, mapName := range []string{writeClassesName, idRoutesName, routeScopesName, readScopeRoutesName, approveRoutesName, routeShapesName} {
 		if literal := packageLiteral(file, mapName); literal != nil {
 			cuts = append(cuts, cut{offset(literal.Lbrace) + 1, offset(literal.Rbrace)})
 		}
