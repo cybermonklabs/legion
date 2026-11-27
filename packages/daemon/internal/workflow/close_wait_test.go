@@ -529,8 +529,10 @@ func TestTheCloseReadsTheChildrenFromDispatch(t *testing.T) {
 // beneath it (record.OpenBeneath, which reads this tree's members) never count it, and only the
 // open children do. Its record is read from the store whatever tree holds it, so a rule that drops
 // every child the record holds in the workflow dropped this one too, and neither term counted it:
-// the root closed while Dispatch held its child open and at work. The control is the same child
-// done, which holds nothing.
+// the root closed while Dispatch held its child open and at work. Once that child has merged and
+// stands in verifying it holds the close no longer: the parent waits for its work to land, and its
+// checks belong to its own tree and root (D10, the lead's ruling on the second read). The control
+// is the same child done, which holds nothing.
 func TestAChildThatIsATreeOfItsOwnHoldsTheClose(t *testing.T) {
 	t.Parallel()
 	const own = "LEGION-301"
@@ -540,6 +542,7 @@ func TestAChildThatIsATreeOfItsOwnHoldsTheClose(t *testing.T) {
 		holds        bool
 	}{
 		{name: "its own tree at work", status: "in_progress", stands: phase.Implementing, holds: true},
+		{name: "its own tree merged, waiting for its checks", status: "testing", stands: phase.Verifying},
 		{name: "control: its own tree done", status: "done", stands: phase.Done},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

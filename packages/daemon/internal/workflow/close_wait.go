@@ -91,8 +91,8 @@ func (e *Engine) closeWaitFrom(ctx context.Context, tx pgx.Tx, issue record.Issu
 // holds in the workflow as a member of this tree is an issue beneath (record.OpenBeneath), whose
 // own record judges it. A child that is a tree of its own is no member, so OpenBeneath never
 // counts it, and it is kept here as ChildOpen answers, its record read from the store whatever
-// tree holds it. So no close comes past a child Dispatch holds open, whatever the daemon's copy of
-// Dispatch holds.
+// tree holds it. So no close comes past such a child while its work has still to land; once it
+// stands in verifying it holds the close no longer, since its checks are its own tree's (D10).
 func (e *Engine) openChildren(ctx context.Context, tx pgx.Tx, children []dispatch.IssueChild, members []record.Issue) ([]string, error) {
 	byKey := make(map[string]record.Issue, len(members))
 	for _, member := range members {
