@@ -1279,6 +1279,7 @@ A role's launcher looks the recorded session up in the table before it starts th
 a launch failure, never a fresh agent, and three of them retire the claim.
 A database it cannot reach is asked again with a backoff (half a second, doubling to four seconds) for up to 30 seconds
 — under `postgres` the URL file read afresh each time, since that file is a projection something else may replace — and only then refuses the start.
+Each lookup is one read-only transaction of the session client (`internal/ompsessions`), which opens it with one message that sets each setting the client depends on, and which closes a server connection it cannot repair and runs the transaction again on a new one ([Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on), step 3, says how).
 Neither `workspace-init` looks for a session file, and neither is told to expect one: there is no disk on which a session could be waiting.
 A launch that creates the issue's pod provisions its workspace from the issue's pushed branch and continues its own session from the table;
 a role launched into the pod already running provisions nothing and continues its session in the workspace the roles before it left.
@@ -1323,7 +1324,7 @@ the transcript, `<CLAUDE_CONFIG_DIR>/projects/<dir>/<id>.jsonl`, and the record,
 Every row has a `byte_len` and a `mtime_ms`, the file's mtime when it was saved, so the rows never stop an Oh My Pi process from loading its index.
 The launcher holds one connection to the session database for the generation, through the generation's proxy socket under `cloudsql-iam`.
 It saves a file that grew at most every 2 s, the transcript only up to its last newline.
-Each save is one transaction that appends the new bytes as a part, and only over what that launcher saved last.
+Each save is one transaction that appends the new bytes as a part, and only over what that launcher saved last; it opens, and is run again on a new connection, as the lookups' transactions are.
 When another writer has moved the row, the launcher stops saving that file and logs it.
 It never overwrites the row.
 A save the database refuses is logged and tried again at the next save, and the agent runs on.
@@ -1682,16 +1683,19 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
    It exits 1 on any `failed` or `refused`, on a `missing` of the claims it was asked to copy (another tree's is reported only), and when `--tree` selects no claim of the list, which is a mistyped key.
 
-   - Every statement it runs, like every statement of the launcher's session lookups and Claude Code saves, runs in a transaction whose first statement is `SET LOCAL search_path = pg_catalog, pg_temp`, which then sets `restrict_nonsystem_relation_kind` to `'view, foreign-table'`, and names each table `public.<table>`; a read-only one also sets `row_security` off.
+   - Every statement it runs, like every statement of the launcher's session lookups and Claude Code saves, runs in a transaction that one simple-protocol message opens: `OpenRead` for a read, `OpenWrite` for a write (`packages/daemon/internal/ompsessions/open.go`).
+     That message names `ISOLATION LEVEL READ COMMITTED` and `READ ONLY` or `READ WRITE`, sets `application_name` to `legion-session-client` for the transaction, so that the server's log names each statement of the client, pins `search_path = pg_catalog, pg_temp`, sets `restrict_nonsystem_relation_kind` to `'view, foreign-table'`, sets `row_security` off in a read, and sets back each other setting that the list `LeftSettings` (`leftsettings.go`) marks, which another client can leave on a pooled server connection; each statement names each table `public.<table>`.
      So no function, operator or table that another login planted in `public`, or in a schema named for the login, resolves in those statements; a view another login made at a table's own name fails the statement rather than runs in it, and the import refuses a relation at either name that is no table; and a row-security policy on the tables fails a read rather than runs in it.
      The pin covers name lookup and those relations alone: a trigger, a rule, a default or a constraint that the tables' owner attaches still runs as whoever writes.
-     It is set in each transaction because a PgBouncer pool in transaction mode refuses `search_path` as a startup parameter.
+     It is set in each transaction because a PgBouncer pool in transaction mode refuses `search_path` as a startup parameter and gives a server connection, with the session settings another client left on it, to the next client.
+     When the server refuses the opening, refuses a statement with SQLSTATE `25006` or `42501`, or ends the connection before the client sent `COMMIT`, the client closes the connection with no `ROLLBACK`, so that the pool closes that server connection too, opens a new connection and runs the whole transaction again, at most 3 times; it runs nothing again once it sent `COMMIT`.
+     A write under a read-only default of the login or the database (`default_transaction_read_only = on`) refuses and writes nothing.
 
 4. **Copy every tree again.**
    Each run must print only `copied before` or `recorded no session` for its tree's claims, and its `missing` lines may name only claims step 5 is to clear: one whose volume was gone before step 3 (the cleared controller's, or a claim of a tree closed earlier), or a `failed` you cannot fix.
    A `refused` here means a writer was still running: the session grew on its volume after step 3 copied it, and the import never overwrites a row it already holds, so it refuses the file it now finds.
    Going on would resume the agent from the older row and lose every turn after it.
-   Go back to step 1 instead: scale the earlier daemon back up, suspend whatever runs, save the list again, and scale it to 0 at once (step 2); then delete that row and its parts in one transaction pinned as the import's own are, `BEGIN; SET LOCAL search_path = pg_catalog, pg_temp; SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'; DELETE FROM public.omp_session_files_parts WHERE path = '<path>'; DELETE FROM public.omp_session_files WHERE path = '<path>'; COMMIT;`, and copy again.
+   Go back to step 1 instead: scale the earlier daemon back up, suspend whatever runs, save the list again, and scale it to 0 at once (step 2); then delete that row and its parts in one transaction opened as the import's own are, on one `psql` connection: `-c` with the text of `OpenWrite` (`packages/daemon/internal/ompsessions/open.go`) as it stands, then `-c "DELETE FROM public.omp_session_files_parts WHERE path = '<path>'"`, `-c "DELETE FROM public.omp_session_files WHERE path = '<path>'"` and `-c COMMIT`, and copy again.
    Nothing writes a row under SQL storage before the switch, so in this runbook a `refused` has no other cause.
 
 5. **Roll out the new daemon, then clear only sessions the import reported missing.**
