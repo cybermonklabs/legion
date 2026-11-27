@@ -6806,9 +6806,10 @@ Each item below names a path with its method and identity, then its purpose.
       A key of Dispatch, an id, a number, and the owner and the repository on GitHub are ASCII.
       So a letter of another script in one of them makes it no form.
 
-    - When a form is beside the writing of another script, or a format character: a colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
+    - When a form is a colour: a colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
       So write such a colour in words.
-      A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
+
+    - When a form is beside the writing of another script, or a format character: a form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
       So it names nothing, and R49 leaves such a text to the reviewer of R25.
       A format character (Unicode class `Cf`), such as a soft hyphen, a zero-width space or a word joiner, hides no form, as the page shows none.
       The rules read the words twice where they hold one: with each format character taken out, which joins the characters on its two sides, and with each read as a space, which parts them.
