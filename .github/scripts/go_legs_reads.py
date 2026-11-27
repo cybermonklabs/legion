@@ -356,7 +356,7 @@ class Scope:
         return [(item.split()[0], "..." in item) if item.split() else ("", False)
                 for item in call_arguments(text, signature.end())]
 
-    def passed(self, name: str, source: str, span, depth: int) -> list | None:
+    def passed(self, name: str, source: str, span) -> list | None:
         """(file, the function it is in, an argument) for each argument a call of the function `span`
         passes the parameter `name` (each from its place on, for a variadic one), or None when
         `name` is no parameter of it."""
@@ -400,7 +400,7 @@ def values_of(expression: str, scope: Scope, source: str, span, depth: int = 0) 
     ranged = re.compile(rf"\bfor\s+(?:\w+\s*,\s*)?{re.escape(expression)}\s*:=\s*range\s+(\w+)\s*\{{")
     sources += [(source, span, over) for over in ranged.findall(region)]
     if not sources and span is not None:
-        sources = scope.passed(expression, source, span, depth)
+        sources = scope.passed(expression, source, span)
         if sources is None:
             return values_of(expression, scope, source, None, depth + 1)
     found = []
@@ -462,7 +462,7 @@ def trace(expression: str, scope: Scope, source: str, span, depth: int = 0) -> l
     if assigned:
         return [o for rhs in assigned for o in trace(rhs, scope, source, span, depth + 1)]
     if span is not None:
-        passed = scope.passed(expression, source, span, depth)
+        passed = scope.passed(expression, source, span)
         if passed is not None:
             return [o for other, at, argument in passed for o in trace(argument, scope, other, at, depth + 1)] \
                 if passed else [Origin(None)]
@@ -704,17 +704,24 @@ class Check:
                 tails = ["/".join(c) for c in itertools.product(*parts)]
             tails = [t for t in tails if not WILDCARD.search(t) and os.path.basename(t) not in ANCHORS]
             for origin in origins(arguments[0], call.start()):
-                if origin.below or WILDCARD.search(origin.tail):
-                    continue
                 for root, climbed in self.starts(origin, roots):
                     for tail in tails:
-                        target = os.path.normpath(os.path.join(root, origin.tail, tail))
-                        if target in self.checker.files and self.outside(target):
-                            problem = unnamed_path(self.names, target, True, True, self.checker.files,
+                        if origin.below or WILDCARD.search(origin.tail):
+                            # Below a part this cannot read: the read is the glob of every file the
+                            # path can name, each held as the file it is.
+                            pattern = os.path.join(root, origin.tail, "**" if origin.below else "", tail)
+                            pattern = os.path.normpath(pattern).removeprefix("./")
+                            targets = sorted(f for f in self.checker.files if matches(pattern, (), f))
+                        else:
+                            targets = [os.path.normpath(os.path.join(root, origin.tail, tail))]
+                        found = next((t for t in targets if t in self.checker.files and self.outside(t)
+                                      and unnamed_path(self.names, t, True, True, self.checker.files,
+                                                       self.checker.dirs)), None)
+                        if found:
+                            problem = unnamed_path(self.names, found, True, True, self.checker.files,
                                                    self.checker.dirs)
-                            if problem:
-                                self.say(line_of(self.text, call.start()), f"reads {target} {problem}")
-                                break
+                            self.say(line_of(self.text, call.start()), f"reads {found} {problem}")
+                            break
         for call in WALK.finditer(self.text):
             arguments = call_arguments(self.text, call.end())
             walks = call.group(1) in DEEP

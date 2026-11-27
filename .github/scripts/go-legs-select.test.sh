@@ -530,6 +530,42 @@ out=$(check_reads) || status=$?
 check "with the line: passes" "$(is "$status" 0)"
 undo
 
+echo "case: a file read below a part the check cannot read is held as the glob of every file it can name"
+put mod/leaf/leaf_test.go 'package leaf
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func moduleRoot(t *testing.T) string {
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+func TestLeaf(t *testing.T) {
+	sub := filepath.Join(moduleRoot(t), os.Getenv("PKG"))
+	_, _ = os.ReadFile(filepath.Join(sub, "b.go"))
+}'
+status=0
+out=$(check_reads) || status=$?
+check "a read of <module>/<unknown>/b.go, no line: refused" "$(is "$status" 1)"
+check "naming a file the glob reaches" "$(contains "$out" 'mod/leaf/leaf_test.go:[0-9]*: reads mod/b/b.go')"
+sed -i 's/^package leaf$/package leaf\n\n\/\/ci:reads mod\/**\/b.go TestLeaf reads b.go from a package PKG names/' mod/leaf/leaf_test.go
+status=0
+out=$(check_reads) || status=$?
+check "with a line that names what the glob reaches: passes" "$(is "$status" 0)"
+undo
+
 echo "case: an assignment inside another function is no constant, so a walked parameter is traced to its callers"
 put mod/leaf/leaf_test.go 'package leaf
 
