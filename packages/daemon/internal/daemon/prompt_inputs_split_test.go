@@ -270,10 +270,9 @@ func promptInputsSplitRequest(raw []byte, launchedPrompt string) (promptInputsSp
 			if !firstRealMessageSeen && msg.Role == "user" && !promptInputsIsSystemReminderOnly(rem) {
 				firstRealMessageSeen = true
 				firstMsgBytes += len(rem)
-			} else if !firstRealMessageSeen && msg.Role == "user" {
-				// System-reminder blocks (e.g. date, hook wrapper) that precede the real prompt.
-				otherMsgBytes += len(rem)
 			} else {
+				// Every other text, the system-reminder blocks (a date, a hook wrapper) before the
+				// real prompt among them.
 				otherMsgBytes += len(rem)
 			}
 		}

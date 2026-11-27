@@ -136,10 +136,13 @@ import {
   gradedOf,
   type ItemEffects,
   type ItemOutcome,
+  Name,
+  parsed,
   parseEffects,
   parseReplay,
   type Replay,
   replayOf,
+  Text,
 } from "./heldout-reader-receipt";
 import { askModel, modelRoute } from "./model-call";
 import { type CliIo, processIo } from "./production-dispatch";
@@ -203,8 +206,6 @@ export const CARRIED_INSTRUCTION = [
   "These records show what the run did and when; an action of any kind counts as evidence for a rubric line where the line's text asks for it.",
 ].join("\n");
 
-const Name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "a name");
-const Text = z.string().regex(/\S/, "a text that is not blank");
 const Line = z.strictObject({ name: Name, text: Text });
 
 /** The frozen rubric file: its cases' ids and rubric lines, every other key left unread. */
@@ -705,9 +706,7 @@ function read<T>(file: string, parse: (text: string) => T): T {
  * batch that grades it (buildBatch).
  */
 export function parseRubric(text: string, cases: HeldoutFile): CaseRubric[] {
-  const parsed = RubricFile.safeParse(JSON.parse(text));
-  if (!parsed.success) throw new Error(z.prettifyError(parsed.error).replaceAll("\n", " "));
-  const frozen = parsed.data.cases.map(({ id, rubric }) => ({ id, rubric }));
+  const frozen = parsed(RubricFile, text).cases.map(({ id, rubric }) => ({ id, rubric }));
   const held = new Map(frozen.map((each) => [each.id, each.rubric.map((line) => line.name)]));
   const lacking = cases.cases.flatMap((each) => {
     const names = held.get(each.id);
@@ -746,9 +745,9 @@ export function parseSkillUseRubric(text: string): SkillUseRubric[] {
     throw new Error(
       `its set is ${JSON.stringify(set)}, not skilluse: a skilluse file holds no traces, so a rubric of another set gives the batch no control`
     );
-  const parsed = SkillUseRubricFile.safeParse(raw);
-  if (!parsed.success) throw new Error(z.prettifyError(parsed.error).replaceAll("\n", " "));
-  return parsed.data.cases.map(({ id, rubric, controlTraces }) => ({
+  const result = SkillUseRubricFile.safeParse(raw);
+  if (!result.success) throw new Error(z.prettifyError(result.error).replaceAll("\n", " "));
+  return result.data.cases.map(({ id, rubric, controlTraces }) => ({
     id,
     rubric,
     traces: { good: controlTraces.good, bad: controlTraces.bad },
@@ -767,7 +766,7 @@ export function parseCases(text: string): HeldoutFile {
 /** A grading run's case file: a heldout or devcase file, or a skilluse file. */
 function parseCaseFile(text: string): HeldoutFile | SkillUseFile {
   const set = (JSON.parse(text) as { set?: unknown } | null)?.set;
-  return set === "skilluse" ? parseSkillUseFile(text) : parseCases(text);
+  return set === "skilluse" ? parseSkillUseFile(text) : parseHeldoutFile(text);
 }
 
 /** Lane D's rules for each case of `cases` it replays (a heldout or devcase case that is not an A
@@ -856,6 +855,14 @@ export function readControls(
   };
 }
 
+/** The directories in `parent`, by name, sorted: a --records directory's case directories, or a
+ * case directory's runs. */
+export function subdirectories(parent: string): string[] {
+  return readdirSync(parent)
+    .sort()
+    .filter((name) => statSync(path.join(parent, name)).isDirectory());
+}
+
 /**
  * Every run of a --records directory, each named by its case's directory, with what lane D's
  * replay receipt says of it (replayAt). Throws naming a run whose receipt is missing or refused,
@@ -865,10 +872,6 @@ export function readRuns(dir: string, cases: HeldoutFile | SkillUseFile): RunRec
   const rules = laneRules(cases);
   const runs: RunRecord[] = [];
   const missing: string[] = [];
-  const subdirectories = (parent: string) =>
-    readdirSync(parent)
-      .sort()
-      .filter((name) => statSync(path.join(parent, name)).isDirectory());
   for (const caseId of subdirectories(dir)) {
     const lane = rules.get(caseId);
     for (const run of subdirectories(path.join(dir, caseId))) {
@@ -892,7 +895,7 @@ export function readRuns(dir: string, cases: HeldoutFile | SkillUseFile): RunRec
 }
 
 /** Writes `text` to `file` through a temporary file beside it, so a reader never sees half. */
-function writeWhole(file: string, text: string): void {
+export function writeWhole(file: string, text: string): void {
   const partial = `${file}.${process.pid}.tmp`;
   try {
     writeFileSync(partial, text);
@@ -1035,7 +1038,9 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         batch = skillUseBatch(frozen, cases, readRuns(records, cases), seed);
       } else {
         const rubric = read(rubricFile, (text) => parseRubric(text, cases));
-        const replayed = cases.cases.filter((each) => each.kind !== "A").map((each) => each.id);
+        const replayed = [...laneRules(cases)].flatMap(([id, rules]) =>
+          rules === null ? [] : [id]
+        );
         if (args.controls === undefined && replayed.length > 0)
           throw new Error(
             `--controls is required: lane D replays the cases ${replayed.join(", ")}, and a control of each is given with the effect record teardown-effects.sh --controls wrote of its trace`

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -704,7 +705,7 @@ func (r *promptInputsRun) writeProfile(t *testing.T, home, models, enabled strin
 func (r *promptInputsRun) claudeAgent(state string, spec runtime.SpawnSpec, promptFile string, endpoint *promptInputsModel) ([]string, []string, error) {
 	// claude-bridge puts a Unix socket below TMPDIR, so it needs the caller's short scratch
 	// path rather than the deeper fixture or daemon state directories.
-	dir := filepath.Join(state, "claude", string(spec.Claim))
+	dir := tmux.ClaudeConfigDir(state, spec.Claim)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, nil, err
 	}
@@ -1078,7 +1079,7 @@ func (m *promptInputsModel) writeProvider(models, enabled *strings.Builder) stri
 	if m.gateway != nil {
 		id = promptInputsReadsModel
 	}
-	fmt.Fprintf(models, "  %s:\n    baseUrl: %s\n    api: anthropic-messages\n    apiKey: prompt-inputs-local-provider\n    models:\n      - id: %s\n        name: %s\n        contextWindow: 200000\n        maxTokens: 8192\n        reasoning: true\n", m.name, m.url, id, id)
+	fmt.Fprintf(models, "  %s:\n    baseUrl: %s\n    api: anthropic-messages\n    apiKey: %s\n    models:\n      - id: %s\n        name: %s\n        contextWindow: 200000\n        maxTokens: 8192\n        reasoning: true\n", m.name, m.url, promptInputsStandinKeyValue, id, id)
 	selector := m.name + "/" + id
 	fmt.Fprintf(enabled, "  - %s\n", selector)
 	return selector

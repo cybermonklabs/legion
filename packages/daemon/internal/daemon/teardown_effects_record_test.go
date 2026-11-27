@@ -332,7 +332,7 @@ func teardownEffectsLines(r io.Reader, visit func([]byte) error) error {
 	b := bufio.NewReader(r)
 	for n := 1; ; n++ {
 		line, err := b.ReadBytes('\n')
-		if len(strings.TrimSpace(string(line))) != 0 {
+		if len(bytes.TrimSpace(line)) != 0 {
 			if problem := visit(line); problem != nil {
 				return fmt.Errorf("line %d: %w", n, problem)
 			}
@@ -388,6 +388,18 @@ type teardownEffectsTrace struct {
 	ID        string
 	Actions   []teardownEffectsTraceAction
 	Documents []teardownEffectsDocument
+}
+
+// action is the trace's action at seq: the last of them where more than one has it, and the zero
+// action where none has.
+func (trace teardownEffectsTrace) action(seq int) teardownEffectsTraceAction {
+	var found teardownEffectsTraceAction
+	for _, a := range trace.Actions {
+		if a.Seq == seq {
+			found = a
+		}
+	}
+	return found
 }
 
 // teardownEffectsDocument is one entry of a trace's `documents`: a document's file name, the last
@@ -656,9 +668,7 @@ type teardownEffectsReview struct {
 
 func teardownEffectsParams(op string, args map[string]any) map[string]any {
 	params := make(map[string]any, len(args)+1)
-	for k, v := range args {
-		params[k] = v
-	}
+	maps.Copy(params, args)
 	params["op"] = op
 	return params
 }
@@ -1703,12 +1713,7 @@ type teardownEffectsTurned struct {
 // teardownEffectsShows is nil where turned, the replay of the trace action that control names,
 // shows control's check, and otherwise says what it shows instead. c is the control's case.
 func teardownEffectsShows(control teardownEffectsControl, c teardownEffectsCase, turned teardownEffectsTurned) error {
-	var a teardownEffectsTraceAction
-	for _, each := range c.trace(control.Trace).Actions {
-		if each.Seq == control.Seq {
-			a = each
-		}
-	}
+	a := c.trace(control.Trace).action(control.Seq)
 	client, after := turned.client, turned.after
 	moved := turned.call.PhaseAfter != turned.call.State.Phase
 	unchanged := func() error {
@@ -2116,10 +2121,7 @@ func TestTeardownEffectsPromisedControls(t *testing.T) {
 	// A known-good trace of sign_off and set_status is judged by the case's own effect: the sign-off
 	// answered ok, at the action that takes it. No operation is refused for being no completion.
 	signOff := func(cases []map[string]any) []map[string]any {
-		other := map[string]any{}
-		for key, value := range cases[0] {
-			other[key] = value
-		}
+		other := maps.Clone(cases[0])
 		answer := map[string]any{"code": nil, "body": map[string]any{}}
 		other["id"] = "X01"
 		other["traces"] = map[string]any{"good": map[string]any{"id": "0b9c2f1e-5d4a-4c3b-8a2e-9f1d0c3b2a10", "actions": []any{
@@ -2142,10 +2144,7 @@ func TestTeardownEffectsPromisedControls(t *testing.T) {
 
 	// An A case runs in a plain session, and lane D replays none of it.
 	agent, err := teardownEffectsPromised(teardownEffectsExampleCases(t, func(cases []map[string]any) []map[string]any {
-		other := map[string]any{}
-		for key, value := range cases[0] {
-			other[key] = value
-		}
+		other := maps.Clone(cases[0])
 		other["id"], other["kind"] = "A01", "A"
 		return append(cases, other)
 	}))

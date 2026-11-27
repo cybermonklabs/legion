@@ -34,19 +34,28 @@ import "github.com/sjawhar/legion/daemon/internal/daemon"
 func init() { productionCheckFragment = daemon.ProductionCheckFragment }
 `;
 
+/** declaresProductionCheck's answer for each module it read. */
+const productionCheckDeclared = new Map<string, boolean>();
+
 /** Whether the daemon in `module` tells an architect its project's `production_check`: whether a
  * Go file of its package daemon that is no test declares `ProductionCheckFragment`, which the
  * daemon appends to every architect's addressing. A daemon older than that function tells no
  * architect the sentence, and daemon-pane.go would not build there with a call of it. The answer
- * comes from the daemon's code, never from the text of the role prompts it composes. */
+ * comes from the daemon's code, never from the text of the role prompts it composes. It is read
+ * once for each module this process names, and kept. */
 export function declaresProductionCheck(module: string): boolean {
-  const pkg = path.join(module, "internal", "daemon");
-  return readdirSync(pkg).some(
-    (name) =>
-      name.endsWith(".go") &&
-      !name.endsWith("_test.go") &&
-      /^func ProductionCheckFragment\(/m.test(readFileSync(path.join(pkg, name), "utf8"))
-  );
+  let declares = productionCheckDeclared.get(module);
+  if (declares === undefined) {
+    const pkg = path.join(module, "internal", "daemon");
+    declares = readdirSync(pkg).some(
+      (name) =>
+        name.endsWith(".go") &&
+        !name.endsWith("_test.go") &&
+        /^func ProductionCheckFragment\(/m.test(readFileSync(path.join(pkg, name), "utf8"))
+    );
+    productionCheckDeclared.set(module, declares);
+  }
+  return declares;
 }
 
 /** Runs daemon-pane.go in `module` with `args`, `input` on its stdin (the caller's own stdin when

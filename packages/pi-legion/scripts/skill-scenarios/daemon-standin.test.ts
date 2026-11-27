@@ -1,6 +1,6 @@
 import { afterAll, expect, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { roleForPhase } from "@legion/contracts";
 import {
@@ -10,10 +10,7 @@ import {
 } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import {
-  temporaryDirectories,
-  temporaryDirectory,
-} from "@legion/test-fixtures/temporary-directories";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import {
   type AnswerEntry,
@@ -40,15 +37,20 @@ import {
 } from "./daemon-standin-harness";
 import { World } from "./heldout-case";
 
-// The rows that run daemon-pane.go, which `go run` compiles, skip on a host without go.
+// The rows that run daemon-pane.go, which `go run` compiles, skip on a host without go, and get a
+// bound of their own, as daemon-pane.test.ts's do.
 const skipGo = skipWithout("go");
+const GO_BOUND = 600_000;
 
 // Each row of a case's stand-in, up to the rows of a process below, starts it in this process, as
 // a run starts it as a process of its own, and asks it what a role's `legion` tool asks: register,
 // mint a grant, redeem it. The case worlds are the committed example's
 // (testdata/heldout-case-example.json): P05, an implementer's, and P10, a production check's look.
-const work = temporaryDirectory("daemon-standin");
-let runs = 0;
+// From the row of a process on, each row starts daemon-standin.ts as the rig runs it: a real
+// process on a port of its own, whose answers and log the row reads. register_plan's rows, with a
+// stub Dispatch and a planted label entry, are daemon-standin-plan.test.ts's; what both files share
+// is daemon-standin-harness.ts. Every row makes its files in a directory of its own.
+const freshDir = temporaryDirectories("daemon-standin");
 const BOOT_TOKEN = fixtureSecret("boot");
 const WORDS = { planning: "plan", implementing: "implement", testing: "test", reviewing: "review" };
 
@@ -69,8 +71,7 @@ afterAll(() => {
 
 /** A stand-in on a port of its own, with a log of its own, and the calls a role makes of it. */
 function boot(options: Partial<StandinOptions> = {}) {
-  const dir = path.join(work, `run-${++runs}`);
-  mkdirSync(dir);
+  const dir = freshDir();
   const logFile = path.join(dir, "daemon.log");
   const standin = startDaemonStandin({
     port: 0,
@@ -343,7 +344,7 @@ test("a tester's fail names a step before the one it stands at, from the world's
 // from that record alone, never from its arguments: a POST gh makes for its fields alone opens one,
 // and a line that kept nothing opens none, whatever its arguments say.
 test("an implementer's completion needs an open pull request on its branch: the world's or one the run opened", async () => {
-  const calls = path.join(work, "calls-implementer.jsonl");
+  const calls = path.join(freshDir(), "calls-implementer.jsonl");
   const call = (argv: string[], exit: number, pull?: Record<string, unknown>) =>
     `${JSON.stringify({ at: "2030-01-07T15:00:00Z", as: "gh", argv, files: {}, route: null, exit, pull })}\n`;
   const append = (line: string) => writeFileSync(calls, `${readFileSync(calls, "utf8")}${line}`);
@@ -647,7 +648,7 @@ test("a pending's floor counts from the launch instant the case records, however
   const started = Date.parse("2026-11-27T09:00:00Z");
   // The setup takes an hour, and the role reports five seconds after its launch.
   const launched = started + 3_600_000;
-  const launchFile = path.join(work, "late-setup-clock-real.txt");
+  const launchFile = path.join(freshDir(), "late-setup-clock-real.txt");
   setSystemTime(new Date(started));
   try {
     const daemon = boot({
@@ -953,7 +954,7 @@ test("a match holds at its dot path, null where the request has no value, and an
   expect(recordedAnswer([entry({})], "GET", "/p", body)).toBeUndefined();
   expect(recordedAnswer([entry({})], "POST", "/q", body)).toBeUndefined();
 
-  const file = path.join(work, "answers-bad.json");
+  const file = path.join(freshDir(), "answers-bad.json");
   const valid = {
     version: 1,
     captured: { command: "c", at: "2030-01-01T00:00:00Z", commit: "a".repeat(40) },
@@ -977,10 +978,7 @@ test("a match holds at its dot path, null where the request has no value, and an
 test.skipIf(skipGo)(
   "starts as a process with a world, a launch instant file, answers files and the run's gh calls, and prints the port it listens on",
   async () => {
-    const dir = path.join(work, "process");
-    mkdirSync(dir);
-    const bootFile = path.join(dir, "boot");
-    writeFileSync(bootFile, `${BOOT_TOKEN}\n`);
+    const dir = freshDir();
     const worldFile = path.join(dir, "world.json");
     writeFileSync(worldFile, JSON.stringify(worldOf("P10")));
     const captured = { command: "c", at: "2030-01-01T00:00:00Z", commit: "a".repeat(40) };
@@ -1000,14 +998,9 @@ test.skipIf(skipGo)(
     });
     writeFileSync(path.join(dir, "shared.json"), JSON.stringify(answers("shared", 409)));
     writeFileSync(path.join(dir, "case.json"), JSON.stringify(answers("case", 400)));
-    const logFile = path.join(dir, "daemon.log");
-    const child = Bun.spawn(
+    await withStandin(
+      dir,
       [
-        process.execPath,
-        path.join(import.meta.dir, "daemon-standin.ts"),
-        "0",
-        logFile,
-        bootFile,
         "skillsrig",
         "ACME-21",
         "tester",
@@ -1024,61 +1017,22 @@ test.skipIf(skipGo)(
         "--gh-calls",
         path.join(dir, "calls.jsonl"),
       ],
-      { stdout: "pipe", stderr: "pipe", env: { ...process.env } }
-    );
-    try {
-      const reader = child.stdout.getReader();
-      let printed = "";
-      while (!/listening on http:\/\/127\.0\.0\.1:\d+/.test(printed)) {
-        const { value, done } = await reader.read();
-        if (done)
-          throw new Error(`the stand-in exited: ${await new Response(child.stderr).text()}`);
-        printed += new TextDecoder().decode(value);
+      async (standin) => {
+        const record = (await (await fetch(`${standin.url}${RECORD("ACME-21")}`)).json()) as Body;
+        expect(record).toMatchObject({ phase: "done", check: { looks: 1, last: false } });
+        const grantId = await grant(standin, await register(standin));
+        const answered = await post(standin, COMPLETE, { grantId, summary: "s", verdict: "fail" });
+        expect(answered.status).toBe(400);
+        expect(await answered.json()).toEqual({ code: "CASE", error: "case" });
       }
-      const base = /http:\/\/127\.0\.0\.1:\d+/.exec(printed)?.[0] ?? "";
-      const record = (await (await fetch(`${base}${RECORD("ACME-21")}`)).json()) as Body;
-      expect(record).toMatchObject({ phase: "done", check: { looks: 1, last: false } });
-      const registered = (await (
-        await fetch(`${base}/legion/v1/claims/register`, {
-          method: "POST",
-          body: JSON.stringify({ bootToken: BOOT_TOKEN }),
-        })
-      ).json()) as Body;
-      const minted = (await (
-        await fetch(`${base}/legion/v1/grants`, {
-          method: "POST",
-          body: JSON.stringify({
-            sessionId: "s",
-            secret: registered.secret,
-            tree: "ACME-21",
-            issue: "ACME-21",
-          }),
-        })
-      ).json()) as Body;
-      const answered = await fetch(`${base}${COMPLETE}`, {
-        method: "POST",
-        body: JSON.stringify({ grantId: minted.grantId, summary: "s", verdict: "fail" }),
-      });
-      expect(answered.status).toBe(400);
-      expect(await answered.json()).toEqual({ code: "CASE", error: "case" });
-    } finally {
-      child.kill();
-    }
+    );
   },
-  600_000
+  GO_BOUND
 );
 
-// daemon-standin.ts as the rig runs it: a real process on a port of its own. Each row starts its
-// own stand-in and reads what it answered and what it wrote to its log. register_plan's rows, with
-// a stub Dispatch and a planted label entry, are daemon-standin-plan.test.ts's; what both files
-// share is daemon-standin-harness.ts.
-
-// Each row starts a Bun process, and the rows of a phase worker ask daemon-pane.go for the role's
-// phase, which `go run` compiles: those get a bound of their own, as daemon-pane.test.ts's do.
+// Each row starts a Bun process, and a phase worker's row asks daemon-pane.go for the role's phase
+// (GO_BOUND).
 setDefaultTimeout(60_000);
-const GO_BOUND = 600_000;
-
-const freshDir = temporaryDirectories("daemon-standin");
 
 // Catches: a sign-off or a move back answered 404, logged without the body the scorer reads
 // (score.ts's acceptance clause names W from it), or a body that does not parse answered 200 or

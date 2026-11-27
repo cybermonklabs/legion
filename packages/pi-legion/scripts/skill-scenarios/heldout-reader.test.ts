@@ -897,8 +897,8 @@ test("a 429 is asked again with the same request, and a reply it cannot read is 
 // grade reads. The runs are the example's P05 and P10 traces under ids of their own, with the
 // receipts receiptsOf and harnessReceipts write.
 
-/** Run id `n` of the lane D tests, which no example trace holds. */
-const laneDId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+/** UUID number `n`, which no example trace holds: a run id of the lane D and skilluse tests. */
+const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 /** The role's session, whose legion calls a run holds. */
 const ROLE_SESSION = "7d1e5a12-0c05-4a12-9b12-a5120c05a512";
 
@@ -942,7 +942,7 @@ test("a lane D run with no replay receipt, with an older capture alone or with a
     expect(quiet.stderr.at(-1)).toContain(message);
     expect(existsSync(`${w.out}.attempts.json`)).toBe(false);
   };
-  const good = { ...P05.traces.good, id: laneDId(1) };
+  const good = { ...P05.traces.good, id: uuid(1) };
   const ok = receiptsOf(good);
   const missing = "replay.json is missing: lane D replays every run of case P05";
   await refuses(laneDWorld("no-receipt", [["P05", "run-1", good, null]]), missing);
@@ -951,7 +951,7 @@ test("a lane D run with no replay receipt, with an older capture alone or with a
   const at = path.join(older.records, "P05", "run-1");
   writeFileSync(path.join(at, "effects.json"), JSON.stringify(ok.effects));
   await refuses(older, "its effects.json alone is an older capture");
-  const other = laneDId(99);
+  const other = uuid(99);
   const foreign = { ...ok, replay: { ...ok.replay, id: other } };
   await refuses(
     laneDWorld("foreign-receipt", [["P05", "run-1", good, foreign]]),
@@ -966,7 +966,7 @@ test("a lane D run with no replay receipt, with an older capture alone or with a
 });
 
 test("a replay receipt that is malformed, or at odds with itself or with the run's outcome, is refused", () => {
-  const good = { ...P05.traces.good, id: laneDId(3) };
+  const good = { ...P05.traces.good, id: uuid(3) };
   const ok = receiptsOf(good);
   const effects: Record<string, unknown> = ok.effects ?? {};
   const answers = effects.answers as Record<string, unknown>[];
@@ -1118,7 +1118,7 @@ function p10Took(): OutcomeRecord["actions"] {
 test("a DIVERGED run is graded through its first difference's call with the real answer, and a HARNESS run by its typed cause", async () => {
   const p10Of = (n: number, actions: OutcomeRecord["actions"]) => ({
     ...P10.traces.good,
-    id: laneDId(n),
+    id: uuid(n),
     actions,
   });
   // (b) The real daemon took the pending report without wake_at that the stand-in refused. The
@@ -1133,9 +1133,9 @@ test("a DIVERGED run is graded through its first difference's call with the real
   // (a) again: a real answer of 500 is a refusal too, and the case allows no retry after it.
   const refusedFailing = p10Of(18, p10Took());
   // HARNESS by the role's own write, on a good and a bad record, and by the harness's own records.
-  const roleGood = { ...P05.traces.good, id: laneDId(15) };
-  const roleBad = { ...P05_BAD, id: laneDId(16) };
-  const records = { ...P05.traces.good, id: laneDId(17) };
+  const roleGood = { ...P05.traces.good, id: uuid(15) };
+  const roleBad = { ...P05_BAD, id: uuid(16) };
+  const records = { ...P05.traces.good, id: uuid(17) };
   const taken = new Map([[2, { status: 200, code: null }]]);
   const wakeRequired = new Map([[2, { status: 400, code: "CHECK_WAKE_REQUIRED" }]]);
   const stale = new Map([[2, { status: 409, code: "HANDOFF_STALE_ENTRY" }]]);
@@ -1166,7 +1166,7 @@ test("a DIVERGED run is graded through its first difference's call with the real
   // A DIVERGED run: its record through the call of its first difference, seq 2, nothing later,
   // and the real daemon's answer joined to the original action by that seq.
   const observed = items.filter((item) => item.observedThrough !== undefined);
-  expect(observed.map((item) => item.id).toSorted()).toEqual([11, 12, 13, 14, 18].map(laneDId));
+  expect(observed.map((item) => item.id).toSorted()).toEqual([11, 12, 13, 14, 18].map(uuid));
   for (const item of observed) {
     expect(Object.keys(item)).toEqual(["id", "case", "outcome", "effects", "observedThrough"]);
     expect(item.observedThrough).toBe(2);
@@ -1175,7 +1175,7 @@ test("a DIVERGED run is graded through its first difference's call with the real
     expect(Object.keys(item.effects ?? {})).not.toContain("diverged");
   }
   const answered = (n: number) =>
-    observed.find((item) => item.id === laneDId(n))?.outcome.actions[1]?.answer;
+    observed.find((item) => item.id === uuid(n))?.outcome.actions[1]?.answer;
   expect(answered(11)).toEqual({ code: null, body: {} });
   expect(answered(13)).toEqual({
     code: "CHECK_WAKE_REQUIRED",
@@ -1212,11 +1212,11 @@ test("a DIVERGED run is graded through its first difference's call with the real
     runs: Disposition[];
   };
   expect(labels.batch).toBe("CONCLUSIVE");
-  const runIds = [11, 12, 13, 14, 15, 16, 17, 18].map(laneDId);
+  const runIds = [11, 12, 13, 14, 15, 16, 17, 18].map(uuid);
   expect(labels.runs.map((each) => each.id)).toEqual(runIds);
   const byId = new Map(labels.runs.map((each) => [each.id, each]));
   const row = (n: number) => {
-    const each = byId.get(laneDId(n));
+    const each = byId.get(uuid(n));
     return [
       each?.graded,
       each?.status,
@@ -1227,7 +1227,7 @@ test("a DIVERGED run is graded through its first difference's call with the real
   // (b), clean through the call: unverified, and one whole remake grades it. The line only a
   // later action could show is null: the clean record is no pass.
   expect(row(11)).toEqual(["observed", "unverified", "whole", "accepted"]);
-  const clean = labels.records.find((each) => each.id === laneDId(11));
+  const clean = labels.records.find((each) => each.id === uuid(11));
   expect(clean?.pass).toBeNull();
   expect(clean?.lines.map((line) => line.pass)).toEqual([true, null]);
   // (b), a forbidden report in the record through the call: a failure, which no remake replaces.
@@ -1236,8 +1236,8 @@ test("a DIVERGED run is graded through its first difference's call with the real
   // where it allows none, though no line failed; a remake only beside the run.
   expect(row(13)).toEqual(["observed", "unverified", "beside", "refused"]);
   expect(row(14)).toEqual(["observed", "fail", "beside", "refused"]);
-  expect(byId.get(laneDId(14))?.why).toContain("the case allows no corrected retry after it");
-  expect(byId.get(laneDId(13))?.difference).toEqual({
+  expect(byId.get(uuid(14))?.why).toContain("the case allows no corrected retry after it");
+  expect(byId.get(uuid(13))?.difference).toEqual({
     call: "toolu_2",
     outcomeSeq: 2,
     seq: 0,
@@ -1250,7 +1250,7 @@ test("a DIVERGED run is graded through its first difference's call with the real
   });
   // A real 500 is a refusal: branch (a), with no retry the case allows after it.
   expect(row(18)).toEqual(["observed", "fail", "beside", "refused"]);
-  expect(byId.get(laneDId(18))?.difference).toMatchObject({
+  expect(byId.get(uuid(18))?.difference).toMatchObject({
     daemon: { status: 500, code: null },
     retry: "not-allowed",
   });
@@ -1259,7 +1259,7 @@ test("a DIVERGED run is graded through its first difference's call with the real
   expect(row(16)).toEqual(["outcome", "fail", "beside", "role-write"]);
   // The harness's own records: no behavioral grade.
   expect(row(17)).toEqual(["none", "unverified", "beside", "harness-record"]);
-  expect(byId.get(laneDId(17))?.harness).toEqual({
+  expect(byId.get(uuid(17))?.harness).toEqual({
     cause: "harness-record",
     reason: HARNESS_REASON,
   });
@@ -1582,7 +1582,7 @@ test("a run and a control reach the reader through one projection, which no audi
 
   // A DIVERGED run, given through its first difference's call, takes the same projection: P10's
   // first report, which the real daemon refused CHECK_WAKE_REQUIRED, after its pull request edit.
-  const p10 = { ...P10.traces.good, id: laneDId(21), actions: p10Took() };
+  const p10 = { ...P10.traces.good, id: uuid(21), actions: p10Took() };
   const refused = new Map([[2, { status: 400, code: "CHECK_WAKE_REQUIRED" }]]);
   const observed = (outcome: OutcomeRecord) => {
     const receipts = receiptsOf(outcome, refused);
@@ -1740,9 +1740,6 @@ const P09N = {
   },
 };
 const SKILL_USE_CASES = JSON.stringify({ ...skillUseExample, cases: [P09, P09N] });
-
-/** UUID number `n`, which no example trace holds. */
-const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 /** A skilluse outcome under `id` whose last words are `lastText`: with a read of legion-retro
  * before its first action that resolved or not, or with no read where `resolved` is undefined. */
@@ -2374,7 +2371,7 @@ test("each carried action and the workspace reach the grader in the order they w
 });
 
 test("lane D's receipt names no carried action: a replay with them among its calls is ok, and a DIVERGED record holds nothing that came after its last action", () => {
-  const completed = { ...C05.traces.good, id: laneDId(41) };
+  const completed = { ...C05.traces.good, id: uuid(41) };
   const parsedReceipts = (outcome: OutcomeRecord, real?: ReadonlyMap<number, Said>) => {
     const receipts = receiptsOf(outcome, real);
     return {
@@ -2397,7 +2394,7 @@ test("lane D's receipt names no carried action: a replay with them among its cal
   // The task agent started at action 5 ended after it, and the workspace's second operation too.
   const later: OutcomeRecord = {
     ...completed,
-    id: laneDId(42),
+    id: uuid(42),
     actions: completed.actions.map((action) =>
       action.kind === "agent" ? { ...action, endedAt: "2030-01-07T15:09:00Z" } : action
     ),
@@ -2441,7 +2438,7 @@ test("lane D's receipt names no carried action: a replay with them among its cal
   if (completion === undefined) throw new Error("P05's good trace has no completion");
   const wrote: OutcomeRecord = {
     ...completed,
-    id: laneDId(43),
+    id: uuid(43),
     actions: [
       ...completed.actions.slice(0, -1),
       docEdit(10, "2030-01-07T15:04:20Z", "plan.md"),

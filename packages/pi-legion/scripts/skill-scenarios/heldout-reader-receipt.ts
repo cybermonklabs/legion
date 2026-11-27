@@ -45,8 +45,8 @@ import { z } from "zod";
 import type { HeldoutCase, OutcomeRecord } from "./heldout-case";
 import { parseInstant } from "./production-dispatch";
 
-const Name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "a name");
-const Text = z.string().regex(/\S/, "a text that is not blank");
+export const Name = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "a name");
+export const Text = z.string().regex(/\S/, "a text that is not blank");
 const Instant = z.string().refine((text) => parseInstant(text) !== undefined, "an RFC 3339 time");
 const Phase = z.enum(LEGION_WORKFLOW_PHASES);
 const Seq = z.number().int().nonnegative();
@@ -214,7 +214,8 @@ export const ReplayRecord = z.strictObject({
 });
 export type ReplayRecord = z.infer<typeof ReplayRecord>;
 
-function parsed<T>(schema: z.ZodType<T>, text: string): T {
+/** `text` as JSON held to `schema`; throws naming each part that is not, on one line. */
+export function parsed<T>(schema: z.ZodType<T>, text: string): T {
   const result = schema.safeParse(JSON.parse(text));
   if (!result.success) throw new Error(z.prettifyError(result.error).replaceAll("\n", " "));
   return result.data;

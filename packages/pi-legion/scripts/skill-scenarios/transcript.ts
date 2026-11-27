@@ -118,7 +118,7 @@ export function toolResults(entries: SessionEntry[]): string[] {
   return entries.flatMap((entry) => {
     const message = entry.message;
     if (message?.role !== "toolResult") return [];
-    return [(message.content ?? []).map((part) => part.text ?? "").join("")];
+    return [resultText(message)];
   });
 }
 

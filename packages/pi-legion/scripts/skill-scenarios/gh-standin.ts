@@ -745,36 +745,34 @@ async function main(run: string, as: string, args: string[]): Promise<never> {
   }
 
   // A body or title edit: `gh pr edit` (`-b`, `-F`, `-t`) or a PATCH of `…/pulls/<n>` naming no
-  // state. It reaches that pull request alone, in each route answering with it.
+  // state. It reaches that pull request alone, in each route answering with it. An edit that sets
+  // neither a body nor a title (`--add-label`, `--base`) leaves every route as it was.
   const editing =
-    pr && call.command === "pr edit"
-      ? {
-          body: text(fields.body),
-          title: text(fields.title),
-          base: text(fields.base),
-        }
-      : api && method === "PATCH" && pullPath && rest?.[3] === undefined && !fields.state
-        ? { body: text(fields.body), title: text(fields.title), base: text(fields.base) }
-        : undefined;
+    (pr && call.command === "pr edit") ||
+    (api && method === "PATCH" && pullPath && rest?.[3] === undefined && !fields.state)
+      ? { body: text(fields.body), title: text(fields.title), base: text(fields.base) }
+      : undefined;
   let answerRoute = route;
   if (editing !== undefined) {
     const number = acted ?? restNumber ?? 0;
-    const edited = routes.map((candidate) => ({
-      ...candidate,
-      stdout: everywhere(candidate.stdout, (object) =>
-        object.number === number && "body" in object
-          ? {
-              ...object,
-              ...(editing.body === undefined ? {} : { body: editing.body }),
-              ...(editing.title === undefined || !("title" in object)
-                ? {}
-                : { title: editing.title }),
-            }
-          : object
-      ),
-    }));
-    next = { ...fixtures, routes: edited };
-    answerRoute = edited[routeAt] ?? route;
+    if (editing.body !== undefined || editing.title !== undefined) {
+      const edited = routes.map((candidate) => ({
+        ...candidate,
+        stdout: everywhere(candidate.stdout, (object) =>
+          object.number === number && "body" in object
+            ? {
+                ...object,
+                ...(editing.body === undefined ? {} : { body: editing.body }),
+                ...(editing.title === undefined || !("title" in object)
+                  ? {}
+                  : { title: editing.title }),
+              }
+            : object
+        ),
+      }));
+      next = { ...fixtures, routes: edited };
+      answerRoute = edited[routeAt] ?? route;
+    }
     const before = pulls.get(number);
     const body = editing.body ?? text(before?.body) ?? "";
     if (editing.body !== undefined) kept = editing.body;

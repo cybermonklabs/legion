@@ -1039,15 +1039,17 @@ func (r *teardownEffectsRun) document(name, body string) {
 	r.t.Helper()
 	r.dispatch.user(http.MethodPost, "/api/v1/issues/"+r.key+"/artifacts", map[string]string{"name": name, "content": body}, 201, nil)
 }
-func (r *teardownEffectsRun) handoff(word, session, body string) handoffRecord {
+func (r *teardownEffectsRun) handoff(word, session, body string) {
 	r.t.Helper()
 	status, answer := r.dispatch.agentPost("/api/v1/issues/"+r.key+"/handoffs/"+word, map[string]any{"actor": map[string]string{"kind": "session", "id": session}, "body": body})
 	if status != http.StatusCreated {
 		r.t.Fatalf("write %s handoff: %d %s", word, status, answer)
 	}
-	got := r.dispatch.latest(r.key, word)
-	r.handoffs[got.ID] = teardownEffectsHandoff{Phase: word, ID: got.ID, Version: got.Version}
-	return got
+	var written handoffRecord
+	if err := json.Unmarshal(answer, &written); err != nil {
+		r.t.Fatalf("decode the written %s handoff %s: %v", word, answer, err)
+	}
+	r.handoffs[written.ID] = teardownEffectsHandoff{Phase: word, ID: written.ID, Version: written.Version}
 }
 
 // seedConversation writes the world's comments and questions (world.dispatch.comments and asks) on
@@ -1193,14 +1195,21 @@ func (r *teardownEffectsRun) productionCheck() *teardownEffectsCheck {
 	return got
 }
 
+// beforeCall is the snapshot of a call that teardownEffectsShows reads, taken before the call: the
+// issue's phase and its production check.
+func (r *teardownEffectsRun) beforeCall() teardownEffectsTurned {
+	return teardownEffectsTurned{call: teardownEffectsReplayCall{State: teardownEffectsState{Phase: string(r.issue(r.key).Phase)}}, before: r.productionCheck()}
+}
+
+// afterCall adds to turned the issue's phase and its production check as the call left them.
+func (r *teardownEffectsRun) afterCall(turned *teardownEffectsTurned) {
+	turned.call.PhaseAfter, turned.after = string(r.issue(r.key).Phase), r.productionCheck()
+}
+
 func teardownEffectsReadJSON(t *testing.T, path string, into any) {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if err := teardownEffectsDecode(path, into); err != nil {
 		t.Fatal(err)
-	}
-	if err := json.Unmarshal(data, into); err != nil {
-		t.Fatalf("%s: %v", path, err)
 	}
 }
 func teardownEffectsWriteJSON(t *testing.T, path string, value any) {
@@ -1418,12 +1427,12 @@ func (h teardownEffectsHarness) control(t *testing.T, c teardownEffectsCase, nam
 			}
 			apply := change.apply
 			change.apply = func() (*teardownEffectsRefusal, error) {
-				turned := teardownEffectsTurned{call: teardownEffectsReplayCall{State: teardownEffectsState{Phase: string(r.issue(r.key).Phase)}}, before: r.productionCheck()}
+				turned := r.beforeCall()
 				refused, err := apply()
 				if err != nil {
 					return nil, err
 				}
-				turned.call.PhaseAfter, turned.after = string(r.issue(r.key).Phase), r.productionCheck()
+				r.afterCall(&turned)
 				if err := teardownEffectsShows(p, c, turned); err != nil {
 					t.Errorf("%s: %v", p, err)
 					return refused, nil
@@ -1465,12 +1474,7 @@ func (h teardownEffectsHarness) control(t *testing.T, c teardownEffectsCase, nam
 func (h teardownEffectsHarness) publishAfter(t *testing.T, c teardownEffectsCase, ran func(teardownEffectsControl, string), capture *teardownEffectsCapture) {
 	seq, _ := teardownEffectsPublishable(c)
 	good := c.Traces.Good
-	var complete teardownEffectsTraceAction
-	for _, a := range good.Actions {
-		if a.Seq == seq {
-			complete = a
-		}
-	}
+	complete := good.action(seq)
 	r := h.start(t, c.World, c.Role, c.Task, nil, "", nil)
 	made := func(kind, command string) {
 		for _, a := range good.Actions {
@@ -1483,9 +1487,9 @@ func (h teardownEffectsHarness) publishAfter(t *testing.T, c teardownEffectsCase
 	}
 	attempt := func(check string) {
 		control := teardownEffectsControl{Case: c.ID, Trace: "good", Check: check, Seq: seq}
-		turned := teardownEffectsTurned{call: teardownEffectsReplayCall{State: teardownEffectsState{Phase: string(r.issue(r.key).Phase)}}, before: r.productionCheck()}
+		turned := r.beforeCall()
 		answers, replies, handoffs, result := r.call(0, r.clock.Now(), teardownEffectsParams(complete.Op, complete.Args))
-		turned.call.PhaseAfter, turned.after = string(r.issue(r.key).Phase), r.productionCheck()
+		r.afterCall(&turned)
 		turned.replies, turned.client, turned.handoffs = replies, teardownEffectsAnswered{isError: result.isError, text: result.text}, handoffs
 		teardownEffectsWriteNew(t, filepath.Join(h.out, c.ID, check, "effects.json"), r.evidence(good.ID, answers, nil, handoffs))
 		if err := teardownEffectsShows(control, c, turned); err != nil {
@@ -1504,12 +1508,7 @@ func (h teardownEffectsHarness) publishAfter(t *testing.T, c teardownEffectsCase
 // daemon-standin.ts matches it by: the check report's verdict, wake and look, or the completion's
 // commit and handoff record. A check that shows no answer of the daemon adds none.
 func (capture *teardownEffectsCapture) take(control teardownEffectsControl, c teardownEffectsCase, turned teardownEffectsTurned) {
-	var a teardownEffectsTraceAction
-	for _, each := range c.trace(control.Trace).Actions {
-		if each.Seq == control.Seq {
-			a = each
-		}
-	}
+	a := c.trace(control.Trace).action(control.Seq)
 	found := teardownEffectsCompletions(turned.replies)
 	if len(found) != 1 {
 		return
@@ -2273,21 +2272,24 @@ func (r *teardownEffectsRun) applyDispatch(e teardownEffectsEvent, own string, b
 // makeDispatch makes the write of e as actor (applyDispatch).
 func (r *teardownEffectsRun) makeDispatch(e teardownEffectsEvent, actor teardownEffectsActor, b *teardownEffectsReadback) error {
 	prefix := "/api/v1/issues/" + r.key
-	text := func(key string) string { s, _ := e.Payload[key].(string); return s }
 	switch e.Type {
 	case "handoff.recorded":
-		body, version, word, _ := b.handoffBody(text("handoff_id"))
-		if _, err := r.dispatchSend(actor, http.MethodPost, prefix+"/handoffs/"+word, map[string]any{"body": body}); err != nil {
+		body, version, word, _ := b.handoffBody(teardownEffectsString(e.Payload, "handoff_id"))
+		answer, err := r.dispatchSend(actor, http.MethodPost, prefix+"/handoffs/"+word, map[string]any{"body": body})
+		if err != nil {
 			return err
 		}
-		got := r.dispatch.latest(r.key, word)
+		var got handoffRecord
+		if err := json.Unmarshal(answer, &got); err != nil {
+			return fmt.Errorf("Dispatch's answer to the %s handoff write: %w", word, err)
+		}
 		if got.Version != version {
 			return fmt.Errorf("the replay wrote the %s handoff version %d, and the run's was version %d", word, got.Version, version)
 		}
 		r.handoffs[got.ID] = teardownEffectsHandoff{Phase: word, ID: got.ID, Version: got.Version}
 		return nil
 	case "result.recorded":
-		result, check, _ := b.result(text("result_id"))
+		result, check, _ := b.result(teardownEffectsString(e.Payload, "result_id"))
 		return r.recordResult(actor.ID, check, result)
 	}
 	request, err := teardownEffectsEventRequest(r.key, e, b, r.ids)
@@ -2424,9 +2426,7 @@ func (r *teardownEffectsRun) state() teardownEffectsState {
 	if root, ok := issues[issue.Tree]; ok && root.TreeRuns != nil {
 		s.TreeRuns = *root.TreeRuns
 	}
-	if listed.Parent != nil {
-		s.Parent = *listed.Parent
-	}
+	s.Parent = parentKey(listed.Parent)
 	r.github.mu.Lock()
 	for _, pull := range r.github.pulls {
 		s.Pulls = append(s.Pulls, teardownEffectsPullState{Number: pull.Number, State: pull.State, Head: pull.Head.SHA})

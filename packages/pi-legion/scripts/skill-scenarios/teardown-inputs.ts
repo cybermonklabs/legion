@@ -164,7 +164,7 @@ const PromptInputsRow = z.strictObject({
     dispatch_first_bytes: Bytes,
     first_message_bytes: Bytes,
     // Absent from a row written before the driver counted the other messages: such a row reads
-    // as history, and `measured` refuses it.
+    // as history, and `unmeasured` refuses it.
     other_messages_bytes: Bytes.optional(),
   }),
   required_reads: list(z.strictObject({ path: z.string(), bytes: Bytes })),
