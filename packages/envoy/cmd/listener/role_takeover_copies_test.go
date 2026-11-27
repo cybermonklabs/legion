@@ -333,15 +333,12 @@ func (r copiesReceived) takeOne(standIn *sessionStandIn, until time.Time) bool {
 	}
 }
 
-// handoverIdle reports whether no handover of role runs on this listener: none holds the role's
-// guard (roleKeepGuards), which every handover - the claim route's, a keep's, a registration's,
-// the sweep's - holds while it runs.
+// handoverIdle reports whether no handover of role is under way on this listener
+// (roleKeepGuards.idle): none started that has yet to return, and none holding the role's guard,
+// which every handover - the claim route's, a keep's, a registration's, the sweep's - holds while
+// it runs.
 func (rig *relayRig) handoverIdle(role string) bool {
-	release, held := rig.deps.delivery.roleKeepDrains.tryHold(role)
-	if held {
-		release()
-	}
-	return held
+	return rig.deps.delivery.roleKeepDrains.idle(role)
 }
 
 // watch counts by event id every frame standIn, sessionID's process, receives: until each of want
@@ -531,6 +528,7 @@ func (rig *copiesRig) holdRoleLaneForward(t *testing.T, eventID string) copiesHe
 // (framesNoReadCanTellTheRoleOf): the pass copies each of the first, which reaches B once, and
 // none of the second.
 func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing.T) {
+	t.Parallel()
 	t.Run("1 an outright claim by a different session after the holder crashed inside its live window", func(t *testing.T) {
 		copiesUnreadRoleMessagesRow(t, false)
 	})

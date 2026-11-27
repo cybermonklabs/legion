@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testInboxPrefix is the inbox prefix of this file's clients, and the one subject family their
@@ -23,10 +24,7 @@ func TestAClientWithAnInboxPrefixTakesItsRepliesUnderIt(t *testing.T) {
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, testnats.SubscribeGrantConfig(public, testInboxPrefix+".>"), []string{"-js"}, false)
 	t.Setenv("NATS_NKEY_SEED", seed)
-	ask := func(t *testing.T, client *bus.Client) error {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
+	ask := func(ctx context.Context, client *bus.Client) error {
 		_, err := client.Connection().RequestWithContext(ctx, "$JS.API.INFO", nil)
 		return err
 	}
@@ -40,7 +38,8 @@ func TestAClientWithAnInboxPrefixTakesItsRepliesUnderIt(t *testing.T) {
 		if inbox := client.Connection().NewInbox(); !strings.HasPrefix(inbox, testInboxPrefix+".") {
 			t.Fatalf("the connection's inbox is %q, want one under %s", inbox, testInboxPrefix)
 		}
-		if err := ask(t, client); err != nil {
+		// No span of its own: the answer can come late on a loaded machine with nothing wrong.
+		if err := ask(testwait.Context(t), client); err != nil {
 			t.Fatalf("JetStream's account info under the prefix: %v", err)
 		}
 		consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0, nil, bus.WithInboxPrefix(testInboxPrefix))
@@ -66,7 +65,11 @@ func TestAClientWithAnInboxPrefixTakesItsRepliesUnderIt(t *testing.T) {
 			t.Fatalf("connect: %v", err)
 		}
 		t.Cleanup(client.Close)
-		if err := ask(t, client); err == nil {
+		// A window, not a wait: no answer may come under _INBOX., and 3 s is how long the row
+		// waits for one.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := ask(ctx, client); err == nil {
 			t.Fatal("a client whose replies come under _INBOX. was answered by a server that refuses it that subscription")
 		}
 	})

@@ -325,6 +325,38 @@ func TestTheOtherRules(t *testing.T) {
 			}},
 			want: Problem{Pos: pos(40), Node: "one-more-interface", Rule: "bad-interface", Detail: `bad-interface: joins "legion-to-dispatch", which is no component`},
 		},
+		{
+			name: "a program check whose runner has no word",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) {
+				program("The program reads the claim.")(c)
+				c.Test.Runner = "---"
+			})}},
+			want: Problem{Pos: pos(5), Node: "a-restart-keeps-the-claim", Rule: "no-test", Detail: "no-test: a program check names its runner and its selector"},
+		},
+		{
+			name: "a program check whose selector has no word",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) {
+				program("The program reads the claim.")(c)
+				c.Test.Selector = "---"
+			})}},
+			want: Problem{Pos: pos(5), Node: "a-restart-keeps-the-claim", Rule: "no-test", Detail: "no-test: a program check names its runner and its selector"},
+		},
+		{
+			name: "a program check whose job has no word",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) {
+				program("The program reads the claim.")(c)
+				c.Test.Job = "---"
+			})}},
+			want: Problem{Pos: pos(5), Node: "a-restart-keeps-the-claim", Rule: "no-job", Detail: "no-job: a program check names the job that runs its test"},
+		},
+		{
+			name: "a procedure that names its own bare Go test",
+			tree: Tree{Statements: []Statement{leaf(nil)}, Checks: []Check{check(func(c *Check) {
+				program("The program runs Test.")(c)
+				c.Test.Selector = "example.com/acme/daemon Test"
+			})}},
+			want: Problem{Pos: pos(5), Node: "a-restart-keeps-the-claim", Rule: "code-in-text", Detail: "code-in-text: procedure names code: Test"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()

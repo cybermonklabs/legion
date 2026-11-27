@@ -1095,6 +1095,52 @@
       "schema": true
     }
   ],
+  "citations/workflow.yaml": [
+    {
+      "data": {
+        "jobs": {
+          "changes": {
+            "runs-on": "ubuntu-24.04",
+            "steps": [
+              {
+                "run": "echo changes"
+              }
+            ]
+          },
+          "envoy-go": {
+            "runs-on": "ubuntu-24.04",
+            "steps": [
+              {
+                "run": "echo envoy-go"
+              }
+            ]
+          },
+          "go-checks": {
+            "needs": "changes",
+            "runs-on": "ubuntu-24.04",
+            "steps": [
+              {
+                "run": "echo go-checks"
+              }
+            ]
+          },
+          "spec-citations": {
+            "if": "always()",
+            "needs": ["changes", "go-checks"],
+            "runs-on": "ubuntu-24.04",
+            "steps": [
+              {
+                "run": "echo spec-citations"
+              }
+            ]
+          }
+        },
+        "name": "Results from CI",
+        "on": "push"
+      },
+      "schema": false
+    }
+  ],
   "compare/approved-text/spec/components.yaml": [
     {
       "data": {

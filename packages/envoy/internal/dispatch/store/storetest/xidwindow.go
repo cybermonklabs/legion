@@ -121,9 +121,10 @@ const XidFaultGap = 20 * time.Millisecond
 // there by that rule, in either build. One that spends its time in Go alone - the rig's own
 // control, and its deliberate-fault self-tests, which inject a sleep - is caught only by a plain
 // run. So in CI the gap bound is judged in plain runs, and no race lane runs a window test: the
-// api, delivery and docs window tests are `//go:build !race`, and envoy-go's step "Test what the
-// race build cannot run at all or at full size" runs them plain (shape and gaps); refs' runs
-// plain in envoy-go's unit step. envoy-go is among the slow suites the changes job holds back on
+// api, delivery and docs window tests are `//go:build !race`, and envoy-go-alone's step "Test
+// the xid window rows, the API's issue-list bound and the auth service's storm, alone" runs them
+// plain (shape and gaps), on a runner nothing else loads; refs' runs plain in a unit leg of
+// envoy-go. envoy-go is among the slow suites the changes job holds back on
 // a pull request: it runs on a merge group (its first attempt only), on a manual dispatch, and on
 // a pull request only while it carries the `full-ci` or `lane:envoy_go` label, and only when its
 // filter (envoy_go) selects the change. So the gap bound is judged in the merge queue before

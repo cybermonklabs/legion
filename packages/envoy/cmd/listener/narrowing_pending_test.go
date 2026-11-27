@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A change of a session consumer's filter that drops a subject the consumer holds undelivered
@@ -38,6 +39,7 @@ import (
 // fails too gives it with delete_confirmed false. An update counts from the consumer's next
 // sequence, past the messages it delivered before the update and awaits acks for.
 func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
+	t.Parallel()
 	const (
 		newer    = "notifications.envoy.exceptions.*.*"
 		pairFoo  = "notifications.envoy.exceptions.foo.*"
@@ -95,7 +97,14 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 	}
 	// deliverUnacked has sessionID's consumer deliver n messages, with one pull request of exactly
 	// that batch, and acks none of them, so the consumer's delivered sequence and its ack floor are
-	// apart by those n.
+	// apart by those n. The request waits for its batch rather than asking no_wait: nats-server
+	// answers a no_wait request from the consumer's count of pending messages, and that count
+	// rises only once the stream's own goroutine has signalled the consumer of each message, after
+	// the publish's acknowledgement went out (2.15.1: processJetStreamMsgWithBatch acknowledges,
+	// then queues the signal that signalConsumersLoop hands to processStreamSignal). A no_wait
+	// request sent as soon as store returned could arrive before that, and be answered "404 No
+	// Messages" with the messages stored. A request that waits is served from the stream's store,
+	// which holds them once their publishes were acknowledged.
 	deliverUnacked := func(t *testing.T, sessionID string, n int) {
 		t.Helper()
 		name, ok := bus.SessionConsumerName(sessionID)
@@ -108,12 +117,13 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 			t.Fatalf("subscribe the pull's inbox: %v", err)
 		}
 		defer func() { _ = sub.Unsubscribe() }()
-		request := fmt.Sprintf(`{"batch":%d,"no_wait":true}`, n)
+		request := fmt.Sprintf(`{"batch":%d}`, n)
 		if err := raw.PublishRequest("$JS.API.CONSUMER.MSG.NEXT."+bus.Stream+"."+name, inbox, []byte(request)); err != nil {
 			t.Fatalf("send the pull request of %s: %v", sessionID, err)
 		}
+		ctx := testwait.Context(t)
 		for range n {
-			msg, err := sub.NextMsg(5 * time.Second)
+			msg, err := sub.NextMsgWithContext(ctx)
 			if err != nil || msg.Header.Get("Status") != "" {
 				t.Fatalf("the pull of %s answered %v (%v), want a message", sessionID, msg, err)
 			}

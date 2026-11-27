@@ -6,19 +6,29 @@
 # Each package of a module is in exactly one place here: one leg of one job, or `elsewhere`, a
 # job that runs it outside these legs. A package too long for one leg is in several legs of one
 # job, each `- <package>: <group>`, a group of its top-level tests from
-# .github/go-legs/<module>/<package>.yaml, and those places are its one place.
+# .github/go-legs/<module>/<package>.yaml, and those places are its one place. A package two jobs
+# each run in a mode of their own (a plain leg and a race leg) is named under the module's `twice`,
+# with why, and is then in the legs of exactly those two jobs, once in each. Every module names
+# under `unlisted` its plain job, whose last leg runs each package `go list ./...` prints and no
+# place here names, with a warning in every leg, so a pull request that adds a package and no line
+# here neither fails the merge group nor runs the package nowhere; list every package all the same,
+# in the same change that adds it (docs/testing.md), and a package under a tree of envoy's race lane
+# must be listed in its race leg, which ci_job_reads.py's hold_envoy_legs holds.
 # .github/scripts/go_legs.py, which each leg's go test step runs, holds all of that before the
 # leg's tests run; which readings are errors that stop a leg and which are warnings it works
-# through is written once, in
-# .github/ci-notes/ci-job-daemon-go.md#why-internaldaemons-tests-run-in-three-legs. A leg sees
-# only its own job, so .github/scripts/ci_job_reads.py's
-# hold_daemon_legs, which the changes job imports, holds this module's job keys to the jobs whose
-# legs run (daemon-go, daemon-go-race) and `elsewhere`; with both, none runs in no job.
+# through is written in .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+# (a package in no place or two, the legs and the matrix, `unlisted`) and
+# #why-internaldaemons-tests-run-in-three-legs (the groups of a split package's tests). A leg sees
+# only its own job, so .github/scripts/ci_job_reads.py's hold_daemon_legs and hold_envoy_legs,
+# which the changes job imports, hold each module's job keys to the jobs whose legs run
+# (daemon-go and daemon-go-race; envoy-go and envoy-go-race) beside `elsewhere`, `unlisted` and
+# envoy's `twice`, and `unlisted` to the plain job; with both, none runs in no job.
 #
 # The legs are balanced from measured times: a leg takes as long as its longest package, or as
 # its packages' sum over the runner's four cores when that is longer, and go test starts its
-# packages in the order they are given, so each leg lists its longest first. The times beside the
-# packages are the medians of the four green merge groups after the Postgres service ran with crash
+# packages in the order they are given, so each leg lists its longest first. The daemon's times
+# beside its packages are the medians of the four green merge groups after the Postgres service ran
+# with crash
 # safety off (#5515, 2026-11-25 14:32Z-16:27Z: runs 45634905903, 45640650357, 45646796488 and
 # 45651378097, daemon-go jobs 139278625735, 139299288707, 139321421329, 139337574002 and
 # daemon-go-race jobs 139278625746, 139299288812, 139321421627, 139337574008); a package with none
@@ -27,47 +37,43 @@
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
 packages/daemon:
   # daemon-go (.github/workflows/ci-job-daemon-go.yaml, job daemon-go-legs): plain, every package
-  # but the race step's and the text checks. Leg 1 is internal/store's, whose 501 s sets its time,
-  # beside the next three, each on a core of its own; leg 2 is the rest, about 794 s of package
-  # time over four cores, and the steps that run no leg's packages (the race-impossible tests, the
-  # stamped shape gate, the forced-order tests and the Stage 1 proof).
+  # but the race step's and the text checks, in three legs. The step's packages compete for two
+  # things on a runner: its four cores and its one Postgres service. cmd/legion keeps about 2.4
+  # cores busy once its tests run beside each other (#5514); internal/store, internal/workspace,
+  # internal/admit, internal/api and internal/workflow mostly wait on Postgres. Leg 1 is cmd/legion
+  # with three packages that need neither: alone there it took 194.5 s, against 421.1 s beside
+  # internal/store (runs 45737777272 and 45731654069). Leg 2 is internal/store, whose Postgres work
+  # took 407.4 s beside the other Postgres packages and a median 274 s beside three, with the small
+  # packages and the steps that run no leg's packages (the race-impossible tests, the stamped shape
+  # gate, the forced-order tests and the Stage 1 proof). Leg 3 is the rest, internal/workspace the
+  # longest, about 874 s of package time over four cores. Its times are not the four groups' above:
+  # they are the medians of the last ten green merge groups that ran these legs (2026-11-25
+  # 20:27Z-22:55Z: runs 45695186634, 45696132960, 45700055287, 45700222985, 45708557702,
+  # 45711933885, 45712646870, 45713803817, 45715584525 and 45717072988), internal/runtime/sandbox's
+  # of the seven since its tests run in parallel (#5507).
   daemon-go:
     1:
-      - internal/store                          # 501 s
-      - internal/runtime/sandbox                # 299 s
-      - cmd/legion                              # 246 s
-      - internal/workflow                       # 223 s
+      - cmd/legion                              # 432 s
+      - internal/leakguard                      # 54 s
+      - internal/record                         # 25 s
+      - internal/repocache                      # 20 s
     2:
-      - internal/workspace                      # 171 s
-      - internal/admit                          # 134 s
-      - internal/api                            # 90 s
-      - internal/leakguard                      # 51 s
-      - internal/classify                       # 39 s
-      - internal/runtime/tmux                   # 38 s
-      - internal/record                         # 29 s
-      - internal/testnats                       # 28 s
-      - internal/repocache                      # 28 s
-      - internal/shim                           # 24 s
-      - internal/podsafety                      # 20 s
-      - internal/supervise                      # 16 s
-      - internal/capabilities                   # 13 s
-      - internal/modeltoken                     # 12 s
-      - internal/stream                         # 12 s
-      - internal/memoryguard                    # 11 s
-      - internal/cipher                         # 11 s
-      - internal/appauth                        # 10 s
+      - internal/store                          # 274 s
+      - internal/cipher                         # 9 s
       - internal/procgroup                      # 9 s
-      - internal/pause                          # 9 s
-      - internal/claudebridge                   # 9 s
-      - internal/natsauth                       # 8 s
-      - internal/ompsessions                    # 5 s
-      - internal/fixtureenv                     # 4 s
-      - internal/blockers                       # 3 s
+      - internal/natsauth                       # 9 s
+      - internal/claudebridge                   # 8 s
+      - internal/pause                          # 8 s
+      - internal/appauth                        # 8 s
+      - internal/podsafety                      # 7 s
+      - internal/ompsessions                    # 3 s
+      - internal/fixtureenv                     # 2 s
+      - internal/blockers                       # 2 s
       - internal/rolefile                       # 2 s
-      - internal/testpg/testdb                  # 1 s
-      - internal/projection                     # 1 s
+      - internal/testpg/testdb                  # 2 s
       - internal/testpg                         # 1 s
-      - internal/config                         # 1 s
+      - internal/projection                     # 1 s
+      - internal/config
       - internal/ghconfig
       - internal/dispatch
       - internal/prompts
@@ -126,8 +132,26 @@ packages/daemon:
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle
+      - internal/yamlerr
+      - internal/repocache/fakegcs
+      - internal/repocache/fakegcs/cmd/fakegcs
       - internal/subreaper
       - internal/startwalk
+    3:
+      - internal/workspace                      # 176 s
+      - internal/runtime/sandbox                # 156 s
+      - internal/workflow                       # 156 s
+      - internal/admit                          # 129 s
+      - internal/api                            # 84 s
+      - internal/runtime/tmux                   # 38 s
+      - internal/classify                       # 38 s
+      - internal/testnats                       # 28 s
+      - internal/supervise                      # 13 s
+      - internal/shim                           # 12 s
+      - internal/memoryguard                    # 12 s
+      - internal/modeltoken                     # 11 s
+      - internal/stream                         # 11 s
+      - internal/capabilities                   # 10 s
   # daemon-go-race (job daemon-go-race-legs): under the race detector, the five packages
   # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES says why. internal/daemon runs in three
   # legs, a group of its tests each (.github/go-legs/packages/daemon/internal/daemon.yaml), since
@@ -148,3 +172,325 @@ packages/daemon:
   # Packages of the module no leg runs, each with the job that does.
   elsewhere:
     internal/textcheck: text-checks
+  # The leg that runs a package no place names: daemon-go's last.
+  unlisted: daemon-go
+packages/envoy:
+  # envoy-go (.github/workflows/ci-job-envoy-go.yaml, job envoy-go-legs): plain, through
+  # packages/envoy/scripts/database-skips.sh, which counts the skips of the broker's packages among
+  # a leg's packages; every package of the module but the race lane's, the text checks, the
+  # integration suite and envoy-go-build's. The legs are by area, so a change to one area's code
+  # runs that area's legs (legs 1-2 the broker, 3-4 Dispatch, 5 the rest); each leg lists its
+  # longest package first. The times beside the packages are each package's `Elapsed` in throwaway
+  # run 45676312472 (2026-11-25, main at 7102278681e2), which ran these legs, each on an
+  # ubuntu-24.04-arm runner of its own with this job's setup (unit legs 1-5: jobs 139424681543,
+  # 139424681329, 139424680750, 139424681174, 139424681322; race legs 3-5: 139424681558,
+  # 139424681328, 139424681325, and cmd/listener alone, which legs 1-2 split, 139424681394).
+  # Rebalance from the times the legs' own runs print,
+  # `pass <package> <seconds>s` in the unit legs and `ok <package> <seconds>s` in the race legs.
+  # why: .github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs
+  envoy-go:
+    # The broker's command, whose time sets the leg's, beside the writer hold's client and the NATS
+    # auth service's plain run.
+    1:
+      - cmd/cipherd                             # 527 s
+      - internal/cipher/natscallout             # 186 s
+      - internal/holdrecord                     # 161 s
+    # The rest of the broker: agent-secrets (cmd/cipher), the broker's packages and its clients.
+    2:
+      - cmd/cipher                              # 437 s
+      - internal/cipher/requests                # 298 s
+      - internal/cipher/api                     # 176 s
+      - internal/cipher/helper                  # 114 s
+      - internal/cipher/oauth                   # 102 s
+      - internal/cipher/enroll                  # 77 s
+      - internal/cipher/store                   # 62 s
+      - internal/cipherclient                   # 49 s
+      - internal/cipherclient/repeatprobe
+      - internal/cipher/approval                # 33 s
+      - internal/cipher/judge                   # 30 s
+      - internal/cipher/proxy                   # 18 s
+      - internal/cipher/hold                    # 15 s (run 45862794170, job 140058256929)
+      - internal/cipher/machine                 # 12 s
+      - internal/cipher/oauthstore              # 12 s
+      - internal/ciphertoken                    # 8 s
+      - cmd/cipher-helper                       # 5 s
+      - internal/cipher/secrets                 # 3 s
+      - internal/cipher/e2e                     # 2 s
+      - internal/cipher/projectrepos            # 2 s
+      - internal/cipher/ciphertest              # 2 s
+      - internal/cipher/policy                  # 2 s
+      - internal/cipher/proxyrules/proxyrulestest  # 1 s
+      - internal/cipher/natshold                # 1 s
+      - cmd/cipher-devrelay
+      - cmd/cipher-refgen
+      - internal/cipher/leasetime
+      - internal/cipher/groups
+      - internal/cipher/reread
+      - internal/cipher/store/storetest
+      - internal/cipher/config
+      - internal/cipher/answer
+      - internal/cipher/projectaccess
+      - internal/cipher/record
+      - internal/cipher/logmask
+      - internal/cipher/rulehost
+      - internal/cipher/proof
+      - internal/cipher/wake
+      - internal/cipher/exchange
+      - internal/cipher/proxyrules
+      - cipheraddr
+      - internal/cipher/githubname
+      - internal/cipher/oauthwire
+      - internal/cipher/netaddr
+      - cipherclient
+      - internal/cipher/ciphertest/requestseed
+      - internal/cipher/dispatchread
+      - internal/cipher/groups/groupstest
+      - internal/cipher/placeholder
+      - internal/cipher/policy/policytest
+      - internal/cipher/projectaccess/projectaccesstest
+      - internal/cipher/wire
+      - internal/ciphertoken/ciphertokentest
+      - internal/holdrecord/holdrecordtest
+    # Dispatch's commands and the lighter half of its packages.
+    3:
+      - cmd/dispatch                            # 316 s
+      - cmd/dispatch-seed                       # 83 s
+      - internal/dispatch/duty                  # 31 s
+      - internal/dispatch/architecture          # 31 s
+      - internal/dispatch/githubapp             # 27 s
+      - internal/dispatch/processes             # 23 s
+      - internal/dispatch/workflowstore         # 21 s
+      - internal/dispatch/events                # 17 s
+      - internal/dispatch/access                # 9 s
+      - internal/dispatch/pmdoc/schemanodes     # 8 s
+      - internal/dispatch/deliveryaudit         # 6 s
+      - internal/dispatch/legion                # 5 s
+      - internal/dispatch/dashboard             # 5 s
+      - internal/dispatch/legion/metrics        # 5 s
+      - internal/dispatch/startup               # 5 s
+      - internal/dispatch/embed                 # 5 s
+      - internal/dispatch/prioritystore         # 5 s
+      - internal/dispatch/githubapp/ratelimit   # 5 s
+      - internal/dispatch/asks                  # 5 s
+      - internal/dispatch/texttrees             # 5 s
+      - internal/dispatch/sessionanswers        # 4 s
+      - internal/dispatch/outbox/copyrule       # 2 s
+      - internal/dispatch/itemblocks
+      - internal/dispatch/auth
+      - internal/dispatch/specgraph/specgraphtest
+      - dispatchblocks
+    # Dispatch's heavier packages.
+    4:
+      - internal/dispatch/outbox                # 320 s
+      - internal/dispatch/pmdoc                 # 242 s
+      - internal/dispatch/refs                  # 186 s
+      - internal/dispatch/cireconcile           # 171 s
+      - internal/dispatch/embedqueue            # 99 s
+      - internal/dispatch/textversions          # 95 s
+      - internal/dispatch/files                 # 40 s
+      - internal/dispatch/graphstore            # 37 s
+      - internal/dispatch/routes                # 25 s
+      - internal/dispatch/graphcensus           # 24 s
+      - internal/dispatch/redeliver             # 22 s
+      - internal/dispatch/identity              # 14 s
+      - internal/dispatch/texttreefill          # 9 s
+      - internal/dispatch/githubapi             # 1 s
+      - internal/dispatch/agentstream
+      - internal/dispatch/bytelru
+      - internal/dispatch/envoy
+      - internal/dispatch/rank
+      - internal/dispatch/text
+      - dispatchbody
+      - internal/dispatch/config
+      - internal/dispatch/githubreads
+      - internal/dispatch/cipher
+      - internal/dispatch/testlimits
+      - internal/dispatch/model
+      - internal/dispatch/accesslog
+      - internal/dispatch/horizontest
+      - internal/dispatch/pmdoc/heavybodies
+      - internal/dispatch/benchtime
+      - internal/dispatch/githubapp/githubapptest
+      - internal/dispatch/retry
+      - internal/dispatch/api/apitest
+      - internal/dispatch/docs/crafted
+      - internal/dispatch/docs/docstest
+      - internal/dispatch/embed/embedtest
+      - internal/dispatch/files/filestest
+      - internal/dispatch/graphcensus/censustest
+      - internal/dispatch/graphstore/graphstoretest
+      - internal/dispatch/pmdoc/pmdoctest
+      - internal/dispatch/pmdoc/schemanodes/schemanodestest
+      - internal/dispatch/refs/refstest
+      - internal/dispatch/textversions/textversionstest
+    # Everything else: the NATS rig, the migrations both stores apply, the Postgres helpers, the
+    # load test and the small packages.
+    5:
+      - internal/testnats                       # 142 s
+      - internal/pgmigrate                      # 84 s
+      - loadtest                                # 41 s
+      - internal/cistore                        # 25 s
+      - clitest                                 # 16 s
+      - internal/pglisten                       # 14 s
+      - cmd/dev-oidc-issuer                     # 5 s
+      - internal/roles                          # 5 s
+      - internal/legionagents                   # 4 s
+      - internal/bus/kvrecords                  # 4 s
+      - internal/googleidentity                 # 3 s
+      - internal/webhook                        # 3 s
+      - cmd/natsprobe                           # 2 s
+      - cmd/dev-proxy-stands                    # 2 s
+      - internal/mcpbridge                      # 1 s
+      - internal/testwait                       # 1 s
+      - agentloop                               # 1 s
+      - natsversion                             # 1 s
+      - internal/oidc/oidctest
+      - internal/contracts
+      - internal/testtmp
+      - going
+      - internal/cmdtest
+      - internal/testpg/testdb
+      - internal/kvchunk
+      - internal/cputest
+      - cmd/natstail
+      - loadtest/browsertype
+      - internal/dedupe
+      - internal/testcleanup
+      - internal/stacktest
+      - internal/redact
+      - natsgrant
+      - internal/oauthrefusal
+      - internal/pgmigrate/pgmigratetest
+      - internal/ratelimit
+      - internal/bus/signedrecord
+      - internal/config
+      - internal/serverwait
+      - internal/testnats/cmd/natsd
+      - internal/weborigin
+      - loadtest/listenerclient
+      - internal/envconf
+      - internal/tlsalert
+      - listenfd
+      - internal/explaintest
+      - internal/ghrename
+      - internal/logging
+      - internal/verify
+      - roleholder
+      - internal/metrics
+      - internal/testport
+      - natsversion/cmd/natsfloor
+      - steprecord
+      - internal/ctxlock
+      - internal/fileowner
+      - internal/fold
+      - internal/goroutinetest
+      - internal/principal
+      - internal/routing
+      - migrationid
+      - ciphertest
+      - cmd/mcp
+      - going/goingtest
+      - internal/buildversion
+      - internal/bus/bustest
+      - internal/docnumbers
+      - internal/dpopproof
+      - internal/fixtureenv
+      - internal/githubappjwt
+      - internal/githubtest
+      - internal/id
+      - internal/kvchunk/kvchunktest
+      - internal/logtest
+      - internal/ordertest
+      - internal/pgmigrate/cmd/edited-migrations
+      - internal/redirects
+      - internal/smoke/systemroots
+      - internal/testbaseline
+      - internal/testnats/cmd/calloutd
+      - internal/testnats/cmd/refillrig
+      - internal/testnats/hooktest
+      - internal/testpg
+      - internal/tests3
+      - internal/testsocks5
+      - internal/tlsalert/tlsalerttest
+      - sessiontiming
+      - subjectforms
+      - testnatsimages
+      - testnatsinprocess
+      - internal/alonetest
+      - internal/clock
+      - internal/clock/clocktest
+      - internal/shapetest
+  # envoy-go-race (.github/workflows/ci-job-envoy-go-race.yaml, job envoy-go-race-legs): under the
+  # race detector, the packages of ci_job_reads.py's ENVOY_RACE_LANE entry for envoy-go-race.
+  envoy-go-race:
+    # The listener, in two legs, a group of its tests each
+    # (.github/go-legs/packages/envoy/cmd/listener.yaml, modelled 442 s a group): alone in one leg
+    # it took 902 s, the lane's time.
+    1:
+      - cmd/listener: 1
+    2:
+      - cmd/listener: 2
+    # The bus, the registry store, the session cache, kvwatch and the NATS credentials.
+    3:
+      - internal/bus                            # 458 s
+      - internal/store                          # 308 s
+      - internal/session                        # 168 s
+      - internal/kvwatch                        # 98 s
+      - natscred                                # 32 s
+      - internal/kvwatch/kvwatchtest
+    # Dispatch: the Dispatch store and delivery, each with the packages under it.
+    4:
+      - internal/dispatch/store                 # 554 s
+      - internal/dispatch/delivery              # 429 s
+      - internal/dispatch/store/storetest       # 18 s
+      - internal/dispatch/delivery/measures     # 1 s
+      - internal/dispatch/delivery/citebody     # 1 s
+      - internal/dispatch/store/cmd/connections
+      - internal/dispatch/store/searchtest
+      - internal/dispatch/store/storetest/lockstep
+    # The NATS auth service and the sign-in code flow, and the forced-order steps, which run no
+    # leg's packages.
+    5:
+      - internal/cipher/natscallout             # 211 s
+      - internal/oidc                           # 42 s
+  # envoy-go-race-api (.github/workflows/ci-job-envoy-go-race-api.yaml, job
+  # envoy-go-race-api-legs): one package, internal/dispatch/api, in three legs, a group of its
+  # tests each (.github/go-legs/packages/envoy/internal/dispatch/api.yaml). The whole package took
+  # 999-1,043 s alone at main 3ebc542c, its 2,900 tests 8 at a time (run 45782644966), and the
+  # groups are dealt from that run to model 357 s each.
+  # why: .github/ci-notes/ci-job-envoy-go-race-api.md#why-the-apis-tests-run-in-three-legs
+  envoy-go-race-api:
+    1:
+      - internal/dispatch/api: 1                # 935 tests, 357 s modelled
+    2:
+      - internal/dispatch/api: 2                # 937 tests, 357 s modelled
+    3:
+      - internal/dispatch/api: 3                # 1,028 tests, 357 s modelled
+  # envoy-go-race-docs (job envoy-go-race-docs-legs): one package, internal/dispatch/docs, in
+  # three legs, a group of its tests each; 1,430 s alone, and its longest test 491.6 s.
+  # why: .github/ci-notes/ci-job-envoy-go-race-docs.md#why-the-document-services-tests-run-in-three-legs
+  envoy-go-race-docs:
+    1:
+      - internal/dispatch/docs: 1               # 444 s modelled
+    2:
+      - internal/dispatch/docs: 2               # 444 s modelled
+    3:
+      - internal/dispatch/docs: 3               # 444 s modelled
+  # The NATS auth service runs in a plain leg and a race leg: its hold rows read the broker's hold
+  # row from Postgres and skip without it, and the plain leg's database-skips.sh counts those skips,
+  # where the race leg's go test counts none.
+  twice:
+    internal/cipher/natscallout: the plain leg counts its hold rows' skips, the race leg runs it under the detector
+  # Packages of the module no leg runs, each with the job that does.
+  elsewhere:
+    internal/integration: envoy-go-natslive
+    internal/textcheck: text-checks
+    internal/dispatch/architecture/notes: envoy-go-build
+    internal/runnerlog: envoy-go-build
+    internal/dispatch/specgraph: envoy-go-build
+    cmd/architecture-check: envoy-go-build
+    cmd/spec-check: envoy-go-build
+    listenerwire: envoy-go-build
+    internal/wirecheck: envoy-go-build
+  # The leg that runs a package no place names: envoy-go's last, the rest of the module.
+  unlisted: envoy-go

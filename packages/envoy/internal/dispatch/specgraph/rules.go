@@ -31,8 +31,8 @@ type Options struct {
 //     parent and serves relations, or through the parents of components);
 //   - a check: check-serves (a statement that the files do not hold), no-claim, no-procedure,
 //     no-failing-example (each a text with no letter or digit), bad-claim (a claim of more than one
-//     sentence), no-test and no-job (a runner, selector or job with no word), bad-selector (a go
-//     selector that picks no one test);
+//     sentence), no-test and no-job (a program check whose runner, selector or job holds no letter
+//     or digit), bad-selector (a go selector that picks no one test);
 //   - a component: bad-component (a name or a purpose with no letter or digit, a purpose that is
 //     not one sentence, or a parent that is no component) and bad-interface (a joined node that is
 //     no component);
@@ -305,7 +305,7 @@ func (v *validator) check(c Check) {
 		}
 	}
 	v.code(c.Pos, c.ID, "claim", c.Claim)
-	v.code(c.Pos, c.ID, "procedure", c.ProcedureText)
+	v.codeNames(c.Pos, c.ID, "procedure", procedureCodeNames(c))
 	v.code(c.Pos, c.ID, "failing example", c.FailingExample)
 }
 
@@ -363,10 +363,32 @@ func (v *validator) component(c Component) {
 
 // code records code-in-text when text, the field of node, names code, each name cut (Cut).
 func (v *validator) code(pos Position, node, field, text string) {
-	if names := CodeNames(text); len(names) > 0 {
+	v.codeNames(pos, node, field, CodeNames(text))
+}
+
+// codeNames records code-in-text when names, the names of code that the field of node holds, are
+// any. Each name is cut, as each value of a problem is (Cut).
+func (v *validator) codeNames(pos Position, node, field string, names []string) {
+	if len(names) > 0 {
 		for i, name := range names {
 			names[i] = Cut(name)
 		}
 		v.problem(pos, node, ruleCodeInText, field, strings.Join(names, ", "))
 	}
+}
+
+// procedureCodeNames adds a program check's own Go test name to CodeNames, including bare Test.
+func procedureCodeNames(c Check) []string {
+	names := CodeNames(c.ProcedureText)
+	if c.Test == nil || c.Test.Runner != "go" {
+		return names
+	}
+	_, test, err := ParseSelector(c.Test.Selector)
+	if err != nil || slices.Contains(names, test) {
+		return names
+	}
+	if slices.Contains(nameRun.FindAllString(backtickSpan.ReplaceAllString(c.ProcedureText, " "), -1), test) {
+		names = append(names, test)
+	}
+	return names
 }

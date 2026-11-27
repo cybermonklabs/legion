@@ -1,9 +1,10 @@
 // Package specgraphtest is test support for the tests of more than one package that read the
-// scenarios of specgraph's testdata: specgraph's own sweeps and the spec-check command's tests. It
-// is an ordinary package rather than a _test.go file because those tests are of two packages, and
-// neither can import the other's test helpers, the reason internal/cmdtest gives for itself. Only
-// test files import it (internal/textcheck's TestOnlyTestFilesImportSpecgraphtest), and it imports
-// the standard library alone, so the tests of package specgraph can import it with no cycle.
+// scenarios of specgraph's testdata or write trees for git: specgraph's own tests and the
+// spec-check command's tests. It is an ordinary package rather than a _test.go file because those
+// tests are of two packages, and neither can import the other's test helpers, the reason
+// internal/cmdtest gives for itself. Only test files import it (internal/textcheck's
+// TestOnlyTestFilesImportSpecgraphtest), and it imports the standard library alone, so the tests
+// of package specgraph can import it with no cycle.
 package specgraphtest
 
 import (
@@ -11,9 +12,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
+	"testing"
 	"testing/fstest"
 )
+
+// PutTree writes each entry of files under dir: "file <bytes>" a file, "exec <bytes>" an
+// executable file, and "link <target>" a link.
+func PutTree(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for path, entry := range files {
+		kind, value, _ := strings.Cut(entry, " ")
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		switch kind {
+		case "file":
+			err = os.WriteFile(full, []byte(value), 0o644)
+		case "exec":
+			err = os.WriteFile(full, []byte(value), 0o755)
+		case "link":
+			err = os.Symlink(value, full)
+		default:
+			t.Fatalf("an entry of kind %q", kind)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 // subjectRead is, for a check of production and for one of the graph, the member of a result that
 // names the subject that the check reads, the value that As writes there (the deploy d1 and the

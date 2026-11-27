@@ -1,0 +1,90 @@
+{
+  "what_this_is": "The input driven through the shipped CONCORD library ioc-concord. It is one real disagreement between the reviewer's two graders at one head of one merged pull request of cybermonklabs/legion. The positions and the counts below are quoted from our own review record; the raw 0-100 ratings are NOT in our record and are derived by the declared rule in derivation, which is this file's author's and not the record's.",
+  "provenance": {
+    "repo": "cybermonklabs/legion",
+    "pull_request": 3522,
+    "review_id": 5854791039,
+    "review_state": "APPROVED",
+    "review_author": "legion-reviewer[bot]",
+    "review_submitted": "2026-11-11T06:36:26Z",
+    "head": "e4c5e7dd96f8088caefbccbabd77ce66ef412059",
+    "dispatch_issue": "dispatch://INFRA-2551",
+    "quoted_sentence": "**The thermonuclear pair at this head.** The deep review reports APPROVE, no Medium or High, three Minor. The code quality report reports CHANGES with seven items. I declined all ten, each for its own reason:",
+    "fetch_command": "gh api repos/cybermonklabs/legion/pulls/3522/reviews --jq '.[] | select(.id==5854791039) | .body'",
+    "fetched": "2026-11-12"
+  },
+  "record_facts": {
+    "thermonuclear-deep-review": {"verdict": "APPROVE", "findings": 3, "severity": "three Minor, no Medium or High"},
+    "thermonuclear-code-quality": {"verdict": "CHANGES", "findings": 7, "severity": "seven items"},
+    "reviewer_outcome": "approved at the head and recorded each of the ten findings as declined with its reason"
+  },
+  "derivation": {
+    "marked": "this mapping is the author's, not our record's; our record holds a verdict word and a finding count per grader and no satisfaction rating and no anchor pair",
+    "anchor": "every grader is anchored raw_reject=0, raw_ideal=100, because our record holds no anchor pair",
+    "rule": "raw = 100 - 5 * (that grader's findings the candidate leaves unanswered) - 10 if the candidate spends another review round and that grader's own verdict at this head was APPROVE",
+    "unanswered": "a finding is answered when the candidate fixes it or records a reason for declining it"
+  },
+  "run_common": {
+    "agents": ["thermonuclear-deep-review", "thermonuclear-code-quality"],
+    "state_id": "legion-pr3522-e4c5e7dd",
+    "context": "Merged pull request cybermonklabs/legion#3522, head e4c5e7dd96f8088caefbccbabd77ce66ef412059, issue INFRA-2551. The reviewer's two graders returned different verdicts at this one head: thermonuclear-deep-review returned APPROVE with three Minor and no Medium or High, and thermonuclear-code-quality returned CHANGES with seven items. The question is what the reviewer does with the head.",
+    "x_reject": "the head is merged with a finding of this grader's kind left neither fixed nor answered",
+    "x_ideal": "the head is merged with every finding of this grader's kind either fixed or answered with its reason",
+    "schema": {
+      "enum": [
+        "approve the head as it stands",
+        "send the head back for changes",
+        "approve the head and record each reported finding as declined with its reason"
+      ]
+    },
+    "anchors": {
+      "thermonuclear-deep-review": {"raw_reject": 0, "raw_ideal": 100},
+      "thermonuclear-code-quality": {"raw_reject": 0, "raw_ideal": 100}
+    },
+    "seeds": [
+      {
+        "agent": "thermonuclear-deep-review",
+        "candidate": "approve the head as it stands",
+        "rationale": "The deep review reports APPROVE at this head, no Medium or High and three Minor."
+      },
+      {
+        "agent": "thermonuclear-code-quality",
+        "candidate": "send the head back for changes",
+        "rationale": "The code quality report reports CHANGES at this head with seven items."
+      }
+    ],
+    "repair": {
+      "agent": "thermonuclear-deep-review",
+      "candidate": "approve the head and record each reported finding as declined with its reason",
+      "rationale": "What the reviewer recorded at this head: it declined all ten findings, each for its own reason."
+    },
+    "raw": {
+      "thermonuclear-deep-review": {
+        "approve the head as it stands": 85,
+        "send the head back for changes": 90,
+        "approve the head and record each reported finding as declined with its reason": 100
+      },
+      "thermonuclear-code-quality": {
+        "approve the head as it stands": 65,
+        "send the head back for changes": 100,
+        "approve the head and record each reported finding as declined with its reason": 100
+      }
+    },
+    "reasoning": {
+      "thermonuclear-deep-review": {
+        "approve the head as it stands": "three Minor left unanswered",
+        "send the head back for changes": "nothing left unanswered, but a further round is spent and this grader judged the head ready",
+        "approve the head and record each reported finding as declined with its reason": "nothing left unanswered and no further round spent"
+      },
+      "thermonuclear-code-quality": {
+        "approve the head as it stands": "seven items left unanswered",
+        "send the head back for changes": "nothing left unanswered",
+        "approve the head and record each reported finding as declined with its reason": "nothing left unanswered"
+      }
+    }
+  },
+  "runs": [
+    {"name": "run-1-default-threshold", "satisfaction_threshold": 0.6, "eps": 0.05, "B": 8, "feed_repair": false},
+    {"name": "run-2-threshold-0.95", "satisfaction_threshold": 0.95, "eps": 0.05, "B": 8, "feed_repair": true}
+  ]
+}

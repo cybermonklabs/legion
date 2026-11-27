@@ -129,7 +129,8 @@ const (
 //     from, its planted_on for a program check of the code; a failing example that its test caught,
 //     or a run of the test of a program check of production or of the graph, counts at another
 //     commit only when the check's tie is known at both commits and no path that changed between
-//     them is covered by the tie at either commit, and one that its test missed never does;
+//     them reaches the tie at either commit, which covers it or holds a path under it, and one that
+//     its test missed never does;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit","planted_on",
 //     "fault_paths"}]: check_version names an approved version of the check, whose Digest the
