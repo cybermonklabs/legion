@@ -1552,10 +1552,10 @@ func actScopes(credential *model.Credential) []string {
 // actor is then only an agreement: one that names the same session is taken, for its Origin,
 // which nothing else carries; one that names any other writer is 403 ACTOR_SESSION_MISMATCH,
 // rather than silently recording the write as a session the caller merely asked for. The refusal
-// points the caller at whoami for the session the credential proved rather than naming it: it is
-// an error that writeHandlerError reads, and an error that carries an actor's ID can reach that
-// function's log lines, which name no writer. Every credential that proves no session — a
-// cookie, a personal token, a Kubernetes service-account token — keeps the rule above exactly.
+// points the caller at whoami for the session the credential proved rather than naming it: no
+// error message of this API carries a signed-in person's login or session. Every credential that
+// proves no session — a cookie, a personal token, a Kubernetes service-account token — keeps the
+// rule above exactly.
 func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *model.Actor) (model.Actor, error) {
 	if credentialProvesSession(authenticated) {
 		// A body that names no writer at all leaves the session to the credential; one that names

@@ -791,8 +791,8 @@ func withPerson(request *http.Request, login string) *http.Request {
 // TestABrokerTokenRefusesABodyActorNamingAnotherSession: the one thing a body actor may not do is
 // name a writer that is not the credential's, and the refusal points the caller at whoami, which
 // names the session the token carries, so the caller can see what it should have sent. The
-// refusal does not name that session itself: it is an error writeHandlerError reads, and an
-// error carrying an actor's ID can reach that function's log lines.
+// refusal does not name that session itself: no error message of this API carries a signed-in
+// person's login or session.
 func TestABrokerTokenRefusesABodyActorNamingAnotherSession(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)

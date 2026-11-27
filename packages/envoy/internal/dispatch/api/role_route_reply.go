@@ -100,8 +100,8 @@ func (s *server) callerPrincipal(r *http.Request) string {
 // allows. A lookup the listener did not answer (dispatchenvoy.ErrUnavailable) is the error, which
 // the route answers 503 ENVOY_UNAVAILABLE: whether this session may answer is the listener's to
 // say, and a refusal would end a reply its host could make again. The error names the route, or
-// the session the attempt was made for, and not the actor: a 503 is an error writeHandlerError
-// reads, and an error that carries an actor's ID can reach that function's log lines.
+// the session the attempt was made for, and not the actor: no error message of this API carries a
+// signed-in person's login or session.
 func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemptSession *string, actor model.Actor, actsFor string) (roleHolderReply, error) {
 	verdict := roleHolderReply{route: route}
 	parsed, err := model.ParseRoute(route)

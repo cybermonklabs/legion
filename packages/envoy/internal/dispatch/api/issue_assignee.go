@@ -52,8 +52,8 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 
 // allowedActingPerson is allowedLogin for person, the canonical login the request's credential
 // acts for (actorPerson) rather than one the caller typed. Its refusal names no login: the value
-// is the request's own identity, and the refusal is an error that writeHandlerError reads, and an
-// error that carries an identity can reach that function's log lines.
+// is the request's own identity, and no error message of this API carries a signed-in person's
+// login or session.
 func (s *server) allowedActingPerson(ctx context.Context, person string) (string, error) {
 	known, err := s.signedIn(ctx, person)
 	if err != nil {
