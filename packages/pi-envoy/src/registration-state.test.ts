@@ -85,12 +85,12 @@ interface RoleClaimRecord {
   readonly clientInstanceID: string;
 }
 
-const apiError = (status: number): EnvoyApiError =>
+const apiError = (status: number, body: Record<string, unknown> = {}): EnvoyApiError =>
   new EnvoyApiError({
     method: "GET",
     url: "/v1/roles/alpha",
     status,
-    responseBody: JSON.stringify({ error: "no live holder" }),
+    responseBody: JSON.stringify({ error: "no live holder", ...body }),
   });
 
 /** The listener's bus-outage error, answered with `status`: under 503 it is the answer the
@@ -766,11 +766,15 @@ describe("the serial queues", () => {
         holder: await handle.readRoleHolder("alpha"),
       };
     });
-    expect(read).toEqual({ opened: true, interest: "ses_a", holder: "ses_a" });
+    expect(read).toEqual({
+      opened: true,
+      interest: "ses_a",
+      holder: { known: true, holder: "ses_a" },
+    });
     expect(subscribedTopics).toEqual(["notifications.dispatch.issue.A-1"]);
   });
 
-  test("a failed listener read answers nothing rather than failing the task", async () => {
+  test("a failed listener read answers that it knows nothing rather than failing the task", async () => {
     const { state, control } = createHarness();
     control.open = "ses_a";
     control.getRole = async () => {
@@ -786,7 +790,32 @@ describe("the serial queues", () => {
         interest: await handle.readInterest("ses_a"),
       };
     });
-    expect(read).toEqual({ holder: undefined, interest: undefined });
+    expect(read).toEqual({ holder: { known: false }, interest: undefined });
+  });
+
+  // The listener's 404 for a role no live session holds names a lapsed holder where it knows one
+  // (unresponsive, or gone and not reaped). That is a known answer naming that session: it was
+  // shown what the stream stored for the role, so a resumed session must not read it again.
+  test("the 404 of a lapsed holder is a known answer naming it, and one naming none answers nobody", async () => {
+    const { state, control } = createHarness();
+    control.open = "ses_a";
+    control.getRole = async () => {
+      throw apiError(404, { holder: "ses_lapsed" });
+    };
+    const lapsed = await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.readRoleHolder("alpha");
+    });
+    expect(lapsed).toEqual({ known: true, holder: "ses_lapsed" });
+
+    control.getRole = async () => {
+      throw apiError(404);
+    };
+    const nobody = await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.readRoleHolder("alpha");
+    });
+    expect(nobody).toEqual({ known: true, holder: undefined });
   });
 });
 
@@ -1177,18 +1206,18 @@ describe("the deployment's role topics", () => {
     });
     const harness = createHarness(topics);
     // A resumed session opened alpha's topics before a claim that decided nothing.
-    topics.open("alpha");
+    topics.open("alpha", "ses_a");
     await harness.hold("beta", "ses_a");
     expect(harness.closedSubjects).toEqual([ALERTS]);
-    expect(topics.role()).toBe("beta");
+    expect(topics.role()).toEqual({ role: "beta", sessionID: "ses_a" });
     expect(topics.subjects()).toEqual([BUILDS]);
   });
 
-  test("a refusal naming this session's own id keeps the role's topics open, and one naming another holder closes them", async () => {
+  test("a refusal naming this session's own id latches none, and one naming another holder latches it", async () => {
     const { harness, topics } = harnessWith();
     harness.control.open = "ses_a";
     // Opened before the claim, as a resumed session's are.
-    topics.open("alpha");
+    topics.open("alpha", "ses_a");
 
     // The standing claim of another process under this same id: nothing ends, nothing closes.
     harness.control.setRole = async () => ({ claimed: false, holder: "ses_a" });
@@ -1196,17 +1225,20 @@ describe("the deployment's role topics", () => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });
     });
-    harness.state.closeRefusedRoleTopics("ses_a");
+    // Nothing ended and no refusal was latched, so the topics the resume opened stay open for
+    // the next pass's claim; the pass's own rule (`settleRoleTopics`) reads `refusalFor`.
     expect(harness.closedSubjects).toEqual([]);
     expect(topics.subjects()).toEqual([ALERTS, OWN]);
+    expect(harness.state.refusalFor("ses_a")).toBeUndefined();
 
-    // Another session holds it: the refusal is latched, and the topics close.
+    // Another session holds it: the refusal is latched and the role's end closes them here, so
+    // the pass's own rule has nothing left to close for this host.
     harness.control.setRole = async () => ({ claimed: false, holder: "ses_newer" });
     await harness.state.roleMoves.run(async (handle) => {
       handle.actFor("ses_a");
       return handle.claimRole("alpha", { soft: true });
     });
-    harness.state.closeRefusedRoleTopics("ses_a");
+    expect(harness.state.refusalFor("ses_a")).toBe("alpha");
     expect(harness.closedSubjects).toEqual([ALERTS, OWN]);
     expect(topics.role()).toBeUndefined();
   });

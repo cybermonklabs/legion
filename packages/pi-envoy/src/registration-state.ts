@@ -262,9 +262,15 @@ export interface TaskHandle {
   readonly noteNoticesClosed: (role: string) => void;
 
   // — listener reads and writes —
-  /** The session the listener names as `role`'s holder; `undefined` when it names none or the
-   *  read failed. */
-  readonly readRoleHolder: (role: string) => Promise<string | undefined>;
+  /**
+   * The session the listener names as `role`'s holder. `known` is false where the read failed, so
+   * a caller tells "nobody holds it" from "nobody could be asked". A 404 that names a lapsed
+   * holder (one unresponsive or gone and not reaped) is a known answer naming that holder: it was
+   * shown what the stream stored for the role, so a resumed session must not read it again.
+   */
+  readonly readRoleHolder: (
+    role: string
+  ) => Promise<{ readonly known: boolean; readonly holder?: string }>;
   /** The listener's registered interests for a session; `undefined` when the read failed. */
   readonly readInterest: (sessionID: string) => Promise<Interest | undefined>;
   /** Unregisters `topics` as `sessionID`'s interests at the listener. A failure is warned in the
@@ -395,14 +401,6 @@ export interface RegistrationState {
   readonly roleSnapshot: (topic: string) => RoleSnapshot;
   /** The role the listener refused to this session's automatic claim, if any. */
   readonly refusalFor: (sessionID: string) => string | undefined;
-  /**
-   * Closes the topics `roleTopics` opened for a role no hold landed for, once the listener refused
-   * that role to `sessionID` naming another holder (`refusalFor`): a resumed session opens its
-   * wanted role's topics before its claim, and they are the role's holder's to read, not its own.
-   * A refusal naming this same session id (another process's standing claim under it), a claim
-   * that threw, or a move that decided nothing leaves them open for the next pass's claim.
-   */
-  readonly closeRefusedRoleTopics: (sessionID: string) => void;
   /** How many roles have ended, which a role-bound subscribe compares against. */
   readonly roleEndCount: () => number;
   /** Whether the hold came back from a hand-back rather than from a claim the listener granted. */
@@ -476,7 +474,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     if (role === undefined) return;
     // Topics opened for another role than this hold's (a resumed session's wanted role, whose
     // claim decided nothing) are that role's to close, not this one's to keep.
-    const dropped = deps.roleTopics.open(role);
+    const dropped = deps.roleTopics.open(role, sessionID);
     if (dropped.length > 0) deps.closeSubjects(sessionID, dropped);
   };
 
@@ -912,8 +910,15 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
           .client()
           .getRole(role)
           .then(
-            (info) => info.holder,
-            () => undefined
+            (info) => ({ known: true, holder: info.holder }),
+            (error: unknown) => {
+              // The listener's 404 for a role no live session holds: it names a lapsed holder
+              // where it knows one, and nobody otherwise. Any other failure is no answer at all.
+              if (error instanceof EnvoyApiError && error.details.status === 404) {
+                return { known: true, holder: error.holder };
+              }
+              return { known: false };
+            }
           );
       },
       readInterest: async (sessionID) => {
@@ -1018,13 +1023,6 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       endsBefore: roleEnds,
     }),
     refusalFor: (sessionID) => refusedRoles.get(sessionID),
-    closeRefusedRoleTopics: (sessionID) => {
-      const opened = deps.roleTopics.role();
-      if (opened === undefined || heldRole() !== undefined) return;
-      if (refusedRoles.get(sessionID) !== opened) return;
-      const closed = deps.roleTopics.close();
-      if (closed.length > 0) deps.closeSubjects(sessionID, closed);
-    },
     roleEndCount: () => roleEnds,
     holdIsUnconfirmed: () => holdUnconfirmed,
     establishedFor: () => establishedSession,

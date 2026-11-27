@@ -4185,6 +4185,77 @@ describe("envoy OMP extension", () => {
     }
   });
 
+  // A resumed session opens its wanted role's topics before its claim, and an own-id refusal
+  // keeps them open for the next pass. A `/new` to another session must not leave that session
+  // following them: it holds no role and wants none, so the pass closes them and its registration
+  // carries none.
+  test("a host move to a new session closes the topics a resumed session opened for a role no hold landed for", async () => {
+    const alerts = "notifications.slack.*.C0ALERTS.message";
+    const role = "legion-controller";
+    const resumed = "ses_move_resumed";
+    const fresh = "ses_move_new";
+    const registrations: { session: string; topics: string[] }[] = [];
+    const unregistered: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === `/v1/roles/${role}` && (init?.method ?? "GET") === "GET") {
+        // Nobody holds it, so the resume opens its topics.
+        return Response.json({ error: "no live holder" }, { status: 404 });
+      }
+      if (url.pathname === "/v1/roles/set") {
+        // The standing claim of another process under the resumed session's own id.
+        return Response.json(
+          { error: `role ${role} is held by ${resumed}`, role, holder: resumed },
+          { status: 409 }
+        );
+      }
+      if (url.pathname === "/v1/interests/unsubscribe") {
+        unregistered.push(Array.isArray(body?.topics) ? body.topics : []);
+        return response({});
+      }
+      if (url.pathname === "/v1/interests/subscribe") {
+        registrations.push({
+          session: String(body?.session_id ?? ""),
+          topics: Array.isArray(body?.topics) ? body.topics : [],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const previous = process.env.ENVOY_ROLE_TOPICS;
+    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ [role]: [alerts] });
+    try {
+      // A fresh module instance, as every row of this file takes one: the query keys the cache,
+      // and this instance must read the ENVOY_ROLE_TOPICS set above when it is created.
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-topics-move");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      const resumedContext = {
+        ...sessionContext(resumed),
+        sessionManager: {
+          ...sessionContext(resumed).sessionManager,
+          getBranch: () => [{ type: "custom", customType: "envoy-role-claim", data: { role } }],
+        },
+      };
+      await fixture.handlers.get("session_start")?.({}, resumedContext);
+      // The resume opened them, and the own-id refusal kept them.
+      expect(registrations.some((call) => call.topics.includes(alerts))).toBe(true);
+
+      // `/new`: another session, which records no role and wants none.
+      const moved = sessionContext(fresh);
+      await fixture.handlers.get("session_switch")?.({ reason: "new" }, moved);
+      // The pass closes what the resume opened: the subjects leave the row, and the session
+      // follows them no longer, so no later registration of this session can carry them.
+      expect(unregistered.flat()).toContain(alerts);
+      expect(await followedTopics(fixture.tools, moved)).not.toContain(alerts);
+      expect(registrations.some((call) => call.session === fresh)).toBe(true);
+      await fixture.handlers.get("session_shutdown")?.({}, moved);
+    } finally {
+      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
+      else process.env.ENVOY_ROLE_TOPICS = previous;
+    }
+  });
+
   test("registers no dispatch_* tool where Dispatch is configured: agents run the dispatch command", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;

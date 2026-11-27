@@ -138,10 +138,11 @@ export function readRoleTopics(value: string | undefined): RoleTopics {
  * it, so the role's end leaves the session's own, and the session's unsubscribe leaves the
  * role's while the role is held.
  *
- * - `open(role)` claims every subject the role's topics expand to, following each the session did
- *   not follow yet; one it followed already is its own as well as the role's. Opened for another
- *   role than the one it holds claims for, it drops that role's claims first and answers the
- *   subjects only that role wanted, which the caller closes as it closes `close()`'s.
+ * - `open(role, sessionID)` claims every subject the role's topics expand to, following each the
+ *   session did not follow yet; one it followed already is its own as well as the role's. Opened
+ *   for another role than the one it holds claims for, it answers the subjects only that role
+ *   wanted and the new one does not name, which the caller closes as it closes `close()`'s; a
+ *   subject both name stays followed and becomes the new role's.
  * - `close()` drops every claim and answers the subjects only the role wanted, for the caller to
  *   stop following, each exactly, and to take out of the listener's registry.
  * - `claimOwn` and `releaseOwn` move a subject between the two when the session subscribes to,
@@ -150,16 +151,18 @@ export function readRoleTopics(value: string | undefined): RoleTopics {
  *   again until the role ends.
  */
 export interface RoleTopicFollows {
-  readonly open: (role: string) => readonly string[];
+  readonly open: (role: string, sessionID: string) => readonly string[];
   readonly close: () => readonly string[];
   readonly refuse: (subjects: readonly string[]) => void;
-  /** The session wants `subject` itself too; answers whether only the role wanted it before. */
-  readonly claimOwn: (subject: string) => boolean;
+  /** The session wants every subject of `topic` itself too; answers whether any of them was only
+   *  the role's before, which changes what the ledger records. */
+  readonly claimOwn: (topic: string) => boolean;
   /** The session no longer wants `subject` itself, though the role still does; answers whether it
    *  was the session's own as well, so what the ledger records changes. */
   readonly releaseOwn: (subject: string) => boolean;
-  /** The role `open` last claimed subjects for, until `close`. */
-  readonly role: () => string | undefined;
+  /** The role `open` last claimed subjects for, until `close`, and the session it was opened
+   *  for: a host move to another session leaves the claims of a role that session never held. */
+  readonly role: () => { readonly role: string; readonly sessionID: string } | undefined;
   /** Whether the role wants `subject`. */
   readonly has: (subject: string) => boolean;
   /** Whether only the role wants `subject`, so the session follows it for no reason of its own. */
@@ -184,7 +187,7 @@ export function createRoleTopicFollows(deps: RoleTopicFollowsDeps): RoleTopicFol
   const wanted = new Set<string>();
   const onlyRole = new Set<string>();
   const refused = new Set<string>();
-  let openedFor: string | undefined;
+  let openedFor: { readonly role: string; readonly sessionID: string } | undefined;
   let owed = false;
   const close = (): readonly string[] => {
     const closed = [...onlyRole];
@@ -196,24 +199,26 @@ export function createRoleTopicFollows(deps: RoleTopicFollowsDeps): RoleTopicFol
     return closed;
   };
   return {
-    open: (role) => {
-      // Another role's claims never outlive the role it holds them for: they are dropped here,
-      // and the subjects only that role wanted are the caller's to close.
-      const dropped = openedFor !== undefined && openedFor !== role ? close() : [];
-      openedFor = role;
+    open: (role, sessionID) => {
+      // Another role's claims never outlive the role it holds them for. A subject the new role
+      // also names stays followed and becomes its claim: dropping it here would unfollow and
+      // unregister a subject the new holder is meant to read, since `follow` answers nothing for
+      // a subject the session still follows.
+      const dropped = openedFor !== undefined && openedFor.role !== role ? close() : [];
+      openedFor = { role, sessionID };
       for (const topic of deps.roleTopics.topicsFor(role)) {
         const subjects = expandSubscriptionTopics([topic]);
         if (subjects.some((subject) => refused.has(subject))) continue;
         const added = new Set(deps.follow(topic));
         for (const subject of subjects) {
-          if (added.has(subject)) {
-            onlyRole.add(subject);
-            owed = true;
-          }
+          // Newly followed, or kept from the role this open replaced: the role's alone either
+          // way, since the session wants no subject it did not follow before this open.
+          if (added.has(subject) || dropped.includes(subject)) onlyRole.add(subject);
+          if (added.has(subject)) owed = true;
           wanted.add(subject);
         }
       }
-      return dropped;
+      return dropped.filter((subject) => !wanted.has(subject));
     },
     close,
     refuse: (subjects) => {
@@ -223,7 +228,13 @@ export function createRoleTopicFollows(deps: RoleTopicFollowsDeps): RoleTopicFol
         refused.add(subject);
       }
     },
-    claimOwn: (subject) => onlyRole.delete(subject),
+    claimOwn: (topic) => {
+      let claimed = false;
+      for (const subject of expandSubscriptionTopics([topic])) {
+        if (onlyRole.delete(subject)) claimed = true;
+      }
+      return claimed;
+    },
     releaseOwn: (subject) => {
       if (!wanted.has(subject) || onlyRole.has(subject)) return false;
       onlyRole.add(subject);

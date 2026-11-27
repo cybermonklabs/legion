@@ -152,7 +152,7 @@ describe("createRoleTopicFollows", () => {
 
   test("a subject the session already followed is its own as well as the role's", () => {
     const open = follows(ALERTS);
-    open.open("ops-owner");
+    open.open("ops-owner", "ses_a");
 
     // The role wants both; only BUILDS is the role's alone, so the role's end closes only it and
     // leaves the session's own ALERTS followed.
@@ -166,7 +166,7 @@ describe("createRoleTopicFollows", () => {
 
   test("an unsubscribe hands its own subject to the role, and a subscribe takes the role's", () => {
     const open = follows(ALERTS);
-    open.open("ops-owner");
+    open.open("ops-owner", "ses_a");
 
     // The session drops its own claim on ALERTS while the role holds it: it stays followed, now
     // for the role alone, so the role's end closes it.
@@ -190,7 +190,7 @@ describe("createRoleTopicFollows", () => {
       // The session follows the base itself, so the role's follow adds only `.>`.
       follow: (topic) => (topic === `${BASE}.>` ? [`${BASE}.>`] : []),
     });
-    open.open("ops-owner");
+    open.open("ops-owner", "ses_a");
     expect(open.subjects()).toEqual([BASE, `${BASE}.>`]);
     expect(open.roleOnly(BASE)).toBe(false);
     // The caller deletes each closed subject exactly, so the base stays followed.
@@ -200,29 +200,29 @@ describe("createRoleTopicFollows", () => {
   test("remembers the role it opened for, until the role's end", () => {
     const open = follows();
     expect(open.role()).toBeUndefined();
-    open.open("ops-owner");
-    expect(open.role()).toBe("ops-owner");
+    open.open("ops-owner", "ses_a");
+    expect(open.role()).toEqual({ role: "ops-owner", sessionID: "ses_a" });
     open.close();
     expect(open.role()).toBeUndefined();
   });
 
   test("opened for another role, it drops the first role's claims and answers what only that role wanted", () => {
     const open = follows(BUILDS);
-    expect(open.open("ops-owner")).toEqual([]);
+    expect(open.open("ops-owner", "ses_a")).toEqual([]);
     // The reviewer role names BUILDS alone, which the session follows itself: switching to it
     // drops ops-owner's claims, and ALERTS, which only ops-owner wanted, is the caller's to close.
-    expect(open.open("reviewer")).toEqual([ALERTS]);
-    expect(open.role()).toBe("reviewer");
+    expect(open.open("reviewer", "ses_a")).toEqual([ALERTS]);
+    expect(open.role()).toEqual({ role: "reviewer", sessionID: "ses_a" });
     expect(open.subjects()).toEqual([BUILDS]);
     expect(open.has(ALERTS)).toBe(false);
     // Opened for the role it holds already, it drops nothing.
-    expect(open.open("reviewer")).toEqual([]);
+    expect(open.open("reviewer", "ses_a")).toEqual([]);
   });
 
   test("owes a registration until one carries every subject it followed", () => {
     const open = follows();
     expect(open.owed()).toBe(false);
-    open.open("ops-owner");
+    open.open("ops-owner", "ses_a");
     expect(open.owed()).toBe(true);
     open.registered([ALERTS]);
     expect(open.owed()).toBe(true);
@@ -230,23 +230,23 @@ describe("createRoleTopicFollows", () => {
     expect(open.owed()).toBe(false);
     // A role the variable names no topic for follows nothing and owes nothing.
     open.close();
-    open.open("architect");
+    open.open("architect", "ses_a");
     expect(open.subjects()).toEqual([]);
     expect(open.owed()).toBe(false);
   });
 
   test("a refused subject leaves the role's and is not followed again until the role ends", () => {
     const open = follows();
-    open.open("ops-owner");
+    open.open("ops-owner", "ses_a");
     open.refuse([ALERTS]);
     expect(open.subjects()).toEqual([BUILDS]);
 
     // A later open of the same role does not ask for it again, so no heartbeat re-sends it.
-    open.open("ops-owner");
+    open.open("ops-owner", "ses_a");
     expect(open.subjects()).toEqual([BUILDS]);
     // The role's end forgets the refusal: the next hold asks for it once more.
     open.close();
-    open.open("ops-owner");
+    open.open("ops-owner", "ses_a");
     expect(open.subjects()).toEqual([ALERTS, BUILDS]);
   });
 });
