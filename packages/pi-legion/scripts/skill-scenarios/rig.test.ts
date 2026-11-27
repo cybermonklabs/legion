@@ -3909,7 +3909,10 @@ describe("score.ts cells", () => {
       }).toEqual({ bad, code: 2, said: true, out: "" });
     }
     const taken = cells('{"head\\troot-B-claude":1}');
-    expect({ code: taken.exitCode, stderr: taken.stderr.toString() }).toEqual({ code: 0, stderr: "" });
+    expect({ code: taken.exitCode, stderr: taken.stderr.toString() }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     expect({
       code: taken.exitCode,
       cell: JSON.parse(taken.stdout.toString().trim()),
