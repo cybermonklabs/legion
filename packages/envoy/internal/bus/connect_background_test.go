@@ -28,6 +28,7 @@ func stoppedNATS(t *testing.T) (*testnats.Server, string) {
 // reconciles the stream on its first connection: before WithConnectInBackground the constructor
 // failed, which ended envoy-dispatch's boot.
 func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnection(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithConnectInBackground())
 	if err != nil {
@@ -39,12 +40,12 @@ func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnect
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's first connection", client.Connected)
+	waitFor(t, "the client's first connection", client.Connected)
 	js, err := testnats.Connect(t, uri).JetStream()
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
-	waitFor(t, 15*time.Second, "the stream the client owns", func() bool {
+	waitFor(t, "the stream the client owns", func() bool {
 		_, err := js.StreamInfo(bus.Stream)
 		return err == nil
 	})
@@ -57,6 +58,7 @@ func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnect
 // for this client's own work. The stream alone proves less: another writer can leave it holding
 // what the test asks of it.
 func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithConnectInBackground())
 	if err != nil {
@@ -71,7 +73,7 @@ func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *tes
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's hooks to cover a connection event", func() bool {
+	waitFor(t, "the client's hooks to cover a connection event", func() bool {
 		return client.HookedConnectionEvents() >= 1
 	})
 	if _, err := client.JS().StreamInfo(bus.Stream); err != nil {
@@ -84,6 +86,7 @@ func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *tes
 // registration stays for the first connection to bind; the core subscription is sent by nats.go
 // as it connects, and SubscribeCore returns at once rather than waiting out the outage.
 func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	owner, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -121,18 +124,18 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's first connection", client.Connected)
+	waitFor(t, "the client's first connection", client.Connected)
 	publisher, err := bus.Connect([]string{uri})
 	if err != nil {
 		t.Fatalf("connect the publisher: %v", err)
 	}
 	t.Cleanup(publisher.Close)
 	publishOnce(t, publisher, "before-the-first-connection")
-	waitFor(t, 15*time.Second, "the JetStream subscription's delivery", func() bool { return streamed.Load() > 0 })
+	waitFor(t, "the JetStream subscription's delivery", func() bool { return streamed.Load() > 0 })
 	// Core NATS keeps nothing for a subscriber the server has not seen yet, and nats.go reports the
 	// connection CONNECTED a moment before the server has read the subscriptions it re-sent, so the
 	// lane is published to until the subscription has received one.
-	waitFor(t, 15*time.Second, "the core subscription's delivery", func() bool {
+	waitFor(t, "the core subscription's delivery", func() bool {
 		_ = publisher.Publish(contracts.Envelope{
 			EventID: "evt-core", Source: "agent", SourceEventID: "src-core", Topic: lane,
 			DedupeKey: "core-before-the-first-connection", IssuedAt: contracts.NowMillis(),
@@ -176,9 +179,9 @@ func TestAPublishBeforeTheFirstConnectionFailsWithinItsOwnDeadline(t *testing.T)
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's first connection", client.Connected)
+	waitFor(t, "the client's first connection", client.Connected)
 	// The stream is reconciled by the first connection's hook, which may still be running.
-	waitFor(t, 15*time.Second, "a publish after the first connection", func() bool {
+	waitFor(t, "a publish after the first connection", func() bool {
 		return client.Publish(envelope) == nil
 	})
 }
@@ -187,6 +190,7 @@ func TestAPublishBeforeTheFirstConnectionFailsWithinItsOwnDeadline(t *testing.T)
 // subscription made on it before it connects relays once it has: envoy-dispatch's agent
 // conversation relay takes its viewers' subscriptions on it while the bus is down.
 func TestDialInTheBackgroundRelaysACoreSubscriptionMadeBeforeItConnects(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	conn, err := bus.Dial("background-dial-test", []string{uri}, lookupOf(nil), bus.WithConnectInBackground())
 	if err != nil {
@@ -203,9 +207,9 @@ func TestDialInTheBackgroundRelaysACoreSubscriptionMadeBeforeItConnects(t *testi
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the connection's first connection", conn.IsConnected)
+	waitFor(t, "the connection's first connection", conn.IsConnected)
 	publisher := testnats.Connect(t, uri)
-	waitFor(t, 15*time.Second, "the relayed message", func() bool {
+	waitFor(t, "the relayed message", func() bool {
 		_ = publisher.Publish(subject, []byte("frame"))
 		_ = publisher.Flush()
 		return relayed.Load() > 0
@@ -289,7 +293,7 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 
-	waitFor(t, 15*time.Second, "the refusal's line", func() bool { return logs.count(name, refusal) > 0 })
+	waitFor(t, "the refusal's line", func() bool { return logs.count(name, refusal) > 0 })
 	if line := logs.lineAt("ERROR", refusal); line == "" || !strings.Contains(strings.ToLower(line), "authorization violation") {
 		t.Fatalf("the refusal is not an ERROR naming the server's answer:\n%s", logs.String())
 	}
@@ -302,7 +306,7 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 		t.Fatal("the client gave its connection up over a refused credential")
 	}
 	clock.Advance(time.Minute)
-	waitFor(t, 15*time.Second, "the next minute's refusal line", func() bool { return logs.count(name, refusal) == 2 })
+	waitFor(t, "the next minute's refusal line", func() bool { return logs.count(name, refusal) == 2 })
 	if client.Connected() {
 		t.Fatal("a client whose credential is refused reports itself connected")
 	}
@@ -319,7 +323,7 @@ func TestASilentCutIsNoticedWithinSecondsAndHealsWhenTrafficResumes(t *testing.T
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	waitFor(t, 15*time.Second, "the client's connection", client.Connected)
+	waitFor(t, "the client's connection", client.Connected)
 
 	thaw := srv.Freeze(t)
 	// Cleanups run last-in first-out, so this thaw precedes the server's shutdown.
@@ -334,5 +338,5 @@ func TestASilentCutIsNoticedWithinSecondsAndHealsWhenTrafficResumes(t *testing.T
 	t.Logf("the cut was noticed %s after it began", time.Since(cut))
 
 	thaw()
-	waitFor(t, 15*time.Second, "the client to reconnect once the traffic moves again", client.Connected)
+	waitFor(t, "the client to reconnect once the traffic moves again", client.Connected)
 }

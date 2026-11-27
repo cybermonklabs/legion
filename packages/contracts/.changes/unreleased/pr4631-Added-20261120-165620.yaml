@@ -1,0 +1,5 @@
+kind: Added
+body: The Dispatch API types hold `POST /api/v1/issues/{key}/status-change`, its answer and its refusals, and the refusal shape carries `issues` and `changed`. The tool `dispatch_issue_update` takes `include_children`, `unlink_children` and `include_parent`, and `dispatch_issues` takes `json`.
+time: 2026-11-20T16:56:20.229915471Z
+custom:
+    Issue: pr4631

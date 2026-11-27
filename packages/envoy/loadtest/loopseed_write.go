@@ -16,7 +16,9 @@ package main
 //
 // A refusal is data, not a failure: a 413, a 400 CAP_EXCEEDED or any other non-2xx answer is
 // counted by route and error code, every object it left unwritable that the id map does not
-// already hold is counted as skipped, and the run goes on. Only a failure of the id map itself
+// already hold is counted as skipped, and the run goes on. A write that landed with no answer to
+// give (a 409 KEY_COMMITTED, or a replayed 2xx reading ANSWER_NOT_KEPT) is no refusal: what it
+// made is read back from Dispatch and recorded as written. Only a failure of the id map itself
 // stops a run, since without it a resume would write everything again.
 //
 // The writer never holds the whole seed. A worker takes one proposal at a time off a channel and
@@ -32,6 +34,7 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -465,12 +468,23 @@ type loopSend struct {
 	// accept lists the statuses other than 2xx this write takes as the object existing.
 	accept  []int
 	localID func(body []byte) string
+	// match finds what the write made when it landed with no answer to give
+	// (callResult.landed): readBack's element whose field match holds what the write's body holds
+	// under match. Every title, name and body the seed writes is one object's own. An empty match is
+	// a write whose localID reads no answer at all (a resolve, the project).
+	match string
 }
+
+// loopLandedUnread is the code a write that landed is counted under when the read of what it
+// made finds no object the run can name: the object is there and unrecorded, so what hangs off it
+// is skipped, and a resume sends the write again under its key.
+const loopLandedUnread = "LANDED_UNREAD"
 
 // send writes one object the id map does not hold yet, under its idempotency key, and records it.
 // It answers the object's local id and whether the object exists now; a refusal is counted by
 // route and code and answers false, which leaves the caller to count what the object would have
-// held as skipped. The error it returns is the run's context or the id map's: nothing else stops
+// held as skipped. A write that landed with no answer to give is recorded as written, with the id
+// readBack finds. The error it returns is the run's context or the id map's: nothing else stops
 // a run.
 func (w *loopWriter) send(ctx context.Context, s loopSend) (string, bool, error) {
 	if local, ok := w.ids.get(s.path); ok {
@@ -482,14 +496,25 @@ func (w *loopWriter) send(ctx context.Context, s loopSend) (string, bool, error)
 		// about the write, so it is not counted as a refusal.
 		return "", false, ctx.Err()
 	}
+	landed := res.landed()
 	accepted := res.err == nil && slices.Contains(s.accept, res.status)
-	if !res.ok() && !accepted {
+	if !res.ok() && !accepted && !landed {
 		w.refuse(s, res.status, loopAnswerCode(res))
 		return "", false, nil
 	}
-	local := s.localID(res.body)
+	local, code := s.localID(res.body), "NO_ID"
+	if landed && s.match != "" {
+		found, err := w.readBack(ctx, s)
+		if ctx.Err() != nil {
+			return "", false, ctx.Err()
+		}
+		if err != nil {
+			w.lg.Printf("%s landed (%d), and the read of what it made failed: %v", s.path, res.status, err)
+		}
+		local, code = found, loopLandedUnread
+	}
 	if local == "" {
-		w.refuse(s, res.status, "NO_ID")
+		w.refuse(s, res.status, code)
 		return "", false, nil
 	}
 	if err := w.ids.put(ctx, s.kind, s.path, local); err != nil {
@@ -497,6 +522,33 @@ func (w *loopWriter) send(ctx context.Context, s loopSend) (string, bool, error)
 	}
 	w.record(s.kind, s.bytes, time.Duration(res.end-res.start))
 	return local, true, nil
+}
+
+// readBack finds what a landed write made in the list the GET of its own route answers - the
+// project's issues for an issue create, the issue's documents or comments for theirs, each of
+// which holds every object of its kind - as the element whose field s.match holds what s.body
+// holds under s.match: its key for an issue, else its id; "" when no element is.
+func (w *loopWriter) readBack(ctx context.Context, s loopSend) (string, error) {
+	path, id := s.url, "id"
+	if s.kind == loopKindIssue {
+		path, id = s.url+"?project="+url.QueryEscape(w.project), "key"
+	}
+	res := w.api.callRetry(ctx, "GET", path, who{}, nil)
+	if !res.ok() {
+		return "", fmt.Errorf("GET %s: %d %s", path, res.status, loopAnswerCode(res))
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(res.body, &rows); err != nil {
+		return "", fmt.Errorf("GET %s: %w", path, err)
+	}
+	want, _ := s.body.(map[string]any)[s.match].(string)
+	for _, row := range rows {
+		var got, local string
+		if json.Unmarshal(row[s.match], &got) == nil && got == want && json.Unmarshal(row[id], &local) == nil {
+			return local, nil
+		}
+	}
+	return "", nil
 }
 
 // loopAnswerCode names an answer the seed could not use: the error code Dispatch's body names, as
@@ -638,6 +690,7 @@ func (w *loopWriter) proposal(ctx context.Context, index int) error {
 		body: map[string]any{"project": w.project, "title": loopIssueTitle(pr),
 			"spec": loopIssueSpec(pr), "force": true, "actor": loopSeedActorBody},
 		localID: localOfKey,
+		match:   "title",
 	})
 	if err != nil {
 		return err
@@ -700,6 +753,7 @@ func (w *loopWriter) part(ctx context.Context, key string, proposal, part int) e
 			fmt.Sprintf("part %03d of the Verified Linux spec loop's seed", part+1)),
 		bytes:   int64(len(text)),
 		localID: idOf,
+		match:   "name",
 	})
 	if err != nil {
 		return err
@@ -761,6 +815,7 @@ func (w *loopWriter) thread(ctx context.Context, key, doc string, th loopThread)
 			"anchor": map[string]any{"artifact": doc, "quote": th.Quote}},
 		bytes:   int64(len(body)),
 		localID: idOf,
+		match:   "body",
 	})
 	if err != nil {
 		return err
@@ -783,6 +838,7 @@ func (w *loopWriter) thread(ctx context.Context, key, doc string, th loopThread)
 				"actor": loopSeedActorBody},
 			bytes:   int64(len(reply)),
 			localID: idOf,
+			match:   "body",
 		}); err != nil {
 			return err
 		}
@@ -814,6 +870,7 @@ func (w *loopWriter) review(ctx context.Context, key string, proposal int) error
 				fmt.Sprintf("review page %04d of proposal %04d", page.Index+1, proposal)),
 			bytes:   int64(len(text)),
 			localID: idOf,
+			match:   "name",
 		}); err != nil {
 			return err
 		}
@@ -831,6 +888,7 @@ func (w *loopWriter) review(ctx context.Context, key string, proposal int) error
 			fmt.Sprintf("the review index of proposal %04d", proposal)),
 		bytes:   int64(len(text)),
 		localID: idOf,
+		match:   "name",
 	})
 	return err
 }

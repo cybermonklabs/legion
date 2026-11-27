@@ -19,22 +19,59 @@ import (
 
 const requestTimeout = 10 * time.Second
 
-// HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
+// HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
+// transport it was made with (New).
 type HTTPClient struct {
 	baseURL    string
-	token      string
 	timeout    time.Duration
 	httpClient *http.Client
 }
 
-// New creates a client for one Dispatch server. The token is sent only as a bearer header.
-func New(baseURL, token string) *HTTPClient {
+// New creates a client for one Dispatch server whose every request goes through transport, which
+// presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
+// under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
+// client sets no Authorization of its own.
+func New(baseURL string, transport http.RoundTripper) *HTTPClient {
 	return &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		token:      token,
 		timeout:    requestTimeout,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: transport},
 	}
+}
+
+// BearerTransport is a RoundTripper that sends each request through base (http.DefaultTransport
+// when nil) with `Authorization: Bearer <token>` and changes nothing else, so a request goes on the
+// wire as it did when the client set the header itself. A redirect to another host name than the
+// request was made to is sent without it, as Go's client sent no Authorization header its caller
+// set on such a redirect: the bearer reaches Dispatch's host and no other. Go's client also kept
+// it on a redirect to a subdomain of that host; this does not.
+func BearerTransport(token string, base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return bearerTransport{authorization: "Bearer " + token, base: base}
+}
+
+type bearerTransport struct {
+	authorization string
+	base          http.RoundTripper
+}
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	presented := r.Clone(r.Context())
+	if strings.EqualFold(r.URL.Hostname(), firstRequest(r).URL.Hostname()) {
+		presented.Header.Set("Authorization", b.authorization)
+	}
+	return b.base.RoundTrip(presented)
+}
+
+// firstRequest is the request the caller made that r is a redirect of, or r itself: Go's client
+// sets each redirect's Response to the answer that redirected it, whose Request is the one before.
+func firstRequest(r *http.Request) *http.Request {
+	for r.Response != nil && r.Response.Request != nil {
+		r = r.Response.Request
+	}
+	return r
 }
 
 // ListIssues reads GET /api/v1/issues?project=<project>. Dispatch accepts one status filter, so
@@ -66,6 +103,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Status:       issue.Status,
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
+			Priority:     issue.Priority,
 			HandedOver:   CarriesLegionLabel(issue.Labels),
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
@@ -243,6 +281,27 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 	}, nil)
 }
 
+// PutStepExperiment writes the experiment and the variant of the record's issue onto the record id
+// of the issue key, through the record's experiment route, PUT
+// /api/v1/issues/{key}/steps/{id}/experiment, as the daemon's own session. The body is the run's
+// identity out of write, of which Dispatch sets each field the record does not hold yet and keeps
+// each it holds, and the pair, and no other field: the start, the end and the rating are the
+// record's own writes, which the outbox sends first (publishStepRecord), so a Dispatch older than
+// this route takes the record and only the pair waits. The pair has a route of its own because the
+// step route and the rating route ignore a member they do not declare, so a pair sent there would
+// be answered 200 and lost. Dispatch answers the step route's refusals, and 400 STEP_INPUT for a
+// pair off its rule; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on.
+func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, write StepWrite, experiment StepExperiment) error {
+	identity := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/experiment", stepExperimentWrite{
+		StepWrite:      identity,
+		StepExperiment: experiment,
+		Actor:          daemonActor(key),
+	}, nil)
+}
+
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
 // issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
 // the route takes a plan of the issue from. The write appends no event and notifies nobody. The
@@ -331,21 +390,24 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it (eventPage): each event in the shape its
 // durable stream carries, so the boot catch-up applies each through the live decoder, with its own
-// sequence. A page that does not ascend past the last sequence read is refused, and so is a page
-// eventPage refuses: one whose events do not decode, or whose created_at is not a time.
+// sequence. A page that holds an event the client cannot read fails the read with an
+// *EventLogError naming that event's place in the log read: an event that does not decode, or
+// whose created_at is not a time (eventPage), or whose seq is not above the sequence read before
+// it.
 func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) ([]Event, error) {
 	events := []Event{}
 	for {
 		query := url.Values{}
 		query.Set("after", fmt.Sprint(after))
 		query.Set("limit", fmt.Sprint(eventPageLimit))
-		page, err := c.eventPage(ctx, key, query)
+		page, err := c.eventPage(ctx, key, query, len(events))
 		if err != nil {
 			return nil, err
 		}
-		for _, event := range page {
+		for i, event := range page {
 			if event.Seq <= after {
-				return nil, fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)
+				return nil, &EventLogError{Event: len(events) + i + 1, Seq: event.Seq,
+					Err: fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)}
 			}
 			after = event.Seq
 		}
@@ -356,28 +418,51 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 	}
 }
 
+// EventLogError is the error for an event of an issue's Dispatch event log that the daemon cannot
+// read. EventsAfter gives it for an event of a page that it cannot read: an event that does not
+// decode, or whose created_at is not a time (eventPage), or whose seq is not above the sequence
+// read before it. The intake's walk of the log (walkIssueEvents in internal/intake) gives it for
+// an issue event whose payload it cannot decode. Event is the event's place in the log read,
+// counted from 1. Seq is the event's sequence where the event decoded, and 0 where it did not. Err
+// names the cause in fixed text, which quotes no value of the event, and, from EventsAfter, the
+// issue; Error returns its text.
+type EventLogError struct {
+	Event int
+	Seq   int64
+	Err   error
+}
+
+func (e *EventLogError) Error() string { return e.Err.Error() }
+func (e *EventLogError) Unwrap() error { return e.Err }
+
 const eventPageLimit = 200
 
 // eventPage reads one page of the issue's event log, GET /api/v1/issues/{key}/events?<query>, in
-// the order query asks for. Each event's members, its created_at among them, are decoded through
-// the answer (Answer.Decode), so a member that does not decode is named in fixed text, and its
-// created_at is Dispatch's words held with the request's record, read as an RFC 3339 time: one
-// that is not a time is refused naming the event's place in the page and the member, never the
-// value. An absent, null or empty created_at is the zero time. Each event's payload is the
-// answer's data (Answer.StreamTo), which the event's reader decodes by the event's type.
-func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values) ([]Event, error) {
+// the order query asks for, read events of the log having been read before it. Each event's
+// members, its created_at among them, are decoded through the answer (Answer.Decode), so a member
+// that does not decode is named in fixed text, and its created_at is Dispatch's words held with
+// the request's record, read as an RFC 3339 time: one that is not a time is refused naming the
+// event's place in the page and the member, never the value. An absent, null or empty created_at
+// is the zero time. Each event's payload is the answer's data (Answer.StreamTo), which the event's
+// reader decodes by the event's type. An event that does not decode, or whose created_at is not a
+// time, is an *EventLogError naming its place in the log read (undecodedEvent).
+func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values, read int) ([]Event, error) {
 	path := "/api/v1/issues/" + url.PathEscape(key) + "/events?" + query.Encode()
 	answer, err := c.answer(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
-	var page []answeredEvent
-	if err := answer.Decode(&page); err != nil {
-		return nil, fmt.Errorf("decode Dispatch GET %s response: %w", path, err)
-	}
 	var body bytes.Buffer
 	if _, err := answer.StreamTo(&body); err != nil {
 		return nil, fmt.Errorf("read Dispatch GET %s response: %w", path, err)
+	}
+	var page []answeredEvent
+	if err := answer.Decode(&page); err != nil {
+		err = fmt.Errorf("decode Dispatch GET %s response: %w", path, err)
+		if place := undecodedEvent(body.Bytes()); place > 0 {
+			return nil, &EventLogError{Event: read + place, Err: err}
+		}
+		return nil, err
 	}
 	var payloads []struct {
 		Payload json.RawMessage `json:"payload"`
@@ -386,15 +471,35 @@ func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values
 		return nil, fmt.Errorf("decode Dispatch GET %s response's payloads: %w", path, oauth2call.DecodeError(err, body.Bytes(), &payloads))
 	}
 	events := make([]Event, len(page))
-	for i, read := range page {
-		at, ok := read.createdAt()
+	for i, answered := range page {
+		at, ok := answered.createdAt()
 		if !ok {
-			return nil, fmt.Errorf("decode Dispatch GET %s response: event %d of the page, at sequence %d, names a created_at that is not an RFC 3339 time (the value is not printed)",
-				path, i+1, read.Seq)
+			return nil, &EventLogError{Event: read + i + 1, Seq: answered.Seq, Err: fmt.Errorf(
+				"decode Dispatch GET %s response: event %d of the page, at sequence %d, names a created_at that is not an RFC 3339 time (the value is not printed)",
+				path, i+1, answered.Seq)}
 		}
-		events[i] = read.event(at, payloads[i].Payload)
+		events[i] = answered.event(at, payloads[i].Payload)
 	}
 	return events, nil
+}
+
+// undecodedEvent is the place, counted from 1, of the first event of page, the body of an answer
+// whose events Answer.Decode refused, that does not decode as an event; 0 where the body is no
+// JSON list, or where every event decodes alone. It decodes each event as the durable stream's
+// bytes (streamEvent), whose members take the JSON kinds an answered event's take, only to find
+// the place: the refusal itself is Answer.Decode's, whose text names the member and no value.
+func undecodedEvent(page []byte) int {
+	var events []json.RawMessage
+	if json.Unmarshal(page, &events) != nil {
+		return 0
+	}
+	for i, raw := range events {
+		var event streamEvent
+		if json.Unmarshal(raw, &event) != nil {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // MessageBodiesSince reads newest-first issue events, page by page (eventPage), until the bounded
@@ -402,9 +507,13 @@ func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values
 // most the first part of a long body (contracts.DispatchEventBodyMax) and say so with
 // body_truncated; the whole of such a body is read from GET /api/v1/issues/{key}/messages/{id},
 // since the outbox's marker closes a body and the cut would drop it. A message.created payload
-// that does not decode is named in fixed text (oauth2call.DecodeError), never json's error.
+// that does not decode is named in fixed text (oauth2call.DecodeError), never json's error. A
+// message its author deleted keeps its message.created event, whose every read carries deleted_at
+// and no body: it is no notice the outbox posted, so the read passes over it, and any other event
+// with no body is still refused.
 func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error) {
 	before := int64(0)
+	read := 0
 	bodies := []string{}
 	for {
 		query := url.Values{}
@@ -413,10 +522,11 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 		if before != 0 {
 			query.Set("before", fmt.Sprint(before))
 		}
-		events, err := c.eventPage(ctx, key, query)
+		events, err := c.eventPage(ctx, key, query, read)
 		if err != nil {
 			return nil, err
 		}
+		read += len(events)
 		if len(events) == 0 {
 			return bodies, nil
 		}
@@ -428,12 +538,16 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 				continue
 			}
 			var message struct {
-				ID            string `json:"id"`
-				Body          string `json:"body"`
-				BodyTruncated bool   `json:"body_truncated"`
+				ID            string          `json:"id"`
+				Body          string          `json:"body"`
+				BodyTruncated bool            `json:"body_truncated"`
+				DeletedAt     json.RawMessage `json:"deleted_at"`
 			}
 			if err := json.Unmarshal(event.Payload, &message); err != nil {
 				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, oauth2call.DecodeError(err, event.Payload, &message))
+			}
+			if len(message.DeletedAt) > 0 && string(message.DeletedAt) != "null" {
+				continue
 			}
 			if message.Body == "" {
 				return nil, fmt.Errorf("decode message.created event %d for %s: payload body is required", event.Seq, key)
@@ -652,6 +766,16 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 	return response.handoff(), nil
 }
 
+// Whoami reads GET /api/v1/whoami: who Dispatch takes this client's credential for. The boot reads
+// it under dispatch_token_broker, to refuse a broker token whose writes Dispatch would refuse.
+func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
+	var caller Caller
+	if err := c.request(ctx, http.MethodGet, "/api/v1/whoami", nil, &caller); err != nil {
+		return Caller{}, err
+	}
+	return caller, nil
+}
+
 // request sends one request to Dispatch (answer) and decodes its 2xx answer into into through the
 // answer (Answer.Decode), whose error names the member that did not decode and quotes no value; a
 // nil into reads nothing of the answer.
@@ -688,7 +812,6 @@ func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) 
 		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -782,6 +905,7 @@ type issueSummaryResponse struct {
 	Status       string         `json:"status"`
 	Parent       *string        `json:"parent"`
 	Rank         string         `json:"rank"`
+	Priority     *int           `json:"priority"`
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
@@ -796,6 +920,7 @@ type issueResponse struct {
 	Status            string         `json:"status"`
 	Parent            *string        `json:"parent"`
 	Rank              string         `json:"rank"`
+	Priority          *int           `json:"priority"`
 	Labels            []string       `json:"labels"`
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
@@ -813,6 +938,7 @@ func (r issueResponse) issue() Issue {
 		Status:            r.Status,
 		Parent:            r.Parent,
 		Rank:              r.Rank,
+		Priority:          r.Priority,
 		Labels:            r.Labels,
 		HandedOver:        CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID: r.PrimaryArtifactID,
@@ -976,6 +1102,14 @@ type stepWrite struct {
 type stepRatingWrite struct {
 	StepWrite
 	PlanRating
+	Actor actor `json:"actor"`
+}
+
+// stepExperimentWrite is the body of a variant's write: the run's identity, the experiment and the
+// variant, and the daemon's actor.
+type stepExperimentWrite struct {
+	StepWrite
+	StepExperiment
 	Actor actor `json:"actor"`
 }
 

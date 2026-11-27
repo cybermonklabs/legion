@@ -25,7 +25,7 @@ func TestAnApprovalWhoseTimeDoesNotParseIsRefusedWithoutItsText(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, bearer).Approval(context.Background(), "artifact-6")
+	_, err := New(server.URL, BearerTransport(bearer, nil)).Approval(context.Background(), "artifact-6")
 
 	if err == nil || !strings.Contains(err.Error(), `artifact "artifact-6"`) || !strings.Contains(err.Error(), "RFC 3339") {
 		t.Fatalf("Approval = %v, want a refusal naming the artifact and its approval time", err)

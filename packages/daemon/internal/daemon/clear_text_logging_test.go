@@ -498,16 +498,19 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 			},
 		},
 		{
-			// readMergeState's error in a read after the ladder, a follow of head code: the pull
-			// request read GitHub answered 500.
-			name: "merge_state_reads.go:followMergeState github: a merge state read after the ladder", capture: "sink/daemon/merge_state_reads.go/followMergeState",
-			message: followRead, level: "WARN", keys: []string{"error"},
-			holds: []string{`"answered":"no answer"`, "GET /pulls/86 with 500", "[redacted]"},
+			// readChunk's error in the reads of a base, which take up a follow of head code after its
+			// ladder (followOnBase): the merge-state query GitHub answered 500.
+			name: "merge_state_batches.go:readChunk github: read the merge state of the open pull requests on a base whose reads were asked for", capture: "sink/daemon/merge_state_batches.go/readChunk",
+			message: sinkBaseReadFailed, level: "WARN", keys: []string{"error"},
+			holds: []string{"POST /graphql with 500", "[redacted]"},
 			drive: func(t *testing.T, log *sinkLog) (string, *sinkServer) {
-				github := newSinkServer(t, map[string]sinkRoute{"/repos/acme/widgets/pulls/86": sinkRefusal(http.StatusInternalServerError)})
-				w := sinkReadRuntime(seededCapture(t), github, log.logger())
+				github := newSinkServer(t, map[string]sinkRoute{"/graphql": sinkRefusal(http.StatusInternalServerError)})
+				pool := seededCapture(t)
+				w := sinkReadRuntime(pool, github, log.logger())
 				w.mergeStateRetry = 10 * time.Millisecond
-				sinkLadder(t, w, func() { w.queueMergeStateFollow("CAPTURE-1", "code") }, func() bool { return log.holds(followRead) })
+				follow := recordedPull(t, pool, "CAPTURE-1")
+				follow.Base = "main"
+				sinkLadder(t, w, func() { w.queueMergeStateFollow("CAPTURE-1", follow) }, func() bool { return log.holds(sinkBaseReadFailed) })
 				return plantedToken, github
 			},
 		},
@@ -521,7 +524,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				rig := newStepRecordRig(t, nil)
 				server := newSinkServer(t, map[string]sinkRoute{"/api/v1/issues/" + stepIssue + "/steps/" + stepRecordID: sinkDispatchRefusal()})
 				rig.runner.log = log.logger()
-				rig.runner.dispatch = dispatch.New(server.URL, plantedToken)
+				rig.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport(plantedToken, nil))
 				rig.run()
 				if left := rig.left(); left != 0 {
 					t.Fatalf("rows left after Dispatch refused the record = %d, want none", left)
@@ -556,7 +559,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				listing := newSinkServer(t, map[string]sinkRoute{"/api/v1/issues": sinkAnswer(`[{"key":"CAPTURE-2","title":"CAPTURE-2","status":"todo","labels":["legion"],"resolved_repo":"acme/widgets"}]`)})
 				repos := newRepositories("CAPTURE", ghrepo.Renames{})
 				w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, dispatchProject: "CAPTURE",
-					dispatch: dispatch.New(listing.URL, plantedToken), installs: &installations{}, repositories: repos, log: log.logger(),
+					dispatch: dispatch.New(listing.URL, dispatch.BearerTransport(plantedToken, nil)), installs: &installations{}, repositories: repos, log: log.logger(),
 					defaultBranches: newDefaultBranches(sinkTokens{}, repos, github.URL, defaultBranchTTL, time.Now)}
 				w.leaveForRecovery(ghrepo.MustParse("acme/widgets"))
 				w.recoverRepositories(context.Background())
@@ -682,6 +685,10 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 		})
 	}
 }
+
+// sinkBaseReadFailed is the line readChunk logs when the merge-state query of a base's reads
+// failed.
+const sinkBaseReadFailed = "github: read the merge state of the open pull requests on a base whose reads were asked for; their records stand as they were, and they are read again"
 
 // sinkLadder runs w's merge-state reader until done holds, after queue asks it for a ladder, then
 // stops it and waits for every ladder it started to end.

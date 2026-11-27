@@ -15,9 +15,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// defaultTask is the id of the one task of an issue whose owner gives no plan (plan.DefaultTask):
-// the task of the project's default steps, and of today's steps of a run with no plan rows
-// (todaysSteps), under which the steps of each are recorded.
+// defaultTask is the id of the one task of an issue whose owner gives no plan, or whose
+// experiment's group takes none (plan.DefaultTask): the task of the project's default steps, and
+// of today's steps of a run with no plan rows (todaysSteps), under which the steps of each are
+// recorded.
 const defaultTask = plan.DefaultTask
 
 // StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one
@@ -180,8 +181,12 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
 	// and the end reads back, so the start and the end write one moment (endRun).
 	now := e.now().Truncate(time.Microsecond)
+	drawn, err := e.variantOf(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
 	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
-		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
+		write := stepWrite(issue, drawn, step.place, step.role, step.typ, string(agent), starts)
 		write.StartedAt = new(now)
 		return write
 	})
@@ -208,8 +213,12 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 	if !ok {
 		return nil
 	}
-	_, err := e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
-		return stepWrite(before, step.place, step.role, step.typ, start.Agent, start.Starts)
+	drawn, err := e.variantOf(ctx, tx, before.Key)
+	if err != nil {
+		return err
+	}
+	_, err = e.endRun(ctx, tx, before.Key, step.place, end, func(start record.StepStart) record.StepRecord {
+		return stepWrite(before, drawn, step.place, step.role, step.typ, start.Agent, start.Starts)
 	})
 	return err
 }
@@ -271,7 +280,11 @@ func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil || latest.Run != record.RunEnded {
 		return err
 	}
-	write := stepWrite(issue, step.place, step.role, step.typ, latest.Agent, latest.Starts)
+	drawn, err := e.variantOf(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	write := stepWrite(issue, drawn, step.place, step.role, step.typ, latest.Agent, latest.Starts)
 	write.Report = new(report)
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
@@ -359,7 +372,7 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 // store records it, and a claim whose start is only queued does not hold its role yet
 // (record.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
 // move into accepting, which starts a failed child architect again (reviveArchitect), and a
-// re-admission's promotion, which brings back a member's suspended architect (admit's
+// re-admitted tree's first run, which brings back a member's suspended architect (admit's
 // startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
 // signs it off. The start is one of no phase or of accepting (architectStartQueued).
 //
@@ -405,11 +418,29 @@ func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, er
 	return claim.NewToken(project, key, role)
 }
 
-// stepWrite is the identity of one run of a step of issue: the fields every write of its record
-// carries.
-func stepWrite(issue record.Issue, place record.StepPlace, role stepRole, typ plan.Type, agent string, starts int64) record.StepRecord {
+// stepWrite is the identity of one run of a step of issue, the fields every write of its record
+// carries, and drawn, the experiment and the variant of issue's group (variantOf), nil for an issue
+// of no group. Every write of a step record is built here, and each caller reads drawn with
+// variantOf first, so each write names its issue's variant. A nil drawn compiles, so the compiler
+// holds no caller to that read: TestEachStepRecordNamesTheVariantOfItsIssue holds the start, the
+// end, the rating and the late report, and TestTheStartTheBootOpensNamesTheVariantOfItsIssue the
+// start the boot opens (OpenUncountedRuns).
+func stepWrite(issue record.Issue, drawn *record.StepExperiment, place record.StepPlace, role stepRole, typ plan.Type, agent string, starts int64) record.StepRecord {
 	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,
-		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation}
+		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation,
+		StepExperiment: drawn}
+}
+
+// variantOf is the experiment and the variant of issue's group, the row of its draw that says how
+// it is done (groupOf), as a step record names them: nil for an issue of no group, whose records
+// name neither. The row was written once, at the issue's draw, so every record of the issue names
+// the one variant it was drawn into, whatever the project's settings say now.
+func (e *Engine) variantOf(ctx context.Context, tx pgx.Tx, issue string) (*record.StepExperiment, error) {
+	group, err := e.groupOf(ctx, tx, issue)
+	if err != nil || group.Experiment == "" || group.Variant == "" {
+		return nil, err
+	}
+	return &record.StepExperiment{Experiment: group.Experiment, Variant: group.Variant}, nil
 }
 
 // readAgent is what the daemon reads of agent now (Config.StepAgent), in the fact's transaction

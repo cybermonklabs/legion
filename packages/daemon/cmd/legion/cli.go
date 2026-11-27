@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -54,6 +55,7 @@ func newRoot(stdout, stderr io.Writer) *cobra.Command {
 		),
 		newRestartCommand(own),
 		newClaimsCommand(stdout, own),
+		newIntakeCommand(stdout, own),
 		newProjectCommand(stdout, own),
 		group(&cobra.Command{Use: "sessions", Short: "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
 			newSessionsImportCommand(stdout, own),
@@ -130,10 +132,18 @@ func newHelpCommand() *cobra.Command {
 // run is `legion` on argv, its exit status what the command answered. A usage error, cobra's or a
 // command's own, exits 2 and names the command and the help that says how to call it; an old form
 // of a command that moved exits 2 and names the new one (movedForm) before cobra reads anything.
+// A build whose contract registry cannot be built runs no command at all, and is refused before
+// the command tree is made, since some flags' defaults read this build's contract: its stamp does
+// not name exactly the entries it registers, so its contract numbers would name other entries
+// than every other build's, and it exits 1 naming each difference (api.ContractRegistryError).
 // What run prints itself goes to the root's stderr, through the URL rule as every command's does
-// (newRoot).
+// (newRoot), and so does that refusal.
 func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	args := argv[1:]
+	if err := api.ContractRegistryError(); err != nil {
+		fmt.Fprintf(redact.Writer(stderr), "legion: %v\n", err)
+		return 1
+	}
 	root := newRoot(stdout, stderr)
 	if message, moved := movedForm(args); moved {
 		fmt.Fprintln(root.ErrOrStderr(), message)

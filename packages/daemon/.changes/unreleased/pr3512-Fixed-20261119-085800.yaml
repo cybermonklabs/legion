@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The outbox's read of an issue's recent messages passes over a message its author deleted, which
+  Dispatch serves with deleted_at and no body, where it refused the whole read and left the outbox
+  row retrying for as long as the deleted message stood inside its window. Any other message event
+  with no body is still refused. Run this release on every deployment's daemon before the Dispatch
+  build that lets an author delete an issue message deploys.
+time: 2026-11-19T08:58:00.000000000Z
+custom:
+    Issue: pr3512

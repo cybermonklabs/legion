@@ -5,12 +5,16 @@
 #
 # Two modes, after dispatch-browser-samples.sh's two:
 #
-#   .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>
+#   .github/scripts/dispatch-browser-run-reads.sh jobs <out-file> <job>
 #   .github/scripts/dispatch-browser-run-reads.sh blobs-refused
 #
 # `jobs` reads this run's own attempt's jobs and writes <out-file>: the array of
 # {id, name, conclusion, leg} that the merge job's two readings consume - reading one for the
-# legs that owed a blob report, reading three for the legs that did not succeed.
+# legs that owed a blob report, reading three for the legs that did not succeed. <job> is the id
+# of the job that calls dispatch-browser.yaml, the merge job's `${{ inputs.job }}`: GitHub names
+# each job of a called workflow `<caller> / <job>`, and a pull request labelled full-ci runs
+# ci.yaml's two callers of this workflow in one run, so only the jobs named under this caller
+# are this lane's.
 #
 # `blobs-refused` writes no file and makes no request. It prints the one `::error::` line for a
 # blob download `actions/download-artifact` could not complete and exits 0: that step has
@@ -66,7 +70,7 @@
 # rows" sets GH_TOKEN in its `env:`, a key ci_filter_coverage.py's ENV_ALLOWED holds - and never
 # from an argument, which every process of the runner can read on the command line.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>, or
+# Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file> <job>, or
 # .github/scripts/dispatch-browser-run-reads.sh blobs-refused
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows" for the
 # `jobs` mode and at the step "Report a refused blob download as a refused read" for
@@ -80,9 +84,10 @@ source "$script_dir/gh-read.sh"
 
 usage() {
   echo "::error::dispatch-browser-run-reads.sh takes a mode and its arguments:" \
-    ".github/scripts/dispatch-browser-run-reads.sh jobs <out-file>, which writes this run's" \
-    "attempt's jobs, or .github/scripts/dispatch-browser-run-reads.sh blobs-refused, which" \
-    "prints the line for a blob download that could not be completed. It was given: $*"
+    ".github/scripts/dispatch-browser-run-reads.sh jobs <out-file> <job>, which writes this" \
+    "run's attempt's jobs under the caller <job>, or .github/scripts/dispatch-browser-run-reads.sh" \
+    "blobs-refused, which prints the line for a blob download that could not be completed. It" \
+    "was given: $*"
   exit 1
 }
 
@@ -165,8 +170,9 @@ mode=$1
 
 case "$mode" in
   jobs)
-    [ "$#" -eq 2 ] || usage "$@"
+    [ "$#" -eq 3 ] && [ -n "$3" ] || usage "$@"
     out_file=$2
+    caller=$3
     need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
 
     # This run's own attempt, which is the attempt this job is reporting on.
@@ -262,27 +268,33 @@ case "$mode" in
     # Each job's leg name is derived here, once, beside the fields it travels with, so the two
     # readings take it rather than each parsing the job name again.
     #
-    # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-    # after either caller's prefix. `binaries`, `merge`, `multiprocess`, `embedder` and
-    # `visual` are this workflow's other five jobs: they pass the name filter and get a null
-    # leg, so reading one passes them over and reading three names them as holding no row.
-    # `binaries` is in that filter because a build that failed leaves the shard and alone jobs
-    # skipped and no blob report anywhere, so a run read without it is reported as legs that
-    # uploaded nothing rather than as the build that handed them nothing. `visual` is in it
-    # because a run whose only red job is that one must not read "every leg of this workflow
-    # concluded success": the verdict step fails ci-ok either way, so the gate held, but the
-    # summary a person reads was wrong. `embedder` is there for the same reason. ci.yaml's
-    # jobs do not get a null leg - the filter drops them first, which is what keeps them out
-    # of reading three, since that reading selects on conclusion alone. The two that come
-    # nearest are ci.yaml's own `dispatch-multiprocess` and `broker-multiprocess`, kept out
-    # only because the character before `multiprocess` is a hyphen and the filter wants a
-    # space or a line start.
+    # Only the jobs named `<caller> / <job>` are this lane's: the jobs API lists every job of the
+    # run, ci.yaml's own and, on a pull request labelled full-ci, those of ci.yaml's other caller
+    # of this workflow, whose legs carry the same names after a prefix of their own
+    # (`dispatch-browser / shard (1)` and `dispatch-browser-pr / shard (1)`). Read without the
+    # prefix, the pull-request lane's merge job would name the full lane's red legs as its own,
+    # and reading one would count rows no blob of this lane holds. After the prefix, the name
+    # must be one of this workflow's seven jobs, with a matrix leg in brackets after it.
+    #
+    # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`.
+    # `binaries`, `merge`, `multiprocess`, `embedder` and `visual` are this workflow's other
+    # five jobs: they pass the name filter and get a null leg, so reading one passes them over
+    # and reading three names them as holding no row. `binaries` is in that filter because a
+    # build that failed leaves the shard and alone jobs skipped and no blob report anywhere, so a
+    # run read without it is reported as legs that uploaded nothing rather than as the build that
+    # handed them nothing. `visual` is in it because a run whose only red job is that one must
+    # not read "every leg of this workflow concluded success": the verdict step fails ci-ok
+    # either way, so the gate held, but the summary a person reads was wrong. `embedder` is there
+    # for the same reason. ci.yaml's own jobs do not get a null leg - the prefix drops them
+    # first, which is what keeps them out of reading three, since that reading selects on
+    # conclusion alone: `dispatch-multiprocess` and `broker-multiprocess` are named under no
+    # caller.
     #
     # The project part takes any name that holds no `)`, and the readings take one leg per
     # line, so a project named with a space, a digit or a capital is one leg here rather than
     # two or none.
-    jq '[.[].jobs[] | select(.name |
-        test("(^| )(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)"))]
+    jq --arg prefix "$caller / " '[.[].jobs[] | select(.name | startswith($prefix)
+          and (ltrimstr($prefix) | test("^(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)")))]
       | map({id, name, conclusion,
           leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
             // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")

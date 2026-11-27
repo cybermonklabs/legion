@@ -19,10 +19,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// causedLockWait bounds how long a step of the lock order test waits for the pass's backend to
-// queue behind a holder, and for Caused to finish once nothing holds it. Both are far above what
-// a pass over three blocks takes, so a step that runs out of either is the order being wrong, not
-// a slow machine.
+// causedLockWait bounds how long a step of the lock order test waits for Caused to finish once
+// nothing holds it; its waits for the pass's backend to queue behind a holder end on the queue
+// itself (storetest.WaitForQueuedBehind). It is far above what a pass over three blocks takes, so
+// a step that runs out of it is the order being wrong, not a slow machine.
 const causedLockWait = 20 * time.Second
 
 // The two versions every document of the lock order test is indexed at. The first holds three
@@ -122,7 +122,7 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 		holder, release := beginCausedHolder(t, database)
 		insertCausedTuple(t, holder, tuple)
 		done := pass.causeInBackground(ctx)
-		if answer, early := storetest.WaitForQueuedBehind(t, holder, pass.pid, done, causedLockWait); early {
+		if answer, early := storetest.WaitForQueuedBehind(t, holder, pass.pid, done); early {
 			t.Fatalf("Caused finished without waiting on the held copy of its %s tuple of %s: %v", tuple.Kind, tuple.FromID, answer)
 		}
 		running := causedStatement(t, database, pass.pid)

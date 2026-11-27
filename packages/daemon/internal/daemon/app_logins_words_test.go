@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -24,7 +23,7 @@ func (l sameLogins) AppLogin(context.Context, appauth.AppRole) (string, error) {
 // daemon.answer-words/app-logins.
 func TestTheBootsAppLoginsRefusalNamesNoLoginOutsideItsShape(t *testing.T) {
 	login := githubtest.InstallationToken(t.Name()) + "-RDX-"
-	_, err := appLoginsAtBoot(context.Background(), sameLogins(login), newStartWaits(startRateLimits, time.Now), slog.New(slog.DiscardHandler))
+	_, err := appLoginsAtBoot(context.Background(), sameLogins(login), newStartWaits(productionAppCalls()), slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("the boot took two Apps under one bot login")
 	}

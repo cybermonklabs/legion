@@ -120,7 +120,7 @@ func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, vers
 	}
 	document, ok := r.plans[planVersion(artifactID, version)]
 	if !ok {
-		return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "version not found"}
+		return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "version not found"}
 	}
 	return document, nil
 }
@@ -255,6 +255,9 @@ func (r *statusRecorder) PutStep(context.Context, string, string, dispatch.StepW
 	return nil
 }
 func (r *statusRecorder) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (r *statusRecorder) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
 	return nil
 }
 func (r *statusRecorder) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {

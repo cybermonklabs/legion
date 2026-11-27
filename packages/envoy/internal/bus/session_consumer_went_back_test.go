@@ -78,12 +78,10 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 		return owner.Connected() && consumers.client.Connected()
 	})
 	var state sessionStreamState
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the cut and the restart", func() (string, bool) {
 		state, err = consumers.streamState(ctx)
-		return err == nil
-	}) {
-		t.Fatalf("read the stream after the restart: %v", err)
-	}
+		return fmt.Sprint(err), err == nil
+	})
 	if state.lastSeq != 0 {
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", state.lastSeq)
 	}
@@ -130,6 +128,7 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 // server reports plus one, not past the stream's end, and the create of the restart that follows
 // clamps that next sequence to the stream's first sequence.
 func TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	restartAfterAWholeLossLeftItUnreconciled(t, "ses_went_back_restarted", func(t *testing.T, consumers *SessionConsumers, session string, filters []string) SessionConsumerStart {
 		t.Helper()
 		start, err := consumers.RestartAtFloor(context.Background(), session, filters)
@@ -145,6 +144,7 @@ func TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFi
 // (RestartAtFloor, cmd/listener session_relay.go) restarts it at the stream's first sequence
 // (restartAfterAWholeLossLeftItUnreconciled).
 func TestKeepListedLeavesAConsumerAWholeLossLeftUnreconciledToARestartAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	restartAfterAWholeLossLeftItUnreconciled(t, "ses_went_back_listed", func(t *testing.T, consumers *SessionConsumers, session string, filters []string) SessionConsumerStart {
 		t.Helper()
 		ctx := context.Background()

@@ -15,6 +15,7 @@ import {
   noDeliveryLine,
   plainDelivery,
   queuedParts,
+  resendable,
   rowAnsweredWithError,
   safeRetryGuidance,
   strandedRetryGuidance,
@@ -94,6 +95,16 @@ test("an attempt the stream already had is not a safe retry either", () => {
 test("an attempt the session answered with an error is not offered a same-mode retry", () => {
   expect(isSafeRetry(attempt({ answeredWithError: true }), now)).toBe(false);
   expect(isSafeRetry(attempt({ answeredWithError: false }), now)).toBe(true);
+});
+
+// Dispatch refuses every new delivery of a deleted post, 409 POST_DELETED, a Retry and a mode
+// change alike, so no surface offers one once the post carries its deletion; a post nobody
+// deleted - its deletion null, or absent from a payload that predates the mark - still may.
+test("a deleted post is sent again in no mode, and a standing one still may be", () => {
+  expect(resendable({ at: "2026-09-25T11:59:00Z", by: { id: "alice", kind: "user" } })).toBe(false);
+  expect(resendable({ at: "2026-09-25T11:59:00Z", by: null })).toBe(false);
+  expect(resendable(null)).toBe(true);
+  expect(resendable(undefined)).toBe(true);
 });
 
 // Every failure Dispatch records itself leaves the envelope id null; only the session's own error

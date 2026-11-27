@@ -286,7 +286,7 @@ func (r *claimCompactionLive) registerController() {
 	t := r.t
 	t.Helper()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret",
-		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
 	}
@@ -298,7 +298,7 @@ func (r *claimCompactionLive) registerController() {
 	status, body = r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: r.controllerSession,
 		OmpSessionFile: "/sessions/" + r.controllerSession + ".jsonl",
-		AgentID:        r.controllerSession, PluginContract: api.DaemonAPIVersion,
+		AgentID:        r.controllerSession, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)
@@ -589,6 +589,11 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	r.awaitControllerNotices(r.notice, 1)
 	told := r.controllerNotices(r.notice)
 	r.note("the project's controller was told once on %s: %q", notify.ControllerTopic(r.project), told[0])
+	// Six refused turns in a row, twice launch_failure_limit's default, fail no claim: a 529 can
+	// clear, so each turn's task went to the same session again (dispatch://INFRA-4508).
+	if held := r.claim(token); held.State == string(supervise.StateFailed) {
+		t.Fatalf("%s failed after six refused turns whose 529 can clear: %+v", token, held)
+	}
 
 	from := r.daemon.count()
 	answer := r.compactedByController(r.notice, claim.RoleImplementer)
@@ -700,7 +705,10 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	started := time.Now()
 	answered := make(chan compactRun, 1)
 	go func() {
-		out, err := r.legionClaimsTry("compact", "--claim", string(token))
+		// --wait past both of the summary's held passes: `legion claims compact` waits one minute
+		// by default, and Oh My Pi writes a split turn's summary in two passes, each held for
+		// compactHeldSummary, so the compaction answers after about 70 s.
+		out, err := r.legionClaimsTry("compact", "--claim", string(token), "--wait", (4 * compactHeldSummary).String())
 		answered <- compactRun{out: out, err: err}
 	}()
 	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {

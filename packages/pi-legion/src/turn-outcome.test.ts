@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
-import { createTurnOutcomeReporter, type TurnOutcomeLog } from "./turn-outcome";
+import {
+  createTurnOutcomeReporter,
+  type TurnOutcomeLog,
+  type TurnOutcomeReporter,
+} from "./turn-outcome";
 
 const SESSION = "ses_implementer_208";
 
@@ -20,7 +24,9 @@ const implementer: ClaimCapability = {
 };
 
 interface Rig {
-  readonly report: (sessionID: string, event: AgentEndEvent) => Promise<void>;
+  readonly report: TurnOutcomeReporter["report"];
+  readonly inputArrived: TurnOutcomeReporter["inputArrived"];
+  readonly runStarted: TurnOutcomeReporter["runStarted"];
   /** Every body posted to `claims/turn-outcome`, in the order the daemon received it. */
   readonly posted: Record<string, unknown>[];
   readonly debugged: string[];
@@ -58,7 +64,14 @@ function rig(
     claim: options.claim ?? ((sessionID) => (sessionID === SESSION ? implementer : undefined)),
     log,
   });
-  return { report: reporter.report, posted, debugged, warned };
+  return {
+    report: reporter.report,
+    inputArrived: reporter.inputArrived,
+    runStarted: reporter.runStarted,
+    posted,
+    debugged,
+    warned,
+  };
 }
 
 /** A run whose last assistant message settled normally. */
@@ -66,9 +79,13 @@ const clean: AgentEndEvent = {
   messages: [{ role: "user" }, { role: "assistant", stopReason: "stop" }, { role: "toolResult" }],
 };
 
-test("a turn the model answered is reported clean, under the claim's own credentials", async () => {
-  const { report, posted } = rig();
+// The daemon's prompt arrives as RPC input, and the run that starts next is that prompt's: its
+// result judges the turn, so the report says nothing more than how it ended.
+test("a turn the daemon's prompt ran is reported clean, under the claim's own credentials", async () => {
+  const { report, inputArrived, runStarted, posted } = rig();
 
+  inputArrived(SESSION, { text: "Continue the task.", source: "rpc" });
+  runStarted(SESSION);
   await report(SESSION, clean);
 
   expect(posted).toEqual([
@@ -144,7 +161,7 @@ test("a session holding no claim reports nothing and spends no sequence", async 
 });
 
 // A refusal the daemon itself gives will not pass on a retry, so the turn goes uncounted and the
-// pane says so once: a report dropped in silence is a claim that never fails.
+// pane says so once: a report dropped in silence is a run of refusals that comes up short.
 test("a report the daemon refuses is warned about, and the next turn still reports", async () => {
   const { report, posted, warned } = rig({
     answer: (attempt) =>
@@ -158,4 +175,176 @@ test("a report the daemon refuses is warned about, and the next turn still repor
 
   expect(warned).toEqual(["legion: a turn's outcome did not reach the daemon"]);
   expect(posted.map((body) => body.sequence)).toEqual([1, 2]);
+});
+
+/** One step of Oh My Pi's own retry or model fallback: a refusal it goes on from. */
+const step: AgentEndEvent = {
+  willContinue: true,
+  messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit" }],
+};
+
+// What INFRA-764's workers did on 2026-11-23
+// (dispatch://INFRA-4508/comment/fd89b8eb-d326-46d6-82b6-6ae84fe76f67): at each step of its
+// fallback chain Oh My Pi ends the run with `willContinue`, the refused attempt's message last, and
+// goes on to the next model. The steps and the end that settles them are one turn.
+test("a refusal Oh My Pi goes on from reports nothing and spends no sequence", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, step);
+  await report(SESSION, step);
+  await report(SESSION, { messages: [{ role: "assistant", stopReason: "error" }] });
+
+  expect(posted.map((body) => [body.sequence, body.outcome])).toEqual([[1, "refused"]]);
+});
+
+// A fallback walk whose next model answers is one turn, and an answered one: the refused step
+// reports nothing, so the one report the turn makes is clean, and it ends the daemon's run of
+// refusals rather than adding one to it.
+test("a refusal Oh My Pi goes on from, then an answered end, reports one clean turn", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, step);
+  await report(SESSION, clean);
+
+  expect(posted).toHaveLength(1);
+  expect(posted[0]).toMatchObject({ sequence: 1, outcome: "clean" });
+  expect(posted[0]).not.toHaveProperty("message");
+});
+
+// The host also goes on from an answered turn, as when the phase reminder continues it: that turn
+// ended clean, and it ends the run of refusals before it.
+test("an answered turn the host goes on from is reported clean", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, { ...clean, willContinue: true });
+
+  expect(posted.map((body) => [body.sequence, body.outcome])).toEqual([[1, "clean"]]);
+});
+
+// A turn that ends waiting only on a background job's result has settled: the pane is idle until
+// the result starts the next run.
+test("a refusal that waits only on a background job's result is reported", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, { ...step, awaitingAsyncWork: true });
+
+  expect(posted.map((body) => [body.sequence, body.outcome])).toEqual([[1, "refused"]]);
+});
+
+/** A refusal as Oh My Pi records it, with the status the provider answered where it gave one. */
+function refusedWith(errorStatus?: number): AgentEndEvent {
+  return {
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "the provider refused the request",
+        ...(errorStatus === undefined ? {} : { errorStatus }),
+      },
+    ],
+  };
+}
+
+// The status is the host's own field, the one its `prompt_result` copies into `httpStatus`
+// (`errorStatus` on the refused assistant message), and never read out of the words: a refusal
+// whose message names a status but whose message carries no `errorStatus` goes with none, as does
+// a number that is no HTTP status, which the contract does not admit and the daemon would take as
+// no status with a warning.
+test("a refused turn's report carries the status the host recorded, and only that", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, refusedWith(529));
+  await report(SESSION, refusedWith(400));
+  await report(SESSION, {
+    messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit" }],
+  });
+  await report(SESSION, refusedWith(0));
+  await report(SESSION, refusedWith(1000));
+  await report(SESSION, {
+    messages: [{ role: "assistant", stopReason: "stop", errorStatus: 500 }],
+  });
+
+  expect(posted.map((body) => [body.outcome, body.httpStatus])).toEqual([
+    ["refused", 529],
+    ["refused", 400],
+    ["refused", undefined],
+    ["refused", undefined],
+    ["refused", undefined],
+    ["clean", undefined],
+  ]);
+  for (const body of posted.slice(2)) expect(body).not.toHaveProperty("httpStatus");
+});
+
+// A phase reminder is a run the plugin starts itself (`pi.sendMessage`): no prompt the daemon sent
+// came before it, so no prompt result will come for it, and its report says so. The daemon judges
+// that turn from the report; the turn the daemon's prompt ran is judged by the prompt's result.
+test("a turn no prompt of the daemon's ran is reported unprompted, and a prompt's turn is not", async () => {
+  const { report, inputArrived, runStarted, posted } = rig();
+
+  inputArrived(SESSION, { text: "Continue the task.", source: "rpc" });
+  runStarted(SESSION);
+  await report(SESSION, refusedWith(529));
+  runStarted(SESSION);
+  await report(SESSION, refusedWith(529));
+
+  expect(posted[0]).toMatchObject({ sequence: 1, outcome: "refused", httpStatus: 529 });
+  expect(posted[0]).not.toHaveProperty("unprompted");
+  expect(posted[1]).toMatchObject({
+    sequence: 2,
+    outcome: "refused",
+    httpStatus: 529,
+    unprompted: true,
+  });
+});
+
+// A person's Send from Dispatch runs as typed input (`sendUserInput`, `source: "extension"`), and
+// no prompt result reports it: only the daemon's own prompt, which arrives over RPC, does.
+test("input that is not the daemon's prompt leaves the run it starts unprompted", async () => {
+  const { report, inputArrived, runStarted, posted } = rig();
+
+  inputArrived(SESSION, { text: "What is the CI saying?", source: "extension" });
+  runStarted(SESSION);
+  await report(SESSION, clean);
+
+  expect(posted[0]).toMatchObject({ outcome: "clean", unprompted: true });
+});
+
+// The host reports a prompt's result at the first end it does not go on from itself, whatever
+// waits to run next (`rpc-prompt-results.ts:164-169` at the pinned tag): a retry and a hook's
+// continuation carry the prompt's run on, so every report up to that end is the prompt's, and the
+// run after it is not.
+test("a prompt's turn runs through the ends the host goes on from, up to the end its result reports", async () => {
+  const { report, inputArrived, runStarted, posted } = rig();
+
+  inputArrived(SESSION, { text: "Continue the task.", source: "rpc" });
+  runStarted(SESSION);
+  await report(SESSION, { ...clean, willContinue: true });
+  runStarted(SESSION);
+  await report(SESSION, step);
+  await report(SESSION, refusedWith(503));
+  runStarted(SESSION);
+  await report(SESSION, refusedWith(503));
+
+  expect(posted.map((body) => [body.sequence, body.unprompted ?? false])).toEqual([
+    [1, false],
+    [2, false],
+    [3, true],
+  ]);
+});
+
+// A prompt the daemon sends while a turn of the plugin's own runs waits for that turn to end, and
+// the host's result reports the run that starts after the prompt, never the one already going.
+test("a prompt that arrives during an unprompted turn is the next turn's, not that one's", async () => {
+  const { report, inputArrived, runStarted, posted } = rig();
+
+  runStarted(SESSION);
+  inputArrived(SESSION, { text: "Continue the task.", source: "rpc" });
+  await report(SESSION, refusedWith(529));
+  runStarted(SESSION);
+  await report(SESSION, clean);
+
+  expect(posted.map((body) => [body.sequence, body.unprompted ?? false])).toEqual([
+    [1, true],
+    [2, false],
+  ]);
 });

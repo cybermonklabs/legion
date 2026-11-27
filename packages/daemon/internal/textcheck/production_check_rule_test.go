@@ -1,5 +1,16 @@
 package textcheck
 
+// The pages and the proof scripts that state the production check's rule outside a prompt.
+// main's #4092 read the first two in internal/prompts's production-check test. That half moved
+// here, so an edit of one of them alone starts the text checks and not the daemon's lane
+// (dispatch://INFRA-1413).
+//ci:reads scripts/e2e/README.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
+//ci:reads docs/site/src/content/docs/legion/concepts.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
+//ci:reads docs/site/src/content/docs/legion/walkthrough.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
+//ci:reads docs/site/src/content/docs/legion/using-legion.md TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
+//ci:reads scripts/e2e/stage3-devbox-workflow.sh TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
+//ci:reads scripts/e2e/stage4b-sandbox-tree.sh TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge reads it under ../../../..
+
 import (
 	"errors"
 	"fmt"

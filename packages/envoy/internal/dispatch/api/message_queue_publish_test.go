@@ -10,10 +10,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -371,6 +373,73 @@ func TestATargetedMessageAnsweredBetweenItsTriesIsNotQueued(t *testing.T) {
 	}
 	if published := publishedBy(t, deps); len(published) != 0 {
 		t.Fatalf("published %d envelopes for an attempt its session already answered, want none", len(published))
+	}
+}
+
+// A sender re-checks its claim immediately before it queues, as it does before each try. Here the
+// message's author deletes it while its one try waits on the listener, whose send then answers
+// that it holds no live session for s1. The delete settled the attempt meanwhile, so the sender
+// publishes nothing - a copy queued now would hold the deleted body for s1 to read when it
+// registers again - and the attempt reads as the delete left it, with the one receipt the delete
+// appended.
+func TestATargetedMessageDeletedDuringItsLastTryIsNotQueued(t *testing.T) {
+	t.Parallel()
+	landed := make(chan string, 1)
+	release := make(chan struct{})
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
+			_, _ = w.Write([]byte(`{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			var body listenerSendBody
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode the listener send: %v", err)
+			}
+			select {
+			case landed <- body.IdempotencyKey:
+			default:
+			}
+			<-release
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live session s1","state":"gone"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not found"}`))
+		}
+	}))
+	t.Cleanup(listener.Close)
+	// A window shorter than the first backoff leaves one try, so the send held here is the last.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: time.Nanosecond})
+	answerSend := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(answerSend)
+	issue := createInteractionIssue(t, handler, "TEST", "A message deleted during its last try", "before")
+
+	created := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		created <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+			"body": "The text its author withdraws.", "target": "session:s1", "delivery": "btw",
+		}, "alice")
+	}()
+	key := testwait.Receive(t, "the message's send at the listener", landed)
+	messageID, _, _ := strings.Cut(key, ":")
+	deleteIssueMessage(t, handler, messageID, "alice")
+	answerSend()
+
+	if answer := <-created; answer.Code != http.StatusCreated {
+		t.Fatalf("the message: status=%d body=%s", answer.Code, answer.Body.String())
+	}
+	if published := publishedBy(t, deps); len(published) != 0 {
+		t.Fatalf("published %d envelopes for a message deleted during its last try, want none: the queued copy "+
+			"holds the body the delete withdrew", len(published))
+	}
+	if attempts := messageAttempts(t, database, messageID); len(attempts) != 1 ||
+		attempts[0].State != model.DeliveryStateFailed || deref(attempts[0].Error) != endedByThePostsDelete ||
+		attempts[0].EnvelopeID != nil {
+		t.Fatalf("the stored attempts = %#v, want attempt 1 failed %q as the delete left it", attempts, endedByThePostsDelete)
+	}
+	if receipts := messageDeliveryReceiptRows(t, database, messageID); len(receipts) != 1 ||
+		receipts[0] != (deliveryReceipt{Attempt: 1, State: model.DeliveryStateFailed}) {
+		t.Fatalf("the delivery receipts = %#v, want the one failed receipt the delete appended", receipts)
 	}
 }
 

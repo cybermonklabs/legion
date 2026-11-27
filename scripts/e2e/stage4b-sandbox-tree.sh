@@ -1102,7 +1102,7 @@ session_copy() {
     echo "the sessions under $prefix are not copied: their directory $root/$stem resolves to $dest, not directly inside $root" >&2
     return 1
   fi
-  table=$(session_psql table omp_session_files <<<"SELECT to_regclass(:'table') IS NOT NULL;") || return 1
+  table=$(session_psql table public.omp_session_files <<<"SELECT to_regclass(:'table') IS NOT NULL;") || return 1
   case $table in
     t) ;;
     f)
@@ -1116,7 +1116,7 @@ session_copy() {
       echo "the sessions under $prefix are not copied: the session database $session_db_container answered '$table' to whether it has a session table" >&2
       return 1 ;;
   esac
-  hex=$(session_psql prefix "$prefix" <<<"SELECT encode(convert_to(path, 'UTF8'), 'hex') FROM omp_session_files WHERE left(path, length(:'prefix')) = :'prefix' ORDER BY path;") || return 1
+  hex=$(session_psql prefix "$prefix" <<<"SELECT encode(convert_to(path, 'UTF8'), 'hex') FROM public.omp_session_files WHERE left(path, length(:'prefix')) = :'prefix' ORDER BY path;") || return 1
   [ -n "$hex" ] || return 0
   mkdir -p -- "$dest" || return 1
   # Every name is derived before any is written, so a key whose name a later key also derives is
@@ -6136,10 +6136,10 @@ dispatch_get "issues/$report" | jq -e '(.labels | map(ascii_downcase) | index("l
   fail "$report, the report issue, carries the legion label"
 # The message is the controller's, names tree 1, which runs throughout, and the free slots, and
 # holds the skill's 2,000-character budget for the report, which is the report's own length rule
-# and not the Dispatch server's body cap.
+# and not the Dispatch server's body cap; a message its author deleted counts as not posted
+# (lib/stage4b-report-posted.jq).
 report_posted() {
-  dispatch_events "$report" | jq -e --arg s "$controller_session" --arg tree "$tree1" \
-    'any(.[]; .type == "message.created" and .actor.id == $s and (.payload.body | test("(^|[^0-9A-Za-z-])" + $tree + "($|[^0-9])")) and (.payload.body | test("slot"; "i")) and (.payload.body | length) <= 2000)' >/dev/null
+  dispatch_events "$report" | jq -e --arg s "$controller_session" --arg tree "$tree1" -f "$root/scripts/e2e/lib/stage4b-report-posted.jq" >/dev/null
 }
 until_true 300 "the controller's report message on $report" report_posted
 # It was posted on a turn a tick started while the controller was idle, the quiet day's wake. A

@@ -27,8 +27,8 @@
 // gave it never writes with no identity, nor with one that has been ended.
 
 import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secrets";
-import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
-import { callLibrary, LibraryError, RemoteText, refusalFetch } from "@legion/contracts/remote-text";
+import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
+import { callLibrary, RemoteText, refusalFetch } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
@@ -39,9 +39,9 @@ import {
   None,
   type TokenEndpointResponse,
 } from "openid-client";
+import { BROKER_URL_SETTING, brokerRefusal, type DpopNonce, sendWithProof } from "./broker-request";
 import type { DpopKey } from "./dpop";
 import { messageOf } from "./error-text";
-import type { RefusalContext } from "./refusal-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BrokerRefusedError,
@@ -56,11 +56,15 @@ import {
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
   EXCHANGE_CLIENT_ID,
+  FORM_AS_OF,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
   FORM_PROJECTS,
+  FORM_SCOPE,
   FORM_SESSION,
   GRANT_TYPE_TOKEN_EXCHANGE,
+  HEADER_DPOP_HOLDER,
+  SCOPE_READ,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   TOKEN_PATH,
   TOKEN_TYPE_DPOP,
@@ -68,10 +72,31 @@ import {
 
 /**
  * How long before an access token's expiry the client trades again, so a renewal lands with the
- * token in hand still good and nothing of the caller's restarts. The broker mints a machine's
- * token for an hour or less.
+ * token in hand still good and nothing of the caller's restarts; a token that lands with less than
+ * twice this left is traded again at half its life instead ({@link renewalAt}). The broker mints a
+ * machine's token for an hour or less.
  */
 export const DEFAULT_RENEW_BEFORE_MS = 5 * 60_000;
+
+/**
+ * When a token that lands at `now` and lapses at `expiresAt` is traded again: `renewBeforeMs`
+ * ahead of its expiry, and never before half of what it had left when it landed; at once for a
+ * token already past its expiry. A token of at least twice the window renews the window ahead of
+ * its expiry, and a shorter one at its half life, so a client handed short tokens, by the broker
+ * or by a subject near its own end, trades again no sooner than half a token's life after it
+ * landed, never at every call.
+ * It is the Go client's `renewalAt` (packages/envoy/internal/cipherclient/brokerclient.go), and
+ * the corpus beside it, `testdata/renewal.json`, holds both clients to it.
+ */
+export function renewalAt(expiresAt: number, now: number, renewBeforeMs: number): number {
+  const left = expiresAt - now;
+  if (left <= 0) return now;
+  return Math.max(expiresAt - renewBeforeMs, now + left / 2);
+}
+
+/** The broker writes `expires_in` in whole seconds, truncated, so a read token's computed expiry
+ *  can fall up to this much before that of the access token it was traded from. */
+export const EXPIRES_IN_STEP_MS = 1_000;
 
 /** One of the broker's access tokens as this client holds it. The five members here are the whole
  *  of what a client reads out of an answer, as `testdata/wire.json`'s `expect.token` names them. */
@@ -91,11 +116,6 @@ export interface BrokerToken {
   /** When that credential lapses, null where the answer carries none. */
   readonly credentialExpiresAt: Date | null;
 }
-
-/** What names the broker's URL in a text where it does not parse (`urlForText`); the constructor
- *  refuses such a URL, and `brokerTokenClient` names AGENT_SECRETS_URL in its refusal. A device
- *  login names it the same way (`device-login.ts`). */
-export const BROKER_URL_SETTING = "the broker URL";
 
 /** The first wait before trading again after a trade the broker did not answer, answered with a
  *  5xx, its 429 or a DPoP refusal, or that failed before it reached the broker, doubling to
@@ -209,9 +229,9 @@ export interface BrokerTokenClientOptions {
    * TypeScript clients want a Dispatch access token and nothing else, and none of them reads
    * `credentialId`. Each trade that asks writes a `launcher_credentials` row keyed by the
    * machine and the key it proved and a `launcher_credential.token_login` audit row, and this
-   * client makes a key per process and per session, so asking would put a row on an operator's
-   * machine-logins list for every `dispatch` call, every hook run and every session of a
-   * long-lived process — rows nothing removes.
+   * client proves a key of one process, or a pod role's own agent-secrets key, so asking would
+   * put a row on an operator's machine-logins list for every `dispatch` call, every hook run and
+   * every session of a long-lived process — rows nothing removes.
    *
    * A person's client leaves it unset, because the broker refuses a person's trade that declines
    * with `400 invalid_request` (`personDeclinesNothing`,
@@ -220,6 +240,23 @@ export interface BrokerTokenClientOptions {
    * `launcher_credential.token_login` audit row, which the broker writes for every one of them.
    */
   readonly launcherCredential?: boolean | undefined;
+  /**
+   * The scope this trade asks for ({@link FORM_SCOPE}): `read` (`SCOPE_READ`) narrows the minted
+   * token to reading, on the identity the same trade would have had. Empty or absent asks for
+   * none and sends no parameter, which is the token every trade got before the parameter.
+   */
+  readonly scope?: string | undefined;
+  /** The cut a read trade asks for ({@link FORM_AS_OF}): an RFC 3339 time, sent as written. Empty
+   *  or absent sends no parameter. The broker refuses a cut beside any scope but `read`. */
+  readonly asOf?: string | undefined;
+  /**
+   * The key the minted token is bound to, where it is not {@link key}: a read trade whose proof
+   * key holds a launcher credential, as a person's box key and a device login's key do, sends a
+   * second proof of the same request signed with this key ({@link HEADER_DPOP_HOLDER}), and the
+   * broker binds the token to it. {@link BrokerTokenClient.key} is then this key, so every proof
+   * presented beside the token is signed with it, and {@link key} signs the trade alone.
+   */
+  readonly holderKey?: DpopKey | undefined;
   /** Overrides {@link DEFAULT_RENEW_BEFORE_MS}. Only a test shortens it. */
   readonly renewBeforeMs?: number | undefined;
   /** `Date.now` unless a test replaces it. */
@@ -242,133 +279,26 @@ export interface BrokerTokenClientOptions {
   readonly fetch?: typeof fetch | undefined;
 }
 
-/**
- * The HTTP status behind `error`, or 0 where it carries none: the status of the answer behind an
- * error `openid-client` threw, which {@link callLibrary} keeps on the {@link LibraryError} it makes
- * of it. The person's identity source reads its issuer's errors with it too
- * (`person-identity.ts`).
- */
-export function statusOf(error: unknown): number {
-  return error instanceof LibraryError ? error.status : 0;
-}
-
-/**
- * What a failed request to the broker's `endpoint` is, the one way every client of this package
- * words it: a trade, and a device login's code request, poll and refresh. An OAuth error the
- * broker answered with a 4xx is its refusal of `refused` (`BrokerRefusedError`), which shows the
- * code only where it is one the clients know and the description only where it is a known
- * refusal; anything else (no answer, a 5xx, a 4xx with no OAuth error, an answer that is not the
- * grant's) is a failure of `doing` it (`BrokerTradeFailedError`), named by the status where there
- * is one and by the error's class, never by its message, which can repeat the URL it was handed,
- * and with no `cause`: an answer the library refused hangs off its error (oauth4webapi's `cause`
- * is the body it read), and that answer can hold a minted token, which no log may carry.
- * `context` is what the request sent that a known refusal may name. `error` crossed
- * {@link callLibrary}, so it is a {@link LibraryError}, whose code and description are the
- * broker's words held as {@link RemoteText} and whose words print only as the rule reads them.
- */
-export function brokerRefusal(
-  doing: string,
-  refused: string,
-  endpoint: string,
-  error: unknown,
-  context: RefusalContext = {}
-): BrokerRefusedError | BrokerTradeFailedError {
-  if (
-    error instanceof LibraryError &&
-    error.name === "ResponseBodyError" &&
-    error.status >= 400 &&
-    error.status < 500
-  ) {
-    return new BrokerRefusedError(error.status, error.code, error.description, refused, context);
-  }
-  const status = statusOf(error);
-  const failure = error instanceof LibraryError ? error.thrownClass : errorClass(error);
-  const said = status === 0 ? failure : `HTTP ${status}: ${failure}`;
-  return new BrokerTradeFailedError(
-    `${doing} ${refused} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
-  );
-}
-
-/**
- * The request `openid-client` asked for in `options`, sent with `headers`: its method, its body,
- * its redirect rule, and its own signal beside the caller's `signal`, either of which aborts it.
- * The broker's exchange and the person's identity source (`person-identity.ts`) both send what
- * the library asks through it.
- */
-export function requestInit(
-  options: CustomFetchOptions,
-  signal: AbortSignal | undefined,
-  headers: Headers | Record<string, string>
-): RequestInit {
-  const signals = [options.signal, signal].filter((one) => one !== undefined);
-  return {
-    method: options.method,
-    headers,
-    // openid-client's own body union is wider than one `fetch` typing or another admits; the
-    // bytes are the form it encoded, and every runtime this package runs on sends them.
-    body: options.body as RequestInit["body"],
-    redirect: options.redirect,
-    ...(signals.length === 0 ? {} : { signal: AbortSignal.any(signals) }),
-  };
-}
-
-/** The most recent `DPoP-Nonce` a server sent one client, which every later proof to it carries
- *  (RFC 9449 Section 8). */
-export interface DpopNonce {
-  value: string;
-}
-
-/**
- * One request `openid-client` asked for in `options`, sent through `fetch` with a DPoP proof of
- * `key` naming the request's method and URL and the nonce `nonce` holds, and sent once more when
- * the server answers `use_dpop_nonce` with a nonce to carry. A nonce any answer sends is kept in
- * `nonce` for the next proof. The broker's exchange and a device login's poll and refresh
- * (`device-login.ts`) send through it, so every request to the token endpoint is proved alike.
- * The request goes out through {@link refusalFetch} below the proof as well as above it (the
- * fetch handed to openid-client), so a refusal's record holds the DPoP proof set here.
- */
-export async function sendWithProof(
-  proved: { readonly key: DpopKey; readonly fetch: typeof fetch; readonly nonce: DpopNonce },
-  url: string,
-  options: CustomFetchOptions,
-  signal: AbortSignal | undefined
-): Promise<Response> {
-  const recorded = refusalFetch((target: string, init: RequestInit) => proved.fetch(target, init));
-  const send = async (): Promise<Response> => {
-    const headers = new Headers(options.headers);
-    headers.set(
-      "DPoP",
-      await proved.key.proof({ method: options.method, url, nonce: proved.nonce.value })
-    );
-    return await recorded(url, requestInit(options, signal, headers));
-  };
-  let answer = await send();
-  const given = answer.headers.get("DPoP-Nonce") ?? "";
-  if (given !== "") proved.nonce.value = given;
-  if (answer.status === 400 && given !== "") {
-    const body: unknown = await answer
-      .clone()
-      .json()
-      .catch(() => null);
-    const asked =
-      typeof body === "object" &&
-      body !== null &&
-      "error" in body &&
-      body.error === "use_dpop_nonce";
-    if (asked) answer = await send();
-  }
-  return answer;
+/** The token a client holds, and when it trades again: {@link renewalAt} as of the moment the
+ *  token landed, worked out once, so a token held to its half life is not halved again at every
+ *  call. */
+interface HeldToken {
+  readonly token: BrokerToken;
+  readonly renewsAt: number;
 }
 
 /** Trades this client's identity for the broker's access tokens and keeps one live. */
 export class BrokerTokenClient {
   readonly #brokerUrl: string;
   readonly #key: DpopKey;
+  readonly #holderKey: DpopKey | undefined;
   readonly #subject: TokenSource;
   readonly #actor: TokenSource | undefined;
   readonly #session: string;
   readonly #projects: readonly string[];
   readonly #launcherCredential: boolean;
+  readonly #scope: string;
+  readonly #asOf: string;
   readonly #renewBeforeMs: number;
   readonly #now: () => number;
   readonly #attemptMs: number;
@@ -378,7 +308,7 @@ export class BrokerTokenClient {
   readonly #random: () => number;
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
   readonly #nonce: DpopNonce = { value: "" };
-  #held: BrokerToken | null = null;
+  #held: HeldToken | null = null;
   /** The retry loop under way (`#run`), so the callers that need a token make one trade per slot
    *  of its schedule however many they are. It runs on no caller's signal: each caller stops
    *  waiting for it on its own (`#joined`). */
@@ -415,11 +345,14 @@ export class BrokerTokenClient {
     // carries no header of its own (`holdUrlUserinfo`).
     this.#brokerUrl = holdUrlUserinfo(brokerUrl);
     this.#key = options.key;
+    this.#holderKey = options.holderKey;
     this.#subject = options.subject;
     this.#actor = options.actor;
     this.#session = options.session ?? "";
     this.#projects = [...(options.projects ?? [])];
     this.#launcherCredential = options.launcherCredential ?? true;
+    this.#scope = options.scope ?? "";
+    this.#asOf = options.asOf ?? "";
     this.#renewBeforeMs = options.renewBeforeMs ?? DEFAULT_RENEW_BEFORE_MS;
     this.#now = options.now ?? Date.now;
     this.#attemptMs = options.attemptMs ?? TRADE_ATTEMPT_MS;
@@ -429,9 +362,11 @@ export class BrokerTokenClient {
     this.#random = options.random ?? Math.random;
   }
 
-  /** The key this client proves, whose public half the broker records. */
+  /** The key the tokens this client trades are bound to, whose public half the broker records:
+   *  the holder key where the client has one, else the key its trades prove. Every proof a caller
+   *  presents beside one of those tokens is signed with it. */
   get key(): DpopKey {
-    return this.#key;
+    return this.#holderKey ?? this.#key;
   }
 
   /** Names the identity traded, without naming a token. */
@@ -440,14 +375,14 @@ export class BrokerTokenClient {
   }
 
   /**
-   * A live access token: the one in hand while it is good for longer than the renewal window, and
+   * A live access token: the one in hand until it is due for renewal ({@link renewalAt}), and
    * otherwise the answer of this client's one retry loop (`#run`), which trades until a token
    * lands or a refusal no trade cures ends it. A caller never starts a second loop and never cuts
    * the loop's wait short, so however many callers ask — a NATS connection's every reconnect,
    * each Dispatch request — the broker sees one trade per slot of the loop's schedule.
    *
-   * - Inside the renewal window, a caller waits for the loop's trade; once a trade of the loop has
-   *   failed, a caller takes the token in hand at once while it is live, since a client that
+   * - Once the token in hand is due, a caller waits for the loop's trade; once a trade of the loop
+   *   has failed, a caller takes the token in hand at once while it is live, since a client that
    *   already holds an identity need not stop for a broker that is merely down or busy, and the
    *   loop trades again on its schedule.
    * - With no live token in hand, a fail-fast caller (the default) is told the loop's last
@@ -470,8 +405,10 @@ export class BrokerTokenClient {
     const waitForReady = options.waitForReady === true;
     const now = this.#now();
     const held = this.#held;
-    if (held !== null && now < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
-    if (held !== null && now < held.expiresAt.getTime() && this.#last !== null) return held;
+    if (held !== null && now < held.renewsAt) return held.token;
+    if (held !== null && now < held.token.expiresAt.getTime() && this.#last !== null) {
+      return held.token;
+    }
     // A closed client trades no more, and says so to a caller with nothing live in hand.
     const closed = this.#closed.signal;
     if (closed.aborted) throw closed.reason;
@@ -509,7 +446,7 @@ export class BrokerTokenClient {
 
   /**
    * The loop's answer, or, when the caller's `signal` ends first, the token in hand where it is
-   * still live (a caller inside the renewal window need not wait out a broker that is slow to
+   * still live (a caller whose token is due need not wait out a broker that is slow to
    * answer), else what `#stopped` says. The loop goes on either way; the caller leaves the
    * waiting set, so nothing of it stays behind.
    */
@@ -518,7 +455,7 @@ export class BrokerTokenClient {
     const stop = (): void => {
       this.#waiters.delete(waiter);
       const held = this.#held;
-      if (held !== null && this.#now() < held.expiresAt.getTime()) resolve(held);
+      if (held !== null && this.#now() < held.token.expiresAt.getTime()) resolve(held.token);
       else reject(this.#stopped(signal?.reason));
     };
     const waiter: Waiter = {
@@ -579,7 +516,7 @@ export class BrokerTokenClient {
    * token it brings back is a fresh one.
    */
   drop(accessToken?: string): void {
-    if (accessToken !== undefined && this.#held?.accessToken !== accessToken) return;
+    if (accessToken !== undefined && this.#held?.token.accessToken !== accessToken) return;
     this.#held = null;
   }
 
@@ -631,7 +568,11 @@ export class BrokerTokenClient {
           `the secrets broker answered this pod's session ${this.#session} once it was registered, ${Math.round((this.#now() - this.#since) / 1000)} s and ${this.#failed} failed trades after the first`
         );
       }
-      this.#held = token;
+      // Its renewal is worked out once, as it lands, as the Go client's `Run` works it out.
+      this.#held = {
+        token,
+        renewsAt: renewalAt(token.expiresAt.getTime(), this.#now(), this.#renewBeforeMs),
+      };
       this.#last = null;
       this.#since = null;
       this.#failed = 0;
@@ -683,8 +624,8 @@ export class BrokerTokenClient {
     this.#since ??= now;
     this.#failed += 1;
     const held = this.#held;
-    if (held !== null && now < held.expiresAt.getTime()) {
-      this.#tell((waiter) => waiter.resolve(held));
+    if (held !== null && now < held.token.expiresAt.getTime()) {
+      this.#tell((waiter) => waiter.resolve(held.token));
     } else {
       this.#held = null;
       // A fail-fast caller is told this failure now; a wait-for-ready caller waits on. Each kind
@@ -755,19 +696,32 @@ export class BrokerTokenClient {
    * One RFC 8693 exchange of this moment's subject token: through the source's own `spend`
    * where it has one, so a token another process can end stays good until the exchange settles
    * (a device login's), and otherwise of the token the source reads (`#exchange`).
+   *
+   * A read trade asks `spend` for a subject token with at least this client's renewal window
+   * left, and {@link EXPIRES_IN_STEP_MS} more: the broker ends a read token no later than its
+   * subject and writes its life in whole seconds, so one traded from a subject with less left
+   * would land with less than the window and be renewed at its half life ({@link renewalAt}),
+   * with less of its subject left each time. A device login caps that ask
+   * (`DeviceLoginIdentity.spend` says at what, and why).
+   *
+   * A refresh this ask brings on can end other processes' read tokens before they renew them;
+   * `.dispatch/architecture/broker-client.md` says by how much and how they recover.
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const source = this.#subject;
     if (source.spend !== undefined) {
-      return await source.spend((subject) => this.#exchange(subject, signal), signal);
+      const leastLifeMs =
+        this.#scope === SCOPE_READ ? this.#renewBeforeMs + EXPIRES_IN_STEP_MS : undefined;
+      return await source.spend((subject) => this.#exchange(subject, signal), signal, leastLifeMs);
     }
     return await this.#exchange(await source.read(signal), signal);
   }
 
   /**
    * One RFC 8693 exchange: `subject`, the actor token where a person is signing in, the session
-   * name, whether this trade declines the launcher credential its identity holds, and a DPoP
-   * proof of this client's key.
+   * name, whether this trade declines the launcher credential its identity holds, the scope and
+   * the cut a read trade asks for, and a DPoP proof of this client's key, with a proof of its
+   * holder key beside it where it has one.
    *
    * `openid-client` makes the request and reads the answer — the grant type, the client id, the
    * form encoding, the endpoint and the shape of what came back — and the proof is signed by the
@@ -788,6 +742,10 @@ export class BrokerTokenClient {
     // Sent only when there is a list: a trade naming none reads exactly as one written before the
     // parameter existed.
     if (this.#projects.length > 0) form[FORM_PROJECTS] = this.#projects.join(" ");
+    // Each sent only when set: a trade that asks for neither reads exactly as one written before
+    // the parameters existed.
+    if (this.#scope !== "") form[FORM_SCOPE] = this.#scope;
+    if (this.#asOf !== "") form[FORM_AS_OF] = this.#asOf;
     if (!this.#launcherCredential) {
       // Sent only to decline: an absent parameter asks, so a broker that has never heard of this
       // parameter answers a client that does ask exactly as it always has.
@@ -839,9 +797,10 @@ export class BrokerTokenClient {
   }
 
   /**
-   * One request with a proof of this client's key ({@link sendWithProof}). The answer's own body
-   * is kept in `raw`, since `openid-client` lowercases `token_type` (RFC 6749 makes it
-   * case-insensitive) while the corpus names the spelling the broker wrote.
+   * One request with a proof of this client's key, and of its holder key where it has one
+   * ({@link sendWithProof}). The answer's own body is kept in `raw`, since `openid-client`
+   * lowercases `token_type` (RFC 6749 makes it case-insensitive) while the corpus names the
+   * spelling the broker wrote.
    */
   async #send(
     url: string,
@@ -850,7 +809,7 @@ export class BrokerTokenClient {
     raw: { body: unknown }
   ): Promise<Response> {
     const answer = await sendWithProof(
-      { key: this.#key, fetch: this.#fetch, nonce: this.#nonce },
+      { key: this.#key, holderKey: this.#holderKey, fetch: this.#fetch, nonce: this.#nonce },
       url,
       options,
       signal

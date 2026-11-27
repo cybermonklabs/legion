@@ -112,8 +112,9 @@ func (r *liveRig) cacheHealth(name string) (repocache.Health, string, error) {
 
 // cache-second-pod: another issue pod of the run's repository (cache-b), launched while the cache
 // is Ready, fills its feed from the cache's tar and fetches from GitHub only the delta, under 1 MiB.
-// Its clone owns its objects rather than borrowing them from the feed, and git verifies that
-// connectivity after the feed is mounted read-only.
+// Its clone reads the feed's objects in place, through alternates that name the feed's objects on
+// the read-only path every container mounts it at, and git verifies that connectivity with the
+// feed mounted read-only.
 func (r *liveRig) checkCacheSecondPod() error {
 	if _, err := r.awaitCacheReady(); err != nil {
 		return err
@@ -126,14 +127,19 @@ func (r *liveRig) checkCacheSecondPod() error {
 		return err
 	}
 	clone := TreeRoot + "/repos/github.com/" + r.env.repo.Owner() + "/" + r.env.repo.Name()
-	if _, err := r.exec(c, "test", "!", "-e", clone+"/.git/objects/info/alternates"); err != nil {
-		return fmt.Errorf("cache-b's clone still borrows objects from the feed: %w", err)
+	feedObjects := FeedDir + "/" + r.env.repo.Owner() + "/" + r.env.repo.Name() + ".git/objects"
+	alternates, err := r.exec(c, "cat", clone+"/.git/objects/info/alternates")
+	if err != nil {
+		return fmt.Errorf("cache-b's clone reads no objects through alternates: %w", err)
+	}
+	if got := strings.TrimSpace(alternates); got != feedObjects {
+		return fmt.Errorf("cache-b's clone's alternates name %q, want the feed's objects %s", got, feedObjects)
 	}
 	fsck, err := r.exec(c, "git", "--git-dir="+clone+"/.git", "fsck", "--connectivity-only", "--no-progress")
 	if err != nil {
 		return fmt.Errorf("git fsck of cache-b's clone: %w", err)
 	}
-	note("operator", "exec %s -- test ! -e %s/.git/objects/info/alternates; git fsck --connectivity-only: ok %s", SandboxName(c.token), clone, oneLine(fsck))
+	note("operator", "exec %s -- cat %s/.git/objects/info/alternates: %s; git fsck --connectivity-only: ok %s", SandboxName(c.token), clone, feedObjects, oneLine(fsck))
 	return nil
 }
 

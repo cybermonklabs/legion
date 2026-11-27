@@ -1,5 +1,8 @@
 package capabilities
 
+//ci:reads packages/contracts/fixtures/capability-redaction.json readFixture reads it
+//ci:reads packages/contracts/fixtures/capability-redaction-plugin-report.json readFixture reads it
+
 import (
 	"encoding/json"
 	"fmt"

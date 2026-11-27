@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  Dispatch serves `PUT /api/v1/issues/{key}/steps/{id}/experiment`, which writes the experiment
+  and the variant of one step record. The actor its body names must be the session of the Legion
+  daemon of the issue's project, `legion-daemon:<PROJECT>`, or the write is refused
+  `403 STEP_WRITER`. A bearer bound to a session cannot name another session
+  (`403 ACTOR_SESSION_MISMATCH`), but a credential that proves no session, such as the shared
+  agent token, can name the daemon's session and write, as on every step-record route. The body
+  states both names
+  or is refused `400 STEP_INPUT`, each name must match `^[a-z0-9-]{1,32}$`, and each field is set
+  once, so a later write changes nothing. The read of an issue's steps answers `experiment` and
+  `variant` on each record, and the read of a project's finished issues answers them on each
+  issue, from the records of its newest run; each is null where the records name none.
+time: 2026-11-22T15:08:56Z
+custom:
+    Issue: pr5014

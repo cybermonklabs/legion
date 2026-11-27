@@ -7,6 +7,10 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/ciphertest"
+
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -40,7 +44,8 @@ var processDSN string
 // LEGION_NEWS_MODEL_SEED, LEGION_NEWS_MODEL_RUNS, LEGION_NEWS_MODEL_STEPS and
 // LEGION_NEWS_MODEL_TRACE, which prints each seed's steps. It
 // drops the migrated template testDSN and isolatedOutboxPool clone their databases from
-// (testpg.Main), removes the directory the tests' Envoy binaries were built into
+// (testpg.Main), drops the database of this binary's own that every secrets-broker rig makes its
+// schema in (ciphertest.Run), removes the directory the tests' Envoy binaries were built into
 // (testbuild.Main), and removes the NATS container the package's tests share (testnats.Main).
 //
 // It names one gh for every daemon the tests boot, LEGION_GH_PATH, this test binary: a boot
@@ -82,7 +87,22 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "TestMain: name this test binary as every daemon's gh (LEGION_GH_PATH): %v\n", err)
 		os.Exit(1)
 	}
+	// The idle rig's launchers read their database password from PGPASSWORD alone
+	// (idleRigSessionPassword), and every rig's database is a clone on LEGION_TEST_PG_DSN's
+	// server and login, so the password is named once here rather than by each rig.
+	if processDSN != "" {
+		cfg, err := pgconn.ParseConfig(processDSN)
+		if err == nil && cfg.Password != "" {
+			err = os.Setenv("PGPASSWORD", cfg.Password)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "TestMain: name LEGION_TEST_PG_DSN's password as PGPASSWORD for the idle rig's launchers: %v\n", err)
+			os.Exit(1)
+		}
+	}
 	os.Exit(testpg.Main("legion_daemon_test", func() int {
-		return testbuild.Main(func() int { return testnats.Main(m) })
+		return ciphertest.Run(func() int {
+			return testbuild.Main(func() int { return testnats.Main(m) })
+		})
 	}))
 }

@@ -317,16 +317,18 @@ func TestAPersonsCommentOnAnIssueNobodyRoutesOrClaimsReachesItsSpecsSessions(t *
 		{
 			// A spec written without a claim: the session that wrote every version of the spec held
 			// no claim.
-			name: "a person's conversation comment and its edit reach the spec's sessions, and a reopening does not",
+			name: "a person's conversation comment, its edit and its delete reach the spec's sessions, and a reopening does not",
 			arrange: func(t *testing.T, database *store.Store, broker *events.Broker, spec string) []recipientCheck {
 				root := seedThreadComment(t, database, "T-1", "", alice, nil)
 				comment := seedThreadComment(t, database, "T-1", "", sami, nil)
 				created := appendCommentEvent(t, database, broker, "comment.created", sami, model.Comment{ID: comment})
 				edited := appendCommentEvent(t, database, broker, "comment.edited", sami, model.Comment{ID: comment})
+				deleted := appendCommentEvent(t, database, broker, "comment.deleted", sami, model.Comment{ID: comment})
 				reopened := appendCommentEvent(t, database, broker, "comment.reopened", sami, model.Comment{ID: root})
 				return []recipientCheck{
 					{event: created, want: specSessions},
 					{event: edited, want: specSessions},
+					{event: deleted, want: specSessions},
 					{event: reopened, want: []string{}},
 				}
 			},

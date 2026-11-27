@@ -36,7 +36,7 @@ import {
   failureNoticeFields,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import {
@@ -513,12 +513,38 @@ export async function postDispatchReply(
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
 ): Promise<void> {
-  const config = sessionDispatchSettings(configFile, process.env, {
-    cwd: identity.directory,
-    session: () => identity.id,
-  }).dispatch
+  const config = (
+    await sessionDispatchSettings(configFile, process.env, {
+      cwd: identity.directory,
+      session: () => identity.id,
+    })
+  ).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
   await postDeliveryReply(config, identity.id, delivery, result)
+}
+
+/**
+ * The Dispatch client a person's message, command, pick or BTW is accepted and read through
+ * (`UserTurnRouterOptions.dispatch`), bounded to `ms`, or undefined while nothing configures
+ * Dispatch. It trades under this session's id, as `postDispatchReply` does: no pod sets
+ * `AGENT_SECRETS_SESSION`, so a trade that named no session would write under none.
+ */
+export async function userTurnDispatchClient(
+  identity: SessionIdentity,
+  configFile: SessionConfigFile,
+  ms: number,
+): Promise<DispatchClient | undefined> {
+  const active = activeDispatchSettings(
+    (
+      await sessionDispatchSettings(configFile, process.env, {
+        cwd: identity.directory,
+        session: () => identity.id,
+      })
+    ).dispatch,
+  )
+  return active === null
+    ? undefined
+    : new DispatchClient(active.url, active.credential, fetch, { deadlineMs: ms })
 }
 
 /**
@@ -573,6 +599,13 @@ export function createChannelDelivery(input: {
     if (envelope === undefined) return
     const eventId = envelope.event_id
     if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
+    // A payload the card could not lay out is shown as the text its sender sent: said here, for
+    // the message the inbox lists the first time, so a copy Envoy sends again says nothing new.
+    if (rendered.payloadShownAsText !== undefined) {
+      process.stderr.write(
+        `envoy-channel: message ${eventId ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+      )
+    }
     inbox.unshift({
       event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
@@ -606,7 +639,9 @@ export function createChannelDelivery(input: {
       if (rendered.skip) return tail.then(() => false)
       // A targeted Dispatch delivery the shared renderer could not validate is
       // never shown to the model: it is answered on Dispatch when it names a
-      // message, and dropped with a log line when it does not.
+      // message, and dropped with a log line when it does not. A report Dispatch
+      // made and gave no copy of its answer for (`DispatchWriteLandedError`)
+      // answered the attempt, and its line says it landed.
       if (rendered.rejectedDelivery !== undefined) {
         const rejected = rendered.rejectedDelivery
         process.stderr.write(
@@ -618,7 +653,9 @@ export function createChannelDelivery(input: {
           () => false,
           (error: unknown) => {
             process.stderr.write(
-              `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
+              error instanceof DispatchWriteLandedError
+                ? `envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — ${error.message}\n`
+                : `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
             )
             return false
           },
@@ -2467,7 +2504,7 @@ function pluginStateDirectory(): string {
  * notifications (`./legion-inbox`). */
 export async function runEnvoyChannelServer(): Promise<void> {
   const directory = projectDirectory()
-  const pane = legionPane(process.env)
+  const pane = await legionPane(process.env)
   // The session's envoy.json, by Claude Code's rule (`$CLAUDE_CONFIG_DIR/envoy.json` when that is
   // set), worked out once as the server starts; Dispatch's URL and token are re-read from it on each
   // use, so a file that moved its server takes effect without a restart.
@@ -2475,7 +2512,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
   // The session this server drives, read at every broker trade: Claude Code mints a new id on
   // /clear and `identity` is set to it, so a token this session presents names this session.
   const currentSessionId = (): string => identity.id
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: directory,
     session: currentSessionId,
   })
@@ -2785,16 +2822,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: (ms) => {
-        const active = activeDispatchSettings(
-          sessionDispatchSettings(configFile, process.env, { cwd: directory }).dispatch,
-        )
-        return active === null
-          ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, {
-              deadlineMs: ms,
-            })
-      },
+      dispatch: (ms) => userTurnDispatchClient(identity, configFile, ms),
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
       reply: (delivery, result) => postDispatchReply(identity, configFile, delivery, result),

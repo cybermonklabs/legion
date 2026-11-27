@@ -109,6 +109,7 @@ func lapsedClaim(holder, instance string) store.RoleClaim {
 // which is what keeps a role with the process that holds it: the claim stays renewed for as long
 // as its holder keeps registering, and nothing else on the record moves.
 func TestARegistrationRenewsTheClaimsItsOwnProcessHolds(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_renewing_holder"
@@ -135,6 +136,7 @@ func TestARegistrationRenewsTheClaimsItsOwnProcessHolds(t *testing.T) {
 // claim to renew. The role was taken when it was taken, by whom it was taken from: adoption
 // writes the process and the renewal, nothing else.
 func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_adopting_holder"
@@ -157,6 +159,11 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 	}
 }
 
+// Serial: it holds a wall-clock bound close to what it spends, the route's own sendRequestBudget
+// (3.5 s) over the CPU work of 1,609 topics under the race detector, which parallel load pushed
+// past (3.66-3.98 s; envoy-go-race jobs 139014454657, 139027938105, 139028491225 and
+// 139049385849).
+//
 // The largest registration production has seen (802 topics, 2026-11-16) is a holder following a
 // few hundred Dispatch issues, each as `<KEY>` and `<KEY>.>`, with the per-kind topics of one
 // issue that its `<KEY>.>` already holds, and the lane topic of the role it holds. This case
@@ -229,6 +236,7 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 // - a renewal it could move would keep a role alive for a process that does not hold it, and
 // would hold the role against its real holder once that holder stopped.
 func TestARegistrationFromAnotherProcessRenewsNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_shared_id"
@@ -249,6 +257,7 @@ func TestARegistrationFromAnotherProcessRenewsNothing(t *testing.T) {
 // the claim record names the registering process, and a view that cannot answer is no failure
 // of the renewal, so nothing says the renewal was passed over.
 func TestARegistrationWhoseRoleClaimViewCannotAnswerRenewsTheClaimItsRowNames(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_refilling_view"
@@ -294,6 +303,7 @@ func (kv *racingRoleClaimUpdate) Update(key string, value []byte, revision uint6
 // it. The registration is answered 200, since a heartbeat is not the place to report a race it
 // has already lost.
 func TestARegistrationWhoseRenewalLosesItsCompareAndSwapStillRegisters(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_raced_holder"

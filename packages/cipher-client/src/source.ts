@@ -39,6 +39,14 @@ export interface TokenSource {
    * answered before (`device-login.ts`). The source holds what keeps other processes from ending
    * the token until `trade` settles, and answers what `trade` answers. A source without it is
    * read (`read`) and its token traded.
+   *
+   * `leastLifeMs`, where given, is the least life in milliseconds the subject token it presents
+   * must still have, for a trade whose token the broker ends no later than its subject's; a source
+   * that cannot choose its token ignores it.
    */
-  spend?<T>(trade: (subject: SubjectToken) => Promise<T>, signal?: AbortSignal): Promise<T>;
+  spend?<T>(
+    trade: (subject: SubjectToken) => Promise<T>,
+    signal?: AbortSignal,
+    leastLifeMs?: number
+  ): Promise<T>;
 }

@@ -155,7 +155,7 @@ func TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint(t *testing.T) {
 			if _, err := client.Token(ctx); err != nil {
 				t.Fatalf("the first trade: %v", err)
 			}
-			client.held.Expiry = time.Now().Add(30 * time.Second)
+			client.held.Load().Expiry = time.Now().Add(30 * time.Second)
 			if _, err := client.Token(ctx); err != nil {
 				t.Fatalf("Token = %v; want the token in hand, which is still live", err)
 			}
