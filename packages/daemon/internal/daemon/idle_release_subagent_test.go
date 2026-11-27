@@ -130,7 +130,7 @@ func TestIdleReleaseReleasesASessionWithNothingRunning(t *testing.T) {
 // turn and reports as soon as it has recorded the task (idleRigRoleProcess.prompted).
 func (r *idleWakeRig) awaitStartTask(issue idleRigIssue) {
 	r.t.Helper()
-	idleRigEventually(r.t, idleRigRecordWait, "the start task of "+issue.key+"'s role", func() bool {
+	idleRigEventually(r.t, "the start task of "+issue.key+"'s role", func() bool {
 		return len(r.agents.prompts(issue.key, string(issue.role))) > 0
 	})
 }
@@ -146,7 +146,7 @@ func (r *idleWakeRig) awaitHeld(issue idleRigIssue, passes int64) api.HoldRecord
 	token := r.token(issue)
 	var held api.HoldRecord
 	var quieted time.Time
-	idleRigEventually(r.t, idleRigRecordWait, "the pod of "+issue.key+" held for background work over passes of the idle tick", func() bool {
+	idleRigEventually(r.t, "the pod of "+issue.key+" held for background work over passes of the idle tick", func() bool {
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
 			r.quiet()
@@ -173,7 +173,7 @@ func (r *idleWakeRig) awaitHeld(issue idleRigIssue, passes int64) api.HoldRecord
 // wait on that report.
 func (r *idleWakeRig) awaitReported(token claim.Token, kinds string) {
 	r.t.Helper()
-	idleRigEventually(r.t, idleRigRecordWait, fmt.Sprintf("the report of %s naming background work %q", token, kinds), func() bool {
+	idleRigEventually(r.t, fmt.Sprintf("the report of %s naming background work %q", token, kinds), func() bool {
 		var background bool
 		var held string
 		err := r.pool.QueryRow(context.Background(),
@@ -207,7 +207,7 @@ func (r *idleWakeRig) awaitReleaseRecords(issue idleRigIssue) store.PodReleaseRe
 	}
 	defer st.Close()
 	var records store.PodReleaseRecords
-	idleRigEventually(r.t, idleRigRecordWait, "the record of the release of "+issue.key+"'s pod", func() bool {
+	idleRigEventually(r.t, "the record of the release of "+issue.key+"'s pod", func() bool {
 		read, err := st.PodReleaseRecords(ctx, r.project, time.Time{})
 		if err != nil {
 			r.t.Fatalf("read the release records: %v", err)

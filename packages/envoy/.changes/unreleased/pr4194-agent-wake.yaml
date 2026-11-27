@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  A message on an agent subject, in either form (`notifications.agent.<session>` or
+  `notifications.agent.<PROJECT or _>.<session>`), is the session's own consumer's alone, with one
+  exception: when a role message's claim names another session, or none, that consumer's relay
+  copies the message to the role's kept lane in place of sending it, and the kept lane's walk
+  forwards the copy to the role's holder (`takeOverFrame`, since cybermonklabs/legion#4387). That
+  hand-over is at least once, not exactly once: the relay copies the message and then acknowledges
+  it, so a listener that stops between the two, or an acknowledgement that fails, can give the
+  holder a second frame with the same `event_id`. The listener no longer defers such a message,
+  tries it again or gives it up, and it logs no
+  `listener agent delivery deferred`, `given up` or `failed` line and sends no `no_holder` or
+  `delivery_failed` notice for it. For a session with no record, or a record past the gone
+  horizon, the listener that holds the session's interest row (each listener when none does)
+  waits once for `ENVOY_UNPLACEABLE_RETRY_WINDOW` (60 s by default), then publishes one wake
+  report that the stream must store before it acknowledges the message, and logs
+  `listener agent wake reported`. A report the stream did not store is tried again after the same
+  wait, and at the stream's 20th delivery the listener logs `listener agent wake not stored` and
+  acknowledges. A read of the session record that did not answer logs
+  `listener agent record unread` once for the message, at the first such read, also when that
+  read is at the last delivery. Below the last delivery the listener sends the message back for
+  the wait, and at the last delivery it reports the wake. The metric label
+  `unplaceable_no_record` is now `wake_reported`.
+time: 2026-11-16T18:39:47Z
+custom:
+    Issue: pr4194
