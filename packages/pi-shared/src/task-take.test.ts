@@ -867,8 +867,17 @@ test("a value of another epoch replaces the held one, whatever its revision", as
 const transport = (code: string): Error =>
   Object.assign(new TypeError(`${code}: the request reached no daemon`), { code });
 
-const uncoded = (status: number): Error =>
-  new LegionDaemonApiError("POST", "/legion/v1/claims/take", status, undefined, "upstream failed");
+/** A proxy's page in the daemon's place answering `status`: no refusal shape, so no code. */
+const proxyPage = (status: number): Error =>
+  new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/claims/take",
+    status,
+    undefined,
+    "upstream failed",
+    false,
+    0
+  );
 
 for (const [name, attempt] of [
   ["a refused connection", { fail: transport("ECONNREFUSED") }],
@@ -884,9 +893,12 @@ for (const [name, attempt] of [
   ["a transport failure no list names", { fail: transport("FailedToOpenSocket") }],
   ["a failure that names no code", { fail: new Error("the socket hung up") }],
   ["no answer within 5 minutes", { silent: true }],
-  ["a 502 with no code", { fail: uncoded(502) }],
-  ["a 503 with no code", { fail: uncoded(503) }],
-  ["a 504 with no code", { fail: uncoded(504) }],
+  ["a proxy's 408", { fail: proxyPage(408) }],
+  ["a proxy's 429", { fail: proxyPage(429) }],
+  ["a proxy's 500", { fail: proxyPage(500) }],
+  ["a 502 with no code", { fail: proxyPage(502) }],
+  ["a 503 with no code", { fail: proxyPage(503) }],
+  ["a 504 with no code", { fail: proxyPage(504) }],
 ] as const) {
   test(`a take that meets ${name} is sent again, the same request, with growing waits and no limit, until it is answered`, async () => {
     const { take, routed, takes, ran, waits, advance, marks } = rig();
@@ -920,9 +932,19 @@ for (const [name, attempt] of [
 }
 
 for (const [name, refusal] of [
-  ["a 409 with a code", new LegionDaemonApiError("POST", "/p", 409, "TASK_NOT_OWED", "refused")],
-  ["a 503 with a code", new LegionDaemonApiError("POST", "/p", 503, "DAEMON_DRAINING", "draining")],
-  ["a 400", new LegionDaemonApiError("POST", "/p", 400, undefined, "malformed")],
+  [
+    "a 409 with a code",
+    new LegionDaemonApiError("POST", "/p", 409, "TASK_NOT_OWED", "refused", true, 0),
+  ],
+  [
+    "a 503 with a code",
+    new LegionDaemonApiError("POST", "/p", 503, "DAEMON_DRAINING", "draining", true, 0),
+  ],
+  [
+    "a 503 in the daemon's refusal shape with no code",
+    new LegionDaemonApiError("POST", "/p", 503, undefined, "unavailable", true, 0),
+  ],
+  ["a 400", new LegionDaemonApiError("POST", "/p", 400, undefined, "malformed", true, 0)],
 ] as const) {
   test(`a take or a seen report the daemon answers with ${name} is not sent again`, async () => {
     const { take, routed, takes, seens, advance, marks } = rig();

@@ -1,3 +1,4 @@
+import { outage } from "@legion/contracts/http-status";
 import type { LegionRegistration, LegionTask } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
@@ -83,9 +84,9 @@ export interface LegionClaimBoot {
 /**
  * Boots a claim on `/legion/v1/claims/*`, the same on every harness: `claims/register`;
  * `afterRegister`, where the host takes the registration's task value; the capability recorded;
- * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the claim's task
- * value read again (`claims/task`) into the host's `taskValue`; `afterReadyRead` once that read
- * has answered; the Envoy role claimed right after that, and claimed again while the listener
+ * `claims/ready`, retried on an outage or a transport failure (`callReadyWithRetry`); the claim's
+ * task value read again (`claims/task`) into the host's `taskValue`; `afterReadyRead` once that
+ * read has answered; the Envoy role claimed right after that, and claimed again while the listener
  * answers it 503; and the regain listener, which reads the
  * claim's task value again, once, each time the heartbeat regains the role, logging a read that
  * fails. It answers the claim it booted, through which the host reads that value again at a new
@@ -115,13 +116,13 @@ export interface LegionClaimBoot {
  * The ready carries no capability report. The session measures its capability rows later, on the
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).
  *
- * A registration the daemon refuses (a 4xx: a spent boot token, another contract) and any failure
- * after a registration but the read after the ready — the host's `afterRegister`, the ready, the
- * role claim, the role claim's refusal among them — are logged and `stop` the agent, since none of
- * them changes on retry; a relaunched process reads its claim's value at its own
- * registration. Any other refusal of the registration (a 5xx) is logged and rejects, as a request
- * that never reached the daemon does unlogged: both leave the agent to the daemon's registration
- * deadline.
+ * A registration the daemon refuses (a 4xx other than a 408 or a 429: a spent boot token, another
+ * contract) and any failure after a registration but the read after the ready — the host's
+ * `afterRegister`, the ready, the role claim, the role claim's refusal among them — are logged and
+ * `stop` the agent, since none of them changes on retry; a relaunched process reads its claim's
+ * value at its own registration. An outage at the registration (`outage`: a 5xx, a 408 or a 429)
+ * is logged and rejects, as a request that never reached the daemon does unlogged: both leave the
+ * agent to the daemon's registration deadline.
  *
  * A role claim the listener answered 503 is no refusal (`listenerAskedToClaimAgain`): the listener
  * wrote no claim - every try of its write met a conflict, or the takeover record a claim writes
@@ -143,7 +144,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   } catch (error) {
     if (!(error instanceof LegionDaemonApiError)) throw error;
     host.log(`claims/register registration failed (${error.status}): ${error.detail}`);
-    if (error.status < 400 || error.status >= 500) throw error;
+    if (error.status < 400 || outage(error.status)) throw error;
     host.stop();
     return undefined;
   }

@@ -86,14 +86,15 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
  * gave no answer to — any failure that carries no HTTP status, whatever the transport names it (a
  * refused, reset or closed connection, an unreachable host or network, a timeout, a DNS failure
- * among them), no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no
- * Legion error code — is sent again, the same request, after a doubling wait with no attempt
+ * among them), no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or an outage (a 408, a 429 or any
+ * 5xx: `outage` of `@legion/contracts/http-status`) whose body is not the daemon's refusal shape,
+ * such as a proxy's page — is sent again, the same request, after a doubling wait with no attempt
  * limit, until the daemon answers it or a newer value replaces it: a take the daemon never
  * received would otherwise be lost, since the worker asks once per revision. Such a re-send is the
  * same ask, not a second one, and the daemon answers a take repeated for the number it accepted
  * with the same text until that task finishes, whether or not its turn has started.
- * Every refusal of these routes names a code, so a coded refusal is an answer and is not sent
- * again.
+ * Every refusal of these routes is in the daemon's refusal shape, so it is an answer and is not
+ * sent again.
  *
  * A take its host replaced (`close`) does nothing more: what it was sending stops, an answer that
  * still arrives for it is dropped, and its task-turn mark is cleared.

@@ -521,7 +521,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		},
 	} {
 		t.Run(tc.row, func(t *testing.T) {
-			g := newRig(t, tc.objects, withoutController())
+			g := newRig(t, tc.objects, withoutController(), withTestBootTimeout())
 			if tc.launcher != nil {
 				g.reportLauncher(workerToken, *tc.launcher)
 			}

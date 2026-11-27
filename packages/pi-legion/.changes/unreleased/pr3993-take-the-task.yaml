@@ -6,7 +6,11 @@ body: |-
   read has answered, no Envoy message starts a turn, one sent to the session itself included. A
   task accepted while a run is going waits for that run's end and starts a turn of its own, and
   that run's report names the task as `held`. Each turn's end is reported to the daemon until the
-  daemon answers. A refused end the host goes on from, with a retry or the next model of its
+  daemon answers. The take, the seen report and the turn's report are each sent again after an
+  outage whose body is not the daemon's refusal shape, as #5230's outage rule says. The turn's report is
+  the one call that a refusal in the daemon's own shape does not end: the route's own 500, which
+  says the daemon could not record the report, is sent again, since the report is what finishes the
+  task. A refused end the host goes on from, with a retry or the next model of its
   fallback chain, ends no turn: the task's take keeps its number and nothing is reported, so the
   daemon does not take the task back while the host still runs its turn, and the end of the attempt
   that settles the turn is the one report. The daemon-launched controller reports ready and reads

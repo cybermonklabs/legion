@@ -174,9 +174,11 @@ func goneShim(t *testing.T) *os.File {
 }
 
 // The bridge's own lines pass the URL rule. A turn's outcome whose post fails in its transport is
-// logged with the error of the post, which quotes the daemon's URL as the pane names it
-// (LEGION_DAEMON_URL), user name and query included, before the report is sent again: the line
-// keeps the URL's host and path, and neither the user name nor the query reaches the pane.
+// logged, before the report is sent again, with the error of the post through
+// redact.RequestError, with the daemon's URL as the pane names it (LEGION_DAEMON_URL), user name
+// and query included: the line names the URL by its scheme, the mark of a URL with credentials and
+// its path, and any host and port the error names as the mark too, since the URL holds a user
+// name; neither the user name, the query, nor the daemon's host and port reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
@@ -221,10 +223,10 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	})
 	p.hangUp()
 	logged := p.logged()
-	if want := `Post "http://` + daemon + `/daemon"`; !strings.Contains(logged, want) {
+	if want := "(the transport failed: http://[a URL with credentials]/daemon: net/http: "; !strings.Contains(logged, want) {
 		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
 	}
-	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {
+	for _, credential := range []string{"legion-reader", "planted-query-token-3", daemon} {
 		if strings.Contains(logged, credential) {
 			t.Errorf("the bridge logged:\n%s\nwhich holds %q", logged, credential)
 		}

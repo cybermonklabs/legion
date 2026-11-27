@@ -115,6 +115,9 @@ type conflictNoTakeoverLive struct {
 // it replaced refused and its completion at the new head taken, and last the control, a conflict
 // whose required check passed, which the second read gets nothing.
 func TestAConflictKeepsThePhaseAndTakesNoTurnOverLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newConflictNoTakeoverLive(t)
 	r.step("step1-the-tester-works-the-assignment-its-phase-handed-it", r.testerWorksItsAssignment)
 	r.step("step2-the-first-conflicting-read-waits-for-a-second-and-sends-nothing", r.firstReadSendsNothing)

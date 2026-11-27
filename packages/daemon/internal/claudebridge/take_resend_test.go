@@ -26,8 +26,9 @@ import (
 // A seen report and a take that get no answer from the daemon are sent again, the same request,
 // until it answers (dispatch://INFRA-2811): on a refused, a reset and a closed connection, an
 // unreachable host and network, a name that does not resolve, a dial and a read that timed out,
-// an attempt with no answer within its bound, and a 502, a 503 and a 504 that name no Legion
-// error code. Once the daemon answers, the task is taken once and runs once.
+// an attempt with no answer within its bound, and a proxy's page answering an outage (a 408, a
+// 429, a 500, a 502, a 503 and a 504: httpoutage.Is), whose body is not the daemon's refusal
+// shape. Once the daemon answers, the task is taken once and runs once.
 func TestATakeAndASeenReportAreSentAgainOnEachListedFailure(t *testing.T) {
 	proxyStatus := func(status int) func(http.ResponseWriter, *http.Request) {
 		return func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "upstream connect error", status) }
@@ -79,13 +80,22 @@ func TestATakeAndASeenReportAreSentAgainOnEachListedFailure(t *testing.T) {
 		{name: "no answer within the attempt's bound", why: "no answer within 200ms", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
 			return func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
 		}},
-		{name: "a 502 with no code", why: "502 with no Legion error code", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
+		{name: "a proxy's 408", why: "408 whose body is not the daemon's refusal shape", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
+			return proxyStatus(http.StatusRequestTimeout)
+		}},
+		{name: "a proxy's 429", why: "429 whose body is not the daemon's refusal shape", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
+			return proxyStatus(http.StatusTooManyRequests)
+		}},
+		{name: "a proxy's 500", why: "500 whose body is not the daemon's refusal shape", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
+			return proxyStatus(http.StatusInternalServerError)
+		}},
+		{name: "a 502 with no code", why: "502 whose body is not the daemon's refusal shape", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
 			return proxyStatus(http.StatusBadGateway)
 		}},
-		{name: "a 503 with no code", why: "503 with no Legion error code", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
+		{name: "a 503 with no code", why: "503 whose body is not the daemon's refusal shape", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
 			return proxyStatus(http.StatusServiceUnavailable)
 		}},
-		{name: "a 504 with no code", why: "504 with no Legion error code", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
+		{name: "a 504 with no code", why: "504 whose body is not the daemon's refusal shape", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
 			return proxyStatus(http.StatusGatewayTimeout)
 		}},
 	} {

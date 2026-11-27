@@ -158,6 +158,7 @@ type providerErrorLive struct {
 // the sixth turn, a content filter's refusal that carries no status, an error that cannot clear,
 // and the operator's commands over the claims the first and the fourth leave.
 func TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newProviderErrorLive(t)
 	r.step("step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder", r.ladderWalks)

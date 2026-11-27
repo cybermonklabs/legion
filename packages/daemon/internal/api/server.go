@@ -275,10 +275,11 @@ type Options struct {
 	// — a boot's ready; a regain of the role sends none, and reads the claim's task value instead
 	// (claims/task) — of the claim as it stands, when it has an issue and is not the controller:
 	// for an issue of the daemon's own project, the daemon queues the publication of that issue's
-	// role sessions to Dispatch, which reads the live set from the store when it runs. A claim
-	// takes no task until it has taken its ready (supervise.HoldNotReady), so the publication is
-	// queued before any take is accepted. An error refuses the ready with 503: the machine has not
-	// taken it, no take is accepted, and the plugin tries the ready again. Nil queues nothing.
+	// role sessions to Dispatch, which reads the set of sessions whose claims hold their roles from
+	// the store when it runs. A claim takes no task until it has taken its ready
+	// (supervise.HoldNotReady), so the publication is queued before any take is accepted. An error
+	// refuses the ready with 503: the machine has not taken it, no take is accepted, and the plugin
+	// tries the ready again. Nil queues nothing.
 	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route

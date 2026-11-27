@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -510,7 +511,7 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 	}
 	var list api.OperatorClaims
 	if err := decodeAnswer(answer, &list); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), redact.URL(op.base+claimsRoute), err)
 		return 1
 	}
 	code := 0
@@ -591,7 +592,7 @@ func (c *claimsCall) awaitHeld(ctx context.Context, op operator, token legioncla
 		}
 		var list api.OperatorClaims
 		if err := decodeAnswer(answer, &list); err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
+			fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), redact.URL(op.base+claimsRoute), err)
 			return nil, false
 		}
 		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == token })
@@ -668,7 +669,7 @@ func (c *claimsCall) stop(ctx context.Context, token string) int {
 	return c.postHeld(ctx, token, "stop", func(op operator, path string, answer []byte) ([]byte, bool) {
 		var held api.OperatorClaim
 		if err := decodeAnswer(answer, &held); err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, path, err)
+			fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), redact.URL(op.base+path), err)
 			return nil, false
 		}
 		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), stopHeldLine(held))

@@ -37,7 +37,7 @@ Restart it only when a person asks, your deployment instructions name the case, 
 1. `kubectl -n <namespace> get pods -l '<daemon label>' -o wide` lists one pod: note its name. With no pod or several, delete nothing and name it in the day's report.
 2. `kubectl -n <namespace> delete pod -l '<daemon label>'`. The daemon's Deployment makes a new pod.
 3. Read again each minute until a new pod reads `Running` with every container ready, or five minutes pass.
-4. When no new pod is `Running` five minutes after the delete, open a finding ask on the report issue that names the pod and its status.
+4. When no new pod is `Running` five minutes after the delete, open a finding ask that names the pod and its status.
 
 Publish to no role topic while the restart runs: a message starts a turn that the wake pacing does not count.
 
@@ -50,7 +50,7 @@ The three steps, the pod uid before the request, the refusals and the pod uid af
 ## A re-run of a CI run
 
 Your `gh` only reads: it holds the review App's read-only lease. This re-run and the reply to a GitHub mention take the implement App token the secrets broker lends, narrowed to the repository.
-Re-run only the failed jobs of an infrastructure failure the log shows, and write a test that failed and passed on the same code to the tree whose code it is, by a mention.
+Re-run only the failed jobs of an infrastructure failure the log shows, and write a test that failed and passed on the same code to the tree whose run it failed, by a mention.
 The four steps, the log read, the flaky test, the re-run and the read after it, are in `skill://legion-controller/references/operations-steps.md#a-re-run-of-a-ci-run`: read them before every re-run.
 
 ## An agent the operator holds
@@ -66,10 +66,10 @@ Before you act on one, read its five steps in `skill://legion-controller/referen
 
 A decision only a person may make is a `dispatch ask`. Every other request goes to the session whose work it is, as a Dispatch comment on the owning issue that mentions its role, and to no other session, such as a person's chief of staff. A tree architect's token is `issues.<ROOT>.architect.locator.claim`, else `legion-<project>-<root key, lower case>-architect`.
 
-- Merge or queue a pull request: not yours. Write to the architect of the tree that owns it, which enqueues one that no merger merges.
-- Cluster, cloud or CI: the restart, the re-run, the pod replacement and the reads above. Any other act (a quota, a pin, a Pulumi value) is a change of code: write it to the owning tree's architect, or file it as a clear defect no tree owns. An apply window is a `dispatch ask`.
+- Merge or queue a pull request: not yours. Write to the architect of its tree, which enqueues one that no merger merges.
+- Cluster, cloud or CI: the restart, the re-run, the pod replacement and the reads above. Any other act (a quota, a pin, a Pulumi value) is a change of code: file it as a clear defect. An apply window is a `dispatch ask`.
 - Work, an investigation, a review, a decision or a status: read what you can reach yourself, and write the rest to its owner.
 - What another agent sent you: send no relay; that agent writes to the owner itself.
-- A person's request from outside Dispatch: write it to the owning tree's architect in their words.
+- A person's request from outside Dispatch: write it to the architect of the tree it concerns, in their words.
 - A person's answer on an ask: mention the owner where the answer is, as `finding-asks.md`'s catch-up step 5 says, copying nothing.
 - A copy only so another session knows: send none.

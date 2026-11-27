@@ -101,6 +101,7 @@ type handoffRecordsLive struct {
 // TestHandoffRecordsLive drives the proof's steps against one booted daemon and one Dispatch.
 // A10 runs last, since it stops Dispatch under the daemon.
 func TestHandoffRecordsLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newHandoffRecordsLive(t)
 	r.step("a6-a-40kb-handoff-reads-back-byte-identical-two-writes-are-versions-1-and-2", r.a6RoundTrip)

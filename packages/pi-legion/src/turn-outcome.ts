@@ -1,3 +1,4 @@
+import { outage } from "@legion/contracts/http-status";
 import type { LegionTurnOutcomeRequestBody } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import {
@@ -80,17 +81,20 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * (`sendUntilAnswered`, the policy a take is sent by): any failure that carries no HTTP status,
  * whatever the transport names it (a refused, reset or closed connection, an unreachable host or
  * network, a connect or read timeout, a DNS failure among them), no answer within five minutes,
- * and a 502, 503 or 504 that names no Legion error code are sent again, the same request, after a
- * doubling wait with no attempt limit, and so is any 500 the route answers, which is the daemon's
- * own failure to record the report (`turn outcome failed: the daemon could not record it`). No
+ * and an outage (`outage` of `@legion/contracts/http-status`: a 408, a 429 or any 5xx) whose body
+ * is not the daemon's refusal shape, such as a proxy's page, are sent again, the same request,
+ * after a doubling wait with no attempt limit. So is any 500 the route answers, which is the
+ * daemon's own failure to record the report (`turn outcome failed: the daemon could not record
+ * it`): that answer is in the daemon's refusal shape, which `sendUntilAnswered` hands back as the
+ * daemon's word, and this report alone sends it again (`recordFailed`, the plan's decision 8). No
  * list of the transport's codes decides it: a report a failure stopped would leave its task's turn
  * started on the daemon, which arms no bound over it, while the take holds the number finished
  * from the turn's end, so nothing would finish the task or take it again until a newer task or
  * the process's end. The daemon stores one outcome per `(generation, sequence)` and applies a
  * repeat once, so a report sent again whose first attempt landed changes nothing, and one whose
- * write failed is applied. A 2xx ends the sending, and so does a refusal
- * (a 4xx, or any other answer the daemon names a code for), which is warned about once: nothing
- * this pane can do changes it. The session's end stops what is still being sent for it
+ * write failed is applied. A 2xx ends the sending, and so does any other answer in the daemon's
+ * refusal shape (a 4xx above all, coded or not), which is warned about once: nothing this pane can
+ * do changes it. The session's end stops what is still being sent for it
  * (`sessionEnded`). The report resolves how the daemon answered it (`TurnReportAnswer`): a 4xx
  * applied nothing, so a task the report named is still owed, and the claim's take, which held
  * that number finished from the turn's end, holds it finished no longer (`TaskTake.reportRefused`
@@ -172,9 +176,9 @@ export interface TurnOutcomeReporter {
  * status of the failed request (0 where it had none, as a content filter's refusal has none, and
  * for a number that is no HTTP status, 100 to 599, which the host's field can hold), the provider
  * and the model, the provider's message, and whether this plugin reads the status as a failure
- * that may clear: a 408 or a 429, a provider's "not now" its own retries may still get through,
- * or a 5xx. The daemon decides by the status and the report's `code` (`cyberPolicy`, below). No
- * status is ever read out of the words.
+ * that may clear: an outage (`outage` of `@legion/contracts/http-status`: a 408 or a 429, a
+ * provider's "not now" its own retries may still get through, or a 5xx). The daemon decides by the
+ * status and the report's `code` (`cyberPolicy`, below). No status is ever read out of the words.
  */
 function providerError(
   message: AgentEndMessage,
@@ -190,7 +194,7 @@ function providerError(
     provider: message.provider ?? "",
     model: message.model ?? "",
     message: refusal,
-    retryable: status === 408 || status === 429 || status >= 500,
+    retryable: outage(status),
   };
 }
 

@@ -23,6 +23,7 @@ import (
 )
 
 func TestLookNamesItsCheckLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	proof := newLiveProof(t, "scripts/e2e/look-names-its-check.sh")
 	proof.cfg.ReviewRoundCap = 3

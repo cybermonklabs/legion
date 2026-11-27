@@ -156,6 +156,7 @@ type busyPane struct {
 // TestARelaunchSaysWhatItEndedLive drives the three relaunch steps, each on a claim of its own.
 // scripts/e2e/busy-relaunch-delivery.sh runs it.
 func TestARelaunchSaysWhatItEndedLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newBusyRelaunchLive(t)
 	r.run("relaunch-subagent-worker", r.relaunchSubagentWorker)

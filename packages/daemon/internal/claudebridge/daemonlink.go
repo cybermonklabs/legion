@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -174,7 +176,12 @@ func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, reque
 // clock, with the daemon's answer read whole, up to maxTaskAnswerBytes. An attempt the bound ended
 // fails with errNoAnswerInTime, whatever the transport made of it: ending the request's context
 // ends its dial, its wait for an answer and its read of the body alike, which read to the
-// transport as a cancel, and the two are told apart by the bound's cause.
+// transport as a cancel, and the two are told apart by the bound's cause. Any other failure is
+// returned through redact.RequestError: LEGION_DAEMON_URL is the daemon's daemon_url, which can
+// carry a user name and a password, so neither the URL's credential nor the host and the port a
+// dial's or a resolver's error names (a password's tail, when it holds an unencoded "@") reaches
+// a line that quotes the error (unanswered, and the callers' own lines). The error it returns
+// still unwraps to the transport's, which is what unanswered reads.
 func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (status int, answer []byte, err error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -185,12 +192,17 @@ func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (sta
 		case <-ctx.Done():
 		}
 	}()
+	route := d.url + path
 	defer func() {
-		if err != nil && context.Cause(ctx) == errNoAnswerInTime {
+		switch {
+		case err == nil:
+		case context.Cause(ctx) == errNoAnswerInTime:
 			err = errNoAnswerInTime
+		default:
+			err = redact.RequestError("the daemon", route, err)
 		}
 	}()
-	post, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url+path, bytes.NewReader(body))
+	post, err := http.NewRequestWithContext(ctx, http.MethodPost, route, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, err
 	}
@@ -215,12 +227,16 @@ var errNoAnswerInTime = errors.New("no answer within the attempt's bound")
 // after it; an attempt past calls.answerTimeout is a daemon that took the request and never
 // answered; any other failure of an attempt that got no status at all is no answer either,
 // whatever it names itself (a code no case here lists, a malformed answer of something in the
-// daemon's place); and a 502, 503 or 504 that names no Legion error code is a proxy in front of a
-// daemon that is not serving. No list of failures decides the attempt that got no status: one that
-// never reached the daemon applied nothing, and one that did is applied once however often it
-// arrives, which is what every request untilAnswered sends is. Every refusal the daemon itself
-// makes names a code (api's taskRefusal), so a coded answer, whatever its status, is the daemon's
-// word and is never sent again.
+// daemon's place); and an outage (httpoutage.Is: a 408, a 429 or any 5xx) whose body is not the
+// daemon's refusal shape (refusalShape) is a proxy in front of the daemon that answered in its
+// place: a gateway for a daemon that is not serving, a proxy whose own timeout ran out, or one
+// that turned the request away. No list of failures decides the attempt that got no status: one
+// that never reached the daemon applied nothing, and one that did is applied once however often
+// it arrives, which is what every request untilAnswered sends is. Every refusal the daemon itself
+// makes is in its refusal shape (api's Failure), so such an answer, whatever its status and with a
+// code or without one, is the daemon's word and is never sent again here; the turn-outcome report
+// names the route's own 500 to send again (recordFailed), and Oh My Pi's daemon client reads
+// answers by the same rule (packages/pi-shared/src/daemon-client.ts, proxyAnswered).
 func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 	var dns *net.DNSError
 	switch {
@@ -246,11 +262,8 @@ func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 	default:
 		return ""
 	}
-	switch status {
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		if !coded(body) {
-			return fmt.Sprintf("%d with no Legion error code", status)
-		}
+	if httpoutage.Is(status) && !refusalShape(body) {
+		return fmt.Sprintf("%d whose body is not the daemon's refusal shape", status)
 	}
 	return ""
 }
@@ -277,13 +290,15 @@ func timedOut(err error) bool {
 	return false
 }
 
-// coded is whether body is a refusal the daemon made: one JSON object naming a Legion error code
-// (api's Failure).
-func coded(body []byte) bool {
+// refusalShape is whether body is an answer the daemon wrote: one JSON object whose `error` is a
+// sentence, with a Legion error code beside it or none (api's Failure, LegionErrorResponse of
+// @legion/contracts/legion-api).
+func refusalShape(body []byte) bool {
 	var refusal struct {
-		Code string `json:"code"`
+		Error string  `json:"error"`
+		Code  *string `json:"code"`
 	}
-	return json.Unmarshal(body, &refusal) == nil && refusal.Code != ""
+	return json.Unmarshal(body, &refusal) == nil && refusal.Error != "" && (refusal.Code == nil || *refusal.Code != "")
 }
 
 // refusalText is what the bridge logs of an answer that is not the one a route answers on

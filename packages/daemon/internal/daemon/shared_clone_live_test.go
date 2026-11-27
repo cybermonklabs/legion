@@ -35,6 +35,7 @@ import (
 // <cache Sandbox>` for the second to LEGION_E2E_RESULT, one line each, for the script, which reads
 // the clones and the feeds in the pods.
 func TestASharedCloneReadsTheFeedInAnIssuePodLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	env := map[string]string{}
 	for _, name := range []string{"LEGION_E2E_KUBECONFIG", "LEGION_E2E_KUBE_CONTEXT", "LEGION_E2E_IMAGE", "LEGION_E2E_STREAM_HOST", "LEGION_E2E_WORK", "LEGION_E2E_RESULT"} {

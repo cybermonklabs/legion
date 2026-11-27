@@ -152,6 +152,7 @@ type phaseEntryConvergeLive struct {
 // that held task and its completion is refused, a start row deleted before any lane runs it whose
 // work the sweep writes for the implementer all the same, and the state's two numbers.
 func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newPhaseEntryConvergeLive(t)
 	r.step("run1-the-testers-start-waits-for-the-launch-the-pace-holds", r.theStartWaitsForTheLaunch)

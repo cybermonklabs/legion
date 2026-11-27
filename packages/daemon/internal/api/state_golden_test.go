@@ -87,7 +87,7 @@ worker_wakes_per_minute: 12
 worker_wake_burst: 2
 operator_token_file: /var/run/legion/OPERATOR_TOKEN
 envoy_url: http://legion:fixture-envoy-password@envoy-listener.internal.example:9020
-nats_urls: [nats://legion:fixture-nats-password@nats.internal.example:4222, nats://nats-2.internal.example:4222]
+nats_urls: ["nats://fixture-nats-user@nats.internal.example:4222", nats://nats-2.internal.example:4222]
 envoy_token_file: /var/run/legion/ENVOY_TOKEN
 nats_nkey_seed_file: /var/run/legion/NATS_NKEY_SEED
 nats_daemon_nkey_seed_file: /var/run/legion/NATS_DAEMON_NKEY_SEED

@@ -99,6 +99,9 @@ type parentWaitsLive struct {
 // worker's completion of the ended phase refused, and the child's merge and done that take the
 // root back.
 func TestParentWaitsLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newParentWaitsLive(t)
 	r.step("step1-a-root-in-implementing-holds-a-slot-and-its-implementer-is-registered", r.rootHoldsASlot)
 	r.step("step2-a-released-child-moves-the-root-to-awaiting-children-and-its-worker-and-architect-are-told", r.releaseMovesTheRoot)
