@@ -129,12 +129,14 @@ func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
 // TestEachEvalReadsTheDayRowsOfItsOwnWriter: a logged eval's readings write and the computation
 // each hold a row of one eval, series and day side by side (eval_days.writer, R3), and every read
 // of an eval's rows reads its definition's writer's alone: the window read, the first day and the
-// items route's day rows. Logged, the eval reads the reading's row and the zero rows its write left
-// after it (writeLoggedZeros), and the reading's day as its first; read as computed, the
-// computation's two rows, the earlier of them its first day.
+// items route's day rows. Logged (registered folded by sum so writeLoggedZeros writes its zero
+// rows), the eval reads the reading's row and the zero rows its write left after it, and the
+// reading's day as its first; read as computed, the computation's two rows, the earlier of them its
+// first day.
 func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
+	r.registerFolded(t, "load", AggSum, "load")
 	evalID := r.write(t, "load", alice, row(t, map[string]any{
 		"series": "load", "row_kind": "run", "row_key": "r", "value": 7, "measured_at": at(4, 9, 0),
 	})).Definition.EvalID
