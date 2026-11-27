@@ -29,7 +29,8 @@ import (
 
 const branchBaseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
 
-// branchCreated, branchExists and branchRefused are GitHub's answers to a create of a ref.
+// branchCreated, branchExists, branchRefused and branchFailed are GitHub's answers to a create of a
+// ref: a create, a ref GitHub has, a refusal a retry meets again, and GitHub's own trouble.
 var (
 	branchCreated = func() (int, string) {
 		return http.StatusCreated, `{"ref":"refs/heads/legion/LEGION-208","object":{"sha":"` + branchBaseCommit + `"}}`
@@ -39,6 +40,9 @@ var (
 	}
 	branchRefused = func() (int, string) {
 		return http.StatusForbidden, `{"message":"Resource not accessible by integration","status":"403"}`
+	}
+	branchFailed = func() (int, string) {
+		return http.StatusBadGateway, `{"message":"Server Error"}`
 	}
 )
 
@@ -226,12 +230,13 @@ func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStart
 	}
 }
 
-// A create GitHub refuses leaves the root's architect unstarted: the branch's row retries on the
-// outbox's backoff, each attempt logged with the repository, the ref, GitHub's status and its body,
-// and the start behind it waits. Once a create passes, the architect starts.
+// A create GitHub fails with its own trouble leaves the root's architect unstarted: the branch's row
+// retries on the outbox's backoff, each attempt logged with the repository, the ref, GitHub's
+// status and its body, and the start behind it waits. Once a create passes, the architect starts.
+// A refusal a retry meets again ends the row instead (issue_branch_refusal_test.go).
 func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.T) {
 	t.Parallel()
-	admitted, github := newBranchAdmission(t, branchRefused)
+	admitted, github := newBranchAdmission(t, branchFailed)
 
 	for range 3 {
 		admitted.run(t)
@@ -244,7 +249,7 @@ func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.
 		t.Fatalf("GitHub saw %d creates, want one per run", got)
 	}
 	want := "create the branch of LEGION-208, which its roles' starts wait for: create refs/heads/legion/LEGION-208 on acme/widgets at " +
-		branchBaseCommit + `: GitHub answered POST /git/refs with 403: {"message":"Resource not accessible by integration","status":"403"}`
+		branchBaseCommit + `: GitHub answered POST /git/refs with 502: {"message":"Server Error"}`
 	var lastError string
 	var attempts int
 	if err := admitted.runner.pool.QueryRow(context.Background(), "select last_error, attempts from outbox where kind = 'issue_branch'").Scan(&lastError, &attempts); err != nil {

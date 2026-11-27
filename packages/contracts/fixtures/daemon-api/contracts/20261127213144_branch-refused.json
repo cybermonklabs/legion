@@ -1,0 +1,29 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "branchRefused",
+        "branchRefused.at",
+        "branchRefused.kind",
+        "branchRefused.reason",
+        "branchRefused.row",
+        "branchRefused.write"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.branchRefused",
+        "issues.*.branchRefused.at",
+        "issues.*.branchRefused.kind",
+        "issues.*.branchRefused.reason",
+        "issues.*.branchRefused.row",
+        "issues.*.branchRefused.write"
+      ]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

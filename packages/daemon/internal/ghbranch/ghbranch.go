@@ -23,7 +23,8 @@ import (
 // itself and never release). A branch GitHub already has is left where it is, and Create reports
 // success: GitHub answers its create with 422 "Reference already exists". Every other answer, to
 // the read of base or to the create, is an error naming the repository, the ref and GitHub's
-// answer (a *githubrest.Answer, its status and body).
+// answer (a *githubrest.Answer, its status and body). An error the same call meets again, a 403
+// or a 422 of the create among them, is a *Refusal naming its kind (refusalKind, PermanentRefusal).
 //
 // The ref name passes the deployment's private-name rules before anything is sent: rules, the
 // rule set the daemon compiled from the deployment's rule file at boot, run alone
@@ -39,7 +40,8 @@ import (
 // daemon's own making, which can carry one of the deployment's private names and none of what the
 // shared check reads for, a secret, customer text or private code. The write itself is one POST
 // of a ref and a sha.
-func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string, rules *leakguard.RuleSet) error {
+func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string, rules *leakguard.RuleSet) (err error) {
+	defer func() { err = withRefusal(err) }()
 	ref := "refs/heads/" + branch
 	if rules != nil {
 		if err := rules.Check(ctx, "the write", leakguard.RefRecord(ref)); err != nil {
@@ -56,10 +58,10 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 	}
 	head := read.Object.SHA
 	if head == "" {
-		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", base, repo)
+		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, errNoCommit)
 	}
 
-	err := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
+	err = github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
 	var answer *githubrest.Answer
 	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer.Body) {
 		return nil

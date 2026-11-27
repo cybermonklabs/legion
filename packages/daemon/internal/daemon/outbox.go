@@ -558,7 +558,11 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // nothing else would: the message is the daemon's only word on the issue for what it carries. A
 // hook prompt that ends undelivered (keptRoleMessageEnded) is named in the message on the issue
 // for its role's undelivered prompts, one held for an hour from the first of them
-// (tellHookPromptUndelivered), since their words reach no session otherwise.
+// (tellHookPromptUndelivered), since their words reach no session otherwise. An issue's branch row
+// GitHub refused for good records the refusal as its issue's refusal of its generation
+// (record.Store.RefuseBranch), which the state names, and tells the owning architect
+// (branchRefusedNotice) only where that record is new: a second refused row of the generation, and
+// one run again after a restart, tell nobody.
 // Each of those rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, store.OnCommit), so the notice's lane is woken as the
 // finish commits and the notice is published without a sweep. Only the hand-over's finish takes
@@ -685,6 +689,29 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told = func() {
 			r.log.Warn("outbox hook prompt finished undelivered; the issue's message names it", "row", row.ID, "issue", row.Issue,
 				"hook", value.Hook, "role", value.Role, "message_posts_at", posts, "error", kept)
+		}
+	case record.IssueBranch:
+		kind, _ := ghbranch.PermanentRefusal(cause)
+		refusal := record.BranchRefusal{Issue: row.Issue, Generation: value.Generation, Row: row.ID, Write: record.BranchWriteCreate,
+			Kind: string(kind), Reason: kept, RefusedAt: r.now().UTC()}
+		if value.From != nil {
+			refusal.Write = record.BranchWriteMove
+		}
+		notice, err := record.NewOutboxRow(row.Issue, branchRefusedNotice(refusal), r.now().UTC())
+		if err != nil {
+			return err
+		}
+		var first bool
+		follow = func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			if first, err = r.records.RefuseBranch(ctx, tx, refusal); err != nil || !first {
+				return err
+			}
+			return r.records.Enqueue(ctx, tx, notice)
+		}
+		told = func() {
+			r.log.Error("outbox issue branch refused for good and dropped, and its architect is told once a generation",
+				"row", row.ID, "issue", row.Issue, "write", refusal.Write, "refusal", refusal.Kind, "told", first, "error", kept)
 		}
 	}
 	finish := func(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
@@ -925,11 +952,21 @@ func standingLimit(limits map[githubrest.Budget]rateLimit, kind record.OutboxKin
 // their routes make for good (recordRefused), so a credential answer retries. The router's 404 of a
 // Dispatch that has no route for a record's or the role holders' write never reaches this: execute
 // makes it a wait (waitsForTheRoute), which wraps nothing of it. For every other kind it is the
-// coded 404 it says.
+// coded 404 it says. An issue's branch row ends on GitHub's refusal of its create or its move that
+// the same write meets again (ghbranch.PermanentRefusal), since it would otherwise retry for ever
+// and tell nobody, while every start of its issue's roles waits behind it.
 func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
+		return permanent
+	case record.OutboxKindIssueBranch:
+		// Permanent where GitHub, or the deployment's rules, refused the write in a way a retry
+		// meets again: the App's GraphQL access, a repository read with no node id, and a coded 4xx
+		// of the create among them (ghbranch's refusalKind lists them). A rate limit, a 5xx, a 401,
+		// a token the daemon could not mint and a GitHub that answered nothing carry no refusal,
+		// and the row retries on its backoff.
+		_, permanent := ghbranch.PermanentRefusal(err)
 		return permanent
 	case record.OutboxKindDesignGatesPublish:
 		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
@@ -5191,11 +5228,14 @@ func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) 
 // repository (its check for changed workflow files, which it runs for an App without the workflows
 // permission, times out on a new ref), where it takes one that moves the branch. A branch GitHub
 // already has is left where it is. A start of the issue waits for this row (the lifecycle lane's
-// ordering rule, record.Store.DueRows and ClaimRow), so a create GitHub refuses holds back the
-// issue's roles, each attempt logged with GitHub's answer, until one passes. A row of a generation
-// the issue has left, or of a tree that lingers, finishes without acting: the starts it held back
-// act on neither. The row of a next change carries where its branch starts (record.IssueBranch.From),
-// and moves the branch there instead (startBranchAtBase).
+// ordering rule, record.Store.DueRows and ClaimRow), so a create GitHub fails holds back the
+// issue's roles, each attempt logged with GitHub's answer, until one passes. A refusal the same
+// write meets again ends the row instead, and tells its architect once (permanentRefusal,
+// finishRefused), so the roles start without the write. A row whose write GitHub takes clears the
+// issue's refusals (record.Store.ClearBranchRefusals). A row of a generation the issue has left,
+// or of a tree that lingers, finishes without acting: the starts it held back act on neither. The
+// row of a next change carries where its branch starts (record.IssueBranch.From), and moves the
+// branch there instead (startBranchAtBase).
 func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload record.IssueBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -5215,10 +5255,24 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 		return nil
 	}
 	if payload.From != nil {
-		return r.startBranchAtBase(ctx, row, issue, *payload.From)
+		if err := r.startBranchAtBase(ctx, row, issue, *payload.From); err != nil {
+			return err
+		}
+		return r.branchWritten(ctx, issue.Key)
 	}
 	if err := r.createBranch(ctx, issue); err != nil {
 		return fmt.Errorf("create the branch of %s, which its roles' starts wait for: %w", issue.Key, err)
+	}
+	return r.branchWritten(ctx, issue.Key)
+}
+
+// branchWritten clears every refusal of issue's branch the record holds, in a transaction of its
+// own, once a row's write GitHub took: the state names no refusal of a branch Legion wrote since.
+func (r *outbox) branchWritten(ctx context.Context, issue string) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.ClearBranchRefusals(ctx, tx, issue)
+	}); err != nil {
+		return fmt.Errorf("clear the refused branches of %s: %w", issue, err)
 	}
 	return nil
 }
@@ -5312,6 +5366,23 @@ func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Resu
 	return record.Notice{Kind: "next-change-workspace", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. %s The next change's first task is told to merge %s into %s.",
 			branch, result.Tip, why, result.Base, branch)}
+}
+
+// branchRefusedNotice is the owning architect's notice of a branch row GitHub refused for good
+// (finishRefused): the branch, whether the row created or moved it, the refusal's kind and the
+// row's error, that Legion does not try again, and that the issue's roles start without the write.
+// A person is who grants the App what it lacks, so the notice asks the architect to ask one.
+func branchRefusedNotice(refusal record.BranchRefusal) record.Notice {
+	branch := workspace.Bookmark(refusal.Issue)
+	wrote := fmt.Sprintf("Legion could not create branch %s on GitHub, and it will not try again.", branch)
+	start := "The issue's roles start without it, so their first push must create it."
+	if refusal.Write == record.BranchWriteMove {
+		wrote = fmt.Sprintf("Legion could not move branch %s to the head of its base for the next change of %s, and it will not try again.",
+			branch, refusal.Issue)
+		start = "The next change starts on the branch as it stands."
+	}
+	return record.Notice{Kind: record.BranchRefusedNotice, Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("%s The refusal is %s: %s. %s Ask a person to fix the refusal.", wrote, refusal.Kind, refusal.Reason, start)}
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The
