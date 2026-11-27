@@ -547,6 +547,39 @@ test("a failed read is forgotten once a page holds the id: reading while a write
   expect(reads.asked.comment).toEqual([ROOT_ID]);
 });
 
+test("a failed read is forgotten again each time a page comes to hold the id, so a second move off the pages keeps the record open too", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ROOT_ID);
+  await jump(0);
+  await failOn(reads, "message");
+  expect(view.result.current.kind).toBe("failed");
+  // A page holds the record, then the pages answer without it, and the route sent again fails.
+  view.rerender({ held: true });
+  await jump(0);
+  reads.again("message");
+  view.rerender({ held: false });
+  await jump(0);
+  await reads.answer("message", { error: new ApiError(503, message404Body) });
+  await tick(2_000);
+  expect(view.result.current.kind).toBe("failed");
+  expect(reads.asked.message).toEqual(Array(6).fill(ROOT_ID));
+  // A page holds the record again, then a write moves it off that page while the page it joins
+  // is out (R14).
+  view.rerender({ held: true });
+  await jump(0);
+  expect(view.result.current.kind).toBe("held");
+  view.rerender({ held: undefined });
+  await jump(0);
+  expect(
+    view.result.current.kind,
+    "the failed read of the second time the pages answered without the id came back while the page it joins was out"
+  ).toBe("reading");
+  expect(reads.asked.message, "the failed route was read while a page held the id").toEqual(
+    Array(6).fill(ROOT_ID)
+  );
+});
+
 test("a failed read is forgotten once while a page holds the id, so a reference to the record reads a route that fails every time once more, and not over and over", async () => {
   jest.useFakeTimers();
   reads = routes();
