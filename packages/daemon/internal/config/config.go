@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -40,6 +41,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/sjawhar/envoy/natsurl"
+	"github.com/sjawhar/envoy/pgdsn"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -47,6 +51,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
 // Runtime is the `runtime` block: its name, under kubernetes the settled `runtime.kubernetes` block
@@ -565,9 +570,11 @@ func load(path string, env func(string) string, resolveAppKeys bool) (Config, er
 	if err != nil {
 		return Config{}, fmt.Errorf("read %s: %w", path, err)
 	}
+	// yamlerr: the file holds postgres_dsn, URL userinfo and the Apps' private keys, and yaml.v3's
+	// text quotes the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+		return Config{}, fmt.Errorf("parse %s: %s", path, yamlerr.Reason(err))
 	}
 
 	root, err := rootMapping(&document)
@@ -630,7 +637,7 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.Warnings = append(file.Warnings,
 				fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
 		default:
-			err = classify(key)
+			err = classify(root.Content[i])
 		}
 		if err != nil {
 			return fileConfig{}, err
@@ -640,14 +647,66 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 }
 
 // classify refuses an unmodelled key, naming its class.
-func classify(key string) error {
+func classify(node *yaml.Node) error {
+	key := node.Value
 	if reason, ok := tossedKeys[key]; ok {
 		return fmt.Errorf("unknown key %s: %s", key, reason)
 	}
 	if message, ok := migrationKeys[key]; ok {
 		return errors.New(message)
 	}
+	if !keyShape(key) {
+		return errors.New(unknownKeyAt(node, ""))
+	}
 	return fmt.Errorf("unknown key %s", key)
+}
+
+// keyGrammar is the configuration's key grammar: lower-case letters, digits and "_", from a
+// letter, 40 characters at most.
+var keyGrammar = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+
+// keyHexRun is a run of 8 or more hexadecimal digits, which no key of the configuration holds and
+// a lower-case hex token that fits keyGrammar does (an API key of 32 hex digits, a legacy GitHub
+// token of 40).
+var keyHexRun = regexp.MustCompile(`[0-9a-f]{8,}`)
+
+// keyAlphanumericRun is a run of 10 or more letters and digits; one that holds a digit is a
+// token's (a lower-case base36 token holds few runs of 8 hex digits), and no key of the
+// configuration holds one: its words are joined by "_", and none of 10 letters holds a digit.
+var keyAlphanumericRun = regexp.MustCompile(`[a-z0-9]{10,}`)
+
+// keyShape reports whether name has a key's shape: keyGrammar's, holding no keyHexRun and no
+// keyAlphanumericRun that holds a digit. An unknown key of that shape is named as written, so a
+// typo keeps its help (`unknown key dispach_url`); any other name, one holding an upper-case
+// letter, a "-", a ":", a "/", an "@", a space, a run of hex digits or a long run of letters and
+// digits, as a token (`sk-ant-…`, `ghp_…`, a hex key, a base36 token) or a URL does, is named by
+// its line alone (unknownKeyAt). A typo holding a "-" or an upper-case letter is named by its line
+// too; a short token of the grammar's letters (`abc_0123456`) is still named as written.
+func keyShape(name string) bool {
+	if !keyGrammar.MatchString(name) || keyHexRun.MatchString(name) {
+		return false
+	}
+	for _, run := range keyAlphanumericRun.FindAllString(name, -1) {
+		if strings.ContainsAny(run, "0123456789") {
+			return false
+		}
+	}
+	return true
+}
+
+// keyShapeWords is keyShape as a refusal says it.
+const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit"
+
+// unknownKeyAt is the refusal of an unknown key whose name has no key's shape (keyShape), under the
+// mapping under names ("" at the file's root): its line, never its text. Such a name is no typo of
+// a key; it can be a credential, or a URL holding one, pasted where a key goes, and the URL rule
+// the refusal is printed through (redact.URLCredentials) does not read such a URL whole when a
+// character that ends a URL in a text, a "'" among them, stands in its userinfo.
+func unknownKeyAt(node *yaml.Node, under string) string {
+	if under == "" {
+		return fmt.Sprintf("unknown key at line %d, whose name has no key's shape (%s)", node.Line, keyShapeWords)
+	}
+	return fmt.Sprintf("unknown key at line %d under %s, whose name has no key's shape (%s)", node.Line, under, keyShapeWords)
 }
 
 // readRuntime reads `runtime`: the `tmux` scalar (no block), or a one-key mapping, `{kubernetes:
@@ -764,10 +823,19 @@ func requiredString(value *yaml.Node, key, why string) (string, error) {
 	return read, err
 }
 
-// unknownKeyError is describedMembers' refusal of a name the mapping may not carry.
-type unknownKeyError struct{ key, name string }
+// unknownKeyError is describedMembers' refusal of a name the mapping may not carry, by its line
+// alone when the name has no key's shape (unknownKeyAt).
+type unknownKeyError struct {
+	key  string
+	node *yaml.Node
+}
 
-func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
+func (e unknownKeyError) Error() string {
+	if !keyShape(e.node.Value) {
+		return unknownKeyAt(e.node, e.key)
+	}
+	return fmt.Sprintf("unknown key %s.%s", e.key, e.node.Value)
+}
 
 // describedMembers returns a mapping's members by name, refusing a name it does not know or names
 // twice. A member whose value is null is left out, as an unset key. It is the one reader of a
@@ -788,7 +856,7 @@ func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Nod
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		name, node := value.Content[i].Value, value.Content[i+1]
 		if !slices.ContainsFunc(described.Members, func(m member) bool { return m.Name == name }) {
-			return nil, unknownKeyError{key, name}
+			return nil, unknownKeyError{key, value.Content[i]}
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("%s names %s twice", key, name)
@@ -813,22 +881,116 @@ func namesKey(value *yaml.Node, name string) bool {
 	return false
 }
 
-// readNatsURLs is `nats_urls`: valid URLs, in order, each once.
+// readNatsURLs is `nats_urls`: valid URLs, in order, each once. Each entry must be a non-empty
+// string, and an entry the NATS client would read other than as written once the entries are
+// joined with commas is refused too, with natsurl's reason (natsurl.EntryRefusal: a comma, an "@"
+// after its host, a websocket path that stops parsing once decoded), and so are:
+//
+//   - an entry whose host and port are not written as an address the NATS client dials
+//     (dialableAuthority): one net.SplitHostPort refuses, as an IPv6 address written with a port
+//     and no brackets is, or one with a port outside 1 to 65535. Such a list loaded and failed at
+//     boot, but for an IPv6 address with a zone written that way, which the client's lookup
+//     returns as it is and the client brackets and dials; it is refused too, so it is written in
+//     brackets;
+//   - an unquoted item of a flow list, `[...]`, plain or tagged (`!!str`), that carries a user name
+//     or password: YAML splits an unquoted flow item at every comma, so a credential holding a
+//     comma, `,nats://` among them, reaches here as two entries that each parse, and the daemon
+//     would dial the credential's head as a host and print it. A block list or a quoted item is
+//     never split: a comma in one is an entry that holds the comma, refused with natsurl's
+//     CommaReason;
+//   - a list that mixes websocket (ws, wss) and other schemes, which the NATS client refuses at
+//     boot, so `legion config check` and boot refuse the same list;
+//   - a list natsurl.Check refuses: its tail rule, which at load refuses only a later entry a
+//     person wrote with a user name or password and none of the schemes nats, tls, ws and wss,
+//     since the two rules above already refuse every list a comma in a credential split.
+//
+// Every refusal names its entry by its position alone (`nats_urls entry 2`), never by any of its
+// text: a credential holding a "/", "?", "#", space or comma ends url.Parse's authority early, so
+// the entry does not parse, or parses with a part of the credential as its host, and nothing that
+// reads a URL finds such a credential to cut; a query can hold a token too.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
-	read, err := readStrings(value, key)
-	if err != nil || read == nil {
-		return read, err
+	if value.Tag == "!!null" {
+		return nil, nil
 	}
-	urls := make([]string, 0, len(read))
-	for _, raw := range read {
-		if _, err := endpointURL(raw, key); err != nil {
-			return nil, fmt.Errorf("%s entry %q%s", key, raw, strings.TrimPrefix(err.Error(), key))
+	if value.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%s must be an array of non-empty strings", key)
+	}
+	flow := value.Style&yaml.FlowStyle != 0
+	read := make([]string, 0, len(value.Content))
+	urls := make([]string, 0, len(value.Content))
+	for index, item := range value.Content {
+		var raw string
+		if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || item.Decode(&raw) != nil || raw == "" {
+			return nil, fmt.Errorf("%s entry %d must be a non-empty string", key, index+1)
 		}
+		// The quoting bits, not Style == 0: a plain item written with an explicit tag has
+		// yaml.TaggedStyle and is split at its commas all the same.
+		if flow && item.Style&(yaml.SingleQuotedStyle|yaml.DoubleQuotedStyle) == 0 && strings.Contains(raw, "@") {
+			return nil, fmt.Errorf("%s entry %d carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list", key, index+1)
+		}
+		// A comma first, so an entry that lists two servers, or a credential holding a comma, gets
+		// the comma's reason, which says how to write it, whatever else of it would not parse.
+		if strings.Contains(raw, ",") {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, natsurl.CommaReason)
+		}
+		parsed, err := endpointURL(raw, key)
+		if err != nil {
+			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
+		}
+		if why := natsurl.EntryRefusal(raw); why != "" {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, why)
+		}
+		if !dialableAuthority(parsed) {
+			return nil, fmt.Errorf("%s entry %d cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none", key, index+1)
+		}
+		read = append(read, raw)
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)
 		}
 	}
+	for index := 1; index < len(read); index++ {
+		if websocketURL(read[index]) != websocketURL(read[0]) {
+			return nil, fmt.Errorf("%s entry %d cannot be read: the list mixes websocket (ws, wss) and other (nats, tls) schemes, which the NATS client refuses; list servers of one kind", key, index+1)
+		}
+	}
+	// Every entry here is a URL endpointURL took, none blank, so Check drops none and its position
+	// is the entry's in the file.
+	if _, position, why := natsurl.Check(read); why != "" {
+		return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, position, why)
+	}
 	return urls, nil
+}
+
+// dialableAuthority reports whether parsed, a nats_urls entry endpointURL read, names its host and
+// port as the NATS client dials them, reading the URL alone: nothing is looked up. The client dials
+// the URL's host and port as written (a host that is an IP address, or one whose lookup finds
+// nothing) or each address the host's lookup answers, joined with the port, adding the scheme's
+// default port where the URL names none (nats.go v1.55.0 addURLToPool and createConn), so the
+// authority must split as net.SplitHostPort splits one, an IPv6 host in brackets, and a port it
+// names must be 1 to 65535. The one form refused that the client would dial is an IPv6 address
+// with a zone, a port and no brackets: its lookup answers the address as it is, and the join
+// brackets it.
+func dialableAuthority(parsed *url.URL) bool {
+	authority, port := strings.TrimSuffix(parsed.Host, ":"), parsed.Port()
+	if port == "" {
+		// Any valid port stands in for the default the client adds.
+		authority += ":4222"
+	}
+	if _, _, err := net.SplitHostPort(authority); err != nil {
+		return false
+	}
+	if port == "" {
+		return true
+	}
+	number, err := strconv.Atoi(port)
+	return err == nil && number >= 1 && number <= 65535
+}
+
+// websocketURL reports whether raw, a nats_urls entry endpointURL accepted, names ws or wss, as the
+// NATS client reads a server's scheme (isWebsocketScheme).
+func websocketURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (strings.EqualFold(parsed.Scheme, "ws") || strings.EqualFold(parsed.Scheme, "wss"))
 }
 
 // dispatchBase is `dispatch_url`: a base URL, never its clients' `/mcp` endpoint, which the clients
@@ -898,6 +1060,23 @@ var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // envNameRule is the refusal's words for a name envVarName does not match.
 const envNameRule = "must be an environment variable name (letters, digits, and underscores, not starting with a digit)"
 
+// envNameRefusal is the refusal of entry, the 1-based position in key's map of a variable name
+// envVarName does not match. It names the entry by its position, never its text: what stands where
+// a variable name goes can be a credential pasted into the wrong place, and the refusal is printed
+// as it is (`legion stop`, `legion config check`).
+func envNameRefusal(key string, entry int) error {
+	return fmt.Errorf("%s entry %d: its key %s", key, entry, envNameRule)
+}
+
+// providerVarName is the variable a provider_keys entry names: an envVarName in upper case, as every
+// provider's variable is (ANTHROPIC_API_KEY, GEMINI_API_KEY). The variable is the entry's name in
+// every refusal, log line, settings answer and file name, so a provider's key pasted in its place,
+// most of which hold a lowercase letter, is refused rather than printed under that name.
+var providerVarName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+// providerVarRule is the refusal's words for a name providerVarName does not match.
+const providerVarRule = "must be an upper-case environment variable name (upper-case letters, digits, and underscores, not starting with a digit)"
+
 // spendAttributesRule is the refusal's words for an operator value of
 // runtime.SpendAttributesVariable that runtime.SpendAttributesRefusal refuses: one malformed
 // member is caught by the detector's caller with an empty hand, so it costs the launch the whole
@@ -953,8 +1132,10 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		envNode, secretNode := value.Content[i], value.Content[i+1]
 		env := envNode.Value
-		if envNode.Kind != yaml.ScalarNode || !envVarName.MatchString(env) {
-			return nil, fmt.Errorf("%s key %q (the variable OMP reads) %s", key, env, envNameRule)
+		if envNode.Kind != yaml.ScalarNode || !providerVarName.MatchString(env) {
+			// By its position, not its text: what stands where a variable name goes can be a key
+			// pasted into the wrong place, and this refusal is printed as it is.
+			return nil, fmt.Errorf("%s entry %d: its key (the variable OMP reads) %s", key, i/2+1, providerVarRule)
 		}
 		if strings.HasPrefix(env, "AGENT_SECRETS_") {
 			return nil, fmt.Errorf("%s names %s: an AGENT_SECRETS_* variable is the runtime's (AGENT_SECRETS_URL, AGENT_SECRETS_KEY_DIR) or the daemon's own agent-secrets machine login, and is never exported into an agent's environment", key, env)
@@ -972,13 +1153,17 @@ func readProviderKeys(value *yaml.Node, key string) ([]ProviderKey, error) {
 		}
 		if path, isFile := strings.CutPrefix(secret, providerKeyFilePrefix); isFile {
 			if !filepath.IsAbs(path) {
-				return nil, fmt.Errorf("%s value %q for %s names a file by a path that is not absolute; write %s/abs/path", key, secret, env, providerKeyFilePrefix)
+				// By the variable alone: a value that is no path can be the provider's key itself,
+				// pasted after the `file:` where its path goes.
+				return nil, fmt.Errorf("%s value for %s names a file by a path that is not absolute; write %s/abs/path", key, env, providerKeyFilePrefix)
 			}
 			keys = append(keys, ProviderKey{Env: env, File: filepath.Clean(path)})
 			continue
 		}
 		if !envVarName.MatchString(secret) {
-			return nil, fmt.Errorf("%s value %q for %s (the key that holds it) %s, or %s and an absolute path", key, secret, env, envNameRule, providerKeyFilePrefix)
+			// By the variable it is for, not its text: a value that is no secretsd key's name can be
+			// the provider's key itself, pasted where its name goes.
+			return nil, fmt.Errorf("%s value for %s (the key that holds it) %s, or %s and an absolute path", key, env, envNameRule, providerKeyFilePrefix)
 		}
 		keys = append(keys, ProviderKey{Env: env, Secret: secret})
 	}
@@ -1110,6 +1295,9 @@ func validURL(value, key string) (*url.URL, error) {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("%s must be a valid URL", key)
 	}
+	if natsurl.UserinfoPastHost(parsed) {
+		return nil, fmt.Errorf("%s cannot be read: %s", key, natsurl.UserinfoPastHostReason)
+	}
 	return parsed, nil
 }
 
@@ -1200,11 +1388,18 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	cfg.StateDir = underConfig(*file.StateDir, configDir)
 
 	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")
+	postgresKey := "LEGION_POSTGRES_DSN"
 	if file.PostgresDSN != nil {
-		cfg.PostgresDSN = *file.PostgresDSN
+		cfg.PostgresDSN, postgresKey = *file.PostgresDSN, "postgres_dsn"
 	}
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")
+	}
+	// By the key alone (pgdsn.Refusal): an unencoded "@" after the user part is where a password
+	// holding an "@" or a "/" leaves part of itself, read as the host, the database or the query,
+	// which every connect error prints.
+	if err := pgdsn.Refusal(postgresKey, cfg.PostgresDSN); err != nil {
+		return Config{}, err
 	}
 
 	// The deployment's private-name rule file: the variable first and the file's key over it, as
@@ -1409,7 +1604,8 @@ func checkProviderKeyFiles(file fileConfig) error {
 	}
 	for _, key := range file.ProviderKeys {
 		if key.File != "" {
-			return fmt.Errorf("provider_keys.%s names the file %s, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env, key.File)
+			// By the variable alone: the path can be the provider's key itself, pasted after `file:/`.
+			return fmt.Errorf("provider_keys.%s names a file, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret", key.Env)
 		}
 	}
 	return nil

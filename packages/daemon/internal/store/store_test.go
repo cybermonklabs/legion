@@ -90,6 +90,9 @@ func emptyStore(t *testing.T) *Store {
 			t.Errorf("drop %s: %v", name, err)
 		}
 	})
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on %s: %v", name, err)
+	}
 
 	testURL := *base
 	testURL.Path = "/" + name
@@ -131,39 +134,6 @@ func TestOpenNamesTheUnreachableAddressAndNotThePassword(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "hunter2") {
 		t.Errorf("error leaks the DSN password: %v", err)
-	}
-}
-
-// The driver's own text is not ours to trust: whatever it says on a future
-// version, the password the daemon was configured with does not reach a log.
-func TestConnectErrorRedactsThePasswordOutOfWhatItWraps(t *testing.T) {
-	t.Parallel()
-	for _, detail := range []string{
-		"failed to connect to `host=db.internal password=hunter2`",
-		"cannot parse postgres://legion:hunter2@db.internal:5432/legion",
-	} {
-		err := &connectError{address: "db.internal:5432", password: "hunter2", err: errors.New(detail)}
-		if strings.Contains(err.Error(), "hunter2") {
-			t.Errorf("error leaks the password its driver printed: %v", err)
-		}
-		if !strings.Contains(err.Error(), "db.internal:5432") {
-			t.Errorf("error does not name the host:port it failed to reach: %v", err)
-		}
-	}
-}
-
-// postgres://legion:legion@… is the ordinary devbox DSN: the password equals
-// the user and the database name. Redaction that blanked every occurrence
-// would hide the two fields an operator reads to diagnose the refusal.
-func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
-	t.Parallel()
-	err := &connectError{
-		address:  "127.0.0.1:5432",
-		password: "legion",
-		err:      errors.New("failed to connect to `user=legion database=legion`: connection refused"),
-	}
-	if !strings.Contains(err.Error(), "user=legion database=legion") {
-		t.Errorf("error hides the user and database the daemon was connecting as: %v", err)
 	}
 }
 
@@ -1133,9 +1103,11 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does a migration that changes a table a version of the list creates, as
 // 20261117213545 adds a column to 20261117034837's plan_steps; 20261123200630 and the givers of a
-// plan version's 20261124033010 each add one to its issue_plans; and 20261123221142 and the
-// sub-owners' 20261124023617 each change its plan_tasks: left out, it is applied as main's, before
-// that table exists; and one that replaces an index a version of the list creates, as
+// plan version's 20261124033010 each add one to its issue_plans; and 20261123221142, the
+// sub-owners' 20261124023617 and 20261126234607 (plan_tasks.start_from) each change its plan_tasks:
+// left out, it is applied as main's, before that table exists, as 20261126234607 was until it was
+// named here, when the case of a database main migrated failed on `relation "plan_tasks" does not
+// exist`; and one that replaces an index a version of the list creates, as
 // 20261122074350 replaces 20261105183200's pod_resumes_one_open_per_role. dispatch://INFRA-3320's
 // gate basis (20261114064234) and awaiting_children (20261114232555) are in it as versions that
 // branch added. The project pause's 20261115194357 is in it as well, though it rewrites no kind

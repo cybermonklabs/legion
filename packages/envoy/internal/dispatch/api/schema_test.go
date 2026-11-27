@@ -49,6 +49,13 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	if owner, declared := schema.Types[3].Attributes.Lookup("owner"); !declared || owner.Kind != pmdoc.BlockAttributeString || owner.Since != 12 || owner.CreatableSince != 12 {
 		t.Fatalf("plan_task attribute owner = %+v (declared %v), want a string read and created from version 12", owner, declared)
 	}
+	if subject, declared := schema.Types[4].Attributes.Lookup("subject"); !declared || subject.Kind != pmdoc.BlockAttributeEnum ||
+		!slices.Equal(subject.Choices, []string{"code", "production", "graph"}) || subject.Since != 6 || subject.CreatableSince != 7 {
+		t.Fatalf("check attribute subject = %+v (declared %v), want an enum of code, production and graph, read from version 6 and created from 7", subject, declared)
+	}
+	if program, declared := schema.Types[4].Attributes.Lookup("program"); !declared || program.Kind != pmdoc.BlockAttributeString || program.Since != 6 || program.CreatableSince != 7 {
+		t.Fatalf("check attribute program = %+v (declared %v), want a string read from version 6 and created from 7", program, declared)
+	}
 	if partOf, declared := schema.Types[3].Attributes.Lookup("part_of"); declared {
 		t.Fatalf("plan_task declares attribute part_of = %+v, want none", partOf)
 	}

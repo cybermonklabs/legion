@@ -215,7 +215,9 @@ func pluginsSourceWords(source string) string {
 
 // pluginsLine is `legion config check`'s plugins line: the pair this daemon would install for a
 // stale-plugin relaunch and where it came from (pluginsSourceWords), or the gap when it knows
-// none. When worker_backends runs any role on Claude Code, the line gains one sentence naming
+// none. A source in URL form is printed as the state shows it (api.PluginSourceOf), without its
+// userinfo, query or fragment, where a private or pre-signed tarball URL carries its credential.
+// When worker_backends runs any role on Claude Code, the line gains one sentence naming
 // those roles: their plugin is the worker image's claude-envoy, which no relaunch installs (the
 // daemon package's stalePluginInstall refuses such a claim), so a plugin-contract change for one
 // of them is answered by a new image.
@@ -223,7 +225,7 @@ func pluginsLine(cfg config.Config) string {
 	line := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract"
 	if pair, source := daemon.ResolvedPlugins(cfg); pair != nil {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
-			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
+			api.PluginSourceOf(pair.PiLegion), api.PluginSourceOf(pair.PiEnvoy), pluginsSourceWords(source))
 	}
 	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
 	// claim.Roles' order, the default steps' order, then each role of the deployment it puts there,
@@ -555,8 +557,8 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 // newline to stderr. Every command's stderr passes the rule already (newRoot) but the three that
 // hand it to a child, `legion claude-bridge` among them, which writes its refusals through here:
 // an error can wrap a *url.Error, which keeps the URL's query and its user name (Go's client masks
-// only a password), and pgx's ParseConfigError of a postgres_dsn it cannot parse quotes the DSN
-// with its user name and its query (pgx masks only the password).
+// only a password). A postgres_dsn pgx cannot parse is named by its key with none of pgx's text
+// (pgdsn.ConnectError).
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }
@@ -605,10 +607,11 @@ func newStopCommand(stdout, stderr io.Writer) *cobra.Command {
 
 // stopLegion is `legion stop`: it stops the daemon registered for configPath's project.
 func stopLegion(configPath string, stdout, stderr io.Writer) int {
-	// The file names the team and nothing else here, so its App key commands do not run.
+	// The file names the team and nothing else here, so its App key commands do not run. A refusal
+	// is printed as `legion start`'s is (printRefusal), with URL userinfo cut from it.
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion stop: %v\n", err)
+		printRefusal(stderr, "legion stop", err)
 		return 1
 	}
 	entry, found, err := findLegion(cfg.Project)
@@ -669,6 +672,8 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	if !ok {
 		return 1
 	}
+	// The address is printed through redact.URL: LEGION_DAEMON_URL can carry userinfo, and get's
+	// refusals name it the same way.
 	address := op.base
 	body, err := get(ctx, address+"/legion/v1/state")
 	if err != nil {
@@ -686,11 +691,11 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 
 	var state api.State
 	if err := json.Unmarshal(body, &state); err != nil {
-		fmt.Fprintf(stderr, "legion state: read the state %s served: %v\n", address, err)
+		fmt.Fprintf(stderr, "legion state: read the state %s served: %v\n", redact.URL(address), err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "legion %s on %s — schema %d, boot %d started %s (first boot %s)\n",
-		state.Daemon.Project, address, state.Daemon.SchemaVersion, state.Daemon.Boots,
+		state.Daemon.Project, redact.URL(address), state.Daemon.SchemaVersion, state.Daemon.Boots,
 		state.Daemon.StartedAt.Format(time.RFC3339), state.Daemon.FirstBootAt.Format(time.RFC3339))
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
@@ -1866,20 +1871,23 @@ func findLegion(team string) (registry.Entry, bool, error) {
 // long it took and the budget it passed — rather than in the transport's own
 // `context deadline exceeded`, which names none of the three and leaves the reader to guess
 // whether the daemon is slow, the body is large or the command gave up early. The caller's own
-// cancellation is not that case and keeps the error it has.
-func get(ctx context.Context, url string) ([]byte, error) {
+// cancellation is not that case and keeps the error it has. Every refusal names the route through
+// redact.URL, and the transport's error through the URL rule: the route can be LEGION_DAEMON_URL's,
+// userinfo and all, and Go's *url.Error quotes it with only the password masked.
+func get(ctx context.Context, route string) ([]byte, error) {
 	budget := programbound.Of(&requestTimeout)
 	timed, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	began := time.Now()
+	shown := redact.URL(route)
 	refuse := func(err error) error {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
-				url, time.Since(began).Round(time.Millisecond), budget)
+				shown, time.Since(began).Round(time.Millisecond), budget)
 		}
-		return fmt.Errorf("read %s: %w", url, err)
+		return fmt.Errorf("read %w", redact.RequestError(daemonServer, route, err))
 	}
-	request, err := http.NewRequestWithContext(timed, http.MethodGet, url, nil)
+	request, err := http.NewRequestWithContext(timed, http.MethodGet, route, nil)
 	if err != nil {
 		return nil, refuse(err)
 	}
@@ -1893,7 +1901,7 @@ func get(ctx context.Context, url string) ([]byte, error) {
 		return nil, refuse(err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%s answered %d: %s", shown, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return body, nil
 }

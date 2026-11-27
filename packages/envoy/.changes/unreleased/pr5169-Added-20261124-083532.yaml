@@ -2,7 +2,9 @@ kind: Added
 body: |-
     Dispatch's `plan_task` block takes `owner`, the role of the task's sub-owner, a string read and
     created from block schema version 12. Its migration moves the stored schema from 11 to 12 with
-    the attribute, so the server and editor agree. The issue page labels it "task owner".
+    the attribute, and a second one writes version 12 again above the migration that adds a check's
+    `subject` and `program`, which sorts after it and writes version 6, so the stored schema ends at
+    12 and the server and editor agree. The issue page labels it "task owner".
 time: 2026-11-24T08:35:32.037159179Z
 custom:
     Issue: pr5169

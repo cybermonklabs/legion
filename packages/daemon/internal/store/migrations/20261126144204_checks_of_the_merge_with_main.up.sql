@@ -14,8 +14,9 @@
 -- kinds, and its 20261126110259 merge_holds_changed without them. This branch's 20261117223524
 -- names step and awaiting_children, which main's 20261114232555 wrote below it; its
 -- 20261121165047 and 20261122122826 name task_branch and task_pull_requests_close with main's two
--- seeds, which they must, since they sort below main's 20261122154643 and so are the last word on
--- a database main migrated; and its 20261123072431 names every task kind and both seeds. This
+-- seeds and its merge_holds_changed, which they must, since they sort below main's 20261122154643
+-- and 20261126110259 and so are the last word on a database main migrated; and its 20261123072431
+-- names every task kind, both seeds and merge_holds_changed, for the same reason. This
 -- file stands above all of them and above main's 20261126110259, so it is the last word on every
 -- database, and it names every value of both branches: 36 kinds, main's merge_holds_changed among
 -- them. On a fresh database Migrate applies every migration in version order and this file ends
@@ -24,18 +25,19 @@
 -- database ends with the same two lists.
 --
 -- An upgrade applies a list late over the rows the table holds, and a row the list refuses stops
--- it (SQLSTATE 23514) before this file runs. That is why 20261121165047 and 20261122122826, which
--- sort below main's 20261122154643 and so run after it on a database main migrated, name main's
--- two basis seeds in their own lists: a queued row of either stands, the upgrade runs through,
--- and no operator deletes a row. On a database a build of this branch migrated, main's
--- 20261114232555 refuses an issue that stands at the phase step (it leaves issues_held_from_check,
--- which keeps step, as it was), and main's 20261122154643 refuses a queued row of the three task
--- kinds. No deployment holds such a database: only a build of this branch made one. With every
--- daemon of it stopped, an operator first finishes or stops each task whose issue stands at step,
--- and deletes the queued rows of the three kinds (`delete from outbox where kind in
--- ('task_branch', 'task_pull_requests_close', 'task_copy_remove')`), then runs the upgrade. What
--- that delete costs is the work those rows owed: a task's branch made on GitHub, the close of the
--- other pull requests of an issue, and the removal of a removed task's working copy.
+-- it (SQLSTATE 23514) before this file runs. That is why 20261121165047, 20261122122826 and
+-- 20261123072431, which sort below main's 20261126110259 and so run after it on a database main
+-- migrated, name main's two basis seeds and its merge_holds_changed in their own lists: a queued row
+-- of any of them stands, the upgrade runs through, and no operator deletes a row. On a database a
+-- build of this branch migrated, main's 20261114232555 refuses an issue that stands at the phase
+-- step (it leaves issues_held_from_check, which keeps step, as it was), and main's 20261122154643
+-- and 20261126110259 each refuse a queued row of the three task kinds. No deployment holds such a
+-- database: only a build of this branch made one. With every daemon of it stopped, an operator
+-- first finishes or stops each task whose issue stands at step, and deletes the queued rows of the
+-- three kinds (`delete from outbox where kind in ('task_branch', 'task_pull_requests_close',
+-- 'task_copy_remove')`), then runs the upgrade. What that delete costs is the work those rows owed:
+-- a task's branch made on GitHub, the close of the other pull requests of an issue, and the removal
+-- of a removed task's working copy.
 --
 -- There is no down file. This directory keeps none, so the way back is the transaction that ends
 -- this header, its last paragraph (migrations.WayBack), run with the daemon stopped, before the

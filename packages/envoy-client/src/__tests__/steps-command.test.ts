@@ -283,7 +283,7 @@ describe("dispatch steps", () => {
   test("a task or a role that is empty prints -", async () => {
     const { result } = await readSteps({
       issue: "LEG-1",
-      tasks: [{ task: "default", steps: [{ ...implementer, task: "", role: "" }] }],
+      tasks: [{ task: "default", needs: null, steps: [{ ...implementer, task: "", role: "" }] }],
     });
 
     expect(result.text.split("\n")[1]).toBe(

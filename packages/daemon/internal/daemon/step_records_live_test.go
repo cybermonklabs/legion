@@ -64,6 +64,7 @@ type stepRecordsLive struct {
 // once the issue is in reviewing for the second time: the second review, the acceptance, the retro
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newStepRecordsLive).
 	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
 	l.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
@@ -451,6 +452,7 @@ func lineName(w stepWant) string {
 // and any other word are no end either, so each fails the walk's read, naming the line. The control
 // is the same ten lines with every end a moment, which the check passes.
 func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
+	t.Parallel()
 	const key = "SR-1"
 	printed := func(end, result string) string {
 		lines := []string{key + ": 10 steps in 1 tasks"}

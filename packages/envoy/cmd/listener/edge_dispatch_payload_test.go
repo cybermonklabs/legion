@@ -147,6 +147,7 @@ func withPayload(t *testing.T, frame []byte, payload string) []byte {
 // and a key of the payload that readers disagree on are withheld; a frame of another source passes
 // by its topic whatever its payload says.
 func TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject(t *testing.T) {
+	t.Parallel()
 	own := contracts.LegacyAgentSubject(payloadSession)
 	privLane := contracts.RoleTopicPrefix + payloadPrivRole
 	projects := []string{"PRIV"}
@@ -285,6 +286,7 @@ func TestEdgeFrameVerdictPassesADispatchFrameOnlyOfAListedProject(t *testing.T) 
 // project; the same mention with the document's project on its event, as the API sends it since
 // #4683, is judged by that project. A listener that is no edge one hands every such frame on.
 func TestEdgeFrameVerdictPassesAPersonsMessageInTheSessionsOwnConversation(t *testing.T) {
+	t.Parallel()
 	own := contracts.LegacyAgentSubject(payloadSession)
 	privLane := contracts.RoleTopicPrefix + payloadPrivRole
 	projects := []string{"PRIV"}
@@ -383,6 +385,7 @@ func TestEdgeFrameVerdictPassesAPersonsMessageInTheSessionsOwnConversation(t *te
 // added to either type fails this test until it is listed or named, so the rule cannot start
 // withholding every direct message, or passing a key it never judged, unseen.
 func TestADirectMessagesKeysAreTheOnesDispatchWrites(t *testing.T) {
+	t.Parallel()
 	excluded := map[string]string{
 		"trees":                              "model.Event: filled only for a caller that sent Dispatch-Trees: 1 and on /ws/live frames",
 		"references_changed":                 "model.ReferenceChangesPayload: a delivery frame carries model.ReferenceChanges{} (finishPendingMessageDelivery)",
