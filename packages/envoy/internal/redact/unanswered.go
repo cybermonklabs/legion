@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"unicode"
+
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // Unanswered is err, the failure of an HTTP request that got no answer it could read
@@ -32,6 +37,15 @@ import (
 // Location named, and its transport failure the host it named, so a failure on another host than
 // request's prints as the redirect's class alone. An error that holds no *url.Error, a body
 // read's, prints as its failure alone, under the caller's own words for the call.
+//
+// A URL that holds user information or an "@" past its host (natsurl.UserinfoPastHost) can hold
+// a credential where the host and the port go: a password holding an unencoded "@" leaves its tail
+// where url.Parse reads the host (https://user:p@ssword), and a credential holding a "/", "?" or
+// "#" leaves its head there and the digits of its next part where the port goes
+// (http://user:4821/<tail>@host), and the resolver's or the dialer's own words name both. So such
+// a URL is named with its authority as URLWithCredentials (askedURL), and the transport's words
+// with its host and its port as URLWithCredentials, or as fixed words where those cannot be found
+// in them (hostShown), whether the call is named shown or by its URL.
 //
 // It unwraps to err, so errors.Is and errors.As still find the failure: a caller decides on it,
 // and prints only this. Unanswered(nil, request, shown) is nil.
@@ -60,6 +74,12 @@ func Unanswered(err error, request *http.Request, shown string) error {
 		text = ClassNotAURL
 	case request != nil && redirectedElsewhere(failed.URL, request.URL):
 		text = ClassRedirected
+	case request != nil:
+		text = hostShown(request.URL, failed.Err, text)
+	default:
+		if asked, err := url.Parse(failed.URL); err == nil {
+			text = hostShown(asked, failed.Err, text)
+		}
 	}
 	return &unanswered{fmt.Sprintf("%s %q: %s", failed.Op, name, text), err}
 }
@@ -74,11 +94,21 @@ func (u *unanswered) Error() string { return u.text }
 func (u *unanswered) Unwrap() error { return u.err }
 
 // The words Unanswered names a failure by where it prints none of net/http's, beside the classes
-// class names (ClassNotAURL, ClassRequestFailed).
+// class names (ClassNotAURL, ClassRequestFailed). ClassHostNotASCII and ClassAddressRefused are the
+// words the daemon's redact.NotASCIIHostError and redact.AddressError print for the same failures,
+// so one failure has one set of words in either module.
 const (
 	ClassRedirected       = "the request was redirected to another host, which did not answer (the redirect's target is not printed: it is the answering party's own words)"
 	ClassLocationUnparsed = "the answer was a redirect whose Location does not parse (the Location is not printed: it is the answering party's own words)"
+	ClassHostNotASCII     = "(the request failed; its error is not printed: it names the host of an address that holds a credential, and that host is not ASCII)"
+	ClassAddressRefused   = "(the request failed; its error is not printed: the address holds a credential, and the dialer refused it as no valid host and port)"
 )
+
+// URLWithCredentials stands in place of the authority of a URL a request asked that holds user
+// information or an "@" past its host, in the name Unanswered and AskedURL give it, and of its host
+// and its port in the transport's words Unanswered prints. It is the daemon's
+// redact.URLWithCredentials, so such a URL has one mark wherever it prints.
+const URLWithCredentials = "[a URL with credentials]"
 
 // unansweredFailure is the words Unanswered prints for err, the failure under a request that got
 // no answer: for the first error down err's chain (errors.Unwrap) that is a transport failure
@@ -132,18 +162,104 @@ func redirectedElsewhere(failed string, asked *url.URL) bool {
 func AskedURL(u *url.URL) string { return askedURL(u) }
 
 // askedURL is u, the URL a request asked, as Unanswered names it, daemon and envoy alike: scheme
-// "://" host path, with u's user information, its query and its fragment removed, where URL prints
-// that unchanged, and NotPrinted where URL refuses it (an escape, a path or a host it does not
-// allow) or u is nil or opaque. The host is the one net/url parsed, the host the request dialled,
-// which a failed dial's own words name too: where a password holds an '@' and no host follows it
-// (URL's https://user:p@ssword), the tail net/url read as the host prints, as it does there. The
-// query goes whole, its keys with its values: a client can write a credential as a key alone
-// (?<token>), and neither URL's allow-list, which a token's letters, digits and '-' pass, nor the
-// credentials the request carried, whose query values requestTokens reads and never its keys, can
-// tell such a key from a parameter's name.
+// "://" host path, with u's query and its fragment removed, where URL prints that unchanged, and
+// NotPrinted where URL refuses it (an escape, a path or a host it does not allow) or u is nil or
+// opaque. The host is the one net/url parsed, the host the request dialled, which a failed dial's
+// own words name too. A URL that holds user information or an "@" past its host is named by
+// markedURL, its authority as URLWithCredentials: where a password holds an '@' and no host follows
+// it (URL's https://user:p@ssword), the host net/url read is the password's tail, and nothing here
+// can tell it from a host. The query goes whole, its keys with its values: a client can write a
+// credential as a key alone (?<token>), and neither URL's allow-list, which a token's letters,
+// digits and '-' pass, nor the credentials the request carried, whose query values requestTokens
+// reads and never its keys, can tell such a key from a parameter's name.
 func askedURL(u *url.URL) string {
 	if u == nil || u.Opaque != "" {
 		return NotPrinted
 	}
+	if u.User != nil || natsurl.UserinfoPastHost(u) {
+		return markedURL(u)
+	}
 	return URL(u.Scheme + "://" + u.Host + u.EscapedPath())
+}
+
+// markedURL is u, a URL that holds user information or an "@" past its host, as askedURL names
+// it: scheme "://" URLWithCredentials path, where the scheme is http or https and the path one URL
+// prints (plainPath), and NotPrinted otherwise. A URL with an "@" past its host
+// (natsurl.UserinfoPastHost) is scheme "://" URLWithCredentials alone: a credential holding a "/",
+// "?" or "#" ends url.Parse's authority inside it, so its head is the host and the port and its
+// tail the path, as the daemon's redact.URLCredentials writes such a URL.
+func markedURL(u *url.URL) string {
+	if scheme := strings.ToLower(u.Scheme); scheme != "http" && scheme != "https" {
+		return NotPrinted
+	}
+	if natsurl.UserinfoPastHost(u) {
+		return u.Scheme + "://" + URLWithCredentials
+	}
+	if path := u.EscapedPath(); plainPath(path) {
+		return u.Scheme + "://" + URLWithCredentials + path
+	}
+	return NotPrinted
+}
+
+// hostShown is text, the words unansweredFailure gave err, the failure of a request to asked, as
+// Unanswered prints them: unchanged where asked holds no user information and no "@" past its host
+// (natsurl.UserinfoPastHost), and otherwise with asked's host and port written as
+// URLWithCredentials, as the daemon's redact.HostShown writes them. A resolver's error names the
+// host (`lookup <host>: no such host`) and a dial's the address and the port (`dial tcp
+// <ip>:<port>`), and either can be a part of the credential. The host is masked as written and, for
+// an IP address, as the dialer writes it back (net.IP's String: `[0:0::1]` is dialled as `[::1]`);
+// the port as written and as the dialer writes it back, a number with no leading zeros (`:0048213`
+// is dialled and printed as `:48213`). A host that is not ASCII is dialled by its ASCII form
+// (`xn--…`, its ASCII letters kept, lower-cased), which no replacement of the host as written
+// finds, so such a failure is ClassHostNotASCII alone; and an address the dialer refused as no host
+// and port is ClassAddressRefused alone, since *net.AddrError quotes the part it refused, which can
+// be a password's head url.Parse read as the port.
+func hostShown(asked *url.URL, err error, text string) string {
+	if asked == nil || asked.User == nil && !natsurl.UserinfoPastHost(asked) {
+		return text
+	}
+	host, port := asked.Hostname(), asked.Port()
+	var address *net.AddrError
+	switch {
+	case strings.IndexFunc(host, func(r rune) bool { return r > unicode.MaxASCII }) >= 0:
+		return ClassHostNotASCII
+	case errors.As(err, &address):
+		return ClassAddressRefused
+	}
+	if host != "" {
+		text = strings.ReplaceAll(text, host, URLWithCredentials)
+		literal, _, _ := strings.Cut(host, "%")
+		if ip := net.ParseIP(literal); ip != nil {
+			text = strings.ReplaceAll(text, ip.String(), URLWithCredentials)
+		}
+	}
+	if port != "" {
+		text = portShown(text, port)
+		if n, err := strconv.Atoi(port); err == nil && strconv.Itoa(n) != port {
+			text = portShown(text, strconv.Itoa(n))
+		}
+	}
+	return text
+}
+
+// portShown is text with each ":"+port that no further digit follows written as
+// ":"+URLWithCredentials, so a port of `1` leaves `:12345` as it is.
+func portShown(text, port string) string {
+	var out strings.Builder
+	needle := ":" + port
+	for {
+		i := strings.Index(text, needle)
+		if i < 0 {
+			out.WriteString(text)
+			return out.String()
+		}
+		end := i + len(needle)
+		out.WriteString(text[:i])
+		if end < len(text) && '0' <= text[end] && text[end] <= '9' {
+			out.WriteString(needle)
+		} else {
+			out.WriteString(":" + URLWithCredentials)
+		}
+		text = text[end:]
+	}
 }
