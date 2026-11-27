@@ -16,6 +16,7 @@ import (
 // keeps the airlock's proxy, which alone swaps that placeholder, and the caller's ALL_PROXY. Each
 // keeps the caller's NO_PROXY and no_proxy as they are, and none is given the trust store.
 func TestGhKeepsTheAirlocksProxyForTheCallersTokenAlone(t *testing.T) {
+	t.Parallel()
 	airlock := "http://" + cipheraddr.AirlockProxyUser + ":placeholder@broker.internal.example:13381"
 	caller := []string{
 		"PATH=/usr/bin:/bin", "HOME=/home/example",
