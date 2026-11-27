@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -1758,7 +1757,8 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	const claudeRoles = "worker_backends: {implementer: claude, tester: claude}\n"
 	// Built from its parts, so that no source line holds a URL with a password.
 	const pluginCredential = "madeUpPluginUser0123:madeUpPluginPassword0123"
-	const privateURL = "https://" + pluginCredential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123"
+	const pluginSignature = "madeUpSignature0123"
+	const privateURL = "https://" + pluginCredential + "@cache.example/pi-legion.tgz?X-Amz-Signature=" + pluginSignature
 	for _, tc := range []struct{ name, extra, legion, envoy, want string }{
 		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
@@ -1788,7 +1788,8 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}
-			for _, credential := range []string{"madeUpPluginUser", "madeUpPluginPassword", "madeUpSignature"} {
+			pluginUser, pluginPassword, _ := strings.Cut(pluginCredential, ":")
+			for _, credential := range []string{pluginUser, pluginPassword, pluginSignature} {
 				if strings.Contains(out.String(), credential) {
 					t.Errorf("legion config check printed %q, which holds %q", out.String(), credential)
 				}
@@ -2682,11 +2683,8 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 		url, want string
 		code      int
 	}{
-		"a daemon that answers": {answering, "legion LEGION on " + redact.URL(answering) + " — ", 0},
-		// The head of the rule's text for a request that got no answer: the route as the rule
-		// writes it, and the separator before the request's own error, which an empty error
-		// leaves alone.
-		"a daemon that does not answer": {unreachable, "legion state: read " + redact.RequestError(daemonServer, unreachable+"/legion/v1/state", errors.New("")).Error(), 1},
+		"a daemon that answers":         {answering, "legion LEGION on " + redact.URL(answering) + " — ", 0},
+		"a daemon that does not answer": {unreachable, "legion state: read " + redact.URL(unreachable+"/legion/v1/state") + ": ", 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
@@ -2731,7 +2729,7 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 		t.Setenv("LEGION_DAEMON_URL", daemonURL)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if code != 1 || !strings.Contains(errb.String(), redact.URL(daemonURL+"/legion/v1/")) || strings.Contains(errb.String(), token[:10]) {
+		if code != 1 || !strings.Contains(errb.String(), redact.URL(daemonURL+claimsRoute)) || strings.Contains(errb.String(), token[:10]) {
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the token", code, errb.String())
 		}
 	})
@@ -2749,7 +2747,7 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 		t.Setenv("LEGION_DAEMON_URL", daemonURL)
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
-		if code != 1 || !strings.Contains(errb.String(), redact.URL(daemonURL+"/legion/v1/")) ||
+		if code != 1 || !strings.Contains(errb.String(), redact.URL(daemonURL+claimsRoute)) ||
 			strings.Contains(errb.String(), head[:10]) || strings.Contains(errb.String(), tail[:10]) {
 			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the password", code, errb.String())
 		}
@@ -2802,7 +2800,7 @@ func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T
 			t.Setenv("LEGION_DAEMON_URL", daemonURL)
 			var out, errb bytes.Buffer
 			code := run(context.Background(), append(append([]string{"legion", "claims"}, args...), "--operator-token-file", bearer), &out, &errb)
-			if code != 1 || !strings.Contains(errb.String(), "read the answer "+redact.URL(daemonURL+"/legion/v1/operator/claims")+" served") ||
+			if code != 1 || !strings.Contains(errb.String(), "read the answer "+redact.URL(daemonURL+claimsRoute)+" served") ||
 				strings.Contains(errb.String(), secret[:10]) {
 				t.Fatalf("legion %s = %d, stderr %q; want 1, the list named by the mark, and no part of the password", name, code, errb.String())
 			}

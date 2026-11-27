@@ -385,7 +385,8 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	// A remote URL a CI checkout writes, a made-up token as its user info, built from its parts so
 	// that no source line holds a URL with a credential.
 	const remoteToken = "x-access-token:madeUpRemoteToken0123"
-	tokenUpstream := ghRemote{name: "upstream", url: strings.Replace("https://github.com/sjawhar/legion.git", "://", "://"+remoteToken+"@", 1)}
+	withToken := func(remote string) string { return strings.Replace(remote, "://", "://"+remoteToken+"@", 1) }
+	tokenUpstream := ghRemote{name: "upstream", url: withToken("https://github.com/sjawhar/legion.git")}
 	originBase := ghMarkerLine("remote.origin.gh-resolved base")
 	markedFork := func(more ...ghRemote) func() ([]ghRemote, error) {
 		return remotes(append([]ghRemote{acmeClone, forkUpstream, originBase}, more...)...)
@@ -425,7 +426,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// writes it beside another owner's, the path, the repository, still printed; a remote this
 		// refuses, naming no OWNER/REPO, is named by its git name alone and the rule's words for a
 		// URL not printed.
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://x-access-token:madeUpRemoteToken0123" + "@" + "github.com/ownera/repo/tree/main"}),
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: withToken("https://github.com/ownera/repo/tree/main")}),
 			err: `the working directory's remote "origin" ` + redact.URLNotPrinted + ` names no OWNER/REPO`},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, tokenUpstream),
 			err: `sjawhar (the working directory's remote "upstream" (` + redact.URL(tokenUpstream.url) + `) naming sjawhar/legion)`},
@@ -778,8 +779,10 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		case tc.err != "":
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
 				t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want a refusal containing %q", tc.argv, tc.env, target, err, tc.err)
-			} else if strings.Contains(err.Error(), "madeUpRemoteT") {
+			} else if user, password, _ := strings.Cut(remoteToken, ":"); strings.Contains(err.Error(), user) || strings.Contains(err.Error(), password) {
 				t.Errorf("ghTargetOf(%q, %v): the refusal %q holds part of the remote's token", tc.argv, tc.env, err)
+			} else if strings.Contains(err.Error(), "git@") {
+				t.Errorf("ghTargetOf(%q, %v): the refusal %q holds a remote's ssh login", tc.argv, tc.env, err)
 			}
 		case err != nil || target.owner != tc.owner:
 			t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want the owner %q", tc.argv, tc.env, target, err, tc.owner)

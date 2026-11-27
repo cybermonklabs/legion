@@ -1725,10 +1725,10 @@ func TestWorkspaceInitProvisionSetsTrunkToTheDefaultBranch(t *testing.T) {
 // workspace-init's lines and its failures pass the URL rule. A repository cache that cannot be
 // reached is logged on stdout while `provision` waits for it, and named on stderr in the failure the
 // wait ends in, each time with the error of the ask (workspace's askCache), which quotes
-// LEGION_REPOSITORY_CACHE_URL with its user name and its query: each line names the cache as the
-// URL rule writes it (redact.Writer, whose text is read from the rule, redact.URLCredentials,
-// never written out here), and neither the user name nor the query reaches the init log. A cache
-// that is never ready is a cause outside the issue's volume, so `provision` exits
+// LEGION_REPOSITORY_CACHE_URL with its user name and its query. The product writes each line
+// through redact.Writer; the expectation is redact.URLCredentials of the same text, read from the
+// rule and never written out here, and neither the user name nor the query reaches the init log.
+// A cache that is never ready is a cause outside the issue's volume, so `provision` exits
 // workspace.InitExitOutsideVolume. The wait reads and sleeps on the clock of the volume's process
 // (issueVolume.proc), whose waits pass at once: on the process's own clock it would last
 // workspace.CacheWaitTimeout.
@@ -1743,8 +1743,11 @@ func TestWorkspaceInitProvisionWritesNoURLCredentials(t *testing.T) {
 	clock := v.instantClock()
 
 	code, stdout, stderr := v.answered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
-	shown := redact.URLCredentials(v.env[cacheURLEnv])
-	if want := "workspace-init: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
+	cacheURL := v.env[cacheURLEnv]
+	shown := redact.URLCredentials(cacheURL)
+	// The ask is GET <cache>/healthz (internal/workspace's cacheNotReady), and Go's error quotes
+	// that URL, so the rule is given the line as the product writes it, the route included.
+	if want := redact.URLCredentials("workspace-init: waiting for the repository cache " + cacheURL + " to be ready: Get \"" + cacheURL + "/healthz\": "); !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}
 	if want := "the repository cache " + shown + " was not ready within " + workspace.CacheWaitTimeout.String(); code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
@@ -1808,19 +1811,23 @@ func TestWorkspaceInitProvisionRetriesATransientFetchFailure(t *testing.T) {
 }
 
 // Neither a retried attempt's log line nor the final failure carries the provisioning token, even
-// where git echoes it: in a URL the userinfo that carries it is removed whole (the URL rule,
-// redact.Writer, whose text is read from the rule, redact.URLCredentials, never written out
-// here), and anywhere else the token says *** in its place.
+// where git echoes it: internal/workspace writes the token as *** wherever git echoed it, and the
+// product then writes the line through redact.Writer, which removes a URL's userinfo whole. The
+// expectation is redact.URLCredentials of the scrubbed line, read from the rule and never written
+// out here.
 func TestWorkspaceInitProvisionLogsNoToken(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t).withRemote(t, "main")
 	const (
 		unreachable = "fatal: unable to access 'https://x-access-token:@TOKEN@@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n"
+		invalid     = "remote: Invalid username or token @TOKEN@."
 		refused     = "fatal: Authentication failed for 'https://x-access-token:@TOKEN@@github.com/acme/widgets/'"
 	)
-	v.failFetches(t, 128, unreachable, "remote: Invalid username or token @TOKEN@.\n"+refused+"\n")
-	// echoed is a line as the fake git writes it: the token it was handed in place of @TOKEN@.
-	echoed := func(line string) string { return strings.ReplaceAll(line, "@TOKEN@", "ghs_test") }
+	v.failFetches(t, 128, unreachable, invalid+"\n"+refused+"\n")
+	// scrubbed is a line the fake git writes (the token it was handed in place of @TOKEN@) as
+	// internal/workspace hands it on: the token as ***, its scrub (remote.scrub,
+	// fetchCredential.scrub), which the package exports nothing to read from.
+	scrubbed := func(line string) string { return strings.ReplaceAll(line, "@TOKEN@", "***") }
 	v.instantClock()
 	v.provisionEnv()
 
@@ -1831,10 +1838,10 @@ func TestWorkspaceInitProvisionLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "ghs_test") {
 		t.Fatalf("provision logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
 	}
-	if want := "workspace-init: fetch attempt 1 failed; retrying in 5s: " + redact.URLCredentials(echoed(unreachable)); stdout != want {
+	if want := redact.URLCredentials("workspace-init: fetch attempt 1 failed; retrying in 5s: " + scrubbed(unreachable)); stdout != want {
 		t.Fatalf("stdout %q, want %q", stdout, want)
 	}
-	for _, says := range []string{"remote: Invalid username or token ***.", redact.URLCredentials(echoed(refused))} {
+	for _, says := range []string{scrubbed(invalid), redact.URLCredentials(scrubbed(refused))} {
 		if !strings.Contains(stderr, says) {
 			t.Fatalf("stderr %q, want it to name %q", stderr, says)
 		}

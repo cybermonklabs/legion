@@ -300,6 +300,9 @@ func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
 		if strings.Contains(printed, token) {
 			t.Errorf("role-init printed the token its flag's value carries: %s", shown)
 		}
+		if strings.Contains(printed, "legion-reader") {
+			t.Errorf("role-init printed the user name its flag's value carries: %s", shown)
+		}
 		if want := redact.URLCredentials(`"` + value + `"`); !strings.Contains(stderr.String(), want) {
 			t.Errorf("role-init printed %q, want it to quote the value as %s", shown, want)
 		}
@@ -425,11 +428,9 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			planted: []string{"planted-query-token-4", "planted-query-token-5"},
 		},
 		{
-			name: "a token file it cannot read",
-			args: []string{"--connect", connect, "--token-file", tokenFile, "--role", "controller", "--private-dir", t.TempDir()},
-			code: 1,
-			// The query runs to the white space after it, so the ":" the line writes there goes
-			// with it.
+			name:    "a token file it cannot read",
+			args:    []string{"--connect", connect, "--token-file", tokenFile, "--role", "controller", "--private-dir", t.TempDir()},
+			code:    1,
 			shown:   []string{redact.URLCredentials("launcher: token file " + tokenFile + ": open " + tokenFile + ": no such file")},
 			planted: []string{"planted-query-token-6"},
 		},

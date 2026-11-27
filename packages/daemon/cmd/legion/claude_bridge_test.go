@@ -175,10 +175,9 @@ func goneShim(t *testing.T) *os.File {
 }
 
 // The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
-// through redact.RequestError, with the daemon's URL as the pane names it (LEGION_DAEMON_URL),
-// user name and query included: the line names the URL by its scheme, the mark of a URL with
-// credentials and its path, and the dial's host and port as the mark too, since the URL holds a
-// user name; neither the user name nor the query reaches the pane.
+// through redact.RequestError, for the report's route under the daemon's URL as the pane names it
+// (LEGION_DAEMON_URL), user name and query included: the line holds redact.RequestError's text for
+// that route and the dial's error, and neither the user name nor the query reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
@@ -204,9 +203,11 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	})
 	p.hangUp()
 	logged := p.logged()
-	// The rule's own text for the failure, read from the rule and never written out here: the URL,
-	// then the dial's error, which begins with the address it dialed.
-	if want := redact.RequestError("the daemon", daemonURL, errors.New("dial tcp "+daemon+": ")).Error(); !strings.Contains(logged, want) {
+	// The rule's own text for the failure, read from the rule and never written out here, for the
+	// route the bridge posts to (internal/claudebridge's turnReports.url): the route, then the
+	// dial's error, which begins with the address it dialed.
+	route := daemonURL + "/legion/v1/claims/turn-outcome"
+	if want := redact.RequestError("the daemon", route, errors.New("dial tcp "+daemon+": ")).Error(); !strings.Contains(logged, want) {
 		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {

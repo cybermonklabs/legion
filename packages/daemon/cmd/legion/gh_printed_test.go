@@ -195,7 +195,8 @@ func TestLegionGhPrintsNoTokenOfAURLScopedGitConfigKey(t *testing.T) {
 	repository := t.TempDir()
 	t.Chdir(repository)
 	env := append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull)
-	key := "http.https://ghuser:" + madeUpGhToken + "@" + "ghe.example.com/.proxy"
+	const user = "ghuser"
+	key := "http.https://" + user + ":" + madeUpGhToken + "@" + "ghe.example.com/.proxy"
 	for _, args := range [][]string{{"init", "-q"}, {"config", key, "http://proxy.example:3128"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir, cmd.Env = repository, env
@@ -210,6 +211,9 @@ func TestLegionGhPrintsNoTokenOfAURLScopedGitConfigKey(t *testing.T) {
 	printed := ghPrinted(err)
 	if strings.Contains(printed, madeUpGhToken) {
 		t.Errorf("legion gh printed %q, which holds the token", printed)
+	}
+	if strings.Contains(printed, user) {
+		t.Errorf("legion gh printed %q, which holds the user name the key's URL carries", printed)
 	}
 	// The key as the URL rule writes it, read from the rule and never written out here.
 	if !strings.Contains(printed, redact.URLCredentials(key)) {
@@ -265,10 +269,11 @@ func TestReadGitRemotesNamesAnUnreadableLineByItsRemoteAlone(t *testing.T) {
 // rule writes it (redact.URL), its host with it, as every other user info does: the rule cannot
 // tell an SSH login from a token written as the user (`<token>@gh-work:owner/repo`), and newRoot
 // passes every command's stderr through the URL rule whatever remoteShown writes. remoteShown reads
-// the URL as gh reads it, which drops a port and reads git+ssh as ssh, and keeps the path, the
-// repository it names: each row names that reading, and the rule's text of it is read from the
-// rule, never written out here. An ssh remote on another host, which the alias-host rule refuses,
-// is named by its git name alone: its path is no checked OWNER/REPO.
+// the URL as gh reads it (ghParseGitURL), which drops a port and reads git+ssh and the scp-like form
+// as ssh, and keeps the path, the repository it names: each row names that reading, which the
+// parse must give, and the rule's text of it is read from the rule, never written out here. No row
+// prints a user name, a login alone included. An ssh remote on another host, which the alias-host
+// rule refuses, is named by its git name alone: its path is no checked OWNER/REPO.
 func TestLegionGhPrintsAnSSHRemotesLoginAsTheMark(t *testing.T) {
 	at := "@"
 	for raw, gh := range map[string]string{
@@ -279,9 +284,16 @@ func TestLegionGhPrintsAnSSHRemotesLoginAsTheMark(t *testing.T) {
 		"git+ssh://deploy" + at + "github.com/acme/widgets":        "ssh://deploy" + at + "github.com/acme/widgets",
 		"ssh://git:zqpass0123" + at + "gh-work/sjawhar/legion.git": "ssh://git:zqpass0123" + at + "gh-work/sjawhar/legion.git",
 	} {
+		if u, err := ghParseGitURL(raw); err != nil || u.String() != gh {
+			t.Errorf("ghParseGitURL(%q) = %v, %v; want %q, the URL as gh reads it", raw, u, err, gh)
+		}
 		got := remoteShown(raw)
 		if want := redact.URL(gh); got != want {
 			t.Errorf("remoteShown(%q) = %q, want %q, the rule's text of %q", raw, got, want, gh)
+		}
+		// Every row's user info ends in an "@", the login alone included: none may print.
+		if strings.Contains(got, at) {
+			t.Errorf("remoteShown(%q) = %q, which holds the remote's user info", raw, got)
 		}
 		for _, credential := range []string{madeUpGhToken, "zqpass0123", "deploy"} {
 			if strings.Contains(got, credential) {
@@ -306,15 +318,15 @@ func TestLegionGhPrintsAnSSHRemotesLoginAsTheMark(t *testing.T) {
 // each lose their user info and query.
 func TestPrintGhRefusalWritesEveryURLThroughTheRule(t *testing.T) {
 	at := "@"
-	glued := "ssh://" + madeUpGhToken + at + "h.example/o/r.git"
+	tokenUser := "ssh://" + madeUpGhToken + at + "h.example/o/r.git"
 	text := "a https://u:" + madeUpGhToken + at + "h.example/x, b https://h.example/x?t=" + madeUpGhToken +
-		", c ssh://u:" + madeUpGhToken + at + "h.example/x, d " + glued + " and e ssh://git" + at + "h.example/o?t=" + madeUpGhToken
+		", c ssh://u:" + madeUpGhToken + at + "h.example/x, d " + tokenUser + " and e ssh://git" + at + "h.example/o?t=" + madeUpGhToken
 	printed := ghPrinted(errors.New(text))
 	if strings.Contains(printed, madeUpGhToken) {
 		t.Errorf("printGhRefusal wrote %q, which holds the token", printed)
 	}
 	// The rule's text of the URL, read from the rule and never written out here.
-	if want := "d " + redact.URLCredentials(glued) + " and"; !strings.Contains(printed, want) {
+	if want := "d " + redact.URLCredentials(tokenUser) + " and"; !strings.Contains(printed, want) {
 		t.Errorf("printGhRefusal wrote %q, want %q", printed, want)
 	}
 }
