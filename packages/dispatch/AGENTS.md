@@ -37,7 +37,6 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 ## Browser CI
 
-The pull-request lane runs the `@pr` rows on two legs: `real` starts the stack, and `stub`
-replays recordings against the downloaded dashboard without a stack. The counting-embedder
-rows run separately after `real` on pull requests and after the wall-clock rows on `full`.
+The pull-request lane runs the `@pr` rows on two legs: `real` starts the stack, and `stub` replays recordings against the downloaded dashboard without a stack.
+The counting-embedder rows run separately after `real` on pull requests and after the wall-clock rows on `full`.
 See [the browser CI notes](../../.github/ci-notes/dispatch-browser.md) for commands and budgets.
