@@ -27,13 +27,13 @@ type ModelRequestsReport struct {
 // configured when it kept it), so a changed selector reads no kept request again. It takes the
 // wire's own request, as KeepMemoryKill takes the wire's frame.
 //
-// A request reported again with a later end moves to that end: the Claude Code bridge reports a
-// request when its newest block is a while old, and a block Claude Code writes after that report
-// is a later end of the same request, which it reports again under the same id
-// (claudebridge's modelRequests). The request's tokens, or its count among the requests of no
-// token count (untold), leave the minute of its earlier end and join that of its later one, so
-// each request counts in the minute of its last block, never of a block before it. An earlier or
-// equal end moves nothing, so a retry of an older report never takes a request back.
+// A request reported again with a later end moves to that end: the Claude Code bridge sends every
+// open request at each window, and sends one again under its id with the later end when a later
+// block of it arrives (claudebridge's modelRequests). The request's tokens, or its count among
+// the requests of no token count (untold), leave the minute of its earlier end and join that of
+// its later one, so each request counts in the minute of its last block, never of a block before
+// it. An earlier or equal end moves nothing, so a retry of an older report never takes a request
+// back.
 //
 // A request that ended before the first minute a read at now or later reaches
 // (modelRequestsReach) is kept as no row, since no read counts it: a host that could not report it

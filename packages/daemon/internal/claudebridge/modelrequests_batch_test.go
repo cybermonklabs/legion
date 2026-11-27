@@ -144,22 +144,34 @@ func (r *modelRequestRig) moveTo(t *testing.T, to time.Time) {
 	}
 }
 
-// fireWindow moves the clock on to to, where the one window armed is due, and waits until the
-// reporter has acted on it: closed each open request that is due, sent what is pending and armed
-// the next window.
-func (r *modelRequestRig) fireWindow(t *testing.T, to time.Time) {
+// advance moves the clock on by d, which fires each window due by then, and, where a window fired
+// while one was armed, waits until the reporter has acted on the one armed: a window that is due
+// closes every open request and sends what is pending (flushLocked), and an early one only arms
+// again. It answers how many windows fired.
+func (r *modelRequestRig) advance(t *testing.T, d time.Duration) int {
 	t.Helper()
 	r.reporter.mu.Lock()
 	armed := r.reporter.window
 	r.reporter.mu.Unlock()
-	if fired := r.clock.advance(to.Sub(r.clock.Now())); fired != 1 {
+	fired := r.clock.advance(d)
+	if fired != 0 && armed != 0 {
+		testwait.Eventually(t, "the window to be acted on", func() bool {
+			r.reporter.mu.Lock()
+			defer r.reporter.mu.Unlock()
+			return r.reporter.window != armed
+		})
+	}
+	return fired
+}
+
+// fireWindow moves the clock on to to, where the one window armed fires, and waits until the
+// reporter has acted on it (advance): a window that is due closes every open request and sends
+// what is pending, and an early one only arms again.
+func (r *modelRequestRig) fireWindow(t *testing.T, to time.Time) {
+	t.Helper()
+	if fired := r.advance(t, to.Sub(r.clock.Now())); fired != 1 {
 		t.Fatalf("moving the clock on to %s fired %d windows, want the one armed", to.Format(time.RFC3339Nano), fired)
 	}
-	testwait.Eventually(t, "the window to be acted on", func() bool {
-		r.reporter.mu.Lock()
-		defer r.reporter.mu.Unlock()
-		return r.reporter.window != armed
-	})
 }
 
 func (r *modelRequestRig) enqueueBatch(n int, prefix string) []string {
@@ -294,17 +306,9 @@ func TestModelRequestsStaggeredSessionsShareOneWindow(t *testing.T) {
 			r.block(lines[0].id, lines[0].agent, lines[0].end)
 			lines = lines[1:]
 		}
-		r.reporter.mu.Lock()
-		armed := r.reporter.window
-		r.reporter.mu.Unlock()
-		if r.clock.advance(tick) == 0 {
+		if r.advance(t, tick) == 0 {
 			continue
 		}
-		testwait.Eventually(t, "the window to be acted on", func() bool {
-			r.reporter.mu.Lock()
-			defer r.reporter.mu.Unlock()
-			return r.reporter.window != armed
-		})
 		r.awaitAnswer(t)
 		for drained := false; !drained; {
 			select {
@@ -337,6 +341,63 @@ func TestModelRequestsStaggeredSessionsShareOneWindow(t *testing.T) {
 		if got := sent[want.id]; got.session != want.session || !got.end.Equal(want.end) {
 			t.Errorf("the bridge last reported %s as %v, want %v", want.id, got, want)
 		}
+	}
+}
+
+// A block Claude Code wrote before a window sent, which the bridge reads only after that window,
+// goes by its own end + requestWindow on the bridge's clock, not requestWindow after that window:
+// whether the bridge holds nothing else, or a window armed for a later request comes after that
+// moment. A block the bridge reads only after that moment goes at once. The row moves the clock a
+// tick at a time, so a report's time is the window's to within a tick.
+func TestModelRequestsSendsABlockReadAfterAWindowByItsOwnEnd(t *testing.T) {
+	t.Parallel()
+	const ms, tick = time.Millisecond, 50 * time.Millisecond
+	for _, row := range []struct {
+		name string
+		// next is whether a request of the role's own, read as Claude Code writes it after the
+		// window, arms the next window before the bridge reads the late block.
+		next bool
+		// end is when Claude Code wrote the late block, read when the bridge read it, and by the
+		// latest its report may go, each after the row's start.
+		end, read, by time.Duration
+	}{
+		{"read after a window", false, 14_350 * ms, 14_850 * ms, 14_350*ms + requestWindow},
+		{"read after a window, with the next armed", true, 14_350 * ms, 14_850 * ms, 14_350*ms + requestWindow},
+		{"read after its own end + requestWindow", false, 5_000 * ms, 20_000 * ms, 20_000 * ms},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			r := newModelRequestRig(t, nil)
+			start := r.clock.Now()
+			at := func(d time.Duration) time.Time { return start.Add(d) }
+			r.block("first", "", start)
+			r.fireWindow(t, at(requestWindow-requestSendMargin))
+			r.expectEnds(t, reportedEnd{"first", capturedSession, start})
+			r.awaitAnswer(t)
+			want := []reportedEnd{{"late", capturedSubagent, at(row.end)}}
+			if row.next {
+				next := at(14_800 * ms)
+				r.moveTo(t, next)
+				r.block("next", "", next)
+				want = append(want, reportedEnd{"next", capturedSession, next})
+			}
+			r.moveTo(t, at(row.read))
+			r.block("late", capturedSubagent, at(row.end))
+			// The first step moves the clock on by nothing: a window due at once fires there.
+			for step := time.Duration(0); len(r.posts) == 0; step = tick {
+				if r.clock.Now().After(at(time.Minute)) {
+					t.Fatalf("the bridge sent nothing by +%s", time.Minute)
+				}
+				if r.advance(t, step) != 0 {
+					r.awaitAnswer(t)
+				}
+			}
+			sent := r.clock.Now().Sub(start)
+			r.expectEnds(t, want...)
+			if sent > row.by {
+				t.Errorf("the late block, ended at +%s and read at +%s, went at +%s, want by +%s", row.end, row.read, sent, row.by)
+			}
+		})
 	}
 }
 

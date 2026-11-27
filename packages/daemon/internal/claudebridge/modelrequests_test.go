@@ -89,8 +89,6 @@ type requestsRig struct {
 	clock    *windowClock
 	requests chan claim.ModelRequestsRequest
 	outcomes chan claim.TurnOutcomeRequest
-	// started is when the rig started: a request's end at or after it is the bridge's clock.
-	started time.Time
 }
 
 func newRequestsRig(t *testing.T) *requestsRig {
@@ -100,7 +98,6 @@ func newRequestsRig(t *testing.T) *requestsRig {
 		clock:    &windowClock{at: time.Date(2026, time.October, 30, 9, 1, 26, 0, time.UTC)},
 		requests: make(chan claim.ModelRequestsRequest, 16),
 		outcomes: make(chan claim.TurnOutcomeRequest, 16),
-		started:  time.Now(),
 	}
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		body, err := io.ReadAll(request.Body)
@@ -163,10 +160,10 @@ func (r *requestsRig) reported() claim.ModelRequestsRequest {
 	}
 }
 
-// rows is each request of reports as rowsOf reads it, against the rig's start.
+// rows is each request of reports as rowsOf reads it.
 func (r *requestsRig) rows(reports ...claim.ModelRequestsRequest) []requestRow {
 	r.t.Helper()
-	return rowsOf(r.t, r.started, reports...)
+	return rowsOf(r.t, reports...)
 }
 
 // noReport holds that the bridge sends no report of model requests within a short while.
@@ -187,8 +184,7 @@ func (r *requestsRig) untilAnswer() {
 	}
 }
 
-// requestRow is what a row asserts of one reported request: everything but its id, and its
-// end where the stream named one.
+// requestRow is what a row asserts of one reported request: everything but its id.
 type requestRow struct {
 	session  string
 	model    string
@@ -197,10 +193,9 @@ type requestRow struct {
 }
 
 // rowsOf is each request of reports as a requestRow, and fails on a request that names no id, no
-// end, or an id another request of reports has: each request counts once. An end at or after
-// since is the bridge's own clock, for a line that names none, and reads "now"; uncached is ""
-// where the request names none.
-func rowsOf(t *testing.T, since time.Time, reports ...claim.ModelRequestsRequest) []requestRow {
+// end, or an id another request of reports has: each request counts once. uncached is "" where
+// the request names none.
+func rowsOf(t *testing.T, reports ...claim.ModelRequestsRequest) []requestRow {
 	t.Helper()
 	var rows []requestRow
 	seen := map[string]bool{}
@@ -215,9 +210,6 @@ func rowsOf(t *testing.T, since time.Time, reports ...claim.ModelRequestsRequest
 			seen[request.ID] = true
 			row := requestRow{session: request.Session, model: request.Model,
 				endedAt: request.EndedAt.UTC().Format(time.RFC3339Nano)}
-			if !request.EndedAt.Before(since) {
-				row.endedAt = "now"
-			}
 			if request.UncachedInputTokens != nil {
 				row.uncached = strconv.FormatInt(*request.UncachedInputTokens, 10)
 			}
@@ -257,7 +249,8 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 	// arrived. The result must not send any of those IDs twice.
 	t.Run("partial", func(t *testing.T) {
 		r := newRequestsRig(t)
-		// Place the bridge's clock at the first request's timestamp, as a live bridge's is.
+		// The window is due from the replay's own times, which each of its requests' lines names:
+		// place the bridge's clock at the first request's, as a live bridge's is.
 		r.clock.set(time.Date(2026, time.November, 26, 5, 13, 16, 266_000_000, time.UTC))
 		r.prompt("p1", "replay subagent-turn.jsonl")
 		r.expect("agent_start", nil)
