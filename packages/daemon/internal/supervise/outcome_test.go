@@ -44,6 +44,7 @@ func TestChargesDecidesEveryOutcome(t *testing.T) {
 		runtime.OutcomeAgentBusy:                  false,
 		runtime.OutcomePromptRefused:              true,
 		runtime.OutcomeAdoptionRefused:            true,
+		runtime.OutcomeStartAtRefused:             false,
 		runtime.OutcomeIdentityUnavailable:        false,
 		runtime.OutcomeTransportLost:              false,
 		runtime.OutcomeNoTurnStarted:              true,

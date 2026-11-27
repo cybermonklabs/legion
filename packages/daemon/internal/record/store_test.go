@@ -3239,8 +3239,10 @@ func TestEveryClearRecordsTheClockTheSameWay(t *testing.T) {
 	records := NewStore()
 	const repo = "acme/widgets"
 	seeded := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
-	// ACME-2's clock is the later of the two, so the row a clear of ACME-1 leaves keeps it.
-	clockOfA, clockOfB, clearedAt := seeded, seeded.Add(time.Hour), seeded.Add(2*time.Hour)
+	// ACME-2's clock is the later of the two, so the row a clear of ACME-1 leaves keeps it. A clear
+	// stamps the row it writes with its own transaction's moment (now()), which the case reads back
+	// from that transaction, so no time of the test's own is written for it.
+	clockOfA, clockOfB := seeded, seeded.Add(time.Hour)
 	seed := func(t *testing.T, tx pgx.Tx) {
 		for _, key := range []string{"ACME-1", "ACME-2", "ACME-3"} {
 			issue := issueFixture(key)
@@ -3289,19 +3291,34 @@ func TestEveryClearRecordsTheClockTheSameWay(t *testing.T) {
 		{"ClearChangeGeneration", func(tx pgx.Tx, issue string) error { return records.ClearChangeGeneration(ctx, tx, issue) }},
 	} {
 		for _, tc := range []struct {
-			issue                string
-			clocks, pullRequests []string
+			issue string
+			// clocks is what cleared_pull_requests holds after the clear, as clockText writes each
+			// row, given the moment of the clear's own transaction (clearedIn): a row the clear
+			// wrote takes it, and a row it left keeps the time it was written with.
+			clocks       func(clearedIn time.Time) []string
+			pullRequests []string
 		}{
-			{issue: "ACME-1", clocks: []string{clockText(repo, 42, "ACME-1", clockOfB, clearedAt)}, pullRequests: []string{"ACME-3 43 open"}},
-			{issue: "ACME-3", clocks: []string{clockText(repo, 42, "ACME-2", clockOfB, seeded)}, pullRequests: []string{"ACME-1 42 closed", "ACME-3 43 open"}},
+			{issue: "ACME-1", clocks: func(clearedIn time.Time) []string {
+				return []string{clockText(repo, 42, "ACME-1", clockOfB, clearedIn)}
+			}, pullRequests: []string{"ACME-3 43 open"}},
+			{issue: "ACME-3", clocks: func(time.Time) []string {
+				return []string{clockText(repo, 42, "ACME-2", clockOfB, seeded)}
+			}, pullRequests: []string{"ACME-1 42 closed", "ACME-3 43 open"}},
 		} {
 			t.Run(clear.name+" of "+tc.issue, func(t *testing.T) {
 				st := migratedStore(t)
 				inTx(t, st, func(tx pgx.Tx) { seed(t, tx) })
-				inTx(t, st, func(tx pgx.Tx) { must(t, clear.clear(tx, tc.issue)) })
+				var clearedIn time.Time
 				inTx(t, st, func(tx pgx.Tx) {
-					if got := clocks(t, tx); !reflect.DeepEqual(got, tc.clocks) {
-						t.Errorf("the cleared pull requests after %s of %s = %v, want %v", clear.name, tc.issue, got, tc.clocks)
+					must(t, clear.clear(tx, tc.issue))
+					// The clear stamps its row with now(), the transaction's own moment, so the
+					// case reads that moment from the same transaction rather than naming one.
+					must(t, tx.QueryRow(ctx, "select now()").Scan(&clearedIn))
+				})
+				want := tc.clocks(clearedIn)
+				inTx(t, st, func(tx pgx.Tx) {
+					if got := clocks(t, tx); !reflect.DeepEqual(got, want) {
+						t.Errorf("the cleared pull requests after %s of %s = %v, want %v", clear.name, tc.issue, got, want)
 					}
 					if got := rowsText(t, tx, `select issue || ' ' || number::text || ' ' || state from pull_requests order by issue`); !reflect.DeepEqual(got, tc.pullRequests) {
 						t.Errorf("the pull requests after %s of %s = %v, want %v: a clear deletes only what is not open", clear.name, tc.issue, got, tc.pullRequests)

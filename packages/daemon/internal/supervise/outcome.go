@@ -124,6 +124,11 @@ func sendOutcome(err error) runtime.Outcome {
 		return runtime.OutcomeUnrecognised
 	case errors.Is(err, runtime.ErrAdoptRefused):
 		return runtime.OutcomeAdoptionRefused
+	case errors.Is(err, runtime.ErrStartAtRefused):
+		// The stream mints this for a refusal it reads itself (stream's refusal switch), and a
+		// runtime that wraps the sentinel around its own answer carries none, so the sentinel is
+		// read here as well: one error, one member of the set, whoever raised it.
+		return runtime.OutcomeStartAtRefused
 	case errors.Is(err, runtime.ErrIdentityUnavailable):
 		return runtime.OutcomeIdentityUnavailable
 	}
