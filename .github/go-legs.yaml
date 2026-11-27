@@ -130,7 +130,6 @@ packages/daemon:
       - internal/supervise/supervisetest
       - internal/testbinary
       - internal/testbuild
-      - internal/testgolden
       - internal/testlog
       - internal/testnkeys
       - internal/testtypes
