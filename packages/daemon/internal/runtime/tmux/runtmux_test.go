@@ -73,24 +73,33 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipes(t *testing.T)
 // A tmux client that exits on its own did not time out, however much of pipeDrainDelay, which
 // then holds runTmux open for something still holding the client's pipes, passes after its
 // timeout: a runTmux that read a timeout from the deadline having passed would report the
-// client's own exit 3 as a timeout. The timeout is 100 ms short of pipeDrainDelay, so a run whose
-// client exits inside it returns past it.
+// client's own exit 3 as a timeout. The timeout is main's, 100 ms short of pipeDrainDelay, so a
+// run whose client exits inside it returns past it.
 //
-// Only a run whose client was seen reaped before its timeout could pass is judged. Go reaps the
-// client in Wait once it has exited, and the deadline comes no sooner than the timeout after the
-// row called runTmux. A kill sent to a client Go has reaped finds nothing, and does not count
-// (procgroup.KilledByContext), so in such a run the timeout passed while the pipes were held and
-// ended nothing. A loaded machine can hold the client past a timeout counted from before the
-// client started, and that run, which the timeout's kill ended, shows nothing of this: the row
-// runs the client again until a run of the right order comes, within a minute.
+// Only a run whose client was seen reaped before its timeout could pass shows this. Go reaps the
+// client in Wait once it has exited, the deadline comes no sooner than the timeout after the row
+// called runTmux, and a kill sent to a client Go has not reaped counts (procgroup.KilledByContext):
+// a run reaped past the timeout reports the timeout's kill, as it should. Main's form judged every
+// run, and two things bring the reap past the timeout: the client's own run, which a loaded
+// machine slows, and runTmux's own time, from the call to the client's start and from the client's
+// exit to its reap. The row tells them apart by facts of the run: the client records when the
+// kernel made its process (testexec.MarkStart) and the moment just before it exits
+// (testexec.MarkNow), and between the two is the client's own run, which nothing runTmux does
+// moves. A run reaped inside the timeout is judged as main judged it. A run reaped past it holds
+// runTmux's own time to main's timeout: a runTmux that spent that long starting the client or
+// reaping it fails, as main's form failed it. Only where runTmux's own time stays inside the
+// timeout did the client's own run carry the reap past it: that run is not judged, and the row
+// runs the client again until a run is judged, within a minute. So is a run whose client never
+// reached its exit mark, which the timeout's kill ended in its own run, once runTmux's time to its
+// start is inside the timeout.
 func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *testing.T) {
 	const timeout = pipeDrainDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, pipeDrainDelay+time.Second)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		dir := t.TempDir()
-		leader := filepath.Join(dir, "leader")
-		client := fakeTmuxClient(t, dir, "echo $$ >"+shellprefix.Literal(leader)+"\necho answered\n"+heldChild(t)+"\nexit 3")
+		leader, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
+		client := fakeTmuxClient(t, dir, testexec.MarkStart(shellprefix.Literal(mark))+"\necho $$ >"+shellprefix.Literal(leader)+"\necho answered\n"+heldChild(t)+"\n"+testexec.MarkNow(shellprefix.Literal(exited))+"\nexit 3")
 		r := &Runtime{tmuxPath: client, commandTimeout: timeout, clock: clock.Real(), environ: []string{"PATH=" + os.Getenv("PATH")}}
 		reaped := make(chan time.Time, 1)
 		go func() {
@@ -103,6 +112,7 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 			}
 		}()
 
+		calledBoot := testexec.SinceBoot(t)
 		called := time.Now()
 		res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
 		elapsed := time.Since(called)
@@ -113,10 +123,23 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 				runs, within, res.exitCode, res.timedOut, err, elapsed)
 		}
 		if !at.Before(called.Add(timeout)) {
+			// runTmux's own time: from the call to the client's start, and from the client's exit
+			// to its reap. Between the two is the client's own run.
+			began := testexec.StartedAfter(t, mark, calledBoot)
+			own, ran := began, "never reached its exit mark: the timeout's kill ended it in its own run"
+			if exit, unread := testexec.ReadNowMark(exited); unread == nil {
+				own += calledBoot + at.Sub(called) - exit
+				ran = fmt.Sprintf("took %s from its start to its exit", exit-calledBoot-began)
+			}
+			if own >= timeout {
+				t.Fatalf("run %d: runTmux spent %s of its own before the client's reap, at or past main's %s timeout: %s from the call to the client's start, and %s from the client's exit to its reap, which the row saw %s after the call (runTmux = exit %d, timed out %s, error %v after %s)",
+					runs, own, timeout, began, own-began, at.Sub(called), res.exitCode, res.timedOut, err, elapsed)
+			}
 			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: the client was seen reaped %s after the call, past its %s timeout, with runTmux's own time %s inside it: the client's own run %s", runs, at.Sub(called), timeout, own, ran)
 				continue
 			}
-			t.Fatalf("no run of the right order in %d runs over %s: in each, the client was seen reaped only after its %s timeout could pass", runs, within, timeout)
+			t.Fatalf("no run judged in %d runs over %s: in each the client was seen reaped past its %s timeout with runTmux's own time inside it; in the last, runTmux's own time was %s, and the client's own run %s", runs, within, timeout, own, ran)
 		}
 		if err != nil {
 			t.Fatalf("run %d: runTmux = %v after %s, want the client's own exit 3", runs, err, elapsed)
