@@ -32,25 +32,35 @@ autopilot_of() {
 }
 
 # node_escape STEP SUFFIX RESOURCE MODE RIGHTS: on the cluster KUBE names, with MODE its
-# AUTOPILOT_MODE: an UNKNOWN for an unknown mode; for Standard (`false`), the ServiceAccount of each
-# system namespace pod bound to a node and running is reviewed for RIGHTS, the rights the cluster's
-# own review asked (read_other_cluster), and NODE_TOKEN_RIGHTS; each right allowed, and each of the
-# rules of the cluster's roles that live_named read ($WORK/named.rec) that gives one by name, is a
-# finding, its label followed by SUFFIX. Autopilot (`true`) and "" (no GKE cluster) read nothing.
-# Every GKE cluster runs kube-system's pods, so a list of the cluster's pods that holds none cannot
-# be told from one that saw nothing, and is UNKNOWN; a list that holds pods, none of them a system
-# ServiceAccount's on a node, is the clean case.
+# AUTOPILOT_MODE: an UNKNOWN for an unknown mode; for Standard (`false`) and for "" (no GKE cluster
+# was read for it, as on a fleet member that is none), the ServiceAccount of each system namespace
+# pod bound to a node and running is reviewed for RIGHTS, the rights the cluster's own review asked
+# (read_other_cluster), and NODE_TOKEN_RIGHTS; each right allowed, and each of the rules of the
+# cluster's roles that live_named read ($WORK/named.rec) that gives one by name, is a finding, its
+# label followed by SUFFIX. Only Autopilot (`true`), read from the cluster itself, reads nothing: a
+# mode never read says nothing about whether a privileged pod there can read a token, and a cluster
+# that is no GKE cluster has no Autopilot to hold it. Every GKE cluster runs kube-system's pods, so
+# a list of the cluster's pods that holds none cannot be told from one that saw nothing, and is
+# UNKNOWN; a list that holds pods, none of them a system ServiceAccount's on a node, is the clean
+# case.
 node_escape() {
   local cstep="$1" suffix="$2" resource="$3" mode="$4" rights principal label verdict error reason _
-  local what id detail kind ns name accounts=0
-  local why=", and it runs a pod on a node of this GKE Standard cluster, where a privileged or hostPath pod reads every token on its node"
+  local what id detail kind ns name accounts=0 where why
   local -A on_node=()
   case "$mode" in
-    "" | true) return 0 ;;
+    true) return 0 ;;
     unknown:*) unknown "$cstep" "whether the cluster is GKE Autopilot is unknown, so whether a privileged pod on its nodes can read a system ServiceAccount's token is unknown: ${mode#unknown:}"; return 0 ;;
+    "")
+      where="no GKE cluster was read for this fleet member, so it is not known to be GKE Autopilot"
+      why=", and it runs a pod on a node of this cluster, which is no GKE cluster and so not GKE Autopilot, where a privileged or hostPath pod reads every token on its node"
+      ;;
+    *)
+      where="the cluster is GKE Standard"
+      why=", and it runs a pod on a node of this GKE Standard cluster, where a privileged or hostPath pod reads every token on its node"
+      ;;
   esac
   if ! kubectl --kubeconfig "$KUBE" get pods --all-namespaces -o json >"$WORK/node-pods.json" 2>"$WORK/node-pods.err"; then
-    unknown "$cstep" "the cluster is GKE Standard, and the API server refused the pods' list, so which system ServiceAccounts run on its nodes is unknown (it needs list on pods, container.pods.list on GKE): $(first_line "$WORK/node-pods.err")"
+    unknown "$cstep" "$where, and the API server refused the pods' list, so which system ServiceAccounts run on its nodes is unknown (it needs list on pods, container.pods.list on GKE): $(first_line "$WORK/node-pods.err")"
     return 0
   fi
   if ! is_list "$WORK/node-pods.json" "$WORK/node-pods.err"; then
@@ -58,7 +68,7 @@ node_escape() {
     return 0
   fi
   if [ "$(jq '.items | length' "$WORK/node-pods.json")" -eq 0 ]; then
-    unknown "$cstep" "the cluster is GKE Standard, and the API server's list of pods holds no pod, though every GKE cluster runs kube-system's, so it cannot be told from a list that saw nothing and which system ServiceAccounts run on its nodes is unknown"
+    unknown "$cstep" "$where, and the API server's list of pods holds no pod, though every GKE cluster runs kube-system's, so it cannot be told from a list that saw nothing and which system ServiceAccounts run on its nodes is unknown"
     return 0
   fi
   jq -r "$JQ_REC"'[.items[] | select((.spec.nodeName // "") != "" and .status.phase == "Running")

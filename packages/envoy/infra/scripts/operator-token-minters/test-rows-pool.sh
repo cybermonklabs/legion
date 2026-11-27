@@ -75,6 +75,9 @@
 #        controls: a copy that asks a node's account only the namespace, ServiceAccount and pod
 #        rights misses nodes/proxy, one that skips an evaluation error and one without the census
 #        witness each exit 0;
+#   (nf) a guarded namespace on a fleet member that is no GKE cluster, whose autopilot mode no
+#        describe ever read, reads UNKNOWN naming the node escape rather than passing; control: a
+#        copy reading that unread state as Autopilot, as both places did, exits 0;
 #   (lb) the operator's cluster's findings carry cluster:<project>/<location>/<name>, apart from a
 #        cluster of its name in another location; a copy using the bare name fails the row;
 #   (gn) a guarded namespace on another cluster: the cluster is reviewed with the operator's
@@ -995,4 +998,38 @@ if row ne; then
   each node_escape_row standard nodes-proxy impersonate named-proxy approval-alone eval-error autopilot no-pod unscheduled \
     empty-census emptylist-census describe-refused pods-refused nodes-proxy-control eval-error-control empty-census-control
   passed "(ne) on another Standard cluster of the pool, a system ServiceAccount with a running pod on a node and any right the cluster's review asks (create namespaces, get nodes/proxy outright or by name, impersonate users) is a finding; the certificate approval alone is none; on Autopilot, with no pod or a pod on no node it is none; an evaluation error, a pods' list of no pod, a refused describe or pods' list reads UNKNOWN; each control copy exits 0"
+fi
+
+# --- (nf) A guarded namespace on a fleet member that is no GKE cluster. No `clusters describe` is
+# made for such a member, so its autopilot mode is the empty string: a reading never made. It was
+# grouped with `true`, read from the cluster itself, in both places that judge it, so the member
+# printed REVIEWED and the run could exit 0 while a privileged pod on its node reads the guarded
+# ServiceAccount's token. --rbac-only-member is given, since without it the member's own UNKNOWN
+# would hide this one. ---
+non_gke_guarded_row() {
+  local copy
+  base_world
+  edge_member
+  echo envoy-operator >>"$world/clusters/edge-cluster/namespaces"
+  case "$1" in
+    control)
+      copy="$(script_copy non-gke-as-autopilot)"
+      plant "$(dirname "$copy")/operator-token-minters/step-workload-identity.sh" '      true) ;;' $'      "" | true) ;;'
+      plant "$(dirname "$copy")/operator-token-minters/node-escape.sh" '    true) return 0 ;;' $'    "" | true) return 0 ;;'
+      run_script="$copy" run --rbac-only-member edge
+      want_status 0 "a copy reading an unread autopilot as Autopilot"
+      [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "a copy reading an unread autopilot as Autopilot read UNKNOWN"
+      ;;
+    member)
+      run --rbac-only-member edge
+      want_status 2 "a guarded namespace on a fleet member that is no GKE cluster"
+      want_line "UNKNOWN live: Workload Identity on fleet member edge: no GKE cluster was read for this fleet member, so it is not known to be GKE Autopilot, and it holds the guarded namespace envoy-operator: a privileged or hostPath pod on a node there can read the token of envoy-operator/envoy-operator, a node escape no RBAC review here sees" \
+        "a guarded namespace on a fleet member that is no GKE cluster"
+      want_text "REVIEWED membership:$project/global/edge: namespace envoy-operator exists there" "a guarded namespace on a fleet member that is no GKE cluster"
+      ;;
+  esac
+}
+if row nf; then
+  each non_gke_guarded_row member control
+  passed "(nf) a guarded namespace on a fleet member that is no GKE cluster reads UNKNOWN, since no cluster was read to say it is Autopilot; a copy reading that unread state as Autopilot exits 0"
 fi

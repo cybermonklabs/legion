@@ -15,14 +15,17 @@ pool_name="the workload pool's project"
 # (binding_rights), or any of those limited by name (each a finding, its right followed by WHERE);
 # every binding of system:masters but the bootstrap one is a finding, and its other Group subjects
 # are judged by GROUPS, where the cluster takes its groups from (groups_verdict), and SETTINGS by
-# settings_verdict. AUTOPILOT, the GKE cluster's autopilot_of mode ("" for no GKE cluster), judges
-# its system ServiceAccounts that run on its nodes (node_escape). The reviews carry the witness.
+# settings_verdict. AUTOPILOT, the GKE cluster's autopilot_of mode ("" where no GKE cluster was
+# read for it, as on a fleet member that is none), judges its system ServiceAccounts that run on
+# its nodes (node_escape). Only `true`, Autopilot read from the cluster itself, says a node escape
+# cannot happen: "" is a reading never made, never the safe answer. The reviews carry the witness.
 # PASS when it recorded neither a finding nor an UNKNOWN. A guarded pair's namespace that exists
 # there names no principal of its own: its ServiceAccount acts as the pair's Google account through
 # the pool, so the cluster is reviewed with the operator's cluster's rights too (RIGHTS_TABLE, and
 # the Secrets the renders declare), each holder a named finding with the cluster's label, and a
 # REVIEWED line says so. What that review cannot see is a privileged or hostPath pod on a node of a
-# GKE Standard cluster reading the ServiceAccount's token, which is UNKNOWN, as on the operator's.
+# cluster that is not GKE Autopilot reading the ServiceAccount's token, which is UNKNOWN, as on the
+# operator's.
 read_other_cluster() {
   local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" autopilot="${6:-}" ns name pair acts accounts=0
   local -a present=()
@@ -48,7 +51,8 @@ read_other_cluster() {
     [ -z "$BROKER" ] || [ "$pair" != "$BROKER_WORKLOAD" ] || acts="the broker account $BROKER"
     echo "REVIEWED $principal: namespace ${pair%%/*} exists there, so its ServiceAccount $pair acts as $acts through the workload pool $POOL_PROJECT.svc.id.goog; the cluster is reviewed with the operator's cluster's rights"
     case "$autopilot" in
-      "" | true) ;;
+      true) ;;
+      "") unknown "$cstep" "no GKE cluster was read for this fleet member, so it is not known to be GKE Autopilot, and it holds the guarded namespace ${pair%%/*}: a privileged or hostPath pod on a node there can read the token of $pair, a node escape no RBAC review here sees" ;;
       *) unknown "$cstep" "the cluster is not GKE Autopilot and holds the guarded namespace ${pair%%/*}, so a privileged or hostPath pod on a node can read the token of $pair there, a node escape no RBAC review here sees" ;;
     esac
   done
