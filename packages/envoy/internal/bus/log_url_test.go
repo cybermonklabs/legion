@@ -16,30 +16,25 @@ import (
 // nats.go authenticates with a server URL's userinfo, a user name alone as a token and
 // user:password as a password, so neither part may reach a log line or a logged error.
 // url.URL.Redacted is not enough: it keeps the user name, which is the whole of a token.
-// NATSURLUserinfoParses is false for exactly the URLs the rendering falls back on: one that does
-// not parse, and one with an "@" past its authority. No bus log line renders a URL now - each
-// names a server by its position (natsconn.ServerPosition) - and the rendering is the one
-// `envoy-infra buckets` prints its connect target with, and refuses a URL whose user info a parse
-// does not read where it is written by (infra/buckets).
+// A URL that does not parse, and one with an "@" past its authority, render as what follows their
+// last "@". No bus log line renders a URL now - each names a server by its position
+// (natsconn.ServerPosition) - and the rendering is the one `envoy-infra buckets` prints its connect
+// target with (infra/buckets).
 func TestNATSURLWithoutUserinfo(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		raw, want string
-		parses    bool
 	}{
-		{"nats://user:secret@nats.example.test:4222", "nats://nats.example.test:4222", true},
-		{"nats://token@127.0.0.1:4223", "nats://127.0.0.1:4223", true},
-		{"u:secret@127.0.0.1:4224", "nats://127.0.0.1:4224", true},
-		{" nats://127.0.0.1:4222 ", "nats://127.0.0.1:4222", true},
-		{"127.0.0.1:4222", "127.0.0.1:4222", true},
-		{"nats://user:secret@host:4222/%zz", "host:4222/%zz", false},
-		{"nats://user:secret@host:4222/a@b", "b", false},
+		{"nats://user:secret@nats.example.test:4222", "nats://nats.example.test:4222"},
+		{"nats://token@127.0.0.1:4223", "nats://127.0.0.1:4223"},
+		{"u:secret@127.0.0.1:4224", "nats://127.0.0.1:4224"},
+		{" nats://127.0.0.1:4222 ", "nats://127.0.0.1:4222"},
+		{"127.0.0.1:4222", "127.0.0.1:4222"},
+		{"nats://user:secret@host:4222/%zz", "host:4222/%zz"},
+		{"nats://user:secret@host:4222/a@b", "b"},
 	} {
 		if got := NATSURLWithoutUserinfo(tc.raw); got != tc.want {
 			t.Errorf("NATSURLWithoutUserinfo(%q) = %q, want %q", tc.raw, got, tc.want)
-		}
-		if got := NATSURLUserinfoParses(tc.raw); got != tc.parses {
-			t.Errorf("NATSURLUserinfoParses(%q) = %v, want %v", tc.raw, got, tc.parses)
 		}
 	}
 }

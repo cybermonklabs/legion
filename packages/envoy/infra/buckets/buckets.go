@@ -70,6 +70,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/internal/flagerr"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // Runner runs a program with args and returns its standard output; an error carries what it wrote
@@ -508,32 +509,26 @@ const (
 )
 
 // connect is both paths' connect to natsURL, or nil once it has written why there is none. The
-// command hands nats.go any URL, since it sets bus.AllowRemoteEnvVar, so before any dial it refuses:
+// command hands nats.go any URL, since it sets bus.AllowRemoteEnvVar, so before any dial it refuses
+// a URL with white space at either end (paddedURL): bus reads the URL trimmed, and nats.go as given,
+// so the two would read different URLs, and nats.go's parse would fail only after the connect's ten
+// tries a second apart.
 //
-//   - a URL with white space at either end (paddedURL): bus reads the URL trimmed, and nats.go as
-//     given, so the two would read different URLs, and nats.go's parse would fail only after the
-//     connect's ten tries a second apart;
-//   - a URL whose user info a parse does not read where it is written (bus.NATSURLUserinfoParses,
-//     unreadableURL): a `/`, `?` or `#` in its user or password ends the authority there, nats.go
-//     dials the credential's head as the host, and the failed lookup names it.
-//
-// A connect that fails prints one line. A URL nats.go still cannot parse - one with no user info,
-// such as a port that is no number - fails with a *url.Error, whose text quotes the whole URL: that
-// prints unreadableURL. Any other failure names the server without the URL's user info
+// A connect that fails prints one line. bus.Connect refuses, before any dial, a URL nats.go would
+// not read as written (natsurl.Refusal): one that does not parse, such as a port that is no number,
+// and one whose user info a parse does not read where it is written - a `/`, `?` or `#` in its user
+// or password ends the authority there, and nats.go would dial the credential's head as the host.
+// That prints unreadableURL, since the server line below would name what the parse read as the
+// host. Any other failure names the server without the URL's user info
 // (bus.NATSURLWithoutUserinfo) and the error, which then quotes no URL.
 func connect(stderr io.Writer, natsURL string, options ...bus.ConnectOption) *bus.Client {
 	if natsURL != strings.TrimSpace(natsURL) {
 		fmt.Fprintln(stderr, paddedURL)
 		return nil
 	}
-	if !bus.NATSURLUserinfoParses(natsURL) {
-		fmt.Fprintln(stderr, unreadableURL)
-		return nil
-	}
 	nc, err := bus.Connect([]string{natsURL}, options...)
-	var unparsed *url.Error
 	switch {
-	case errors.As(err, &unparsed):
+	case err != nil && natsurl.Refusal(natsURL) != "":
 		fmt.Fprintln(stderr, unreadableURL)
 		return nil
 	case err != nil:
