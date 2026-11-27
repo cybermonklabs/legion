@@ -356,6 +356,14 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 		}
 		args = append([]string{"--config=git.executable-path=" + TOMLString(git)}, args...)
 	}
+	// PLANT (control, not for merge): the process execRunner.Run forks reaches the command's own
+	// first line this long after the fork, in that same process (`sh -c 'sleep N; exec "$@"'`), so
+	// the kernel's start time of the command's process is unchanged.
+	if late := plantDelay("exec-late"); late > 0 {
+		fmt.Fprintf(os.Stderr, "PLANT exec-late fired: %s for %s\n", late, strings.Join(command.Argv, " "))
+		args = append([]string{"-c", "sleep " + strconv.FormatFloat(late.Seconds(), 'f', -1, 64) + "; exec \"$@\"", "sh", executable}, args...)
+		executable = "/bin/sh"
+	}
 	child := exec.CommandContext(bounded, executable, args...)
 	child.Dir = command.Dir
 	// Provisioning's children take their git configuration from the caller's intent, never from
