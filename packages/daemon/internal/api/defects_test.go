@@ -358,20 +358,20 @@ func TestReportDefectAnswersEachCase(t *testing.T) {
 func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 	t.Parallel()
 
-	// reported is the harness with the root in retro and one defect its implementer reported, and
-	// that defect's id.
-	reported := func(t *testing.T) (*harness, string) {
+	// reported is the harness with the root in retro and one defect its implementer reported, that
+	// defect's id, and the implementer's claim.
+	reported := func(t *testing.T) (*harness, string, liveClaim) {
 		t.Helper()
 		h, _, _ := statusHarness(t)
 		acceptPhase(t, h, statusRoot, phase.Retro)
 		implementer := newLiveClaim(t, h, statusRoot, claim.RoleImplementer)
 		answer := answeredDefect(t, reportDefectAs(h, implementer.grant(t), statusRoot, defectText, defectHead, ""))
-		return h, answer.Defect
+		return h, answer.Defect, implementer
 	}
 
 	t.Run("the owning architect withdraws a reported defect with its reason", func(t *testing.T) {
 		t.Parallel()
-		h, id := reported(t)
+		h, id, _ := reported(t)
 		architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 		answer := answeredDefect(t, withdrawDefectAs(h, architect.grant(t), statusRoot, id, "same as 3"))
 		if answer.State != "withdrawn" || answer.Defect != id {
@@ -392,8 +392,7 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 
 	t.Run("a phase worker is refused DEFECT_WITHDRAW_NOT_OWNER", func(t *testing.T) {
 		t.Parallel()
-		h, id := reported(t)
-		implementer := newLiveClaim(t, h, statusRoot, claim.RoleImplementer)
+		h, id, implementer := reported(t)
 		refused(t, withdrawDefectAs(h, implementer.grant(t), statusRoot, id, "fixed"), http.StatusForbidden, "DEFECT_WITHDRAW_NOT_OWNER")
 		if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].withdrawn {
 			t.Fatalf("defects = %+v, want the defect still open", rows)
@@ -403,7 +402,7 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 	for _, id := range []string{"999999", "not-an-id"} {
 		t.Run("the id "+id+" is refused DEFECT_NOT_FOUND", func(t *testing.T) {
 			t.Parallel()
-			h, _ := reported(t)
+			h, _, _ := reported(t)
 			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 			refused(t, withdrawDefectAs(h, architect.grant(t), statusRoot, id, "fixed"), http.StatusNotFound, "DEFECT_NOT_FOUND")
 		})
@@ -414,8 +413,13 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 			t.Parallel()
 			h, _, _ := statusHarness(t)
 			setIssueColumns(t, h, statusRoot, "phase = 'verifying', status = 'testing'")
-			id := seedDefect(t, h, record.Defect{Issue: statusRoot, Generation: 1, Kind: kind, Text: "it failed", Check: "c-done",
-				ReportedAt: time.Date(2026, 11, 27, 5, 0, 0, 0, time.UTC)})
+			// A check's reason names its deciding result, as the record requires of it.
+			reason := record.Defect{Issue: statusRoot, Generation: 1, Kind: kind, Text: "it failed", Check: "c-done",
+				ReportedAt: time.Date(2026, 11, 27, 5, 0, 0, 0, time.UTC)}
+			if kind == record.DefectKindCheck {
+				reason.Result = "result-7"
+			}
+			id := seedDefect(t, h, reason)
 			architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 			refused(t, withdrawDefectAs(h, architect.grant(t), statusRoot, strconv.FormatInt(id, 10), "wrong check"), http.StatusConflict, "DEFECT_IS_A_CHECK")
 			if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].withdrawn {
@@ -445,7 +449,7 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 
 	t.Run("a blank reason is refused DEFECT_REASON_REQUIRED", func(t *testing.T) {
 		t.Parallel()
-		h, id := reported(t)
+		h, id, _ := reported(t)
 		architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 		refused(t, withdrawDefectAs(h, architect.grant(t), statusRoot, id, "  \n"), http.StatusBadRequest, "DEFECT_REASON_REQUIRED")
 		if rows := defectRows(t, h, statusRoot); len(rows) != 1 || rows[0].withdrawn {
