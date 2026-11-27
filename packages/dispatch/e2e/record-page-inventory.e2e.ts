@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { issueTabs } from "../web/src/features/issue/issue-tab-list";
 import { patchIssue } from "./api";
+import { openIssueDetails } from "./issue-details";
 import { seedWholeIssueAdvancing } from "./issue-layout-seed";
 import {
   INVENTORY_CONTROLS,
@@ -63,8 +64,11 @@ import { asUser } from "./users";
  * That page renders only the active tab's panel - every other panel is `hidden`, which the
  * accessibility snapshot leaves out - so a state's inventory is the merge of every tab's panel,
  * each visited in turn at each width, and each panel is asserted to offer a control of its
- * own. The priority row's picker is a view of its own too, because no tab holds it: the row's
- * add control opens it, and an open state records the page with it open (`recordPriorityPicker`).
+ * own. The header's Details (`web/src/features/issue/HeaderDetails.tsx`, dispatch://INFRA-5200)
+ * is closed until the reader opens it and holds the issue's properties and their controls, so
+ * each state opens it before it reads the page (`openIssueDetails`). The priority row's picker
+ * is a view of its own too, because no tab holds it: the Advances row's add control in Details
+ * opens it, and an open state records the page with it open (`recordPriorityPicker`).
  */
 
 /** The tabs of the issue page, read from `web/src/features/issue/issue-tab-list.ts`'s `issueTabs`
@@ -141,12 +145,12 @@ function named(entry: InventoryEntry): string {
 }
 
 /**
- * The priority row's picker (dispatch://INFRA-2947 R3), which the row's "Edit priorities" control
- * opens (`IssuePriorityLine.tsx`, `MultiSelect` in a portal) and no tab holds: in an open state
- * the page is recorded once more with it open, and it is closed by Escape. A closed issue's row
- * draws the control refused (`disabled`), so a closed state has no picker to open, and asserting
- * that is what keeps an open state whose control could not be pressed from recording no picker
- * without a word.
+ * The priority row's picker (dispatch://INFRA-2947 R3), which the Advances row's "Edit
+ * priorities" control in the header's Details opens (`IssuePriorityLine.tsx`, `MultiSelect` in a
+ * portal) and no tab holds: in an open state the page is recorded once more with it open, and it
+ * is closed by Escape. A closed issue's row draws the control refused (`disabled`), so a closed
+ * state has no picker to open, and asserting that is what keeps an open state whose control
+ * could not be pressed from recording no picker without a word.
  */
 async function recordPriorityPicker(page: Page, state: RecordedState): Promise<InventoryEntry[]> {
   const row = page.getByTestId("issue-advances");
@@ -202,6 +206,9 @@ async function recordState(
     drawn,
     `the page at ${state.key} draws other tabs than this recorder reads, so the fixture would miss a panel`
   ).toEqual([...ISSUE_TABS]);
+  // The header's Details holds the issue's properties, closed until the reader opens it, so it is
+  // opened before the page is read; the browser keeps it open for every later state.
+  await openIssueDetails(page);
   const found: InventoryEntry[] = [];
   const panels = new Map<string, readonly InventoryEntry[]>();
   for (const tab of ISSUE_TABS) {
