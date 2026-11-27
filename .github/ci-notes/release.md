@@ -94,51 +94,22 @@ commit there still releases: each is a --patch-path. Nothing has been published 
 name, so --first-npm seeds the line at npm's 0.0.0 and the first release bumps from the whole
 history.
 
-## The Go legion's version arguments and the check that holds them to the build
+## The Go legion's version arguments and the command that prints its envoy packages
 
 The Go `legion`. The binary embeds its prompts (internal/prompts/roles and go), so a docs:
 commit there still releases. The notices scripts and the target list are runtime inputs of the
 release archives and worker image, so any change to one needs a new tag rather than a CI-only
-rebuild. Beside packages/daemon/, `LEGION_VERSION_ARGS` names each envoy package directory the
-release build compiles, public and internal, through the daemon module's `replace` on ../envoy,
-for any legion target of .github/go-release-targets.json (one binary each, which
-.github/scripts/release-build-legion.sh builds): GOOS and GOARCH decide which files, and so
-which imports, a build compiles. A change to any of those packages changes the binary and must
-release one. The list also names the module files that decide what that build compiles and with
-which toolchain: the envoy module's go.mod, and go.work, the workspace the build runs in, whose
-go line and use list move the toolchain and the module versions as a go.mod does. It carries the
-envoy module's go.sum too, which holds checksums and chooses nothing; the check below neither
-requires nor refuses it.
-
-The list is written out because the version step runs before setup-go
-(.github/ci-notes/release.md#why-legion_build-reads-the-tags-before-setup-go), where no go
-command can compute it. Rule 25 of .github/scripts/check-ci-filters.sh holds it to the build
-instead, from the entry `.github/scripts/ci_job_reads.py#VERSION_ARGS` declares, and the ci-filters
-job runs it on the pull request, on every change to a Go file, a module file or a workflow:
-
-- What the build compiles: the package directories each target's build lists, from the go list
-  runs lint's notices step already asks for, and the go.mod and go.work of its workspace.
-- What the list reads: git decides, reading the same words from the repository's root as the git
-  log of release-bump.sh does. A path ending in `/` takes in a directory alone, so `go.mod/` reads
-  nothing.
-- It fails naming each package directory or module file the list does not read, each listed path
-  git reads no file for, and each listed path inside the build's modules under which the build
-  compiles nothing. It does not refuse a listed path wider than the build, such as packages/.
-- The entry pins release-build-legion.sh whole, as an Exact entry pins a step, and its go
-  commands say what that text compiles: ./cmd/legion for each legion target, with CGO_ENABLED=0.
-  Any change to the script fails the check, naming the first line that differs, until the entry's
-  pinned text, and its go commands where the build moves, change with it.
-- The step that runs it is pinned the same way: legion_build's "Build legion" runs the script's
-  path alone, from the repository's root, and no other step of the workflow names it, so a
-  prefix, an export or a source before it, or a mention in a comment fails. An env: of the step,
-  the job or the workflow that can move what go compiles fails, and a name go never reads, such
-  as another release's list in the workflow's env:, goes in ENV_ALLOWED. A step before it that
-  writes $GITHUB_ENV or $GITHUB_PATH, or runs `go env -w`, fails too, and so does a shell or a
-  container. A step that writes go's env file by its path is not read.
-
-The envoy part of the list for the host's target, by hand, from packages/daemon:
-  go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
+rebuild. The envoy packages of `LEGION_VERSION_ARGS` are every package `go list -deps ./cmd/legion` reaches
+through the module's `replace` on ../envoy, public and internal, so a change to any of them
+changes the binary and must release one, and the envoy module's own go.mod and go.sum decide
+which versions of their dependencies it links. That list is written here by hand; this is the
+command that prints it, to be run from packages/daemon, once for each target
+.github/go-release-targets.json lists, whenever what the binary links moves:
+  CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
+packages/daemon/cmd/legion/release_list_test.go (TestTheReleaseListNamesEveryEnvoyPackageLegionLinks,
+in daemon-go) runs that command for each target and fails naming each package the list misses,
+with the targets that link it, or that no target links any longer.
 
 ## Why GOPROXY falls through to direct
 

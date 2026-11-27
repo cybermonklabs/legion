@@ -44,6 +44,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -103,6 +104,24 @@ type GrantSource interface {
 	// name and slot and answered again after, so a command that asks for one scope twice - and
 	// a second pod that exchanges that scope for itself - reads back the same string.
 	AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error)
+	// ProxyGrantsOfEnrollment is the live grants of enrollment enrollmentID, but exceptGrantID,
+	// that hold a placeholder of one of names - the secrets whose entries bind the host the proxy
+	// decides for (boundEntries) - each as AirlockConnection answers a connection opened with one
+	// of its placeholders, in grant id order. A grant that holds no placeholder of any of names
+	// is left out before any check of it, its project check among them, and a read naming no
+	// name answers none: so such a grant is never read for this host, and a check of it that
+	// cannot be made fails no call to that host. A grant that does hold one is read and checked
+	// whole, even where the name it holds is one its session's operator withheld. A command holds
+	// the placeholders of every grant its session has, so a host such a grant binds is read
+	// (sessionBinds), and a placeholder of such a grant is swapped on one connection (handledFor).
+	// Every error of it is a read that did not happen, or a refusal of the whole enrollment
+	// (grantRefusal).
+	ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string, names []string) ([]requests.AirlockConnection, error)
+	// ProxyPlaceholderGrant is the grant the broker minted a placeholder for, and "" where it
+	// knows none: a release's placeholder live or ended, until the sweep deletes an ended grant's
+	// rows, and a minted capability's while its grant lives. The refusal of a request that still
+	// carries a placeholder after the swap names that grant (Server.placeholderGrant).
+	ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error)
 	// AirlockRules is the airlock's rules as the live policy holds them: the profiles file's
 	// kinds, and the binding of each name whose secret's proxy tag names one. A tag changes at
 	// runtime, so the proxy reads them on each request and each CONNECT rather than once at
@@ -115,6 +134,9 @@ type Options struct {
 	// Grants is the broker's own reads, in production a *requests.Machine: the grant behind a
 	// connection, its values, the policy version and the airlock's rules.
 	Grants GrantSource
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 	// CA signs the certificate of each bound host.
 	CA *Authority
 	// Idle is BROKER_AIRLOCK_IDLE_SECONDS: how long one connection may go with no byte in
@@ -214,6 +236,7 @@ type Options struct {
 // live grant.
 type Server struct {
 	grants GrantSource
+	hold   *hold.Gate
 	ca     *Authority
 	idle   time.Duration
 	watch  time.Duration
@@ -315,8 +338,15 @@ type connInfo struct {
 	password string
 	// grant is what that password proved when the connection was opened. Nothing is decided
 	// from it - each request is decided from the grant it read for itself - and what it is
-	// here for is the line a request logs before that read answers.
+	// here for is the line a request logs before that read answers. On the copy one request
+	// reads, serveBound replaces it with the grant that request is handled for (handledFor),
+	// which the call's line, its dials and its watcher read.
 	grant requests.AirlockConnection
+	// handledBy is a placeholder of the grant one request on this connection is handled for,
+	// when that is another live grant of the connection's enrollment than the one password
+	// proves (handledFor), and "" otherwise: the watcher of the call reads that grant again by it
+	// (carryRefusal). It is set on the copy of this one request, never on the connection's own.
+	handledBy string
 	// cut is the connection under this one's TLS, which the cut of a joined connection
 	// stops before it writes close_notify (cutJoined). It travels here so that the watcher
 	// of a join reaches it as it reaches everything else it was opened with, rather than
@@ -337,6 +367,7 @@ type decryptedKey struct{}
 func New(o Options) *Server {
 	s := &Server{
 		grants:        o.Grants,
+		hold:          o.Hold,
 		ca:            o.CA,
 		idle:          o.Idle,
 		watch:         o.Watch,
@@ -507,7 +538,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // serveProxy is the whole of the outer server: a proxy request, a credential that proves a live
-// grant, and then either a tunnel or a bound host.
+// grant of a person Dispatch does not hold, and then either a tunnel or a bound host.
 func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// A request that is neither CONNECT nor an absolute-URL proxy request is somebody treating
 	// this port as an ordinary web server. It serves nothing of its own, not even a health
@@ -523,22 +554,14 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	grant, err := s.grants.AirlockConnection(r.Context(), placeholder)
 	if err != nil {
-		status, code, why := s.grantRefusal("connection", err)
-		switch status {
-		case http.StatusProxyAuthRequired:
-			// The broker's own words for why this credential opens nothing - an unknown or
-			// ended grant, an enrollment whose lease lapsed, a grant every one of whose
-			// names is withheld - and never the placeholder itself, which a command's own
-			// proxy error line would otherwise print and keep.
-			s.refuseCredential(w, r, call{host: requestHost(r)}, code, why)
-		case http.StatusServiceUnavailable:
-			// A read that did not happen, which grantRefusal has logged: a failure of the
-			// broker's, and no refusal of the caller.
-			fail(w, http.StatusServiceUnavailable, code, why)
-		default:
-			// The broker's own refusal of this grant, in its own words (grantRefusal).
-			s.refuse(w, r, call{host: requestHost(r)}, status, code, why)
-		}
+		s.refuseRead(w, r, call{host: requestHost(r)}, "connection", err)
+		return
+	}
+	// The person the grant's session acts for, asked of the hold before anything else of the
+	// request is read: a connection a held person opens is refused, a tunnel no less than a bound
+	// host, and so is each of their plain requests (holdRefusal).
+	if status, code, why := s.holdRefusal(r.Context(), grant.Operator); status != 0 {
+		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, status, code, why)
 		return
 	}
 	// Every dial below this point is made for this grant, and the lines it writes name it
@@ -571,14 +594,6 @@ func proxyPassword(r *http.Request) (string, string) {
 	}
 	_, password, _ := strings.Cut(string(decoded), ":")
 	return password, ""
-}
-
-// refuseCredential answers 407 and asks for the credential again (refuse, with the challenge a
-// client sends its credential again on). Nothing is tunnelled and nothing is dialled: a request
-// that reaches here never left the broker.
-func (s *Server) refuseCredential(w http.ResponseWriter, r *http.Request, c call, code, why string) {
-	w.Header().Set("Proxy-Authenticate", `Basic realm="airlock"`)
-	s.refuse(w, r, c, http.StatusProxyAuthRequired, code, why)
 }
 
 // requestHost is the host a request of the outer server asks for, as a refusal's line names it
@@ -696,6 +711,34 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 	return http.StatusServiceUnavailable, codeGrantUnreadable, grantUnreadable
 }
 
+// holdUnreadable is the message of the line a check of the hold that decided nothing logs, with
+// the gate's own error, which no answer carries (holdRefusal, carryRefusal).
+const holdUnreadable = "airlock proxy: whether Dispatch holds a person could not be read"
+
+// holdRefusal is the status, the code and the words a request is refused with when the person
+// its grant's session acts for (requests.AirlockConnection's Operator) is one the hold refuses,
+// by the gate's Verdict (hold.Verdict.Refusal), and zero for a person it serves and for a grant
+// whose enrollment names no person - a pod's own, a machine's own session. A held person is 403
+// MEMBERSHIP_HELD. Every kind that decides nothing is 503 HOLD_UNCHECKABLE, a held answer the
+// broker could not keep among them, since the broker could serve that person in a later outage of
+// Dispatch. A request reads it after the connection read and before any value of the grant, so a
+// held person's request reaches neither the values this pod holds nor the store's.
+//
+// The 503 names the failure by its kind in fixed words (hold.Verdict.Words) and never in the
+// gate's own words, which hold a Postgres error's database user, name and address when the broker
+// could not read or keep an answer, as grantRefusal's 503 holds none of the read's: those words go
+// to the log.
+func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, string) {
+	if person == "" {
+		return 0, "", ""
+	}
+	v := s.hold.Decide(ctx, person)
+	if v.Kind != hold.Served && v.Kind != hold.Held {
+		s.log.Error(holdUnreadable, "person", person, "error", v.Err)
+	}
+	return v.Refusal()
+}
+
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
 // for http:// rather than https://, or that sent an https URL to the proxy as it is rather than
 // as a CONNECT.
@@ -730,11 +773,17 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	forwarded := *r.URL
 	forwarded.Host = net.JoinHostPort(host, port)
 	r.URL = &forwarded
-	// Whether any name of this grant may carry a secret to this host, from the one function
-	// that says what is bound (candidates). It is asked about 443 because that is the only
-	// port a kind's hosts speak about, while the refusal below is about no port at all: a
-	// value may not cross in the clear whatever port it was asked for on.
-	if len(candidates(s.grants.AirlockRules(), grant, host, 443)) > 0 {
+	// Whether any name of this grant, or of another live grant of its enrollment, may carry a
+	// secret to this host, from the one function that says what is bound for a session
+	// (sessionBinds). It is asked about 443 because that is the only port a kind's hosts speak
+	// about, while the refusal below is about no port at all: a value may not cross in the clear
+	// whatever port it was asked for on.
+	bound, err := s.sessionBinds(r.Context(), s.grants.AirlockRules(), grant, host, 443)
+	if err != nil {
+		s.refuseRead(w, r, call{grant: grant, host: host}, "enrollment", err)
+		return
+	}
+	if bound {
 		// Plain HTTP to a bound host is refused rather than swapped into: the value would
 		// cross the network in the clear, and no rule of the airlock says a secret may. The
 		// command asks again over https, where the proxy's own certificate covers it.
@@ -749,9 +798,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
 		return
 	}
-	// A host no name of this grant is bound to: the proxy forwards it and puts nothing into it,
-	// exactly as the tunnel above carries what it cannot read, on a socket of its own whose line
-	// is the tunnel's (Server.forward).
+	// A host no name of a live grant of the session is bound to: the proxy forwards it and puts
+	// nothing into it, exactly as the tunnel above carries what it cannot read, on a socket of
+	// its own whose line is the tunnel's (Server.forward).
 	proxy := &httputil.ReverseProxy{
 		Transport:     s.forward,
 		FlushInterval: -1,
@@ -760,8 +809,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		ErrorLog: s.errorLog,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL
-			pr.Out.Header.Del("Proxy-Authorization")
-			pr.Out.Header.Del("Proxy-Connection")
+			for _, name := range proxyOnlyHeaders {
+				pr.Out.Header.Del(name)
+			}
 		},
 		ErrorHandler: s.badGateway(host, r.URL.Path),
 	}

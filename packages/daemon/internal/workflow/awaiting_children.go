@@ -83,7 +83,9 @@ type childrenHold struct {
 // read it already, so the move reads it no second time. In one transaction it
 //
 //   - writes in_progress where the record shows another status (Engine.status): the parent's
-//     work is under way in its children (dispatch://INFRA-3320 R11);
+//     work is under way in its children (dispatch://INFRA-3320 R11). Where that write would
+//     replace a status that accepts the parent (record.AcceptedStatus, retro), it first ends every
+//     step of another root that waits on the parent's approval request (endsAcceptedBases);
 //   - writes the phase with the held start — its phase, its task, its reason naming the open
 //     children, the moment the wait began and the keys of those children, which the return reads
 //     for the ones that merged (record.ChildrenWait) — and the moment of the move, which outlives
@@ -102,16 +104,18 @@ type childrenHold struct {
 //     notice the start would have sent (R10);
 //   - tells the role whose phase the move ends, where there is one, that its phase ended
 //     and no task of it follows (record.PhaseEnded into awaiting_children);
-//   - and, where the merge forward it drops had not landed (record.MergeForward.Landed empty),
-//     tells the role it was asked of (record.MergeForward.Asked, the implementer for an ask that
-//     names none) of it, named with its head and its base, and of what to do with a merge of it
-//     begun or not (R10): in the phase-ended message where the phase the move ends is that role's,
-//     and otherwise in one role message on that role's topic
+//   - and, where the merge forward it drops is the open ask of the head (openAsk: not landed, on
+//     a pull request that is open) and the implementer was not told it is no longer its work
+//     (record.MergeForward.Withdrawn), tells the role it was asked of (record.MergeForward.Asked,
+//     the implementer for an ask that names none) of it, named with its head and its base, and
+//     of what to do with a merge of it begun or not (R10): in the phase-ended message where the
+//     phase the move ends is that role's, and otherwise in one role message on that role's topic
 //     (record.DroppedMergeForward.RoleMessageBody), addressed as mergeForward addresses its ask
 //     (addressRoles). The phase-ended message of any other worker carries it too, and tells that
 //     worker to write and push nothing more, since the role asked may be merging in the
-//     workspace they share (record.PhaseEnded.Message). A merge forward that landed is dropped
-//     with no word of it.
+//     workspace they share (record.PhaseEnded.Message). A merge forward that landed, one on a
+//     pull request that closed, and one withdrawn are dropped with no word of it: a role told to
+//     merge nothing for the head, or a pull request that takes no push, leaves no merge to finish.
 //
 // A released role gets nothing of that role message, which the outbox ends with no publish and no
 // wake as it ends every role message to a released role (the daemon's outbox.roleMessage).
@@ -139,6 +143,9 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	from, now := issue.Phase, e.now()
 	reason := childrenWaitReason(issue.Key, hold)
 	status := PhaseStatus(phase.AwaitingChildren)
+	if err := e.endsAcceptedBases(ctx, tx, issue, status); err != nil {
+		return err
+	}
 	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return err
 	}
@@ -164,15 +171,19 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	// no task's line, classify.MergeForwardStands), and the return asks for none: a conflict still there fails the
 	// tester's merge with the base, and the implementer merges forward once GitHub reads the pull
 	// request CONFLICTING (R10). The merge forward the clear drops is named to the role it was
-	// asked of where it had not landed: the implementer for an ask made before merging, and the
-	// merger for one made in merging that a move back out of merging left in the record.
-	cleared, err := e.clearMergeForward(ctx, tx, issue.Key)
+	// asked of where it was the open ask of the head (openAsk) and not withdrawn, as withdrawnBy
+	// reads it: the implementer for an ask made before merging, and the merger for one made in
+	// merging that a move back out of merging left in the record. The phase the issue stands in does
+	// not decide it, as it decides owedTo, since a merger moved back may still be at work on it.
+	before, err := e.clearMergeForward(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}
 	var dropped *record.DroppedMergeForward
-	if cleared != nil && cleared.Landed == "" {
-		dropped = &record.DroppedMergeForward{Head: cleared.Head, Base: cleared.Base, Role: cleared.Asked()}
+	if before != nil {
+		if asked, open := openAsk(*before); open && !asked.Withdrawn {
+			dropped = &record.DroppedMergeForward{Head: asked.Head, Base: asked.Base, Role: asked.Asked()}
+		}
 	}
 	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
@@ -195,6 +206,29 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: hold.Ended, From: from, To: phase.AwaitingChildren, Reason: reason,
 		MergeForward: dropped})
+}
+
+// endsAcceptedBases ends, before awaitChildren's status write to status, every step of another
+// root that waits, closed, on a request of issue (endPendingOn), where that write is the daemon's
+// own overwrite of a status that accepts issue: Engine.status queues it only for a status the
+// record does not show, and its write lands only while Dispatch still shows the record's status
+// (record.StatusWrite.ObservedStatus), here retro (record.AcceptedStatus). The authority is what the
+// store shows now under the fact lock (record.BasisAcceptance), never that status alone, and the
+// end names it as the pending-basis seed's read would (ancestorLeft): a seed the same event queued
+// (readBasisOnCue) can run after this write lands and read issue in_progress, the same status
+// it read before the acceptance, so without this the wait would outlive the
+// acceptance (dispatch://INFRA-3320 R1). The move still enters awaiting_children and writes
+// in_progress (R11); a write from any other status ends nothing here, and its waits are left to
+// the seed's read.
+func (e *Engine) endsAcceptedBases(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
+	if status == issue.Status || !record.AcceptedStatus(issue.Status) {
+		return nil
+	}
+	why, _, err := record.BasisAcceptance(ctx, e.store, tx, issue.Key)
+	if err != nil || why == "" {
+		return err
+	}
+	return e.endPendingOn(ctx, tx, issue.Key, ancestorLeft(issue.Key, why, "", true))
 }
 
 // childrenHolding is the open Dispatch children of issue that hold its start of to (R9's guard),
@@ -277,7 +311,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.nameMoveEnd(ctx, w, issue, trigger, to, handoff); err != nil {
 		return err
 	}
-	replaced := noticeFor(trigger, issue.Phase, to, handoff, reason)
+	replaced := noticeFor(trigger, issue, issue.Phase, to, handoff, reason)
 	moved := issue
 	if err := e.moveTask(ctx, tx, &moved, &w, to, record.TaskRunning); err != nil {
 		return err

@@ -157,6 +157,7 @@ type compactPane struct {
 // fresh sessions both doors start, and the fresh session that starts a worker whose process is
 // gone, which runs last because it kills the panes the steps before it drive.
 func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newClaimCompactionLive(t)
 	r.step("step1-the-panes-run-the-deployments-overlays-and-a-short-session-can-be-compacted", r.overlaysAreTheDeployments)
@@ -226,7 +227,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.registerController()
 	r.backends[r.onClaude] = runtime.BackendClaude
 	r.note("worker_backends now runs %s on %s, and the %s claim of %s is stopped and never launched",
@@ -552,8 +553,9 @@ func (r *claimCompactionLive) operatorCompactsAPhaseWorker() {
 // controllerCompactsAndIsToldTwice drives the controller's own door — a controller grant minted
 // from its registration, then `POST /legion/v1/claims/compact` naming the issue and the role —
 // and the one thing only a compaction that ran makes possible: a second notice. The run of
-// provider-error turns reaches six, the project's controller is told once, the compaction puts
-// that run back to zero, and six more such turns tell it again.
+// provider-error turns reaches six, the issue's architect and the project's controller are each
+// told once, the compaction puts that run back to zero, and six more such turns tell them again.
+// This step reads the controller's copies (controllerNotices).
 func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	t := r.t
 	token := r.token(r.notice, claim.RoleImplementer)
@@ -578,7 +580,7 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 		t.Fatalf("the controller's compaction answered %+v, want a session compacted", answer)
 	}
 	door := r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
-		return record.Message == "api: the controller compacted a claim's session" && record.Attrs["claim"] == string(token)
+		return record.Message == "api: the controller compacted an agent's session" && record.Attrs["claim"] == string(token)
 	})
 	r.note("the daemon holds that the controller asked: %q (issue %v, role %v, compacted %v)",
 		door.Message, door.Attrs["issue"], door.Attrs["role"], door.Attrs["compacted"])
@@ -639,7 +641,7 @@ func (r *claimCompactionLive) architectIsSentNothing() {
 		t.Fatalf("the second compaction answered %+v, want it not compacted with Oh My Pi's own reason", second)
 	}
 	r.awaitLogFrom("the daemon's record that the controller asked", asked, time.Minute, func(record loggedRecord) bool {
-		return record.Message == "api: the controller compacted a claim's session" &&
+		return record.Message == "api: the controller compacted an agent's session" &&
 			record.Attrs["claim"] == string(token) && record.Attrs["compacted"] == false
 	})
 	r.note("the controller's compaction of the same session answered 200 with compacted=false, reason %q", second.Reason)
@@ -815,14 +817,22 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		"controller's own door cannot name the role at all", status, strings.TrimSpace(string(body)))
 
 	// A suspended, a stopped and a failed claim: each runs no Oh My Pi session, so each is told
-	// that a fresh session is what reaches it instead.
+	// what starts it again instead. For the stopped and the failed claim that is the fresh session,
+	// through both doors. The suspended claim is the operator's own suspension (`legion claims
+	// suspend`), which the controller may not get past: the controller's door names the operator's
+	// resume and no fresh session, since its fresh_session of that agent is refused
+	// SUSPENDED_BY_OPERATOR (api's holdSentences; TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension),
+	// while the operator's door names the fresh session.
 	implementer := r.token(r.notice, claim.RoleImplementer)
 	r.note("%s", r.legionClaims("suspend", "--claim", string(implementer)))
 	r.await(string(implementer)+" to be suspended", 2*time.Minute, func() bool {
 		return r.claim(implementer).State == string(supervise.StateSuspended)
 	})
-	r.refusedThroughBothDoors("a suspended worker", compactDoors, implementer, r.notice, claim.RoleImplementer,
-		http.StatusConflict, "CLAIM_NOT_RUNNING", string(supervise.StateSuspended), compactNamesFreshSession)
+	r.refusedThroughEachDoor("a worker the operator suspended", compactDoors, implementer, r.notice, claim.RoleImplementer,
+		http.StatusConflict, "CLAIM_NOT_RUNNING",
+		[]string{string(supervise.StateSuspended), compactNamesFreshSession},
+		[]string{string(supervise.StateSuspended), "`legion claims resume --claim " + string(implementer) + "`"},
+		"fresh_session")
 
 	// The ladder's planner is finished with: its kept task is answered first, so step 7 can read
 	// what its issue's phase owes a fresh session rather than the task the ladder held.
@@ -888,7 +898,7 @@ func (r *claimCompactionLive) freshSessionsStartEachWorker() {
 		t.Fatalf("the controller's fresh session of %s = %d %s, want 200", architect, status, body)
 	}
 	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
-		return record.Message == "api: the controller started a claim in a fresh session" && record.Attrs["claim"] == string(architect)
+		return record.Message == "api: the controller started an agent in a fresh session" && record.Attrs["claim"] == string(architect)
 	})
 	r.note("the daemon holds that the controller asked for %s's fresh session", architect)
 	started := r.awaitFreshPane(architect, was.Session)
@@ -1025,7 +1035,7 @@ func (r *claimCompactionLive) architectComesBackThroughTheControllersDoor() {
 	r.note("the controller's `fresh_session` of %s, asked of a claim stored %s over its dead process, answered %d %s",
 		token, dead.State, status, strings.TrimSpace(string(body)))
 	r.awaitLogFrom("the daemon's record of which door asked", from, time.Minute, func(record loggedRecord) bool {
-		return record.Message == "api: the controller started a claim in a fresh session" && record.Attrs["claim"] == string(token)
+		return record.Message == "api: the controller started an agent in a fresh session" && record.Attrs["claim"] == string(token)
 	})
 	started := r.awaitFreshPane(token, dead.Session)
 	told := r.waitArchitectNotices(r.root, "catch-up", caughtUp+1)
@@ -1329,6 +1339,24 @@ func (r *claimCompactionLive) refusedThroughBothDoors(what string, doors doorPai
 			doors.operation, what, operator, controller)
 	}
 	r.note("%s at %s is refused %d %s through both doors, word for word: %q", doors.operation, what, status, code, operator)
+}
+
+// refusedThroughEachDoor drives one operation at one claim through both of its doors where the
+// two refusals differ by design: the same status and code through each, each door's own phrases,
+// and none of the controller's naming notToController, which is a door the operator's suspension
+// refuses the controller (api's holdSentences).
+func (r *claimCompactionLive) refusedThroughEachDoor(what string, doors doorPair, token claim.Token,
+	issue string, role claim.Role, status int, code string, operatorPhrases, controllerPhrases []string, notToController string) {
+	r.t.Helper()
+	operatorStatus, operatorBody := doors.operator(r, token)
+	operator := r.heldRefusal(doors.operation+" at "+what+", through the operator's door", operatorStatus, operatorBody, status, code, operatorPhrases...)
+	controllerStatus, controllerBody := doors.controller(r, issue, role)
+	controller := r.heldRefusal(doors.operation+" at "+what+", through the controller's door", controllerStatus, controllerBody, status, code, controllerPhrases...)
+	if strings.Contains(controller, notToController) {
+		r.t.Fatalf("%s at %s: the controller's door names %q, a door the operator's suspension refuses it: %q",
+			doors.operation, what, notToController, controller)
+	}
+	r.note("%s at %s is refused %d %s through each door: the operator's %q, the controller's %q", doors.operation, what, status, code, operator, controller)
 }
 
 // refusedByController drives one request only the controller's door can make and holds its

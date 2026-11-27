@@ -76,10 +76,24 @@ func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string,
 	return "", fmt.Errorf("this grant has no Azure exchange")
 }
 
+// ProxyGrantsOfEnrollment answers no grant beside the one above, which is its enrollment's only
+// one and the one every connection of the test opens.
+func (gcpAirlockGrant) ProxyGrantsOfEnrollment(context.Context, string, string, []string) ([]requests.AirlockConnection, error) {
+	return nil, nil
+}
+
+// ProxyPlaceholderGrant names the one grant above for its placeholder, and none for any other.
+func (gcpAirlockGrant) ProxyPlaceholderGrant(_ context.Context, placeholder string) (string, error) {
+	if placeholder == gcpAirlockPlaceholder {
+		return gcpAirlockGrantID, nil
+	}
+	return "", nil
+}
+
 // AirlockRules is the airlock's rules for the one grant: a kind on Secret Manager's host whose
-// credential travels in the default Authorization header on every method and path, and the
-// grant's one name bound to it as a Google login's token, which the broker mints and the proxy
-// swaps in, with no allow of a profile's own.
+// credential travels in the default Authorization header on every method and path, and the grant's
+// one name bound to it as a Google login's token, which the broker mints and the proxy swaps in,
+// with no allow of a profile's own.
 func (gcpAirlockGrant) AirlockRules() proxyrules.Rules {
 	return proxyrules.Rules{
 		Kinds: []proxyrules.Kind{{Name: gcpAirlockKind, Hosts: []string{gcpAirlockHost}, Ways: []string{proxyrules.WayMint}}},
@@ -139,7 +153,7 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := proxy.NewAuthority(certFile, keyFile)
+	ca, err := proxy.NewAuthority(certFile, keyFile, proxy.AuthorityOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

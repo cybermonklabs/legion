@@ -56,7 +56,7 @@ every session it enrolled ends, and the box signs in again to work on.
 A Kubernetes pod trades its own projected ServiceAccount token at the same exchange for a Dispatch
 access token alone: that trade mints no machine login and enrols nothing. The entry that lists the
 pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` gives it a person
-and the one Dispatch project it may write, or no project for an entry that names none
+and the one Dispatch project its token names, or no project for an entry that names none
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
 service, and Dispatch records its writes under that account. An entry of that setting that names a
@@ -450,34 +450,41 @@ sessions that act for them, and their machine-login page only their own machines
 logins. Their revoke or dismissal of anything else, and their deny of a service's machine login an
 older broker opened, is refused `403 NOT_APPROVER`, saying why, and their revoke of a service's
 machine login `404 NOT_FOUND`. Their own machine logins and the grants of their own sessions stay
-theirs. While Dispatch cannot say what kind of member a person is, those lists leave such rows
+theirs. The broker keeps the member kind Dispatch last answered for each person, so a person
+Dispatch last answered a full member is served as one while Dispatch does not answer, for at most
+an hour (`projectaccess.KeptAnswerTTL`), on every
+route of this section, and "cannot say" below means a person it last answered a restricted member,
+or of whom it keeps no kind ([Asking Dispatch](/legion/broker/operate/#what-it-depends-on)).
+While Dispatch cannot say what kind of member a person is, those lists leave such rows
 out, the machine-login page and its revoke hold the person to their own logins, so a lost
 machine's login can still be ended there, while a service's login is out of reach there until
 Dispatch answers and what remains is cluster access (delete the service's pods, or remove its
 account from `BROKER_SERVICE_LOGINS` and redeploy the broker), such a dismissal or deny is refused
 `503 MEMBER_KIND_UNCHECKABLE`, and the approval page shows no request (`503`). While Dispatch does
-not answer at all (a timeout, a failed connection, a gateway's `502`, `503` or `504`, Dispatch's
-own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`, or a `500` that names no code or names
-`INTERNAL`, which is how Dispatch answers a read its database failed), only the person a grant
-names as its approver ends it through the broker as an approver, since a revoke only takes access
-away. Every revoke through a group or as anyone is then refused `503 MEMBER_KIND_UNCHECKABLE`,
-whatever session holds the grant. A grant on a person's session can still be ended by that person,
-its operator, asking Dispatch nothing; a grant on a session that acts for no person (a service's
-pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's own session) nobody but
-its named approver ends through the broker until Dispatch answers. What remains for a pod's grant
-meanwhile is cluster access: delete the pod. Its grants then end when its lease lapses unrenewed
-(`BROKER_LEASE_SECONDS`), except that a session that names a session id leaves them dormant, used
-by nothing, for its next enrollment until `BROKER_SESSION_CARRY_SECONDS` passes, and a Legion
-claim's pod hands them to the claim's next live pod at once; so where something starts that
-session again (a Legion claim), stop that too. A grant also ends at its own expiry. Every revoke
-while Dispatch answers anything else the broker
+not answer at all (a timeout, a failed connection, a `408` or a `429` whatever its body names, a
+gateway's `502`, `503` or `504`, Dispatch's own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`,
+or a `500` that names no code or names `INTERNAL`, which is how Dispatch answers a read its database
+failed), only the person a grant names as its approver ends it through the broker as an approver,
+since a revoke only takes access away. Every revoke through a group or as anyone is then refused
+`503 MEMBER_KIND_UNCHECKABLE`, whatever session holds the grant. A grant on a person's session can
+still be ended by that person, its operator, asking Dispatch nothing; a grant on a session that acts
+for no person (a service's pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's
+own session) nobody but its named approver ends through the broker until Dispatch answers. What
+remains for a pod's grant meanwhile is cluster access: delete the pod. Its grants then end when its
+lease lapses unrenewed (`BROKER_LEASE_SECONDS`), except that a session that names a session id
+leaves them dormant, used by nothing, for its next enrollment until `BROKER_SESSION_CARRY_SECONDS`
+passes, and a Legion claim's pod hands them to the claim's next live pod at once; so where something
+starts that session again (a Legion claim), stop that too. A grant also ends at its own expiry.
+Every revoke while Dispatch answers anything else the broker
 cannot read is refused `503 MEMBER_KIND_UNCHECKABLE` too: a refusal of the broker's own account, a
 kind this broker does not know, a `500` naming another code, another code of Dispatch's, a
 certificate that does not verify or a name that does not resolve. A revoke of a grant of one's own
 session asks nothing. The member-kind read of each route Dispatch relays ends within 2 seconds,
 inside the 5 that Dispatch waits for the broker, and so does the approval page's; a revoke's read
 of a grant's project is not bounded so, and while all of Dispatch is down it refuses the revoke of
-a grant whose project, or whose reason's issue key, it cannot ask about.
+a grant whose project, or whose reason's issue key, Dispatch last answered hidden from the person,
+or never answered for them; one Dispatch last answered public, visible to them, or no project at
+all is answered so from what the broker kept, for at most an hour (`projectaccess.KeptAnswerTTL`).
 The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and
@@ -553,8 +560,11 @@ marked with tags or annotations:
   type (`scopes-type`). It lists the OAuth scopes the minted token carries, each the part of a
   Google scope after `https://www.googleapis.com/auth/`, separated by spaces
   (`cloud-platform bigquery`). A secret without it mints the `cloud-platform` scope alone, which
-  is what every such secret minted before the tag existed, and a changed list reaches the token
-  at the next release. The names are the short ones because an AWS tag value holds at most 256
+  is what every such secret minted before the tag existed. The list is in the fingerprint of the
+  secret by its own name and of each profile of it with no `google` block of its own, so a changed
+  list, or the tag added or taken off, ends each live grant decided under the old one at its next
+  release, and the session asks again: a grant never mints at scopes it was not decided under. The
+  names are the short ones because an AWS tag value holds at most 256
   characters, which five whole scope URLs are longer than. A comma, a list naming no scope, a
   whole scope URL, a name with a capital letter, and a name given twice are each refused
   `scopes-malformed`. Set it with `agent-secrets secret create|retag --scopes "<scope> <scope>"`.
@@ -985,8 +995,10 @@ member's pod enrolls nothing, naming projects or not, as that member's machine l
 nothing: `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`. A pod naming a project its person may not see,
 or one Dispatch does not hold, is refused `403 PROJECT_NOT_VISIBLE`, with the same words for both.
 While Dispatch cannot say what kind of member the person is, the pod enrolls nothing
-(`503 MEMBER_KIND_UNCHECKABLE`); on a broker with no `BROKER_PROJECT_ACCESS_URL`, a pod naming a
-project is refused `503 PROJECTS_UNCHECKED` and nothing is enrolled, and a pod naming none enrolls
+(`503 MEMBER_KIND_UNCHECKABLE`), but for a person Dispatch last answered a full member, whose
+kept kind the broker serves while Dispatch does not answer; on a broker with no
+`BROKER_PROJECT_ACCESS_URL`, a pod naming a project is refused `503 PROJECTS_UNCHECKED` and
+nothing is enrolled, and a pod naming none enrolls
 as the person's session does. Only a person's pod names projects: any other pod naming one is
 refused `400 PROJECTS_NEED_A_PERSON`.
 
@@ -1017,7 +1029,8 @@ whether it gets anything at all: a broker with `BROKER_PROJECT_ACCESS_URL` asks 
 person at each request, approval, release and airlock connection of the pod, so the pod of a person
 Dispatch calls a restricted member is denied every secret `restricted-member` after the change as
 before it, and the pod's requests and releases are refused `503 MEMBER_KIND_UNCHECKABLE` while
-Dispatch cannot say what kind of member that person is.
+Dispatch cannot say what kind of member that person is and the broker last kept them as no full
+member.
 [Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
 ### A group's secret
@@ -1308,8 +1321,12 @@ The broker evaluates every name
   ([manage a secret](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-type-requesters-or-max-grant)).
   A change reverted before any release finds
   it leaves the grant as it was: it was approved for that secret, type and source, and its next
-  release mints a token of that same type from that same frozen source, never the stored value. To
-  end a grant, revoke it. A type secret the broker stops serving, such as one whose
+  release mints a token of that same type from that same source, never the stored value. A release
+  reads the source the policy serves the name from: the source the request froze, or, while a
+  deployment moves its store to another prefix, the policy's source when the frozen one counts as
+  it under `BROKER_SECRETS_SECOND_PREFIX`, and never that frozen one
+  ([Moving the store to another prefix](/legion/broker/operate/#moving-the-store-to-another-prefix)).
+  To end a grant, revoke it. A type secret the broker stops serving, such as one whose
   `github-owners` is removed or malformed, stops releasing until the secret is served again.
 - A secret with `max-grant` needs a lifetime no longer than that duration. A request whose `--ttl`
   (or, with none, the default of 15 minutes for a human-tier secret and 12 hours otherwise, or session length under `default-grant=session`) is longer is refused `GRANT_REQUIRES_LIFETIME` before the broker writes a request. A
@@ -1650,7 +1667,20 @@ string that names another kind than the source's tag is refused (`proxy-kind-con
 that names the same kind is served with one warning line at each full load. The string goes once
 every source it is written for carries its `proxy` tag. And a `proxy` object of kind `dpop` alone
 (below) is kept until a `dispatch` kind with the `dpop` way serves the broker's minted Dispatch
-tokens. Every other `proxy` object is refused, naming `kinds`.
+tokens. In a file that declares a kind, every other `proxy` object is refused, naming `kinds`.
+
+A profiles file that declares no kind, as every deployment's file did before the kinds, is read as
+the broker before the kinds read it, so a broker of this release starts against it. Each `proxy`
+object of no kind, of kind `aws` or of kind `azure` serves its profile's name behind the object's
+`hosts`, `headers` and `allow`, in the way its kind took: no kind swaps a stored value or a minted
+token in, `aws` signs with a stored key pair, and `azure` exchanges an `azure-login` token. The
+name is behind a kind of its own, named for the profile (`DEEL_API_KEY`'s is `deelxapixkey`). No
+`proxy` tag can name that kind, so a secret tagged `proxy` under such a file is refused as naming no
+kind (`proxy-kind-unknown`). The name's fingerprint is the one the broker before the kinds gave it,
+the whole object with its source's `judge` seconds, so it does not move at the upgrade, and a change
+of the object's `kind`, `hosts`, `headers` or `allow` ends the name's live grants. A `judge` or
+`guidance` in such an object is refused, naming the source's tag that holds it now. This reading is
+transitional: it goes once every deployment's file declares kinds.
 
 Who decides a request for a value is no part of a kind: that is the secret's own `judge` and
 `guidance` tags ([The model judge](#the-model-judge)), and a profiles file that still sets `judge`
@@ -1723,10 +1753,10 @@ What a host in another spelling would do if it were served depends on the spelli
 
 A secret behind a kind is **behind the airlock**, and the broker never releases its value to
 anyone: a read of a grant of it leaves the name out of `values` and answers an `airlock` object
-instead, which carries the proxy's URL, the certificate authority to trust that proxy by, a proxy
-password, and, for each name, a placeholder, the placeholder of each slot of the value, and the
-hosts its kind binds. A placeholder is the kind's `placeholder_prefix`, else
-`agent-secrets-placeholder-`, and 32 letters and digits, minted for that one grant and name. The
+instead, which carries the proxy's URL, the roots to trust that proxy by, a proxy password, and,
+for each name, a placeholder, the placeholder of each slot of the value, and the hosts its kind
+binds. A placeholder is the kind's `placeholder_prefix`, else `agent-secrets-placeholder-`, and
+32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
 brokers; `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>]
 [--private-upstream '<host>=<url> ...']` says whether a broker would serve a file, and what that
@@ -1802,7 +1832,7 @@ the proxy before any token is minted for it. `dispatch review` sends a person's 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
 proxy password, writes a trust bundle (every trust file the command's own environment named, and
-the system roots where it named none, plus the proxy's own certificate) and a wgetrc naming it,
+the system roots where it named none, plus every root the release carries) and a wgetrc naming it,
 and sets `NO_PROXY` so the grant's bound hosts reach the proxy while loopback and the private
 ranges stay direct. The environment it reads is the one the command will have, released values
 included. A trust file or `WGETRC` named by a relative path is resolved from the directory the
@@ -1836,11 +1866,23 @@ a fixed phrase in place of the names, so a service that sent the value back ther
 on.
 
 The proxy reads the grant behind the password on every connection, and the name's kind and
-profile decide each request (`packages/envoy/internal/cipher/proxy`). A host that no kind of the
-grant's names binds is tunnelled unread, to a public address alone. A bound host is read with a
-certificate of the proxy's own authority, and the request must name that same host in its TLS
-name and in its `Host` header; then the kind's hosts and headers, and the kind's and the profile's
-methods and paths, decide whether the swap happens. That
+profile decide each request (`packages/envoy/internal/cipher/proxy`). A command can hold
+placeholders of several grants of its session at once: one `agent-secrets` run nested in another,
+or a Legion role's GitHub grant beside a grant that a run inside the role asked for. Its password
+names one of them. A host is bound when a kind of any live grant of the password's enrollment
+binds it. A host no such kind binds is tunnelled unread, to a public address alone. A bound host
+is read with a leaf the broker pod signs for it ([the proxy's chain](#the-proxys-chain)), and the
+request must name that same host in its TLS name and in its `Host` header; then the kind's hosts
+and headers, and the kind's and the profile's methods and paths, decide whether the swap happens.
+A request is handled for one name of one grant: the password's own grant when the request carries
+one of its placeholders, and otherwise the first other live grant of the enrollment, in grant ID
+order, that binds the host and whose placeholder the request carries. A placeholder of another
+grant of the session is therefore swapped on the same connection. A `github-app` or
+`github-installations` name holds one placeholder for each account its App is installed on, and
+the proxy swaps the token of the account the request's path names when the grant holds it:
+`/repos/{owner}/…`, `/orgs/{owner}` and `/users/{owner}` on an API host, and git's
+`/{owner}/{repo}` on `github.com`. GraphQL, search and `/user` get the token of the account whose
+placeholder the request carries. A decrypted
 connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
 else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
 request, with its `:authority` as its `Host`, so one connection carries no request for another
@@ -1868,6 +1910,34 @@ each placeholder — `agent-secrets-placeholder-`, in any case, and at most the 
 digits after it, up to where another placeholder starts, or a kind's own `placeholder_prefix` and
 the 32 letters and digits after it, where the character before it is no ASCII letter or digit —
 replaced by `[placeholder]`.
+
+A request that still carries a whole placeholder after the swap is refused `403`
+(`PLACEHOLDER_NOT_SWAPPED`), and nothing of it goes to the service. This includes a placeholder of
+an ended grant, another session, a second grant beside the one the request is handled for, or one
+outside the headers its kind names. The refusal line names the grant the placeholder was minted
+for in `placeholder_grant`, while the broker still holds the release's row or while a minted
+capability's grant lives.
+
+The scan reads the command-written headers, trailers, path and query. It leaves out only the
+placeholder the proxy replaced in a named header, substituting a space so text on either side is
+never joined; a second, ended or unknown placeholder in the same header is refused. On the AWS
+sign path, the three headers the signer writes (`Authorization`, `X-Amz-Date`,
+`X-Amz-Security-Token`) are left out because the signer wrote them; the query is scanned as the
+command wrote it, since the sign path does not rewrite it and presigned URLs are refused earlier.
+A whole placeholder is the default `agent-secrets-placeholder-` prefix, or a kind's
+`placeholder_prefix`, followed by 32 letters and digits; the default prefix also opens a minted
+capability's form (`agent-secrets-placeholder-`, a kind word, a hyphen, and 32 letters and
+digits). The default prefix has no left boundary. A kind prefix must start the text or have a
+character that is not an ASCII letter or digit before it, so `tml-` does not match inside
+`html-`.
+
+A trailer reaches the broker in time for this scan only where the broker has already read the body
+to its end: an AWS call it signs with the body's hash, and a `Limited` name's post it reads to find
+the channel. On every other request the body is streamed to the service, and the proxy copies the
+trailer map before any value has arrived in it. A placeholder in the body goes to the service as
+the command wrote it. The Azure token exchange instead decides its form and refuses `TOKEN_ASSERTION`
+unless the assertion is this grant's own placeholder. In each case a command gives away its own
+placeholder to a service its grant already lets it call.
 
 A path that holds a `.` or `..` segment is refused on every bound host (`path has a dot
 segment`), whatever the kind allows, because a reader that resolves such a path first — which is
@@ -1965,6 +2035,73 @@ What the airlock does not stop is as much of the design as what it does:
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.
+
+### The proxy's chain
+
+A broker pod signs each bound host's leaf with a certificate authority of its own, which the
+deployment's settings name one of two ways (`packages/envoy/internal/cipher/proxy`, `ca.go` and
+`intermediate.go`):
+
+- **A pool of Google Certificate Authority Service** (`BROKER_PROXY_CA_POOL`). For each certificate
+  request, at its start, at each renewal and at each retry, each pod makes a new ECDSA P-256 key in
+  its own memory, which is never written anywhere, and sends the pool a request for it
+  (`projects.locations.caPools.certificates.create`) with its own Google credential: an
+  authority of path length 0 for servers alone (`serverAuth` its one extended key usage), for 7
+  days, whose name constraints, marked critical, permit the names of the profiles file's hosts, a
+  `*.` pattern as its domain, and exclude every IPv4 and IPv6 address (`0.0.0.0/0` and `::/0`).
+  The pool's issuance policy fixes what the answer may be, and the pod holds the answer to it too:
+  the answer must certify the pod's key, chain to a root, be an authority of path length 0 whose
+  key usage signs certificates and whose one extended key usage is `serverAuth`, last 7 days and 5
+  minutes at most, have critical name constraints that permit exactly the DNS names of the bound
+  hosts (no other name, and not no constraint at all), permit no IP range and exclude all of
+  `0.0.0.0/0` and `::/0`, sign a leaf a client trusts for every bound host, and chain to the same
+  root as the pod's first answer, since every release the pod has made names that root. A name
+  constraint applies only to names of its own kind (RFC 5280, section 4.2.1.10), so permitted DNS
+  names alone would leave the key free to sign a trusted leaf for any IP address; the exclusion
+  closes that. URI and email names are left unconstrained, since no TLS client takes either as a
+  server's identity. What the constraints bound depends on the client. Go's `crypto/tls` never
+  takes a subject's common name as the server's name, so it refuses every leaf that names a host
+  only there, and GnuTLS refused every such leaf too. Clients built on OpenSSL (`openssl verify`,
+  curl, Python's `ssl`, Node) read the common name of a leaf with no DNS alternative name and
+  accept a name outside the allowed ones when that common name is one label, such as `localhost`,
+  or a wildcard over two or more labels, such as `*.evil.example` for `a.evil.example`; they refuse
+  a plain name, such as `evil.example`, and a wildcard over one label, such as `*.example`. Bun
+  accepts any name through the common name once the leaf also carries a URI, email or
+  registered-ID alternative name. Against those clients a leaked pod key is bounded by the
+  intermediate's life, at most 7 days and 5 minutes, and not by its names. The `serverAuth` usage
+  keeps the key from signing a certificate a verifier takes for e-mail or for a client. The pod
+  asks for the next intermediate when the one it holds has less than 2 days left, whatever its
+  life, but no sooner than 5 minutes after it took that one, so a pool that answers one of 2 days
+  or less, which has less than 2 days left the moment it arrives, is asked at most twelve times an
+  hour and never in a loop. It goes on asking with a backoff of 1 second doubling to 5 minutes
+  until it gets one; an answer it refuses counts as a failure. It goes on signing with the
+  intermediate it held until a minute after the new one's start, so after a renewal a command
+  whose clock runs up to a minute behind the pool's never meets an intermediate that is not yet
+  valid. A pod's first intermediate, and the one after an intermediate ended, have no earlier one
+  to sign with, so they rely on the pool's `backdateDuration: 300s`, which covers five minutes in
+  every case. It logs one line for each intermediate it takes, and one for each request that
+  failed.
+- **A mounted pair** (`BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`), for a deployment
+  without that service: an intermediate and then each authority up to and including its root, or a
+  self-signed root alone. The broker refuses at start a chain that reaches no root, one whose life
+  is over, one that would sign no trusted leaf for a bound host, and an intermediate past any bound
+  a pool's answer is held to.
+
+With both set, the pool is the one used. A leaf lasts 25 hours from its start to its end, and
+never past the end of the certificate that signed it, so a leaf signed while the pool fails ends
+with the intermediate the pod holds. The TLS answer carries the leaf and every authority between
+it and the root, so a client that trusts the root alone completes the chain. A pod that holds no
+certificate it may still sign with — before the pool's first answer, or once its intermediate
+ended with no new one — answers `GET /healthz` with `503 NO_INTERMEDIATE`, so its readiness keeps
+traffic away and a rolling update keeps the old pods until a new one has its intermediate. That
+takes the pod out of every Service, the edge's included, so once every pod's intermediate has
+ended with none in its place, the whole broker is down
+([Health and logs](/legion/broker/operate/#health-and-logs)).
+
+Every release carries the root of the pod's own chain and each root of
+`BROKER_PROXY_RELEASE_ROOTS_FILE`, one PEM block after another in its root field. A rollout from
+one authority to another hands out both at once: a client of any release writes the whole field
+into its trust bundle, so it trusts a pod that signs under either root.
 
 ## Approvals
 
@@ -2232,8 +2369,10 @@ A read its bound cuts short fails its check, and the request goes to its person.
 with the same token, is one GET of the issue a Legion worker pod's claim names, for its assignee
 alone ([Approvals](#approvals)); the reads of a person's project access and member kind at
 `BROKER_PROJECT_ACCESS_URL`, by the token exchange, an enrollment, a secret request, an approval, a
-release and every airlock connection, and those for a private project's secrets
-([A private project's secrets](#a-private-projects-secrets)), are the last
+release and every airlock connection, those for a private project's secrets
+([A private project's secrets](#a-private-projects-secrets)), and each read of whether Dispatch
+holds the person a credential names
+([What it depends on](/legion/broker/operate/#what-it-depends-on)), are the last
 ([Operating the broker](/legion/broker/operate/)). An approval asks Dispatch again before it is
 written, under a 5-second bound of its own that ends a second before the run does, so a Dispatch
 slow to answer then fails the approval, and the request goes to its person. A run with a verdict
@@ -2289,7 +2428,9 @@ answers this row to the accounts that read the grant log),
 `grant.revoked` (naming, under `withheld`,
 the secrets an operator's revoke withheld from the session, under `withheld_on`, the session's
 other enrollments it wrote them on besides the grant's own, and, on each other grant of the
-session that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's
+session that revoke ended, the withheld secrets that grant held; and carrying
+`member_kind_unchecked: true` where the grant's named approver ended it while Dispatch did not
+answer whether they are a restricted member), `grant.withheld` (an operator's
 revoke of a grant already revoked, naming under `withheld` the secrets it withheld from the
 session, and under `withheld_on` the other enrollments it wrote them on),
 `request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person

@@ -28,6 +28,14 @@ const (
 	// IdleHoldImage: the pod runs an image other than the one the configuration names, or its
 	// image could not be read at all.
 	IdleHoldImage
+	// IdleHoldRepository: the pod was built from a repository the issue's record no longer
+	// holds, because Dispatch moved the issue and the daemon's record followed it
+	// (record.Store.CorrectIssueRepository). Such a pod is a replacement's to take and never a
+	// release's: every role in it works a clone of the repository the issue has left, and the
+	// update round replaces it with a pod of the repository the record holds. It is the image
+	// hold's neighbour for that reason — a pod already behind is a relaunch's to replace, not a
+	// release's to take.
+	IdleHoldRepository
 	// IdleHoldPluginContract: a live claim of the pod speaks a plugin contract other than the
 	// daemon's current one.
 	IdleHoldPluginContract
@@ -114,10 +122,15 @@ const (
 	// (pods.IdleClaim.HasProcess), so something the daemon started is still running there and a
 	// deletion would take it with the pod.
 	IdleHoldUnownedClaimProcess
-	// IdleHoldUnownedOperatorSuspended: an operator's own suspension holds a claim of the pod
-	// (pods.IdleClaim.OperatorSuspended), the one suspension no daemon rule undoes, and the
-	// operator's resume brings that role back into this pod.
-	IdleHoldUnownedOperatorSuspended
+	// IdleHoldUnownedSuspensionHolds: a suspension that the operator or the controller holds over
+	// an agent of the pod (pods.IdleClaim.SuspensionHolds, read from
+	// supervise's SuspendSource.Holds), which no daemon rule undoes, and whose holder's resume
+	// brings that role back into this pod. Its recorded name stays `unowned_operator_suspended`,
+	// from when the operator's was the one suspension that held: a release record holds the
+	// hold's name and nothing else (idleHoldNames), the records already written carry this one,
+	// and a deployment reads the hold by it (docs/kubernetes.md), so a new name would read one
+	// hold as two across the records written before and after it.
+	IdleHoldUnownedSuspensionHolds
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
 	IdleHoldUnownedDelivery
@@ -171,6 +184,7 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldTreeNotLive:    "tree_not_live",
 	IdleHoldAwaitingPerson: "awaiting_person",
 	IdleHoldImage:          "image",
+	IdleHoldRepository:     "repository",
 	IdleHoldPluginContract: "plugin_contract",
 	IdleHoldUpdateRound:    "update_round",
 	IdleHoldInTurn:         "in_turn",
@@ -189,15 +203,15 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldUnauthorized:    "unauthorized",
 	IdleHoldNoLiveClaim:     "no_live_claim",
 
-	IdleHoldUnownedClaimLive:         "unowned_claim_live",
-	IdleHoldUnownedNoClaim:           "unowned_no_claim",
-	IdleHoldUnownedSandboxGone:       "unowned_sandbox_gone",
-	IdleHoldUnownedClaimProcess:      "unowned_claim_process",
-	IdleHoldUnownedOperatorSuspended: "unowned_operator_suspended",
-	IdleHoldUnownedDelivery:          "unowned_delivery_waiting",
-	IdleHoldUnownedTreeNotLive:       "unowned_tree_not_live",
-	IdleHoldUnownedReleasing:         "unowned_releasing",
-	IdleHoldUnownedNotIdle:           "unowned_not_idle",
+	IdleHoldUnownedClaimLive:       "unowned_claim_live",
+	IdleHoldUnownedNoClaim:         "unowned_no_claim",
+	IdleHoldUnownedSandboxGone:     "unowned_sandbox_gone",
+	IdleHoldUnownedClaimProcess:    "unowned_claim_process",
+	IdleHoldUnownedSuspensionHolds: "unowned_operator_suspended",
+	IdleHoldUnownedDelivery:        "unowned_delivery_waiting",
+	IdleHoldUnownedTreeNotLive:     "unowned_tree_not_live",
+	IdleHoldUnownedReleasing:       "unowned_releasing",
+	IdleHoldUnownedNotIdle:         "unowned_not_idle",
 
 	IdleHoldPaused:           "paused",
 	IdleHoldPauseHeld:        "pause_held",
@@ -275,9 +289,18 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 //     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
 //     person qualify whatever their root is waiting for;
 //
-//   - the pod runs the image the configuration names, and each live claim speaks this daemon's
-//     plugin contract: a released pod comes back as a fresh pod on the configured image, so a pod
-//     already behind is a relaunch's to replace, not a release's to save;
+//   - the pod runs the image the configuration names: a released pod comes back as a fresh pod on
+//     the configured image, so a pod already behind is a relaunch's to replace, not a release's to
+//     take;
+//
+//   - the pod was built from the repository the issue's record holds now (repositoryDrifted,
+//     which the daemon reads of the pod itself against that record). A correction of the
+//     repository in Dispatch leaves the pod a clone of the repository the issue has left, and
+//     the update round that replaces it opens on a later sweep. The pod is replaced rather than
+//     released, as a pod on an image this daemon does not serve is;
+//
+//   - each live claim speaks this daemon's plugin contract: a pod with a claim behind on it is a
+//     relaunch's to replace as well, not a release's to take;
 //
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
@@ -321,7 +344,7 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 // the round it left (supervise.Claim.UpdateRound): the round is over for every claim of it only
 // when the daemon clears it, so a pod is released once the round's own end has run and not
 // before.
-func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage bool, contract int) IdleDecision {
+func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfiguredImage, repositoryDrifted bool, contract int) IdleDecision {
 	if !view.Found {
 		return IdleDecision{Hold: IdleHoldNoPod}
 	}
@@ -352,6 +375,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	}
 	if !onConfiguredImage {
 		return IdleDecision{Hold: IdleHoldImage}
+	}
+	if repositoryDrifted {
+		return IdleDecision{Hold: IdleHoldRepository}
 	}
 	for _, c := range view.Claims {
 		if c.Live() && c.PluginContract != contract {
@@ -444,9 +470,9 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - the project is paused, or a pause holds the pod (IdleHoldPaused, IdleHoldPauseHeld);
 //   - a live claim is in a turn, starting or stopping (IdleHoldInTurn);
 //   - a stopped claim still records a process, which the suspension would wait on for as long as
-//     it stands (IdleHoldUnownedClaimProcess), or an operator's suspension holds a claim, which
-//     keeps the pod for that operator as UnownedPodRelease keeps it
-//     (IdleHoldUnownedOperatorSuspended);
+//     it stands (IdleHoldUnownedClaimProcess), or a suspension that holds, the operator's or
+//     the controller's, is over a claim, which keeps the pod for its holder as
+//     UnownedPodRelease keeps it (IdleHoldUnownedSuspensionHolds);
 //   - a task, notice, message or start waits for delivery to a role of the pod (IdleHoldDelivery);
 //   - a live role's session has reported nothing since its last turn, or reported background
 //     work of its own running (IdleHoldUnreported, IdleHoldBackgroundWork);
@@ -585,8 +611,8 @@ func leftPodStops(view pods.IdleView) IdleDecision {
 		}
 	}
 	for _, c := range view.Claims {
-		if c.OperatorSuspended() {
-			return IdleDecision{Hold: IdleHoldUnownedOperatorSuspended}
+		if c.SuspensionHolds() {
+			return IdleDecision{Hold: IdleHoldUnownedSuspensionHolds}
 		}
 	}
 	if view.Waiting {
@@ -665,12 +691,13 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //     read through issueStopFences), so a release marked for such an issue could never finish:
 //     the mark would stand while the teardown waited for a process nothing is going to stop;
 //
-//   - no claim is an operator's suspension (pods.IdleClaim.OperatorSuspended). It is the one
-//     suspension the daemon never ends by itself (supervise.Claim.RuleMayResume), and the
-//     operator who suspended the role may want the workspace as its roles left it. Such a pod
-//     stands for as long as the operator leaves it standing: they end it by resuming the claim,
-//     which starts the role in the pod that is still there, or by stopping it, which retires the
-//     claim and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended);
+//   - no claim is under a suspension that holds (pods.IdleClaim.SuspensionHolds): the operator's
+//     or the controller's (supervise's SuspendSource.Holds). Those are the
+//     suspensions the daemon never ends by itself (supervise.Claim.RuleMayResume), and the one
+//     who suspended the role may want the workspace as its roles left it. Such a pod stands for
+//     as long as its holder leaves it standing: the holder ends it by resuming the agent, which
+//     starts the role in the pod that is still there, or by stopping it, which retires the agent
+//     and leaves the issue to this rule (IdleHoldUnownedSuspensionHolds);
 //
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a
@@ -744,8 +771,8 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 		}
 	}
 	for _, c := range view.Claims {
-		if c.OperatorSuspended() {
-			return IdleDecision{Hold: IdleHoldUnownedOperatorSuspended}
+		if c.SuspensionHolds() {
+			return IdleDecision{Hold: IdleHoldUnownedSuspensionHolds}
 		}
 	}
 	if view.Waiting {

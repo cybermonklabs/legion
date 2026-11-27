@@ -80,7 +80,7 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
 
 - `reread`: registers 3,000 `old` and 3,000 `both` sessions, then recreates the session bucket
   holding `both` with changed titles and 3,000 `new`, the interest bucket the same way with changed
-  topics, and the session bucket again with the very records it holds (only its creation time
+  directories, and the session bucket again with the very records it holds (only its creation time
   changes). Each new bucket carries 100,000 delete markers among its records, so the read outlasts
   many list answers. Every `old` and `both` row must be listed until the read's completed
   `cache warm-up` line, a delivered row never goes back, and the list is exactly the bucket after
@@ -108,7 +108,16 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
   new bucket. A listener that finds a recreate only by the self-health tick's `Check` fails both
   shapes: the longer one shows nothing of the new bucket before the tick, the shorter one part of
   it. `refillrig recreate -fill-log` records when each record of the fill was acknowledged, so a
-  read that begins before the fill is done is judged against what the bucket held.
+  read that begins before the fill is done is judged against what the bucket held. NATS sends the
+  first 2 MB of the new bucket at once, without waiting for the listener (the push consumer's
+  flow-control window). In an agent pod with 2 CPUs it had sent all 3,001 records about 18 ms after
+  the read began, and the stop on the finding line came 0.2 to 24 ms after that line. A stop that
+  comes after the send holds nothing back, and the shape is `INVALID`: the one at 24 ms was. So a
+  shape that is `INVALID` runs again on a fresh NATS and listener, up to three attempts in all, with
+  a later attempt's evidence in `recreate-live/<shape>-attempt-<n>`. A missed window is never a
+  pass, so another attempt changes no judgement. A `PASS` or `FAIL` on a later attempt says so and
+  quotes the `INVALID` reason of each earlier attempt. Three `INVALID` attempts give `INVALID`, with
+  all three reasons.
 - `refuse`: a start on 40,000-record buckets, where every list answer is the refilling `503` with
   `Retry-After: 5` or the whole bucket and no gauge has a sample while its list refuses; NATS down
   past the 2-minute stale bound, where both lists answer the refilling `503` and `/metrics` has
@@ -124,12 +133,22 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
 Each scenario prints `verdict <scenario> PASS <what it saw>`, `FAIL <reason>`, or
 `INVALID <reason>` when the run missed the window it was there to observe (no poll inside the read,
 a scan that finished before the interruption, a read that began before the bucket was filled, a
-self-health tick inside the read of `recreate-live`), which is never a pass. It exits 0 when every
-verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and
-`--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
-scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
-`$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports. A full run takes about ten minutes, so it is a manual proof, not a CI job.
+self-health tick inside the read of `recreate-live`), which is never a pass. `recreate-live` runs an
+`INVALID` shape again, up to three attempts (above). It exits 0 when every verdict passes, 1 on a
+`FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and `--natsd-bin` run other builds,
+such as the merge base's for a negative control. The evidence (each scenario's listener and NATS
+logs and every poll, one JSON line each) goes to `--out` (default `$TMPDIR/envoy-e2e-refill`).
+`E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the ports.
+
+A record's set and variant are in what the listener keeps of it: the session id names the set, a
+session row's title (`refill <set> <index> v<n>`) and an interest row's directory
+(`/refill/<set>/v<n>`) name the variant. The listener drops a registration's topic that no stream
+subject captures, so no seeded record carries its variant in a topic. `refillrig register` asks for
+each session's own consumer, as a plugin does: the listener refuses a registration that asks for
+none unless it comes from `@sjawhar/pi-envoy` 14.1.0 or later, and the rig names no plugin.
+
+A full run takes about ten minutes. CI runs it as the `envoy-refill` job of
+`.github/workflows/ci.yaml` on every change its `envoy_refill` filter matches.
 
 ## dev-airlock.sh
 
@@ -138,18 +157,18 @@ runtime and no cluster, and prints the exports a check needs. It runs
 `dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
 second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
-services S and T, the GitHub, Google and Microsoft endpoints and the AWS service, the
-anthropic kind's Admin API at `api.anthropic.com` with the IAM `generateIdToken` and
-Anthropic token exchange the broker mints its tokens at, and the certificate authority
-they are signed by), which is a second such process:
-`dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
-at, and this script points nothing at that one. It then writes a profiles file
-(`BROKER_PROFILES_FILE`, in the kinds form: a `kinds` list of a test kind for each
-stand-in and the `anthropic` kind as the deployment writes it, the `github-app`
-secret's profile, `AIRLOCK_PLAIN_GITHUB` of an untagged copy of that App, and the
-narrowed anthropic secret's profile) and a fake Secrets Manager whose secrets each
-name their kind in a `proxy` tag, starts **two** broker processes on a
-database of their own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front
+services S and T, the GitHub, Google and Microsoft endpoints and the AWS service, the `ca` stand,
+the stand-in of Certificate Authority Service, and the anthropic kind's Admin API at
+`api.anthropic.com` with the IAM `generateIdToken` and Anthropic token exchange the broker mints
+its tokens at), which is a second such process: `dev-broker.sh` starts one too, for the GitHub its
+own `github-app` secrets mint at, and this script points nothing at that one. It then writes a
+profiles file (`BROKER_PROFILES_FILE`, in the kinds form: a `kinds` list of a test kind for each
+stand-in and the `anthropic` kind as the deployment writes it, the `github-app` secret's profile,
+`AIRLOCK_PLAIN_GITHUB` of an untagged copy of that App, and the narrowed anthropic secret's
+profile) and a fake Secrets Manager whose secrets each name their kind in a `proxy` tag, gives the
+`ca` stand the profiles file's hosts as its policy, starts **two** broker processes on a database
+of their own with the whole `BROKER_AIRLOCK_*` block and the proxy chain's settings, puts one TCP
+front
 over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
 front`, round-robin per connection), and enrols one pod session the way the Legion
 daemon does — a service login at `POST /v1/launcher-credentials/token`, then
@@ -160,6 +179,18 @@ token `dev-oidc-issuer` rewrites in place. The broker ends a session whose lease
 (`BROKER_LEASE_SECONDS`, 900 seconds by default) passes unrenewed, and every grant
 of it with it, so without the renewer a check that holds a grant for longer would
 have its calls refused 407 midway.
+
+Each broker takes its proxy's intermediate from the `ca` stand (`BROKER_PROXY_CA_POOL`,
+`BROKER_PROXY_TEST_CA_URL`), as a production pod takes it from its pool, and the script
+waits for each broker's `proxy intermediate` line: every call a check makes through the
+proxy verifies a chain of test root, test intermediate and leaf. `AIRLOCK_CA_CERT_FILE`
+is a file of the stack's two roots, that test root and the stands' own authority, which
+a client of the stack trusts; `PROXY_ROOT_FILE` is the test root alone. The brokers and
+the `ca` stand date their certificates by one clock file, `PROXY_CLOCK_OFFSET_FILE`
+(`BROKER_PROXY_TEST_CLOCK_OFFSET_FILE`), which holds `0s` until a check writes another Go
+duration into it. `PROXY_CA_URL` and `PROXY_CA_POOL` name the stand and the pool,
+`PROXY_STANDS_CA_CERT_FILE` and `PROXY_STANDS_CA_KEY_FILE` the stands' own authority, which
+a check can mount as a broker's self-signed pair.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
@@ -187,12 +218,13 @@ Options: `--keep-values` and `--no-kind`, the two negative controls
 
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
-database, the profiles file in the kinds form with every secret but the plain App
-behind a kind of it by its `proxy` tag, the `anthropic` kind as the spec writes it and
-its two secrets tagged and bound, one front over each pair of ports, the options reaching
-the brokers, the enrolment written beside the session key, the session's renewer, the
-usage error, and the cleanup stopping everything it started — with no real Postgres,
-no network and no Go build; CI runs it in the `envoy-go-checks` job
+database, each taking its intermediate from the `ca` stand on the one clock file, the stand's
+policy given before the brokers start, the file of both roots, the profiles file in the kinds form
+with every secret but the plain App behind a kind of it by its `proxy` tag, the `anthropic` kind as
+the spec writes it and its two secrets tagged and bound, one front over each pair of ports, the
+options reaching the brokers, the enrolment written beside the session key, the session's renewer,
+the usage error, and the cleanup stopping everything it started — with no real Postgres, no network
+and no Go build; CI runs it in the `envoy-go-checks` job
 (`.github/workflows/ci-job-envoy-go-checks.yaml`).
 
 `dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
@@ -205,6 +237,57 @@ and ends `dev-airlock-lease: passed` or `dev-airlock-lease: failed (<n> of <m>)`
 needs what `dev-airlock.sh` needs, takes the stack's start plus about five minutes,
 and is not part of CI. Without the renewer, the second call is refused 407 "grant is
 expired, revoked, or its session ended".
+
+## proxy-chain-check.sh
+
+Runs the checks of the proxy's chain on the local stack (`dev-airlock.sh --one-broker`)
+and prints, for each property, what it expected beside what it got, in the same result
+block as `judge-check.sh`. It moves the stack's clock by writing `PROXY_CLOCK_OFFSET_FILE`,
+so it drives days of a broker's life without a restart, and makes each call at a moved
+clock with `openssl s_client` under `agent-secrets`, through the grant's own proxy URL,
+verifying the chain the broker presented against the test root alone at that moment
+(`-attime`). A step that needs another broker starts one beside the stack's, with the stack
+broker's environment (`lib/exec-env.sh`), and points the two fronts at it. The stack's start, its
+banner reading and the extra-broker launch are `lib/check-stack.sh`, which `judge-check.sh`
+sources too; `judge-check.test.sh` tests that file, with no stack, and that `judge-check.sh`'s
+report of a run that evaluated no property says `UNKNOWN` and fails.
+
+```bash
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/proxy-chain-check.sh [k27|k21|compat]
+```
+
+- `k27`, the default: the first call's leaf chains through an intermediate to the test root
+  and lasts at most 25 hours; at 5 days and 1 minute the broker logs a new intermediate and
+  the call succeeds; with the `ca` stand failing from day 4, the leaf at 6 days and 12 hours
+  ends no later than the old intermediate; when the stand answers again the broker logs a
+  new intermediate; a second process is not ready while the stand fails; a broker rolled onto
+  a profiles file with a new host before the stand's policy names it is not ready, and after
+  the policy is applied the call to the new host succeeds. Its negative control is a broker
+  with `BROKER_PROXY_TEST_RENEWAL_MARGIN=0s`, which at 5 days and 1 minute still signs with its
+  first intermediate and logs no renewal.
+- `k21`: a broker whose mounted `BROKER_AIRLOCK_CA_CERT_FILE` and `BROKER_AIRLOCK_CA_KEY_FILE`
+  are an intermediate and its chain to its root starts, ready, and signs a leaf a client
+  verifies against the root alone; its control, the same intermediate with no chain, is
+  refused at start.
+- `compat`: `agent-secrets` built from a release before the chain (`--old-client-ref`, the
+  newest `legion-envoy-v*` tag by default), given a release that carries two roots
+  (`BROKER_PROXY_RELEASE_ROOTS_FILE`), writes both into its bundle and reaches S through a broker
+  signing under either; its control, a release carrying one root, cannot verify a broker
+  signing under the other.
+
+It ends `check <part>: passed`, `check <part>: failed (<n> of <m>)`, or `check <part>: UNKNOWN`
+when it evaluated no property, and exits 0 only when every property passed. It needs what
+`dev-airlock.sh` needs and openssl 3; `compat` also builds the old client from git. Each bound
+host listens on port 443 of a loopback address, so run it where this user may bind 443 and no
+other stack holds it (a container's network namespace does). `--keep-stack` leaves the stack
+and the run's work directory up.
+
+`proxy-chain-check.test.sh` proves, with no stack, the parts its verdicts rest on: its usage
+errors, `call`'s reading of a transcript shaped like `openssl s_client -showcerts` output, holding
+a chain made there (the client's exit, the HTTP status, the certificates presented, the leaf's
+start and end and the signer's serial), the reading of a broker's `proxy intermediate` lines, the
+clock file, and a report
+that evaluated nothing saying UNKNOWN. CI runs it in the `envoy-go-checks` job.
 
 ## airlock-check.sh
 
@@ -306,14 +389,7 @@ required inputs, fake broker rules, store names, the name and reason each nested
 broker start on its own, k6's login steps (the login, the command's exit status and
 the removal of their directory, after a TERM too), k6's az wrapper with an az shim
 first on PATH (a shim that looks az up on PATH again must reach the real az, not the
-wrapper), and `approve_record` against a `python3` stand-in of the broker's approval
-page: it must post back every `printed` and every `profile_digest` field of a page that
-prints two records, and the same helper without either is refused 403. It also runs
-`k47`'s readers (the kind, the broker's lines, the Admin API stand's and the
-exchange's records, the token search, the `--secrets-json` list and the two control
-edits) and `k8`'s copies on fixtures, each with a control the reader must catch, and
-holds the verdict to exit 3 for a run with an `UNKNOWN:` or `DEFERRED:` property or
-none judged.
+wrapper), `approve_record` against a `python3` stand-in of the broker's approval page: it must post back every `printed` and every `profile_digest` field of a page that prints two records, and the same helper without either is refused 403; the file's own EXIT trap, run in a shell of its own under `set -euo pipefail` with a stand-in that is still running and one that has already exited: the shell must end with its own status, 0 or 1, must have stopped the stand-in, and must remove its work directory. It also runs `k47`'s readers (the kind, the broker's lines, the Admin API stand's and the exchange's records, the token search, the `--secrets-json` list and the two control edits) and `k8`'s copies on fixtures, each with a control the reader must catch, and holds the verdict to exit 3 for a run with an `UNKNOWN:` or `DEFERRED:` property or none judged.
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -575,7 +651,7 @@ left in one skips it with the variable set.
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 DISPATCH_TEST_DATABASE_URL=postgres://… BROKER_TEST_DATABASE_URL=postgres://… \
   packages/envoy/scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL \
-  --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+  --var BROKER_TEST_DATABASE_URL --race --timeout 70m '-run=^(TestA|TestB)$' ./internal/dispatch/api/
 packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
@@ -592,11 +668,20 @@ reads that report. `--var NAME` names a variable the packages need, and repeats;
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
 the packages run several at a time, so one that starts late ends later. `--skip PATTERN` adds
 go test's `-skip`; go test reports nothing for a test it leaves out, so that test is neither
-run nor counted as a skip. `--module-except PATTERN` adds to that one go test every other
-package of the module that `go list ./... | grep -Ev PATTERN` keeps; their skips are not
-counted and they are not held to showing a run, but a failure of theirs fails go test and so the
-count. `--report` reads a `go test -json` report instead and runs nothing, and refuses the five
-options that shape a run.
+run nor counted as a skip. `--count-table` runs every `PACKAGE` and counts the skips of the
+default table's packages among them alone; the others' skips are not counted and they are not
+held to showing a run, but a failure of theirs fails go test and so the count. A run whose
+packages hold none of the table's prints `database_skips=NONE`, not a zero, and passes or fails
+on go test's result. `-run=PATTERN` adds go test's `-run`, in the one shape `.github/scripts/go_legs.py`
+prints for a leg that runs a group of a package's tests, `^(Name|Name|…)$`, each alternative a
+whole test name: `Test`, `Fuzz` or `Example`, then no whitespace and no regex metacharacter, the
+rule `go_legs.py`'s `TEST_NAME` lists tests by. An `EXPECTED_SKIPS` line whose test the package
+still has (`go test -list .` under the run's flags) and the pattern leaves out is another leg's
+and is not held; a line whose test the package no longer has is held, and reads UNKNOWN, in every
+leg. Any other `-run` shape (`^(.*)$`, `^(A)|(B)$`, a bare name) is refused as a usage error
+before any test runs. `--report` reads a `go test -json` report instead and runs nothing, and
+refuses the six options that shape a run (`--var`, `--race`, `--timeout`, `--skip`,
+`--count-table`, `-run`).
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -616,24 +701,36 @@ under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary'
 dump and a data race report among them), the build output and, for a run of its own, go test's
 stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
-`ci.yaml`'s `envoy-go` job runs the module through it as "Unit test envoy Go package", with
-`--timeout 20m`, `--skip` of the web display fixture's two tests and of the five the job's
-"Count the store-form rows on each backend" runs (`backend-count.sh`, above), `--module-except`
-of the packages other jobs run, and a step limit of its own (`timeout-minutes: 45`) that its
-time budget counts; one go test lets the broker's packages share its `-p` slots with the rest
-of the module, where a step of their own after the unit step waited on `cmd/cipherd` alone.
-`envoy-go-race-api` runs the Dispatch API through it as the second line above.
-`database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
-and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
-that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
-a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
-package spelled other than canonically is counted;
+`ci.yaml`'s `envoy-go` job runs its unit legs through it as "Unit test envoy Go package", each
+over the packages `.github/go-legs.yaml` lists for that leg, with `--timeout 20m`, `--skip` of
+the web display fixture's two tests, which `envoy-go-build` runs, of the five that
+`envoy-go-skips`' "Count the store-form rows on each backend" runs (`backend-count.sh`, above),
+and of the 38 rows whose bound is on time, which `envoy-go-alone` runs on a runner nothing else
+loads (`UNIT_ALONE_TESTS` in `.github/scripts/ci_job_reads.py`), `--count-table`, and a step
+limit of its own (`timeout-minutes: 30`) that its time budget counts; one go test a leg lets the
+broker's packages share its `-p` slots with the rest of the leg.
+`envoy-go-race-api` runs the Dispatch API through it in three legs, each piping its group's
+`-run=^(…)$` and `./internal/dispatch/api/` into the second line above's options.
+`database-skips.test.sh` holds it to eight controls, which `envoy-go-skips` runs as "Test the
+database skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`,
+`./cmd/cipherd/` and `./internal/dispatch/api/` is counted; either variable unset or empty is
+UNKNOWN; a report that shows no run (no test ran, only expected skips ran, or one package ran
+none) is UNKNOWN, a failed test fails, a race report filed under a passed subtest is printed, and
+a skip in a package spelled other than canonically is counted;
 `--timeout 1s` ends a package's binary; a copy with
-one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; and a skip
-planted in a package `--module-except` adds is not counted, where a failure planted there fails
-the count. It needs a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and
-`DISPATCH_TEST_DATABASE_URL`.
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip; with
+`--count-table` a skip planted in a package outside the table is not counted, one planted in the
+table's package among them is, a failure planted outside the table fails the count, and a run
+with no package of the table prints `database_skips=NONE`; and with `-run`, a run that leaves most
+expected tests out passes, a line for a test the package does not have reads UNKNOWN and is the
+one named, a name with a non-ASCII letter is taken, and three shapes that are no list of whole
+names are refused, as is `-run` beside `--report`. The eighth holds the test's own output: a
+control that passes prints no line that a reader or a grep of the CI log takes for a test failure
+(`--- FAIL:`, a `FAIL` or `UNFINISHED` line, a panic, a race report), since its planted tests'
+output is printed only beside a control that failed; and each test the script plants is named
+`TestPlanted…`, which it checks against every failed or unfinished test its controls' runs
+printed, so a grep tells a planted failure from a real one. It needs a scratch Postgres named by
+both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
 ## forced-order.sh
 
@@ -1194,8 +1291,9 @@ printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`
   service gives its user (`<kind>/<machine id>`). That list classifies every kind config declares,
   and a session's token; natscallout's
   `TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject` holds it to those kinds
-  and to the grants the service answers (`dispatch`, `edge-listener` and `listener` publish
-  today). Nothing the gate reads links a user to the stack that runs it, so the operator maps each
+  and to the grants the service answers (`dispatch`, `edge-listener`, `listener` and
+  `webhook-listener` publish today). Nothing the gate reads links a user to the stack that runs it,
+  so the operator maps each
   with `--publisher <identity>=<pin key>`, repeated for a user more than one process runs, to a key
   of `daemon-release-gate.sh --listeners`, run beside the gate: `envoy` (the VM hub's listener),
   `envoy-cluster`, `dispatch` (Dispatch's listener) or `dispatch-server`. An edge listener's entry
@@ -1628,20 +1726,23 @@ measurement.
 
 `internal/dispatch/benchtime` is the runner, and each package that owns statement texts carries
 its own `statement_timing_test.go`, all named `TestStatementTimings`: `internal/dispatch/api`,
-`internal/dispatch/refs` and `internal/dispatch/docs`.
+`internal/dispatch/refs`, `internal/dispatch/docs` and `internal/dispatch/sessionanswers`.
 `Pair` takes a named pair of statement texts with their arguments, runs `EXPLAIN (ANALYZE, BUFFERS)` of each alternately on one connection, reports planning plus execution as the median of runs 2 to 12, prints both plans and fails when the after text's median is not below the before text's.
 `Report` is that same two-sided reading with no bound, for a statement whose gain is real but smaller than the run-to-run spread of the parts it shares a statement with: the gate then sits on the piece whose text differs, as a pair of its own.
-The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding and three words), each read from the database at run time, so a re-seed moves them with it.
+`PairBuffers` reads the shared buffers of each side's top plan node, under the plan made for its values and under the generic plan, prints each count with its plan, and fails when the after text does not read fewer under each plan.
+The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding, three words, and the start of the agents' answers window with its three sessions), each read from the database at run time, so a re-seed moves them with it.
+A database seeded before the seed wrote deliveries holds no answers subjects, so every package's `TestStatementTimings` then fails when it binds its subjects: seed the database again with this checkout's `cmd/dispatch-seed`.
 
 ```bash
 cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
   go test -run TestStatementTimings -v -count=1 -timeout 90m \
-  ./internal/dispatch/api ./internal/dispatch/refs ./internal/dispatch/docs
+  ./internal/dispatch/api ./internal/dispatch/refs ./internal/dispatch/docs ./internal/dispatch/sessionanswers
 ```
 
-A statement whose gain needs an index or a table a migration of this release adds has no such pair, because one schema cannot hold both sides of it.
+A statement whose gain needs a table a migration of this release adds has no such pair, because one schema cannot hold both sides of it.
 `Before` and `After` measure one side of such a statement alone, with its plan and no bound, each line naming the side it read: the after side on a database at this release's schema, the before side on one migrated from the release before it.
 Running this same test against each of the two databases is what puts the two sides together.
+A statement whose gain needs only an index is a pair all the same, as `benchtime`'s package comment says: its before side's `Setup` drops that index, or puts back the one the release before read through, in the measuring transaction, which the run rolls back, so one database holds both sides.
 Each test file says which statement is under which protocol and why.
 
 `TestRelatedTermsRefreshTiming`, in `internal/dispatch/api`, measures the related-terms refresh,

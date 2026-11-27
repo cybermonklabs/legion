@@ -190,11 +190,12 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // An answer a step takes as data is no failure, and neither are the steps that read no GitHub nor
 // the runs backfills, which never fail the pass (the client still notes what they meet). It is
 // recorded on the context the lease handed the pass, so a pass this process's shutdown cut short
-// records nothing.
+// records nothing. Begin also names the read as the caller kind its calls to GitHub are counted
+// under, for the rate reading.
 func (r *Reconcile) runOnce(ctx context.Context) {
 	caller := ctx
-	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.DeliveryReconcile, attempt, r.gitHubReads, nil)
+	ctx, attempt := githubreads.Begin(ctx, githubreads.DeliveryReconcile)
+	defer githubreads.Finish(caller, attempt, r.gitHubReads, nil)
 	now := time.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
@@ -298,6 +299,9 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		record("record issue.deployed events", err)
 	} else if written > 0 {
 		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "reconcile")
+	}
+	if _, err := RecordProductionDeploys(ctx, r.pool, settings, r.events); err != nil {
+		record("record production deploys", err)
 	}
 
 	if len(failures) > 0 {

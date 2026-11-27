@@ -3,13 +3,9 @@ package supervise
 import (
 	"context"
 	"errors"
-	"fmt"
-	"go/ast"
 	"go/importer"
-	"go/parser"
 	"go/token"
 	"go/types"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // sealed reads the package's own source for what the table has to cover: every type that
@@ -41,31 +38,18 @@ func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerK
 	return events, states, timers
 }
 
-// sealedSource parses every file of the package but its tests, and reads the sealed set from
-// them (sealedSet).
+// sealedSource is the sealed set read from the package's own source as the build compiles it
+// (checkedSealedSet).
 func sealedSource(t *testing.T) sealedSets {
 	t.Helper()
-	entries, err := os.ReadDir(".")
+	set, err := checkedSealedSet()
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := token.NewFileSet()
-	var parsed []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(files, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		parsed = append(parsed, file)
-	}
-	return sealedSet(t, files, parsed)
+	return set
 }
 
-// sealedSet is what the compiler sees of this package: every type that implements Event, and the
+// sealedSets is what the compiler sees of this package: every type that implements Event, and the
 // value of every ClaimState, TimerKind and SuspendSource constant. It is read as the compiler
 // sees it rather than as the source spells it — a type that inherits isEvent by embedding, or
 // declares it on a pointer receiver, is an event a scan of isEvent declarations would not see,
@@ -78,38 +62,19 @@ type sealedSets struct {
 	sources []string
 }
 
-func sealedSet(t *testing.T, files *token.FileSet, parsed []*ast.File) sealedSets {
-	t.Helper()
-	set, err := checkedSealedSet(files, parsed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return set
-}
-
 // checkedSealedSet type-checks this package once per test binary — the check reads the standard
 // library from source, which is seconds, and five tests ask for the sealed set.
-var checkedSealedSet = func() func(*token.FileSet, []*ast.File) (sealedSets, error) {
-	once := sync.OnceValues(func() (sealedSets, error) {
-		return sealedSets{}, errors.New("the sealed set was asked for before any file was parsed")
-	})
-	var files *token.FileSet
-	var parsed []*ast.File
-	return func(f *token.FileSet, p []*ast.File) (sealedSets, error) {
-		if files == nil {
-			files, parsed = f, p
-			once = sync.OnceValues(func() (sealedSets, error) { return readSealedSet(files, parsed) })
-		}
-		return once()
-	}
-}()
+var checkedSealedSet = sync.OnceValues(readSealedSet)
 
-func readSealedSet(files *token.FileSet, parsed []*ast.File) (sealedSets, error) {
-	config := types.Config{Importer: importer.ForCompiler(files, "source", nil)}
-	pkg, err := config.Check("github.com/sjawhar/legion/daemon/internal/supervise", files, parsed, nil)
+// readSealedSet reads the sealed set from the package's own source as the build compiles it
+// (testtypes.CheckPackage).
+func readSealedSet() (sealedSets, error) {
+	files := token.NewFileSet()
+	checked, err := testtypes.CheckPackage(files, importer.ForCompiler(files, "source", nil), supervisePath, ".")
 	if err != nil {
-		return sealedSets{}, fmt.Errorf("type-check the package: %w", err)
+		return sealedSets{}, err
 	}
+	pkg := checked.Types
 	event, ok := pkg.Scope().Lookup("Event").Type().Underlying().(*types.Interface)
 	if !ok {
 		return sealedSets{}, errors.New("Event is not an interface")
@@ -169,6 +134,7 @@ func samples(t *testing.T) map[string][]Event {
 		"StalePlugin":          {StalePlugin{}},
 		"RecordedDeath":        {RecordedDeath{}},
 		"StallBackstop":        {StallBackstop{}},
+		"TurnPastBound":        {TurnPastBound{}},
 		"PodUpdateSignalled":   {PodUpdateSignalled{}},
 		"RequestSpawn":         {RequestSpawn{}},
 		"RequestRegister":      {RequestRegister{}},
@@ -181,7 +147,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestIssueClose":    {RequestIssueClose{}},
 		"RequestOperatorClose": {RequestOperatorClose{}},
 		"RequestRetry":         {RequestRetry{}},
-		"RequestOperatorRetry": {RequestOperatorRetry{}},
+		"RequestAskedRetry":    {RequestAskedRetry{}},
 		"RequestForgetSession": {RequestForgetSession{}},
 		"RequestDeliver":       {RequestDeliver{}},
 		"RequestExit":          {RequestExit{}},
@@ -364,6 +330,8 @@ func fenced(ev Event, c Claim) Event {
 		return RecordedDeath{Claim: c.Token, Generation: c.Generation}
 	case StallBackstop:
 		return StallBackstop{Claim: c.Token, Bound: time.Hour, Deadline: epoch.Add(-time.Hour)}
+	case TurnPastBound:
+		return TurnPastBound{Claim: c.Token, Bound: time.Hour, TurnStart: c.LastTurnStart}
 	case PodUpdateSignalled:
 		return PodUpdateSignalled{Claim: c.Token, Generation: c.Generation, Session: session, Head: "deadbeef"}
 	case PodUpdateOpen:
@@ -379,17 +347,17 @@ func fenced(ev Event, c Claim) Event {
 	case RequestSuspend:
 		return RequestSuspend{Claim: c.Token, By: SuspendedByOperator}
 	case RequestResume:
-		return RequestResume{Claim: c.Token}
+		return RequestResume{Claim: c.Token, By: SuspendedByOperator}
 	case RequestRuleResume:
 		return RequestRuleResume{Claim: c.Token, Reason: "it owns its issue's phase"}
 	case RequestStop:
-		return RequestStop{Claim: c.Token}
+		return RequestStop{Claim: c.Token, By: SuspendedByOperator}
 	case RequestRetry:
 		return RequestRetry{Claim: c.Token}
-	case RequestOperatorRetry:
-		return RequestOperatorRetry{Claim: c.Token}
+	case RequestAskedRetry:
+		return RequestAskedRetry{Claim: c.Token, By: SuspendedByOperator}
 	case RequestForgetSession:
-		return RequestForgetSession{Claim: c.Token, Session: c.Session}
+		return RequestForgetSession{Claim: c.Token, Session: c.Session, By: SuspendedByOperator}
 	case RequestDeliver:
 		return RequestDeliver{Claim: c.Token, Task: "another task"}
 	case RequestExit:
@@ -519,7 +487,7 @@ func TestAnEventForAnotherClaimIsAnError(t *testing.T) {
 func wantsRefusal(ev Event) bool {
 	switch ev.(type) {
 	case RequestSpawn, RequestRegister, RequestReady, RequestSuspend, RequestResume, RequestStop,
-		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
+		RequestRetry, RequestAskedRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
 		RequestTurnOutcome, PodUpdateSignalled:
 		return true
 	}

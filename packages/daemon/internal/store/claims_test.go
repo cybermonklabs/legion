@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -347,7 +348,7 @@ func TestARePutDeliveryKeepsThePhaseItWasQueuedFor(t *testing.T) {
 // The ladder a provider error puts a task on outlives the daemon that armed it: the count says
 // which step the next send waits, and the sentence is what that send puts in front of the task
 // (dispatch://INFRA-956 R2). The claim's own run of such turns is beside them, because that is
-// what the controller's notice is counted from, and neither a restart nor a re-put of the
+// what the provider-errors notice is counted from, and neither a restart nor a re-put of the
 // delivery under a new id may lose either.
 func TestAProviderErrorsLadderAndItsRunRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -725,6 +726,183 @@ func TestTheRoundAClaimLeftRoundTrips(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
+// The repository a round's pod was built from is read back as the repository it was written as
+// (supervise.Claim.UpdateRepository): a restart has nothing else to name the issue branch of a
+// gone pod's message from, nor the workspace on a kept volume. The round's end clears it, and a
+// claim with no repository reads back with none.
+func TestTheRepositoryARoundsPodWasBuiltFromRoundTrips(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-repositoryround")
+	want.UpdateRound = supervise.PodRound("9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22")
+	want.UpdateRepository = ghrepo.MustParse("acme/widgets")
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	want.UpdateRound, want.UpdateRepository = "", ghrepo.Repository{}
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// A daemon of an earlier release names neither repository column in its claim write, so it ends
+// a round this release opened and opens the claim's next round with the name still standing.
+// That name is read for the round it was written with alone: the next round reads as one that
+// recorded no repository, since read as this one's it would name a repository that the next pod
+// was not built from.
+func TestClaimsReadARoundsRepositoryForTheRoundItWasWrittenWithAlone(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-earlierround")
+	want.UpdateRound = supervise.PodRound("9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22")
+	want.UpdateRepository = ghrepo.MustParse("acme/widgets")
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	const next = "pod:4b8e1d60-3c92-4f7a-ae15-8d0c2b5f6a34"
+	if _, err := store.pool.Exec(ctx, `update claims set update_round = $2, update_reasons = 'image' where token = $1`,
+		string(want.Token), next); err != nil {
+		t.Fatalf("write the next round as the earlier release writes it: %v", err)
+	}
+
+	got := onlyClaim(t, store)
+	if got.UpdateRound != next || !got.UpdateRepository.IsZero() {
+		t.Fatalf("the claim reads round %q with the repository %q, want %q with none",
+			got.UpdateRound, got.UpdateRepository, next)
+	}
+}
+
+// A repository column written with the claim's own round that is no repository refuses the read
+// by the claim's name, as a locator that does not validate does: the daemon writes only a name it
+// parsed, and read as no repository the row would send the roles of a gone pod to the issue
+// branch at origin, which is not where their work is.
+func TestClaimsRefusesAStoredRoundRepositoryThatIsNoRepository(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	stored := tmuxClaim("legion-LEGION-209-badrepository")
+	stored.UpdateRound = supervise.PodRound("9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22")
+	stored.UpdateRepository = ghrepo.MustParse("acme/widgets")
+	if err := store.PutClaim(ctx, stored); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `update claims set update_repository = 'acme widgets' where token = $1`,
+		string(stored.Token)); err != nil {
+		t.Fatalf("write a repository with no slash: %v", err)
+	}
+
+	_, err := store.Claims(ctx)
+	if err == nil {
+		t.Fatal("claims loaded a round's repository that is no repository")
+	}
+	for _, want := range []string{"legion-LEGION-209-badrepository", "acme widgets"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
+// The repository a claim's process works is read back as the repository it was written as
+// (supervise.Claim.WorkingRepository), and so is the zero Repository of a launch that named none,
+// which is not none recorded: after a restart it is what every task sent to that process names
+// in its working copy line. A claim that records no process reads back with none.
+func TestTheRepositoryAClaimsProcessWorksRoundTrips(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-workingrepository")
+	for _, working := range []ghrepo.Repository{ghrepo.MustParse("acme/widgets"), {}} {
+		want.WorkingRepository = &working
+		if err := store.PutClaim(ctx, want); err != nil {
+			t.Fatalf("put claim working %q: %v", working, err)
+		}
+		sameClaim(t, onlyClaim(t, store), want)
+	}
+
+	want.Locator, want.WorkingRepository = nil, nil
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim with no process: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// A daemon of an earlier release names neither working repository column in its claim write, so
+// its relaunch of a claim this release launched writes the new process's locator beside the name
+// this release recorded for the process before it. That name is read for the incarnation it was
+// recorded for alone: the new process reads as one no launch of this release recorded a
+// repository for, since read as its own it would name a workspace that process may not work in.
+// The same holds once that release's suspension writes no locator at all.
+func TestClaimsReadTheRepositoryAProcessWorksForTheIncarnationItWasRecordedForAlone(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	stored := tmuxClaim("legion-LEGION-209-earlierrelaunch")
+	working := ghrepo.MustParse("acme/widgets")
+	stored.WorkingRepository = &working
+	if err := store.PutClaim(ctx, stored); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if got := onlyClaim(t, store); got.WorkingRepository == nil || *got.WorkingRepository != working {
+		t.Fatalf("the claim reads the working repository %v, want %s: the case's own premise", got.WorkingRepository, working)
+	}
+
+	const relaunched = "31002:900002"
+	if _, err := store.pool.Exec(ctx, `update claims set generation = generation + 1,
+		locator = jsonb_build_object('runtime', 'tmux', 'claim', token, 'incarnation', $2::text,
+			'tmux', jsonb_build_object('window', '@4', 'pane', '%42'))
+		where token = $1`, string(stored.Token), relaunched); err != nil {
+		t.Fatalf("write the relaunch as the earlier release writes it: %v", err)
+	}
+	got := onlyClaim(t, store)
+	if got.Locator == nil || got.Locator.Incarnation != relaunched || got.WorkingRepository != nil {
+		t.Fatalf("the relaunched claim reads the process %+v working %v, want the process %s with no working repository",
+			got.Locator, got.WorkingRepository, relaunched)
+	}
+
+	if _, err := store.pool.Exec(ctx, `update claims set locator = null, state = 'suspended' where token = $1`,
+		string(stored.Token)); err != nil {
+		t.Fatalf("write the suspension as the earlier release writes it: %v", err)
+	}
+	if got := onlyClaim(t, store); got.Locator != nil || got.WorkingRepository != nil {
+		t.Fatalf("the suspended claim reads the process %+v working %v, want neither", got.Locator, got.WorkingRepository)
+	}
+}
+
+// A working repository column written for the claim's own process that is no repository refuses
+// the read by the claim's name, as a round's repository that is none does: the daemon writes only
+// a name it parsed, and read as none the row would send that process the line its task was
+// composed with, which names the workspace of the record's repository.
+func TestClaimsRefusesAStoredWorkingRepositoryThatIsNoRepository(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	stored := tmuxClaim("legion-LEGION-209-badworking")
+	working := ghrepo.MustParse("acme/widgets")
+	stored.WorkingRepository = &working
+	if err := store.PutClaim(ctx, stored); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `update claims set working_repository = 'acme widgets' where token = $1`,
+		string(stored.Token)); err != nil {
+		t.Fatalf("write a repository with no slash: %v", err)
+	}
+
+	_, err := store.Claims(ctx)
+	if err == nil {
+		t.Fatal("claims loaded a working repository that is no repository")
+	}
+	for _, want := range []string{"legion-LEGION-209-badworking", "acme widgets"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
 // A locator is checked where it is read back: a row nothing could act on is refused by name rather
 // than loaded as a process the daemon believes in.
 func TestClaimsRefusesAStoredLocatorThatDoesNotValidate(t *testing.T) {
@@ -983,8 +1161,8 @@ func TestASuspendedClaimsSourceRoundTripsAndTheSchemaRefusesAnUnknownOne(t *test
 	t.Parallel()
 	s := migratedStore(t)
 	ctx := context.Background()
-	for _, by := range []supervise.SuspendSource{supervise.SuspendedByOperator, supervise.SuspendedByDaemon, supervise.SuspendedByExit,
-		supervise.SuspendedByReleased, ""} {
+	for _, by := range []supervise.SuspendSource{supervise.SuspendedByOperator, supervise.SuspendedByController,
+		supervise.SuspendedByDaemon, supervise.SuspendedByExit, supervise.SuspendedByReleased, ""} {
 		c := supervise.Claim{Token: "legion-LEGION-209-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209",
 			Role: claim.RoleTester, Generation: 2, State: supervise.StateSuspended, Session: "ses_tester", SuspendedBy: by}
 		if err := s.PutClaim(ctx, c); err != nil {
@@ -1774,6 +1952,7 @@ func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 // it, and the next mark is a new one. A retired claim takes no mark, and a claim loses the one it
 // holds as it retires.
 func TestAMessageMarkOutlivesMachineWritesButStandsOnlyUntilTheNextTurn(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	st := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")

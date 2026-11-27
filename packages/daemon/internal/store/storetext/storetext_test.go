@@ -216,9 +216,10 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 			want: "dial tcp 127.0.0.1:9: connect: connection refused",
 		},
 		{
+			// The URL rule's own text of the URL, read from the rule, never written out here.
 			name: "a short text loses its URL credentials",
 			text: `Get "https://u:` + planted + `@h.example/x?token=` + planted + `": EOF`,
-			want: `Get "https://h.example/x": EOF`,
+			want: redact.URLCredentials(`Get "https://u:` + planted + `@h.example/x?token=` + planted + `": EOF`),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,6 +234,10 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 			if strings.Contains(got, "token") || strings.Contains(got, planted) {
 				t.Fatalf("FarSideError(%.80q…) holds a part of the URL's credentials", tc.text)
 			}
+			// The planted URLs' user name is u: neither it nor its "@" may stay.
+			if strings.Contains(got, "://u:") || strings.Contains(got, "://u@") {
+				t.Fatalf("FarSideError(%.80q…) holds the URL's user name", tc.text)
+			}
 			if again := FarSideError(got); again != got {
 				t.Fatalf("FarSideError of its own result gave %.80q…, want the result kept", again)
 			}
@@ -246,6 +251,7 @@ func TestFarSideErrorBoundsTheCleanedTextKeepingItsStart(t *testing.T) {
 func TestFarSideErrorEndsKeepsBothEnds(t *testing.T) {
 	keep := FarSideErrorRunes / 2
 	middle := strings.Repeat("m", 1<<20)
+	start := redact.URLCredentials("start https://u:" + planted + "@h.example/x ")
 	for _, tc := range []struct {
 		name, text, want string
 	}{
@@ -261,9 +267,10 @@ func TestFarSideErrorEndsKeepsBothEnds(t *testing.T) {
 			want: strings.Repeat("é", keep-1) + "…" + strings.Repeat("é", keep),
 		},
 		{
+			// The start as the URL rule writes it, read from the rule, never written out here.
 			name: "a URL's credentials in the part the cut drops",
 			text: "start https://u:" + planted + "@h.example/x " + middle + " end",
-			want: "start https://h.example/x " + middle[:keep-1-len("start https://h.example/x ")] + "…" + middle[:keep-len(" end")] + " end",
+			want: start + middle[:keep-1-len(start)] + "…" + middle[:keep-len(" end")] + " end",
 		},
 		{
 			name: "a text of exactly the bound kept whole",
@@ -285,6 +292,9 @@ func TestFarSideErrorEndsKeepsBothEnds(t *testing.T) {
 			}
 			if !utf8.ValidString(got) || utf8.RuneCountInString(got) > FarSideErrorRunes || strings.Contains(got, planted) {
 				t.Fatalf("FarSideErrorEnds gave %d runes, want valid UTF-8 of at most %d runes with no credential", utf8.RuneCountInString(got), FarSideErrorRunes)
+			}
+			if strings.Contains(got, "://u:") || strings.Contains(got, "://u@") {
+				t.Fatalf("FarSideErrorEnds(%.80q…) holds the URL's user name", tc.text)
 			}
 		})
 	}

@@ -47,6 +47,8 @@ func heldKeys(t *testing.T, memo *documentCutMemo) []string {
 // then served as refused; an entry is served only for the markdown it was cut from; and the
 // document as it stands is kept under a key of its own, which no stored version's key is.
 func TestTheDocumentCutMemoKeepsTheMostRecentlyUsedCutsWithinItsBound(t *testing.T) {
+	// Not parallel: it writes the package variable decisionCutsObserver, the hook every decision cut
+	// calls.
 	const markdownBytes = 100
 	const artifactID = "2e5d211a-b79d-48a7-9e08-3eece00fffed"
 	entry := int64(markdownBytes + documentCutOverheadBytes)

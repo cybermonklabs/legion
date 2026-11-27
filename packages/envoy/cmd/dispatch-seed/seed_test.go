@@ -4,12 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -19,160 +16,41 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/fixtureenv"
 )
 
-// TestMain runs the package's tests, or, run by seedInChild with seedChildEnv set, is that test's
-// seed: one run of seed over the database seedChildDatabaseEnv names. Only TestMain makes a seed
-// of a copy a test starts: in a build of these tests without it, such a copy runs the tests, each
-// of which starts copies that run them again. seedInChild refuses to start a copy in such a
-// process (seedCopyRefusal), and TestACopyStartedAsASeedRunsAsTheSeed fails in such a build by
-// name.
-func TestMain(m *testing.M) {
-	if report := os.Getenv(seedChildEnv); report != "" {
-		os.Exit(seedAsChild(os.Getenv(seedChildDatabaseEnv), report))
-	}
-	os.Exit(storetest.Main(m))
-}
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
-// seedChildEnv and seedChildDatabaseEnv make this test binary a seed rather than a test run: the
-// file to write the run's subjects to, and the database to fill (seedInChild).
-const (
-	seedChildEnv         = "DISPATCH_SEED_TEST_CHILD_REPORT"
-	seedChildDatabaseEnv = "DISPATCH_SEED_TEST_CHILD_DATABASE_URL"
-)
-
-// seedCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
-// process that has seedChildEnv set was started as a seed, and TestMain runs such a process as a
-// seed, so one that runs the tests runs in a build without TestMain, and a copy started there would
-// run the tests again. seedInChild answers it as its own error rather than failing a test, because
-// it runs on a goroutine of its own.
-func seedCopyRefusal() error {
-	if report := os.Getenv(seedChildEnv); report != "" {
-		return fmt.Errorf("this process has %s=%s, so a test started it as a seed, but it runs the tests: this build of the tests has no TestMain that runs a seed, and a copy started here would run the tests again", seedChildEnv, report)
-	}
-	return nil
-}
-
-// seedCopyRefusal, which seedInChild asks before any copy starts, refuses a process that has
-// seedChildEnv set and no other. While TestMain is in the build no copy reaches it, so this test is
-// what holds the refusal.
-func TestAProcessStartedAsASeedStartsNoCopy(t *testing.T) {
-	fixtureenv.Unset(t, seedChildEnv)
-	if err := seedCopyRefusal(); err != nil {
-		t.Fatalf("with %s unset: %v, want no refusal", seedChildEnv, err)
-	}
-	t.Setenv(seedChildEnv, "/run/subjects.json")
-	if err := seedCopyRefusal(); err == nil || !strings.Contains(err.Error(), seedChildEnv+"=/run/subjects.json") {
-		t.Fatalf("with %s set: %v, want a refusal that names it", seedChildEnv, err)
-	}
-}
-
-// A copy started with seedChildEnv set runs as a seed: it opens the database seedChildDatabaseEnv
-// names, and refuses one it cannot read, exit 1. The seed does not read -h. In a build without
-// TestMain, the testing package reads -h before any test runs, prints its own flag usage and exits
-// 0, so this test fails there by name and its copy starts no copy of its own.
-func TestACopyStartedAsASeedRunsAsTheSeed(t *testing.T) {
-	t.Parallel()
-	if err := seedCopyRefusal(); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(os.Args[0], "-h")
-	cmd.Env = append(os.Environ(), seedChildEnv+"="+filepath.Join(t.TempDir(), "subjects.json"), seedChildDatabaseEnv+"=postgres://%zz")
-	out, err := cmd.CombinedOutput()
-	var exit *exec.ExitError
-	if want := "open the test database: "; !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.HasPrefix(string(out), want) {
-		t.Fatalf("a copy started as a seed with -h and a database URL it cannot read: %v, want exit 1 and a refusal that starts %q\n%s", err, want, out)
-	}
-}
-
-// seedAsChild fills the database at databaseURL as seed does in a test, and writes the run's
-// subjects to report as JSON. It writes the seed's progress and report on stdout and a failure
-// on stderr, which seedInChild prints when the run fails.
-func seedAsChild(databaseURL, report string) int {
-	ctx := context.Background()
-	database, err := store.Open(ctx, databaseURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "open the test database: %v\n", err)
-		return 1
-	}
-	defer database.Pool.Close()
-	run, err := seed(ctx, database, testScale, os.Stdout)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "seed at scale %v: %v\n", testScale, err)
-		return 1
-	}
-	encoded, err := json.Marshal(run.subject)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "encode the run's subjects: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(report, encoded, 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "write the run's subjects: %v\n", err)
-		return 1
-	}
-	return 0
-}
-
-// seedInChildren seeds each of databases in a process of its own, all at once, this test binary
-// run as a seed (seedAsChild), and answers each run as the tests read it: its subjects, and the
-// plan every run at testScale writes. A seed sets the block id generator for its whole process
-// (pmdoc.SetBlockIDGenerator, seedRun.do), so two seeds in one process would draw each other's
-// ids; in processes of their own, they run at once, and so do the seeds of the package's parallel
-// tests.
-func seedInChildren(t *testing.T, databases ...*store.Store) []*seedRun {
+// seedAtOnce seeds each of databases at once, a goroutine each, and answers each run. Each
+// database is its test's own (storetest.Open) and each render its own block ids (renderVersion),
+// so the seeds of a test, and those of the package's parallel tests, run at once in one process.
+func seedAtOnce(t *testing.T, databases ...*store.Store) []*seedRun {
 	t.Helper()
 	runs := make([]*seedRun, len(databases))
 	failures := make([]error, len(databases))
 	var seeds sync.WaitGroup
 	for index, database := range databases {
-		report := filepath.Join(t.TempDir(), "subjects.json")
 		seeds.Go(func() {
-			runs[index], failures[index] = seedInChild(t, database, report)
+			started := time.Now()
+			runs[index], failures[index] = seed(context.Background(), database, testScale, io.Discard)
+			t.Logf("seed %d of %d at scale %v in %s", index+1, len(databases), testScale,
+				time.Since(started).Round(time.Millisecond))
 		})
 	}
 	seeds.Wait()
 	for index, failure := range failures {
 		if failure != nil {
-			t.Fatalf("seed %d of %d: %v", index+1, len(databases), failure)
+			t.Fatalf("seed %d of %d at scale %v: %v", index+1, len(databases), testScale, failure)
 		}
 	}
 	return runs
-}
-
-// seedInChild runs one seed of database in a process of its own and reads back the subjects it
-// wrote to report. It answers an error rather than failing t, because seedInChildren calls it
-// from a goroutine of its own.
-func seedInChild(t *testing.T, database *store.Store, report string) (*seedRun, error) {
-	if err := seedCopyRefusal(); err != nil {
-		return nil, err
-	}
-	command := exec.CommandContext(t.Context(), os.Args[0])
-	command.Env = append(os.Environ(),
-		seedChildEnv+"="+report, seedChildDatabaseEnv+"="+database.Pool.Config().ConnString())
-	var output bytes.Buffer
-	command.Stdout = &output
-	command.Stderr = &output
-	started := time.Now()
-	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("seed at scale %v in a child process: %w\n%s", testScale, err, output.String())
-	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
-	encoded, err := os.ReadFile(report)
-	if err != nil {
-		return nil, fmt.Errorf("read the subjects the seed wrote: %w\n%s", err, output.String())
-	}
-	run := &seedRun{plan: newPlan(newSizes(testScale))}
-	if err := json.Unmarshal(encoded, &run.subject); err != nil {
-		return nil, fmt.Errorf("decode the subjects the seed wrote: %w", err)
-	}
-	return run, nil
 }
 
 // testScale is the scale the suite seeds at: about 200 issues, which is small enough that two
@@ -183,11 +61,11 @@ const testScale = 0.01
 // TestSeedAtASmallScale seeds two fresh databases and holds the pair, and then one of them, to
 // everything the seed promises. Both runs are in one test because each one takes most of a
 // minute: a test of its own for each check would seed six databases to read one data set. The two
-// seeds run at once, each in a process of its own (seedInChildren).
+// seeds run at once, in this process (seedAtOnce).
 func TestSeedAtASmallScale(t *testing.T) {
 	t.Parallel()
 	first, second := storetest.Open(t), storetest.Open(t)
-	firstRun := seedInChildren(t, first, second)[0]
+	firstRun := seedAtOnce(t, first, second)[0]
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -210,6 +88,15 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
+	})
+	t.Run("the answers read finds the seed's deliveries", func(t *testing.T) {
+		assertAnswersReadFindsTheDeliveries(t, first, firstRun)
+	})
+	t.Run("every answer and decline names its ask after the ask's opening event", func(t *testing.T) {
+		assertAnswersAndDeclinesNameTheirAsks(t, first)
+	})
+	t.Run("the newest status move of every issue in backlog or icebox is into the status it stands in", func(t *testing.T) {
+		assertStatusMovesEndInTheStatus(t, first)
 	})
 	t.Run("every project's default assignee is a person who has signed in", func(t *testing.T) {
 		var unknown int
@@ -254,7 +141,7 @@ func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
 		`alter table search_term_totals drop column snapshot, drop column snapshot_at`); err != nil {
 		t.Fatalf("drop the snapshot columns 20261101182515 added: %v", err)
 	}
-	run := seedInChildren(t, database)[0]
+	run := seedAtOnce(t, database)[0]
 
 	var built int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from search_term_totals`).Scan(&built); err != nil {
@@ -290,7 +177,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), string(rollback)); err != nil {
 		t.Fatalf("restore the schema before comment answers: %v", err)
 	}
-	seedInChildren(t, database)
+	seedAtOnce(t, database)
 	var replies int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from comments where reply_to is not null`).Scan(&replies); err != nil {
 		t.Fatal(err)
@@ -301,6 +188,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 }
 
 func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
+	t.Parallel()
 	plan := newPlan(newSizes(testScale))
 	for index, comment := range plan.comments {
 		parent := comment.ReplyTo
@@ -336,6 +224,7 @@ func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 // migrate-first run creates schema_migrations before it applies anything (store.prepareVersionTable),
 // so it shows there whichever migration it then fails on.
 func TestSeedRefusesAFilledDatabaseWithoutMigratingIt(t *testing.T) {
+	t.Parallel()
 	t.Run("a database that is not Dispatch's", func(t *testing.T) {
 		ctx := context.Background()
 		database := storetest.Open(t)
@@ -557,7 +446,7 @@ var checksums = []struct {
 	{"comment_block_refs", `comment_id::text, block_id, from_node, to_kind, to_id, kind, created_at`},
 	{"message_block_refs", `message_id::text, block_id, from_node, to_kind, to_id, kind, created_at`},
 	{"events", `id, issue_key, artifact_id::text, project_key, seq, type, actor::text, payload::text,
-		notify, published_at, created_at`},
+		notify, published_at, created_at, published_destinations::text`},
 	{"embeddings", `kind, id, content_hash, embedded_hash, model, embedded_at, md5(embedding::text)`},
 	{"search_term_stats", `project_key, lexeme, ndoc`},
 	{"search_term_totals", `project_key, items`},
@@ -691,6 +580,287 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 	if len(missing) > 0 {
 		t.Errorf("%d of %d asks have no opening event, the first few: %v",
 			len(missing), len(askIDs), missing[:min(5, len(missing))])
+	}
+}
+
+// assertAnswersReadFindsTheDeliveries holds the seed's deliveries to the agents' answers read
+// (sessionanswers.List), over the window's start by its one rule (answerswindow.StartQuery).
+// Each of the five types the read lists has a person's event delivered to a session; the read
+// lists at least one item for each of the three sessions the report names, and the three
+// together list every kind of item; and the old session holds at least OldDeliveries of those
+// events before the window, which the read must not read. The report's subjects are logged, as
+// the command prints them.
+func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, run *seedRun) {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := database.Pool.Query(ctx, `select e.type, count(*) from events e where `+answerswindow.DeliveredPersonEvent+` group by e.type`)
+	if err != nil {
+		t.Fatalf("count the deliveries by type: %v", err)
+	}
+	delivered := map[string]int{}
+	for rows.Next() {
+		var eventType string
+		var count int
+		if err := rows.Scan(&eventType, &count); err != nil {
+			t.Fatalf("count the deliveries by type: %v", err)
+		}
+		delivered[eventType] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the deliveries by type: %v", err)
+	}
+	t.Logf("person events delivered to a session, by type: %v", delivered)
+	for _, eventType := range deliveryTypes {
+		if delivered[eventType] == 0 {
+			t.Errorf("no person's %s event names a session among its destinations", eventType)
+		}
+	}
+
+	subjects, err := answerswindow.Read(ctx, database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subjects.Since.IsZero() {
+		t.Fatal("the answers window has no start: no event delivers a person's words to a session")
+	}
+	report := *run
+	var printed bytes.Buffer
+	report.out = &printed
+	if err := report.reportSubjects(ctx); err != nil {
+		t.Fatalf("print the subjects: %v", err)
+	}
+	t.Logf("the report's subjects:%s", printed.String())
+
+	kinds := map[string]int{}
+	for _, subject := range []struct {
+		name    string
+		subject answerswindow.Subject
+	}{{"old", subjects.Old}, {"most", subjects.Most}, {"fewest", subjects.Fewest}} {
+		if subject.subject.Session == "" {
+			t.Errorf("the seed holds no %s session for the answers read", subject.name)
+			continue
+		}
+		items, err := sessionanswers.List(ctx, database.Pool, subject.subject.Session, subjects.Since)
+		if err != nil {
+			t.Fatalf("list the answers of the %s session %s: %v", subject.name, subject.subject.Session, err)
+		}
+		listed := map[string]int{}
+		for _, item := range items {
+			listed[item.Kind]++
+			kinds[item.Kind]++
+		}
+		t.Logf("the %s session %s: %d deliveries in the window, %d before it; the read lists %v",
+			subject.name, subject.subject.Session, subject.subject.InWindow, subject.subject.BeforeWindow, listed)
+		if len(items) == 0 {
+			t.Errorf("the answers read lists nothing for the %s session %s since %s",
+				subject.name, subject.subject.Session, subjects.Since.Format(time.RFC3339))
+		}
+	}
+	for _, kind := range []string{model.SessionAnswerKindAnswer, model.SessionAnswerKindComment,
+		model.SessionAnswerKindMessage, model.SessionAnswerKindDeclined} {
+		if kinds[kind] == 0 {
+			t.Errorf("the answers read lists no %s item for any of the three sessions", kind)
+		}
+	}
+
+	if before := subjects.Old.BeforeWindow; before < run.sizes.OldDeliveries {
+		t.Errorf("the old session %s holds %d deliveries before the window, want at least %d",
+			subjects.Old.Session, before, run.sizes.OldDeliveries)
+	}
+}
+
+// assertAnswersAndDeclinesNameTheirAsks holds every ask.answered and ask.resolved event to the
+// ask it carries. Its payload decodes as its type's payload, with no field the type does not
+// know: model.AskAnsweredEventPayload for an answer and model.AskEventPayload for a decline,
+// whose resolution is of kind declined. It names an ask the database holds, whose row holds the
+// answer or the resolution the event carries. And its id is above the id of the ask's identity
+// event as events.OpenedEventIDs resolves it, the lowest id of the ask's events, so the ask's
+// ask.opened stays that event: an event numbered below its ask.opened resolves to itself, and
+// fails.
+func assertAnswersAndDeclinesNameTheirAsks(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	type closing struct {
+		id       int64
+		kind     string
+		payload  []byte
+		askID    string
+		askHeld  bool
+		rowAgree bool
+	}
+	rows, err := database.Pool.Query(ctx, `
+		select e.id, e.type, e.payload::text, coalesce(e.payload->>'id', ''),
+		       a.id is not null,
+		       coalesce(case e.type when 'ask.answered' then a.answer = e.payload->'answer'
+		                            else a.resolution = e.payload->'resolution' end, false)
+		from events e
+		left join asks a on a.id::text = e.payload->>'id'
+		where e.type in ('ask.answered', 'ask.resolved')
+		order by e.id
+	`)
+	if err != nil {
+		t.Fatalf("read the answers and declines: %v", err)
+	}
+	closings, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (closing, error) {
+		var read closing
+		var payload string
+		err := row.Scan(&read.id, &read.kind, &payload, &read.askID, &read.askHeld, &read.rowAgree)
+		read.payload = []byte(payload)
+		return read, err
+	})
+	if err != nil {
+		t.Fatalf("read the answers and declines: %v", err)
+	}
+	askIDs := make([]string, 0, len(closings))
+	for _, read := range closings {
+		askIDs = append(askIDs, read.askID)
+	}
+	openedEventIDs, err := events.OpenedEventIDs(ctx, database.Pool, askIDs)
+	if err != nil {
+		t.Fatalf("resolve the asks' identity events: %v", err)
+	}
+	written := map[string]int{}
+	for _, read := range closings {
+		written[read.kind]++
+		decoder := json.NewDecoder(bytes.NewReader(read.payload))
+		decoder.DisallowUnknownFields()
+		var ask model.Ask
+		if read.kind == "ask.answered" {
+			var payload model.AskAnsweredEventPayload
+			err = decoder.Decode(&payload)
+			ask = payload.Ask
+		} else {
+			var payload model.AskEventPayload
+			err = decoder.Decode(&payload)
+			ask = payload.Ask
+			if err == nil && (ask.Resolution == nil || ask.Resolution.Kind != model.AskResolutionDeclined) {
+				t.Errorf("ask.resolved event %d carries resolution %+v, not a decline", read.id, ask.Resolution)
+			}
+		}
+		opened, resolved := openedEventIDs[read.askID]
+		switch {
+		case err != nil:
+			t.Errorf("%s event %d does not decode as its payload: %v\n%s", read.kind, read.id, err, read.payload)
+		case ask.ID == "" || !read.askHeld:
+			t.Errorf("%s event %d names ask %q, which the database does not hold", read.kind, read.id, ask.ID)
+		case !read.rowAgree:
+			t.Errorf("%s event %d carries an answer or a resolution that ask %s's row does not hold", read.kind, read.id, ask.ID)
+		case !resolved || opened >= read.id:
+			t.Errorf("%s event %d of ask %s is not after the ask's ask.opened event (%d)", read.kind, read.id, ask.ID, opened)
+		}
+	}
+	for _, kind := range []string{"ask.answered", "ask.resolved"} {
+		if written[kind] == 0 {
+			t.Errorf("the seed wrote no %s event, so this check proves nothing of it", kind)
+		}
+	}
+}
+
+// assertStatusMovesEndInTheStatus holds the seed's status moves to what the backlog move read
+// (api's backlogMoveLateral) finds of them. A status move is an `issue.updated` event whose payload
+// names `status` in `changed`, which are the lateral's own conditions beside the status. Every
+// issue that stands in `backlog` or `icebox` has a status move, and its newest one, by seq, is into
+// the status the issue stands in: so the event the lateral stops at is the issue's newest move.
+// Every other issue's newest move, where it has one, is into its status too. At least one issue in
+// backlog or icebox holds newer events after its newest move, so a read that stops at the move
+// reads fewer events than one that reads all of them, and at least one move into backlog or icebox
+// is on an issue that stands elsewhere now. Each move's payload decodes as the payload of the
+// status write (model.IssueEventPayload), with no field the type does not know, and names its
+// issue, its status, the status alone in `changed`, and its own seq as the issue's last_seq.
+func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	type issueRow struct {
+		status  string
+		lastSeq int
+	}
+	rows, err := database.Pool.Query(ctx, `select key, status, last_seq from issues`)
+	if err != nil {
+		t.Fatalf("read the issues: %v", err)
+	}
+	issues := map[string]issueRow{}
+	for rows.Next() {
+		var key string
+		var row issueRow
+		if err := rows.Scan(&key, &row.status, &row.lastSeq); err != nil {
+			t.Fatalf("read the issues: %v", err)
+		}
+		issues[key] = row
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the issues: %v", err)
+	}
+
+	type move struct {
+		seq    int
+		status string
+	}
+	newest := map[string]move{}
+	var moves, backlogElsewhere int
+	rows, err = database.Pool.Query(ctx, `
+		select e.issue_key, e.seq, e.payload->>'status', e.payload::text from events e
+		where `+statusMoveEvent+`
+		order by e.issue_key, e.seq
+	`)
+	if err != nil {
+		t.Fatalf("read the status moves: %v", err)
+	}
+	for rows.Next() {
+		var key, status, raw string
+		var seq int
+		if err := rows.Scan(&key, &seq, &status, &raw); err != nil {
+			t.Fatalf("read the status moves: %v", err)
+		}
+		moves++
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		var payload model.IssueEventPayload
+		switch err := decoder.Decode(&payload); {
+		case err != nil:
+			t.Errorf("the status move of %s at seq %d does not decode as the status write's payload: %v\n%s", key, seq, err, raw)
+		case payload.Key != key || payload.Status != status || payload.LastSeq != seq ||
+			!slices.Equal(payload.Changed, []string{"status"}):
+			t.Errorf("the status move of %s at seq %d names issue %s, status %s, last_seq %d and changed %v",
+				key, seq, payload.Key, payload.Status, payload.LastSeq, payload.Changed)
+		}
+		if slices.Contains(model.IssueStatusesParked, status) && !slices.Contains(model.IssueStatusesParked, issues[key].status) {
+			backlogElsewhere++
+		}
+		newest[key] = move{seq: seq, status: status}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the status moves: %v", err)
+	}
+
+	var inBacklog, followed int
+	for key, issue := range issues {
+		last, moved := newest[key]
+		if !slices.Contains(model.IssueStatusesParked, issue.status) {
+			if moved && last.status != issue.status {
+				t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
+			}
+			continue
+		}
+		inBacklog++
+		switch {
+		case !moved:
+			t.Errorf("%s stands in %s and has no status move", key, issue.status)
+		case last.status != issue.status:
+			t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
+		case issue.lastSeq > last.seq:
+			followed++
+		}
+	}
+	t.Logf("%d status moves, %d of them into backlog or icebox on an issue that stands elsewhere; %d issues in backlog or icebox, %d with newer events after their newest move",
+		moves, backlogElsewhere, inBacklog, followed)
+	if inBacklog == 0 {
+		t.Fatal("no seeded issue stands in backlog or icebox, so this check proves nothing")
+	}
+	if followed == 0 {
+		t.Error("no issue in backlog or icebox holds an event newer than its newest status move")
+	}
+	if backlogElsewhere == 0 {
+		t.Error("no move into backlog or icebox is on an issue that stands elsewhere now")
 	}
 }
 

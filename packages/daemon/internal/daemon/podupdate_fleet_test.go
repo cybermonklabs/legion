@@ -230,9 +230,9 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		tokens: tokens, workers: workers, pods: pods, noPod: map[string]bool{}, wire: wire}
 	rig.s = &supervision{
 		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
-		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
+		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval,
+			enqueue: (&workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: quietLogger()}).enqueueOutbox},
 		runtime: rt, supervisor: sup,
-		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: quietLogger()}).enqueueOutbox,
 		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
@@ -379,7 +379,7 @@ func (r *fleetRig) restart() *fleetRig {
 		grants: r.grants, handoffs: r.handoffs, tokens: r.tokens, workers: workers, pods: r.pods,
 		noPod: maps.Clone(r.noPod), wire: r.wire}
 	next.s = &supervision{
-		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
+		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup,
 		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(r.records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
@@ -609,20 +609,6 @@ func (r *fleetRig) replacementsOf(pod string) []fake.Call {
 // replacements is every ReplacePod the sweep made, over any pod.
 func (r *fleetRig) replacements() []fake.Call { return r.rt.CallsOf("ReplacePod") }
 
-// controllerNotices is every controller notice the sweep and the workflow wrote, oldest first.
-func (r *fleetRig) controllerNotices() []record.ControllerNotice {
-	r.t.Helper()
-	var notices []record.ControllerNotice
-	for _, row := range r.rows(record.OutboxKindControllerNotice) {
-		var notice record.ControllerNotice
-		if err := json.Unmarshal(row.Payload, &notice); err != nil {
-			r.t.Fatalf("decode controller notice %d: %v", row.ID, err)
-		}
-		notices = append(notices, notice)
-	}
-	return notices
-}
-
 // statusWrites is every Dispatch status the workflow queued, oldest first, with the issue each is
 // of: a park is one of them, the backlog a leaving issue is written to.
 func (r *fleetRig) statusWrites() map[string]string {
@@ -663,7 +649,7 @@ func (r *fleetRig) rows(kind record.OutboxKind) []record.OutboxRow {
 // assertNoRootLeftTheWorkflow is the fleet round's second promise: the round moves no root out of
 // the workflow. No root waits on a person, none is parked — its phase done at backlog, or a
 // Dispatch status write that would park it — and no architect of either issue is suspended or
-// holds a suspension for its turn. The controller is told of no root waiting on a person either.
+// holds a suspension for its turn.
 func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 	r.t.Helper()
 	writes := r.statusWrites()
@@ -685,11 +671,6 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 		if architect.State == supervise.StateSuspended || architect.SuspendedBy != "" || architect.SuspensionHeld {
 			r.t.Errorf("%s's architect is %s, suspended by %q (held %t); the round suspends no root",
 				issue, architect.State, architect.SuspendedBy, architect.SuspensionHeld)
-		}
-	}
-	for _, notice := range r.controllerNotices() {
-		if notice.Kind == record.AwaitingPersonNotice {
-			r.t.Errorf("the controller was told %+v; no root of the round waits on a person", notice)
 		}
 	}
 }

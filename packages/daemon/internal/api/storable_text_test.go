@@ -174,6 +174,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/claims/exit":                            reads("reason"),
 		"POST /legion/v1/claims/turn-outcome":                    reads("message"),
 		"POST /legion/v1/claims/activity":                        reads("sessionId"),
+		"POST /legion/v1/claims/owed":                            reads("sessionId"),
 		"POST /legion/v1/claims/release-records":                 reads("since"),
 		"POST /legion/v1/grants":                                 reads("sessionId"),
 		"POST /legion/v1/controller/secret":                      noString,
@@ -182,8 +183,15 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/issues/status":                          reads("status"),
 		"POST /legion/v1/claims/fresh-session":                   reads("issue"),
 		"POST /legion/v1/claims/compact":                         reads("issue"),
+		"POST /legion/v1/agents/stop":                            reads("issue"),
+		"POST /legion/v1/agents/retry":                           reads("issue"),
+		"POST /legion/v1/agents/suspend":                         reads("issue"),
+		"POST /legion/v1/agents/resume":                          reads("issue"),
+		"POST /legion/v1/issues/pod-update":                      reads("issue"),
 		"POST /legion/v1/project/pause":                          reads("reason"),
 		"POST /legion/v1/project/resume":                         reads("grantId"),
+		"POST /legion/v1/project/p0-bound":                       reads("reason"),
+		"POST /legion/v1/project/p0-bound/clear":                 reads("reason"),
 		"POST /legion/v1/gates/register":                         reads("artifactId"),
 		"POST /legion/v1/plans/register":                         reads("artifactId"),
 		"POST /legion/v1/tasks/stop":                             reads("task"),
@@ -211,6 +219,8 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/operator/intake/discard":                reads("reason"),
 		"POST /legion/v1/operator/project/pause":                 reads("reason"),
 		"POST /legion/v1/operator/project/resume":                noString,
+		"POST /legion/v1/operator/project/p0-bound":              reads("reason"),
+		"POST /legion/v1/operator/project/p0-bound/clear":        reads("reason"),
 	}
 
 	served := (&server{}).routes()

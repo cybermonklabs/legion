@@ -68,17 +68,6 @@ function namesCheck(args: Readonly<Record<string, unknown>>): boolean {
   return args["check_opened_at"] !== undefined;
 }
 
-/** The input gate effect of a successful call. A look's report leaves phase input open. */
-export function phaseInputAfter(
-  op: string,
-  args: { readonly check_opened_at?: unknown }
-): "phase-closed" | "update-answered" | undefined {
-  if (op === "ready_for_update") return "update-answered";
-  if (op === "request_backward_move" || (op === "handoff_complete" && !namesCheck(args)))
-    return "phase-closed";
-  return undefined;
-}
-
 /** A string field `op` requires: present, and not blank. The value is passed on as it was sent. */
 const requiredString = (op: PhaseOp, field: string) => {
   const message = `${op} requires ${field}`;
@@ -424,7 +413,10 @@ export function legionToolDescription(host: {
     "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
     "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
-    "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
+    "before you answer. The daemon replaces the pod and its disk when the round ends. A kept volume stays with its Sandbox " +
+    "through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon " +
+    "finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the " +
+    "pod replaces the pod anyway. The round ends at the moment the message " +
     "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
     "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
     "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
@@ -765,8 +757,8 @@ const percentile = (sorted: readonly number[], share: number): number | null =>
  * role to the first wake of its pod, and to `asOf` for one nothing has woken yet, since that pod
  * is gone now. A pod's roles wake one resume each, so the first of them ends the release. A
  * resume names the release it ended, except a wake a project pause held, which names none
- * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake.go`). A held wake
- * therefore ends every release of its issue that came before it, where no resume that names the
+ * (`release` 0, `PodRecords.TakePodWake` in `packages/daemon/internal/store/wake_take.go`). A held
+ * wake therefore ends every release of its issue that came before it, where no resume that names the
  * release came sooner: a pod released before a pause and woken during it would otherwise be
  * charged to `asOf` at every read, for ever. The release ends at the wake's own moment, which is
  * when the pod was wanted again. The pod stays gone from there until the project runs again, and

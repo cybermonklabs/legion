@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"iter"
 	"log/slog"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -46,6 +48,88 @@ type issuePods interface {
 
 // Without it, a sandbox.Runtime missing a method fails the rt.(issuePods) checks with no error.
 var _ issuePods = (*sandbox.Runtime)(nil)
+
+// issuePodRepository is the repository the pod of issue was built from, read through the claims
+// of the issue the daemon supervises (podRepository), for the idle rule's repository hold
+// (podRepositoryDrifted).
+//
+// It is the pod's own fact and not the record's: a pod clones one repository into the issue's
+// workspace at its creation and holds the gh directories and the token of that repository's
+// owner for its whole life, so this is the repository every role in it works, and the
+// repository every byte of unpushed work on its disk is of, until the pod is replaced.
+//
+// The claims are read as their machines last published them (supervise.Machine.View), never
+// waiting on a decision in flight, exactly as the capability report reads them
+// (supervision.deployment).
+//
+// It answers "" with no error where nothing can say: a daemon with no supervisor or no runtime,
+// an issue no claim of which records a process, and the tmux runtime, whose panes share no pod
+// and which answers "" itself. Each of those is an unknown rather than a statement, which is
+// the rule every reader of a pod's repository already follows (repositoryDrift).
+func issuePodRepository(ctx context.Context, sup *supervisor, issue string) (string, error) {
+	if sup == nil || sup.deps.Runtime == nil {
+		return "", nil
+	}
+	return podRepository(ctx, sup.deps.Runtime, func(yield func(supervise.Claim) bool) {
+		for _, m := range sup.supervised() {
+			if c := m.View().Claim; c.Issue == issue && !yield(c) {
+				return
+			}
+		}
+	})
+}
+
+// podRepository is the repository the pod claims run in was built from, as that pod itself
+// names it (runtime.Runtime.PodRepository), asked through the claim of claims that records a
+// process and has the lowest token. One claim answers for the whole issue: every role of an
+// issue runs in that one pod and works the one workspace its fetch cloned. The claim is chosen
+// by its token and not by the order claims arrive in, so the readers that hand it every claim of
+// the issue ask the pod through the same claim whichever list they hold: the idle rule reads the
+// claims the daemon supervises (issuePodRepository), and the update-round sweep reads the claims
+// the store answered (supervision.groupDrift). That is what lets the release and the replacement
+// agree on which pods are on a repository the issue has left (podRepositoryDrifted). It answers
+// "" with no error where no claim records a process.
+func podRepository(ctx context.Context, rt runtime.Runtime, claims iter.Seq[supervise.Claim]) (string, error) {
+	var pod supervise.Claim
+	found := false
+	for c := range claims {
+		if c.Locator != nil && (!found || c.Token < pod.Token) {
+			pod, found = c, true
+		}
+	}
+	if !found {
+		return "", nil
+	}
+	repository, err := rt.PodRepository(ctx, runtime.Known{Claim: pod.Token, Locator: pod.Locator})
+	if err != nil {
+		return "", fmt.Errorf("ask the pod through the claim %s: %w", pod.Token, err)
+	}
+	return repository, nil
+}
+
+// podRepositoryDrifted is whether the issue's pod was built from a repository the issue's
+// record no longer holds, which is the idle rule's repository hold (workflow.IdleHoldRepository)
+// and the one input of it the daemon's Postgres does not hold on its own. It is the update-round
+// sweep's reading of the same pair, through the same claim (podRepository) and the sweep's own
+// comparison (repositoryDrift), so the release and the replacement never disagree about which
+// pods are on a repository the issue has left: the sweep opens a round over exactly the pods
+// this holds.
+//
+// Anything that leaves either name unread answers false — a runtime that cannot be asked, a pod
+// that names no repository, a deployment with no workflow, a record that cannot be read — since
+// an unknown is never a statement that something drifted, and a hold on one would keep a pod
+// that nothing is going to replace.
+func (s *supervision) podRepositoryDrifted(ctx context.Context, issue string) bool {
+	pod, err := issuePodRepository(ctx, s.supervisor, issue)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("idle release: read the repository this issue's pod was built from", "issue", issue, "error", err)
+		}
+		return false
+	}
+	_, reason := s.repositoryDrift(ctx, issue, pod)
+	return reason != ""
+}
 
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),
 // under both release rules: the release of a pod no claim owns, whose every claim is failed,
@@ -105,8 +189,13 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 
 // releaseIdlePod decides one issue's pod and, when the rule releases it, writes the release's
 // rows and its mark in one transaction with the view they rest on (store.ReleaseIdleIssue). The
-// pod's image is read before that transaction, from the runtime's own store of pods, because it
-// is the one input the daemon's Postgres does not hold.
+// pod's image and the repository it was built from are read before that transaction, from the
+// runtime's own store of pods, because they are the inputs the daemon's Postgres does not hold.
+// The repository, and the record it is read against, are read only for a pod on the configured
+// image: the rule holds any other pod for its image, or for an earlier reason, before it reads
+// the repository (workflow.IdleRelease), so a read there would decide nothing. A deployment that
+// wired no repository reader — a test that builds the runtime by hand — reads no drift, as a pod
+// whose repository cannot be read does.
 //
 // A pod the rule kept that was quiet for the whole idle period is recorded as a hold
 // (recordIdleHold): that is a pod release would have taken and something else stopped, which is
@@ -120,6 +209,7 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	now := w.clockNow().UTC()
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
+	repositoryDrifted := onConfiguredImage && w.idleRepositoryDrifted != nil && w.idleRepositoryDrifted(ctx, issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	podUID := w.runningPod(issue)
@@ -132,7 +222,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 			view.PodUID = podUID
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion())
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, repositoryDrifted, api.DaemonAPIVersion())
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
@@ -480,18 +570,18 @@ func (w *workflowRuntime) runningPod(issue string) string {
 // place a streak ends outside a hold of another reason (releaseIdlePod).
 //
 // Every other value is a reason worth a row, the ones that are working as designed
-// (background_work, in_turn, delivery_waiting, reminder_due, awaiting_person) as much as the
-// ones that are not (image, plugin_contract, unreported, unpushed_work, workspace_unread,
-// overtaken, unauthorized): a deployment reads release's health from which of them it sees, so
-// leaving the healthy ones out would leave it unable to tell a pod kept for good reason from one
-// never decided at all. IdleHoldTreeNotLive is recorded too: it holds a pod of an issue the
-// workflow has taken out only while a close of that pod is still to come or still running
-// (workflow.LeftPodClose) — a tree that lingers, a root out of the workflow, an open look of the
-// issue's production check, a role stop or a Sandbox suspension of the issue still queued — so a
-// deployment that sees it every tick past a linger's end or a look's bound is seeing a close that
-// is stuck.
+// (background_work, in_turn, delivery_waiting, reminder_due, awaiting_person, repository, which
+// is a pod the update round is about to replace) as much as the ones that are not (image,
+// plugin_contract, unreported, unpushed_work, workspace_unread, overtaken, unauthorized): a
+// deployment reads release's health from which of them it sees, so leaving the healthy ones out
+// would leave it unable to tell a pod kept for good reason from one never decided at all.
+// IdleHoldTreeNotLive is recorded too: it holds a pod of an issue the workflow has taken out only
+// while a close of that pod is still to come or still running (workflow.LeftPodClose) — a tree
+// that lingers, a root out of the workflow, an open look of the issue's production check, a role
+// stop or a Sandbox suspension of the issue still queued — so a deployment that sees it every tick
+// past a linger's end or a look's bound is seeing a close that is stuck.
 //
-// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedOperatorSuspended
+// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedSuspensionHolds
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
 // here: each names a pod that stands, past the quiet period, with no live claim in it, and such
 // a pod holds its reservation (2 CPU and 8 GiB at the defaults) for as long as it stands. A
@@ -570,16 +660,29 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // here would charge this release with a role it never touched and the hours that role's pod was
 // gone a second time.
 //
-// The record names the release's mark (release, issue_releases.id), so a teardown that runs again
-// after its record and before the mark's clear writes no second record (store.RecordPodRelease).
-// The release line follows the record's first write. A retry whose record was already written
-// logs no second line.
+// The record also retells the start of each wake taken under the release's mark that a
+// project's pause told in its words: that start's task becomes the task of the same wake in the
+// release's words (workflow.ReleasedWakeTask, store.PodRelease.WakeTask), since the release takes
+// the pod.
 //
-// If the write fails, the teardown logs the release line beside the warning: the pod is already
-// released, and nothing undoes that for want of a row.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role) bool {
+// The record is the release's one-way step too: it names the release's mark (release,
+// issue_releases.id; store.Store.RecordPodRelease), and the teardown records the release once the
+// runtime has answered, before its own steps that can fail. So a teardown that runs again after
+// such a step failed finishes the release, asks the runtime nothing and cannot cancel it
+// (store.ReleaseDecision.PodTaken), and its record writes no second row. A step of the runtime
+// that fails comes before the record, and the commit of the runtime's read keeps that release
+// from being cancelled (store.Store.CommitIssueRelease). A record that cannot be written is
+// answered as the teardown's error, and the row's failure logs it once (settle): the mark stands,
+// and the row runs again on the outbox's backoff until workflow.WakeHeldForRelease after the mark.
+// The teardown's attempt at or past that bound gives up on the record (recordGivenUp), and its
+// last write settles the release in place of the record and clears the mark, in one transaction
+// (settleGivenUp). Until a record lands, no record names the mark.
+//
+// It answers whether this call wrote the record. The release line follows the record's first
+// write, so a retry whose record was already written logs no second line.
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role) (bool, error) {
 	if r.supervisor == nil || r.supervisor.store == nil {
-		return true
+		return true, nil
 	}
 	roles := make([]string, 0, len(suspended))
 	for _, role := range suspended {
@@ -588,13 +691,69 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int
 	slices.Sort(roles)
 	_, wrote, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
-		At: time.Now().UTC(), Release: release,
+		At: time.Now().UTC(), Release: release, WakeTask: workflow.ReleasedWakeTask,
 	})
-	if err != nil {
-		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
-		return true
+	return wrote, err
+}
+
+// recordGivenUp answers whether the teardown of a release gives up on its record, whose write
+// failed (recordPodRelease). decision is the answer the teardown acts on. The record is what tells
+// each wake taken under the mark the release it ends, so a failed record is retried; and a release
+// that cannot finish must not run for ever, so the retries are bounded. R3's bound
+// (dispatch://INFRA-3589) is workflow.WakeHeldForRelease after the release's mark
+// (store.ReleaseDecision.MarkedAt), read on the outbox's clock, as the teardown's other steps
+// read it.
+//
+// It answers whether that bound has passed. Before the bound, the teardown answers the record's
+// error: it fails, the mark stands, and the row runs again on its backoff. At or past the bound,
+// the teardown gives up on the record: it finishes its later steps, and its last write is the
+// settle, in place of the clear of the mark (clearOrSettleRelease, settleGivenUp). It makes no
+// store call and logs nothing, so an attempt whose later step fails before the settle writes
+// nothing of the give-up and logs no line of it.
+//
+// Each decision that reaches the record is the mark's own answer (store's releaseMark.decision),
+// so it carries the mark's time, a column that is never null (issue_releases.marked_at). A zero
+// time would read as a bound long past, so it would end the retries and never keep them for ever.
+func (r *outbox) recordGivenUp(decision store.ReleaseDecision) bool {
+	return !r.now().UTC().Before(decision.MarkedAt.Add(workflow.WakeHeldForRelease))
+}
+
+// clearOrSettleRelease is the last write of a teardown of issue's release, whose mark is release.
+// unrecorded is the error of the record's write where the teardown gave up on it (recordGivenUp),
+// and nil otherwise. A teardown that gave up settles the release in place of the clear of the mark
+// (settleGivenUp); every other teardown clears the mark (store.Store.ClearIssueRelease).
+func (r *outbox) clearOrSettleRelease(ctx context.Context, issue string, release int64, unrecorded error) error {
+	if unrecorded != nil {
+		return r.settleGivenUp(ctx, issue, release, unrecorded)
 	}
-	return wrote
+	return r.trees.ClearIssueRelease(ctx, r.project, issue)
+}
+
+// settleGivenUp is the last write of a teardown that gave up on the record of issue's release
+// (recordGivenUp), in place of the clear of the mark: release is the release's mark, and failed
+// the record's error. The store settles the wakes taken under the mark in place of the record and
+// clears the mark, in one transaction that writes nothing to pod_releases
+// (store.Store.SettleUnrecordedRelease). So each such wake keeps its one start, the role's next
+// wake takes no second one, and no wake is taken between the settle and the clear. Once that
+// transaction commits, this logs one ERROR line naming the issue, the release and failed, and
+// answers nil, so the row finishes. Only the attempt whose settle commits logs the line: an
+// attempt whose step before the settle failed runs the row again, and the next attempt writes the
+// record, or, where that write fails again, gives up again.
+//
+// Where a record names the mark after all, the store writes nothing and leaves the mark, and this
+// answers failed: the next attempt reads that record (store.ReleaseDecision.PodTaken). A settle
+// that fails answers its own error, and the row runs again.
+func (r *outbox) settleGivenUp(ctx context.Context, issue string, release int64, failed error) error {
+	recorded, err := r.supervisor.store.SettleUnrecordedRelease(ctx, r.project, issue, release, r.now().UTC(), workflow.ReleasedWakeTask)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return failed
+	}
+	r.log.Error("outbox: the record of a release could not be written within 15 minutes of its mark; the teardown finishes without it and clears the mark, the release records hold no row of this release, and each wake taken during it starts once",
+		"issue", issue, "release", release, "error", failed)
+	return nil
 }
 
 // releaseHold is the hold a cancel the store decided is recorded under, and the sentence the

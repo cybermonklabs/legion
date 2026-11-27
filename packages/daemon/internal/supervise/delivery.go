@@ -147,13 +147,25 @@ type Delivery struct {
 	// owes them. It is rewritten, with the task text, by the send-time narrowing of what the task
 	// still names of this claim's tree (Deps.RootTask). Empty for a task that names none.
 	Kept []byte
+	// Resume marks the task as the resume task of a root a person answered, and is what its text is
+	// rendered from at every send (Deps.RootTask, the daemon's rootTask): the wait the start
+	// answers (record.SuperviseRequest.Awaiting, encoded JSON), opaque here as Kept is. The resume
+	// text is not written when the task is queued, because a person can review the document again
+	// before any send of it, and the issue's own record no longer holds that wait once the root has
+	// resumed, so the delivery carries it, and every rewrite of the delivery keeps it. Until the
+	// first send writes that text, the task's text is only the news its start carries, whose own
+	// text (News) is empty, or empty where the start carries no news. Resume is empty for every
+	// other task, and for a held task a daemon of an earlier release queued, which is sent as the
+	// text it holds.
+	Resume []byte
 	// News is what the task carries of news of the approved design (record.DeliveryNews, encoded
 	// JSON): the start's own text, each item it tells and each opening it carries. It is opaque here
 	// as Kept is, and carried and persisted with the delivery. It is rewritten, with the task text,
 	// at every send, by the one render that writes both (Deps.DesignNews, and Deps.RootTask where a
-	// root architect's task is narrowed), so the news a delivery holds is exactly what its text
-	// names: no writer keeps one beside a text it did not render with it. Empty for a task that
-	// carries none, which no send asks about.
+	// root architect's task is narrowed, and at every send of a resume task, whose text RootTask
+	// writes from the record with this news rendered after it), so the news a delivery holds is
+	// exactly what its text names: no writer keeps one beside a text it did not render with it.
+	// Empty for a task that carries none, which no send asks about.
 	News []byte
 	// Carried is the copy of News that the prompt whose turn this delivery's confirmation takes
 	// carried, and, while the delivery is confirmed, its credit: what its audiences are read as
@@ -606,8 +618,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(),
-		RoundNamed: request.RoundNamed}
+		Resume: request.Resume, News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry,
+		CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -988,8 +1000,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		if !sends {
 			return m.relaunchAfterDrop(ctx)
 		}
-		m.startSend(conn, *m.claim.Pending)
-		return nil
+		return m.startSend(ctx, conn)
 	}
 	// The question a restart left — whether the turn the agent may be in is the pending
 	// delivery's — is asked once, here. Left armed, it would make the next task the running
@@ -1011,15 +1022,11 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	m.askFirst = false
 	if askAgent {
 		if streaming, _ := m.streaming(ctx, conn); streaming {
-			// The agent's answer is the daemon's first word of the turn, so the turn is dated
-			// from it (Claim.LastTurnStart), as recordBusyTurn dates a turn from a busy answer,
-			// and the confirmation's write carries the date: a let-go in this turn reads a report
-			// older than it as no report of the turn (recordEnd), where the start of the turn
-			// before it would count the report that turn's end left as one of this turn.
-			m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
-			// The turn this claim is put in is logged before the write that records it, as
-			// turnStarted logs its own: a line written after the write would say nothing of the
-			// turn whose write failed.
+			// The agent's answer is the daemon's first word of the turn. The turn this claim is
+			// put in is dated and logged before the write that records it (startTurn,
+			// Claim.LastTurnStart), as turnStarted logs its own: a line written after the write
+			// would say nothing of the turn whose write failed.
+			m.claim.State = StateWorking
 			m.startTurn(p.ID)
 			m.log.Info("supervise: the agent is in a turn; confirming the delivery an earlier daemon sent", "delivery", p.ID)
 			news, _ := m.turnAnswers()
@@ -1057,8 +1064,17 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return nil
 		}
 	}
-	m.startSend(conn, *p)
-	return nil
+	// A resume task is written at its send, wherever that send is decided: one on a daemon that
+	// wires no answer to RootHears is still written from the record first (currentRootTask), since
+	// the text it was queued with holds no resume, only the news its start carries or nothing at
+	// all (Delivery.Resume).
+	if len(p.Resume) > 0 {
+		sends, err := m.currentRootTask(ctx)
+		if err != nil || !sends {
+			return err
+		}
+	}
+	return m.startSend(ctx, conn)
 }
 
 // asksRoot says whether a delivery's send waits on whether the root of this claim's tree has an
@@ -1153,6 +1169,11 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 	if err := m.rewritePending(ctx, id, task, kept, news); err != nil {
 		return false, err
 	}
+	if len(p.Resume) > 0 {
+		m.log.Info("supervise: the resume task is written from the record as it stands at this send",
+			"delivery", id, "was", was, "issue", m.claim.Issue, "run", p.Generation)
+		return true, nil
+	}
 	m.log.Info("supervise: a decision this held task named is owed to another tree now; the task is sent without it",
 		"delivery", id, "was", was, "issue", m.claim.Issue, "run", p.Generation)
 	return true, nil
@@ -1170,11 +1191,11 @@ func renderedID(was string, news, held []byte) string {
 
 // rewritePending writes the pending delivery back under id with task as its text, and kept and
 // news as the decisions and the news it carries, then holds that delivery in memory: the one
-// persist-and-swap of a held task read again at its send (currentRootTask, currentNews), each of
-// which keeps its own rule for when to rewrite and when to retire. Its callers render the task's
-// text and its news together, so news is always what task names. The write comes first, so a
-// restart reads the task the send that follows carries, and a failed write leaves memory as the
-// record holds it.
+// persist-and-swap of a held task read again at its send (currentRootTask, currentNews,
+// currentWorkingCopy), each of which keeps its own rule for when to rewrite and when to retire.
+// Its callers render the task's text and its news together, so news is always what task names.
+// The write comes first, so a restart reads the task the send that follows carries, and a failed
+// write leaves memory as the record holds it.
 func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
 	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
@@ -1225,9 +1246,15 @@ func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, new
 // rewritten task is persisted before it is sent, so a restart reads the task this send carried. A
 // task that carries no news is never asked about, and every task holds where nothing answers
 // (Deps.DesignNews nil).
+//
+// Nor is a resume task (Delivery.Resume) asked here: the start queued it with no text of its own,
+// so the news it carries follows an empty text, and a render of that alone would send the news
+// without the resume, or read a resume whose news no longer stands as a task with nothing to say.
+// Every send of it renders its text from the record first (currentRootTask, Deps.RootTask), and
+// the news after that text in the same answer, so the one render of its news is there.
 func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
-	if m.deps.DesignNews == nil || len(p.News) == 0 {
+	if m.deps.DesignNews == nil || len(p.News) == 0 || len(p.Resume) > 0 {
 		return true, nil
 	}
 	task, news, err := m.deps.DesignNews(ctx, m.claim, *p)
@@ -1298,11 +1325,10 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 		return nil
 	}
 	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped")
-	// The turn is dated from the agent's answer, the daemon's first word of it, as the askFirst
-	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
-	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
+	m.claim.State = StateWorking
 	// The guard above has already established that the claim holds no delivery, so this turn is
-	// no task's and the line names none. It goes before the write, as the others do.
+	// no task's and the line names none. The turn is dated from the agent's answer, the daemon's
+	// first word of it (startTurn, Claim.LastTurnStart), before the write, as the others are.
 	m.startTurn("")
 	return m.persist(ctx)
 }
@@ -1589,21 +1615,30 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 	return state.IsStreaming, true
 }
 
-// startSend runs one prompt on its own goroutine and posts its outcome back to the machine. The
-// task is marked as put to the agent before the goroutine starts (Delivery.Prompted), whatever
-// the agent then answers: from here on, a prompt of it has gone out. Of the claim's two untold
-// records, this marks which the prompt carries the sentence of, as message composed it
-// (Machine.carried), and tells neither, as confirmCarrying states. Whether the send adopts the
-// working copy first is decided here, under the machine's lock, so the goroutine acts on the claim
-// the hold in sendPending was decided against.
+// startSend sends the pending delivery: it writes the task's working copy line from the
+// repository the claim's process works first (currentWorkingCopy), then runs one prompt on its own
+// goroutine and posts its outcome back to the machine. It is the one place a prompt goes out, so
+// no send of a worker's task, the first or any resend after a busy answer, a lost answer or a
+// relaunch, goes out with the line its start was composed with. The task is marked as put to the
+// agent before the goroutine starts (Delivery.Prompted), whatever the agent then answers: from
+// here on, a prompt of it has gone out. Of the claim's two untold records, this marks which the
+// prompt carries the sentence of, as message composed it (Machine.carried), and tells neither, as
+// confirmCarrying states. Whether the send adopts the working copy first is decided here, under
+// the machine's lock, so the goroutine acts on the claim the hold in sendPending was decided
+// against.
 //
 // The news of the approved design this prompt carries is the pending delivery's own (d.News, as
-// sendPending's render left it), and nothing keeps a second copy of it: every rendering takes a new
-// id (currentNews, currentRootTask) and the fence passes only an outcome of the pending id
-// (fenceOutcome), so while this send is the pending delivery's, the pending delivery's News is what
-// it carries. Its acknowledgement records that news with the prompt (acked), and a turn taken for
-// the task's while the send is in flight credits the same (turnAnswers).
-func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
+// sendPending's render and currentWorkingCopy left it), and nothing keeps a second copy of it:
+// every rendering takes a new id (currentNews, currentRootTask, currentWorkingCopy) and the fence
+// passes only an outcome of the pending id (fenceOutcome), so while this send is the pending
+// delivery's, the pending delivery's News is what it carries. Its acknowledgement records that
+// news with the prompt (acked), and a turn taken for the task's while the send is in flight
+// credits the same (turnAnswers).
+func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
+	if err := m.currentWorkingCopy(ctx); err != nil {
+		return err
+	}
+	d := *m.claim.Pending
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)
 	prompt, carried := d.message(m.claim)
@@ -1643,6 +1678,48 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 		m.idle.Broadcast()
 		m.mu.Unlock()
 	}()
+	return nil
+}
+
+// currentWorkingCopy writes a phase worker's held task back to the working copy the process it
+// goes to works (Deps.WorkingCopy): its working copy line, which the start that queued it composed
+// from the issue's record then, written again from the repository the claim's process was
+// launched on (Claim.WorkingRepository). The two can differ: a correction of the issue's
+// repository can land between the start and the send (the claim held the task behind a turn, a
+// busy agent, a launch), and it moves the record at once and the process only at its next launch,
+// a tmux pane's or the relaunch into the pod its update round builds. The line names the
+// workspace the agent that reads it is in, and a relaunch moves it. Only a task that names a phase
+// is asked: a worker's task is a task of a phase, and a task of news alone (NewsOnly) holds none
+// of the phase's text. The daemon's answer (its workingCopy) reads no record: what can fail is its
+// decoding of the news the task holds, which fails the same way at every trigger while the task
+// holds that news. An answer that fails sends nothing: the task stays pending, unsent and charged
+// nothing, so no send carries a line its process does not work in and none goes without one.
+//
+// A task the answer leaves as it is is sent as it is. One it rewrites is persisted before it is
+// sent, so a restart reads the task this send carries, under a new id (rotateTaskID): the shim
+// answers a send under an id it already holds from its own record without forwarding it
+// (shimwire's Dedupe), so an earlier send of this task under the same id, whose prompt named
+// another directory, would be the one the agent read.
+func (m *Machine) currentWorkingCopy(ctx context.Context) error {
+	p := m.claim.Pending
+	if m.deps.WorkingCopy == nil || p.Phase == "" || p.NewsOnly {
+		return nil
+	}
+	task, news, err := m.deps.WorkingCopy(ctx, m.claim, *p)
+	if err != nil {
+		return fmt.Errorf("write again the working copy line of the task held for %s: %w", m.claim.Token, err)
+	}
+	if task == p.Task && bytes.Equal(news, p.News) {
+		return nil
+	}
+	was := p.ID
+	id := rotateTaskID(was)
+	if err := m.rewritePending(ctx, id, task, p.Kept, news); err != nil {
+		return err
+	}
+	m.log.Info("supervise: the working copy this task names was written again for the process it goes to; the task is sent naming the workspace that process works",
+		"delivery", id, "was", was, "issue", m.claim.Issue)
+	return nil
 }
 
 // adopts is whether sending d hands the claim's working copy the role's App identity first
@@ -1917,21 +1994,22 @@ func (m *Machine) sendUnproven() bool {
 }
 
 // promptFailed is a prompt that was acknowledged and then came to nothing: the wait for its turn
-// ran out, or Oh My Pi answered it a failure with no turn of its own running. The task goes back
-// to waiting and the prompt is charged, so an agent that never takes one walks its budget to the
-// relaunch and the retirement. read says whether the agent may have read it: the bound's caller
-// passes true, since the turn that has not started may still be this task's, and a refusal passes
-// false, since a prompt the agent answered a failure never ran.
+// ran out, Oh My Pi answered it a failure, or its result ran no turn. The task goes back to
+// waiting and the prompt's outcome is handed to the prompt budget, which charges it where the
+// policy says so (chargePrompt, Charges), so an agent that never takes one walks its budget to the
+// relaunch and the retirement. read says whether the agent may have read it, and is the caller's
+// to answer, not the policy's: a turn that has not started may still be this task's, and a prompt
+// the agent answered a failure, or answered that it is in a turn of its own, never ran.
 //
 // The caller has already dropped from the task's outstanding prompts the one its answer names,
 // where it names one (Machine.outstanding); the wait that ran out names none, and its prompt
 // stays outstanding, since its turn at the pin is still the session's next. Whatever stays
 // outstanding is what the take-back reads (takeBackPending).
-func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error {
+func (m *Machine) promptFailed(ctx context.Context, o runtime.Outcome, read bool) error {
 	if err := m.takeBackPending(ctx, read); err != nil {
 		return err
 	}
-	return m.chargePrompt(ctx, why)
+	return m.chargePrompt(ctx, o)
 }
 
 // interruptedTask begins a task taken back from a turn its process could no longer finish
@@ -1953,13 +2031,21 @@ func interruptedTask(cause string) string {
 }
 
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
-// abandoned (forgetSession): one whose last turns the provider refused, one an operator retried
-// with --fresh-session, or one no session store holds any more. Nothing in a new session says
-// that an older one existed, so a worker reading an empty transcript takes its task for a fresh
-// start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section). It names the session that was left behind and why in the words the claim recorded,
-// and then the two things that outlive a session: the issue's branch, and the handoff records its
-// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// abandoned (forgetSession): one whose last turns the provider refused, one left behind by a
+// fresh session the operator or the controller asked for or by the operator's forget-session
+// (forgottenBy), one no session store holds any more, or one the daemon replaced for the project
+// controller (replaceEndedSession, replaceAgedSession). Nothing in a new session says that an
+// older one existed, so a worker reading an empty transcript takes its task for a fresh start and
+// does again what is already pushed (item 4 of the refusal section of the phase-workflow spec). It
+// names the session that was left behind and why in the words the claim recorded, and then the
+// two things that outlive a session: the issue's branch, and the handoff records its phases wrote
+// on the Dispatch issue.
+//
+// The controller works no checkout and has no architect, so it is told neither: its sentence
+// (controllerAbandonedTask) names the session it replaces and why, and says that Envoy messages
+// sent to that session may be lost, before the start message its keeper sends it
+// (dispatch://INFRA-2045 R4).
+//
 // last is whether this sentence is the last one before the task, and so ends in the task's own
 // instruction: in front of a task with no record's sentence after it. Where the record's sentence
 // follows it (EndedWork.Tells), that sentence is the last and carries the instruction instead
@@ -1973,17 +2059,33 @@ func interruptedTask(cause string) string {
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
 // instruction of the daemon's own. The abandoned session's id is quoted the same way, with %q.
 func abandonedTask(c Claim, last bool) string {
-	read := "read the issue"
-	if c.Role != claim.RoleController {
-		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
-			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
-			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
+	if c.Role == claim.RoleController {
+		return controllerAbandonedTask(c, last)
 	}
+	read := fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
+		"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
+		claim.IssueBranch(c.Issue), c.Issue, handoffWords())
 	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %q. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
 		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
 		c.Abandoned.Session, c.Abandoned.Why, read)
+	if last {
+		sentence += " Then continue the task."
+	}
+	return sentence + "\n\n"
+}
+
+// controllerAbandonedTask is abandonedTask for the project's controller: the session it replaces
+// and why, quoted as abandonedTask quotes them, that the old session's work is gone, and that an
+// Envoy message sent to the old session may never reach this one, so the controller reads the
+// records its start procedure reads rather than wait for a message it may never get.
+func controllerAbandonedTask(c Claim, last bool) string {
+	sentence := fmt.Sprintf("The session this controller ran before this one, %q, was replaced by this one: %q. "+
+		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
+		"gone, and Envoy messages sent to that session may be lost, so read the daemon's state and the Dispatch "+
+		"records your start procedure reads before you act on any of that session's work.",
+		c.Abandoned.Session, c.Abandoned.Why)
 	if last {
 		sentence += " Then continue the task."
 	}
@@ -2337,6 +2439,7 @@ func (m *Machine) turnNews() []byte {
 // first write the store takes and no failure is handled any other way.
 func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)
+	m.answeredBusy = ""
 	p := m.claim.Pending
 	id, kept := rotateTaskID(p.ID), m.awaitsResult()
 	var moved, handshakeMoved bool

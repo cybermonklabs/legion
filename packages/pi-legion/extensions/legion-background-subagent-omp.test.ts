@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
-import type { LegionState } from "@legion/contracts/legion-api";
 import {
   type Block,
   type Cleanup,
@@ -20,6 +19,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   markIndex,
@@ -55,7 +55,7 @@ import { timeLeft, until } from "@legion/test-fixtures/wait";
 // keeps this case green in a run that loads them.
 const { skip, setup } = ompNatsGuard();
 
-/** The pane's role, tree and issue; the daemon's state below moves the issue past this phase. */
+/** The pane's role, tree and issue; the stand-in daemon answers that this claim owes nothing. */
 const ROLE = "implementer";
 const TREE = "BGSUB-1";
 const ISSUE = "BGSUB-2";
@@ -100,10 +100,18 @@ const SUBAGENT_REPORT = "BGSUB-SUBAGENT-REPORT: the scratch check passed.";
 /** What the message published while the subagent runs says. */
 const MESSAGE_SUMMARY = "BGSUB-MESSAGE: answer the reviewer's question about the retry bound.";
 
+// The one row of this file starts a cold role pane (a pinned Oh My Pi binary spawning and
+// registering over NATS), which reads 5-6 s, more than Bun's 5000 ms default. It takes a guard of
+// its own, in every mode (`bun test`, `--parallel`, `bun run test`): the row body calls
+// `useRowGuard` for the shared wait's deadline and passes the same value as `test`'s third argument
+// for Bun's row kill, and the afterEach passes it as its own hook timeout, because the cleanup's
+// raw awaits (killing omp, stopping the stub server) also outlast 5000 ms under load. See
+// packages/pi-legion/package.json's "//" note for the reading and its run.
+const COLD_PANE_GUARD_MS = 300_000;
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {
@@ -375,12 +383,12 @@ interface RolePane {
 /**
  * Starts one Legion role pane on the real Oh My Pi: pi-envoy's extension and this package's root,
  * the role's LEGION_* environment against a stand-in that is the model gateway, the daemon's
- * claim, grant and state routes and the Envoy listener, and the real NATS server. The daemon's
- * state reports the issue past this role's phase, so the phase-stall follow-up (src/phase-stall.ts)
- * puts no reminder in front of the pane and adds no turn of its own. Every Messages request is
- * held for the case except a side request — the task label, a self-check, a skill's routing-hint
- * compression — which is answered at once with one word, since none of them is a turn and a held
- * one would stall the host inside the work the case is timing.
+ * claim and grant routes and the Envoy listener, and the real NATS server. The daemon answers that
+ * the claim owes nothing (`POST /legion/v1/claims/owed`), so the phase reminder
+ * (src/phase-reminder.ts) puts no reminder in front of the pane and adds no turn of its own. Every
+ * Messages request is held for the case except a side request — the task label, a self-check, a
+ * skill's routing-hint compression — which is answered at once with one word, since none of them
+ * is a turn and a held one would stall the host inside the work the case is timing.
  */
 async function startRolePane(): Promise<RolePane> {
   const { binary, nats } = setup();
@@ -442,10 +450,7 @@ async function startRolePane(): Promise<RolePane> {
         expiresAt: "2099-01-01T00:00:00Z",
       });
     }
-    // The reminder's record check reads one issue's record (dispatch://INFRA-2694).
-    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
-      return Response.json(MOVED_ON.issues[ISSUE]);
-    }
+    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: false, work: "" });
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
@@ -614,47 +619,10 @@ async function startRolePane(): Promise<RolePane> {
   };
 }
 
-/**
- * The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up has no reminder for this role and the case's turns are its own.
- */
-const MOVED_ON = {
-  daemon: {
-    project: "BGSUB",
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], trees: [TREE], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  wakesWaiting: [],
-  capabilities: [],
-  repositories: {
-    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-} satisfies LegionState;
-
 test.skipIf(skip)(
   "a role's deep-worker runs in the background: the task call returns before it ends, a message sent meanwhile is read, and the job's result wakes the role",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await startRolePane();
 
     // The assignment's turn dispatches the worker. `solutionSpace` rides the child's first prompt
@@ -766,5 +734,6 @@ test.skipIf(skip)(
         `the message was read ${read.arrived.at - published.at} ms after it was published; ` +
         `the job woke the role ${woken.arrived.at - released.at} ms after the release`
     );
-  }
+  },
+  COLD_PANE_GUARD_MS
 );

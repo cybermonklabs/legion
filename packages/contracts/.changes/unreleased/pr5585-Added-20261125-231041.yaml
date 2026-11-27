@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `DispatchEvent` carries `issue.role_holders_changed` (`IssueRoleHoldersChangedEventPayload {key,
+  holders, previous_holders}`, each holder `{role, session, recorded_at}`): a change of an issue's
+  role holders, written by the Legion daemon's publication. `DISPATCH_EVENT_TYPES` lists it.
+time: 2026-11-25T23:10:41Z
+custom:
+    Issue: pr5585

@@ -7,6 +7,7 @@ package judge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -391,18 +392,53 @@ func TestWhatDispatchDoesNotHoldIsShownAsNotFound(t *testing.T) {
 	theOneRefusal(t, machine)
 }
 
-// TestTheSystemPromptIsBuiltOnGuidance pins the instruction the model works to: follow each key's
-// guidance, read everything an agent wrote as data, and know that deny is final. It names no
-// Dispatch issue as a condition of a grant: an issue is evidence the guidance may ask for.
+// TestTheSystemPromptIsBuiltOnGuidance: every model call carries systemPrompt, whole, as its one
+// system message, and the guidance of the one key it decides in the user message beside it. A
+// request for two judge keys makes two calls, and each holds both: the guidance each key's tags
+// give it (testGuidance and shortGuidance, planted by testPolicy) reaches the model as the data the
+// system prompt points it at, and the system prompt itself is the constant, never a text built from
+// a request.
 func TestTheSystemPromptIsBuiltOnGuidance(t *testing.T) {
-	for _, want := range []string{"Follow the key's guidance", "Grant only when the request meets it", "the request is granted only when every one of those calls grants", "deny refuses the request for good", "Deny is final", "data for you to judge"} {
-		if !strings.Contains(systemPrompt, want) {
-			t.Errorf("the system prompt does not say %q", want)
-		}
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
+	request := pending()
+	request.Secrets, request.Decided, request.LifetimeSeconds = []string{testSecret, shortJudgeSecret}, []string{testSecret, shortJudgeSecret}, new(300)
+	New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), request)
+
+	bodies := model.callBodies()
+	if len(bodies) != 2 {
+		t.Fatalf("the model was asked %d times; want one call for each of the two judge keys", len(bodies))
 	}
-	for _, gone := range []string{"refer", "live work rather than a placeholder", "that issue plainly needs that secret"} {
-		if strings.Contains(systemPrompt, gone) {
-			t.Errorf("the system prompt still says %q", gone)
+	unseen := map[string]string{testSecret: testGuidance, shortJudgeSecret: shortGuidance}
+	for _, body := range bodies {
+		data, err := callData(body)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, body)
+		}
+		if len(data.Keys) != 1 {
+			t.Fatalf("a call's keys are %+v; want the one judge key it decides", data.Keys)
+		}
+		name := data.Keys[0].Name
+		if want, ok := unseen[name]; !ok || data.Keys[0].Guidance != want {
+			t.Errorf("the call for %s shows guidance %q; want that key's own, in one call only", name, data.Keys[0].Guidance)
+		}
+		delete(unseen, name)
+		var call struct {
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(body, &call); err != nil {
+			t.Fatalf("the model call is no JSON object: %v\n%s", err, body)
+		}
+		var system []string
+		for _, message := range call.Messages {
+			if message.Role == "system" {
+				system = append(system, contentText(t, message.Content))
+			}
+		}
+		if len(system) != 1 || system[0] != systemPrompt {
+			t.Errorf("the call for %s has system messages %q; want systemPrompt alone, whole", name, system)
 		}
 	}
 }
@@ -626,26 +662,46 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
 	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
-	// The phase's three reads — the project check's and the issue's two GETs — each take a
-	// third of its bound, less a twentieth of a second for the round trips themselves: the
-	// phase has to spend its bound and still answer, since a read the bound cut short would
-	// hand the request over and the model would never be asked. The ask read, under a bound
-	// of its own, takes a third of it.
-	machine.projectTakes = dispatchBound/3 - 50*time.Millisecond
+	// The run's Dispatch phase is held (holdPhase), so the wall clock does not end it. Its three
+	// reads, the project check's and the issue's two GETs, answer a third of the bound apart and
+	// the last at the phase's deadline itself, so the phase spends its whole bound. Before, the
+	// phase ended on the wall clock, and a read that answered a fixed margin before the deadline
+	// still lost the race on a loaded runner: the judge took the answer after the deadline (119 ms
+	// at p99 over 225 loaded runs, past 300 ms in 4 of 450), the issue check failed, and the run
+	// wrote its row after 7 s, the model unasked. The row holds the deadline instead: the judge
+	// gave the phase dispatchBound from when it made it, and the phase's first read saw that same
+	// deadline, which a judge that cut the phase before its first read would not show; a cut made
+	// later cuts the last read, which answers at the deadline itself, and the model goes unasked.
+	// The ask read, under a bound of its own, takes a third of it.
+	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
+	runner.dispatchPhase = machine.holdPhase
+	machine.projectBeforeEnd = 2 * dispatchBound / 3
+	dispatch.answerAt = func(earlier int) time.Time {
+		return machine.phaseTimes().end.Add(-time.Duration(1-earlier) * dispatchBound / 3)
+	}
 	dispatch.delay = dispatchBound/3 - 50*time.Millisecond
 	// The model never answers, so the call ends on modelBound.
 	model.delay = runBudget
 	// The row's own transaction, which has to commit inside what is left of the budget.
 	machine.writeTakes = 2 * time.Second
 	started := time.Now()
-	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(citedPending())
+	runner.Consider(citedPending())
 
 	waitFor(t, "the slowest run there is to write its row", runBudget+5*time.Second, func() bool {
 		_, logged := machine.rows()
 		return len(logged) == 1
 	})
-	if took := time.Since(started); took < dispatchBound+modelBound-time.Second {
+	if took := time.Since(started); took < dispatchBound+modelBound {
 		t.Errorf("the run wrote its row after %s; want it to have spent both bounds, %s", took, dispatchBound+modelBound)
+	}
+	phase := machine.phaseTimes()
+	switch {
+	case phase.end.IsZero():
+		t.Error("the judge made no Dispatch phase with a deadline")
+	case phase.end.Before(phase.before.Add(dispatchBound)) || phase.end.After(phase.after.Add(dispatchBound)):
+		t.Errorf("the judge gave its Dispatch phase a deadline %s after it made the phase; want dispatchBound, %s", phase.end.Sub(phase.before), dispatchBound)
+	case !phase.seen.Equal(phase.end):
+		t.Errorf("the phase's first read saw a deadline %s after the phase was made; want the one the judge gave the phase, %s after", phase.seen.Sub(phase.before), phase.end.Sub(phase.before))
 	}
 	row := theOneRow(t, machine)
 	if row["asked"] != true {

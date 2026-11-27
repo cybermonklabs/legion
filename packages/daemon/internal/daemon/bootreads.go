@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/sjawhar/envoy/pgdsn"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -44,14 +46,15 @@ type variantInstructions struct {
 }
 
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
-// and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
-// the operator bearer's file, operator configuration colliding with Legion's own
-// (checkOperatorConfig), the launch secrets (readLaunchSecrets), the deployment's private-name
-// rule file among them, which it compiles (compilePrivateNameRules), the daemon's own NATS nkey
-// seed (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file,
-// the file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch
-// bearer's file, or under dispatch_token_broker the transition token's file where the
-// configuration names one, and the runtime's own reads (readTmux, readSandbox).
+// and getenv for the OMP invocation) and the files they name, writing nothing: the project key's
+// shape (config.CheckProjectKey), the project token, the operator bearer's file, operator
+// configuration colliding with Legion's own (checkOperatorConfig), the launch secrets
+// (readLaunchSecrets), the deployment's private-name rule file among them, which it compiles
+// (compilePrivateNameRules), the daemon's own NATS nkey seed (natsauth.DaemonSeed), the
+// instructions file, every declared variant's instructions file, the file of every hook that reads
+// its words from one (`hooks[].prompt_file`), the Dispatch bearer's file, or under
+// dispatch_token_broker the transition token's file where the configuration names one, and the
+// runtime's own reads (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check refuses
 // whatever boot refuses before its first write, with one exception: under dispatch_token_broker,
@@ -63,6 +66,9 @@ type variantInstructions struct {
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
 	var err error
+	if err := config.CheckProjectKey(cfg.Project); err != nil {
+		return bootReads{}, err
+	}
 	if r.project, err = claim.ProjectToken(cfg.Project); err != nil {
 		return bootReads{}, err
 	}
@@ -282,18 +288,18 @@ func checkRoleConfigFiles(cfg config.Config) error {
 // parse, such as a malformed URL, a bad pool_* key or an sslrootcert, sslcert or sslkey file it
 // cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
 // fills what the DSN leaves unset from the process's own PG* environment variables, whatever
-// lookup holds, as it does at boot. Each such refusal is store.ConnectError, as store.Open wraps
-// it: the DSN's address and the driver's detail, never the DSN's password. The driver's detail of
-// a DSN pgx cannot parse quotes the DSN with its user name and its query, which
-// `legion config check` and `legion start` both remove when they write the refusal (printRefusal,
-// the URL rule).
+// lookup holds, as it does at boot. Each such refusal is pgdsn.ConnectError, as store.Open wraps
+// it: a DSN pgx cannot parse is named by its setting alone, with none of pgx's text, since that
+// text quotes the DSN (a keyword DSN's password among it, which pgx masks only when written
+// `password=<value>`); any other refusal names the DSN's address and the driver's detail, never
+// the DSN's password.
 func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
 		return "", "", err
 	}
 	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
-		return "", "", store.ConnectError(cfg.PostgresDSN, err)
+		return "", "", pgdsn.ConnectError(store.DSNSetting, cfg.PostgresDSN, err)
 	}
 	if r.nats.source == natsSeedDaemon {
 		daemonNatsUser = r.nats.user

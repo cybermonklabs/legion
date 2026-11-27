@@ -465,7 +465,7 @@ func (r *Runtime) ended(ctx context.Context, v view, container string, role clai
 		fmt.Fprintf(&detail, "; sandbox Finished=%s %s", finished.Status, finished.Reason)
 	}
 	if initExit != nil {
-		if container == fetchContainer {
+		if container == initContainer {
 			detail.WriteString(r.fetchCacheState(pod))
 		}
 		fmt.Fprintf(&detail, "; last lines of %s:\n%s", container, r.logTail(ctx, pod.Name, container))
@@ -490,10 +490,10 @@ func outOfMemory(container string, state *corev1.ContainerStateTerminated) bool 
 	return container == runtime.IssuePodContainer && state != nil && state.Reason == "OOMKilled"
 }
 
-// fetchCacheState is what a failed workspace-fetch's detail says of the repository cache it fills
-// a fresh feed from: that cache's state, with the kubelet's reason while it is failing, or that the
-// repository has none. The repository is the one the pod's fetch container names
-// (fetchRepository); a pod whose fetch names none says nothing.
+// fetchCacheState is what a failed workspace-init's detail says of the repository cache that fills
+// its clone: that cache's state, with the kubelet's reason while it is failing, or that the
+// repository has none. The repository is the one workspace-init names (fetchRepository); a pod
+// whose workspace-init names none says nothing.
 func (r *Runtime) fetchCacheState(pod *corev1.Pod) string {
 	repo, ok := fetchRepository(pod)
 	if !ok {
@@ -501,25 +501,38 @@ func (r *Runtime) fetchCacheState(pod *corev1.Pod) string {
 	}
 	status, found := r.RepositoryCache(repo)
 	if !found {
-		return fmt.Sprintf("; %s has no repository cache, which a fresh feed comes from alone", repo)
+		// Every issue pod is given its repository's cache address (prepare), so a pod whose cache
+		// the runtime cannot find waits for one that never answers and fails at CacheWaitTimeout.
+		return fmt.Sprintf("; the runtime knows no repository cache of %s, which workspace-init waits for", repo)
 	}
-	state := fmt.Sprintf("; the repository cache of %s, which a fresh feed comes from alone, is %s", repo, status.State)
+	state := fmt.Sprintf("; the repository cache of %s, which workspace-init fills the clone from, is %s", repo, status.State)
 	if status.Reason != "" {
 		state += ": " + status.Reason
 	}
 	return state
 }
 
-// fetchRepository is the repository pod's fetch container names (--repo), which the runtime wrote
-// there; false for a pod whose fetch names none that parses.
+// fetchRepository is the repository workspace-init names (--repo), which the runtime wrote there;
+// false for a pod whose workspace-init names none that parses.
 func fetchRepository(pod *corev1.Pod) (ghrepo.Repository, bool) {
 	for _, c := range pod.Spec.InitContainers {
-		if at := slices.Index(c.Command, "--repo"); c.Name == fetchContainer && at >= 0 && at+1 < len(c.Command) {
+		if at := slices.Index(c.Command, "--repo"); c.Name == initContainer && at >= 0 && at+1 < len(c.Command) {
 			repo, err := ghrepo.Parse("--repo", c.Command[at+1])
 			return repo, err == nil
 		}
 	}
 	return ghrepo.Repository{}, false
+}
+
+// fetchRepositoryName is the repository pod's fetch container names (fetchRepository) as
+// `<owner>/<name>`, and "" for a pod whose fetch names none that parses: an unknown, which its one
+// reader, PodRepository, answers as no name at all.
+func fetchRepositoryName(pod *corev1.Pod) string {
+	repo, named := fetchRepository(pod)
+	if !named {
+		return ""
+	}
+	return repo.String()
 }
 
 func containerStatus(pod *corev1.Pod, name string) *corev1.ContainerStatus {
@@ -738,7 +751,11 @@ func rolePrefixed(line string) bool {
 }
 
 // events are the pod's events, "<type> <reason>: <message>" joined by " | ", or why they could
-// not be read.
+// not be read. A FailedMount on the providers volume naming a missing key is printed with the key
+// replaced by the settings that name it (providersMountedKeyShown); every other message is printed
+// as written. The kubelet's message quotes the key (`references non-existent secret key: <key>`),
+// and a provider_keys value is such a key and can be a provider's key pasted where its name goes;
+// these lines reach the daemon's log and its relaunch refusals.
 func (r *Runtime) events(ctx context.Context, pod *corev1.Pod) string {
 	events, err := r.podEvents(ctx, pod)
 	if err != nil {
@@ -746,12 +763,30 @@ func (r *Runtime) events(ctx context.Context, pod *corev1.Pod) string {
 	}
 	parts := make([]string, 0, len(events))
 	for _, event := range events {
-		parts = append(parts, fmt.Sprintf("%s %s: %s", event.Type, event.Reason, event.Message))
+		parts = append(parts, fmt.Sprintf("%s %s: %s", event.Type, event.Reason, r.providersMountedKeyShown(event)))
 	}
 	if len(parts) == 0 {
 		return "(none)"
 	}
 	return strings.Join(parts, " | ")
+}
+
+// providersMountedKeyShown is event's message as events prints it: for a FailedMount on the
+// providers volume that names a missing key, the message up to the kubelet's missingSecretKey
+// wording, then the settings whose key it is, or "one no setting names" (missingProvidersKey); any
+// other message as written.
+func (r *Runtime) providersMountedKeyShown(event corev1.Event) string {
+	if event.Reason != "FailedMount" || !strings.Contains(event.Message, `volume "`+providersVolume+`"`) {
+		return event.Message
+	}
+	before, setting, missing := r.missingProvidersKey(event.Message)
+	if !missing {
+		return event.Message
+	}
+	if setting == "" {
+		setting = "one no setting names"
+	}
+	return before + "references a key the Secret does not hold: the key of " + setting
 }
 
 // podEvents lists the events the API server holds for pod, this incarnation's only.

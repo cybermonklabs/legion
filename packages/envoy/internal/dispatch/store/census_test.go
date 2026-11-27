@@ -1235,6 +1235,123 @@ func TestCensusAdmitsTheBtreeGinMigrationAtAnyTableSize(t *testing.T) {
 	}
 }
 
+// answersDestinationsIndexVersion builds events_person_words_destinations, the partial GIN index of
+// (published_destinations, created_at) that the answers read (sessionanswers.List) finds a
+// session's events in its window through on a database of production's size and shape; where the
+// window holds far fewer of a person's events, the read takes events_person_words_with_declines
+// instead. GIN indexes created_at by an operator class of btree_gin, which btreeGinVersion
+// creates.
+const answersDestinationsIndexVersion = 20261125131000
+
+// backlogMovesIndexVersion builds events_backlog_moves, the partial index of (issue_key, seq) that
+// the lateral of the second fault (backlogMoveLateral in package api) reads an issue's newest move
+// into backlog or icebox through.
+const backlogMovesIndexVersion = 20261125131100
+
+// eventsIndexCensus is the census of the embedded migrations through `through` over a database at
+// `at`, with the limit at one byte, and the entry of each version of versions (pendingCensus takes
+// the census, and fails the test when the first of them is not pending). It fails the test when
+// another of them is not pending, or when one touches another table than events, or events at one
+// byte or less, which leaves the limit nothing to refuse or exempt. Only those entries are read,
+// never the verdict of the whole set, for the reason
+// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+func eventsIndexCensus(t *testing.T, at, through int, versions ...int) (*pgmigrate.Report, map[int]*pgmigrate.MigrationCensus) {
+	t.Helper()
+	report, _, _ := pendingCensus(t, at, through, versions[0], pgmigrate.CensusOptions{TableLimit: 1})
+	entries := make(map[int]*pgmigrate.MigrationCensus, len(versions))
+	for i := range report.Pending {
+		entry := &report.Pending[i]
+		if !slices.Contains(versions, entry.Migration.Version) {
+			continue
+		}
+		if len(entry.Tables) != 1 || entry.Tables[0].Name != "events" {
+			t.Fatalf("%s touches %+v, want events alone; report:\n%s", entry.Migration.Name, entry.Tables, reportText(report))
+		}
+		if table := entry.Tables[0]; !table.Exists || table.Bytes <= 1 {
+			t.Fatalf("%s: events is %d bytes, which leaves the limit nothing to refuse or exempt", entry.Migration.Name, table.Bytes)
+		}
+		entries[entry.Migration.Version] = entry
+	}
+	for _, version := range versions {
+		if entries[version] == nil {
+			t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
+		}
+	}
+	return report, entries
+}
+
+// Once btreeGinVersion is applied, the census admits both index migrations of events at any size
+// of the table. Each is one marked, non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS, and no
+// migration pending before it takes the concurrent index exemption away, so with the limit at one
+// byte each has no refusal and carries the exemption. The database is at btreeGinVersion, so the
+// two are the only pending migrations.
+func TestCensusAdmitsTheAnswersAndBacklogIndexesOnceBtreeGinIsApplied(t *testing.T) {
+	t.Parallel()
+	_, entries := eventsIndexCensus(t, btreeGinVersion, backlogMovesIndexVersion, answersDestinationsIndexVersion, backlogMovesIndexVersion)
+	for _, version := range []int{answersDestinationsIndexVersion, backlogMovesIndexVersion} {
+		if entry := entries[version]; len(entry.Refusals) != 0 || !entry.ConcurrentIndex {
+			t.Errorf("%s at a table limit of 1 byte: refusals %q, concurrent index %v; want no refusal and the concurrent build admitted",
+				entry.Migration.Name, entry.Refusals, entry.ConcurrentIndex)
+		}
+	}
+}
+
+// A deploy that applies btreeGinVersion and the answers index together is refused while events is
+// above the limit. A pending create extension can create an event trigger that the census does not
+// see, so it takes the concurrent index exemption from every pending migration after it
+// (pgmigrate's takesLaterExemptions). The census then refuses the index on the size of events, with
+// a reason that names the extension's migration. That is why the extension ships in a release
+// before the index. The database is at 20261125005337, the version before btreeGinVersion, so the
+// extension and the index are the only migrations pending through the index.
+func TestCensusRefusesTheAnswersIndexBesideItsPendingExtension(t *testing.T) {
+	t.Parallel()
+	report, entries := eventsIndexCensus(t, 20261125005337, answersDestinationsIndexVersion, answersDestinationsIndexVersion)
+	extension := ""
+	for _, entry := range report.Pending {
+		if entry.Migration.Version == btreeGinVersion {
+			extension = entry.Migration.Name
+		}
+	}
+	if extension == "" {
+		t.Fatalf("%d is not pending before the index; report:\n%s", btreeGinVersion, reportText(report))
+	}
+	entry := entries[answersDestinationsIndexVersion]
+	want := []string{
+		"events is ",
+		"above the 1 bytes a table a migration touches may be",
+		"the earlier pending migration " + extension + " creates or alters an extension",
+		"which can run code of its own on the concurrent index build",
+	}
+	refusedOnSize := slices.ContainsFunc(entry.Refusals, func(reason string) bool {
+		return !slices.ContainsFunc(want, func(text string) bool { return !strings.Contains(reason, text) })
+	})
+	if entry.ConcurrentIndex || !refusedOnSize {
+		t.Fatalf("%s beside the pending %s: concurrent index %v, refusals %q; want no exemption and a refusal on the size of events that holds each of %q",
+			entry.Migration.Name, extension, entry.ConcurrentIndex, entry.Refusals, want)
+	}
+}
+
+// Neither index migration of events creates an extension. btree_gin, which the answers index needs,
+// comes from btreeGinVersion alone, which a deploy applies before them: a create extension in
+// either would take the census's concurrent index exemption from every pending migration after it,
+// and would bring its extension in the release of the index instead of the one before it. The test
+// reads the files themselves (MigrationText), and not the set pgmigrate.Load answers, so it fails
+// on the words whatever the loader makes of a second statement. The words match in any case, with
+// each comment read as a space (pgmigrate.WithoutComments) and white space folded.
+func TestTheAnswersAndBacklogIndexMigrationsCreateNoExtension(t *testing.T) {
+	t.Parallel()
+	for _, version := range []int{answersDestinationsIndexVersion, backlogMovesIndexVersion} {
+		migration, err := MigrationText(version)
+		if err != nil {
+			t.Error(err)
+			continue
+		}
+		if text := strings.ToLower(strings.Join(strings.Fields(pgmigrate.WithoutComments(migration)), " ")); strings.Contains(text, "create extension") {
+			t.Errorf("migration %d holds a create extension, comments aside: %q; want the one create index concurrently and nothing else", version, text)
+		}
+	}
+}
+
 // TestCensusAdmitsTheBackfillIndexes holds the census to admitting the four indexes envoy-dispatch
 // backfill-graph-store reads through for each batch: two on events (20261119020700 on the document
 // and the version an artifact.version event names, 20261119020800 on the comment a comment.created
@@ -1570,12 +1687,26 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 // still prints its report rather than exiting without one. Here the read waits on an ACCESS
 // EXCLUSIVE holder under a statement timeout shorter than the lock timeout, so Postgres cancels it
 // as a statement timeout (57014), as it cancels a slow count of a large table.
+//
+// The held read never ends while the holder holds its lock, so it outlasts TableReadTimeout
+// however long that is, and at 1 s, under the census's 5 s lock_timeout, it ends as 57014 however
+// loaded the machine is: the statement timeout starts with the statement, lock_timeout only once
+// the read waits, and Postgres reports the one due first when both have run out. That 1 s bounds
+// the held read alone: the read fails, which aborts its savepoint, and Postgres gives the
+// transaction back CensusStatementTimeout, a minute, for every other statement of the census. The
+// migration's census shows it: it answers 0 only when the statement timeout it runs under is that
+// minute. So a short bound that reached the census's other statements again adds a refusal on
+// every machine, and not only on one too loaded to read pg_event_trigger within a second, as CI's
+// was. LongTransaction is an hour, so the holder, opened just before the census, is never old
+// enough to refuse.
 func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	pid := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "things", "access exclusive")), 10)
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{StatementTimeout: time.Second})
+	underTheCensusBound := "select case when current_setting('statement_timeout')::interval = interval '" +
+		strconv.FormatInt(pgmigrate.CensusStatementTimeout.Milliseconds(), 10) + " milliseconds' then 0 else 1 end"
+	report, err := census(ctx, url, withCheck(underTheCensusBound), pgmigrate.CensusOptions{TableReadTimeout: time.Second, LongTransaction: time.Hour})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}

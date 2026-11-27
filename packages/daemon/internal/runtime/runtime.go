@@ -129,7 +129,7 @@ type Runtime interface {
 	// message (supervise.UpdateTask) and answer (api's claims/ready-for-update), and replaces the
 	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
 	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
-	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
+	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, a holding
 	// suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
@@ -138,6 +138,22 @@ type Runtime interface {
 	// and the round open over it ends. Any other error means the runtime itself could not be
 	// asked, and is never a statement that something drifted either.
 	PodDrift(ctx context.Context, k Known) ([]string, error)
+	// PodRepository is the repository the place k's process runs in was built from: the
+	// repository that place's own workspace fetch names, fixed at the place's creation as
+	// everything else about it is. Only a runtime whose processes share such a place has an
+	// answer — the Sandbox runtime's issue pod, which clones one repository into the issue's
+	// workspace — and a runtime whose processes share no such place answers "". So does a claim
+	// with no process, which records no place at all, and a place whose fetch names no
+	// repository.
+	//
+	// It states what the place holds and compares nothing: the record of the repository an issue
+	// works is the daemon's, so the daemon is what reads this answer against that record and
+	// decides that a pod built from the repository the issue has left must be replaced
+	// (internal/daemon's groupDrift), and what records it as the repository a process launched
+	// into the place works (supervise's Claim.WorkingRepository). An error means the runtime
+	// itself could not be asked, and is never a statement that the place was built from another
+	// repository.
+	PodRepository(ctx context.Context, k Known) (string, error)
 	// ReplacePod ends the place k's process runs in, once its update round is over, and returns
 	// when the runtime no longer has it. It creates nothing in its stead: every process it ends is
 	// reported ended by the daemon's own act (Observation.Displaced), and the supervisor's resume
@@ -226,7 +242,9 @@ var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a s
 
 // BreakingDrift is the mark a reason of PodDrift starts with where the drift breaks the pod: no
 // role can keep working in it (R7 of #5285). The runtime sets it where it decides
-// the drift, at the start of that drift's reason (Breaks), and nowhere else: a value a reason
+// the drift, at the start of that drift's reason (Breaks), and the daemon sets it on the one reason
+// it decides itself, a pod built from a repository the issue's record has left (internal/daemon's
+// repositoryReason, R3 of #3712), and nowhere else: a value a reason
 // displays, an image name or an account among them, follows the reason's own first words, so it
 // can hold the mark's words without making the drift one that breaks the pod. The Sandbox
 // runtime's PodDrift marks a drift of the Kubernetes service account the pod runs as (spec v23:
@@ -299,11 +317,13 @@ type TakenPod struct {
 	Claim     claim.Token
 	Issue     string
 	PodUID    string
-	Why       string
-	Act       RecordedAct
-	WithPod   bool
-	Work      WorkspaceWork
-	Err       error
+	// Repository is the repository the pod cloned, or empty if it was not known.
+	Repository string
+	Why        string
+	Act        RecordedAct
+	WithPod    bool
+	Work       WorkspaceWork
+	Err        error
 }
 
 // Tells is whether the replacement may have taken work that origin does not hold: the read found
@@ -916,6 +936,19 @@ type PluginInstall struct {
 	PiLegion, PiEnvoy string
 	Contract          int
 }
+
+// PluginScope is the npm scope of the two plugins a launch installs, PiLegionPackage and
+// PiEnvoyPackage (runtime/sandbox's installBlock). A registry tarball URL of one holds it as a
+// path segment of its own, and it is the one segment holding an "@" a plugin source's URL may
+// carry (config's readPluginSource): any other is where a credential pasted as the URL's user
+// lands.
+const PluginScope = "@sjawhar"
+
+// PiLegionPackage and PiEnvoyPackage are the npm names of the plugins PluginInstall pins.
+const (
+	PiLegionPackage = PluginScope + "/pi-legion"
+	PiEnvoyPackage  = PluginScope + "/pi-envoy"
+)
 
 // PromptParts are the pieces of the agent's system prompt, in the one order the runtime
 // concatenates them into exactly one text (ComposePrompt), which the agent reads from the one

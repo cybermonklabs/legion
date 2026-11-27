@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -54,6 +55,16 @@ type DispatchIssue struct {
 	// payload, the listing's or the detail's (record.DispatchPriority over Dispatch's 0 to 3 or
 	// null). The record takes it wherever it takes the observation's rank.
 	Priority record.Priority
+	// Resolved is the priority Dispatch resolves the issue to, with the issue it comes from, as the
+	// same observation showed it (record.Resolved): Known is false where the observation carried no
+	// `resolved_priority`, and a present null is no priority. The record takes it with Priority.
+	Resolved record.Resolved
+	// ResolvedOnly says the event changed nothing of the issue but the priority Dispatch resolves it
+	// to: its `changed` names `resolved_priority` or `priority_from` and nothing else, as the event
+	// Dispatch appends on an issue whose ancestor's priority or parent changed (J3 of
+	// dispatch://INFRA-5793). It is no work of the issue's own, so it marks no movement
+	// (record.Issue.MovedAt).
+	ResolvedOnly bool
 	// Labels is the issue's labels as the observation showed them, in Dispatch's order. The copy
 	// of Dispatch's issues writes them with the rest of the observation (blockers.Mirror), and
 	// nothing else reads them: a decision reads HandedOver.
@@ -65,7 +76,8 @@ type DispatchIssue struct {
 	DaemonActor  bool
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to at the event: its
 	// own, else its nearest ancestor's, else its project's default; empty when it resolves to none.
-	// The workflow takes it when it first records the issue, and never after.
+	// The workflow takes it when it first records the issue, and a recorded issue's record follows
+	// it onto another repository (workflow.Engine.ApplyRepositoryChange).
 	ResolvedRepo string
 	// Blockers is the keys of the issues the event says this issue waits on, in Dispatch's own
 	// order. An event retained from a Dispatch that did not yet send them carries none, as an issue
@@ -86,6 +98,31 @@ type DispatchIssue struct {
 	// installs the App is taken at that preparation with no wait and no restart. Empty for every
 	// other fact, the decode's own among them: only a preparation sets it.
 	RepositoryRefusal string
+	// RepositoryRefusalKind is what refused the repository RepositoryRefusal names a reason for,
+	// set beside it by the same preparation, so a reader that acts on the kind reads it here and
+	// never parses the name again: GitHub's answer for a repository name, or a name that is no
+	// <owner>/<name>, which asks GitHub nothing. RefusedNothing for every fact RepositoryRefusal is
+	// empty on.
+	RepositoryRefusalKind RepositoryRefusalKind
+	// RepositoryRead is what GitHub answered this event's preparation for the repository a
+	// recorded issue's resolution moves it onto: GitHub's own spelling of the repository and its
+	// default branch, read at that preparation, with both role Apps answered installed on it (the
+	// daemon's prepareRecorded). The correction writes it (workflow.Engine.ApplyRepositoryChange)
+	// and never a read the daemon kept from an earlier preparation, so an App uninstalled since,
+	// or a default branch renamed since, is what the record follows. Nil for every other fact, the
+	// decode's own among them, and for a preparation whose reads GitHub did not answer or refused:
+	// only a preparation sets it.
+	RepositoryRead *ghbranch.Repository
+	// PreparedAgainst is the repository the issue's record held when this fact was prepared (the
+	// daemon's prepareRecorded, from the record that preparation read), kept in memory with the
+	// fact and never stored. The record's correction is written only while the record still holds
+	// it; workflow.Engine.ApplyRepositoryChange says why. Empty for every fact no preparation of a
+	// recorded issue made, the decode's own among them, an event prepared while its issue had no
+	// record, and an event prepared while its record held no repository (record.Issue.Unfilled),
+	// which the preparation stamps empty: such a fact carries no RepositoryRead, so where it moves
+	// the record its correction writes nothing and asks a follow of the issue instead
+	// (ApplyRepositoryChange says why).
+	PreparedAgainst string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
 	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
@@ -142,6 +179,22 @@ type DispatchIssue struct {
 	LabelSetter string
 }
 
+// RepositoryRefusalKind is what refused a repository (DispatchIssue.RepositoryRefusal), which is
+// what a person can do about it: install an App on the repository, or set another one.
+type RepositoryRefusalKind uint8
+
+const (
+	// RefusedNothing is no refusal.
+	RefusedNothing RepositoryRefusalKind = iota
+	// RefusedByGitHub is GitHub's answer for a repository name: a role App not installed on it,
+	// or no such repository, which one answer covers. Installing the App, or setting another
+	// repository, answers it.
+	RefusedByGitHub
+	// RefusedName is a name that is no <owner>/<name> at all, which asks GitHub nothing and which
+	// no App can be installed on: only setting a repository answers it.
+	RefusedName
+)
+
 // LabelledTriageRoot says whether the fact shows a root (no Dispatch parent) in triage that
 // carries the label: the one kind of issue whose label's setter the prepare stage and the boot
 // listing read (LabelSetter), and admission then judges, so the two sides test one predicate.
@@ -166,7 +219,8 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), Resolved: dispatchResolved(issue.Resolved), HandedOver: issue.HandedOver,
+		Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
 		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
 }
 
@@ -193,8 +247,8 @@ func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 		parent = *issue.Parent
 	}
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
-		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy,
-		ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
+		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), Resolved: dispatchResolved(issue.Resolved), HandedOver: issue.HandedOver,
+		ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy, ClaimedBy: issue.ClaimedBy, ClaimKnown: !issue.ClaimUnread}
 }
 
 // dispatchPriority is level, the priority a Dispatch read serves, as the record keeps it. The
@@ -205,12 +259,52 @@ func dispatchPriority(level *int) record.Priority {
 	return priority
 }
 
+// dispatchResolved is the resolved priority a Dispatch read serves, as the record keeps it: unknown
+// where the read carried none, else its level, none for a present null, and the issue it comes from.
+func dispatchResolved(resolved *dispatch.ResolvedPriority) record.Resolved {
+	if resolved == nil {
+		return record.Resolved{}
+	}
+	return record.Resolved{Priority: dispatchPriority(resolved.Priority), From: resolved.From, Known: true}
+}
+
 // Handover is the outbox's direct completion of a hand-over whose Dispatch state is already todo
 // with the legion label, so PATCH would make no event. Admission validates the durable fence.
 type Handover struct {
 	Issue      string
 	Tree       string
 	Generation uint64
+	// ResolvedRepo is the repository (owner/name) Dispatch resolved the issue to at the read the
+	// outbox made of it just before it applied this fact (its status executor), carried here so
+	// that this door follows Dispatch's resolution as every other one does (the engine's
+	// ApplyRepositoryChange): it raises a generation with no Dispatch event and no PATCH, so a
+	// root handed over while its repository changed in Dispatch would otherwise come back on the
+	// repository the record holds. It is empty where that read answered no repository and where
+	// nothing read one: the absence of a resolution is no statement by Dispatch about which
+	// repository the issue is on, so admission corrects nothing and the record stands, as a
+	// retained event's missing repository leaves it (workflow.SettleRetainedRepository).
+	ResolvedRepo string
+	// Seq is the sequence Dispatch had run to at that read (dispatch.Issue.LastSeq), zero where
+	// nothing read one. A record that took a later event (record.Issue.LastDispatchSeq above it)
+	// holds a newer statement by Dispatch of the issue's repository than this read, so admission
+	// corrects nothing from it, as the daemon's follow pass leaves a record a later event carried
+	// past its listing: the outbox reads GitHub between its Dispatch read and this fact's apply,
+	// and a person's change of the repository applied in that time would otherwise be undone.
+	Seq int64
+	// RepositoryRead, RepositoryRefusal and RepositoryRefusalKind are what the outbox's
+	// preparation of the fact read of GitHub for ResolvedRepo where it names another repository
+	// than the record holds (the daemon's prepareHandover), as an event's preparation carries them
+	// (DispatchIssue.RepositoryRead, RepositoryRefusal, RepositoryRefusalKind): the read the
+	// correction is written from, or GitHub's refusal it waits with. All empty where nothing was
+	// read, and the correction then writes nothing.
+	RepositoryRead        *ghbranch.Repository
+	RepositoryRefusal     string
+	RepositoryRefusalKind RepositoryRefusalKind
+	// PreparedAgainst is the repository the issue's record held at the outbox's preparation of
+	// the fact (the daemon's prepareHandover), as an event's preparation carries it
+	// (DispatchIssue.PreparedAgainst), kept in memory and never stored: admission's correction is
+	// written only while the record still holds it. Empty where nothing prepared the fact.
+	PreparedAgainst string
 }
 
 func (f Handover) namedIssue() (string, bool) { return f.Issue, true }
@@ -247,6 +341,22 @@ type AdoptedChild struct {
 func (ChildAdoption) namedIssue() (string, bool) { return "", false }
 
 func (f DispatchIssue) namedIssue() (string, bool) { return f.Key, true }
+
+// MergeHoldsChanged is an event that changes the daemon's own project's merge holds document
+// (record.MergeHoldsDocument), which Dispatch publishes on
+// notifications.dispatch.document.<Project>.merge-holds-md.<type>: its creation, a new version,
+// its rename or its removal (the decoder's mergeHoldsChangeTypes), as when the controller created
+// it, added a hold, changed one or lifted one. Event is the Dispatch event's id, which ApplyFact
+// records the fact under, so a delivery of the same event again applies nothing. The workflow
+// tells the architect of each issue in accepting and the merger of each issue in merging
+// (workflow's mergeHoldsChanged): a role that a hold stops waits on nothing else, since a
+// Dispatch document event does not wake a released pod.
+type MergeHoldsChanged struct {
+	Project string
+	Event   string
+}
+
+func (MergeHoldsChanged) namedIssue() (string, bool) { return "", false }
 
 // DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
@@ -668,6 +778,18 @@ type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
 
+// LingerDeadline is the moment a root's linger the admission block reads runs out, applied as a
+// synthetic fact by the daemon's one timer for it (internal/daemon's wakeAtLingerDeadlines) and
+// never decoded from an event: the block changes at that deadline with no write at all (admit's
+// queueAdmissionBlock), and an admission pass runs only on a fact, so this is the fact that runs
+// one there. Admission is the only handler that acts on it, and does nothing but end its pass with
+// the block judged, which admit's block rule (Admission.Apply) always does for this fact, and
+// written where it moved, which queues that change's state event. It carries nothing: the pass
+// reads the whole project and the clock.
+type LingerDeadline struct{}
+
+func (LingerDeadline) namedIssue() (string, bool) { return "", false }
+
 // ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
 // the resume has committed and never decoded from an event (internal/daemon's
 // projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission
@@ -686,6 +808,23 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 type ProjectResumed struct{}
 
 func (ProjectResumed) namedIssue() (string, bool) { return "", false }
+
+// P0BoundChanged is a change of the project's P0 bound while the daemon runs (dispatch://INFRA-5636
+// C3), applied as a synthetic fact by the P0 bound routes (api's changeP0Bound) and never decoded
+// from an event. Change is the change as the store records it: a set to a number
+// (store.P0BoundSet, Bound from 1 to 2147483647, which the route refused anything else against), a
+// set to none (store.P0BoundUnbounded, no bound whatever legion.yaml says), or a clear
+// (store.P0BoundCleared, which returns the project to legion.yaml's admission_p0_bound), with who
+// made it, in a pause's actor shape, why and when. The routes leave Change.Project empty: admission
+// writes its own project there. Admission is its one handler: it appends the change
+// (store.RecordP0BoundChangeTx) and then runs the admission pass whatever it wrote, in the same
+// transaction, so the bound is in force from that pass on (admit.Admission.applyFact). The workflow
+// engine and the blockers mirror do nothing for it.
+type P0BoundChanged struct {
+	Change store.P0BoundChange
+}
+
+func (P0BoundChanged) namedIssue() (string, bool) { return "", false }
 
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
@@ -1587,8 +1726,8 @@ func ClaimFailedOf(c supervise.Claim, limits supervise.Limits) ClaimFailed {
 
 // SessionLost is a claim that forgot its recorded session: its worker now runs a fresh agent that
 // has read none of its own earlier work (supervise's startFresh). Detail is why, as the supervisor
-// said it. It is told on the issue, to its architect and to the controller, because a worker that
-// silently lost its memory looks like one that is merely slow.
+// said it. It is told on the issue and to its architect, because a worker that silently lost its
+// memory looks like one that is merely slow; the controller gets no copy (#4065).
 //
 // Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
 // Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
@@ -1830,11 +1969,13 @@ func CheckWakeOf(issue string, wake record.CheckWakeDue) CheckWakeDue {
 }
 
 // CheckLookEnded is a look of issue Issue's production check ending with no report: Cause is
-// `look bound` (the check_look row due at the look's bound), `operator hold` (a check start the
-// outbox met an operator's suspension on) or `claim failed` (the implementer's claim failed in
-// the look). Look names the look, so a row of a look already ended changes nothing, and OpenedAt
-// the check instance (its OpenedAt), so a row of a check a later merge of the same issue replaced
-// — whose looks count from one again — changes nothing either; a zero OpenedAt names none.
+// `look bound` (the check_look row due at the look's bound), `operator hold` or `controller hold`
+// (a check start the outbox met a suspension of the check's role on, which holds against every
+// rule, named by whose it is) or `claim failed` (the implementer's claim
+// failed in the look). Look names the look, so a row of a look already ended changes nothing,
+// and OpenedAt the check instance (its OpenedAt), so a row of a check a later merge of the same
+// issue replaced — whose looks count from one again — changes nothing either; a zero OpenedAt
+// names none.
 type CheckLookEnded struct {
 	Issue    string
 	Look     int
@@ -1950,7 +2091,7 @@ type Result struct {
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
-// Reasons is set on a refused plan alone (PlanRefused): one reason for each cause, each naming
+// Reasons is set on a refused plan alone (PlanRefused): the reasons of its causes, each naming
 // its task where it has one, which the route writes beside the code; every other refusal is its
 // code and its sentence, and carries none.
 type Refusal struct {
@@ -1960,10 +2101,12 @@ type Refusal struct {
 	Reasons []plan.Refusal
 }
 
-// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
-// cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running task (RunningTaskChanged). The
-// message holds every reason in its order, so a reader of the sentence alone reads every cause.
+// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with its reasons:
+// register_plan answers it for a plan that plan.FromBlocks cannot read, or that plan.Supported or
+// plan.Validate refuses, each naming the first plan.MostReasons causes of each kind and counting
+// the rest, and the workflow for a version that changes or removes a running task
+// (RunningTaskChanged). The message holds every reason given, in its order, so a reader of the
+// sentence alone reads every reason the list holds.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -2485,9 +2628,14 @@ func Applied(ctx context.Context, pool store.TxPool, source string, eventIDs []s
 // settleObserved is the fact ApplyFact applies in fact's place, under the fact lock, and whether it
 // applies one: an Observed issue fact's view, as a plain observation, while the workflow records no
 // issue of its key, and once one is recorded the event it was prepared in place of (Delivered),
-// carrying the view's Ancestry and Reread, which the preparation read for the view alone,
-// or nothing when it was prepared in place of none. Every other fact applies as it is, so no
-// handler sees Observed or Delivered.
+// carrying the view's Ancestry and Reread, which the preparation read for the view alone, the
+// repository the record held at that preparation (PreparedAgainst), and what that preparation read
+// of GitHub for the view's repository (RepositoryRead, RepositoryRefusal and its kind) where the
+// event resolves the issue to that same repository, which a recorded issue's correction is written
+// from (workflow.Engine.ApplyRepositoryChange): the daemon's own status write resolves the issue as
+// the view does, so its correction would otherwise read as unread. A view prepared in place of no
+// event applies nothing. Every other fact applies as it is, so no handler sees Observed or
+// Delivered.
 //
 // A view older than an issue fact of the issue the daemon has already applied (the copy's applied
 // sequence, record.Store.DispatchIssueApplied, which blockers.Mirror raises for every applied issue
@@ -2521,7 +2669,11 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 		return nil, false, nil
 	default:
 		delivered := *issue.Delivered
-		delivered.Ancestry, delivered.Reread = issue.Ancestry, issue.Reread
+		delivered.Ancestry, delivered.Reread, delivered.PreparedAgainst = issue.Ancestry, issue.Reread, issue.PreparedAgainst
+		if strings.EqualFold(delivered.ResolvedRepo, issue.ResolvedRepo) {
+			delivered.RepositoryRead, delivered.RepositoryRefusal, delivered.RepositoryRefusalKind =
+				issue.RepositoryRead, issue.RepositoryRefusal, issue.RepositoryRefusalKind
+		}
 		return delivered, true, nil
 	}
 }
