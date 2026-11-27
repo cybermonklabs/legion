@@ -56,6 +56,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"ControllerMemoryGuardKill":   ControllerMemoryGuardKill{},
 		"EntrySweep":                  EntrySweep{},
 		"ProjectResumed":              ProjectResumed{},
+		"P0BoundChanged":              P0BoundChanged{},
 		"PullRequestOpened":           PullRequestOpened{Branch: "legion/" + issue},
 		"PullRequestSynchronized":     PullRequestSynchronized{Branch: "legion/" + issue},
 		"PullRequestReview":           PullRequestReview{},
@@ -70,6 +71,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"BasePush":                    BasePush{},
 		"DaemonBooted":                DaemonBooted{},
 		"CutoverMergerRepair":         CutoverMergerRepair{},
+		"MergeHoldsChanged":           MergeHoldsChanged{},
 		"ListenerWake":                ListenerWake{},
 	}
 	for name, fact := range namesOne {

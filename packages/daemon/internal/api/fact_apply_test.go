@@ -135,10 +135,17 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/controller/secret":            {none: "the controller's secret; " + noFact},
 		"POST /legion/v1/controller/github-credential": {none: "the controller's GitHub credential; " + noFact},
 		"POST /legion/v1/issues/status":                {none: controller},
-		"POST /legion/v1/claims/fresh-session":         {none: controller},
+		"POST /legion/v1/issues/pod-update":            {none: "it applies no fact: it posts the update round of the issue's pod to that issue's claims' machines (Options.RequestPodUpdate), and " + controller},
 		"POST /legion/v1/claims/compact":               {none: controller},
+		"POST /legion/v1/claims/fresh-session":         {none: controller},
+		"POST /legion/v1/agents/stop":                  {none: controller},
+		"POST /legion/v1/agents/suspend":               {none: controller},
+		"POST /legion/v1/agents/resume":                {none: controller},
+		"POST /legion/v1/agents/retry":                 {none: controller},
 		"POST /legion/v1/project/pause":                {none: controller},
 		"POST /legion/v1/project/resume":               {none: controller},
+		"POST /legion/v1/project/p0-bound":             {none: controller},
+		"POST /legion/v1/project/p0-bound/clear":       {none: controller},
 		"POST /legion/v1/waves/release": {none: "its own status writes name children not in the workflow yet, which no run is on, so they wait for nothing; " +
 			"its adoption of children recorded in other trees names no one issue (intake.IssueOf), so apply asks RunsAStep, the read TestTheRecordNamesTheAgentOfARunThatIsNotEnded holds, and this table drives no adoption"},
 		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's Walk.PlaceOf)"},
@@ -248,6 +255,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/operator/intake/discard":                {none: noRequester},
 		"POST /legion/v1/operator/project/pause":                 {none: noRequester},
 		"POST /legion/v1/operator/project/resume":                {none: noRequester},
+		"POST /legion/v1/operator/project/p0-bound":              {none: noRequester},
+		"POST /legion/v1/operator/project/p0-bound/clear":        {none: noRequester},
 		"/": {none: "the catch-all answers no route; " + noFact},
 	}
 

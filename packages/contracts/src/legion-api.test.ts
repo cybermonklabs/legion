@@ -17,6 +17,7 @@ import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
   LegionActivityRequest,
+  LegionAgentActionResponse,
   LegionCapabilityReport,
   LegionChildRequest,
   LegionClaimRequest,
@@ -44,12 +45,17 @@ import {
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
+  LegionOperatorProjectP0BoundRequest,
   LegionOperatorProjectPauseRequest,
+  LegionP0BoundResponse,
   LegionPauseFailureResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
   LegionPlanRegisterRequest,
   LegionPlanRegisterResponse,
+  LegionPodUpdateRequest,
+  LegionPodUpdateResponse,
+  LegionProjectP0BoundRequest,
   LegionProjectPauseRequest,
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
@@ -188,6 +194,15 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (the agent-actions
+  // contract): the claim's state after each, and who holds a suspension over the agent.
+  "agent-stop.json": LegionAgentActionResponse,
+  "agent-retry.json": LegionAgentActionResponse,
+  "agent-suspend.json": LegionAgentActionResponse,
+  "agent-resume.json": LegionAgentActionResponse,
+  // The controller's request for the replacement of one issue's pod (the agent-actions contract):
+  // the update round over it, its reasons, and whether the request opened it.
+  "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -212,6 +227,13 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
+  // The P0 bound the controller's set and clear left in force (the P0 start's contract entry), each written from
+  // what the route itself answers (internal/api's TestP0BoundRouteGoldens): a set of 2 over
+  // legion.yaml's 3, a set of none after it, whose bound in force and live bound are null, and the
+  // clear after that.
+  "p0-bound.json": LegionP0BoundResponse,
+  "p0-bound-none.json": LegionP0BoundResponse,
+  "p0-bound-clear.json": LegionP0BoundResponse,
   // The replay and the discard of the intake's give-ups (contract 228), written by internal/api's
   // TestIntakeReplayAnswerGolden and TestIntakeDiscardAnswerGolden from what each route answers:
   // a replay with one record of each outcome and one left, and the ids a discard closed.
@@ -463,6 +485,9 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
   "intake-replay": LegionIntakeReplayResponse,
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (the agent-actions
+  // contract): the claim's `state`, and who holds a suspension over it.
+  "agent-action": LegionAgentActionResponse,
 };
 
 /** The schemas this module parses each answer of the daemon's table that writes a body with, by
@@ -487,6 +512,8 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "project-resume": [LegionProjectResumeResponse],
   "plan-register": [LegionPlanRegisterResponse],
   "intake-discard": [LegionIntakeDiscardResponse],
+  "p0-bound": [LegionP0BoundResponse],
+  "pod-update": [LegionPodUpdateResponse],
 };
 
 /** The reason the refusal's `reasons` is named by no schema of this module. */
@@ -2170,6 +2197,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionClaimRequest,
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
+    ["pod update", LegionPodUpdateRequest, { grantId: "grant-208", issue: "LEGION-209" }],
     [
       "gate register",
       LegionGateRegisterRequest,
@@ -3200,7 +3228,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   };
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
-      const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      // A caller below the P0 start's contract entry is served each issue without the two keys it
+      // added (the daemon's `withoutResolvedPriority`).
+      const {
+        podHold: _podHold,
+        priority: _priority,
+        resolvedPriority: _resolvedPriority,
+        priorityFrom: _priorityFrom,
+        ...kept
+      } = issue;
       const narrowed: Record<string, unknown> = { ...kept };
       const line = kept.waitingLine;
       if (isJsonObject(line)) {
@@ -3237,7 +3273,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource });
+  // A caller below the P0 start's contract entry is served the admission without the two keys it
+  // added (the daemon's `withoutP0Start`), and a caller below 202 is below the entry.
+  const {
+    p0Holders: _p0Holders,
+    p0Bound: _p0Bound,
+    ...admission
+  } = z.record(z.string(), z.unknown()).parse(rest.admission);
+  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource, admission });
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to
@@ -3251,10 +3294,26 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
 });
 
-/** The responses an operator's bearer opens, the only ones that may name a suspension. */
+/** The responses an operator's bearer opens, the only ones of the operator's that may name a
+ * suspension. */
 const operatorSchemas: Record<string, true> = {
   LegionOperatorClaimResponse: true,
   LegionOperatorClaimsResponse: true,
+};
+
+/** The one session-facing exception: four of the controller's six agent actions
+ * (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
+ * because those routes are where the caller reads whether its own resume_agent lifts it. The
+ * reason the guard exists does not reach them: they arrived with the agent-actions contract, so only a plugin at
+ * that contract or later calls them, and no reader of these bodies predates the key. The schema
+ * and the four fixtures it pins are named here, and nothing else; a new session-facing body that
+ * names a suspender still fails the walk below. */
+const agentActionSchemas: Record<string, true> = { LegionAgentActionResponse: true };
+const agentActionFixtures: Record<string, true> = {
+  "agent-stop.json": true,
+  "agent-retry.json": true,
+  "agent-suspend.json": true,
+  "agent-resume.json": true,
 };
 
 /** Every key `schema` can carry, at any depth, through objects, arrays, unions, records, optional
@@ -3290,23 +3349,46 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and nowhere else, and this holds that for every
+// `suspendedBy` is served to the operator's bearer and, from the agent-actions contract, to the
+// controller's four agent actions (agentActionSchemas), and nowhere else; this holds that for every
 // schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
-    if (!isSchema(schema) || operatorSchemas[name] === true) continue;
+    if (!isSchema(schema) || operatorSchemas[name] === true || agentActionSchemas[name] === true)
+      continue;
     walked += 1;
     expect([...schemaKeys(schema)], `${name} carries suspendedBy`).not.toContain("suspendedBy");
   }
   expect(walked).toBeGreaterThan(20);
   // The walk finds the key where it does live, so an empty walk cannot pass for a clean one.
   expect([...schemaKeys(LegionOperatorClaimResponse)]).toContain("suspendedBy");
+  expect([...schemaKeys(LegionAgentActionResponse)]).toContain("suspendedBy");
 
-  // And no body the daemon writes carries it outside the operator's own.
-  for (const name of readdirSync(fixtureDir).filter((entry) => entry.endsWith(".json"))) {
-    if (name.startsWith("operator-")) continue;
+  // And no body the daemon writes carries it outside the operator's own and the four routes'.
+  // The fixtures of this directory are bodies, and main's frozen tables, none of which names it.
+  // The daemon's records of every answer's key paths and value domains are the frozen tables and
+  // then each entry's fixture under `contracts/`, composed as `daemonApiRecords` composes them: they
+  // name `suspendedBy` at the four routes' answer, `agent-action`, and must name it at no other.
+  const fixtures = readdirSync(fixtureDir);
+  for (const name of fixtures.filter((entry) => entry.endsWith(".json"))) {
+    if (name.startsWith("operator-") || agentActionFixtures[name] === true) continue;
     expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
+  }
+  const build = daemonApiRecords(fixtureDir);
+  const naming = [...build.records, ...build.enumeratedFields].filter((row) =>
+    JSON.stringify(row).includes("suspendedBy")
+  );
+  // The composition finds the key where it does live, so an empty read cannot pass for a clean one.
+  expect(naming.length).toBeGreaterThan(0);
+  for (const row of naming) {
+    expect(row.answer, `a record names suspendedBy at the ${row.answer} answer`).toBe(
+      "agent-action"
+    );
+  }
+  // The exception is the four routes' and no wider: each of their fixtures exists.
+  for (const name of Object.keys(agentActionFixtures)) {
+    expect(fixtures, name).toContain(name);
   }
 });
 
@@ -3519,6 +3601,90 @@ test("the state golden names the daemon's Dispatch credential, and the key may b
   }
 });
 
+// Each issue's two Dispatch priorities (C1 and C5 of dispatch://INFRA-5636, check c-mirror):
+// `priority`, the issue's own (contract 250), and `resolvedPriority`, the one Dispatch resolves it
+// to and admission reads (the P0 start's contract entry), are each `number | null`: 0 for P0 to 3
+// for P3, null for none, and absent where the daemon serves no such key. `priorityFrom` names the
+// issue a resolved priority comes from, and is absent where it is the issue's own or none.
+// state.json holds every reading the daemon writes of the resolved priority: LEGION-211's own P1,
+// LEGION-207's P2 inherited from OTHER-5, LEGION-214's known none, which the key says with a null,
+// and no key at all on every other issue, as a Dispatch release that sends no resolved priority
+// leaves it. The issue record answers the state's issue view, so each row is read through both
+// schemas. What is refused is anything but a whole number from 0 to 3 or null, and a
+// `priorityFrom` that is no issue key.
+test("each issue's priority and resolved priority are a number from 0 to 3 or null, and may be absent", () => {
+  const state = fixtureBody("state.json");
+  const issues = state.issues;
+  if (!isJsonObject(issues)) {
+    throw new Error("state.json carries no issues");
+  }
+  const issue = (key: string): Record<string, unknown> => {
+    const found = issues[key];
+    if (!isJsonObject(found)) {
+      throw new Error(`state.json carries no issue ${key}`);
+    }
+    return found;
+  };
+  /** The issue as each reader of it parses body: the issue record's schema, and the state's with
+   * body in the place of the golden's issue of that key. */
+  const readings = (key: string, body: Record<string, unknown>) => {
+    const record = LegionIssueRecordResponse.safeParse(body);
+    const served = LegionStateResponse.safeParse({ ...state, issues: { ...issues, [key]: body } });
+    return [
+      { reader: "the issue record", success: record.success, issue: record.data },
+      { reader: "the state", success: served.success, issue: served.data?.issues[key] },
+    ];
+  };
+
+  const parsed = LegionStateResponse.parse(state).issues;
+  expect(parsed["LEGION-211"]).toMatchObject({ priority: 1, resolvedPriority: 1 });
+  expect(parsed["LEGION-207"]).toMatchObject({
+    priority: null,
+    resolvedPriority: 2,
+    priorityFrom: "OTHER-5",
+  });
+  expect(issue("LEGION-214").resolvedPriority).toBeNull();
+  expect(parsed["LEGION-214"]).toMatchObject({ priority: null, resolvedPriority: null });
+  for (const key of ["LEGION-211", "LEGION-214"]) {
+    expect(issue(key)).not.toHaveProperty("priorityFrom");
+  }
+  expect(issue("LEGION-208")).not.toHaveProperty("resolvedPriority");
+  expect(parsed["LEGION-208"]?.resolvedPriority).toBeUndefined();
+
+  const known = issue("LEGION-214");
+  for (const field of ["priority", "resolvedPriority"] as const) {
+    for (const value of [0, 1, 2, 3, null]) {
+      for (const read of readings("LEGION-214", { ...known, [field]: value })) {
+        const row = `${read.reader}, ${field} ${value}`;
+        expect(read.success, row).toBeTrue();
+        expect(read.issue?.[field], row).toBe(value);
+      }
+    }
+    const { [field]: _absent, ...without } = known;
+    for (const read of readings("LEGION-214", without)) {
+      expect(read.success, `${read.reader}, ${field} absent`).toBeTrue();
+      expect(read.issue?.[field], `${read.reader}, ${field} absent`).toBeUndefined();
+    }
+    for (const refused of ["0", true, 4, -1, 1.5]) {
+      for (const read of readings("LEGION-214", { ...known, [field]: refused })) {
+        expect(read.success, `${read.reader}, ${field} ${JSON.stringify(refused)}`).toBeFalse();
+      }
+    }
+  }
+
+  const inherited = issue("LEGION-207");
+  const { priorityFrom: _from, ...fromNone } = inherited;
+  for (const read of readings("LEGION-207", fromNone)) {
+    expect(read.success, `${read.reader}, priorityFrom absent`).toBeTrue();
+    expect(read.issue?.priorityFrom, `${read.reader}, priorityFrom absent`).toBeUndefined();
+  }
+  for (const refused of ["other-5", "OTHER", "OTHER-", "", 5, null]) {
+    for (const read of readings("LEGION-207", { ...inherited, priorityFrom: refused })) {
+      expect(read.success, `${read.reader}, priorityFrom ${JSON.stringify(refused)}`).toBeFalse();
+    }
+  }
+});
+
 // The project's pause (contract 178). state.json is the state of a paused project: it names the
 // pause that stands, who paused, the claim whose stop the pause still waits on and the two rows
 // it holds, one for a claim and one that names none. state-last-pause.json is the state of a
@@ -3681,6 +3847,32 @@ test("a pause rejects an empty reason", () => {
     LegionProjectPauseRequest.safeParse({ grantId: "controller-grant-1", reason: "" }).success
   ).toBeFalse();
   expect(LegionOperatorProjectPauseRequest.safeParse({ reason: "" }).success).toBeFalse();
+});
+
+// A set of the P0 bound names a bound, a whole number from 1 to 2147483647, the most the daemon's
+// store holds, as the daemon takes it (`INVALID_P0_BOUND` otherwise): the controller's request and
+// the operator's take the same bounds, and the answer carries no other.
+test("a set of the P0 bound takes a bound from 1 to 2147483647 and refuses one past either end", () => {
+  const grantId = "controller-grant-1";
+  const reason = "the P0 issues outran the gateway";
+  for (const [bound, taken] of [
+    [1, true],
+    [2147483647, true],
+    [0, false],
+    [2147483648, false],
+  ] as const) {
+    expect(
+      LegionProjectP0BoundRequest.safeParse({ grantId, bound, reason }).success,
+      `${bound}`
+    ).toBe(taken);
+    expect(
+      LegionOperatorProjectP0BoundRequest.safeParse({ bound, reason }).success,
+      `${bound}`
+    ).toBe(taken);
+    expect(LegionP0BoundResponse.safeParse({ bound, configured: bound }).success, `${bound}`).toBe(
+      taken
+    );
+  }
 });
 
 // The intake's open give-ups (contract 228). The golden counts two consumers' and lists three

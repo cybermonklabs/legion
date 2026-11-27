@@ -384,32 +384,37 @@ Check, in order:
    legion state --config legion.yaml --json | jq .admission
    ```
 
-   `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
-   line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
-   counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
-   is in `blocked`, with each child it waits for. So is a parent in phase `awaiting_children`, whose
-   phases had started: it holds no slot, `held` names it `awaiting_children`, and it goes on by
-   itself once no child under it is open
+   `active` lists the issues holding a slot, roots and children alike.
+   `waiting` lists the issues in line, `trees` lists the roots of the live trees, `cap` is
+   `admission_cap` (which counts only holders that are not P0), `p0Holders` counts the holders
+   that are P0 outside `cap`, and `p0Bound` gives the P0 bound in force.
+   A P0 issue needs no free regular slot and starts outside `cap` while below any P0 bound.
+   A parent whose own first phase waits for its open children is in `blocked`, with each child it
+   waits for.
+   So is a parent in phase `awaiting_children`, whose phases had started: it holds no slot, `held`
+   names it `awaiting_children`, and it goes on by itself once no child under it is open
    ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
 
    Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
-   that placed it, its own, else its tree root's (0 for P0 to 3 for P3, or null for one that waits
-   after P3); `part`, `returned` for
-   an issue whose work came back or `starting` for one that has not started; `kind`;
-   `partPlace` and `partLength` within its priority and part; `holdsSlot`, true where it holds its
-   admission slot already and so waits for no free one; `since`, or the `rootRank`, `ownRank`
-   and `rootKey` that placed it; and `reason`, the daemon's own sentence. Plain `legion state`
-   prints that sentence for the first ten waiting issues under the `admission:` counts, each
-   line reading `<KEY> <place> of <N>, <part>: <reason>`, and then `and <N> more`. It prints
-   `waiting line: none` while nothing waits, and
-   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
-   this caller no sentence. The line is ordered by Dispatch priority first, P0 to P3 and then the
-   issues with no priority; within one priority, an issue that has not started stands behind every
-   issue whose work came back, whatever its board rank, so that order is no fault to chase. An
-   issue waits behind every issue of a higher priority, whatever its part: `waitingLine.priority`
-   is the priority it waits at, and `issues.<KEY>.priority` is its own, so a child whose own is
-   null waits at its tree root's. A priority changed in Dispatch moves the issue at the next
-   admission pass, and priority takes no slot back from work that runs.
+   that placed it (the priority Dispatch resolves for it, 0 for P0 to 3 for P3, or null for one
+   that waits after P3); `part`, `returned` for an issue whose work came back or `starting` for
+   one that has not started; `kind`; `partPlace` and `partLength` within its priority and part;
+   `holdsSlot`, true where it holds its admission slot already and so waits for no free one;
+   `since`, or the `rootRank`, `ownRank` and `rootKey` that placed it; and `reason`, the daemon's
+   own sentence. Plain `legion state` prints that sentence for the first ten waiting issues under
+   the `admission:` counts, each line reading `<KEY> <place> of <N>, <part>: <reason>`, and then
+   `and <N> more`. It prints `waiting line: none` while nothing waits, and `waiting line: the
+   daemon sent no reasons at this caller's contract` where the daemon served this caller no
+   sentence. The line is ordered by the priority Dispatch resolves first, P0 to P3 and then issues
+   with no priority. Within one priority, an issue that has not started stands behind every issue
+   whose work came back, whatever its board rank, so that order is no fault to chase. An issue
+   waits behind every issue of a higher priority, whatever its part. `waitingLine.priority` is the
+   priority it waits at, `issues.<KEY>.priority` is its own, and `issues.<KEY>.resolvedPriority`
+   is what Dispatch resolved (with `priorityFrom` naming the ancestor when inherited). With an
+   older Dispatch release that sends no `resolved_priority`, an issue waits at its own priority,
+   else its Legion root's, for the line alone, and that fallback never makes an issue P0. A priority
+   change in Dispatch moves the issue at the next admission pass, and priority takes no slot back
+   from work that runs.
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -475,12 +480,13 @@ start it by hand. Without `answeredAt`, check, in order:
    turn, wakes it once nothing else is with the person. An agent's answer or resolution of another
    ask never wakes it, nor does a person's act from before the wait began.
 2. **The hand-over label.** A root whose `legion` label was taken off is not resumed: the daemon
-   takes it out of the workflow (`phase: done`) and tells the controller `unslotted`. Put the label
-   back and set the root to `todo` to queue it again.
+   takes it out of the workflow (`phase: done`) and tells nobody; `legion state` shows the root at
+   `phase: done` beside the status it ran with. Put the label back and set the root to `todo` to
+   queue it again.
 3. **The Dispatch claim.** `dispatch read <KEY>` shows `Claimed by:`. A claim held by a person or a
-   session outside the tree stops the resume and takes the root out of the workflow the same way,
-   with an `unslotted` notice: Legion never resumes work another owner took. Release the claim,
-   then `todo` with the label queues the root again.
+   session outside the tree stops the resume and takes the root out of the workflow the same way:
+   Legion never resumes work another owner took. Release the claim, then `todo` with the label
+   queues the root again.
 4. **An answer the daemon never saw.** When `dispatch read <KEY>` shows the person already
    answered after `since` and none of the above holds, the answer's event never reached the
    daemon, and nothing re-reads a waiting root's asks until the next boot. Restarting the daemon
@@ -609,10 +615,10 @@ fallback chain, so the next prompt goes to another model
 ([Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged));
 a 429, a 408, a 401, a 403, a 5xx and an error the provider answered no status for are sent again
 too: a credential error is the fleet's rather than this claim's work, so it climbs the ladder like
-any other and the controller's notice at six is what tells a person. A session that reached Oh My
-Pi's cost cap (`session.maxCost`; Oh My Pi gives the result the code `cost_cap` and sends no
-request) climbs the ladder too: the re-sent prompt and the notice name the cost cap, and the next
-send after a person raises the cap goes through. A newer
+any other and the `provider-errors` notice at six (below) is what tells a person. A session that
+reached Oh My Pi's cost cap (`session.maxCost`; Oh My Pi gives the result the code `cost_cap` and
+sends no request) climbs the ladder too: the re-sent prompt and the notice name the cost cap, and
+the next send after a person raises the cap goes through. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
 waits for the compaction's end instead, as everything the claim is owed does. An update round
@@ -747,22 +753,24 @@ counts in the claim's run of provider-error turns below. Nothing is sent again f
 carried no task.
 
 **After six turns of one claim in a row have ended in a provider error**, whether a prompt of the
-daemon's ran them or not, the project's controller is told once, as `provider-errors on <KEY>`,
-with the run, the model where the prompt's result named one, and the cause
-(`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
-held and nothing is stopped by that count. A prompt's task is still kept and still sent again on
-the ladder, and the notice says so; a turn that no prompt of the daemon's ran carried no task, so
+daemon's ran them or not, the daemon tells once, as `provider-errors on <KEY>`, with the run, the
+model where the prompt's result named one, and the cause
+(`supervise: a run of turns that ended in a provider error; it is handed to ProviderErrorRunReached`).
+A run of a phase worker's claim is told to the architect that owns the issue and to the project's
+controller, a run of the tree root's architect's own claim to the controller alone, and a run of a
+child's own architect's claim to the architect above that child and the controller. Nothing is held
+and nothing is stopped by that count. A prompt's task is still kept and still sent again on the
+ladder, and the notice says so; a turn that no prompt of the daemon's ran carried no task, so
 nothing is sent again for it, the reminders keep their pace, and a notice whose sixth turn was such
-a turn says that the daemon sends no task again for it. The run
-goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
-compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
-Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's
-recorded session is forgotten, by `legion claims retry --fresh-session`, the controller's
-`fresh_session`, `legion claims forget-session`, or any new launch of the agent of a claim held for
-`cyber_policy`. Only after one of those can another notice go. The notice is the claim's own — the
-issue and the role that names it — so
-two claims of one issue each get a notice of their own, and in a provider outage every claim that
-reaches six is told.
+a turn says that the daemon sends no task again for it. The run goes back to zero three ways: at a
+turn of that claim that ends with no provider error, at a compaction of its session that ran
+(`legion claims compact`, or the controller's `compact`; one Oh My Pi refused or skipped resets
+nothing, since the session is as it was), and when the claim's recorded session is forgotten, by
+`legion claims retry --fresh-session`, the controller's `fresh_session`,
+`legion claims forget-session`, or any new launch of the agent of a claim held for `cyber_policy`.
+Only after one of those can another notice go. The notice is the claim's own — the issue and the
+role that names it — so two claims of one issue each get a notice of their own, and in a provider
+outage every claim that reaches six is told.
 
 **When the memory guard of the controller's own pod ends one of the controller's programs**, the
 controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the project key as a
@@ -973,8 +981,10 @@ nobody read whether a turn of it runs. A claim stored working that no process st
 refused
 `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again, because this command has
 no agent to ask; for the project's own controller claim, which `--fresh-session` refuses and
-whose keeper does nothing while it is stored working, it names
-`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
+whose keeper ends its turn only once that turn has stayed open longer than
+`controller_turn_bound_minutes` (90 by default, `0` off), it names
+`legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`, which
+wait for no bound.
 A handoff Oh My Pi refused — one asked for in a turn, a session with nothing to hand off — or
 answered with no document, or with a result that is not an object (`Oh My Pi gave a handoff
 result that is not an object. The daemon cannot say if the session changed.`), is printed with
@@ -1162,11 +1172,13 @@ failure by the child's next phase start. A notice starts no architect, except on
 the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
 undelivered once that claim has failed or retired, and a notice for a child whose own architect
 does not hold its role goes to the architect above. A suspended worker of its issue's current
-phase that the daemon suspended is resumed by the daemon at boot. One an operator suspended
-(`legion claims suspend`, one claim at a time or a whole fleet before a restart), or whose
+phase that the daemon suspended is resumed by the daemon at boot. One the operator or the
+project's controller suspended (the operator's `legion claims suspend`, one agent at a time or a
+whole fleet before a restart, or the controller's suspension through its `legion` tool), or whose
 suspension predates the release that records who suspended it (`suspendedBy: unknown`), is not;
-neither is an operator-suspended or failed tree architect, nor a claim whose launches ran out, nor
-a claim a close or a stop retired while its tree runs, whatever its role. Each of those but a
+neither is a tree architect that the operator or the controller suspended or that failed, nor a
+claim whose launches ran out, nor an agent a close or a stop retired while its tree runs,
+whatever its role. Each of those but a
 child's own architect stops its tree: nothing wakes it, the daemon looks healthy and the state
 shows the tree active, but the tree stops for good at the worker's phase, or at the first decision
 that needs its architect. A child's own architect stops no tree, since its child's notices go to
@@ -1231,6 +1243,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     legion claims deliver --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-12-implementer \
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
+  - **`suspendedBy: controller`** (the project's controller suspended it through its `legion`
+    tool): it is the controller's move, and it waits for the controller's `resume_agent`. Ask the
+    controller on its role topic before you act; your own resume or delivery lifts that suspension
+    too, since the operator's outranks it.
 
 - **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on
   a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
@@ -1274,11 +1290,12 @@ The list never names a child's own architect: while that architect does not hold
 architect above it takes the child's notices, and a later start of the role brings it back, as the
 daemon's supervise table decides for the state the claim stands in. The workflow's own starts of
 it, an operator's retry and the controller's `fresh_session` are among such starts. A child's own
-architect that an operator suspended waits for the operator's resume (`legion claims list` shows
-it).
-Any other claim an operator suspended is listed even when a workflow start is queued for it: that
-start waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no
-start is queued for it, since the next phase start or re-admission resumes it as before.
+architect that the operator or the controller suspended waits for that holder's resume, or the
+operator's, which lifts the controller's too (`legion claims list` shows the holder as its
+`suspendedBy`). Any other claim whose agent either of them suspended is listed even when a
+workflow start is queued for it: that start waits for the same resume. One whose `suspendedBy` is
+`unknown` is listed only while no start is queued for it, since the next phase start or
+re-admission resumes it as before.
 
 ## A worker that stopped taking turns
 
@@ -1292,7 +1309,9 @@ That bound is 30 minutes by default, and the configuration refuses a value under
 
 The daemon sends the worker its work again, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
 The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
-A suspension an operator holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
+A suspension the operator or the controller holds over the agent is the one thing that refuses the start when the outbox runs it, and the notice says so as well.
+Resume the agent, or have the architect message the role and the controller start its session again with `fresh_session`.
+Under your own suspension, the daemon refuses the controller's `fresh_session` with `409 SUSPENDED_BY_OPERATOR`, so lift that hold first with your own `legion claims resume`.
 
 The daemon writes the same record to its own log, as `workflow: a phase worker nothing will prompt was found silent; its architect is told`, so an operator finds every silence without a Dispatch notice.
 

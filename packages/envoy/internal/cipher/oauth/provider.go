@@ -7,7 +7,7 @@
 // The same token endpoint runs the RFC 8693 token exchange: a pod, a continuous-integration
 // workflow run or a dev box session presents the identity its platform already gave it and is
 // answered a short-lived Dispatch access token, bound to its own key, saying which session is
-// writing, which person it acts for and which project it may write. Those tokens stay opaque, so
+// writing, which person it acts for and which project it names. Those tokens stay opaque, so
 // Dispatch reads one back through Introspect, the RFC 7662 answer.
 package oauth
 
@@ -158,14 +158,18 @@ var ErrMachineKeyTaken = errors.New("another live machine login holds this key")
 // (enroll.ErrKeyBindsReadToken). Its hint names the read token and the cure, a new key.
 var ErrMachineKeyBindsReadToken = errors.New("a live read token is bound to this key")
 
-// ErrSignInRevoked and ErrSignInMachineChanged are the two ExchangeConfig.PersonSignIns errors
-// (wrapped or not) that refuse a person's trade invalid_grant: that person has revoked the
-// sign-in this box key belongs to, and the sign-in this box key belongs to was made on another
-// machine. Either way the box signs in again with a key of its own. Any other error from it is
-// a 500 server_error.
+// ErrSignInRevoked, ErrSignInMachineChanged, ErrSignInSubjectChanged and ErrSignInSubjectReplaced
+// are the ExchangeConfig.PersonSignIns errors (wrapped or not) that refuse a person's trade
+// invalid_grant: that person has revoked the sign-in this box key belongs to; the sign-in this box
+// key belongs to was made on another machine, or by another account than the one the person's
+// token names, and either way the box signs in again with a key of its own; or the account the
+// person's token names no longer holds the person's address, which another account holds now.
+// Any other error from it is a 500 server_error.
 var (
-	ErrSignInRevoked        = errors.New("the person has revoked this machine's sign-in")
-	ErrSignInMachineChanged = errors.New("this sign-in was made on another machine")
+	ErrSignInRevoked         = errors.New("the person has revoked this machine's sign-in")
+	ErrSignInMachineChanged  = errors.New("this sign-in was made on another machine")
+	ErrSignInSubjectChanged  = errors.New("this sign-in was made by another account")
+	ErrSignInSubjectReplaced = errors.New("another account holds this person's address now")
 )
 
 // TokenHooks are the broker's own steps around a token request the library has validated.
@@ -382,6 +386,12 @@ func (p *Provider) DeviceAuthorize(w http.ResponseWriter, r *http.Request, verif
 	writeOAuthJSON(w, http.StatusOK, body)
 }
 
+// extraOperator is the key of a machine login's session extra naming the person who approved the
+// login (machine.Service.decideDevice writes it): the login's subject (ApproveDevice), the person
+// the device-code grant asks the hold of, and the person introspection answers a machine login's
+// own token held for.
+const extraOperator = "operator"
+
 // ApproveDevice records a person's decision on the device login userCode names (as typed:
 // NormalizeUserCode applies), in the transaction ctx carries when it carries one. An approval
 // grants the machine scope and gives the login's session extra, whose "operator" is its subject
@@ -415,7 +425,7 @@ func (p *Provider) ApproveDevice(ctx context.Context, userCode string, approved 
 		request.GrantScope(oauthwire.Scope)
 	}
 	request.SetStatus(status)
-	operator, _ := extra["operator"].(string)
+	operator, _ := extra[extraOperator].(string)
 	session := &oauth2.DefaultSession{Subject: operator, Extra: extra}
 	// The decision's session replaces the stored one, so it keeps the stored codes' expiry.
 	if stored, ok := request.GetSession().(*oauth2.DefaultSession); ok {
@@ -436,6 +446,12 @@ func (p *Provider) ApproveDevice(ctx context.Context, userCode string, approved 
 // so a row Before locks stays locked until the new tokens are stored. Validating the request stays
 // outside it: a reused refresh token's family revocation commits on its own though the request is
 // refused.
+//
+// The device code grant asks the hold gate about the login's operator before the transaction
+// begins (heldRefusal), and refuses a held person's grant once hooks.Before has found the login
+// live, so a revoked login gets its own refusal first; the transaction rolls back, issuing
+// nothing and leaving the device code to be redeemed once the hold ends. The refresh grant asks
+// nothing: a machine login refreshes while Dispatch holds its person, so a hold lapses no login.
 func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHooks) {
 	ctx := r.Context()
 	// Read before the library does, because the two kinds of request need different sessions and
@@ -455,6 +471,11 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 	var extra map[string]any
 	if session, ok := request.GetSession().(*oauth2.DefaultSession); ok {
 		extra = session.Extra
+	}
+	var held error
+	if grant == oauth2.GrantTypeDeviceCode {
+		operator, _ := extra[extraOperator].(string)
+		held = p.heldRefusal(ctx, operator)
 	}
 	txCtx, err := p.store.BeginTX(ctx)
 	if err != nil {
@@ -478,6 +499,10 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 			refusal = oauth2.ErrInvalidGrant.WithHint("The machine login has ended.")
 		}
 		p.writeError(ctx, w, request, refusal.WithWrap(err).WithDebugError(err))
+		return
+	}
+	if held != nil {
+		p.writeError(ctx, w, request, held)
 		return
 	}
 	resp, err := p.oauth.NewAccessResponse(txCtx, request)
@@ -590,13 +615,14 @@ func (p *Provider) ReleasePodSessions(ctx context.Context, registrar string, ses
 }
 
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause. A
-// request the store refused to keep (oauthstore.ErrUnstorableText, however the library wrapped it)
-// is the caller's, not the broker's: it is answered 400 invalid_request REQUEST_INVALID and logs
-// nothing.
+// request the store refused to keep (oauthstore.ErrUnstorableText, however the library wrapped it:
+// a control character in a form parameter or a DPoP proof's jti, or a proof's jti and target URI
+// too long) is the caller's, not the broker's: it is answered 400 invalid_request REQUEST_INVALID
+// and logs nothing.
 func (p *Provider) writeError(ctx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, err error) {
 	if errors.Is(err, oauthstore.ErrUnstorableText) {
 		WriteRefusal(w, &Refusal{Status: http.StatusBadRequest, Code: "REQUEST_INVALID",
-			Message: "the request holds a control character in a form parameter or a DPoP proof's jti, which the broker does not store"})
+			Message: "the request holds a control character in a form parameter or a DPoP proof's jti, or the proof's jti and target URI are too long, which the broker does not store"})
 		return
 	}
 	if oauth2.ErrorToRFC6749Error(err).CodeField >= http.StatusInternalServerError {

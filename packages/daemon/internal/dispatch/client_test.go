@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1253,6 +1254,225 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	defer stuck.Close()
 	if _, err := New(stuck.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7); err == nil || !strings.Contains(err.Error(), "non-ascending") {
 		t.Fatalf("a page at the sequence already read = %v, want refused", err)
+	}
+}
+
+// daemonOfOther is the actor every write of clientWrites names from a client made with no option:
+// the session of the daemon of the project OTHER, the project of the key OTHER-7
+// (DaemonSession).
+const daemonOfOther = `{"kind":"session","id":"legion-daemon:OTHER"}`
+
+// clientWrite is one write of HTTPClient as the daemon makes it on the issue OTHER-7 (on the
+// project OTHER for PutGatedSteps): the method, the call, the request it sends ("<method>
+// <escaped path>"), the body a client made with no option sends, which is the body the client sent
+// before WritesAs, byte for byte, and what the stand-in answers ({} where it is empty).
+type clientWrite struct {
+	method string
+	call   func(ctx context.Context, client *HTTPClient) error
+	route  string
+	body   string
+	answer string
+}
+
+// clientWrites is every write of HTTPClient, one row each.
+func clientWrites() []clientWrite {
+	const step = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
+	const plan = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
+	retro := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
+		Agent: "legion-other-other-7-implementer", Generation: 2}
+	started := retro
+	at := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
+	started.StartedAt = &at
+	return []clientWrite{
+		{
+			method: "SetStatus", route: "PATCH /api/v1/issues/OTHER-7",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.SetStatus(ctx, "OTHER-7", "in_progress")
+				return err
+			},
+			body: `{"status":"in_progress","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "SetStatusAt", route: "PATCH /api/v1/issues/OTHER-7",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.SetStatusAt(ctx, Issue{Key: "OTHER-7", Status: "todo", LastSeq: 12}, "in_progress")
+				return err
+			},
+			body: `{"status":"in_progress","expected_sequence":12,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "ReleaseClaim", route: "DELETE /api/v1/issues/OTHER-7/claim",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.ReleaseClaim(ctx, "OTHER-7")
+			},
+			body: `{"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutGatedSteps", route: "PUT /api/v1/projects/OTHER/gated-steps",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutGatedSteps(ctx, "OTHER", []string{"criteria", "spec"})
+			},
+			body: `{"steps":["criteria","spec"],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutDesignGates", route: "PUT /api/v1/issues/OTHER-7/design-gates",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutDesignGates(ctx, "OTHER-7", []DesignGateDocument{{Step: "spec", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"}})
+			},
+			body: `{"gates":[{"step":"spec","artifact_id":"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b","holds":null}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutRoleHolders", route: "PUT /api/v1/issues/OTHER-7/role-holders",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutRoleHolders(ctx, "OTHER-7", []RoleHolder{{Role: "implementer", Session: "ses-implementer"}})
+			},
+			body: `{"holders":[{"role":"implementer","session":"ses-implementer"}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutStep", route: "PUT /api/v1/issues/OTHER-7/steps/" + step,
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutStep(ctx, "OTHER-7", step, started)
+			},
+			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"started_at":"2026-11-16T23:00:00Z","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutStepRating", route: "PUT /api/v1/issues/OTHER-7/steps/" + step + "/rating",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutStepRating(ctx, "OTHER-7", step, retro, PlanRating{Rating: 4, Reason: "The plan put the tests after the review."})
+			},
+			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"rating":4,"rating_reason":"The plan put the tests after the review.","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutStepExperiment", route: "PUT /api/v1/issues/OTHER-7/steps/" + step + "/experiment",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutStepExperiment(ctx, "OTHER-7", step, retro, StepExperiment{Experiment: "memory", Variant: "off"})
+			},
+			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"experiment":"memory","variant":"off","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PutPlan", route: "PUT /api/v1/issues/OTHER-7/plans/" + plan,
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutPlan(ctx, "OTHER-7", plan, PlanWrite{Generation: 2, Source: "default",
+					Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}})
+			},
+			body: `{"generation":2,"source":"default","tasks":[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}],"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "HandOver", route: "PATCH /api/v1/issues/OTHER-7",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.HandOver(ctx, Issue{Key: "OTHER-7", Status: "in_progress", LastSeq: 7}, "todo")
+			},
+			body: `{"status":"todo","labels_add":["legion"],"expected_sequence":7,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "PostMessage", route: "POST /api/v1/issues/OTHER-7/messages",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PostMessage(ctx, "OTHER-7", "Pull request checks are blocked.")
+			},
+			body: `{"body":"Pull request checks are blocked.","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "UploadArtifact", route: "POST /api/v1/issues/OTHER-7/artifacts",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.UploadArtifact(ctx, "OTHER-7", "rescue-pod-9d3f0c7a", "# The full list\n")
+				return err
+			},
+			body:   `{"name":"rescue-pod-9d3f0c7a","content":"# The full list\n","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+			answer: `{"artifact":{"id":"artifact-3","slug":"rescue-pod-9d3f0c7a"}}`,
+		},
+	}
+}
+
+// TestEveryWriteNamesTheSessionItsClientWritesAs: every write of the daemon's client names an
+// actor, and Dispatch takes the write of a broker token that proves a session only where that
+// actor names the same session (ACTOR_SESSION_MISMATCH). A client made with no option names the
+// session of the daemon of the key's project (DaemonSession) and sends each body byte for byte as
+// it did before WritesAs. A client made WritesAs a session names that session on every write, on
+// an issue of another project too, and changes nothing else in the body.
+func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
+	for _, write := range clientWrites() {
+		t.Run(write.method, func(t *testing.T) {
+			if named := strings.Count(write.body, daemonOfOther); named != 1 {
+				t.Fatalf("the row's body names the actor %s %d times, want once: %s", daemonOfOther, named, write.body)
+			}
+			for _, tc := range []struct {
+				name   string
+				client func(url string) *HTTPClient
+				body   string
+			}{
+				{
+					name:   "a client made with no option",
+					client: func(url string) *HTTPClient { return New(url, BearerTransport(dispatchToken, nil)) },
+					body:   write.body,
+				},
+				{
+					name: "a client made WritesAs legion-daemon:EXAMPLE",
+					client: func(url string) *HTTPClient {
+						return New(url, BearerTransport(dispatchToken, nil), WritesAs("legion-daemon:EXAMPLE"))
+					},
+					body: strings.Replace(write.body, daemonOfOther, `{"kind":"session","id":"legion-daemon:EXAMPLE"}`, 1),
+				},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var route, body string
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						sent, err := io.ReadAll(r.Body)
+						if err != nil {
+							t.Errorf("read the body of %s %s: %v", r.Method, r.URL.EscapedPath(), err)
+						}
+						route, body = r.Method+" "+r.URL.EscapedPath(), string(sent)
+						answer := write.answer
+						if answer == "" {
+							answer = "{}"
+						}
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = io.WriteString(w, answer)
+					}))
+					defer server.Close()
+					if err := write.call(context.Background(), tc.client(server.URL)); err != nil {
+						t.Fatalf("%s: %v", write.method, err)
+					}
+					if route != write.route {
+						t.Errorf("%s sent %s, want %s", write.method, route, write.route)
+					}
+					if body != tc.body {
+						t.Errorf("%s sent the body\n%s\nwant\n%s", write.method, body, tc.body)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable: TestEveryWriteNamesTheSessionItsClientWritesAs
+// holds each write of its table to the session its client writes as, so a write the client gains
+// and the table does not hold could name another session unseen. Every exported method of
+// *HTTPClient is a row of that table or one of the reads below, which send no actor, and each name
+// the two lists hold is a method the client has.
+func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
+	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "Artifacts", "Ask", "Reviews", "DocumentVersion",
+		"EventsAfter", "MessageBodiesSince", "Approval", "ApprovedVersionBefore", "ArtifactChanges", "PlanDocument", "Handoff",
+		"Whoami"}
+	listed := map[string]string{}
+	for _, read := range reads {
+		listed[read] = "the list of reads"
+	}
+	for _, write := range clientWrites() {
+		listed[write.method] = "the table of writes"
+	}
+	methods := reflect.TypeOf(&HTTPClient{})
+	exported := map[string]bool{}
+	for i := range methods.NumMethod() {
+		name := methods.Method(i).Name
+		exported[name] = true
+		if _, ok := listed[name]; !ok {
+			t.Errorf("(*HTTPClient).%s is neither a row of clientWrites nor in this test's list of reads: a write is a row of that table, which holds it to the session its client writes as, and a read sends no actor", name)
+		}
+	}
+	for name, list := range listed {
+		if !exported[name] {
+			t.Errorf("%s names %s, which is no exported method of *HTTPClient", list, name)
+		}
 	}
 }
 

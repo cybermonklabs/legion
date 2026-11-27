@@ -23,7 +23,11 @@ import { checkCIJobResultCall, ciJobResultCommand } from "./dispatch-commands/ci
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
-import { hostedDispatch, hostSession, unhostedDispatch } from "./dispatch-commands/host-session";
+import {
+  hostedDispatch,
+  hostSessionDirectory,
+  unhostedDispatch,
+} from "./dispatch-commands/host-session";
 import { printsJson, specCheckResultCommand } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
 import {
@@ -52,6 +56,9 @@ import {
   tokenNotChecked,
   writeOutcomeUnknown,
 } from "./dispatch-http";
+import { LOGIN_COMMAND } from "./dispatch-login-command";
+import { runDispatchProxy, socketPathTaken } from "./dispatch-proxy";
+import { PROXY_COMMAND, parseProxyArgv, proxyExitLine, proxyHelp } from "./dispatch-proxy-command";
 import {
   SESSION_VARIABLES,
   sessionDirectory,
@@ -367,11 +374,13 @@ const LITERAL_FORM =
   "AskGate reviews a Dispatch write, and lets it post, only when it is sent as one bash call of literal words: `dispatch <command> <words…>`. Each word is plain text, text in single quotes (also over more than one line), or text in double quotes with no `$`, backtick or `\\`. A `\\` at the end of a line continues the command. Before it, one `cd <path> &&` is permitted; after it, one `2>&1`, one here-document opened with a quoted delimiter (`<<'EOF'`) and one `| head -n N` or `| tail -n N`. For text with `$` or a backtick in it, use `--<field>-file - <<'EOF'`. A variable, `~`, a glob, an assignment, another redirect (`2>/dev/null`, `> file`), another pipe, another command (`;`, `&&`, `||`), a loop, xargs, `bash -c`, a script, an alias, or a process that a program or an eval cell starts carries no marker.";
 
 /** A line that refuses a call before it reaches Dispatch, each at the start of the line:
- *  `dispatch <command> was not called: …` (an argument problem, exit 2, wherever it is found;
- *  AskGate's block of a write wears the same line and exits 1), or a usage refusal
- *  (exit 2), which is `dispatch: ` and its reason. The CLI's other `dispatch: ` lines refuse
- *  nothing: a result's warning
- *  (`dispatch: warning: `), the note that the session's state was not written
+ *  `dispatch <command> was not called: …` (an argument problem of a spec command or of
+ *  `dispatch login`, exit 2, wherever it is found; AskGate's block of a write wears the same line
+ *  and exits 1), or a usage refusal (exit 2), which is `dispatch: ` and its reason: a spec
+ *  command's, and `dispatch proxy`'s refusal of its session or of Dispatch's configuration. The
+ *  proxy's own refusals (`dispatch proxy: …`) and `dispatch login`'s answers at the broker
+ *  (`dispatch login: …`) are of neither form. The CLI's other `dispatch: ` lines refuse nothing:
+ *  a result's warning (`dispatch: warning: `), the note that the session's state was not written
  *  (STATE_WRITE_FAILED), and the notice of a file that is not read, printed beside a result. */
 const NOT_CALLED = /^dispatch ([a-z][a-z-]*) was not called: /;
 const NOT_A_REFUSAL = [
@@ -389,9 +398,9 @@ export interface CliRefusal {
 }
 
 /**
- * Each refusal the dispatch CLI printed in `text`, by its first line: what a reader of the CLI's
- * output (an agent's transcript, where a pipe can hide the exit) needs to tell a refused call from
- * one Dispatch answered. A line counts only at the start of a line of `text`.
+ * Each refusal of those two forms the dispatch CLI printed in `text`, by its first line: what a
+ * reader of the CLI's output (an agent's transcript, where a pipe can hide the exit) needs to tell
+ * a refused call from one Dispatch answered. A line counts only at the start of a line of `text`.
  */
 export function cliRefusals(text: string): CliRefusal[] {
   const found: CliRefusal[] = [];
@@ -466,7 +475,7 @@ export function fitOutput(
 }
 
 /**
- * One `dispatch` command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
+ * One spec command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
  * the host session the environment names, and prints what the model reads. The host plugin sets
  * `DISPATCH_HOST`, `ENVOY_CONFIG_FILE` (the envoy.json it chose) and the session's id in the
  * agent's shell (`CLAUDE_CODE_SESSION_ID` under Claude Code, where claude-envoy's QA override
@@ -517,6 +526,90 @@ function commandHost(
   return env.CLAUDE_CODE_CHILD_SESSION === "1" ? "claude" : undefined;
 }
 
+/**
+ * `dispatch proxy --socket <path> -- <command>`: its own arguments (`parseProxyArgv`), then the
+ * host, the session, its directory and Dispatch resolved as every spec command resolves them
+ * (`hostSessionDirectory`, `hostedDispatch`), under `DISPATCH_TOKEN_BROKER=1` with a DPoP
+ * credential, then the proxy itself (`runDispatchProxy`). It reads the settings a spec command
+ * reads, but it never runs on the token files: it starts only under `DISPATCH_TOKEN_BROKER=1`,
+ * which the files refuse beside them, so it trades its own token at the broker. Every line of its
+ * own goes to standard error, since standard output belongs to its command, and none goes to the
+ * session's records: it calls neither `refuse` nor `recordOutcome`. A run that cannot start ends
+ * with the exit line, as every run does; `--help`, `--dry-run` and a refusal of its own arguments
+ * print none. `--dry-run` checks what a run checks before it trades and prints the Dispatch
+ * server, the session and the socket on standard output.
+ */
+async function runProxyCommand(
+  rest: readonly string[],
+  env: Readonly<Record<string, string>>,
+  rawEnv: Readonly<Record<string, string | undefined>>,
+  io: DispatchCliIo,
+  hostName: () => string | undefined
+): Promise<number> {
+  const say = (text: string): void => io.stderr(`${text}\n`);
+  const parsed = parseProxyArgv(rest, io.cwd);
+  if (parsed.kind === "help") {
+    io.stdout(proxyHelp());
+    return OK;
+  }
+  if (parsed.kind === "refused") {
+    say(`dispatch proxy: ${parsed.problem} Run dispatch proxy --help.`);
+    return USAGE;
+  }
+  const { dryRun, socket, command } = parsed;
+  const cannotStart = (text: string): number => {
+    say(text);
+    if (!dryRun) say(proxyExitLine(0, 0, 0));
+    return USAGE;
+  };
+
+  const hosted = hostSessionDirectory(hostName(), env);
+  if ("problem" in hosted) return cannotStart(hosted.problem);
+  const { sessionId, file } = hosted;
+  // Read before the configuration, whose refusal without the setting would name a bearer the
+  // proxy never presents. A value other than 1 is refused there too, unquoted.
+  if ((env.DISPATCH_TOKEN_BROKER ?? "").trim() !== "1") {
+    return cannotStart(
+      "dispatch proxy: DISPATCH_TOKEN_BROKER is not 1, so this session holds no broker token for the proxy to serve with. The proxy runs only where the deployment trades this session's Dispatch credential at the secrets broker, and never with a bearer."
+    );
+  }
+  const resolved = await hostedDispatch(file, env, { cwd: io.cwd, session: sessionId });
+  for (const line of resolved.warnings) say(line);
+  if ("problem" in resolved) return cannotStart(resolved.problem);
+  const { config } = resolved;
+  if (config.credential.scheme !== "DPoP") {
+    return cannotStart(
+      "dispatch proxy: this session's Dispatch credential is not a DPoP-bound broker token, and the proxy serves only with one."
+    );
+  }
+
+  if (dryRun) {
+    const taken = socketPathTaken(socket);
+    if (taken !== undefined) return cannotStart(taken);
+    io.stdout(
+      [`Dispatch server: ${config.url}`, `Session: ${sessionId}`, `Socket: ${socket}`, ""].join(
+        "\n"
+      )
+    );
+    return OK;
+  }
+  // The command's environment is the one the proxy was given, an empty variable kept as it is.
+  const commandEnv: Record<string, string> = {};
+  for (const [name, value] of Object.entries(rawEnv)) {
+    if (value !== undefined) commandEnv[name] = value;
+  }
+  return await runDispatchProxy({
+    socket,
+    command,
+    env,
+    commandEnv,
+    cwd: io.cwd,
+    config,
+    sessionId,
+    stderr: (text) => io.stderr(text),
+  });
+}
+
 export async function runDispatchCli(
   argv: readonly string[],
   rawEnv: Readonly<Record<string, string | undefined>>,
@@ -545,16 +638,17 @@ export async function runDispatchCli(
   // terminal, so it reads no host, no session and no envoy.json (`dispatch-commands/login.ts`).
   // It refuses while either token file is set, after its own `--help`; `tokenFilesTarget` in
   // `dispatch-config.ts` says when a call below runs on the files.
-  if (argv[0] === "login") {
+  if (argv[0] === LOGIN_COMMAND) {
     return await loginCommand(argv.slice(1), env, {
       print,
       fetchImpl: io.fetchImpl,
       sleep: io.sleep,
     });
   }
-  // A refusal before the call reaches Dispatch goes to the session's ledger too, whenever this
-  // call knows its session, so a reader of the ledger (pi-envoy's run-end check, the
-  // skill-scenario rig) sees a call whose output a pipe, `$(…)` or another program swallowed.
+  // A refusal before the call reaches Dispatch, but `dispatch proxy`'s, goes to the session's
+  // ledger too, whenever this call knows its session, so a reader of the ledger (pi-envoy's
+  // run-end check, the skill-scenario rig) sees a call whose output a pipe, `$(…)` or another
+  // program swallowed.
   // The host need not be known for the session to be: a Python `subprocess.run(["dispatch", …])`
   // inherits the session id without `DISPATCH_HOST`. A ledger that cannot be written changes
   // nothing here: the refusal is already printed, and the caller is exiting.
@@ -596,6 +690,13 @@ export async function runDispatchCli(
     ledgerRefusal(text, tool, askgate);
     return code;
   };
+
+  // No Dispatch tool spec defines `dispatch proxy`: its own parser takes `--` and the command
+  // after it, and it prints every line of its own on standard error, since its command's
+  // standard output is the command's alone.
+  if (argv[0] === PROXY_COMMAND) {
+    return await runProxyCommand(argv.slice(1), env, rawEnv, io, ledgerHost);
+  }
 
   // A CI job's call prints into its runner's log, a refusal of its argv included: a problem can
   // repeat a word of the argv, such as an unknown flag or a file it could not read, so each is
@@ -723,15 +824,9 @@ export async function runDispatchCli(
     }
   }
 
-  const hosted = hostSession(ledgerHost(), env);
+  const hosted = hostSessionDirectory(ledgerHost(), env);
   if ("problem" in hosted) return refuse(hosted.problem, USAGE, parsed.tool);
-  const { host, sessionId, file } = hosted;
-  let dir: string;
-  try {
-    dir = sessionDirectory(env, sessionId);
-  } catch (error) {
-    return refuse(messageFor(error), USAGE, parsed.tool);
-  }
+  const { host, sessionId, file, dir } = hosted;
 
   if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
     // The call's own argument check, so the call refuses no arguments its dry run passed. It runs
@@ -1038,10 +1133,8 @@ export async function runDispatchCli(
   } catch (error) {
     // A 409 PARENT_STATUS_CONFLICT names each issue that holds the rule and what the refused
     // command's caller does next (`parentStatusConflictLines`), as a near copy's refusal names
-    // each open issue. LEGION_ISSUE tells the project of the issue a call with no --issue names.
-    text = (
-      parentStatusConflictLines(error, tool, args, env.LEGION_ISSUE) ?? [messageFor(error)]
-    ).join("\n");
+    // each open issue.
+    text = (parentStatusConflictLines(error, tool, args) ?? [messageFor(error)]).join("\n");
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
     // was only a step of its command (a picture, a closing reason) into a failure of its own. A
@@ -1062,12 +1155,14 @@ export async function runDispatchCli(
       // there, an id that matches no ask) is the same usage error as one the parse refuses, and
       // exits 2 alike. `--dry-run` runs the call's own check (checkDispatchCall): the owner,
       // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
-      // so the two stay one answer. A refusal the executor makes during the call, such as an id of
-      // the wrong shape or an ask id prefix matching no ask, only the call reaches. Everything else
-      // here is Dispatch's own refusal or failure. No argument of the command reaches the client's
-      // refusal of a path value that names nothing (`DispatchEmptyPathError`): each flag whose
-      // value goes into a URL path is a `path` field of IDENTIFIER_FIELDS (`dispatch-command.ts`),
-      // which the parse refuses first, naming the flag.
+      // so the two stay one answer. A refusal the executor makes during the call, such as an id
+      // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
+      // Everything else here exits 1. That is Dispatch's own refusal or failure, a Dispatch the
+      // command cannot reach, a trade at the secrets broker that fails, and a call that writes
+      // nothing whose answer Dispatch kept no copy of. No argument of the command reaches the
+      // client's refusal of a path value that names nothing (`DispatchEmptyPathError`): each flag
+      // whose value goes into a URL path is a `path` field of IDENTIFIER_FIELDS
+      // (`dispatch-command.ts`), which the parse refuses first, naming the flag.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }

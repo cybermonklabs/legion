@@ -92,7 +92,13 @@ func settledResolution(check checkBlockRef, indexed indexedCheck, stored *string
 // `check` block, or a check the index does not hold yet, which a browser wrote and its settlement
 // has not indexed — is 400 UNKNOWN_CHECK. The check's version, digest, attributes and surface are
 // one state of it (results_settled_check.go).
-func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
+//
+// caller is the one project the request's credential names, empty for a credential that names
+// none. Such a caller does not see a check of an issue of a private project that the credential
+// does not name, so resolveCheck leaves out each such check before it counts the matches (seenBy):
+// a private check alone is 400 UNKNOWN_CHECK, the answer of a check that does not exist, and a
+// 409 CHECK_AMBIGUOUS names no issue that the caller does not see.
+func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, caller, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return resolvedCheck{}, err
@@ -118,9 +124,12 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	}
 
 	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256, t.text, sv.renderer_version
+		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256, t.text, sv.renderer_version,
+		       i.project_key, p.visibility = 'private'
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
+		join issues i on i.key = a.issue_key
+		join projects p on p.key = i.project_key
 		`+settledCheckText+`
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
@@ -131,28 +140,48 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 	}
 	defer rows.Close()
-	var found []resolvedCheck
-	var texts []*string
-	var stamps []*int
-	var references []string
+	// matchedCheck is one check the value matches, with the block index's text of it and that
+	// version's renderer, the reference its document's slug spells, and its issue's project and
+	// whether that project is private, which the caller's own project is judged against below.
+	type matchedCheck struct {
+		check     resolvedCheck
+		settled   *string
+		stamp     *int
+		reference string
+		project   string
+		private   bool
+	}
+	var matched []matchedCheck
 	for rows.Next() {
-		check := resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}
+		match := matchedCheck{check: resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}}
 		var slug string
-		var settled *string
-		var stamp *int
-		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256, &settled, &stamp); err != nil {
+		if err := rows.Scan(&match.check.IssueKey, &slug, &match.check.ArtifactID, &match.check.Version, &match.check.SHA256,
+			&match.settled, &match.stamp, &match.project, &match.private); err != nil {
 			return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 		}
 		if reference, ok := text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: check.IssueKey, ID: slug, Block: blockID,
+			Kind: "block", IssueKey: match.check.IssueKey, ID: slug, Block: blockID,
 		}); ok {
-			check.Ref = reference
-			references = append(references, reference)
+			match.check.Ref = reference
+			match.reference = reference
 		}
-		found, texts, stamps = append(found, check), append(texts, settled), append(stamps, stamp)
+		matched = append(matched, match)
 	}
 	if err := rows.Err(); err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
+	}
+	if caller != "" {
+		matched = seenBy(caller, matched, func(match matchedCheck) (string, bool) { return match.project, match.private })
+	}
+	found := make([]resolvedCheck, 0, len(matched))
+	texts := make([]*string, 0, len(matched))
+	stamps := make([]*int, 0, len(matched))
+	var references []string
+	for _, match := range matched {
+		found, texts, stamps = append(found, match.check), append(texts, match.settled), append(stamps, match.stamp)
+		if match.reference != "" {
+			references = append(references, match.reference)
+		}
 	}
 	if len(found) == 0 {
 		return resolvedCheck{}, unknownCheck(value)

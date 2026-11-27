@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,8 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -247,15 +250,19 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	first := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	second := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: []*burstGate{first, second}}
-	testcleanup.Add(t, func() {
-		first.let()
-		second.let()
-	})
-	service := newShutdownTestService(t, database, appends)
+	drainClock := clocktest.New(time.Now())
+	service := newShutdownTestServiceOn(t, database, appends, drainClock)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	testcleanup.Add(t, httpServer.Close)
+	// Registered after the service and the server, so it runs before both: a row that fails while
+	// an append is held at its gate lets it go, rather than leave the cleanup's Shutdown waiting on
+	// it under a drain budget that only the test's moves of drainClock end.
+	testcleanup.Add(t, func() {
+		first.let()
+		second.let()
+	})
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
 	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
 		t.Fatal(err)
@@ -263,19 +270,13 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 
 	appends.armed.Store(true)
 	editLiveTree(t, service, artifactID, replaceRun("before", "first"))
-	select {
-	case <-first.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first append never reached the store")
-	}
+	testwait.Receive(t, "the first append to reach the store", first.entered)
 	if err := editor.WaitForText(peerMarkdown, "first\n", 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelShutdown()
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
+	go func() { shutdown <- service.Shutdown(testwait.Context(t)) }()
 	waitFor(t, 10*time.Second, "Shutdown to have scanned the room", func() bool {
 		return service.shuttingDown(artifactID)
 	})
@@ -287,22 +288,20 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
 	// Both appends stay queued past the pre-fix 5 s drain budget, and land with time to spare
-	// inside the 9 s per-room budget this round widened it to.
-	time.Sleep(7 * time.Second)
+	// inside the 9 s per-room budget: the budget runs on Deps.Clock, the drain budget's clock,
+	// which the test moves seven seconds once Shutdown has armed the budget on it, before it lets
+	// the appends go. How long the machine takes between those steps spends none of it.
+	budget := drainClock.Now().Add(ShutdownDrainBudget)
+	testwait.Until(t, "Shutdown's drain budget to be armed on Deps.Clock", func() ([]time.Time, bool) {
+		armed := drainClock.Armed()
+		return armed, slices.ContainsFunc(armed, budget.Equal)
+	})
+	drainClock.Advance(7 * time.Second)
 	first.let()
-	select {
-	case <-second.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the second append never reached the store once the first let go")
-	}
+	testwait.Receive(t, "the second append to reach the store once the first let go", second.entered)
 	second.let()
 
-	var shutdownErr error
-	select {
-	case shutdownErr = <-shutdown:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Shutdown did not return once both appends landed")
-	}
+	shutdownErr := testwait.Receive(t, "Shutdown to return once both appends landed", shutdown)
 	if shutdownErr != nil {
 		t.Errorf("Shutdown returned %v, want nil: the burst should settle within the per-room drain budget", shutdownErr)
 	}
@@ -454,10 +453,18 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 // appends, when set, stands in for the store's own document persistence.
 func newShutdownTestService(t *testing.T, database *store.Store, appends VersionedStore) *Service {
 	t.Helper()
+	return newShutdownTestServiceOn(t, database, appends, nil)
+}
+
+// newShutdownTestServiceOn is newShutdownTestService on serviceClock (Deps.Clock), which
+// Shutdown's drain budget runs on; the real clock when nil.
+func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends VersionedStore, serviceClock clock.Clock) *Service {
+	t.Helper()
 	service := New(Deps{
 		Store: database, Persistence: appends, Events: events.NewBroker(),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   time.Hour,
+		Clock:    serviceClock,
 	})
 	// A test that already called Shutdown runs this one a second time; it logs its own
 	// "left to resume" line but does no second settlement attempt (settleRoomWithin's

@@ -91,6 +91,7 @@ func whoamiAs(t *testing.T, handler http.Handler, cookie *http.Cookie) *httptest
 }
 
 func TestDevSignInIssuesTheSessionCookieAndRecordsThePerson(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 
@@ -126,6 +127,7 @@ func TestDevSignInIssuesTheSessionCookieAndRecordsThePerson(t *testing.T) {
 
 // The dev sign-in names a person as the production identities do: trimmed and lowercased.
 func TestDevSignInMintsTheLowercasedEmail(t *testing.T) {
+	t.Parallel()
 	handler := newDevSignInRouter(t, devSignInOrigin, &memorySessionStore{generations: map[string]int64{}})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, devSignInRequest(t, devSignInOrigin+"/auth/_dev/signin?login="+url.QueryEscape(" Alice@D.example ")))
@@ -143,6 +145,7 @@ func TestDevSignInMintsTheLowercasedEmail(t *testing.T) {
 }
 
 func TestDevSignInRequiresALogin(t *testing.T) {
+	t.Parallel()
 	handler := newDevSignInRouter(t, devSignInOrigin, &memorySessionStore{generations: map[string]int64{}})
 	for _, target := range []string{"/auth/_dev/signin", "/auth/_dev/signin?login=%20%20"} {
 		response := httptest.NewRecorder()
@@ -161,6 +164,7 @@ func TestDevSignInRequiresALogin(t *testing.T) {
 // another host, and an address that dresses another host up in userinfo. The route mints a cookie
 // and sends the browser on, so it never sends it anywhere but its own origin.
 func TestDevSignInRefusesAReturnAddressOffItsOrigin(t *testing.T) {
+	t.Parallel()
 	sessions := &memorySessionStore{generations: map[string]int64{}}
 	handler, people := newDevSignInRouterWithPeople(t, devSignInOrigin, sessions)
 	for _, next := range []string{
@@ -197,6 +201,7 @@ func TestDevSignInRefusesAReturnAddressOffItsOrigin(t *testing.T) {
 // at all is the dashboard's root. The Location always names the configured origin itself, so no
 // page a request names can move the browser to another host.
 func TestDevSignInReturnsToAnAddressOnItsOrigin(t *testing.T) {
+	t.Parallel()
 	handler := newDevSignInRouter(t, devSignInOrigin, &memorySessionStore{generations: map[string]int64{}})
 	for _, tc := range []struct{ next, want string }{
 		{next: "", want: "/"},
@@ -222,6 +227,7 @@ func TestDevSignInReturnsToAnAddressOnItsOrigin(t *testing.T) {
 }
 
 func TestDevSignInRefusesANonLoopbackPeer(t *testing.T) {
+	t.Parallel()
 	handler := newDevSignInRouter(t, devSignInOrigin, &memorySessionStore{generations: map[string]int64{}})
 	for _, peer := range []string{"10.0.0.5:4000", "192.0.2.1:1234", "[::ffff:127.0.0.1]:4000", "not-an-address"} {
 		request := devSignInRequest(t, devSignInOrigin+"/auth/_dev/signin?login=alice")
@@ -249,6 +255,7 @@ func TestDevSignInRefusesANonLoopbackPeer(t *testing.T) {
 // Every fence item that takes a URL decides on LoopbackURL, so the spellings that dress another host
 // up as this machine are refused in one place.
 func TestLoopbackURL(t *testing.T) {
+	t.Parallel()
 	for _, raw := range []string{
 		"http://127.0.0.1:9022",
 		"https://127.0.0.2/api",
@@ -289,6 +296,7 @@ func TestLoopbackURL(t *testing.T) {
 }
 
 func TestDevSignInRefusesForwardedRequests(t *testing.T) {
+	t.Parallel()
 	handler := newDevSignInRouter(t, devSignInOrigin, &memorySessionStore{generations: map[string]int64{}})
 	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via"} {
 		for _, value := range []string{"10.0.0.5", ""} {
@@ -307,6 +315,7 @@ func TestDevSignInRefusesForwardedRequests(t *testing.T) {
 }
 
 func TestDevSignInRouterRefusesAnotherHost(t *testing.T) {
+	t.Parallel()
 	handler := newDevSignInRouter(t, devSignInOrigin, &memorySessionStore{generations: map[string]int64{}})
 	signIn := func(host string) *httptest.ResponseRecorder {
 		request := devSignInRequest(t, devSignInOrigin+"/auth/_dev/signin?login=alice")
@@ -352,6 +361,7 @@ func TestDevSignInRouterRefusesAnotherHost(t *testing.T) {
 }
 
 func TestDevSignInIsNotMountedByDefault(t *testing.T) {
+	t.Parallel()
 	sessions := &memorySessionStore{generations: map[string]int64{}}
 	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
@@ -385,6 +395,7 @@ func TestDevSignInIsNotMountedByDefault(t *testing.T) {
 }
 
 func TestBuildAppContextDevSignInNeedsSessions(t *testing.T) {
+	t.Parallel()
 	_, err := BuildAppContext(AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     newMemoryPeople(),
@@ -398,6 +409,7 @@ func TestBuildAppContextDevSignInNeedsSessions(t *testing.T) {
 }
 
 func TestBuildAppContextDevSignInRefusesAPublicOrigin(t *testing.T) {
+	t.Parallel()
 	build := func(serverURL string) error {
 		_, err := BuildAppContext(withDocuments(t, AppContextOptions{
 			SigningKey: testSigningKey,
