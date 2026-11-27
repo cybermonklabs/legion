@@ -67,7 +67,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	recipients := []roleRecipient{{issue: issue.Key, role: asker, row: issue.Key}}
 	for _, step := range issue.RunningAt(at) {
-		if step.Role != asker && record.MergeForwardReaches(record.MergeForwardHold, step.Role) {
+		if step.Role != asker && record.MergeForwardReaches(record.MergeForwardHold, step.Role) && !lostRole(step.Role, e.cfg.Deployment) {
 			recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, row: issue.Key})
 		}
 	}
@@ -304,7 +304,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 	review := w.standsBefore(phase.Reviewing, at)
 	var recipients []roleRecipient
 	for _, step := range issue.RunningAt(at) {
-		if record.MergeForwardReaches(record.MergeForwardLanded, step.Role) {
+		if record.MergeForwardReaches(record.MergeForwardLanded, step.Role) && !lostRole(step.Role, e.cfg.Deployment) {
 			recipients = append(recipients, roleRecipient{issue: issue.Key, role: step.Role, row: issue.Key})
 		}
 	}

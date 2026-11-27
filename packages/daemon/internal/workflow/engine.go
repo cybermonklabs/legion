@@ -600,9 +600,10 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 // no row at all. The row this line queues names the todo, so it is the one that writes.
 //
 // A hold of the root's plan (planHold) is not a failure a retry answers. A todo on a root held for
-// its stopped task ends the stop: a task whose work ran starts again at its first step
-// (startAtFirstStep), and a task stopped before its first step went out waits for that step again
-// (waitForFirstStep). A todo on a root held before its retro (record.HoldForChildren) leaves the
+// its stopped task ends the stop, unless a step of the task names a role the deployment no longer
+// defines, where the stop stands (keepLostStop): a task whose work ran starts again at its first
+// step (startAtFirstStep), and a task stopped before its first step went out waits for that step
+// again (waitForFirstStep). A todo on a root held before its retro (record.HoldForChildren) leaves the
 // hold, since the retro starts by itself once nothing holds the root, keeps the observation, and
 // logs why. It queues the status the record keeps, the last step's, over the todo, with the reason
 // the hold still stands posted beside it (heldParentWait's reason), so the person who set the todo
@@ -665,12 +666,17 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 			if err := e.enqueue(ctx, tx, held.issue.Key, record.OrdinaryStatusWrite(held.issue.Status, fact.Status, wait.reason())); err != nil {
 				return err
 			}
-		case !held.walk.Place.Started():
-			if err := e.waitForFirstStep(ctx, tx, held, restartReason); err != nil {
-				return err
-			}
 		default:
-			if err := e.startAtFirstStep(ctx, tx, held, restartReason); err != nil {
+			lost, isLost := held.walk.lostFrom(1, e.cfg.Deployment)
+			switch {
+			case isLost:
+				err = e.keepLostStop(ctx, tx, held, lost, fact)
+			case !held.walk.Place.Started():
+				err = e.waitForFirstStep(ctx, tx, held, restartReason)
+			default:
+				err = e.startAtFirstStep(ctx, tx, held, restartReason)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -3780,6 +3786,36 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		return err
 	}
 	return e.notice(ctx, tx, issue.Key, noticeFor(TriggerGateOpened, issue.Phase, written.Phase, record.PhaseRow{}, "", ""))
+}
+
+// keepLostStop answers a person's todo on a root held for s's stopped task when a step of the task
+// names a role the engine's deployment no longer defines (Walk.lostFrom from step 1, since every
+// step of the task runs again once it goes on): nothing starts, and the stop stands, now for that
+// step, which the owner's next version of the plan or the role defined again ends. A task its owner
+// stopped before the role was lost, which the boot leaves as it stands (stopLostRoles), takes the
+// lost step's reason here. The issue keeps its hold, with the observation the todo brought (s's
+// copy, read on the issue releaseHeldRoot observed). The status the record keeps is written back
+// over the todo with the stop's reason, as a todo on a root held for its children has its status
+// written back (releaseHeldRoot), and the owner is told again, in the task-stopped notice that
+// names the role, as stopLostRole tells it. Nothing moved, so no movement is marked and no process
+// is stopped: the stop that held the issue stopped it.
+func (e *Engine) keepLostStop(ctx context.Context, tx pgx.Tx, s TaskScope, lost record.TaskPlace, fact intake.DispatchIssue) error {
+	role := s.walk.Steps[lost.Position-1].Role
+	why := fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", lost.Position, role)
+	said := fmt.Sprintf("task %s of %s was stopped: %s", s.walk.Task, s.issue.Key, why)
+	if err := e.store.StopTask(ctx, tx, s.issue.Key, s.issue.Generation, s.walk.Task, why); err != nil {
+		return err
+	}
+	s.walk.StoppedReason = why
+	if _, err := e.putScope(ctx, tx, &s); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a todo starts no task whose step names a role the deployment no longer defines; the task stays stopped",
+		"issue", s.issue.Key, "tree", s.issue.Tree, "task", s.walk.Task, "step", lost.Position, "reason", why)
+	if err := e.enqueue(ctx, tx, s.issue.Key, record.OrdinaryStatusWrite(s.issue.Status, fact.Status, said)); err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, s.issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(role), Phase: record.StandsAt(s.issue), Reason: said})
 }
 
 // stopLostRole stops s's task, whose step at lost names a role the engine's deployment no longer
