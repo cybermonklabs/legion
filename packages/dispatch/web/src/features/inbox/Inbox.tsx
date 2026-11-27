@@ -3076,11 +3076,22 @@ function InboxBody({
     // scroller reaches 20 px left of the rows, into the page's own inset, so it does not clip
     // the press square of a row's checkbox (`MarkCheckbox`). The column is the list's own stop
     // for the selection bar's hand-off, so it is named.
+    //
+    // The box the column scrolls in has the browser's own scroll anchoring off, as the project
+    // List's box has (`components/DataTable.tsx`): the anchor keeps the reader's row in it, and
+    // the anchor gives the box this value back when its hold after a press ends
+    // (`ViewportAnchor`'s `releaseNativeAnchoring`). With it on, WebKit at 1440 px scrolled the
+    // box 134 px after the bar's Snooze of two rows above the view, once the hold had ended and
+    // the rows left in a commit the anchor did not hold, with no scroll of the page's own. The
+    // other layouts keep the browser's anchoring: there the section scrolls nothing, and `none`
+    // on it would take its rows out of the anchoring of the window or the drawer's `aside` that
+    // scrolls them, a change no measurement asked for.
     <section
       aria-label="Inbox list"
       className={mode === "columns" ? "-ml-5 min-w-0 flex-1 overflow-y-auto pr-1 pl-5" : undefined}
       data-testid="inbox-list"
       ref={listScroller}
+      style={mode === "columns" ? { overflowAnchor: "none" } : undefined}
     >
       <ViewportAnchor
         className="space-y-4"
