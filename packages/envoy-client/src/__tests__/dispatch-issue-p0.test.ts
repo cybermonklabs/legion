@@ -31,16 +31,17 @@ const P0_CHALLENGE = 'Bearer error="insufficient_scope", scope="p0"';
 /** DSP-9, the P0 issue the move and the new child go under. */
 const P0_PARENT = "DSP-9";
 
-/** The words Dispatch refuses a move with that makes work P0, from a credential without p0. */
-const MOVE_REFUSAL = `this request's credential does not hold the p0 scope, which this move needs: under ${P0_PARENT}, which reads P0, DSP-1 and each issue under it that takes its priority from it would read P0; a person makes the move at a browser, or gives p0 to a personal token in Settings, Agent tokens`;
+/** The words Dispatch refuses a move of DSP-1 under DSP-9 with, from a credential without p0
+ *  (`p0MoveRefusal`). */
+const MOVE_REFUSAL = `this request's credential does not hold the p0 scope, which a move that makes work P0 needs: under ${P0_PARENT}, which reads P0, DSP-1 would take priority 0, and so would each issue under it that takes its priority from it. Give DSP-1 a priority from 1 to 3 before the move, or ask a person with p0: a person moves it at a browser, or gives p0 to a personal token in Settings, Agent tokens`;
 
-/** The words Dispatch refuses a clear with that makes work P0, from a credential without p0. */
-const CLEAR_REFUSAL =
-  "this request's credential does not hold the p0 scope, which this clear needs: with no priority of its own, DSP-1 would take P0 from the issue above it; a person clears it at a browser, or gives p0 to a personal token in Settings, Agent tokens";
+/** The words Dispatch refuses a clear of DSP-1's own priority with, where DSP-1 would then take P0
+ *  from DSP-9, from a credential without p0 (`p0ClearRefusal`). */
+const CLEAR_REFUSAL = `this request's credential does not hold the p0 scope, which a clear that makes work P0 needs: with no priority of its own, DSP-1 would take priority 0 from ${P0_PARENT}, and so would each issue under it that takes its priority from it. Set a priority from 1 to 3 in place of the clear, or ask a person with p0: a person clears it at a browser, or gives p0 to a personal token in Settings, Agent tokens`;
 
-/** The words Dispatch refuses a new issue with no priority under a P0 issue with, from a
- *  credential without p0 whose session is not that issue's architect. */
-const NEW_CHILD_REFUSAL = `this request's credential does not hold the p0 scope, which a new issue with no priority under ${P0_PARENT} needs, since ${P0_PARENT} reads P0: give it a priority from 1 to 3, file it as the architect of ${P0_PARENT}, or ask a person with p0`;
+/** The words Dispatch refuses a new issue with no priority under DSP-9 with, from a credential
+ *  without p0 whose session is not DSP-9's architect (`p0NewChildRefusal`). */
+const NEW_CHILD_REFUSAL = `this request's credential does not hold the p0 scope, which a new issue with no priority under a P0 issue needs: ${P0_PARENT} reads P0, so the new issue would take priority 0 from it. Give it a priority from 1 to 3, file it as the architect of ${P0_PARENT}, or ask a person with p0: a person files it at a browser, or gives p0 to a personal token in Settings, Agent tokens`;
 
 /** The refusal the stub answers a write with, by what the write carries: a priority of 0, else a
  *  create (a new child), else a clear, else a move. */

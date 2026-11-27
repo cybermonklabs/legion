@@ -19,9 +19,10 @@ import {
  * OpenAPI document marks them required and nullable. The schemas here take them as optional: a
  * Dispatch older than the walk sends neither, and its answers and events still parse.
  *
- * A zod object drops every key it does not declare, so a reader that parsed the new fields without
- * declaring them would succeed and hand its caller nothing. Each row therefore reads what the parse
- * answers, not only whether it succeeded.
+ * `IssueSchema` and `WrittenIssueEventPayloadSchema` are `z.strictObject`: each refuses a key it
+ * does not declare. `IssueEventPayloadSchema` is `z.object`: it drops a key it does not declare,
+ * so a parse that did not declare the new fields would succeed and hand its caller nothing of
+ * them. Each row therefore reads what the parse answers, not only whether it succeeded.
  *
  * The second half reads the committed document's descriptions of the two issue writes, which say
  * when a move, a clear or a new child of a P0 issue needs the p0 scope. It reads them sentence by

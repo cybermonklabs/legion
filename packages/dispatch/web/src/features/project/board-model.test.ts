@@ -388,6 +388,19 @@ test("dragging an inherited P0 card to the P2 lane gives it its own P2", () => {
   ).toMatchObject({ priority: 2, resolved_priority: 2, priority_from: null });
 });
 
+// ACME-2 has no own priority to clear, so a drag to No priority would leave it in the P0 lane at
+// a rank taken from the No priority cell: the move is refused, in its own column and in another.
+test("dragging an inherited P0 card to No priority moves nothing", () => {
+  expect(
+    moveIssueToLane(priorityBoard, "ACME-2", "todo", null, 0),
+    "board drag to No priority, same status"
+  ).toBeUndefined();
+  expect(
+    moveIssueToLane(priorityBoard, "ACME-2", "in_progress", null, 0),
+    "board drag to No priority, another status"
+  ).toBeUndefined();
+});
+
 test("dragging an own P2 onto an inherited P0 card writes its own P0", () => {
   const target = laneDropTarget(priorityBoard, "ACME-3", "ACME-2");
   expect(target, "board drop target takes the receiving card's resolved lane").toEqual({

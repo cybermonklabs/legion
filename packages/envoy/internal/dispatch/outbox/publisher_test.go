@@ -1610,7 +1610,7 @@ func TestRunPublishesEveryEventButRoutesOnlyNotifyingEvents(t *testing.T) {
 // it had subscribed to; `quiet` says whether the event carries anything at all. An issue.updated
 // of the resolved fields alone, which a person's write to another issue appends on each issue
 // whose resolved priority it moved (dispatch://INFRA-5793/spec#b-j-events), carries nothing to
-// act on, and its stored notify is false although a person wrote it.
+// act on.
 func TestEnvelopePayloadStatesWhetherTheEventIsQuiet(t *testing.T) {
 	t.Parallel()
 	agent := model.Actor{Kind: "session", ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7"}

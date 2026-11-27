@@ -242,6 +242,9 @@ test.each(["badge", "header"] as const)(
     try {
       expect(screen.getByText("P2", { selector: "span" }), `${variant} own priority`).toBeVisible();
       expect(screen.queryByRole("link"), `${variant} own priority has no source`).toBeNull();
+      expect(select(), `${variant} own priority has no description`).not.toHaveAttribute(
+        "aria-describedby"
+      );
     } finally {
       own.unmount();
     }
@@ -256,6 +259,9 @@ test.each(["badge", "header"] as const)(
       ).toBeVisible();
       expect(select().value, `${variant} unset choice`).toBe("");
       expect(screen.queryByRole("link"), `${variant} unset priority has no source`).toBeNull();
+      expect(select(), `${variant} unset priority has no description`).not.toHaveAttribute(
+        "aria-describedby"
+      );
     } finally {
       none.unmount();
     }
@@ -273,6 +279,11 @@ test.each(["badge", "header"] as const)(
     try {
       const before = inherited.container.textContent;
       const source = screen.queryByRole("link", { name: "ACME-1" });
+      // The select reads Unset, the issue's own priority, and the badge is hidden from a screen
+      // reader, so the select's description says the priority the issue works at.
+      expect(select(), `${variant} inherited priority description`).toHaveAccessibleDescription(
+        "P0, from ACME-1"
+      );
       await inherited.user.selectOptions(select(), "1");
       await waitFor(() =>
         expect(patchIssue, `${variant} priority pick PATCH`).toHaveBeenCalledWith(

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -72,9 +72,11 @@ export function PriorityControl({
  * from beside the badge: "P0 · from ACME-1" (`PrioritySource`), whose key is a link laid over the
  * select, so a press on it follows the link and a press anywhere else opens the picker. The
  * select picks the issue's own priority, so for an inherited one it reads Unset, and a pick of a
- * level makes that level the issue's own. While a pick of none waits for Dispatch's answer, the
- * control keeps the priority it drew and reads busy (`aria-busy`, and a quieter look), since
- * only the answer says what the issue inherits then.
+ * level makes that level the issue's own. The badge is hidden from a screen reader, so for an
+ * inherited priority a hidden line describes the select ("P0, from ACME-1", `aria-describedby`)
+ * and the reader hears the priority the issue works at, not only Unset. While a pick of none
+ * waits for Dispatch's answer, the control keeps the priority it drew and reads busy
+ * (`aria-busy`, and a quieter look), since only the answer says what the issue inherits then.
  *
  * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
  * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
@@ -107,6 +109,13 @@ export function PriorityEditor({
         : pageLabelChip;
   const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
+  // The select's value is the issue's own priority, so an inherited one needs words of its own.
+  // An own priority or none draws no hidden line, and its select keeps no description.
+  const sourceId = useId();
+  const inheritedWords =
+    from === null || priority === null
+      ? null
+      : `P${priority}, ${page?.CONTROL_LABELS.priority_from ?? "from"} ${from}`;
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
   // and its wrapper narrows to the line rather than keep its width. The header variant is the
   // new page's shape alone, so it wraps on every surface. The source sits between the badge and
@@ -143,6 +152,7 @@ export function PriorityEditor({
           from={from}
         />
         <select
+          aria-describedby={inheritedWords === null ? undefined : sourceId}
           aria-label={`Priority of ${issueKey}`}
           className={badgeSelectOverlay}
           disabled={disabled}
@@ -161,6 +171,11 @@ export function PriorityEditor({
             </option>
           ))}
         </select>
+        {inheritedWords === null ? null : (
+          <span className="sr-only" id={sourceId}>
+            {inheritedWords}
+          </span>
+        )}
       </span>
       {write.failed ? (
         <QueryError

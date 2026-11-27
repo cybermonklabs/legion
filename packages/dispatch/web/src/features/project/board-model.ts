@@ -350,7 +350,9 @@ export function laneDropTarget(
  * issue works at, so a drag within the lane of an inherited priority writes none, and the card
  * keeps inheriting it. A drag to another lane makes that lane's priority the issue's own, which
  * is also the one it works at, from nowhere else; a drag to No priority clears the own priority
- * and leaves what the issue inherits to Dispatch's answer, as a pick of none does.
+ * and leaves what the issue inherits to Dispatch's answer, as a pick of none does. A card that
+ * inherits its priority has no own priority to clear, so a drag of it to No priority is
+ * undefined: the card would stay in its inherited lane, at a rank taken from another lane.
  */
 export function moveIssueToLane(
   issues: readonly IssueSummary[],
@@ -364,8 +366,12 @@ export function moveIssueToLane(
   if (active === undefined) {
     return undefined;
   }
+  const { level, own } = issuePriority(active);
+  if (targetLane === null && own === null && level !== null) {
+    return undefined;
+  }
   const inLane = (issue: IssueSummary) => issuePriority(issue).level === targetLane;
-  const relaned = !inLane(active);
+  const relaned = level !== targetLane;
   const placed = placeInColumn(
     issues,
     active,
