@@ -575,10 +575,13 @@ func (e *Engine) lookAfterNotRun(ctx context.Context, tx pgx.Tx, issue record.Is
 // made after that close, shows a pass for each check (D6). It is the door lookAfterNotRun leaves
 // shut: a look whose checking agent recorded each check's pass and ended before it reported
 // closes the check not_run with every check passing, so no result after the close is one for a
-// check without a pass, and the issue would wait in verifying until a person's done. The open look
-// fences every read after it, and a look that closes not_run again is opened again only by a read
-// made after that close, so each look this opens answers a read of its own. A read in which a
-// check has no pass opens nothing: a result for that check opens the look (lookAfterNotRun).
+// check without a pass, and the issue would wait in verifying until a person's done. It opens that
+// look once. The look that closed is read from the record (ProductionCheck.LastWakeKind), and
+// where this door woke it, the close is that look's own: a look that reopens because of its own
+// close is no new look, and opening it again would run close, read, look, pending, close without
+// end, every check of each turn already passing. The bound is that fact of the record, not a count.
+// The open look fences every read after it. A read in which a check has no pass opens nothing: a
+// result for that check opens the look (lookAfterNotRun).
 func (e *Engine) lookAfterNotRunRead(ctx context.Context, tx pgx.Tx, issue record.Issue, read record.CheckRead) error {
 	if e.checkRole() == "" || read.Failure != "" || len(read.Answer) == 0 {
 		return nil
@@ -588,7 +591,7 @@ func (e *Engine) lookAfterNotRunRead(ctx context.Context, tx pgx.Tx, issue recor
 		return err
 	}
 	if check.Open() || check.Outcome != record.CheckNotRun || check.Generation != issue.Generation || check.MergeSHA != issue.Merge.SHA ||
-		check.ClosedAt == nil || !read.ReadAt.After(*check.ClosedAt) {
+		check.ClosedAt == nil || !read.ReadAt.After(*check.ClosedAt) || check.LastWakeKind == wakeRead {
 		return nil
 	}
 	var answer record.CheckReadAnswer
