@@ -58,11 +58,12 @@
 // proof drives (liveGitHub, in live_issue_proof_test.go), which serves that pull request's state,
 // head, base and mergeable, the last of them mergeable throughout, and no branch rule of any kind:
 // what it does not serve it answers 404, which the daemon's own reads take as GitHub being
-// unreadable — the implementer's completion is applied unread on that answer (api/handoff.go's
-// implementationPullRequest) — so no read of this proof reaches github.com. Dispatch is the board
-// the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go), which holds
-// the handoff record each completion names and takes the reason each backward move posts. The two
-// Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is launched by
+// unreadable — the implementer's completion is applied unread on that answer
+// (api/handoff_pull_request.go's implementationPullRequest) — so no read of this proof reaches
+// github.com. Dispatch is the board the package's whole-daemon live proofs share (liveDispatch, in
+// live_proof_test.go), which holds the handoff record each completion names and takes the reason
+// each backward move posts. The two Apps' tokens are workflowTokenRecorder's placeholders. No
+// agent runs: every claim is launched by
 // the package's fake runtime, which says it provisions each workspace in the claim's own pod, as
 // the Agent Sandbox runtime does, so the daemon clones nothing from GitHub. The issue, its pull
 // request, its slot and the implementer's claim are seeded through the store, as every daemon test

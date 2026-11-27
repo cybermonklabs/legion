@@ -1,6 +1,7 @@
 -- 20261126005343_check_states_ci_read_at.up.sql
 -- When the check states settler last started a read of GitHub's check runs at a former head of an
--- open pull request (api/check_states.go, formerHeadsOf), on the head's row of check_state_sets;
+-- open pull request (api/check_states_former_heads.go, formerHeadsOf), on the head's row of
+-- check_state_sets;
 -- null where no read there has started yet. The settler reads the former heads' check runs in the
 -- order this gives, the head whose read started longest ago first, and starts reads only while the
 -- bound of its settle lasts, so a head behind heads GitHub does not answer for is read within a

@@ -3,7 +3,7 @@
 -- The former heads of each open pull request: each head the pull request had while it was open
 -- and has since left, which the check states settler computes a state at as it does at an open
 -- head, so a tester's result at the head it tested still decides after a push moves the pull
--- request on (api/check_states.go, formerHeadsOf).
+-- request on (api/check_states_former_heads.go, formerHeadsOf).
 --
 -- No trigger here makes a writer wait for a lock. Each trigger this migration puts on a writer's
 -- table (pull_request_heads, check_results, ci_check_results) only reads and appends one row to a
@@ -90,8 +90,9 @@
 --                              when the claim holds and its token, drawn from
 --                              pull_request_former_heads_order by the claim that took it. The
 --                              settle that holds it makes the one read; a settle of any other
---                              issue leaves the candidates to it (api/check_states.go,
---                              verifyFormerHeads). The answer gives the row back by its token; one
+--                              issue leaves the candidates to it
+--                              (api/check_states_former_heads.go, verifyFormerHeads). The answer
+--                              gives the row back by its token; one
 --                              a stopped process left is taken over, with a new token, once its
 --                              time has passed.
 --
@@ -186,8 +187,9 @@
 -- pull request's. The Verification document is the issue's document of that role, by the
 -- predicate the server reads it by (api/artifacts.go, documentRolePredicate), which
 -- check_states_owe_check_block (20261126005334) states too. The settler asks GitHub once which of
--- each such pull request's candidates are its own commits and keeps those (api/check_states.go,
--- verifyFormerHeads), and each issue holding a candidate is marked owed here, so that read comes
+-- each such pull request's candidates are its own commits and keeps those
+-- (api/check_states_former_heads.go, verifyFormerHeads), and each issue holding a candidate is
+-- marked owed here, so that read comes
 -- at the settler's first pass. A head left before this release with no result at it is not known,
 -- and needs no state.
 --
@@ -754,7 +756,8 @@ end $$;
 -- (above): $2 the claim's token, $3 the generation and $4 the snapshot the claim read, $5 and $6
 -- each member and the incarnation the claim read it at, $7 and $8 each commit GitHub showed is not
 -- one and its incarnation, and $9 the issue settling. The answer is GitHub's comparison of the head
--- and the base revision the claim read with the snapshot (api/check_states.go, verifyFormerHeads),
+-- and the base revision the claim read with the snapshot (api/check_states_former_heads.go,
+-- verifyFormerHeads),
 -- so the snapshot unchanged shows that the row the read went by still stores the two commits the
 -- answer is about. Under the pull request's lock it gives the claim back by its token, and applies
 -- only where that claim was still live and the generation and the snapshot are still the pull

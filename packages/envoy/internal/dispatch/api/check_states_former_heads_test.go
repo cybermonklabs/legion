@@ -1,5 +1,5 @@
 // check_states_former_heads_test.go holds the settler to its rule for the former heads of an open
-// pull request (check_states.go, formerHeadsOf): a head the pull request has left keeps its states,
+// pull request (check_states_former_heads.go, formerHeadsOf): a head the pull request has left keeps its states,
 // and a result, a retraction, a change of a check's words or a settled CI run there publishes the
 // new state there, while that pull request is open, since the tester may have tested that head
 // while the pull request moved on; the head's rows go once the pull request is closed or merged.

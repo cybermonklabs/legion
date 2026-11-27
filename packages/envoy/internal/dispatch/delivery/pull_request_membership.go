@@ -55,7 +55,7 @@ func MembershipUnreadable(err error) bool {
 // number of repoFull standing at head onto the base revision base, the two revisions Dispatch
 // stores for it: a commit head holds and base does not, the set `git log base..head`. The check
 // states settler asks it about the candidate former heads of an open pull request
-// (api/check_states.go, verifyFormerHeads).
+// (api/check_states_former_heads.go, verifyFormerHeads).
 //
 // Every answer comes of reads that name those two commits, so it is about them by construction,
 // whatever the pull request stands at while it is read: GitHub's comparison of base and head

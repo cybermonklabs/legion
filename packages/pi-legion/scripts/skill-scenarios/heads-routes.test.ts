@@ -5,7 +5,8 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import path from "node:path";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
-import { type HeadsWorld, type Route, type RouteTable, renderHeadsRoutes } from "./heads-routes";
+import type { HeadsWorld } from "./heads-answers";
+import { type Route, type RouteTable, renderHeadsRoutes } from "./heads-routes";
 import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
 
 // One row runs the renderer as a bun process of its own, a start a loaded machine stretches.

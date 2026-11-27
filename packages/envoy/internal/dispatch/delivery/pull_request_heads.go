@@ -1450,7 +1450,7 @@ const PullRequestHeadBatch = 200
 // unchanged checked_at, and so their places, every pass, and a row behind them was never read. A
 // failed read stamps no checked_at and stores nothing of the pull request, so the row stays due,
 // and nothing that waits on its read (the check states settler's read of a row with no base
-// revision, api/check_states.go, verifyFormerHeads) takes the try for one. A stamp whose call
+// revision, api/check_states_former_heads.go, verifyFormerHeads) takes the try for one. A stamp whose call
 // times out or loses its connection may still commit, at a moment the reconcile never learns, and
 // the reconcile then gives the row up with no read (reconcilePullRequestHeads): where the stamp
 // commits before the next selection the row moves behind the other due rows unread, a selection
