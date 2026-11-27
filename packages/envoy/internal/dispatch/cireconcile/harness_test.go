@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -28,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -98,6 +100,9 @@ type harness struct {
 	// defaults counts the projects seedProjectDefault has made, so each one it makes has a key of
 	// its own.
 	defaults int
+	// bound is the fake clock this harness's passes put their own bound on where the test ends
+	// that bound rather than the wall clock (boundByTheTest), and nil until a test asks for it.
+	bound *clocktest.Fake
 }
 
 // newHarness is the whole stack with the listener already running, which every test wants but
@@ -180,15 +185,59 @@ func openWriter(client *bus.Client) func() (Writer, error) {
 	}
 }
 
+// boundByTheTest puts this harness's passes under a bound the test ends (endBound) where the wall
+// clock would end PassTimeout's: the Reconciler's bound (Reconciler.bound) is a deadline
+// PassTimeout ahead on a fake clock, which moves only when the test ends it. Its end is the end
+// PassTimeout's passing makes -- the pass's context, and every context made from it, reports
+// context.DeadlineExceeded -- at the moment the test is about, so the load of the tests beside
+// it can end a pass neither sooner nor later than that. A pass the test never ends is bound and
+// never cut short, as a pass that finishes inside its bound is.
+//
+// A pass that puts a bound on itself other than its PassTimeout fails the test.
+func (h *harness) boundByTheTest() {
+	h.bound = clocktest.New(time.Now())
+	h.reconciler.bound = func(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		if want := h.reconciler.PassTimeout; timeout != want {
+			h.t.Errorf("the pass bound itself at %s, want its PassTimeout, %s", timeout, want)
+		}
+		return h.bound.WithTimeout(ctx, timeout)
+	}
+}
+
+// boundEndsAtTheStall is boundByTheTest with the bound ended at the moment GitHub begins holding
+// an answer back (stall, stallQuery): what a GitHub slower than the pass has left comes to, with
+// no wait for PassTimeout to pass.
+func (h *harness) boundEndsAtTheStall() {
+	h.boundByTheTest()
+	h.github.atStall(h.endBound)
+}
+
+// endBound ends the bound of the pass running now: it moves the fake clock to the one deadline
+// pending on it, which that pass armed as it began (boundByTheTest). It fails the test where no
+// deadline is pending, which is a pass that put no bound on itself, and where more than one is.
+func (h *harness) endBound() {
+	armed, moved := h.bound.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		if len(armed) != 1 {
+			return now, false
+		}
+		return armed[0], true
+	})
+	if !moved {
+		h.t.Errorf("the test ended the pass's bound with %d deadlines pending, want the one its pass armed: %v", len(armed), armed)
+	}
+}
+
 // holdWriteUntilTheBoundFalls makes the nth check-run write of this harness's passes, each the
-// runs of one head, wait until the pass making it has run out of its own bound. It is a CI bucket
-// slower to answer than the pass has left, which is the one thing that can take a pass past its
-// bound in the middle of a page its query answered whole: those heads cost no request of their
-// own, so nothing else about them can be slow.
+// runs of one head, end the pass's own bound (boundByTheTest, endBound) and wait until the pass
+// making it has run out of it. It is a CI bucket slower to answer than the pass has left, which
+// is the one thing that can take a pass past its bound in the middle of a page its query
+// answered whole: those heads cost no request of their own, so nothing else about them can be
+// slow.
 //
 // The count is the harness's rather than one pass's, so the pass after the one that was held
 // writes every head of its own without waiting.
 func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
+	h.boundByTheTest()
 	open := h.reconciler.Open
 	writes := 0
 	h.reconciler.Open = func() (Writer, error) {
@@ -198,7 +247,8 @@ func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
 		}
 		return &holdingWriter{Writer: writer, hold: func(ctx context.Context) {
 			if writes++; writes == nth {
-				<-ctx.Done()
+				h.endBound()
+				testwait.Receive(h.t, "the end of the pass's context at its bound", ctx.Done())
 			}
 		}}, nil
 	}

@@ -8,10 +8,11 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// TestMain drops the databases the harness clones (storetest.Run) and shuts down the one NATS
-// server its tests share (testnats.Main), each test under a JetStream account of its own
-// (testnats.URL). Both run the package's tests themselves, so they compose the way storetest.Run
-// documents. Every harness used to start a server of its own; that was a JetStream start per test.
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel).
+//
+// Each test has its own JetStream account on testnats.Main's shared server (testnats.URL).
+// storetest.Run drops the cloned databases after testnats.Main shuts down that server.
 func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
 	os.Exit(storetest.Run(func() int { return testnats.Main(m) }))
 }

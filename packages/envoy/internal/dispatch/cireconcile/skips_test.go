@@ -32,6 +32,7 @@ func installationPath(repository string) string {
 // the pass goes on to the repositories after it: one repository GitHub has stopped answering
 // about must not cost every other repository its pass.
 func TestAProjectDefaultGitHubDoesNotAnswerIsSkipped(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(absentRow)
 	h.seedProjectDefault(rowRepository)
@@ -74,6 +75,7 @@ func TestAProjectDefaultGitHubDoesNotAnswerIsSkipped(t *testing.T) {
 // holds then. The default that names no rename is reconciled exactly as it was: its head settles
 // on the checks GitHub holds.
 func TestARenamedProjectDefaultIsReconciledUnderTheNameItHasNow(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.seedRenamePair(renamedAwayRow, rowRepository)
@@ -119,6 +121,7 @@ func TestARenamedProjectDefaultIsReconciledUnderTheNameItHasNow(t *testing.T) {
 // INFO, and GitHub is asked about it once rather than once a pass: githubapp keeps only an
 // installation it found, so the pass holds this answer itself.
 func TestAnIssuesRepositoryWithoutTheAppIsNoSkippedDefaultAndIsAskedAboutOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.issueInRepository(uninstalledRow)
@@ -169,6 +172,7 @@ func TestAnIssuesRepositoryWithoutTheAppIsNoSkippedDefaultAndIsAskedAboutOnce(t 
 // issue names it too, and it is no part of the count of repositories only an issue names.
 // GitHub is asked about it once all the same: the answer is held whoever names the repository.
 func TestAProjectDefaultWithoutTheAppIsSkippedAtEveryPassAndAskedAboutOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(uninstalledRow)
 	h.issueInRepository(uninstalledRow)
@@ -223,6 +227,7 @@ func TestAProjectDefaultWithoutTheAppIsSkippedAtEveryPassAndAskedAboutOnce(t *te
 // a connection, and a writer held from an earlier pass would write through the connection it
 // gave up on, so every later pass would read GitHub in full and record nothing until a restart.
 func TestNoBucketYetNoPass(t *testing.T) {
+	t.Parallel()
 	h := newHarnessBeforeTheListener(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -288,6 +293,7 @@ func TestNoBucketYetNoPass(t *testing.T) {
 // takes `acme/..`, `acme/.git`, `Zeta/..` and `acme/...git` and asks GitHub about
 // `/repos/acme/../installation`.
 func TestARefusedStoredNameIsSkippedAndNamed(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault("acme/..")
 	h.seedProjectDefault("acme/.git")

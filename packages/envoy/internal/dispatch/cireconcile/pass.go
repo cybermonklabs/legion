@@ -158,7 +158,7 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		// Every read of the pass is made within this, and so is every gap it leaves between two
 		// of them, so the pass ends whatever it is waiting for. Zero is unbounded, which is what
 		// a test that is not about the bound wants.
-		bounded, done := context.WithTimeout(ctx, r.PassTimeout)
+		bounded, done := r.withBound(ctx, r.PassTimeout)
 		defer done()
 		ctx = bounded
 	}

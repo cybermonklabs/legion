@@ -16,6 +16,7 @@ const verdictApp = 5341240
 // that recorded the suite would change the settled record, which re-arms it, and the head would
 // be published a second time.
 func TestAPassOverTheVerdictAppsCompletedSuitePublishesTheHeadOnce(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
 	h := newHarnessBeforeTheListener(t, reviewerAppID)
 	h.verdict = strconv.Itoa(verdictApp)
 	h.reconciler.VerdictAppID = h.verdict

@@ -22,6 +22,7 @@ import (
 // suite, and the listener's summary loop publishes the settlement the daemon reads. A newer run
 // at the same head, which again no webhook carries, settles again.
 func TestAPassSettlesAHeadNoWebhookReached(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -72,6 +73,7 @@ func TestAPassSettlesAHeadNoWebhookReached(t *testing.T) {
 // that never comes. The pass reads GitHub's own listing, finds the run ended, writes it over the
 // running one, and the listener publishes the settlement the daemon was waiting for.
 func TestAPassSettlesAHeadWhoseCompletionWebhookNeverCame(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -150,6 +152,7 @@ func TestAPassSettlesAHeadWhoseCompletionWebhookNeverCame(t *testing.T) {
 // defaults name -- the name it had and the name it has -- is read once, because GitHub answers
 // both names with one id.
 func TestAPassReadsEachCoveredRepositoryOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.seedProjectDefault("acme/widgets-old")
@@ -185,6 +188,7 @@ func TestAPassReadsEachCoveredRepositoryOnce(t *testing.T) {
 // record holding it would never settle, since cistore holds a head while any suite it holds is
 // not completed.
 func TestAQueuedSuiteIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -219,6 +223,7 @@ func TestAQueuedSuiteIsNotRecordedAndTheHeadStillSettles(t *testing.T) {
 // holds the head: GitHub has not finished the head's CI, so a settlement on its one completed
 // check would claim the head done while two of its checks still run.
 func TestARunningRunIsRecordedAndHoldsTheHead(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -251,6 +256,7 @@ func TestARunningRunIsRecordedAndHoldsTheHead(t *testing.T) {
 // one the webhook made, so the record's revision does not move and no second settlement is
 // published.
 func TestAPassOverRecordedChecksChangesNothing(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -294,6 +300,7 @@ func TestAPassOverRecordedChecksChangesNothing(t *testing.T) {
 // A verdict check says a review passed or failed, so it is recorded only when the review App
 // created it, and not at all when Dispatch holds no review App id.
 func TestOnlyTheReviewAppsVerdictIsRecorded(t *testing.T) {
+	t.Parallel()
 	runs := []object{
 		checkRun(1, "build", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
 		checkRun(2, "tester", "completed", "success", reviewerApp, "2026-11-05T03:01:01Z"),
@@ -301,6 +308,7 @@ func TestOnlyTheReviewAppsVerdictIsRecorded(t *testing.T) {
 	}
 
 	t.Run("with the review App's id", func(t *testing.T) {
+		t.Parallel()
 		h := newHarness(t, reviewerAppID)
 		h.seedProjectDefault(rowRepository)
 		h.listHead()
@@ -326,6 +334,7 @@ func TestOnlyTheReviewAppsVerdictIsRecorded(t *testing.T) {
 	})
 
 	t.Run("with no review App id", func(t *testing.T) {
+		t.Parallel()
 		h := newHarness(t, "")
 		h.seedProjectDefault(rowRepository)
 		h.listHead()
@@ -357,6 +366,7 @@ func TestOnlyTheReviewAppsVerdictIsRecorded(t *testing.T) {
 // is one the query cannot answer: GitHub refuses its Checks fields and the pass reads it over
 // REST, which is where the ETags and this rule live.
 func TestAHeadWhoseRecordIsGoneIsReadInFullAgain(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -406,6 +416,7 @@ func TestAHeadWhoseRecordIsGoneIsReadInFullAgain(t *testing.T) {
 // The pass's one line carries the counts an alarm reads, under field names that do not move:
 // the counts it has always carried, and the GraphQL and REST counts beside them.
 func TestThePassLineCountsWhatThePassDid(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -477,6 +488,7 @@ func TestThePassLineCountsWhatThePassDid(t *testing.T) {
 // changes nothing. Pull request 8, of the other repository, was opened since, and its
 // completed run is the one record this pass changes.
 func TestThePassLineTellsItsPagesHeadsAndRecordsApart(t *testing.T) {
+	t.Parallel()
 	// The second project's default repository, and the two heads beside the harness's own: the
 	// one whose every observation the record holds already, and the one with a run to record.
 	const (
@@ -580,6 +592,7 @@ func atHead(repository, sha string, item object) object {
 // A limit already in force on the App ends a pass before it sends GitHub anything, and the pass
 // line names the scope and when the limit ends.
 func TestALimitInForceEndsThePassBeforeItReadsGitHub(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -609,7 +622,9 @@ func TestALimitInForceEndsThePassBeforeItReadsGitHub(t *testing.T) {
 // pass to read from the start (the cursor names it). A rate limit is not a repository the App
 // cannot read, which the pass would have skipped quietly and gone on from.
 func TestARateLimitedAnswerStopsThePass(t *testing.T) {
+	t.Parallel()
 	t.Run("at a head's REST read", func(t *testing.T) {
+		t.Parallel()
 		h := newHarness(t, reviewerAppID)
 		h.seedProjectDefault(rowRepository)
 		h.listHead()
@@ -642,6 +657,7 @@ func TestARateLimitedAnswerStopsThePass(t *testing.T) {
 	})
 
 	t.Run("at the first request of all", func(t *testing.T) {
+		t.Parallel()
 		h := newHarness(t, reviewerAppID)
 		h.seedProjectDefault(rowRepository)
 		h.listHead()
@@ -667,6 +683,7 @@ func TestARateLimitedAnswerStopsThePass(t *testing.T) {
 // is recorded in the shared ledger under that installation; a line naming the App instead would
 // send an alarm looking for a limit nobody recorded.
 func TestTheStopNamesTheScopeTheReadWasBudgetedUnder(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -742,6 +759,7 @@ func (h *harness) recordReads() *readRecorder {
 // GitHub answered, records succeeded; and a pass that asked GitHub nothing -- it bound no CI
 // record writer, so it read nothing -- records nothing at all.
 func TestEachPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	reads := h.recordReads()
 	h.seedProjectDefault(rowRepository)
@@ -788,6 +806,7 @@ func TestEachPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 // listing then read is a read the pass made the other way, and it records succeeded; a pass its
 // caller cancelled, which is this process shutting down, records nothing.
 func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// arrange sets up the project's default, GitHub's answers and the shared limits before the
@@ -932,6 +951,7 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 		nothing: true,
 	}} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			h := newHarness(t, reviewerAppID)
 			reads := h.recordReads()
 			row.arrange(h)

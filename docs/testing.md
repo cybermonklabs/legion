@@ -773,6 +773,13 @@ redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `Te
 re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
 resolver tests that replace the default logger.
 
+`internal/dispatch/cireconcile` also runs 4 at once through `storetest.SetDefaultParallel`.
+Each harness has its own database, GitHub stand-in and NATS account on the package's shared
+server. Tests of a pass ending on its bound move a `clocktest.Fake` through the reconciler's
+unexported bound hook, which checks the configured `PassTimeout` and preserves
+`context.DeadlineExceeded`. One test keeps the real timer. Tests of pacing and settlement quiet
+windows stay serial, with a comment naming the wall-clock span.
+
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
 through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
@@ -780,7 +787,8 @@ variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `Heart
 `PruneInterval` and `LiveWindow` through `setInterval` and `quickRegistry`, architecture's
 `syncTimeout`, contracts' `githubEventKinds`). It also stays serial when it holds a wall-clock
 bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
-on a correct product or pass with the defect present; the comment names the span. A wait for an
+on a correct product or pass with the defect present; the comment names the span. A seam that
+takes the deciding clock out lets the test run beside the others. A wait for an
 event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
 and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
 marker in these packages: a new test with neither the call nor the comment runs alone for no

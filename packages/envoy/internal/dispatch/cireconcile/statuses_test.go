@@ -157,8 +157,10 @@ var readings = []struct {
 // answer whole. A status is an entry of its own: it is no check run, and the head's settlement
 // names it in a field of its own.
 func TestReconcileRecordsTheTerminalStatusesOfAHead(t *testing.T) {
+	t.Parallel()
 	for _, read := range readings {
 		t.Run(read.name, func(t *testing.T) {
+			t.Parallel()
 			h := newHarness(t, reviewerAppID)
 			h.headWithStatuses(tokenWithStatuses,
 				commitStatus(101, "ci/build", "success", "2026-11-17T05:01:00Z"),
@@ -216,8 +218,10 @@ func TestReconcileRecordsTheTerminalStatusesOfAHead(t *testing.T) {
 // while the check runs and suites answer 304. A changed state settles the head again, and a
 // pending status alone moves nothing.
 func TestReconcileRecordsAStatusThatAloneChanged(t *testing.T) {
+	t.Parallel()
 	for _, read := range readings {
 		t.Run(read.name, func(t *testing.T) {
+			t.Parallel()
 			h := newHarness(t, reviewerAppID)
 			h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
 			if read.overREST {
@@ -306,11 +310,13 @@ func TestReconcileRecordsAStatusThatAloneChanged(t *testing.T) {
 // statuses. GitHub refuses a status read while the token the pass holds names Commit statuses
 // when the grant is taken away while that token lives.
 func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
+	t.Parallel()
 	// A refused status field is no refusal of the head: GitHub answers it null beside an errors
 	// entry against its path, and the head is answered whole by its check suites, as a head with
 	// no error is. It is not read over REST, so the pass sends what the same pass sends with the
 	// query of before. The refusal is named at WARN, as a refused REST status read is.
 	t.Run("a refused status field", func(t *testing.T) {
+		t.Parallel()
 		h := newHarness(t, reviewerAppID)
 		h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
 		h.github.refuseStatuses(gitHubRepository, headSHA)
@@ -367,6 +373,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 	// A head the query could not answer whole is read over REST for its checks, and GitHub has
 	// already refused its statuses in the query: the REST read asks for none of them.
 	t.Run("a refused status field of a head read over REST", func(t *testing.T) {
+		t.Parallel()
 		h := newHarness(t, reviewerAppID)
 		h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
 		h.github.refuseChecks(gitHubRepository, headSHA)
@@ -393,6 +400,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 	// the pass recorded before that read, and the ETags of both: the read costs the head its
 	// statuses alone, and no request for the head follows it. The head beside it reads its own.
 	t.Run("a refused REST status read", func(t *testing.T) {
+		t.Parallel()
 		h := newHarness(t, reviewerAppID)
 		h.seedProjectDefault(rowRepository)
 		refused, read := head(7), head(8)
@@ -455,6 +463,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 	// was not read whole: it is not counted among the heads the pass read, the cursor names it,
 	// and the pass after the limit's reset reads it again and records its statuses.
 	t.Run("a rate-limited REST status read", func(t *testing.T) {
+		t.Parallel()
 		h := newHarness(t, reviewerAppID)
 		h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
 		h.github.refuseChecks(gitHubRepository, headSHA)
@@ -511,6 +520,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 // entry against any other field of the node refuses the head's Checks, a status field of a check
 // suite included, and an entry that names no pull request node refuses the page whole.
 func TestARefusedStatusFieldIsToldFromTheRestOfAHead(t *testing.T) {
+	t.Parallel()
 	const commit = `"repository","pullRequests","nodes",3,"commits","nodes",0,"commit"`
 	for _, c := range []struct {
 		name                     string
@@ -553,11 +563,13 @@ func TestARefusedStatusFieldIsToldFromTheRestOfAHead(t *testing.T) {
 // at all: each repository is sent the query of before, byte for byte, no status listing is read
 // over REST, and every route is sent what it was sent before the pass read statuses.
 func TestReconcileReadsNoStatusWhereTheInstallationHoldsNone(t *testing.T) {
+	t.Parallel()
 	if headsQuery != todaysHeadsQuery {
 		t.Fatalf("the query a repository without Commit statuses is sent is no longer the query of before:\n%s", headsQuery)
 	}
 	for _, read := range readings {
 		t.Run(read.name, func(t *testing.T) {
+			t.Parallel()
 			h := newHarness(t, reviewerAppID)
 			// GitHub holds statuses of the head, which the token may not read.
 			h.headWithStatuses(tokenWithoutStatuses,

@@ -118,6 +118,7 @@ func observationsOf(t *testing.T, event string, items []object) map[string]contr
 // own bodies make. It is k5's mapping, read from answers captured from the real API rather
 // than from a stand-in's idea of them.
 func TestGitHubsQueryAndItsRESTListingsMapToOneSetOfObservations(t *testing.T) {
+	t.Parallel()
 	head := capturedHead(t)
 	if head.sha != capturedSHA {
 		t.Fatalf("the captured answer is of commit %s, want %s", head.sha, capturedSHA)
@@ -195,6 +196,7 @@ func statusObservationsOf(items []object) map[string]contracts.StatusObservation
 // failure or error: a pending status, and GraphQL's EXPECTED, map to none either way. A status
 // field GitHub refused costs the head its statuses alone: its check objects map as before.
 func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t *testing.T) {
+	t.Parallel()
 	head := headOf(statusPagePull(t), false, nil)
 	if head.overflow != "" || head.sha != headSHA {
 		t.Fatalf("the answer's head is %q, read over REST for %q; want %s answered whole", head.sha, head.overflow, headSHA)
@@ -243,6 +245,7 @@ func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t 
 // publish no settlement: the pass writes the observations the webhooks already wrote, and
 // cistore applies an unchanged observation as no change. It is k5 end to end.
 func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T) {
+	// Not parallel: it holds a 2 s quiet window (settlements.NextMsg), which load could make it miss.
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(capturedRepository)
 	h.github.setRepository(capturedRepository, capturedRepository, 555)
