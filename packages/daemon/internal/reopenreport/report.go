@@ -504,6 +504,7 @@ const (
 	openHeading      = "Next change"
 	withdrawnHeading = "Withdrawn defects"
 	reasonCutLine    = "  The defect was:"
+	agentTextIndent  = "      "
 	waitTimeLayout   = "2006-01-02 15:04:05 UTC"
 	waitTimePattern  = `(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC)`
 )
@@ -516,9 +517,18 @@ var (
 	withdrawnLine = regexp.MustCompile(`^- defect (\d+), withdrawn at ` + waitTimePattern + `, because:$`)
 )
 
-// parseWait reads one version of close-wait.md. Every text a role wrote stands indented under its
-// item (record's writeIndented and writeWaitReason), so a line that starts `## ` or `- ` is the
-// daemon's own. A section of the three it reads that holds no line of its form, or an item of one
+// knownHeadings is every `##` heading record.CloseWaitDocument writes. A version with any other is
+// refused: a section the renderer gained may say what the report must read (a request's
+// withdrawal under a heading of its own, say), so it is never passed over in silence.
+var knownHeadings = []string{
+	endedHeading, withdrawnHeading, "Closed", "Unread", "Unapproved", "Checks", "Production check",
+	"Issues beneath", "Open children", "Reported defects", openHeading,
+}
+
+// parseWait reads one version of close-wait.md. Every text a role wrote stands under its item as
+// an indented code block (record's writeAgentText), so a line that starts `## ` or `- ` is the
+// daemon's own. A withdrawal's reason is the block between its item and the line that opens the
+// defect's text. A section of the three it reads that holds no line of its form, or an item of one
 // in another form, is an error: the renderer changed, and the report does not guess at its words.
 func parseWait(markdown string) (waitVersion, error) {
 	var version waitVersion
@@ -591,12 +601,12 @@ func parseWait(markdown string) (waitVersion, error) {
 			if err != nil {
 				return waitVersion{}, err
 			}
-			var reason []string
-			for i+1 < len(lines) && lines[i+1] != reasonCutLine && strings.HasPrefix(lines[i+1], "  ") {
-				i++
-				reason = append(reason, strings.TrimPrefix(lines[i], "  "))
+			reason, next, err := agentText(lines, i+1, reasonCutLine)
+			if err != nil {
+				return waitVersion{}, fmt.Errorf("the withdrawal of %d: %w", id, err)
 			}
-			version.withdrawn = append(version.withdrawn, Withdrawal{Request: id, Reason: strings.Join(reason, "\n"), At: at})
+			i = next
+			version.withdrawn = append(version.withdrawn, Withdrawal{Request: id, Reason: reason, At: at})
 		}
 	}
 	switch {
@@ -606,6 +616,29 @@ func parseWait(markdown string) (waitVersion, error) {
 		return waitVersion{}, fmt.Errorf("its section %q names no change", openHeading)
 	}
 	return version, nil
+}
+
+// agentText reads a role's text that lines holds from from, an indented code block as record's
+// writeAgentText writes it under an item, up to the line until: each line agentTextIndent past the
+// margin, and blank lines, the block's own first and last blank lines left out. It answers the
+// text and the index of the line before until. A line of any other form, or no line until, is an
+// error.
+func agentText(lines []string, from int, until string) (string, int, error) {
+	var text []string
+	for i := from; i < len(lines); i++ {
+		line := lines[i]
+		switch {
+		case line == until:
+			return strings.Trim(strings.Join(text, "\n"), "\n"), i - 1, nil
+		case line == "":
+			text = append(text, "")
+		case strings.HasPrefix(line, agentTextIndent):
+			text = append(text, strings.TrimPrefix(line, agentTextIndent))
+		default:
+			return "", 0, fmt.Errorf("its text holds %q, which is no line of a block the daemon writes", line)
+		}
+	}
+	return "", 0, fmt.Errorf("its text runs to the end with no line %q", until)
 }
 
 // changeEndOf is the end a line of "The change that ended" says: the generation, the pull request

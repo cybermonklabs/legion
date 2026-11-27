@@ -216,9 +216,11 @@ func (s *schedule) merged(at time.Time) {
 
 // The five cases of D17's measurement, each classified by what the program alone can tell, with
 // the interval from the accepted todo to the change's end: its merge, or its end with no pull
-// request, as close-wait.md says it. Two variants beside them: a Verification document first
-// written in the interval, and two ways a row cannot be read that only the report names, the
-// change's end that no version says and a version in the same second as the end.
+// request, as close-wait.md says it. Beside them: a Verification document first written in the
+// interval, and three ways a row cannot be read that only the report names, the change's end that
+// no version says, a version in the same second as the end, and a section the renderer does not
+// write. Every version of close-wait.md is rendered by record.CloseWaitDocument, and the types it
+// renders from hold the fields the fixtures set, so a change of the renderer fails here.
 func TestReopenInstructionCountUsesTheChangeEnd(t *testing.T) {
 	t.Parallel()
 	mergedAt := requested.Add(3 * time.Hour)
@@ -347,6 +349,16 @@ func TestReopenInstructionCountUsesTheChangeEnd(t *testing.T) {
 			},
 			want: want{category: NotAssessable, start: true, end: &End{PullRequest: pullRequest, At: mergedAt}},
 		},
+		{
+			name: "a version with a section the renderer does not write is not assessable, never passed over",
+			build: func(t *testing.T, key string) *fakeDispatch {
+				s := reopened(t, key)
+				s.merged(mergedAt)
+				s.fake.closeWait[s.waits] += "\n## Withdrawn requests\n\n- request 17, withdrawn at 2026-11-20 12:00:00 UTC, because:\n"
+				return s.fake
+			},
+			want: want{category: NotAssessable},
+		},
 	}
 	var rows []Row
 	for i, tc := range cases {
@@ -397,7 +409,7 @@ func TestReopenInstructionCountUsesTheChangeEnd(t *testing.T) {
 		{Category: RequestWithdrawn, Issues: []string{"ACME-4"}},
 		{Category: NotFollowed, Issues: []string{"ACME-2", "ACME-3"}},
 		{Category: Pending, Issues: []string{"ACME-5"}},
-		{Category: NotAssessable, Issues: []string{"ACME-6", "ACME-8", "ACME-9"}},
+		{Category: NotAssessable, Issues: []string{"ACME-6", "ACME-8", "ACME-9", "ACME-10"}},
 	}
 	if !reflect.DeepEqual(totals, wantTotals) {
 		t.Fatalf("the totals are %+v, want %+v", totals, wantTotals)
@@ -410,5 +422,29 @@ func TestReopenInstructionCountUsesTheChangeEnd(t *testing.T) {
 	}
 	if assessed != 5 {
 		t.Fatalf("%d ended rows could be assessed, want 5: checks written, withdrawn and not followed, and neither pending nor not assessable", assessed)
+	}
+	// The fixtures render close-wait.md from these types with record.CloseWaitDocument, so a form
+	// the renderer changes fails the cases above. A field the types gain is one no fixture sets, and
+	// a renderer that writes a request's withdrawal from it would pass here unread. So each type
+	// holds exactly the fields the fixtures were written against.
+	for _, shape := range []struct {
+		of     any
+		fields []string
+	}{
+		{record.StoredWait{}, []string{"Entered", "Checks", "Production", "Beneath", "OpenChildren", "Defects", "NextChange", "Unread", "Unapproved", "Ended", "Withdrawn", "Closed"}},
+		{record.WaitChange{}, []string{"Generation", "Reasons", "Since"}},
+		{record.WaitReason{}, []string{"ID", "Kind", "Text", "Check", "Role", "Head", "Since"}},
+		{record.WaitWithdrawal{}, []string{"ID", "Text", "Reason", "At"}},
+		{record.WaitChangeEnd{}, []string{"Generation", "PullRequest", "At"}},
+	} {
+		typ := reflect.TypeOf(shape.of)
+		var fields []string
+		for i := range typ.NumField() {
+			fields = append(fields, typ.Field(i).Name)
+		}
+		if !slices.Equal(fields, shape.fields) {
+			t.Errorf("record.%s has the fields %v, and the fixtures were written against %v: set each new field in the fixture that renders it, and read what close-wait.md says of it",
+				typ.Name(), fields, shape.fields)
+		}
 	}
 }
