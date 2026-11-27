@@ -31,7 +31,8 @@ string, boolean, number and null literals; the contexts `github.event_name`, `gi
 `github.sha`, `github.event.pull_request.number`, `github.event.pull_request.labels.*.name`,
 `github.event.pull_request.base.sha`, `github.event.merge_group.base_sha`, `runner.temp` (the
 runner's temporary directory, /home/runner/work/_temp, which the generation step's env names the
-directory of its base's cached filters in), `inputs.<name>` (a
+directory of its base's cached filters in), `env.<NAME>` (a value of the workflow's own top-level
+`env:`, as the file writes it, which CI_MERGE_GROUP_SKIPS is), `inputs.<name>` (a
 workflow_dispatch input this workflow declares, and under --steps an input of the called
 workflow), `steps.<id>.outputs.<name>` and `steps.<id>.outputs`, and under --steps
 `needs.changes.result`, `needs.changes.outputs.<name>` and `needs.changes`; `!`, `==`, `!=`, `&&`,
@@ -98,14 +99,14 @@ class Refused(Exception):
 
 # The contexts an expression may read, whole: the event's name, the run's ref and commit, the pull
 # request's number, label names and base commit, the merge group's base commit, the runner's
-# temporary directory, an input, and a
+# temporary directory, a value of the workflow's own env, an input, and a
 # step's outputs or one of them; and under --steps the changes job's result and outputs, which only
 # that mode's context holds. A read of anything else, `github.event.pull_request` or `github.event`
 # as a whole among them, is refused, so an output can read the labels only through the path
 # --label-readers finds in its text.
 MODELLED = re.compile(r"github\.event_name|github\.ref|github\.sha|github\.event\.pull_request\.number"
                       r"|github\.event\.pull_request\.labels\.\*\.name|github\.event\.pull_request\.base\.sha"
-                      r"|github\.event\.merge_group\.base_sha|runner\.temp|inputs\.[A-Za-z0-9_-]+"
+                      r"|github\.event\.merge_group\.base_sha|runner\.temp|env\.[A-Za-z0-9_]+|inputs\.[A-Za-z0-9_-]+"
                       r"|steps\.[A-Za-z0-9_-]+\.outputs(?:\.[A-Za-z0-9_-]+)?"
                       r"|needs\.changes(?:\.result|\.outputs(?:\.[A-Za-z0-9_-]+)?)?", re.I)
 # An `inputs.<name>` read, and a value naming the changes job: what makes a step's `if:` one --steps
@@ -404,6 +405,7 @@ def steps_of(workflow, document, job_id, outputs, context, result):
     called_path = Path(workflow).resolve().parent.parent.parent / str(caller["uses"])[2:]
     called = yaml.safe_load(called_path.read_text())
     context = dict(context, needs={"changes": {"result": result, "outputs": outputs}})
+    context["env"] = workflow_env(called)
     evaluator = Evaluator(context)
     passed, from_changes = {}, set()
     for name, value in (caller.get("with") or {}).items():
@@ -428,6 +430,17 @@ def steps_of(workflow, document, job_id, outputs, context, result):
             name = str(step.get("name") or step.get("id") or step.get("run", "")).strip()
             out.append((name, runs(step, evaluator, f"step {index + 1} of job {called_id} of {called_path.name}")))
     return out
+
+
+def workflow_env(document):
+    """The `env` context of a workflow's jobs: its top-level `env:`, each value a string as the file
+    writes it. A value that embeds an expression is refused, since this reader models none there."""
+    env = {}
+    for name, value in (document.get("env") or {}).items():
+        if EMBEDDED.search(str(value)):
+            raise Refused(f"env {name} embeds an expression, which this reader does not evaluate")
+        env[str(name)] = text_of(value)
+    return env
 
 
 def main():
@@ -496,6 +509,7 @@ def main():
     try:
         context = {
             "runner": {"temp": "/home/runner/work/_temp"},
+            "env": workflow_env(document),
             "github": {"event_name": args.event, "ref": ref, "sha": args.sha,
                        "event": {"pull_request": {"number": 1 if pull_request else None,
                                                   "labels": [{"name": label} for label in args.label],

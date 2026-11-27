@@ -293,12 +293,34 @@ check "prints docs as selected" "$(contains "$out" '^docs: success (selected: ne
 check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
 check "writes no job summary" "$(is "$step_summary" "")"
 
-echo "case: a merge-group run never says full-ci, since the label term of those outputs is already true there"
+echo "case: a merge group that held docs out names CI_MERGE_GROUP_SKIPS, never full-ci"
+# On a merge group the label term of the slow suites' outputs is already true, so an output that
+# is false where its filter said yes is one CI_MERGE_GROUP_SKIPS names: a package-local unit
+# suite the pull request ran. The verdict accepts its skip as before and names the list, not a
+# label that a merge group never reads.
 run_ci_ok "$(needs success "$gated_selects" success typecheck=success envoy-client=skipped worker-image=skipped docs=skipped)" merge_group
+check "passes" "$(is "$status" 0)"
+check "says the merge group held it out, by the list" \
+  "$(contains "$out" '^docs: skipped (not selected: selected by paths, held out of the merge group by CI_MERGE_GROUP_SKIPS: package-local unit tests, which run on the pull request)$')"
+check "says nothing about a pull request holding it back" "$(is "$(contains "$out" 'held back on a pull request')" false)"
+not_run_docs_queue='not run at this head: docs (selected by paths, held out of the merge group by CI_MERGE_GROUP_SKIPS; runs on the pull request)'
+check "names docs after the pass line as not run at this head" \
+  "$(contains "$(sed -n '/^changes and lint succeeded/,$p' <<<"$out")" "^$not_run_docs_queue\$")"
+check "the job summary names docs as not run at this head" "$(contains "$step_summary" "^- $not_run_docs_queue\$")"
+
+echo "case: a merge group that held docs out, beside a selected job that failed"
+# The held-out job is no pass: a failure of a job the merge group runs still fails the group.
+run_ci_ok "$(needs success "$gated_selects" success typecheck=failure envoy-client=skipped worker-image=skipped docs=skipped)" merge_group
+check "fails" "$(is "$status" 1)"
+check "names the failed job" \
+  "$(contains "$out" '^::error::typecheck ended failure, but changes selected it (needs.changes.outputs.typecheck is true)')"
+check "still names docs as not run at this head" "$(contains "$out" "^$not_run_docs_queue\$")"
+
+echo "case: a merge group whose docs filter said no names nothing as not run"
+run_ci_ok "$(needs success "$unmatched_selects" success typecheck=success envoy-client=skipped worker-image=skipped docs=skipped)" merge_group
 check "passes" "$(is "$status" 0)"
 check "keeps today's wording" \
   "$(contains "$out" '^docs: skipped (not selected: needs.changes.outputs.docs is false)$')"
-check "says nothing about a pull request holding it back" "$(is "$(contains "$out" 'held back on a pull request')" false)"
 check "names no job as not run at this head" "$(is "$(contains "$out" 'not run at this head')" false)"
 check "writes no job summary" "$(is "$step_summary" "")"
 

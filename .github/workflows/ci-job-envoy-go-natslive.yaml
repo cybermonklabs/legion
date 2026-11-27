@@ -1,0 +1,183 @@
+name: CI job envoy-go-natslive
+
+# The steps of `.github/workflows/ci.yaml#envoy-go-natslive` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The container-backed NATS matrix, the integration suite and the callout check: the one job of
+# envoy-go's file that is no package's unit test. It ran beside envoy-go's legs, under that job's
+# output, until the merge group stopped running envoy-go; a job of its own keeps it in the merge
+# group and on every pull request its paths select.
+# why: .github/ci-notes/ci.md#what-the-merge-group-runs-and-what-only-a-pull-request-runs
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  # The container-backed NATS matrix, the integration suite and the callout check.
+  envoy-go-natslive:
+    runs-on: ubuntu-24.04-arm
+    # Each go test's -timeout must fire before the runner cancels the job: about 2 minutes of
+    # setup, natslive's default 10, the bus matrix's own 5, the auth service's own 5, the edge
+    # grant's own 5 and the edge listener's own 10 (its relay socket's rows wait out a 30 s token
+    # twice and a consumer's 60 s ack wait), which is 37, the integration step's 5 and the callout
+    # check's own 6, so 50.
+    timeout-minutes: 50
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      JOB_TIMEOUT_MINUTES: 50 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+      # clean up, and its image would be one more registry pull a test could fail on.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      # go-envoy-test: the envoy module's test binaries, which this job and the jobs of
+      # ci-job-envoy-go.yaml, from which it was split, build between them, each its share.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
+        timeout-minutes: 2
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The server's version and the pgvector version it offers, read from the service itself, so
+      # the run shows which Postgres the tests below ran on.
+      - name: Postgres service version
+        run: |
+          docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
+      # Every image the tests here start: testnats.HubImage, which the natslive step below runs
+      # Envoy on, testnats.Image (nats:2.10), which only the tests of that server itself and of the
+      # listener's refusal of it start, and tests3.Image, pulled first for the reason the action
+      # gives.
+      - name: Pull test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/envoy/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go HubImage
+            packages/envoy/internal/tests3/seaweedfs.go Image
+      # internal/testnats runs its server in the test process, so its untagged tests, which a unit
+      # leg of envoy-go-legs runs, start no container. The real-server tests, a rendered authorization on the image the hub runs
+      # among them, are the one thing an in-process server cannot reproduce: they sit behind the
+      # natslive tag, and this step is where they run (INFRA-250). internal/bus has tests of its own
+      # there. One is the consumer cap: the module links nats-server v2.15.1 in process, which caps
+      # a stream that sets no cap at a default of its own and takes a change of MaxConsumers on a
+      # stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the consumer
+      # cap this binary compiles and the keeper's restore of a cap an operator lowered or unset are
+      # proved in process. What is left for a real image is the pair of 2.10 cases - the stream with
+      # no cap the binary must leave alone, and the refusal of the raise of a lower cap, naming the
+      # field, the cap and the first server taking the change - and the hub's own reconcile on the
+      # nats:2.15.1-alpine image the deployment runs (INFRA-1384). The others are a session
+      # consumer's own messages behind other sessions' traffic on the hub's image, the listener's
+      # refusal of nats:2.10 (natsversion), and that refusal's control: on 2.10, stepped past, the
+      # consumer loses its old-form message. internal/cipher/natscallout has one too: that the
+      # image the hub runs lets a user with an empty publish allow list publish anywhere, the
+      # fail-open its guard refuses, so the guard is shown able to fail on the server production
+      # runs. natsgrant and cmd/listener have the edge listener's: the server refuses the edge's
+      # user a Dispatch event, and the edge listener starts, relays a send and is reached by a
+      # role message through a shared listener under its rendered grant, with no violation, and
+      # ends its start, naming its inbox prefix, under a grant without it; a role message of the
+      # edge reaches no holder of another project's role; and the relay socket's rows, most of the
+      # step's time, run two edge listeners and the real broker with 30 s tokens, and carry frames
+      # and receipts, refuse other sessions' subjects, and close the socket at a token's expiry,
+      # a revoke, a Reset, a person's removal, a changed answer and an unreachable broker. Each
+      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
+      # the package's untagged tests, which already run elsewhere - internal/testnats and natsgrant
+      # in a unit leg, internal/bus and cmd/listener in envoy-go-race, and
+      # internal/cipher/natscallout in both - so the -run comes from .github/scripts/go-tagged-tests.sh,
+      # which reads the names off the source at run time, and no test name is spelled here. Each
+      # assignment is a line of its own: under bash -e it carries the script's exit status, so an
+      # empty or refused list fails the step instead of running -run "", which matches every test.
+      - name: Test the container-backed NATS matrix (natslive)
+        run: |
+          rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
+          go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
+          cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
+          go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+          callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/cipher/natscallout)
+          go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/
+          grant=$(../../.github/scripts/go-tagged-tests.sh natslive ./natsgrant)
+          go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
+          edge=$(../../.github/scripts/go-tagged-tests.sh natslive ./cmd/listener)
+          go test -count=1 -timeout 10m -tags natslive -run "$edge" -v ./cmd/listener/
+        working-directory: packages/envoy
+
+      - name: Integration test envoy (a real NATS server, in the test process)
+        run: go test ./internal/integration/ -timeout 300s -count=1
+        working-directory: packages/envoy
+      # check c-callout-live of the NATS auth service's verification: the real broker (twice, one
+      # queue group), listener, Dispatch and nats-server behind the auth callout, built and started
+      # by dev-stack.sh --callout on this job's Postgres, and driven by natsprobe. It prints one
+      # PASS line per property and exits 1 on any FAIL or UNKNOWN.
+      - name: Prove the hub behind the NATS auth service on the local stack (callout-check.sh)
+        timeout-minutes: 6
+        run: bash scripts/callout-check.sh
+        env:
+          LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        working-directory: packages/envoy
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-go-natslive
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

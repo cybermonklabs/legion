@@ -65,8 +65,9 @@
 #                      check-ci-filters.sh holds it to ci.yaml. (A job an event must hold back
 #                      otherwise needs no list: `changes` sets its output false there, as it does
 #                      for the slow suites on a pull request without the label full-ci or the
-#                      job's own lane:<output>, whose skip this verdict accepts and whose line
-#                      says the pull request held it back.)
+#                      job's own lane:<output>, and for the outputs CI_MERGE_GROUP_SKIPS names on
+#                      a merge group, whose skip this verdict accepts and whose line says which
+#                      event held it back.)
 #   ALWAYS_RUN         a JSON array of the jobs no `changes` output gates, `changes` among them:
 #                      each runs on every change, so ci-ok passes only when it succeeded, and a
 #                      skip, a cancellation or an absence fails. ci.yaml's env names them in
@@ -87,17 +88,19 @@
 # prints every job's result and whether it was selected, and an `::error::` for each failure
 # naming the job, its result and why.
 #
-# A job its paths selected and a pull request held back (`.github/scripts/ci-ok.jq#gated`) did not run at this
+# A job its paths selected and its event held back (`.github/scripts/ci-ok.jq#gated`) did not run at this
 # head, and the verdict accepts its skip as it accepts any job changes did not select. Its own
 # line reads `<job>: skipped (...)` among the jobs that ran, and the pass line says every job
 # changes selected succeeded, so a reader of a green ci-ok could take it for a job that passed.
 # So after the verdict, pass or fail, each such job gets a line of its own, `not run at this head:
-# <job> (selected by paths, held back on a pull request without full-ci or lane:<output>; runs in
-# the merge queue)`, naming the job's own `changes` output, and the job summary lists those lines
-# apart from the jobs that ran and passed. No job runs in part: each runs all its steps wherever
-# it runs, or its own output skips it, so a success is the whole job's. A run that held nothing
-# back writes no summary: only a pull request can hold a job back, so ci-ok-report.sh's
-# merge-group calls, inside other jobs, never write one.
+# <job> (...)`, which on a pull request reads `selected by paths, held back on a pull request
+# without full-ci or lane:<output>; runs in the merge queue`, naming the job's own `changes`
+# output, and on a merge group `selected by paths, held out of the merge group by
+# CI_MERGE_GROUP_SKIPS; runs on the pull request`; the job summary lists those lines apart from the
+# jobs that ran and passed. No job runs in part: each runs all its steps wherever it runs, or its
+# own output skips it, so a success is the whole job's. A run that held nothing back writes no
+# summary; ci-ok-report.sh's merge-group calls, inside other jobs, write the same list into the
+# reporting job's summary when the group held a job out.
 #
 # Run from anywhere:
 #   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... GH_TOKEN=... \
@@ -193,7 +196,7 @@ include "ci-ok";
       selection($job) as $s
       | ["info", "\($job): \($result) (\(if $s.selected then "selected" else "not selected" end): \($s.why))"],
         (select($s.gated and $result == "skipped")
-         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request without full-ci or lane:\($map[$job]); runs in the merge queue)"]),
+         | ["not_run", "not run at this head: \($job) (\(if $event == "merge_group" then "selected by paths, held out of the merge group by CI_MERGE_GROUP_SKIPS; runs on the pull request" else "selected by paths, held back on a pull request without full-ci or lane:\($map[$job]); runs in the merge queue" end))"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but SELECTED_BY maps it to needs.changes.outputs.\($map[$job]); the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every SELECTED_BY job a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then

@@ -1770,12 +1770,15 @@ def reduce_line(line: str) -> tuple:
 # a workflow's value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY,
 # CI_OK_ALWAYS_RUN and CI_OK_EXEMPT are
 # ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
-# to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
+# to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. CI_MERGE_GROUP_SKIPS is the list of
+# changes outputs a merge group sets false, which those outputs' own expressions alone read; go
+# reads it nowhere. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
 # time by the test it governs, so go compiles the same files with them set as without.
 ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
-    "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
+    "BROKER_TEST_DATABASE_URL", "CI_MERGE_GROUP_SKIPS", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY",
+    "CI_OK_SELECTED_BY",
     # The file of the filters this run's changes job computed, which the lint job hands
     # check-image-trigger-paths.sh and check-ts-filters.sh. around_job reads the env of every step
     # of the job that runs go-release-notices.sh, so without this name here every go command of

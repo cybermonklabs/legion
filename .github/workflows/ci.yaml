@@ -59,6 +59,7 @@ env:
       "dispatch-browser-pr": "dispatch_browser_pr",
       "claude-envoy": "claude_envoy",
       "envoy-go": "envoy_go",
+      "envoy-go-natslive": "envoy_go_natslive",
       "envoy-go-build": "envoy_go_build",
       "envoy-go-checks": "envoy_go_checks",
       "envoy-infra-go": "envoy_infra_go",
@@ -101,6 +102,20 @@ env:
       "dispatch-references",
       "pr-title"
     ]
+  # The changes outputs a merge group sets false: each gates a job of package-local unit tests,
+  # whose result the heads a group combines cannot change, so its pull request's run is its gate.
+  # Every other job runs in the merge group as its paths select it. Each output named here reads
+  # this list in its own expression, and ci-router-outputs.test.sh holds the two to each other.
+  # why: .github/ci-notes/ci.md#what-the-merge-group-runs-and-what-only-a-pull-request-runs
+  CI_MERGE_GROUP_SKIPS: |
+    [
+      "envoy_go",
+      "envoy_go_race",
+      "envoy_go_race_api",
+      "envoy_go_race_docs",
+      "envoy_go_claim_model",
+      "sessions_script"
+    ]
 
 jobs:
   # why: .github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries
@@ -116,7 +131,8 @@ jobs:
     timeout-minutes: 40
     outputs:
       # why, for each output below with a `lane:` term: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
-      # and .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
+      # and .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request; for each
+      # that reads CI_MERGE_GROUP_SKIPS: .github/ci-notes/ci.md#what-the-merge-group-runs-and-what-only-a-pull-request-runs
       typecheck: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:test')) && steps.filter.outputs.test || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
@@ -128,7 +144,7 @@ jobs:
       # why: .github/ci-notes/ci.md#why-the-private-name-port-harness-has-an-output-of-its-own
       private_names_port: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.private_names_port }}
       # why: .github/ci-notes/ci.md#why-the-session-message-wait-suite-has-an-output-of-its-own
-      sessions_script: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.sessions_script }}
+      sessions_script: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'merge_group' || !contains(env.CI_MERGE_GROUP_SKIPS, '"sessions_script"')) && steps.filter.outputs.sessions_script || 'false' }}
       # The step gates of the test and tooling-checks jobs, all in one: the paths filter's own list
       # of the filters that matched, out of which each harness step and the guides' layout step
       # read their own; `all` on a run that selects every job and when the filters fell open.
@@ -160,7 +176,8 @@ jobs:
       # why: .github/ci-notes/ci.md#the-reference-rows-preview-job
       dispatch_references: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_references }}
       claude_envoy: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.claude_envoy }}
-      envoy_go: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go')) && steps.filter.outputs.envoy_go || 'false' }}
+      envoy_go: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'merge_group' || !contains(env.CI_MERGE_GROUP_SKIPS, '"envoy_go"')) && steps.filter.outputs.envoy_go || 'false' }}
+      envoy_go_natslive: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_go_natslive }}
       # why: .github/ci-notes/ci.md#why-envoy-gos-build-and-checks-come-back-on-every-push
       envoy_go_build: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_go_build }}
       envoy_go_checks: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_checks')) && steps.filter.outputs.envoy_go_checks || 'false' }}
@@ -170,10 +187,10 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the every-job one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.text_checks }}
-      envoy_go_race: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
-      envoy_go_race_api: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
-      envoy_go_claim_model: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_claim_model')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
-      envoy_go_race_docs: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_docs')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
+      envoy_go_race: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'merge_group' || !contains(env.CI_MERGE_GROUP_SKIPS, '"envoy_go_race"')) && steps.filter.outputs.envoy_go_race || 'false' }}
+      envoy_go_race_api: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'merge_group' || !contains(env.CI_MERGE_GROUP_SKIPS, '"envoy_go_race_api"')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
+      envoy_go_claim_model: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'merge_group' || !contains(env.CI_MERGE_GROUP_SKIPS, '"envoy_go_claim_model"')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
+      envoy_go_race_docs: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'merge_group' || !contains(env.CI_MERGE_GROUP_SKIPS, '"envoy_go_race_docs"')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
       dispatch_memory: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_memory')) && steps.filter.outputs.dispatch_memory || 'false' }}
       dispatch_multiprocess: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_multiprocess')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-job-builds-the-previous-release-and-runs-both-halves-against
@@ -696,6 +713,18 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # why: .github/ci-notes/ci.md#what-the-merge-group-runs-and-what-only-a-pull-request-runs
+  envoy-go-natslive:
+    needs: changes
+    if: needs.changes.outputs.envoy_go_natslive == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-go-natslive.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # why: .github/ci-notes/ci.md#the-envoy-infra-module-its-own-workspace-and-its-live-tests
   envoy-infra-go:
     needs: changes
@@ -1051,6 +1080,7 @@ jobs:
       - envoy-go-build
       - envoy-go-checks
       - envoy-go
+      - envoy-go-natslive
       - envoy-infra-go
       - envoy-infra-build
       - text-checks

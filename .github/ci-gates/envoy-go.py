@@ -1,12 +1,10 @@
 # The envoy_go filter's gate: what job envoy-go reads. Its steps are in the jobs of the file it
 # calls (ENVOY_GO_FILE): the unit step in the legs of envoy-go-legs, each over the packages
 # .github/go-legs.yaml lists for it, and the job's other steps beside them in envoy-go-alone,
-# envoy-go-race-impossible, envoy-go-skips and envoy-go-natslive; the job envoy-go itself only
-# restates their result. So each citation names one of those jobs.
+# envoy-go-race-impossible and envoy-go-skips; the job envoy-go itself only restates their
+# result. So each citation names one of those jobs. The container-backed NATS matrix and the
+# integration suite are envoy-go-natslive's gate's.
 GATE = gate("envoy_go", "envoy-go", runs=[
-    step_run(ENVOY_NATSLIVE_JOB, "Integration test envoy (a real NATS server, in the test process)",
-             "go test ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"],
-             workflow=ENVOY_GO_FILE),
     step_run(ENVOY_SKIPS_JOB, "Vet agentloop's live proof (no model call)", "go vet -tags modellive ./agentloop/", ENVOY,
              ["./agentloop/"], workflow=ENVOY_GO_FILE, tags="modellive", mode="vet"),
     step_run(ENVOY_SKIPS_JOB, "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/cipher/", ENVOY,
@@ -73,24 +71,8 @@ GATE = gate("envoy_go", "envoy-go", runs=[
          f"database-skips.sh --count-table's go test -json -timeout {UNIT_TEST_TIMEOUT} over each unit leg's "
          f"packages of {GO_LEGS}", {}),
     ], workflow=ENVOY_GO_FILE),
-    # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
-    # test of internal/bus that needs a real server image, the auth service's check that the
-    # deployed server lets an empty allow list through, which its guard refuses, and the edge
-    # listener's grant and start under its rendered user. The rest of internal/testnats runs in a
-    # unit leg; the rest of internal/bus runs in envoy-go-race, and the rest of
-    # internal/cipher/natscallout there and in a unit leg, since the unit legs leave the race
-    # lane's packages out but those whose skips they count, and the envoy_go entry of TAG_RUNS,
-    # one entry per step, checks the testnats half alone.
-    pinned_step(ENVOY_NATSLIVE_JOB, NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
-        (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
-        (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
-        (ENVOY, ["./internal/cipher/natscallout/"], "go test -tags natslive ./internal/cipher/natscallout/", {"tags": "natslive"}),
-        (ENVOY, ["./natsgrant/"], "go test -tags natslive ./natsgrant/", {"tags": "natslive"}),
-        (ENVOY, ["./cmd/listener/"], "go test -tags natslive ./cmd/listener/", {"tags": "natslive"}),
-    ], workflow=ENVOY_GO_FILE),
 ], reads=reads(
     (".github/actions/pull-test-images/**", at(ENVOY_LEGS_JOB, "Pull test container images", ENVOY_GO_FILE)),
-    (TAGGED_TESTS, f"{at(ENVOY_NATSLIVE_JOB, NATS_MATRIX_STEP, ENVOY_GO_FILE)} takes its -run from it"),
     (DATABASE_SKIPS_SCRIPT, f"{at(ENVOY_LEGS_JOB, UNIT_TEST_STEP, ENVOY_GO_FILE)} runs it, and "
                             f"{at(ENVOY_SKIPS_JOB, DATABASE_SKIPS_TEST_STEP, ENVOY_GO_FILE)} runs it and copies it"),
     (DATABASE_SKIPS_TEST, f"{at(ENVOY_SKIPS_JOB, DATABASE_SKIPS_TEST_STEP, ENVOY_GO_FILE)} runs it"),

@@ -12,11 +12,19 @@
 # nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
 # fails its case rather than leaving the set.
 #
+# It holds the other way round the outputs ci.yaml's env CI_MERGE_GROUP_SKIPS names, the jobs of
+# package-local unit tests: a merge group sets exactly those false, every filter saying yes, while
+# a pull request and a dispatch of a branch run each where its paths matched
+# (.github/ci-notes/ci.md#what-the-merge-group-runs-and-what-only-a-pull-request-runs). The list is
+# read from ci.yaml, and a copy with a name taken off it, and one with an output's read of it
+# misspelt, show that either fault fails its case.
+#
 # It holds a dispatched run's selection and the workflow's cancel key the same way, through the
 # changes job's own steps and the workflow's own `concurrency:`
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
 # a dispatch of main selects every job whatever the filters say, a dispatch of a branch selects
-# what a merge group with the same verdicts selects and diffs its own commit with main, the filter
+# what a merge group with the same verdicts selects, and the outputs CI_MERGE_GROUP_SKIPS names as
+# their filters say, and diffs its own commit with main, the filter
 # generation measures a branch's dispatch against its merge base with main as it measures a merge
 # group against its base, and is handed that base only because the base step runs before it (the
 # runner evaluates a step's env when the step starts), `every-job` selects every job on a branch,
@@ -110,12 +118,12 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: exactly the fifteen gated outputs read the pull request's labels"
+echo "case: exactly the ten gated outputs read the pull request's labels"
 # A count and the names, so an output whose label term is deleted outright fails here by name
-# rather than leaving the set. A sixteenth gated suite adds its name to this list.
-gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion test'
-check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 15)"
-check "and they are the fifteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
+# rather than leaving the set. An eleventh gated suite adds its name to this list.
+gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go_checks envoy_infra_go envoy_smoke pi_legion test'
+check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 10)"
+check "and they are the ten" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
 
 echo "case: each of them is on for a merge group and for a push, where no label is read"
 check "a merge group leaves none off" \
@@ -199,11 +207,11 @@ PY
 
 echo "case: an output whose full-ci literal is broken stays in the set and fails the full-ci case"
 broken=$(copy_with "$work/no-full-ci" ci.yaml \
-  "contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')" \
-  "contains(github.event.pull_request.labels.*.name, 'full-cj') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')")
+  "contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_memory')" \
+  "contains(github.event.pull_request.labels.*.name, 'full-cj') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_memory')")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
-check "full-ci leaves exactly envoy_go_race_api off" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "envoy_go_race_api ")"
+check "full-ci leaves exactly dispatch_memory off" "$(is "$(off_under "$broken" full-ci | tr '\n' ' ')" "dispatch_memory ")"
 
 echo "case: an output whose lane literal is broken fails its lane row"
 broken=$(copy_with "$work/no-lane" ci.yaml "'lane:envoy_smoke'" "'lane:envoy_smokx'")
@@ -213,12 +221,12 @@ check "full-ci still turns it on" "$(is "$(off_under "$broken" full-ci | tr '\n'
 
 echo "case: an output whose event term is broken stays in the set and fails the merge-group case"
 broken=$(copy_with "$work/no-event" ci.yaml \
-  "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race'))" \
-  "(github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race'))")
+  "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_multiprocess'))" \
+  "(github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_multiprocess'))")
 check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
 check "the set keeps all ${#held[@]}" "$(is "$(held_of "$broken" | wc -l)" "${#held[@]}")"
-check "a merge group leaves exactly envoy_go_race off" \
-  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "envoy_go_race ")"
+check "a merge group leaves exactly dispatch_multiprocess off" \
+  "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "dispatch_multiprocess ")"
 
 echo "case: an output that reads the labels through the whole pull request is refused, never missed"
 broken=$(copy_with "$work/whole-pr" ci.yaml \
@@ -247,6 +255,32 @@ n_selecting=$(python3 -c 'import sys, yaml; print(len(yaml.safe_load(open(sys.ar
 mapfile -t names < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))))' "$filters")
 old=1111111111111111111111111111111111111111
 new=2222222222222222222222222222222222222222
+# skips_of <workflow>: the outputs its env CI_MERGE_GROUP_SKIPS names, one per line, sorted.
+skips_of() {
+  python3 -c 'import json, sys, yaml; print("\n".join(sorted(json.loads(yaml.safe_load(open(sys.argv[1]))["env"]["CI_MERGE_GROUP_SKIPS"]))))' "$1"
+}
+# skip_readers_of <workflow>: the outputs whose expression reads CI_MERGE_GROUP_SKIPS, one per line,
+# sorted, read off the text and not by the evaluator under test. An output that reads the list for
+# a name other than its own prints as `<output> reads <names>`, which no list holds.
+skip_readers_of() {
+  python3 -c '
+import re, sys, yaml
+outputs = yaml.safe_load(open(sys.argv[1]))["jobs"]["changes"]["outputs"]
+found = []
+for name, expression in outputs.items():
+    if "CI_MERGE_GROUP_SKIPS" in str(expression):
+        read = re.findall(r"contains\(env\.CI_MERGE_GROUP_SKIPS, \x27\"([^\"]*)\"\x27\)", str(expression))
+        found.append(name if read == [name] else f"{name} reads {read}")
+print("\n".join(sorted(found)))
+' "$1"
+}
+# words <text>: its space-separated words, sorted bytewise and space-separated, so two lists
+# compare as sets whatever order each was read in.
+words() { tr ' ' '\n' <<<"$1" | grep . | LC_ALL=C sort | tr '\n' ' ' || true; }
+mapfile -t skips < <(skips_of "$ci")
+# unskipped <outputs>: the selecting outputs but those CI_MERGE_GROUP_SKIPS names, which a merge
+# group sets false where a dispatch of a branch reads their filters.
+unskipped() { selecting "$1" | grep -Ev "^($(IFS='|'; echo "${skips[*]}"))=" || true; }
 
 echo "case: a dispatch of main selects every job, whatever each filter says"
 got=$(outputs --event workflow_dispatch --ref refs/heads/main --verdicts false)
@@ -271,7 +305,8 @@ for parity in 0 1 all none; do
   esac
   dispatched=$(outputs --event workflow_dispatch --ref refs/heads/feature "${args[@]}")
   queued=$(outputs --event merge_group "${args[@]}")
-  check "filters $parity: the same outputs, value for value" "$(is "$(selecting "$dispatched")" "$(selecting "$queued")")"
+  check "filters $parity: the same outputs, value for value, but those CI_MERGE_GROUP_SKIPS names" \
+    "$(is "$(unskipped "$dispatched")" "$(unskipped "$queued")")"
   check "filters $parity: all $n_selecting read" "$(is "$(selecting "$dispatched" | wc -l)" "$n_selecting")"
   case $parity in
     0 | 1) check "filters $parity: some jobs selected and some left off" \
@@ -280,6 +315,41 @@ for parity in 0 1 all none; do
     all) check "filters all: every output that selects a job is true on the branch" "$(is "$(off_of "$dispatched")" "")" ;;
   esac
 done
+
+echo "case: a merge group sets false exactly the outputs CI_MERGE_GROUP_SKIPS names, every filter saying yes"
+# The list is what a merge group leaves to the pull request
+# (.github/ci-notes/ci.md#what-the-merge-group-runs-and-what-only-a-pull-request-runs): a name on it
+# whose output does not read it would run in the merge group still, and an output that reads it
+# while off the list is a hold nobody can see in the list.
+check "the list names outputs to hold: ${skips[*]}" "$(is "$([ "${#skips[@]}" -gt 0 ] && echo yes)" yes)"
+check "the outputs that read the list, each for its own name, are the names on it" \
+  "$(is "$(skip_readers_of "$ci" | tr '\n' ' ')" "$(skips_of "$ci" | tr '\n' ' ')")"
+queued=$(outputs --event merge_group --verdicts true)
+check "a merge group leaves exactly them off" "$(is "$(words "$(off_of "$queued")")" "$(words "${skips[*]}")")"
+check "a dispatch of a branch leaves none of them off" \
+  "$(is "$(off_of "$(outputs --event workflow_dispatch --ref refs/heads/feature --verdicts true)")" "")"
+matched=$(outputs --event pull_request --verdicts true)
+unmatched=$(outputs --event pull_request --verdicts false)
+for name in "${skips[@]}"; do
+  check "an unlabelled pull request runs $name where its paths matched" "$(is "$(value "$matched" "$name")" true)"
+  check "  and leaves it off where they did not" "$(is "$(value "$unmatched" "$name")" false)"
+done
+
+echo "case: a name taken off CI_MERGE_GROUP_SKIPS while its output still reads the list fails the readers case"
+broken=$(copy_with "$work/skip-unlisted" ci.yaml $'      "envoy_go_race_api",\n' '')
+check "the copy's list lacks envoy_go_race_api" "$(is "$(skips_of "$broken" | grep -cx envoy_go_race_api || true)" 0)"
+check "  so its readers and its list differ by exactly envoy_go_race_api" \
+  "$(is "$(comm -3 <(skip_readers_of "$broken" | LC_ALL=C sort) <(skips_of "$broken" | LC_ALL=C sort) | tr -d '\t' | tr '\n' ' ')" "envoy_go_race_api ")"
+check "  and a merge group runs it" \
+  "$(is "$(value "$(outputs_of "$broken" --event merge_group --verdicts true)" envoy_go_race_api)" true)"
+
+echo "case: an output whose read of the list names another output fails the readers case and the merge-group case"
+broken=$(copy_with "$work/skip-misread" ci.yaml "'\"envoy_go_race_docs\"'" "'\"envoy_go_race_dosc\"'")
+check "the readers case names the misread" \
+  "$(contains "$(skip_readers_of "$broken")" "^envoy_go_race_docs reads \\['envoy_go_race_dosc'\\]\$")"
+check "  and a merge group leaves exactly envoy_go_race_docs on of the list" \
+  "$(is "$(words "$(off_of "$(outputs_of "$broken" --event merge_group --verdicts true)")")" \
+    "$(words "$(skips_of "$broken" | grep -vx envoy_go_race_docs | tr '\n' ' ')")")"
 
 echo "case: every-job selects every job on a branch"
 got=$(outputs --event workflow_dispatch --ref refs/heads/feature --input every-job=true --verdicts false)
@@ -382,8 +452,8 @@ echo "case: an output that lost its filter fails the all-filters case, which equ
 broken=$(copy_with "$work/output-no-filter" ci.yaml "typecheck: \${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.typecheck }}" "typecheck: \${{ steps.scope.outputs.every_job }}")
 dispatched=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/feature --verdicts true)
 check "every filter true: the branch then leaves exactly typecheck off" "$(is "$(off_of "$dispatched")" "typecheck ")"
-check "  while a merge group leaves it off too, so the two still agree" \
-  "$(is "$(selecting "$dispatched")" "$(selecting "$(outputs_of "$broken" --event merge_group --verdicts true)")")"
+check "  while a merge group leaves it off too, so the two still agree but for the outputs CI_MERGE_GROUP_SKIPS names" \
+  "$(is "$(unskipped "$dispatched")" "$(unskipped "$(outputs_of "$broken" --event merge_group --verdicts true)")")"
 
 echo "case: an output still forced on every dispatch fails the branch case"
 broken=$(copy_with "$work/output-every-dispatch" ci.yaml "typecheck: \${{ steps.scope.outputs.every_job" "typecheck: \${{ github.event_name == 'workflow_dispatch'")
@@ -655,4 +725,4 @@ broken=$(copy_with "$work/no-fall-open" ci.yaml " || steps.generate.outputs.ever
 got=$(fallen "$broken" --event merge_group --steps test)
 check "none of them runs" "$(is "$(running "$got")" "")"
 
-summary "ci.yaml's changes outputs turn on what full-ci, the lane labels and a dispatch's ref and diff name, its filter generation is measured against each diff's base, its cancel key cancels only a branch's older dispatch, and the test job's steps run on what their filters name"
+summary "ci.yaml's changes outputs turn on what full-ci, the lane labels and a dispatch's ref and diff name, a merge group sets false exactly what CI_MERGE_GROUP_SKIPS names, its filter generation is measured against each diff's base, its cancel key cancels only a branch's older dispatch, and the test job's steps run on what their filters name"

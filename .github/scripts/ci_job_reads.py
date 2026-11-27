@@ -143,7 +143,7 @@ def targets(path: str, key: str) -> list:
 
 def step_run(job, step, text, workdir, pkgs, workflow="", **options):
     """A go command a ci.yaml step starts, pinned to the step and its text, in `workflow` when the
-    job's steps are not in its own called file (envoy-go-natslive's, in ci-job-envoy-go.yaml)."""
+    job's steps are not in its own called file (envoy-go-skips', in ci-job-envoy-go.yaml)."""
     return run(workdir, pkgs, f"{at(job, step, workflow)}: {text}", step=step, text=text, **options)
 
 
@@ -1631,11 +1631,12 @@ hold_database_skips_packages()
 # ci-job-envoy-go.yaml, and the job's other steps run beside them, each kind on a runner of its
 # own: envoy-go-alone runs the rows whose bound is on time and the xid window rows, which need a
 # runner nothing else loads; envoy-go-race-impossible the rest of the plain run the race build
-# cannot make; envoy-go-skips the skip counter's test, the store-form count and the two vets; and
-# envoy-go-natslive the container-backed matrix, the integration suite and the callout check. The
-# race step's legs are envoy-go-race-legs, of ci-job-envoy-go-race.yaml. The jobs envoy-go and
-# envoy-go-race keep the check-run names the one jobs had before, and pass only when every job
-# they wait for passed.
+# cannot make; and envoy-go-skips the skip counter's test, the store-form count and the two vets.
+# envoy-go-natslive, the container-backed matrix, the integration suite and the callout check, ran
+# beside them too and is a ci.yaml job of its own now, in ci-job-envoy-go-natslive.yaml, so the
+# merge group runs it and not the legs. The race step's legs are envoy-go-race-legs, of
+# ci-job-envoy-go-race.yaml. The jobs envoy-go and envoy-go-race keep the check-run names the one
+# jobs had before, and pass only when every job they wait for passed.
 # why: .github/ci-notes/ci.md#why-envoys-go-tests-run-in-legs
 ENVOY_PLAIN_JOB = "envoy-go"
 ENVOY_RACE_JOB = "envoy-go-race"
@@ -2722,15 +2723,14 @@ def browser_gate(filter, job):
 
 
 # One entry per step of ci.yaml that runs a package under a build tag and passes -run: the job
-# whose untagged run of that package the -run leans on, which check-ci-filters.sh holds to running
-# in every run the tag step runs (check_tag_runs). The note says which step runs the untagged
-# tests, the judgement the check cannot derive. The envoy_go entry pairs a job with itself: the
-# untagged run is a step of the same job, so the filters are the same one and the subset holds
-# trivially; it is here all the same, so the rule covers every -run step and a later move of
-# one to another job is caught. What the check holds an untagged job's filter to is what the tag
-# step's gate reads and the tag step filter's listed block, never what the tag filter selects, so
-# that entry holds its filter to nothing its own gate does not read already, and rules 9 and 17
-# judge it as they judge any other.
+# whose untagged run of that package the -run leans on, whose filter check-ci-filters.sh holds to
+# covering every file the tag step reads (check_tag_runs). The note says which step
+# runs the untagged tests, the judgement the check cannot derive. What the check holds an untagged
+# job's filter to is what the tag step's gate reads and the tag step filter's listed block, never
+# what the tag filter selects. A merge group runs neither untagged job, envoy-go nor envoy-go-race
+# (ci.yaml's CI_MERGE_GROUP_SKIPS): their filters select the change all the same, and the pull
+# request's run of them is the untagged run each tag step leans on
+# (.github/ci-notes/ci.md#what-the-merge-group-runs-and-what-only-a-pull-request-runs).
 TAG_RUNS = [
     TagRun("dispatch_memory", "dispatch-memory", MEMORY_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
@@ -2753,9 +2753,9 @@ TAG_RUNS = [
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",
            f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
            job_file("listener-server-change")),
-    TagRun("envoy_go", ENVOY_NATSLIVE_JOB, NATS_MATRIX_STEP, "envoy_go", "envoy-go",
+    TagRun("envoy_go_natslive", ENVOY_NATSLIVE_JOB, NATS_MATRIX_STEP, "envoy_go", "envoy-go",
            f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests in a unit leg",
-           ENVOY_GO_FILE),
+           job_file(ENVOY_NATSLIVE_JOB)),
     # The natslive step is the merge-queue half of envoy-infra's old job, and the unit step that
     # runs the three packages' untagged tests went with the half a pull request runs.
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_build", "envoy-infra-build",
