@@ -47,6 +47,10 @@ type poolStatements struct {
 	mu         sync.Mutex
 	statements []drivenStatement
 	waitWork   func(context.Context) error
+	// checked is the next unaudited statement in a read-only world. It is touched only by the
+	// world's serial request driver; record uses mu for the statements it appends.
+	checked   int
+	checkGaps bool
 }
 
 func (p *poolStatements) record(ctx context.Context, sql string) {
@@ -94,21 +98,37 @@ func (p *poolStatements) since(from int) []drivenStatement {
 	return slices.Clone(p.statements[from:])
 }
 
-// driveWindowLimit bounds each request's work and the calibration's extra observation.
+// auditGap checks every statement since the preceding window's snapshot. Advancing by exactly
+// that snapshot's length leaves a concurrently appended statement for the next check.
+func (p *poolStatements) auditGap(t *testing.T, what string) {
+	t.Helper()
+	if !p.checkGaps {
+		return
+	}
+	statements := p.since(p.checked)
+	requireReadsWrites(t, "between windows "+what, statements)
+	p.checked += len(statements)
+}
+
+// driveWindowLimit bounds each request's work and each extra background observation.
 const driveWindowLimit = 20 * time.Second
 
-// driveCalibrationWindow keeps the calibration's original two-second observation for background
-// writers outside the known workers' completion barriers. Each world pays it only once.
+// driveCalibrationWindow is the two-second observation used before and after a world's rows to
+// catch background writers outside the known workers' completion barriers.
 const driveCalibrationWindow = 2 * time.Second
 
 // window records the request and all its background work, including a worker that runs no SQL
 // until after the response. waitWork joins those workers. An optional observation then keeps the
-// window open for unknown writers in the calibration. The same driveWindowLimit bounds both.
+// window open for unknown writers before or after the rows. The same driveWindowLimit bounds both.
 func (p *poolStatements) window(t *testing.T, what string, observation time.Duration, send func()) []drivenStatement {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), driveWindowLimit)
 	defer cancel()
+	p.auditGap(t, "before "+what)
 	from := p.count()
+	if p.checkGaps {
+		from = p.checked
+	}
 	send()
 	p.finish(t, ctx, what, from)
 	if observation > 0 {
@@ -122,7 +142,11 @@ func (p *poolStatements) window(t *testing.T, what string, observation time.Dura
 			t.Fatalf("%s: observation did not finish within %s: %v; window writes: %v", what, driveWindowLimit, err, writesIn(p.since(from)))
 		}
 	}
-	return p.since(from)
+	statements := p.since(from)
+	if p.checkGaps {
+		p.checked = from + len(statements)
+	}
+	return statements
 }
 
 // settle joins the preceding request's work, so the next window contains none of it.
@@ -131,6 +155,7 @@ func (p *poolStatements) settle(t *testing.T, what string) {
 	ctx, cancel := context.WithTimeout(context.Background(), driveWindowLimit)
 	defer cancel()
 	p.finish(t, ctx, what, p.count())
+	p.auditGap(t, what)
 }
 
 func (p *poolStatements) finish(t *testing.T, ctx context.Context, what string, from int) {

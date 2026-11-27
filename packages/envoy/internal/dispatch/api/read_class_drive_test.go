@@ -541,6 +541,10 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // (driveWorldsFor), each a seeded store, a server and a tracer of its own (newDriveWorld). The
 // worlds run at once and each sends its rows one after another, so a window reads its own world's
 // pool alone and holds no statement of a row another world sends beside it.
+// Statements between windows are checked too. Each world finishes with a two-second observation
+// after its last row, so an unregistered worker cannot escape by writing between requests or
+// after the last response. Such a failure may name the following row or the end of the world,
+// rather than the row that started the worker.
 //
 // In each world, before its first row, a calibration window, GET /api/v1/limits under the
 // deployment's shared token, joins known workers and observes two more seconds for an unknown
@@ -576,6 +580,8 @@ func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing
 						world.driveRead(t, name, drives[name], &tally)
 					})
 				}
+				tail := world.tracer.window(t, "after the world's last row", driveCalibrationWindow, func() {})
+				requireReadsWrites(t, "after the world's last row", tail)
 				writes := make([]string, 0, len(tally.writes))
 				for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
 					writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))

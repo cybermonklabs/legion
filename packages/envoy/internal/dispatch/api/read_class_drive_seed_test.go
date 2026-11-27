@@ -96,6 +96,8 @@ func newDriveWorld(t *testing.T) *driveWorld {
 	// and its writer's.
 	world.as(t, "alice", http.MethodPost, "/api/v1/artifacts/_test/quiesce", nil, http.StatusOK)
 	awaitSettledDocuments(t, world.raw)
+	world.tracer.checked = world.tracer.count()
+	world.tracer.checkGaps = true
 	return world
 }
 

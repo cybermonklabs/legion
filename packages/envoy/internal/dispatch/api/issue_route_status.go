@@ -220,10 +220,7 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 		// transaction-tracking mark among them) belong to that request alone; the fetch bound
 		// still limits it, and a shutdown ends it. now, the database's clock on the read that
 		// found the row stale, is when its call counts as sent.
-		if s.readWorkers != nil {
-			s.readWorkers.start()
-		}
-		go s.fetchRouteRoster(s.lifetime, fetch, now)
+		s.goReadWorker(func() { s.fetchRouteRoster(s.lifetime, fetch, now) })
 	}
 	cache.mu.Unlock()
 	select {
@@ -353,9 +350,6 @@ func (c *rosterCache) keep(sent time.Time, roster routeRoster) {
 // before the call, so no read is served a list older than the TTL however long the listener took;
 // a silence's counts from the moment it was known, so a read that timed out is still left alone.
 func (s *server) fetchRouteRoster(ctx context.Context, fetch *rosterFetch, sent time.Time) {
-	if s.readWorkers != nil {
-		defer s.readWorkers.done()
-	}
 	fetch.roster = s.storeRouteRoster(ctx, sent, s.listRouteRoster(ctx))
 	cache := &s.rosters
 	cache.mu.Lock()

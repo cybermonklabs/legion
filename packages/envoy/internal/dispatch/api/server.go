@@ -864,6 +864,16 @@ func (b *backgroundWork) goDetached(work func()) {
 	}()
 }
 
+// goReadWorker counts a read worker for a test that joins it. Production leaves readWorkers nil
+// and starts the same goroutine without a counter.
+func (s *server) goReadWorker(work func()) {
+	if workers := s.readWorkers; workers != nil {
+		workers.goDetached(work)
+		return
+	}
+	go work()
+}
+
 func (b *backgroundWork) wait() {
 	for {
 		b.mu.Lock()
