@@ -480,10 +480,11 @@ makes one of those gates true. The engine adds each step gate's reads to its job
 ## tooling_checks: The tooling-checks job: the Claude Code plugin build, the changelog
 
 The tooling-checks job: the Claude Code plugin build, check and pack, the plugin's build-input
-list check, the changelog fragments' render check, the guides' layout step, and the lints and
+list check, the changelog fragments' render check, the guides' layout step, the lints and
 typechecks of scripts/dispatch, scripts/github-apps, scripts/sessions, scripts/approval-eval
-and scripts/e2e/lib. They were steps of the test job, beside its harnesses; this filter names
-what they read and none of the harness groups, which stay on the `test` filter.
+and scripts/e2e/lib, and the typecheck of scripts/e2e's drivers. They were steps of the test
+job, beside its harnesses; this filter names what they read and none of the harness groups,
+which stay on the `test` filter.
 
 ## tooling_checks: The guides' layout step's own gate, named here so the job runs
 
@@ -2392,7 +2393,8 @@ build reads, the render check of every changelog fragment with the changie it in
 guides' layout step behind its own guide_layout filter, read out of the same list of matched
 filters (#one-list-for-the-test-jobs-step-gates), and the lints and typechecks of
 scripts/dispatch, scripts/github-apps, scripts/sessions and scripts/approval-eval, with the
-typecheck of scripts/e2e/lib's plan ratings read test. They are builds, lints and typechecks,
+typecheck of scripts/e2e/lib's plan ratings read test and of scripts/e2e's drivers, which Bun
+runs with no check of their types. They are builds, lints and typechecks,
 which a pull request runs whatever their time, and they come to 1.0 minutes at the 90th
 percentile (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 The job shares ci-job-test.yaml with the test job

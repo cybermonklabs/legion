@@ -15,6 +15,8 @@ GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + reads(
                             f"itself is {SESSIONS_JOB}'s"),
     ("scripts/approval-eval/**", f"{at(TOOLING_JOB, 'Lint the approval-eval statistics')} and typecheck"),
     ("scripts/e2e/lib/**", f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')}: scripts/e2e/lib/tsconfig.json"),
+    ("scripts/e2e/*.ts", f"{at(TOOLING_JOB, 'Typecheck the e2e drivers')}: scripts/e2e/tsconfig.json includes every *.ts of the directory"),
+    ("scripts/e2e/tsconfig.json", f"{at(TOOLING_JOB, 'Typecheck the e2e drivers')}: the program it typechecks"),
     ("packages/envoy-client/test/fake-dispatch.ts", f"`scripts/e2e/lib/agent-replay.test.ts#startFakeDispatch` imports it by path, and "
                                                     f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compiles that test"),
     ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),

@@ -15,7 +15,7 @@ Each entry of PROGRAMS is (filter, project, why):
 The pairs are hand-kept and few; the files of each program are derived, which is the point. A
 job that typechecks a second project is a second entry (the dispatch-ui job typechecks the proof
 editor beside the dashboard, and the tooling-checks job the five script directories that are no
-workspace).
+workspace and the e2e drivers).
 """
 
 
@@ -59,6 +59,8 @@ PROGRAMS = [
      at("tooling-checks", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)", "test")),
     ("tooling_checks", "scripts/e2e/lib",
      at("tooling-checks", "Typecheck the plan ratings read test (bunx tsc --noEmit -p scripts/e2e/lib)", "test")),
+    ("tooling_checks", "scripts/e2e",
+     at("tooling-checks", "Typecheck the e2e drivers (bunx tsc --noEmit -p scripts/e2e)", "test")),
 ]
 
 # The entries a step runs with Bun rather than typechecks: what such a step loads is the entry's
