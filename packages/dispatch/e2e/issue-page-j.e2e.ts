@@ -21,6 +21,7 @@ import {
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { pageFocusedRow } from "../web/src/theme/classes";
 import {
   answerAsk,
   createAsk,
@@ -2476,6 +2477,12 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
       rowMore(comment),
       "the comment's row cuts its words behind more while it holds the focus"
     ).toHaveCount(0);
+    // The row draws the focused look (`pageFocusedRow`) in the render that draws it with the
+    // focus, so its going is the sign that the row has drawn itself again without the focus:
+    // the DOM focus leaves it first, and a read taken then sees the row as it was drawn with it.
+    const looksFocused = () =>
+      comment.evaluate((row, look) => row.className.includes(look), pageFocusedRow);
+    expect(await looksFocused(), "the comment's focused row does not look focused").toBe(true);
     // ArrowUp takes the focus to the row above the comment's, a statement of the view.
     await page.keyboard.press("ArrowUp");
     await expect
@@ -2483,6 +2490,12 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
         message: "ArrowUp from the comment's row leaves the focus on the comment",
       })
       .not.toBe(seeded.longCommentId);
+    await expect
+      .poll(looksFocused, {
+        message: "the comment's row is not drawn again without the focus after ArrowUp",
+      })
+      .toBe(false);
+    await settledScrollTop(page);
     await expect(
       rowMore(comment),
       "the comment's row cuts its words behind more once the focus has left it"
