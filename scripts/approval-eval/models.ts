@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { outage } from "../../packages/contracts/src/http-status";
 import { CannotRunError, listOf, numberOf, recordOf, stringOf } from "./corpus-io";
 
 /**
@@ -29,10 +30,11 @@ import { CannotRunError, listOf, numberOf, recordOf, stringOf } from "./corpus-i
  * costs the next reader an hour, and a provider's JSON error carries its `message` well past the
  * first 200 characters.
  *
- * One retry ladder covers both: a transport error, a 429 and a 5xx are tried again, four times,
- * with growing waits and jitter, and a `retry-after` header on the answer sets the wait where it
- * asks for a longer one. A 4xx other than 429 is not retried, since the request is what is
- * wrong. Every outcome is a `ModelAnswer`: an answer, or a fault saying why none came.
+ * One retry ladder covers both: a transport error and an outage (`outage`, from
+ * `@legion/contracts/http-status`: a 5xx, a 408 or a 429) are tried again, four times, with
+ * growing waits and jitter, and a `retry-after` header on the answer sets the wait where it asks
+ * for a longer one. Any other 4xx is not retried, since the request is what is wrong. Every
+ * outcome is a `ModelAnswer`: an answer, or a fault saying why none came.
  */
 
 /** Where the gateway's key is kept, read at the moment of each call. */
@@ -290,7 +292,7 @@ interface Attempt {
   body: string;
   /** Why this try gave no answer, where it gave none. */
   failure: string | null;
-  /** Whether another try could do better: a transport error, a 429 or a 5xx. */
+  /** Whether another try could do better: a transport error, or an outage (`outage`). */
   again: boolean;
   /** What the answer's `retry-after` header asked for, in milliseconds. */
   retryAfterMs: number | null;
@@ -312,12 +314,11 @@ async function tryOnce(url: string, init: RequestInit, timeMs: number): Promise<
     if (answer.ok) {
       return { status: answer.status, body, failure: null, again: false, retryAfterMs: null };
     }
-    const again = answer.status === 429 || answer.status >= 500;
     return {
       status: answer.status,
       body,
       failure: `${answer.status} ${body.slice(0, DETAIL_CHARS)}`,
-      again,
+      again: outage(answer.status),
       retryAfterMs: retryAfterOf(answer.headers.get("retry-after")),
     };
   } catch (error) {
@@ -337,8 +338,8 @@ interface Sent {
 /**
  * One call, with the retry ladder around it. The waits grow, each is drawn with jitter, and a
  * `retry-after` the answer carries raises the wait where it asks for a longer one. A 4xx other
- * than 429 ends the ladder at once: another try of the same request would be refused the same
- * way.
+ * than a 408 or a 429 ends the ladder at once: another try of the same request would be refused
+ * the same way.
  */
 async function send(url: string, init: RequestInit, bounds: CallBounds | undefined): Promise<Sent> {
   const timeMs = bounds?.timeMs ?? DEFAULT_TIME_MS;
