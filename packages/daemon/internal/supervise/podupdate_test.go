@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -259,6 +260,48 @@ func TestPodUpdateALaterOpenOfTheSameRoundKeepsTheTermsItOpenedWith(t *testing.T
 		t.Errorf("stored reasons = %q, want the %q the round opened with", stored.UpdateReasons, testReasons)
 	}
 	h.wantPrompts(0)
+}
+
+// A round records the repository its pod was built from beside its reasons, as its first post
+// carries it, and keeps it as it keeps them: a later post of the same round that carries another
+// repository, or none, writes nothing. A round that replaces it records only its own, here none,
+// and the end of a round clears it in the claim and in the store. So no round of the claim reads
+// a repository that it was not opened with.
+func TestPodUpdateKeepsTheRepositoryItsRoundOpenedWithUntilTheRoundEnds(t *testing.T) {
+	const second = "pod:1f0b4c8d-7e21-4a55-8c3b-9d2e6f0a4b13"
+	const third = "pod:6a2d9e14-0b57-4c83-b1f6-3e8a5c7d2f90"
+	built := ghrepo.MustParse("acme/widgets")
+	h := updateHarness(t, PodUpdateContract)
+	h.reach(StateReady)
+
+	h.must(PodUpdateOpen{Claim: h.token, Round: testRound, Reasons: testReasons, Repository: built})
+	settled := len(h.store.history())
+	h.must(PodUpdateOpen{Claim: h.token, Round: testRound, Reasons: testReasons, Repository: ghrepo.MustParse("zeta/tools")})
+	h.openUpdate(testRound, testReasons)
+
+	if c := h.wantRound(testRound); c.UpdateRepository != built {
+		t.Errorf("UpdateRepository = %q, want %q, the repository the round opened with", c.UpdateRepository, built)
+	}
+	if stored := h.store.load(h.token); stored.UpdateRepository != built {
+		t.Errorf("stored repository = %q, want %q", stored.UpdateRepository, built)
+	}
+	if got := len(h.store.history()); got != settled {
+		t.Errorf("two later posts of the open round wrote the claim %d times, want none", got-settled)
+	}
+
+	h.openUpdate(second, testReasons)
+	if c := h.wantRound(second); !c.UpdateRepository.IsZero() {
+		t.Errorf("the round that replaced it records the repository %q, want none: its post carried none", c.UpdateRepository)
+	}
+
+	h.must(PodUpdateOpen{Claim: h.token, Round: third, Reasons: testReasons, Repository: built})
+	h.must(PodUpdateEnded{Claim: h.token, Round: third})
+	if c := h.wantRound(""); !c.UpdateRepository.IsZero() {
+		t.Errorf("the claim after the round's end records the repository %q, want none", c.UpdateRepository)
+	}
+	if stored := h.store.load(h.token); !stored.UpdateRepository.IsZero() {
+		t.Errorf("the stored claim after the round's end records the repository %q, want none", stored.UpdateRepository)
+	}
 }
 
 // A claim working a phase task keeps it: the round records itself, and the task in the worker's

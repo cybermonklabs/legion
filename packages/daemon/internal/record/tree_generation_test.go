@@ -3,7 +3,6 @@ package record
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -89,7 +88,10 @@ func TestAWholeTreeRerunRaisesTheTreeGeneration(t *testing.T) {
 	if got := runGenerationOf(t, st, runRoot); got != 1 {
 		t.Fatalf("the root's tree generation after its write at generation 2 = %d, want 1: only the clear of the whole tree raises it", got)
 	}
-	inTx(t, st, func(tx pgx.Tx) { must(t, records.ClearTreeGeneration(ctx, tx, runRoot, time.Now().UTC())) })
+	inTx(t, st, func(tx pgx.Tx) {
+		_, err := records.ClearTreeGeneration(ctx, tx, runRoot, forgetNothing)
+		must(t, err)
+	})
 	if got := runGenerationOf(t, st, runRoot); got != 2 {
 		t.Fatalf("the root's tree generation after the clear of its tree = %d, want 2, the root's new generation", got)
 	}

@@ -58,13 +58,14 @@ entry, writes the notices, stages this package's partition of `skills/`, and tak
 write from every path the pack ships (each `files` entry, the manifest and the root's README and
 licence files), so the tarball's modes do not depend on the packer's umask. It refuses to pack
 with the committed manifest, whose `omp.extensions` names `extensions/legion.ts`; the release
-workflow's `pi_legion_build` job (`.github/workflows/release.yaml`), the worker image and the e2e
-pack step rewrite it to `["dist/legion.js"]` before `bun pm pack`. Only the e2e pack step restores it
-afterwards: the build job's tree is discarded, and nothing commits a version — the committed
-manifest's `.version` stays where it last was, and the `pi-legion-v` tag the release makes records
-the release. The same three steps write the daemon API contract the plugin was built against into
-the manifest's `legion` key (`daemonContract` in `packages/contracts/src/daemon-contract.ts`: the
-greatest number of `released-contracts.json` plus the checkout's count of entry fixtures), and the
+workflow's `pi_legion_build` job (`.github/workflows/release.yaml`) and the worker image rewrite it
+to `["dist/legion.js"]` before `bun pm pack`, in a tree they then discard, and the e2e pack step
+(`scripts/e2e/lib/pack-plugin.sh`) rewrites a staged copy of the package and never writes the
+checkout's. Nothing commits a version — the committed manifest's `.version` stays where it last
+was, and the `pi-legion-v` tag the release makes records the release. The same three steps write
+the daemon API contract the plugin was built against into the manifest's `legion` key
+(`daemonContract` in `packages/contracts/src/daemon-contract.ts`: the greatest number of
+`released-contracts.json` plus the checkout's count of entry fixtures), and the
 bundle inlines it. The committed manifest declares none, so a plugin linked from the checkout
 declares no contract and the boot gate refuses it.
 

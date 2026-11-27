@@ -65,21 +65,20 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // stopped (everyIssueWaitsByDesign over lineHolds, from what the caller handed over, given the
 // project's liveness clause, lineCanMove, which this method answers once and hands in).
 //
-// Two rules say whether an issue of the tree is held by something the daemon knows of, and each
+// Three rules say whether an issue of the tree is held by something the daemon knows of, and each
 // is written once: lineHolds.waitsByDesign, the ladder of the daemon's own waits, which holds a
-// tree back only while the project's line can still move, save its second clause,
-// waitsForItsChecks, and lineHolds.waitsOnWorkOutsideItsTree. That clause and that wait are the
-// two that hold a tree back whether or not the line can move, and each is one function both
-// readers call: everyIssueWaitsByDesign asks all of
-// them of every member of a quiet tree, and lineCanMove asks the ladder of every slot holder. A
+// tree back only while the project's line can still move, and waitsForItsChecks and
+// lineHolds.waitsOnWorkOutsideItsTree, the two waits that hold a tree back whether or not the line
+// can move. everyIssueWaitsByDesign asks all three of every member of a quiet tree, and
+// lineCanMove asks the ladder of every slot holder. A
 // member in implementing under a root that waits on a person is the case the ladder's last
 // clause decides: the root's wait is the root's alone, and the tree is told.
 //
 // The ladder's other waits silence a tree only while the project's line can still move, which
 // is the whole of why lineCanMove is read here and not per tree: in a project no work of which
 // can start again by itself, every tree is named save one whose every member waits in verifying
-// or on work outside its tree (dispatch://INFRA-2560, R5; waitsByDesign's second clause and
-// waitsOnWorkOutsideItsTree's doc say why those two waits end whatever the line does). The
+// or on work outside its tree (dispatch://INFRA-2560, R5; the docs of waitsForItsChecks and
+// waitsOnWorkOutsideItsTree say why those two waits end whatever the line does). The
 // clause is a fact of the project and not of one tree, so it is answered once for the pass
 // beside the per-tree walk rather than inside it, where every tree would ask the same question
 // again.
@@ -604,18 +603,12 @@ func lineHoldsOf(facts record.LineFacts, slots []record.Slot, line []record.Line
 //     answered or not) waits by design wherever the walk placed it: it keeps its slot while it
 //     waits (record.KeepsSlot, the ruling on dispatch://INFRA-1909), and once answered it
 //     stands in the line as well, so neither membership says anything of why it stands still;
-//  2. an issue whose work merged and whose close waits (phase.Verifying) waits by design
-//     wherever it stands and whether or not the project's line can move: no role works that
-//     phase and it holds none of the cap's slots (record.PhaseKeepsSlot), and what ends the wait
-//     is a check of its goal, its production check, a defect, an open next change or an issue
-//     beneath it — a report or a departure, and never a worker of its tree or a slot of its
-//     project. So no reading of the line decides it: the phase is read before them here, and
-//     everyIssueWaitsByDesign reads it beside waitsOnWorkOutsideItsTree, whatever lineCanMove
-//     answers. A project whose only open tree is a root in verifying fails every term of
-//     lineCanMove, and that root is still told to nobody. An issue beneath it that has stopped
-//     is a member of the same tree and names that tree on its own terms. An issue in accepting,
-//     retro or merging on no slot is read the other way in the last clause, because a worker of
-//     its tree has the turn there;
+//  2. an issue whose work merged and whose close waits (phase.Verifying) is not asked here.
+//     everyIssueWaitsByDesign reads that wait first, whatever lineCanMove answers
+//     (waitsForItsChecks), and lineCanMove meets no slot holder in verifying: the phase keeps
+//     none of the cap's slots (record.PhaseKeepsSlot), and the pass frees the row a merge left
+//     standing (releaseSlots) before the measure runs. An issue in accepting, retro or merging on
+//     no slot is read in the last clause, because a worker of its tree has the turn there;
 //  3. an entry of the waiting line waits by design exactly where it holds no slot
 //     (record.LineEntry.Holds): that is the cap's own hold, in both its shapes — a start written
 //     and marked for a row the slots table names none of, and a first phase whose start the
@@ -643,9 +636,6 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 	if issue.AwaitingPerson() {
 		return true
 	}
-	if waitsForItsChecks(issue) {
-		return true
-	}
 	if entry, waits := h.line[issue.Key]; waits {
 		return !entry.Holds
 	}
@@ -660,12 +650,11 @@ func (h lineHolds) waitsByDesign(issue record.Issue) bool {
 // goal: an issue in `verifying`, which the merge put there and which no role works. It is a wait
 // by design that holds its tree back whether or not the project's line can move, as
 // waitsOnWorkOutsideItsTree is: nothing the line does moves it, and only a check's result or the
-// next change it starts ends it. It is written here, in one function, because both readers ask
-// it — waitsByDesign, as the one clause of its ladder that stands outside the line's liveness,
-// and everyIssueWaitsByDesign, which asks it of every member before it asks the ladder at all
-// (dispatch://INFRA-2560 R5, cybermonklabs/legion#5558). Two copies of this one rule is how the
-// first fix for a root waiting in verifying came to reach only the case where the line could
-// move.
+// next change it starts ends it. everyIssueWaitsByDesign is its one reader, and it asks it of every
+// member before it asks the ladder at all (dispatch://INFRA-2560 R5, cybermonklabs/legion#5558):
+// the ladder is read only while the project's line can move, and the first fix for a root waiting
+// in verifying, read inside the ladder, reached only that case. An issue beneath a merged root
+// that has stopped is a member of the same tree and names that tree on its own terms.
 func waitsForItsChecks(issue record.Issue) bool {
 	return issue.Phase == phase.Verifying
 }
@@ -681,7 +670,7 @@ func waitsForItsChecks(issue record.Issue) bool {
 //
 // It is one of the two waits of the daemon's own that silence a member whether or not the
 // project's line can move (everyIssueWaitsByDesign), beside an issue in verifying
-// (waitsByDesign's second clause says why that one ends whatever the line does), and this is the
+// (waitsForItsChecks says why that one ends whatever the line does), and this is the
 // one statement of which waits on other work it covers and why. The ladder's other waits are
 // waits for the line, which a project that fails every term of lineCanMove will never give them;
 // this wait ends when the issue waited on finishes, and nothing of this project's slots decides
@@ -749,7 +738,7 @@ func (h lineHolds) waitsOnWorkOutsideItsTree(issue record.Issue) bool {
 // (dispatch://INFRA-2560, R5): the ladder's waits (lineHolds.waitsByDesign) leave a tree unnamed
 // only while this holds, because a wait is a wait for something, and a project where nothing is
 // coming waits for nothing. Two waits are the exceptions, since what ends each is nothing this
-// project's slots decide: an issue in verifying (lineHolds.waitsByDesign's second clause) and a
+// project's slots decide: an issue in verifying (waitsForItsChecks) and a
 // wait on work outside the tree (lineHolds.waitsOnWorkOutsideItsTree, whose doc says why).
 //
 // Why a project that fails every term is stopped for good: a slot is freed by a phase or by a
@@ -846,7 +835,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working 
 // once for the whole pass).
 //
 // It answers one tree and is the whole of the silencing rule for that tree: a member waits by
-// design where it waits in verifying (lineHolds.waitsByDesign's second clause) or on work
+// design where it waits in verifying (waitsForItsChecks) or on work
 // outside its tree (lineHolds.waitsOnWorkOutsideItsTree), whatever canMove says, or where
 // canMove holds and the ladder answers true of it (lineHolds.waitsByDesign).
 //
