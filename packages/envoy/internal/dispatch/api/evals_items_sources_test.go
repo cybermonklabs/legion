@@ -2,6 +2,7 @@ package api
 
 import (
 	"maps"
+	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
@@ -296,14 +297,85 @@ func TestAPullRequestItemIsTimedToTheDeployItsDayRowsName(t *testing.T) {
 // default repository, which OMEGA's GitHub source reads, beside an events source. #1 and #2 of it,
 // of no issue, merge at 09:00, so each counts for OMEGA through the repository; its GitHub deploy
 // 101 ships both at 10:29, and deploys posted to OMEGA name #1, finished at 09:30, and #2, finished
-// at 11:00. OMEGA's merge-to-production counts each once, from the deploy that finished first: n 2
-// and max 89, one of the two through the repository. Its items list each pull request once, timed
-// to that deploy: #1 to its post, with no run id, 30 minutes, and #2 to run 101, 89 minutes, the
-// one set the number folds.
+// at 11:00 (ownerKeyAndPosts). OMEGA's merge-to-production counts each once, from the deploy that
+// finished first, and its items list each once, timed to that deploy (expectEachOnce).
 func TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItem(t *testing.T) {
 	t.Parallel()
-	handler, database, deps := newTestServer(t, testServerOptions{})
 	const app = "acme/omega-app"
+	handler, _, _ := ownerKeyAndPosts(t, app)
+	expectEachOnce(t, "after the posts", handler, app)
+}
+
+// TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItemOnceItsRepositoryIsRenamed
+// (dispatch://INFRA-978/comment/b4eecb12-e9e5-4f37-978d-e2155c36c6d7): the end of a rename's
+// transient. Over the history of TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItem, the boot's
+// rename pass (store.RewriteRenamedRepositories) renames acme/omega-app to acme/omega-next: the
+// pull requests, the run, the posted deploys' pull requests, OMEGA's default repository and the
+// day rows' owner keys and deploy repositories, and not the pull request of each day row's
+// samples (eval_days.sample_keys), which the owner key's row and OMEGA's events repository's row
+// hold under the old name. The refresher's passes after it build the rows the pass's writes name
+// again, both of them, so no row's keys name the old name and each row times acme/omega-next#1 and
+// #2: OMEGA's merge-to-production counts each once again, from the deploy that finished first, and
+// its items list each once, timed to that deploy. Red where the refresher builds one of the two
+// rows again and leaves the other's keys under the old name: the two no longer name one pull
+// request, so both its samples count (n 4 and max 120), and an item misses the deploy that row
+// counts.
+func TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItemOnceItsRepositoryIsRenamed(t *testing.T) {
+	t.Parallel()
+	const app, renamed = "acme/omega-app", "acme/omega-next"
+	handler, database, refresh := ownerKeyAndPosts(t, app)
+	ctx, pool := t.Context(), database.Pool
+	if _, err := pool.Exec(ctx, `insert into repo_projects (repo, project, created_by, renamed_to)
+		values ($1, 'OMEGA', '{"kind":"user","id":"alice"}', $2)`, app, renamed); err != nil {
+		t.Fatalf("declare the rename of %s: %v", app, err)
+	}
+	pairs, err := store.ReadRepoRenames(ctx, pool)
+	if err != nil {
+		t.Fatalf("read the rename pairs: %v", err)
+	}
+	if pass := store.RewriteRenamedRepositories(ctx, pool, pairs); pass.Err() != nil || pass.Failures != 0 {
+		t.Fatalf("the boot's rename pass = %+v (%v), want no failure and nothing left", pass, pass.Err())
+	}
+	// keyed is how many merge-to-production rows of the day name pr among their samples' keys.
+	keyed := func(pr string) int {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, `
+			select count(*) from eval_days where eval_id like '%/' || $1 and day = $2 and repo = '' and $3 = any(sample_keys)
+		`, evals.SlugMergeToProduction, sourcesDay, pr).Scan(&n); err != nil {
+			t.Fatalf("read the rows that time %s: %v", pr, err)
+		}
+		return n
+	}
+	if n := keyed(app + "#1"); n != 2 {
+		t.Fatalf("right after the pass %d merge-to-production rows time %s#1, want the owner key's and OMEGA's events repository's under the old name", n, app)
+	}
+	refresh()
+	for _, number := range []string{"#1", "#2"} {
+		if n := keyed(app + number); n != 0 {
+			t.Errorf("after the refresher's passes %d merge-to-production rows time %s%s under the old name, want none", n, app, number)
+		}
+		if n := keyed(renamed + number); n != 2 {
+			t.Errorf("after the refresher's passes %d merge-to-production rows time %s%s, want the owner key's and OMEGA's events repository's", n, renamed, number)
+		}
+	}
+	expectEachOnce(t, "after the rename", handler, renamed)
+}
+
+// sourcesDayAt is hour:minute of sourcesDay.
+func sourcesDayAt(hour, minute int) time.Time {
+	return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+}
+
+// ownerKeyAndPosts is a server holding OMEGA, whose default repository app its GitHub source reads
+// beside an events source; #1 and #2 of app, of no issue, merged at 09:00 on sourcesDay and so
+// counted for OMEGA through app's plain owner key; app's GitHub deploy 101, which ships both at
+// 10:29; and deploys posted to OMEGA that name #1, finished at 09:30, and #2, finished at 11:00.
+// It builds the day rows (refreshEvalDays) and answers the server, its store and the refresh, as
+// of the end of sourcesDay, which builds again the days a later write names.
+func ownerKeyAndPosts(t *testing.T, app string) (http.Handler, *store.Store, func()) {
+	t.Helper()
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	createTestProject(t, handler, "OMEGA")
 	setDefaultRepository(t, handler, "OMEGA", app)
 	saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{
@@ -311,14 +383,11 @@ func TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItem(t *testing.T) {
 		Sources:           []delivery.SourceInput{deliveryseed.SourceOf(deployRule(app, "release"), nil), {Kind: delivery.SourceKindEvents}},
 		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
 	})
-	at := func(hour, minute int) time.Time {
-		return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
-	}
-	posts := map[int]time.Time{1: at(9, 30), 2: at(11, 0)}
+	posts := map[int]time.Time{1: sourcesDayAt(9, 30), 2: sourcesDayAt(11, 0)}
 	for number, finished := range posts {
 		upsertPR(t, database, delivery.DeliveryPullRequest{
 			Repo: app, Number: number, Title: "Change " + strconv.Itoa(number), Author: "octocat",
-			URL: "https://github.com/" + app + "/pull/" + strconv.Itoa(number), CreatedAt: new(at(8, 0)), MergedAt: new(at(9, 0)),
+			URL: "https://github.com/" + app + "/pull/" + strconv.Itoa(number), CreatedAt: new(sourcesDayAt(8, 0)), MergedAt: new(sourcesDayAt(9, 0)),
 		})
 		writeProductionEvent(t, database.Pool, prodevents.Event{
 			ProjectKey: "OMEGA", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "release-" + strconv.Itoa(number),
@@ -327,19 +396,32 @@ func TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItem(t *testing.T) {
 	}
 	seedSourceRun(t, database, app, 101, 10, "release")
 	leaveAttributionInputsUnread(t, database.Pool)
-	next := sourcesDay.AddDate(0, 0, 1)
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, next.Add(-time.Minute))
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
+	refresh := func() {
+		t.Helper()
+		refreshEvalDays(t, registry, database, sourcesDay.AddDate(0, 0, 1).Add(-time.Minute))
+	}
+	refresh()
+	return handler, database, refresh
+}
 
-	window := url.Values{"from": {sourcesDay.Format(time.RFC3339)}, "to": {next.Format(time.RFC3339)}}
+// expectEachOnce fails unless OMEGA's merge-to-production over sourcesDay, on handler holding
+// ownerKeyAndPosts' history with its repository named repo, counts #1 and #2 of repo once each,
+// from the deploy that finished first: n 2 and max 89, one of the two through the repository; and
+// unless its items list each once, timed to that deploy: #1 to its post, with no run id, 30 minutes,
+// and #2 to run 101, 89 minutes, the one set the number folds.
+func expectEachOnce(t *testing.T, what string, handler http.Handler, repo string) {
+	t.Helper()
+	window := url.Values{"from": {sourcesDay.Format(time.RFC3339)}, "to": {sourcesDay.AddDate(0, 0, 1).Format(time.RFC3339)}}
 	list := evalGet[evalListResponse](t, handler, "/api/v1/projects/OMEGA/evals?limit=200&"+window.Encode())
 	minutes := seriesValues(t, findEval(t, list.Items, "OMEGA", evals.SlugMergeToProduction), measures.SeriesMinutes)
 	for statistic, want := range map[string]float64{"n": 2, "max": 89} {
 		if got := minutes.Window[statistic]; got == nil || *got != want {
-			t.Errorf("OMEGA's merge-to-production states %s %v, want %v", statistic, got, want)
+			t.Errorf("%s: OMEGA's merge-to-production states %s %v, want %v", what, statistic, got, want)
 		}
 	}
 	if minutes.ViaRepository != 1 {
-		t.Errorf("OMEGA's merge-to-production counts %d pull requests through a repository, want 1", minutes.ViaRepository)
+		t.Errorf("%s: OMEGA's merge-to-production counts %d pull requests through a repository, want 1", what, minutes.ViaRepository)
 	}
 
 	query := url.Values{"from": window["from"], "to": window["to"], "row_kind": {evalRowPullRequest}}
@@ -347,24 +429,25 @@ func TestAPullRequestAnOwnerKeyAndAPostBothTimeIsOneItem(t *testing.T) {
 	rows := map[string]map[string]any{}
 	for _, row := range answer.Items {
 		if _, twice := rows[row.RowKey]; twice {
-			t.Errorf("OMEGA's merge-to-production items list %s twice, want once", row.RowKey)
+			t.Errorf("%s: OMEGA's merge-to-production items list %s twice, want once", what, row.RowKey)
 		}
 		rows[row.RowKey] = row.Cols
 	}
 	if len(rows) != 2 {
-		t.Errorf("OMEGA's merge-to-production items list %v, want %s#1 and #2", slices.Sorted(maps.Keys(rows)), app)
+		t.Errorf("%s: OMEGA's merge-to-production items list %v, want %s#1 and #2", what, slices.Sorted(maps.Keys(rows)), repo)
 	}
 	for _, want := range []struct {
 		key      string
 		finished time.Time
 		run      any
 		minutes  float64
-	}{{app + "#1", at(9, 30), nil, 30}, {app + "#2", at(10, 29), 101.0, 89}} {
+	}{{repo + "#1", sourcesDayAt(9, 30), nil, 30}, {repo + "#2", sourcesDayAt(10, 29), 101.0, 89}} {
 		row := rows[want.key]
 		deployed, _ := row["deployed_at"].(string)
 		when, err := time.Parse(time.RFC3339, deployed)
 		if row == nil || err != nil || !when.Equal(want.finished) || row["deploy_run_id"] != want.run || row["merge_to_production_minutes"] != want.minutes {
-			t.Errorf("OMEGA's item %s is %v, want deployed at %s by run %v, %v minutes from its merge", want.key, row, want.finished.Format(time.RFC3339), want.run, want.minutes)
+			t.Errorf("%s: OMEGA's item %s is %v, want deployed at %s by run %v, %v minutes from its merge", what, want.key, row,
+				want.finished.Format(time.RFC3339), want.run, want.minutes)
 		}
 	}
 }
