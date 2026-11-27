@@ -16,6 +16,7 @@ import { DispatchQueryClient } from "../../api/query-client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { NoTooltips } from "../issue-page/NoTooltips";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
@@ -743,11 +744,12 @@ test("offline, Approve is held until its review's deadline, let go there, and ke
 // A host draws its chip again within the page - the document page's header after another document
 // and back (`ArtifactHeader` keys it by the document), the Inbox's reading pane after the
 // selection moves off the request and back - and may do so while a review's write is still out,
-// before it lands. The chip drawn again holds Approve and Request changes from that review's own
-// state (`usePendingKeyedPress`), as the chip pressed did: a press of Approve sends no second
-// review, one of Request changes opens no dialog, and both let go at the review's deadline
-// (`SEND_DEADLINE_MS`). Dispatch never answers the review: each try fails at the network and is
-// tried again under its key.
+// before it lands. Inside `NoTooltips`, the new issue page, the chip drawn again holds Approve and
+// Request changes from that review's own state (`usePendingKeyedPress`), as the chip pressed did:
+// a press of Approve sends no second review, one of Request changes opens no dialog, and both let
+// go at the review's deadline (`SEND_DEADLINE_MS`). Outside it the chip holds from its own press
+// alone, as on `main` (`shared-controls.options.test.tsx`'s Escape row). Dispatch never answers
+// the review: each try fails at the network and is tried again under its key.
 test("a chip drawn again while its review's write is out holds Approve and Request changes until the review's deadline and sends no second review", async () => {
   const review = spyOn(api, "createArtifactVersionReview").mockRejectedValue(
     new NetworkError(
@@ -761,7 +763,7 @@ test("a chip drawn again while its review's write is out holds Approve and Reque
   const target = artifact({ latest_version: 3, state: "awaiting" });
   const chip = (drawn: boolean) => (
     <QueryClientProvider client={queryClient}>
-      {drawn ? <ApprovalChip artifact={target} variant="header" /> : null}
+      <NoTooltips>{drawn ? <ApprovalChip artifact={target} variant="header" /> : null}</NoTooltips>
     </QueryClientProvider>
   );
   const view = render(chip(true));

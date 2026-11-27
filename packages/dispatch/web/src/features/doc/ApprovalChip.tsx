@@ -484,10 +484,12 @@ export interface ApprovalChipProps {
  *
  * It holds the review it made and the change-request dialog, with the reason typed into it, so a
  * host that draws it for one document after another keys it by the document (`ArtifactHeader`).
- * The review goes under the document's name, so a chip drawn again while it is out, before it
- * lands - the document page's header after another document and back, the reading pane's head
- * after the selection moves off the request and back - holds its actions from that press until
- * the review's deadline, as the chip it was made on did (`usePendingKeyedPress`).
+ * Inside `NoTooltips` the review goes under the document's name, so a chip drawn again while it
+ * is out, before it lands - the document page's header after another document and back, the
+ * reading pane's head after the selection moves off the request and back - holds its actions
+ * from that press until the review's deadline, as the chip it was made on did
+ * (`usePendingKeyedPress`). Outside it the chip holds from its own press alone, as on `main`, so
+ * a chip that lets go of its write (`reset`, as its dialog closes) takes a press again.
  *
  * Each review that lands reads the reviewed document's issue again, which every chip of that
  * issue draws from, so a line that draws more than one chip with actions holds them all through
@@ -558,6 +560,7 @@ function ChipOfReads({
     onSettled: () => submitGuard.release(),
     method: "POST",
     mutationKey,
+    readsLate: true,
     write: ({ artifact: reviewed, input, version }, bounds) =>
       api.createArtifactVersionReview(reviewed.id, version, input, bounds),
     onSuccess: (_result, { artifact: reviewed }) => {
@@ -626,11 +629,15 @@ function ChipOfReads({
   }
 
   /** Whether a review holds the actions and the dialog's submit: while it is out within its
-   *  deadline, until the reads it made stale are read again (`onSuccess`), on a chip drawn again
-   *  while it is out too (`reviewOut`). A review past its deadline (`late`) holds them no longer:
-   *  it is still tried under its key, and the shell's indicator offers to stop it, but one that
-   *  never answers - the browser offline - would otherwise hold them for good. */
-  const reviewHolds = reviewOut.isPending && !reviewOut.late;
+   *  deadline, until the reads it made stale are read again (`onSuccess`). Inside `NoTooltips`
+   *  that is the press of the document's review out, which holds a chip drawn again while it is
+   *  out too, and which a closed dialog leaves going (`reviewOut`); outside it, this chip's own
+   *  press, which a closed dialog lets go of (`reset`), as on `main`. A review past its deadline
+   *  (`late`) holds them no longer: it is still tried under its key, and the shell's indicator
+   *  offers to stop it, but one that never answers - the browser offline - would otherwise hold
+   *  them for good. */
+  const reviewHolds =
+    page === null ? review.isPending && !review.late : reviewOut.isPending && !reviewOut.late;
   /** Held while a review holds them, and in the pane's head until the read has given the
    *  approval. */
   const held = reviewHolds || approval === undefined;
@@ -650,12 +657,12 @@ function ChipOfReads({
         };
   /** Sends the review of the version the page read: the latest, which Approve names when the
    *  approval it follows is stale, and which the reading pane draws. Inside `NoTooltips` the
-   *  review is remembered (`sentReview`). Nothing is sent while a review of the document is out,
-   *  past its deadline too: the press's own guard holds this chip's until it settles, and a chip
-   *  drawn again since finds the press by the document's name for it. */
+   *  review is remembered (`sentReview`), and nothing is sent while a review of the document is
+   *  out, past its deadline too: the press's own guard holds this chip's until it settles, and a
+   *  chip drawn again since finds the press by the document's name for it. */
   const send = (input: CreateArtifactReviewInput) => {
     if (artifact === undefined || approval === undefined) return;
-    if (queryClient.isMutating({ exact: true, mutationKey }) > 0) return;
+    if (page !== null && queryClient.isMutating({ exact: true, mutationKey }) > 0) return;
     const press: ReviewPress = { artifact, input, version: approval.latest_version };
     submitGuard.guard(() => {
       if (page !== null) setSentReview(input.state);
