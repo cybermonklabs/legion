@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -25,19 +26,32 @@ import (
 // from cmd.ProcessState.ExitCode(). A fake git that exits 0 while a child it started keeps its
 // stdout pipe open proves that wiring end to end: RunChecked must succeed with ExitCode 0, not
 // report the command's own clean exit as a failure. The child runs until the test's cleanup
-// releases it (heldChild), so every run holds the pipe past WaitDelay, and the budget is the rest
-// of the test binary's deadline, far from the git's own exit on a loaded machine.
+// releases it (heldChild), so every run holds the pipe past WaitDelay.
+//
+// The runner's budget is the rest of the test binary's deadline, so a loaded machine that slows
+// the fake git does not cut it off. Main's form gave the runner 5 s from before the git started,
+// and that bound stays (runBound), on the runner's own time and no stand-in's. The fake git
+// records when the kernel made its process (testexec.MarkStart) and the moment just before it
+// exits (testexec.MarkNow), and the span between the two is the git's own run. What is left of the
+// call is the runner's: from the call to that start, and from the git's exit to the return. Of the
+// second, procgroup.WaitDelay is not the runner's to spend: os/exec waits that long after the
+// git's reap for the child to close the pipe, and main's budget, which ended at that reap, never
+// counted it either. A runner that spends main's 5 s before it starts the git, or after the git
+// has exited, fails here.
 func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputOpen(t *testing.T) {
+	const runBound = 5 * time.Second
 	dir := t.TempDir()
-	fakeGit := filepath.Join(dir, "git")
-	script := "#!/bin/sh\necho done\n" + heldChild(t, false) + "\nexit 0\n"
-	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+	fakeGit, mark, exited := filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
+	script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho done\n" + heldChild(t, false) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 0\n"
+	if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
 	run := NewRunner(testwait.Remaining(t), map[string]string{"git": fakeGit})
 
+	called := testexec.SinceBoot(t)
 	started := time.Now()
 	result, err := RunChecked(context.Background(), run, []string{"git"}, nil, dir)
+	returned := testexec.SinceBoot(t)
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("RunChecked = %v, want no error: the command exited 0 on its own", err)
@@ -47,6 +61,11 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 	}
 	if result.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
+	}
+	began, after, held := testexec.StartedAfter(t, mark, called), returned-exitMark(t, exited), procgroup.WaitDelayNow()
+	if own := began + after - held; own > runBound {
+		t.Errorf("RunChecked spent %s of its own, past main's %s: %s from the call to the git's start, and %s from the git's exit to the return, less the %s os/exec holds the child's pipe (procgroup.WaitDelay)",
+			own, runBound, began, after, held)
 	}
 }
 
@@ -504,6 +523,18 @@ func watchReaped(leader string, bound time.Duration) <-chan time.Time {
 		seen <- at
 	}()
 	return seen
+}
+
+// exitMark is the moment, as a time since boot, a stand-in recorded at path just before it exited
+// (testexec.MarkNow). A stand-in that wrote none never reached its exit, and the row fails saying
+// so.
+func exitMark(t *testing.T, path string) time.Duration {
+	t.Helper()
+	at, err := testexec.ReadNowMark(path)
+	if err != nil {
+		t.Fatalf("read the moment the command exited, which it records just before its exit: %v", err)
+	}
+	return at
 }
 
 // pidIn is the pid a command's shell wrote to path, once the whole line is there, and 0 before.
