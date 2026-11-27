@@ -276,9 +276,11 @@ func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Is
 // implementer's completion raised opens with the held task, since both are built over the
 // implementer's handoff. The release of a hold (retryPhase) holds the task the same way, built on
 // the issue it has put back in the held phase. The notice it sends carries what the one it
-// replaces (noticeFor) would have carried. It tells no role that its phase ended: each move it
-// holds is the completion or the move back of the role it leaves, or the daemon's own move on a
-// review it read, which leaves the reviewer that has just made that review.
+// replaces (noticeFor) would have carried, and the phase the parent left: the move hands
+// awaitChildren the moved copy standing in that phase again, as startAtFirstStep does, since
+// moveTask stood it in to. It tells no role that its phase ended: each move it holds is the
+// completion or the move back of the role it leaves, or the daemon's own move on a review it read,
+// which leaves the reviewer that has just made that review.
 func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, s TaskScope, trigger TriggerKind, to phase.Phase,
 	place record.TaskPlace, handoff record.PhaseRow, pr *record.PullRequest, reason string, open []record.OpenChild,
 ) error {
@@ -296,7 +298,9 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, s TaskScope, tr
 	if err != nil {
 		return err
 	}
-	return e.awaitChildren(ctx, tx, moved, childrenHold{Start: to, Task: task(moved.issue, at, handoff, reason),
+	waiting := moved
+	waiting.issue.Phase = issue.Phase
+	return e.awaitChildren(ctx, tx, waiting, childrenHold{Start: to, Task: task(moved.issue, at, handoff, reason),
 		Cause: heldCause(trigger, issue.Phase, replaced, reason), Open: open,
 		Summary: replaced.Summary, Verdict: replaced.Verdict})
 }
