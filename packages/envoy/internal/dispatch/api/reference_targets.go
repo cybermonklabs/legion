@@ -440,9 +440,12 @@ const footnoteParseEntryBytes = 128
 // process are held to.
 const footnoteParsesBytes = 1 << 20
 
-// footnoteParses is the footnoteParse of each markdown footnotesCalledIn has read, by its SHA-256:
-// what it holds is a property of the markdown its key hashes alone, so no entry goes stale, and
-// one leaves only to make room for another.
+// footnoteParses is the footnoteParse of each markdown footnotesCalledIn has read, by its SHA-256.
+// What an entry holds is read from the markdown its key hashes under the block schema installed
+// when it was read: whether the parser refuses the markdown, and which of its nodes are typed
+// blocks, follow that schema. The server can install the schema again while it runs
+// (pmdoc/manifest.go), and an entry read under the earlier schema stays until it is dropped to
+// make room for another, as the display trees' cache keeps its trees (pmdoc's displayCache).
 var footnoteParses = bytelru.New[[32]byte, []byte](footnoteParsesBytes)
 
 // blockTextContent is the markdown a block's text_tree is read from, given the block's whole
