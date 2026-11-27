@@ -800,7 +800,8 @@ func reapExited() (int, error) {
 	reaped := 0
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 1 || pid == os.Getpid() {
+		// CONTROL: the regression the orphan row catches: every process but this one is passed over.
+		if err != nil || pid <= 1 || pid != os.Getpid() {
 			continue
 		}
 		got, err := syscall.Wait4(pid, nil, syscall.WNOHANG, nil)
