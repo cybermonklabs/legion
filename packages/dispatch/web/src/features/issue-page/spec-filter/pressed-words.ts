@@ -122,29 +122,30 @@ export function pressInWords(words: HTMLElement, x: number, y: number): CaretAt 
 
 /** Whether the point (`x`, `y`) stands past the end of `atom`'s last line: right of its greatest
  *  right where the atom runs left to right, and left of its least left where it runs right to
- *  left. Chromium draws an atom in one box for each run of one direction, in the order of the text,
- *  so the last line is every box that stands beside the last box, its top to its bottom, and its
- *  end need not be the last box's. An atom's box is as tall as its font, not as its line, so `y`
- *  only tells the last line from the one before it, the last box above the last line: the two
- *  lines meet half way between them, and a point at or above that is on no last line. An atom
- *  whose boxes all stand on one line has no line before its last. Where the browser names the atom
- *  neither direction, the point is past no end of it. Read only for a place the browser answered
- *  inside an atom, so no other press lays the words out. */
+ *  left. Chromium draws an atom in one box for each run of one direction and gives the boxes of
+ *  one line left to right on the screen, so the line's end need not be the last box's. A box is on
+ *  the last line where its middle stands between the last box's top and bottom; a padded atom's
+ *  boxes are taller than its line and overlap the line above, so no edge tells the two lines
+ *  apart. An atom's box is as tall as its font, not as its line, so `y` only tells the last line
+ *  from the one before it, the last box above the last line: the two lines meet half way between
+ *  that box's foot and the last box's top, and a point at or above that is on no last line. An
+ *  atom whose boxes all stand on one line has no line before its last. Where the browser names the
+ *  atom neither direction, the point is past no end of it. Read only for a place the browser
+ *  answered inside an atom, so no other press lays the words out. */
 function pastAtomEnd(atom: Element, x: number, y: number): boolean {
-  const lines = atom.getClientRects();
-  const last = lines[lines.length - 1];
+  const boxes = atom.getClientRects();
+  const last = boxes[boxes.length - 1];
   if (last === undefined) return false;
   let earlier: DOMRect | undefined;
-  let { top, left, right } = last;
-  for (const box of lines) {
-    if (box.bottom <= last.top) earlier = box;
-    else if (box.top < last.bottom) {
-      top = Math.min(top, box.top);
+  let { left, right } = last;
+  for (const box of boxes) {
+    if (box.top + box.bottom < 2 * last.top) earlier = box;
+    else {
       left = Math.min(left, box.left);
       right = Math.max(right, box.right);
     }
   }
-  if (earlier !== undefined && y <= (earlier.bottom + top) / 2) return false;
+  if (earlier !== undefined && y <= (earlier.bottom + last.top) / 2) return false;
   const direction = atom.ownerDocument.defaultView?.getComputedStyle(atom).direction;
   return direction === "rtl" ? x < left : direction === "ltr" && x > right;
 }
