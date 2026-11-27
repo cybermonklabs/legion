@@ -158,14 +158,16 @@ function gh(args: readonly string[]): Buffer {
   return result.stdout;
 }
 
-type Artifact = {
+/** An artifact as GitHub's API lists it, in the fields the tool reads; the API documents its
+ *  `workflow_run` as nullable. */
+export type Artifact = {
   readonly id: number;
   readonly expired: boolean;
   readonly workflow_run?: {
     readonly id: number;
     readonly head_branch: string;
     readonly head_sha: string;
-  };
+  } | null;
 };
 
 /** How many pages of a hundred artifacts the listing reads at most before it gives up: a pull
@@ -174,7 +176,7 @@ type Artifact = {
 const pagesAtMost = 10;
 
 /** A run's merged report artifact: its id, the run that uploaded it and the commit that run ran. */
-type RunArtifact = { readonly commit: string; readonly id: number; readonly run: number };
+export type RunArtifact = { readonly commit: string; readonly id: number; readonly run: number };
 
 /** The artifacts of the newest `count` merged reports of main's full-lane runs. */
 function mainArtifacts(count: number): RunArtifact[] {
@@ -190,7 +192,7 @@ function mainArtifacts(count: number): RunArtifact[] {
       ...listed.artifacts.filter(
         (artifact) =>
           !artifact.expired &&
-          artifact.workflow_run !== undefined &&
+          artifact.workflow_run != null &&
           (artifact.workflow_run.head_branch === "main" ||
             artifact.workflow_run.head_branch.startsWith("gh-readonly-queue/main/"))
       )
@@ -210,33 +212,53 @@ function mainArtifacts(count: number): RunArtifact[] {
   });
 }
 
-/** The artifact of the merged report of run `run`, which `--run` named; a run that has none, or
- *  whose artifact has expired, ends the tool. */
-function namedArtifact(run: number): RunArtifact {
-  const { artifacts } = JSON.parse(
-    gh([
-      "api",
-      `repos/{owner}/{repo}/actions/runs/${run}/artifacts?name=${artifactName}`,
-    ]).toString()
-  ) as { artifacts: readonly Artifact[] };
+/** The choice `namedArtifact` makes over GitHub's answers for run `run`: its first listed artifact
+ *  that has not expired, with the commit that artifact's `workflow_run` names, else the commit of
+ *  `runAnswer()`, the run's own answer, which is asked for only then; or, when the answer lists no
+ *  artifact or every one it lists has expired, why the run is refused. */
+export function namedArtifactOf(
+  run: number,
+  { artifacts }: { readonly artifacts: readonly Artifact[] },
+  runAnswer: () => { readonly head_sha: string }
+): RunArtifact | { readonly refusal: string } {
   const artifact = artifacts.find((listed) => !listed.expired);
   if (artifact === undefined) {
-    console.error(
-      artifacts.length === 0
-        ? `run ${run} has no ${artifactName} artifact: name a full-lane run whose first attempt ` +
+    return {
+      refusal:
+        artifacts.length === 0
+          ? `run ${run} has no ${artifactName} artifact: name a full-lane run whose first attempt ` +
             "uploaded its merged report"
-        : `run ${run}'s ${artifactName} artifact has expired: name a newer full-lane run`
-    );
-    process.exit(1);
+          : `run ${run}'s ${artifactName} artifact has expired: name a newer full-lane run`,
+    };
   }
   if (artifact.workflow_run) {
     return { commit: artifact.workflow_run.head_sha, id: artifact.id, run };
   }
   // The API's `workflow_run` of an artifact is nullable: the run itself names its commit too.
-  const workflowRun = JSON.parse(
-    gh(["api", `repos/{owner}/{repo}/actions/runs/${run}`]).toString()
-  ) as { head_sha: string };
-  return { commit: workflowRun.head_sha, id: artifact.id, run };
+  return { commit: runAnswer().head_sha, id: artifact.id, run };
+}
+
+/** The artifact of the merged report of run `run`, which `--run` named; a run that has none, or
+ *  whose artifact has expired, ends the tool. */
+function namedArtifact(run: number): RunArtifact {
+  const chosen = namedArtifactOf(
+    run,
+    JSON.parse(
+      gh([
+        "api",
+        `repos/{owner}/{repo}/actions/runs/${run}/artifacts?name=${artifactName}`,
+      ]).toString()
+    ) as { artifacts: readonly Artifact[] },
+    () =>
+      JSON.parse(gh(["api", `repos/{owner}/{repo}/actions/runs/${run}`]).toString()) as {
+        head_sha: string;
+      }
+  );
+  if ("refusal" in chosen) {
+    console.error(chosen.refusal);
+    process.exit(1);
+  }
+  return chosen;
 }
 
 /** The rows of the merged report `id` holds, read from `<cache>/<run id>.json` when an earlier
