@@ -39,6 +39,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"golang.org/x/sys/unix"
 )
 
 var _ runtime.Runtime = (*Runtime)(nil)
@@ -476,13 +478,17 @@ type result struct {
 func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	bounded, cancel := r.clock.WithTimeout(ctx, r.commandTimeout)
 	defer cancel()
+	// CONTROL ONLY (#5206 far-budget row): the timeout passes at the client's own exit, before
+	// Wait has read that exit (runPassingTheTimeoutAtTheClientsExit).
+	bounded, passAtClientsExit, endStandIn := testwait.StandInDeadline(bounded)
+	defer endStandIn()
 	cmd := exec.CommandContext(bounded, r.tmuxPath, argv[1:]...)
 	cmd.Env = r.environ
 	cmd.WaitDelay = pipeDrainDelay
 	killed := procgroup.KilledByContext(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	err := runPassingTheTimeoutAtTheClientsExit(cmd, passAtClientsExit, killed)
 	res := result{stdout: stdout.String(), stderr: stderr.String()}
 	if err == nil {
 		return res, nil
@@ -503,6 +509,28 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	}
 	res.exitCode = cmd.ProcessState.ExitCode()
 	return res, nil
+}
+
+// runPassingTheTimeoutAtTheClientsExit is CONTROL ONLY (#5206 far-budget row): cmd.Run, but the
+// timeout passes at the client's own exit. It waits for the client to exit without reaping it
+// (waitid WNOWAIT), passes the timeout then, and lets exec's Cancel kill the unreaped client before
+// Wait reads its exit, which counts as the timeout's kill (procgroup.KilledByContext). A client
+// that exited on its own is then reported as timed out.
+func runPassingTheTimeoutAtTheClientsExit(cmd *exec.Cmd, pass func(error), killed func() bool) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var info unix.Siginfo
+	for {
+		if err := unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil); !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	pass(context.DeadlineExceeded)
+	for until := time.Now().Add(10 * time.Second); !killed() && time.Now().Before(until); {
+		time.Sleep(time.Millisecond)
+	}
+	return cmd.Wait()
 }
 
 // verb is the tmux command an argv runs: the word after `-L <socket>`.
