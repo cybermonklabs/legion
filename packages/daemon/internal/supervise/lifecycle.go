@@ -199,10 +199,12 @@ func (m *Machine) watchAgain() {
 }
 
 // waitingRelaunch is the relaunch relaunchLater left waiting (Machine.relaunch): retry is the
-// call TimerRelaunch makes again, and kind the wake kind of the launch it retries, which is the
-// stale-plugin lane's own for a retry of that lane's launch and WakeLaunch for every other. The
-// two are one value so that one assignment sets or clears both, and a retry is never left
-// recorded under a kind that is not its own.
+// call TimerRelaunch makes again, and kind the wake kind relaunchLater's caller recorded for the
+// launch it retries, which is the stale-plugin lane's own for a retry of that lane's launch and
+// WakeLaunch for every other. The two are one value so that one assignment sets both and one
+// clears both, and neither is left standing without the other. That is all the one value holds:
+// kind is the caller's argument, not read off the intent retry restores, so the two agree only
+// because each caller of relaunchLater passes that intent's kind (relaunchLater).
 type waitingRelaunch struct {
 	retry func(context.Context) error
 	kind  WakeKind
@@ -219,10 +221,22 @@ type waitingRelaunch struct {
 // kind is the wake kind of the launch relaunch retries, recorded with it. A retry of a launch of
 // the stale-plugin lane is that lane's launch still owed, so the machine keeps the credit of the
 // refresh gate that launch was admitted on until the retry is dropped, or runs and leaves nothing
-// of that launch owed (laneLaunchOwed, endRefreshLane). The retries of a start that waits for the
-// session store or for its pod's update round pass WakeLaunch whatever launch they retry: each
-// waits on a fault outside the daemon or on a pod's round, which can take hours, and a credit
-// held that long would stop the lane (startWaitsForStore, startWaitsForPodRound).
+// of that launch owed (laneLaunchOwed, endRefreshLane). Nothing here reads kind off relaunch, and
+// the intent relaunch restores is what decides the kind the launch it retries parks under
+// (retryHolding, reserveWake), so each caller must pass the kind of that intent: the kind it
+// waits under (pluginIntent.waitsUnder), which is WakeLaunch for a relaunch that restores none. A
+// caller that passed another would park a wake of the lane with its credit given back, or hold a
+// credit for a launch that is not the lane's. These are the callers, and what each passes:
+//
+//   - relaunchRefused records the kind its own callers hand it: launchAfter and
+//     relaunchAfterFailure read it off the machine's intent, which the retry relaunchRefused arms
+//     restores, and runWake passes its wake's kind, read where that wake was made off the intent
+//     the wake's retry restores (reserveWake, heldTryWake, retryHolding).
+//   - relaunchAtProbe reads it off the intent of the try's launch, the one its retry restores
+//     (launchFromTop).
+//   - startWaitsForStore and startWaitsForPodRound pass WakeLaunch whatever launch they retry,
+//     and their retries restore no intent: each waits on a fault outside the daemon or on a pod's
+//     round, which can take hours, and a credit held that long would stop the lane.
 func (m *Machine) relaunchLater(wait time.Duration, kind WakeKind, relaunch func(context.Context) error) {
 	m.claim.State = StateLaunching
 	m.relaunch = &waitingRelaunch{retry: relaunch, kind: kind}

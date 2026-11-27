@@ -97,15 +97,22 @@ package supervise
 // Holding a credit through every wait of its launch costs the lane while a relaunch is slow or
 // held. A credit is out from its admission to the end of the decision that leaves its launch owed
 // no longer, and that decision includes the relaunch itself, which under Kubernetes can wait
-// minutes for a pod. A retry keeps its credit for up to the probe interval it waits out
-// (probe_interval_seconds, 30 s by default); a wake the pause's gate holds keeps it until the
-// pause's stop drops the wake or the resume lets it out; and a try parked at its issue pod's start
-// gate keeps it until the grant. In two refresh waves of the INFRA daemon on 2026-11-25, 3 of 30
-// and 4 of 31 lane wakes parked at the pod's start gate, for 20 to 101 s, so about one credit in
-// ten was held up to about 100 s past its turn. While credits are held so, the gate admits fewer
-// than K new refreshes at a sweep, though fewer than K of the lane's wakes wait in the pacing, and
-// a wave drains a little more slowly; the bound does not change, and the other lanes keep the
-// share of the pacing it leaves them.
+// minutes for a pod. A retry keeps its credit through the probe interval it waits out
+// (probe_interval_seconds, 30 s by default), and a retry that fails again arms the next one under
+// the same kind (relaunchAtProbe, and the refusal of launchAfter or runWake), so the credit is
+// held for the whole run of consecutive failed retries, one probe interval each, and every
+// correction in that run keeps it (reclaimCredit): through an outage of the store, which answers
+// no write, session hold or lifecycle check, that is the whole outage. The lane pays that rather
+// than make the retry wait: a retry that gave its credit back would have to wait for a free one
+// before it entered the pacing, and a launch of a claim that records no process waits for no
+// credit (dispatch://INFRA-4110 R2). A wake the pause's gate holds keeps it until the pause's stop
+// drops the wake or the resume lets it out; and a try parked at its issue pod's start gate keeps
+// it until the grant. In two refresh waves of the INFRA daemon on 2026-11-25, 3 of 30 and 4 of 31
+// lane wakes parked at the pod's start gate, for 20 to 101 s, so about one credit in ten was held
+// up to about 100 s past its turn. While credits are held so, the gate admits fewer than K new
+// refreshes at a sweep, though fewer than K of the lane's wakes wait in the pacing, and a wave
+// drains a little more slowly; the bound does not change, and the other lanes keep the share of
+// the pacing it leaves them.
 //
 // It lives in this package rather than in internal/daemon because Deps already carries the rest
 // of the lane's facts (PluginContract, PluginRelaunchable, NoPluginInstall, WakePace) and because
@@ -346,8 +353,10 @@ func (m *Machine) settleUntakenCredit(credit *RefreshCredit) {
 // whether the pacing holds it, the project pause's gate holds it (wake.pause) or it waits at its
 // issue pod's start gate (wake.park), or its retry waits on TimerRelaunch for a launch of the lane
 // (Machine.relaunch, waitingRelaunch.kind). Each is the launch the credit was admitted on, waiting
-// to run, and each kind is read off the same intent (pluginIntent.waitsUnder). The caller holds
-// mu.
+// to run. A wake's kind is read off the intent of the launch it holds where the wake is made
+// (reserveWake, heldTryWake, pluginIntent.waitsUnder); a retry's is the kind its caller recorded,
+// which agrees with the intent the retry restores only because each caller of relaunchLater passes
+// that intent's kind (relaunchLater lists them). The caller holds mu.
 func (m *Machine) laneLaunchOwed() bool {
 	return m.wake != nil && m.wake.kind == WakePluginRefresh ||
 		m.relaunch != nil && m.relaunch.kind == WakePluginRefresh

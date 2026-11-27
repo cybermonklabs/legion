@@ -35,13 +35,17 @@ import (
 //
 // Two of the three start a role process and are held in the claim's own machine: the launch every
 // other decision of this package raises, and the relaunch the stale-plugin refresh lane raises,
-// which is a launch in every step it takes and is told apart only so that a reader of the
-// daemon's state can tell the refresh of a fleet from the work that refresh is holding up
-// (dispatch://INFRA-2712 R4). That is why no decision reads a kind of its own accord: one that
-// means "this wake starts a process" asks StartsProcess, which both answer, and a kind itself is
-// read only to be written — into the view a reader of every claim takes and into the lines the
-// machine writes of a wake (WakeWaiting, wakeRan). The third is the outbox's own — a catch-up
-// waits on its durable row rather than in a machine, and no machine parks one.
+// which is a launch in every step it takes and is told apart so that a reader of the daemon's
+// state can tell the refresh of a fleet from the work that refresh is holding up
+// (dispatch://INFRA-2712 R4). That is why no decision about starting a process reads a kind: one
+// that means "this wake starts a process" asks StartsProcess, which both answer. A kind is written
+// into the view a reader of every claim takes and into the lines the machine writes of a wake
+// (WakeWaiting, wakeRan), and the reads of it that decide something are the refresh lane's own:
+// the lane's wake re-reads its claim before it relaunches it (runWake, refreshOverturned), a
+// machine keeps the lane's refresh credit while its wake or its retry is of the lane's kind
+// (laneLaunchOwed), and the daemon's refresh pass counts the lane's wakes in the views to correct
+// the gate (internal/daemon's parkedWakes, RefreshGate.Correct). The third is the outbox's own —
+// a catch-up waits on its durable row rather than in a machine, and no machine parks one.
 //
 // They are one named type rather than loose strings so that a misspelt kind does not compile and
 // a fourth lane is found by the compiler in every place a kind travels — the machine's own wake,
@@ -588,10 +592,12 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 // relaunch it still owes.
 //
 // The kind goes beside the closure rather than in it, recorded where the retry is armed
-// (relaunchLater, waitingRelaunch.kind), and it is the one the intent names
-// (pluginIntent.waitsUnder). So the machine keeps the credit of the refresh gate the launch was
-// admitted on while the retry waits, and the wake that retry parks holds that same credit in the
-// pacing: no retry of this lane asks the gate for a second one (laneLaunchOwed, RefreshGate).
+// (relaunchLater, waitingRelaunch.kind), and nothing here sets it: each caller that arms a retry
+// wrapped here must record the kind intent waits under (pluginIntent.waitsUnder), which
+// relaunchLater states with the list of those callers. Where it does, the machine keeps the
+// credit of the refresh gate the launch was admitted on while the retry waits, and the wake that
+// retry parks holds that same credit in the pacing: no retry of this lane asks the gate for a
+// second one (laneLaunchOwed, RefreshGate).
 //
 // The intent goes back on the machine where that retry runs and nowhere earlier, so it reaches
 // the launch that retry makes and no other (holdPluginRelaunch, reserveWake), and nowhere

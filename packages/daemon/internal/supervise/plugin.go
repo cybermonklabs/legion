@@ -330,10 +330,13 @@ type pluginIntent struct {
 // waitsUnder is the wake kind the launch this intent names waits under: the kind of the lane that
 // raised it (relaunchStale), and WakeLaunch for a nil intent, which is every launch no
 // stale-plugin relaunch raised. It is the one read of that kind: by the wake gate (reserveWake),
-// by a try a gate holds (heldTryWake), and by the retry a launch that still carries its intent
-// arms (launchAfter, relaunchAtProbe, relaunchLater). So the kind a launch waits under and the
-// kind its refresh credit is held for come from the same intent and cannot disagree
-// (laneLaunchOwed).
+// by a try a gate holds (heldTryWake), and where a retry is armed to be recorded under it
+// (launchAfter, relaunchAfterFailure, relaunchAtProbe). A wake's kind is read here off the intent
+// of the launch it holds as the wake is made, but nothing ties the kind a retry is recorded under
+// to the intent its closure restores (retryHolding): the two agree, and with them the kind a
+// launch waits under and the kind its refresh credit is held for (laneLaunchOwed), only because
+// each caller of relaunchLater passes the kind of the intent its retry restores, which
+// relaunchLater states with the list of those callers.
 func (i *pluginIntent) waitsUnder() WakeKind {
 	if i == nil {
 		return WakeLaunch

@@ -168,10 +168,14 @@ var FailureCauses = []FailureCause{
 // (deathLaunchFailureCharged).
 //
 // A relaunch the tree lifecycle refuses (its cleanup reserved) is checked before the charge, so
-// it costs none; one whose process is already stopped is relaunchRefused's, whose retry waits
-// under the launch kind, since a relaunch after a failure is no relaunch of the stale-plugin lane.
-// That check is a guard of this site's and no outcome question: it asks whether the tree may
-// launch at all, which no event of the claim's answers.
+// it costs none; one whose process is already stopped is relaunchRefused's. That check is a guard
+// of this site's and no outcome question: it asks whether the tree may launch at all, which no
+// event of the claim's answers. The retry relaunchRefused arms restores the machine's
+// stale-plugin intent (retryHolding), so the kind that retry is recorded under is read off that
+// same intent here (pluginIntent.waitsUnder, relaunchLater). No such intent is on the machine on
+// this path today, since a relaunch after a failure is no relaunch of the stale-plugin lane, so
+// the kind is the launch kind; it is read off the intent rather than written as the launch kind so
+// that the two cannot drift apart.
 //
 // o is what failed the process this relaunch replaces, from the caller that saw it. Where the
 // policy charges o, the cause derived from it (failureCause) is recorded on the claim before the
@@ -196,7 +200,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 		return m.launchAfter(ctx, false, false, false, place, ending)
 	}
 	if err := m.checkLaunch(ctx); err != nil {
-		return m.relaunchRefused(ctx, WakeLaunch, func(ctx context.Context) error {
+		return m.relaunchRefused(ctx, m.pluginRelaunch.waitsUnder(), func(ctx context.Context) error {
 			return m.relaunchAfterFailure(ctx, o, ending, nil)
 		}, err)
 	}
