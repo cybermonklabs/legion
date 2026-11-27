@@ -56,8 +56,12 @@ func (m *Machine) Leaves(start StartWork) bool {
 }
 
 // leaves is Leaves under the machine's lock, which every caller inside the machine already holds.
+//
+// CONTROL BRANCH, never merged (dispatch://INFRA-4112, check v-one-key, control 1): every start of
+// a claim that records a session leaves it, so each step the claim is brought back for runs in a
+// session of its own, whatever its key says. The head leaves only the session a key's agent ran in.
 func (m *Machine) leaves(start StartWork) bool {
-	return start.LeaveSession != "" && m.claim.Session == start.LeaveSession
+	return m.claim.Session != ""
 }
 
 // ErrStartLeft is a start the machine judged no longer the work of its claim's issue

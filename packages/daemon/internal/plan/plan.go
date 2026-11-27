@@ -56,8 +56,12 @@ type Agent struct {
 }
 
 // AgentOf is the agent of step place (from 1) of task, whose step is s.
+//
+// CONTROL BRANCH, never merged (dispatch://INFRA-4112, check v-one-key, control 1): every step but
+// the owner's is an agent of its own, whatever its key says, so no two steps share a claim or a
+// session. The rule the head holds — the steps of one key are one agent — is taken out here.
 func AgentOf(task string, place int, s Step) Agent {
-	if s.Key != "" {
+	if s.Key == "owner" {
 		return Agent{Key: s.Key}
 	}
 	return Agent{Task: task, Place: place}
