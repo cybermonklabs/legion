@@ -5651,8 +5651,47 @@ binaries_case binaries-fill-gone
 replace "$root/.github/workflows/ci-caches.yaml" "  browser-binaries:" "  other-binaries:"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "naming the file, the job and the family's reader" \
-  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::this workflow has no job browser-binaries, which .github/scripts/ci_job_reads.py's BINARIES_FILLS pairs as the fill of the family .github/workflows/dispatch-browser.yaml's binaries job restores")"
+check "naming the file, the job and what goes unfilled" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::this workflow has no job browser-binaries, which .github/scripts/ci_job_reads.py's BINARIES_FILLS names, so nothing fills the family .github/workflows/dispatch-browser.yaml's binaries job restores and that job compiles its binaries from nothing on every run")"
+
+echo "case: the reader job is gone while the fill job is not"
+binaries_case binaries-fill-reader-gone
+replace "$root/.github/workflows/dispatch-browser.yaml" $'\n  binaries:\n' $'\n  other-binaries:\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the reader's file, its job and what its absence leaves" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::this workflow has no job binaries, which .github/scripts/ci_job_reads.py's BINARIES_FILLS names, so the family job browser-binaries of .github/workflows/ci-caches.yaml fills is restored by no job, and the fill saves an entry nothing reads")"
+check "and says nothing of the fill, which is there" \
+  "$(is "$(contains "$out" "this workflow has no job browser-binaries")" false)"
+
+# A GOCACHE sends the objects away from the ~/.cache/go-build the fill saves, and an `if:` can
+# leave the step unrun: either way every text still matches while the entry holds nothing. Both
+# are refused although neither enters an object's cache key.
+echo "case: the fill's build step sets GOCACHE"
+binaries_case binaries-fill-gocache
+replace "$root/.github/workflows/ci-caches.yaml" $'/bin/app2" ./cmd/app\n        working-directory: mod' \
+  $'/bin/app2" ./cmd/app\n        env:\n          GOCACHE: /tmp/elsewhere\n        working-directory: mod'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the env and what it moves" \
+  "$(contains "$out" "${fill_build}its own env sets GOCACHE, which moves the objects away from the cache the fill saves\.")"
+
+echo "case: the fill's build step runs under an if:"
+binaries_case binaries-fill-if
+replace "$root/.github/workflows/ci-caches.yaml" "      - name: Build the binaries the browser suite runs, as the binaries job does" \
+  $'      - name: Build the binaries the browser suite runs, as the binaries job does\n        if: false'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the condition" "$(contains "$out" "${fill_build}it runs under \`if: false\`, so it may run nothing at all\.")"
+
+echo "case: the reader's build step runs under an if:"
+binaries_case binaries-fill-reader-if
+replace "$root/.github/workflows/dispatch-browser.yaml" "      - name: Build the binaries the browser suite runs" \
+  $'      - name: Build the binaries the browser suite runs\n        if: false'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the reader's file, its step and the condition" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::job binaries's step \"Build the binaries the browser suite runs\" is not what .github/scripts/ci_job_reads.py's BINARIES_FILLS gives its pair: it runs under \`if: false\`")"
 
 echo "case: the fill's connections step is renamed"
 binaries_case binaries-fill-step-gone

@@ -387,21 +387,27 @@
 #      .github/workflows/ci-caches.yaml's browser-binaries job, and the two steps of
 #      dispatch-browser.yaml's binaries job they fill the cache family for - that does not run the
 #      pair's text (compared as an Exact entry compares a step's, the whole text), in the pair's
-#      directory, with no env: name outside ENV_ALLOWED, no earlier step writing $GITHUB_ENV or
-#      $GITHUB_PATH or running `go env -w`, and no shell or container, naming the file, the step
-#      and its first line that differs; a job or step of either side that is gone; and an entry
+#      directory, with no `if:`, no GOCACHE of the workflow, the job or the step, no other env:
+#      name outside ENV_ALLOWED, no earlier step writing $GITHUB_ENV or $GITHUB_PATH or running
+#      `go env -w`, and no shell or container, naming the file, the step and its first line that
+#      differs; a job or step of either side that is gone, each in its own words; and an entry
 #      that names no pair, an empty text or a workflow the tree does not have. An object's cache
-#      key holds the flags, CGO_ENABLED and every variable go reads of the command that made it,
-#      so a fill that drifts saves an entry the job finds and does not hit: it compiles everything
-#      from nothing, and nothing fails - the shape measured on a go-envoy-test entry, a family
-#      filled with cgo on, which left 427 of the job's 1,034 packages to compile. Whole texts
+#      key holds the compiler's flags, CGO_ENABLED and the other GO* variables that enter the
+#      build, with the source it compiles, so a fill that drifts saves an entry the job finds and
+#      does not hit: it compiles everything from nothing, and nothing fails - the shape measured
+#      on a go-envoy-test entry, a family filled with cgo on, which left 427 of the job's 1,034
+#      packages to compile. GOCACHE and an `if:` are refused although neither enters a key: a
+#      GOCACHE sends the objects away from the `~/.cache/go-build` the fill saves, which leaves
+#      the fill saving an empty entry, and a step that does not run compiles nothing, while every
+#      text still matches. Whole texts
 #      rather than the go commands read out of them, so that no shape of a command (a `GOFLAGS=`
 #      prefix, a `time`, a continued line, an `export`) can read as no command on both sides and
 #      pass. The two steps of a pair are two copies of one text rather than one script: a Run
 #      pinned to a script's text is reduced over every job of the called workflow, and the shard
 #      and alone jobs run in a container, so a shared script would make that filter read every Go
 #      file of the repository (ci_job_reads.py's browser gate says so where it lists no script
-#      Run). Not compared: the runner and the Go version, which the family's key carries.
+#      Run). Not compared: the runner and the Go version, which the family's key carries, and
+#      GOPROXY, which decides where a module comes from and enters no key.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to
