@@ -424,7 +424,7 @@ type noticeClass struct {
 var noticeClasses = map[record.NoticeKind]noticeClass{
 	// A person's approval of the root's own document tells one; a basis opening, where an
 	// ancestor's approval opened the step and no person approved the root's version, tells none
-	// (openedNotice).
+	// (tellOpened).
 	"design-approved": {tells: true, rows: []string{
 		"notice-design-approved-from-artifact-approved", "notice-design-approved-from-a-registration",
 		"notice-design-approved-after-an-exact-undo", "notice-design-approved-from-the-gate-seed",
@@ -570,7 +570,7 @@ var silentPaths = []silentPath{
 		r.wantOwn(ownRoot, ownDocument, 2)
 		return r.basisEnded()
 	}},
-	// design-approved at a basis opening (openedNotice): an ancestor's approval opened the step, at
+	// design-approved at a basis opening (tellOpened): an ancestor's approval opened the step, at
 	// the registration on it (gateRegistered) or at a person's approval of the version a pending
 	// step waited on (openPendingBasis). No person approved the root's own version, so the route
 	// answers none, or the person's approval of version 2 the step keeps apart (KeptPerson).
@@ -964,7 +964,7 @@ func (r *pathRig) basisEnded() record.Notice {
 }
 
 // basisOpened is the newest design-approved notice on ownRoot, as a basis opening writes it
-// (openedNotice): it names the ancestor's document for the step and the version a person approved
+// (tellOpened): it names the ancestor's document for the step and the version a person approved
 // of it, not the root's own spec.
 func (r *pathRig) basisOpened() record.Notice {
 	r.t.Helper()

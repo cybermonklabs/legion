@@ -539,10 +539,32 @@ func TestMergeHoldTellsTheArchitectOfItsOwnAcceptanceAtOnce(t *testing.T) {
 	}
 }
 
+// specStated is the spec step as catch-up states it in its tree (record.CatchUpTree.Gates).
+func specStated(t *testing.T, what string, catchUp record.Notice) record.CatchUpGate {
+	t.Helper()
+	if catchUp.CatchUp != nil {
+		for _, gate := range catchUp.CatchUp.Gates {
+			if gate.Step == record.DesignStepSpec {
+				return gate
+			}
+		}
+	}
+	t.Fatalf("%s states no spec step: %+v", what, catchUp.CatchUp)
+	return record.CatchUpGate{}
+}
+
 // Decision 21: the ordinary catch-up still arrives while the work hold stands, and asks for no
 // acceptance of the architect's own, in its text or in any field: built at the architect's ready
-// while the hold stands, and, in the other case, built with the gate open and delivered after the
-// gate closed. It still states the root in accepting.
+// while the hold stands; built with the gate open and delivered after the gate closed; and
+// delivered while the gate stands closed under `work` before the boot has written the hold's
+// record. It still states the root in accepting.
+//
+// The delivery composes the catch-up again from the record (readNoticeTree, workflow.TreeCatchUp),
+// which leaves the clause out while the hold's record stands (workHoldStands), and then strips
+// the clause while the live standing gate stands closed under `work` (deliverNotice,
+// workflow.CatchUpWithoutAcceptance). The two reads part only where the gate stands closed under
+// `work` with no hold record yet, which the third case builds: there the strip alone holds the
+// clause back.
 func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 	t.Run("built at the architect's ready while the hold stands", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
@@ -564,6 +586,9 @@ func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 		wantTheTreeListed(t, "the catch-up the architect was told", published[0])
 	})
 
+	// The catch-up is queued with the gate open at version 3 and delivered after version 4 closed
+	// it: the architect is told the spec as the record holds it at the delivery, version 4 and
+	// closed, so what it reads is the delivery's composition and not the queued text.
 	t.Run("built with the gate open and delivered after the gate closed", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
 		r.live(claim.RoleArchitect)
@@ -572,14 +597,54 @@ func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 		if len(built) != 1 || !strings.HasSuffix(built[0].Reason, acceptanceAsked) {
 			t.Fatalf("the ready with the gate open queued the catch-ups %+v, want one asking for the acceptance: %q", built, acceptanceAsked)
 		}
+		if spec := specStated(t, "the catch-up the ready built", built[0]); spec.Version != 3 || !spec.Open {
+			t.Fatalf("the ready with the gate open built the spec step %+v, want version 3 and open: the case's own premise", spec)
+		}
 		r.close(4)
 		r.drain()
 		published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
 		if len(published) != 1 {
 			t.Fatalf("the architect was told %d catch-ups, want the one its ready queued", len(published))
 		}
+		if spec := specStated(t, "the catch-up the architect was told", published[0]); spec.Version != 4 || spec.Open {
+			t.Fatalf("the architect was told the spec step %+v, want version 4 and closed, as the record holds it at the delivery", spec)
+		}
 		wantNoAcceptanceAsked(t, "the catch-up the architect was told once the gate closed", published[0])
 		wantTheTreeListed(t, "the catch-up the architect was told once the gate closed", published[0])
+	})
+
+	// A deployment moves from `merge` to `work` while the root's gate stands closed. The close
+	// under `merge` wrote no work hold row, and the boot's fact, which writes it
+	// (workflow.workHoldBooted), is applied beside the outbox, so a row can run before it
+	// (restartBeforeTheBoot). The catch-up queued under `merge` asks for the acceptance, and its
+	// delivery under `work` before the boot composes it again with the clause, since the record's
+	// hold does not stand; the strip of the live gate is what leaves the clause out.
+	t.Run("delivered while the gate stands closed and the boot has not yet applied the hold", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldMerge))
+		r.live(claim.RoleArchitect)
+		r.close(4)
+		r.drain()
+		r.architectReady()
+		built := r.builtCatchUps()
+		if len(built) != 1 || !strings.HasSuffix(built[0].Reason, acceptanceAsked) {
+			t.Fatalf("the ready under merge queued the catch-ups %+v, want one asking for the acceptance: %q", built, acceptanceAsked)
+		}
+		r.restartBeforeTheBoot()
+		r.deploy(config.HoldWork)
+		r.drain()
+		var holds int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from work_holds where tree = $1`, r.tree.key).Scan(&holds); err != nil {
+			t.Fatalf("read the work holds: %v", err)
+		}
+		if holds != 0 {
+			t.Fatalf("the record holds %d work holds of %s at the delivery, want none: the case's own premise", holds, r.tree.key)
+		}
+		published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
+		if len(published) != 1 {
+			t.Fatalf("the architect was told %d catch-ups, want the one its ready queued", len(published))
+		}
+		wantNoAcceptanceAsked(t, "the catch-up the architect was told under work before the boot", published[0])
+		wantTheTreeListed(t, "the catch-up the architect was told under work before the boot", published[0])
 	})
 }
 
