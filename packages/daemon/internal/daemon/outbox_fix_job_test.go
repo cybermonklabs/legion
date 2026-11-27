@@ -190,7 +190,7 @@ func TestAnOlderDispatchKeepsTheRowWaiting(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	rig.runner.dispatch = dispatch.New(server.URL, "agent-token")
+	rig.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil))
 
 	const tries = 3
 	for try := 1; try <= tries; try++ {
