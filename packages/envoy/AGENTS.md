@@ -45,10 +45,3 @@ Start with `docs/architecture.md`; `.dispatch/architecture/` at the repository r
   a migration that drops, renames or narrows waits a release (`cmd/dispatch/README.md`, "Database migrations").
 
 - Deliver to a session only through its own durable consumer on `ENVOY_NOTIFICATIONS`: add no plain NATS subscription and no fallback path.
-
-- A secret store is one package, `internal/cipher/secretstore/<id>`, and one registry file, `internal/cipher/secretstore/backends/<id>.go`.
-  The registry file starts with `//go:build !cipher_no_<id>` and registers the store's `Backend` with `var _ = register(<id>.Backend{})`.
-  A test a default build compiles calls both `secretstoretest.StoreContract(t, "<id>", …)` and `secretstoretest.WriterContract(t, "<id>", …)`.
-  Only the store's own package tree, the registry and the test-support packages (a name ending in `test`) may import the store or its `ServiceSDKs()`.
-  A store with a live service puts its live tests behind a tag of its own and runs them with `scripts/store-live-check.sh <id>`.
-  `internal/cipher/secretstore/backends/backends_test.go` holds each of these rules, and `cmd/cipher`'s `onEachStore` needs a rig for the new store in `storeRigs`.
