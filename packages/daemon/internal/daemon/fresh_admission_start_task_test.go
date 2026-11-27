@@ -52,9 +52,9 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 		t.Fatalf("the architect's phases row = entry %d, task %q, raised at %s; want entry 1 carrying the task it was given, with the moment it was raised",
 			row.Entry, row.EntryTask, row.EntryRaisedAt)
 	}
-	if row.EntryVerbatim {
-		t.Fatalf("the architect's phases row marks the derivation's task %q to be sent again as written, want it derived again: "+
-			"a send again names what is still unclaimed then (workflow.Engine.SendArchitectStart)", row.EntryTask)
+	if row.EntryAwaiting != nil {
+		t.Fatalf("the architect's phases row keeps the wait %+v beside the derivation's task %q, want none, so a send again derives it: "+
+			"a send again names what is still unclaimed then (workflow.Engine.SendArchitectStart)", row.EntryAwaiting, row.EntryTask)
 	}
 	if pending.Entry != 1 {
 		t.Fatalf("the architect's pending task is of entry %d, want the 1 its row names: the start carries the entry its own transaction raised", pending.Entry)

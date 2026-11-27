@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+    This change adds the daemon API contract entry 20261125181104, whose number
+    `legion version --contracts` prints. A Legion issue carries four more keys: `repoBefore` and
+    `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the
+    correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that
+    the daemon has not applied and why. Each is optional, and an issue no correction has reached
+    carries none. The daemon strips the four from the state it serves a plugin below that entry.
+    `LegionOwedRequest` and `LegionOwedResponse` are the two bodies of the claim route
+    `POST /legion/v1/claims/owed`: the claim token, session and secret, answered with `owes` and
+    `work`, whether the claim owes work now and what that work is called. `work` is empty exactly
+    when `owes` is false. The optional `architect` names the architect claim that owns the claim
+    now: the issue's own architect while it holds its role, else the nearest one above it, else
+    the tree root's. A phase worker on an issue the daemon records gets it whether or not it owes.
+time: 2026-11-12T04:36:49.992078967Z
+custom:
+    Issue: pr3712

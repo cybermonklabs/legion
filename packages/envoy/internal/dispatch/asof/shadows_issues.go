@@ -127,6 +127,13 @@ func issueActivityAt(aggregate, cut string) string {
 //
 //   - tasks_done, tasks_total and tasks_version: the row's present values. Progress at a cut is
 //     counted in Go from the primary document's version at the cut (decision 9).
+//
+//   - last_event_at and last_event_at_seq: SQL null, as a row holds the pair before
+//     20261125144002 fills it. A reader takes a null pair for unknown and probes the event of
+//     last_seq instead (api's priorityReadQuery), here the shadow's last_seq at the cut, so it
+//     reads the issue's newest event at the cut. The row's present pair names the issue's newest
+//     event now, which can be later than the cut, and the pair at the cut is that same probe; so
+//     the shadow reads neither, and a statement pays nothing for the two columns.
 func issuesShadow(cut string) string {
 	title := `coalesce(s.payload->>'title', '')`
 	return `select i.key as key,
@@ -159,7 +166,9 @@ func issuesShadow(cut string) string {
 		i.tasks_total as tasks_total,
 		i.tasks_version as tasks_version,
 		public.title_lexemes(` + title + `) as title_lexemes,
-		s.payload->>'repo' as repo
+		s.payload->>'repo' as repo,
+		null::timestamptz as last_event_at,
+		null::bigint as last_event_at_seq
 	from public.issues i
 	cross join lateral (` + issueStateAt("i", cut) + `) s`
 }

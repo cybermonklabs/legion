@@ -86,9 +86,10 @@ trap cleanup EXIT
 # --- Fake docker: reports dispatch-pg already running on dev-postgres.sh's pinned image (so
 # dev-postgres.sh reuses it) or, with DEV_BROKER_TEST_PG_IMAGE_ID set, on that other image (so
 # dev-postgres.sh refuses it), answers every "exec ... pg_isready"/"exec ... psql -c ..." with
-# success, and records the exact command line of every invocation to the caller's own
-# DEV_BROKER_TEST_DOCKER_CALL_FILE (each instance below gets its own, so two concurrent
-# instances' calls never interleave in one file). ---
+# success, answers dev-postgres.sh's read of the reused server's shared_preload_libraries with
+# pg_stat_statements (the preload it requires to reuse a container), and records the exact
+# command line of every invocation to the caller's own DEV_BROKER_TEST_DOCKER_CALL_FILE (each
+# instance below gets its own, so two concurrent instances' calls never interleave in one file). ---
 cat >"${fake_bin_dir}/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${DEV_BROKER_TEST_DOCKER_CALL_FILE:?}"
@@ -106,6 +107,11 @@ case "$1 $2" in
     esac
     ;;
   "image inspect") printf '%s\n' "$pinned_id" ;;
+  "exec dispatch-pg")
+    case "$*" in
+      *" psql -h 127.0.0.1 -U postgres -Atc show shared_preload_libraries") printf 'pg_stat_statements\n' ;;
+    esac
+    ;;
 esac
 exit 0
 EOF

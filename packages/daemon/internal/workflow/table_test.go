@@ -362,6 +362,7 @@ var awaitingChildrenIgnores = map[TriggerKind]string{
 // trigger there to its reason in awaitingChildrenIgnores. The two triggers of one act, a tester's
 // pass and failure or a review's approval and rejection, share one reason.
 func TestEveryTriggerInAwaitingChildrenIsANamedIgnore(t *testing.T) {
+	t.Parallel()
 	for _, row := range Table {
 		if row.From == phase.AwaitingChildren {
 			t.Errorf("the table holds a row out of awaiting_children (%s -> %s), want none: only the admission pass's return leaves it", row.Trigger, row.To)

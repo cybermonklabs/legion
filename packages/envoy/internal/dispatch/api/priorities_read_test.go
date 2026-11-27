@@ -147,7 +147,7 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatal("ship-the-daemon carries no newest event, want the newest event on an issue that advances it")
 	}
 
-	// A comment on a member moves the newest event, although it writes no issue row.
+	// A comment on a member appends an event of that issue, and the event moves the newest event.
 	beforeComment := *ship.Work.NewestEventAt
 	if commented := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+coreChild+"/comments",
 		map[string]any{"body": "The packaging is ready."}, "bob"); commented.Code != http.StatusCreated {
@@ -512,14 +512,16 @@ func moveTestIssue(t *testing.T, handler http.Handler, key, status, login string
 
 // ageSeededIssue moves one issue and every event under it back to a moment of the caller's: the
 // seven-day window and the newest event under a priority are read off the stored columns, and a
-// test cannot wait days for them.
+// test cannot wait days for them. The issue's newest-event pair moves with its event, as the
+// append that wrote both would have written it (events/broker.go), where the pair names one.
 func ageSeededIssue(t *testing.T, database *store.Store, key string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
 		update issues
 		set created_at = $2::timestamptz, updated_at = $2::timestamptz,
-		    closed_at = case when closed_at is null then null else $2::timestamptz end
+		    closed_at = case when closed_at is null then null else $2::timestamptz end,
+		    last_event_at = case when last_event_at is null then null else $2::timestamptz end
 		where key = $1
 	`, key, at); err != nil {
 		t.Fatalf("age %s: %v", key, err)
@@ -543,7 +545,7 @@ func seedBulkFaults(t *testing.T, database *store.Store, priority string) (unpla
 	issues := make([][]any, 0, 2*bulkFaultRows)
 	events := make([][]any, 0, bulkFaultRows)
 	tuples := make([][]any, 0, bulkFaultRows)
-	moved := seededStatusMovePayload(t, "backlog")
+	moved := seededIssuePayload(t, "backlog", "status")
 	for index := range bulkFaultRows {
 		at := base.Add(-time.Duration(index) * time.Minute)
 		unplacedKey := seededIssueKey(bulkFaultProject, index+1)
