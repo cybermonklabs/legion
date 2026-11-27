@@ -295,9 +295,9 @@ type lookIDRouteEntry struct {
 // its reason. Any unregistered or unclassified route fails the test, and any body carrying the
 // look id fails the route's row.
 //
-// At the head of T1, the operator claim routes that render OperatorClaim through operatorView
-// (api/operator_claim.go) serve DeliveryView.Task whole and fail here; every other searched route
-// guards that today's agent-facing surfaces withhold the look id and passes.
+// The operator claim routes render OperatorClaim through operatorView (api/operator_claim.go),
+// which writes the pending task with its look id withheld (withheldTask), so their rows pass with
+// the rest; TestTheOperatorClaimViewWithholdsTheLookID holds what that view still shows.
 func TestEveryRouteIsSearchedForTheLookID(t *testing.T) {
 	patterns := registeredPatterns(t)
 

@@ -7,6 +7,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -23,9 +24,10 @@ import (
 // carries and no claim's; the table's withheld column reaches no surface at all,
 // the claim's two hashes among it. Two fields stand here whole where a claim view reduces them:
 // the four counts, under `budgets` and again inside `failure`, and the pending task with its
-// text, under `pending`. Three keys below are no field of the claim record and stand on the
-// answer of the one route that writes them rather than on every claim: ForgottenSession,
-// ForgottenSessionFile and PhaseNotRestarted.
+// text, under `pending`, where a look's task has its look id withheld (DeliveryView.Task). Three
+// keys below are no field of the claim record and stand on the answer of the one route that
+// writes them rather than on every claim: ForgottenSession, ForgottenSessionFile and
+// PhaseNotRestarted.
 type OperatorClaim struct {
 	Token                claim.Token `json:"token"`
 	Tree                 string      `json:"tree"`
@@ -155,7 +157,11 @@ func BudgetsViewOf(b supervise.Budgets) BudgetsView {
 // turn a send started; each absent until it happens. SendFailures, LastSendFailureAt and
 // LastSendError stand beside them as the record of the sends that did not get that far.
 type DeliveryView struct {
-	ID   string `json:"id"`
+	ID string `json:"id"`
+	// Task is the task's text, with every occurrence of a look's id withheld (withheldTask): the
+	// look id is secret, and only the look's own task, in the session of the checking role, gives
+	// it (R3 of dispatch://INFRA-3518). The controller under `controller: operator` reaches these
+	// routes, so no field of the view serves the id either.
 	Task string `json:"task"`
 	// Phase is the issue phase the task was queued for, and empty for a task of no phase — an
 	// operator's own, an architect's. It is what says whether a pending task is still the work to
@@ -293,12 +299,27 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
-			ID: p.ID, Task: p.Task, Phase: p.Phase, QueuedAt: p.QueuedAt,
+			ID: p.ID, Task: withheldTask(*p), Phase: p.Phase, QueuedAt: p.QueuedAt,
 			DeliveredAt: instant(p.DeliveredAt), ConfirmedAt: instant(p.ConfirmedAt), Interrupted: p.Interrupted,
 			SendFailures: p.SendFailures, LastSendFailureAt: instant(p.LastSendFailureAt), LastSendError: p.LastSendError,
 		}
 	}
 	return view
+}
+
+// lookIDWithheld is what the operator claim view writes in a pending task's text in place of the
+// look id the task gives (withheldTask).
+const lookIDWithheld = "<look id withheld>"
+
+// withheldTask is the text of d as the operator claim view writes it: a look's task with every
+// occurrence of its look id (supervise.Delivery.LookID) replaced by lookIDWithheld, and every
+// other task as it is, since a task that names no look carries no id. The rest of the text stays,
+// so an operator still reads which check, which look and which wake the task is of.
+func withheldTask(d supervise.Delivery) string {
+	if d.LookID == "" {
+		return d.Task
+	}
+	return strings.ReplaceAll(d.Task, d.LookID, lookIDWithheld)
 }
 
 // operatorAnswer is the answer every operator route about one claim writes: the claim its caller
