@@ -368,7 +368,7 @@ function procText(root: string, pid: number | string, file: ProcFile): string | 
  *  that takes long, as one of a `/proc/<pid>/environ` can, holds up no other work of the loop.
  *  Measured with bun 1.4.4 on 2026-11-22: while a read of a named pipe waited 2 s for its writer,
  *  a timer due 50 ms after the read began fired at 50 ms. `Bun.file` is read when it is called, so
- *  the row of `bounded-subprocess.test.ts` that counts the kill's reads reaches it. */
+ *  the row of `bounded-subprocess.test.ts` that records the kill's reads reaches it. */
 async function procTextYielding(
   root: string,
   pid: number | string,

@@ -464,10 +464,11 @@ test(
   ROW_MS
 );
 
-/** Whether anything accepts a TCP connection on `port` of this machine's loopback. */
-function serving(port: number): Promise<boolean> {
+/** Whether anything accepts a connection on the unix socket at `path`: a server that is gone
+ *  leaves none there, or leaves its socket file with no listener, and either refuses. */
+function serving(path: string): Promise<boolean> {
   const { promise, resolve } = Promise.withResolvers<boolean>();
-  const socket = connect({ host: "127.0.0.1", port });
+  const socket = connect({ path });
   socket.once("connect", () => {
     socket.destroy();
     resolve(true);
@@ -493,7 +494,7 @@ test.skipIf(!provider)(
   "a stack's Postgres whose parent is killed serves no longer",
   async () => {
     const dir = makeDirectory();
-    const portFile = join(dir, "port");
+    const socketFile = join(dir, "socket-directory");
     // The connection limit is given rather than read through `go`, which this row has no need of.
     const env = { ...process.env, [pgConnectionsVariable]: "20" };
     const parent = Bun.spawn(
@@ -504,7 +505,7 @@ test.skipIf(!provider)(
          import { stackPostgres } from ${JSON.stringify(harnessPostgres)};
          const provider = stackPostgres({ dir: ${JSON.stringify(dir)}, run: "orphans-" + process.pid });
          const stack = await provider.start(0);
-         writeFileSync(${JSON.stringify(portFile)}, stack.port + "\\n");
+         writeFileSync(${JSON.stringify(socketFile)}, stack.socketDirectory + "\\n");
          setInterval(() => {}, 1 << 30);`,
       ],
       { cwd: dispatchPackage, env, stderr: "inherit", stdout: "ignore" }
@@ -513,21 +514,23 @@ test.skipIf(!provider)(
       const written = await eventually(
         async () =>
           /\n$/u.test(
-            await Bun.file(portFile)
+            await Bun.file(socketFile)
               .text()
               .catch(() => "")
           ),
         POSTGRES_ROW_MS / 2
       );
-      if (!written) throw new Error("the parent started no Postgres: it wrote no port");
-      const port = Number((await Bun.file(portFile).text()).trim());
-      expect(await serving(port)).toBe(true);
+      if (!written) throw new Error("the parent started no Postgres: it wrote no socket directory");
+      // The socket file the stack's server makes in its socket directory for the port it is told
+      // (`socketPort`, e2e/harness-postgres.ts): the server listens on no TCP address.
+      const socket = join((await Bun.file(socketFile).text()).trim(), ".s.PGSQL.5432");
+      expect(await serving(socket)).toBe(true);
 
       parent.kill("SIGKILL");
       await parent.exited;
 
-      await eventually(async () => !(await serving(port)), 30_000);
-      expect(await serving(port)).toBe(false);
+      await eventually(async () => !(await serving(socket)), 30_000);
+      expect(await serving(socket)).toBe(false);
     } finally {
       parent.kill("SIGKILL");
       // What a failing row leaves is removed here by the exact name or directory this run's

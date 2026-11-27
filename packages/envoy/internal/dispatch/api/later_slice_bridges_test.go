@@ -40,7 +40,7 @@ func stubBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker, options 
 	return func(database *store.Store) *ciphertoken.Verifier {
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
-			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
+			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, credentialTestAccountToken)),
 			Origins:   []string{testServerURL},
 			Replay:    store.NewDPoPProofs(database.Pool),
 			// What Dispatch itself passes: the check keys its bucket on the address

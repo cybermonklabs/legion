@@ -383,6 +383,7 @@ func TestTwoRepairsAtOnceWithdrawEachAskOnce(t *testing.T) {
 // A closed issue with no issue.closed event has no closer to name: the repair logs it and leaves
 // its asks open, writing nothing.
 func TestRepairSkipsAClosedIssueWithNoClosingEvent(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault).
 	f := newRepairFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closed with no event", "Context\n")
 	ask := createSessionAsk(t, f.handler, issue.Key, "Which region?")

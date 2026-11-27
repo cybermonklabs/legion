@@ -377,6 +377,7 @@ func TestStoredOrderChecker(t *testing.T) {
 // the check reads its markdown and reports no mismatch where that markdown reads as the render.
 // A version holding other text than the fold is still a mismatch, whatever its stamp.
 func TestStoredOrderReadsAVersionOfAnotherRendererVersionAsTheTreeItSpells(t *testing.T) {
+	t.Parallel()
 	another := pmdoc.RendererVersion - 1
 	for _, test := range []struct {
 		name     string

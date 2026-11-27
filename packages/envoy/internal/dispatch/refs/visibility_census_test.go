@@ -46,6 +46,7 @@ import (
 // readsWithoutAViewer, which names it with the reason it answers no reader. A read in neither
 // place fails here, named, and so does an entry of that table that names no such read.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if SeedStoreThroughItsWriters == nil {

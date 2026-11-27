@@ -80,7 +80,7 @@ func TestAParentsProgressCountsOnlyTheChildrenItsReaderSees(t *testing.T) {
 			t.Fatalf("%s lists %s: status=%d body=%s", who, publicProject, listing.Code, listing.Body.String())
 		}
 		found := false
-		for _, summary := range decodeBody[model.IssueSummaryPage](t, listing).Issues {
+		for _, summary := range decodeBody[[]model.IssueSummary](t, listing) {
 			if summary.Key != parent {
 				continue
 			}

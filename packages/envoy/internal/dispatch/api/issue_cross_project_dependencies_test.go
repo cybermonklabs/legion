@@ -675,6 +675,7 @@ func patchIssueParent(t *testing.T, handler http.Handler, key, parent string) *h
 // own project, and every refusal that stood inside one project stands across two: a ring of
 // parent links, and a chain past the depth cap, whichever projects its links alternate between.
 func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	alpha := createListedIssues(t, handler, "ALPHA", 3)
 	beta := createListedIssues(t, handler, "BETA", 3)
@@ -758,6 +759,7 @@ func TestParentCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 // one taken and the other refused as a cycle, never with both committed, never with a deadlock.
 // The race is replayed crossProjectRaceRounds times, each round on the pair cleared of parents.
 func TestRacingReparentsAcrossProjectsCommitNoRing(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	alpha := createListedIssues(t, handler, "ALPHA", 1)[0]
 	beta := createListedIssues(t, handler, "BETA", 1)[0]
@@ -812,6 +814,7 @@ func TestRacingReparentsAcrossProjectsCommitNoRing(t *testing.T) {
 // both. With ALPHA's lock held, a BETA create under ALPHA's issue and a BETA reparent under it
 // wait; once it is released, both land with that parent.
 func TestAParentWriteTakesTheParentsProjectLock(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	alpha := createListedIssues(t, handler, "ALPHA", 1)[0]
 	beta := createListedIssues(t, handler, "BETA", 1)[0]
@@ -1035,6 +1038,7 @@ func TestAProjectScopedCallerRecordsAndRetractsOnAnotherProjectsCheck(t *testing
 // ALPHA's issue under BETA's issue is a root of its own for every one of the four. A child and a
 // grandchild of the issue's own project still inherit each, which is the control.
 func TestInheritedValuesStopAtTheProjectEdge(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	for _, project := range []string{"ALPHA", "BETA"} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{

@@ -82,10 +82,15 @@ func errNoBrokerConfigured() *apiError {
 }
 
 // brokerPersonScopes is what a broker token that acts for its person holds, a read-only one
-// included: the person scope alone, never approve (brokerTokenActor). Every such credential
-// shares this one slice, as model.BrowserActor's credential shares model.Scopes, so a request allocates none;
-// nothing writes it.
+// included, but for an approve-only token (brokerApproveOnlyScopes): the person scope alone, never
+// approve (brokerTokenActor). Every such credential shares this one slice, as model.BrowserActor's
+// credential shares model.Scopes, so a request allocates none; nothing writes it.
 var brokerPersonScopes = []string{model.ScopePerson}
+
+// brokerApproveOnlyScopes is what an approve-only token holds (brokerTokenActor): the person and
+// approve scopes, never p0, which no broker-issued token holds. It is a slice of its own, as
+// brokerPersonScopes is, so no request allocates one; nothing writes it.
+var brokerApproveOnlyScopes = []string{model.ScopePerson, model.ScopeApprove}
 
 // legionStatusScopes is the scopes of a Legion daemon's own broker token: model.ScopeLegionStatus
 // alone. It is a slice of its own, as brokerPersonScopes is, so no request allocates one and
@@ -280,15 +285,15 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// Those need the person's browser session, a personal token the person gave approve, or the
 	// one broker-issued token no machine holds: an approve-only token (ciphertoken.Caller.
 	// ApproveOnly), which the secrets broker mints for a person's approve grant, binds to its own
-	// pod's key and spends through its proxy without ever releasing it. That token holds both of
-	// the person's scopes and is marked approve-only, so refuseApproveOnlyToken holds it to the
-	// approve list (approveScopeRoutes) before any route runs. A token scoped to a project gets no
-	// person scope, because the deployment mapped that token to a project and not to the person: it
-	// proves a session, not that any person stands behind the request. A token that names a
-	// service and no person gets none either, whatever scope the broker answered: there is no
-	// person for it to act as, and a scope that said otherwise would let it act as the session's
-	// own id on the routes that read what belongs to a person. A job's token, named or public, is
-	// one of those.
+	// pod's key and spends through its proxy without ever releasing it. That token holds person
+	// and approve (brokerApproveOnlyScopes), never p0, and is marked approve-only, so
+	// refuseApproveOnlyToken holds it to the approve list (approveScopeRoutes) before any route
+	// runs. A token scoped to a project gets no person scope, because the deployment mapped that
+	// token to a project and not to the person: it proves a session, not that any person stands
+	// behind the request. A token that names a service and no person gets none either, whatever
+	// scope the broker answered: there is no person for it to act as, and a scope that said
+	// otherwise would let it act as the session's own id on the routes that read what belongs to a
+	// person. A job's token, named or public, is one of those.
 	//
 	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
 	// token without read would be: one narrowed from a token that acts as its person still acts
@@ -310,7 +315,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	var scopes []string
 	switch {
 	case caller.ApproveOnly:
-		scopes = model.Scopes
+		scopes = brokerApproveOnlyScopes
 	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson:
 		scopes = brokerPersonScopes
 	case caller.LegionStatus && oneProject:

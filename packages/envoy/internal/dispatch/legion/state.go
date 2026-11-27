@@ -32,7 +32,8 @@ type State struct {
 	// Admission is the daemon's admission block, absent from a document that carries none: the
 	// Legion board reads the waiting line's own order from it (the spec's "Rule details": that
 	// order puts answered roots first and follows Dispatch's rank after them, so Dispatch's rank
-	// alone is not it), the blockers each held issue waits on, and the slot cap its header shows.
+	// alone is not it), the blockers each held issue waits on, and the slot cap and the number of
+	// P0 holders its header shows.
 	Admission *Admission `json:"admission,omitempty"`
 	// Settings is the settings the daemon reports, which hold no secret, each value kept as the
 	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
@@ -46,6 +47,11 @@ type State struct {
 type Admission struct {
 	// Cap is the deployment's admission cap, the slots the header counts against.
 	Cap *int `json:"cap,omitempty"`
+	// P0Holders is how many of the issues holding a slot are P0 and hold it outside the cap, the
+	// daemon's own count (dispatch://INFRA-5636), which the board's header copies and never
+	// counts itself. It is absent from the state of a daemon before that change and from the body
+	// a daemon serves a caller below that contract, so none stays none here rather than 0.
+	P0Holders *int `json:"p0Holders,omitempty"`
 	// Active is every issue holding a slot, which a daemon may widen to children as well as
 	// roots (dispatch://INFRA-980). The board counts the slots in use from it, and from each
 	// issue's own `slot` only where a daemon sends no `active`.

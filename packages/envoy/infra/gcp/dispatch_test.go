@@ -985,7 +985,7 @@ func TestDispatchRegistersItsCloudResources(t *testing.T) {
 		"random:index/randomPassword:RandomPassword":        4,
 		"gcp:sql/database:Database":                         1,
 		"gcp:sql/user:User":                                 1,
-		"gcp:secretmanager/secretIamMember:SecretIamMember": 2,
+		"gcp:secretmanager/secretIamMember:SecretIamMember": 4,
 	}
 	got := map[string]int{}
 	for _, registration := range m.Registrations() {
@@ -1020,10 +1020,60 @@ func TestDispatchSeedAccessorWaitsForTheCluster(t *testing.T) {
 	}
 }
 
+// dispatchPoolRoot is the path every principal of the example cluster's Workload Identity pool
+// starts with.
+const dispatchPoolRoot = "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog"
+
+// dispatchSeedAccessors are the NATS seed's four grants, one by name and one by uid to each of the
+// two accounts that mount it: the Secret Manager grants the default inputs register.
+var dispatchSeedAccessors = []string{
+	"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor",
+	"example-dispatch-nats-seed-uid-accessor", "example-dispatch-listener-nats-seed-uid-accessor",
+}
+
+// requireSeedGrantByUID requires grant to give roles/secretmanager.secretAccessor on the NATS seed
+// to ServiceAccount account of the component's namespace by the uid its API server gave it,
+// <pool>/kubernetes.serviceaccount.uid/<uid>, and never by its name,
+// <pool>/subject/ns/dispatch/sa/<account>, which every cluster of the pool can make a
+// ServiceAccount under. The member is built from the account's own metadata.uid, so the grant
+// registers after the account, and from the cluster's pool, so it waits for the cluster as the
+// grants by name do.
+func requireSeedGrantByUID(t *testing.T, grant, account string) {
+	t.Helper()
+	m, err := runDispatch(t, dispatchArgs(), true)
+	require.NoError(t, err)
+	registration := m.Named(t, "gcp:secretmanager/secretIamMember:SecretIamMember", grant)
+	inputs := registration.Inputs.Mappable()
+	byName := dispatchPoolRoot + "/subject/ns/dispatch/sa/" + account
+	require.NotEqual(t, byName, inputs["member"],
+		"%s names ServiceAccount dispatch/%s by its name, %s, which a ServiceAccount of that name in any cluster of the pool holds", grant, account, byName)
+	require.Equal(t, dispatchPoolRoot+"/kubernetes.serviceaccount.uid/"+mockServiceAccountUID(account), inputs["member"],
+		"%s names ServiceAccount dispatch/%s by the uid its API server gave it", grant, account)
+	require.Equal(t, "roles/secretmanager.secretAccessor", inputs["role"])
+	require.Equal(t, "projects/example-project/secrets/example-nats-seed", inputs["secretId"], "%s grants the NATS seed alone", grant)
+	accountURN := "urn:pulumi:s::p::" + dispatchType + "$kubernetes:core/v1:ServiceAccount::" + account
+	require.Contains(t, registration.RPC.GetPropertyDependencies()["member"].GetUrns(), accountURN,
+		"%s's member is the uid of ServiceAccount %s, so the grant registers after it", grant, account)
+	require.Contains(t, registration.RPC.GetDependencies(), "urn:pulumi:s::p::"+dispatchType+"$gcp:container/cluster:Cluster::example-dispatch",
+		"%s is granted after the cluster that creates its principal's pool", grant)
+}
+
+// The app's grant on the NATS seed by uid, beside the grant by name,
+// <hostname>-nats-seed-accessor, which this release keeps.
+func TestTheDispatchSeedGrantNamesItsKSAByUID(t *testing.T) {
+	requireSeedGrantByUID(t, "example-dispatch-nats-seed-uid-accessor", "example-dispatch")
+}
+
+// The listener's grant on the NATS seed by uid: beside the grant by name,
+// <hostname>-listener-nats-seed-accessor, which this release keeps.
+func TestTheDispatchListenerSeedGrantNamesItsKSAByUID(t *testing.T) {
+	requireSeedGrantByUID(t, "example-dispatch-listener-nats-seed-uid-accessor", "example-dispatch-listener")
+}
+
 // The app and the listener mount the NATS seed, which a pod can read only once its own account's
-// seed accessor exists, so each Deployment registers after its own grant rather than racing IAM on
-// the first deployment: the app after <hostname>'s, the listener after <hostname>-listener's. The
-// front door mounts no seed and waits for no grant.
+// seed accessors exist, so each Deployment registers after its own two grants, by name and by
+// uid, rather than racing IAM on the first deployment: the app after <hostname>'s, the listener
+// after <hostname>-listener's. The front door mounts no seed and waits for no grant.
 func TestDispatchSeedMountingDeploymentsWaitForTheSeedAccessor(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
@@ -1031,14 +1081,16 @@ func TestDispatchSeedMountingDeploymentsWaitForTheSeedAccessor(t *testing.T) {
 	accessor := func(name string) string {
 		return "urn:pulumi:s::p::" + dispatchType + "$gcp:secretmanager/secretIamMember:SecretIamMember::" + name
 	}
-	for deployment, grant := range map[string]string{
-		"example-dispatch":          "example-dispatch-nats-seed-accessor",
-		"example-dispatch-listener": "example-dispatch-listener-nats-seed-accessor",
+	for deployment, grants := range map[string][]string{
+		"example-dispatch":          {"example-dispatch-nats-seed-accessor", "example-dispatch-nats-seed-uid-accessor"},
+		"example-dispatch-listener": {"example-dispatch-listener-nats-seed-accessor", "example-dispatch-listener-nats-seed-uid-accessor"},
 	} {
-		require.Contains(t, m.Named(t, "kubernetes:apps/v1:Deployment", deployment).RPC.GetDependencies(), accessor(grant),
-			"%s mounts the seed, so it registers after the grant that lets it", deployment)
+		for _, grant := range grants {
+			require.Contains(t, m.Named(t, "kubernetes:apps/v1:Deployment", deployment).RPC.GetDependencies(), accessor(grant),
+				"%s mounts the seed, so it registers after the grant %s that lets it", deployment, grant)
+		}
 	}
-	for _, grant := range []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"} {
+	for _, grant := range dispatchSeedAccessors {
 		require.NotContains(t, m.Named(t, "kubernetes:apps/v1:Deployment", "example-dispatch-tailnet").RPC.GetDependencies(), accessor(grant))
 	}
 }
@@ -2619,7 +2671,7 @@ func TestDispatchSecretCarriesNoBrokerOrAppKeyUnset(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY", "DISPATCH_SIGNIN_CLIENT_SECRET",
 	}, secretDataKeys(dispatchSecretData(t, m)))
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
+	require.ElementsMatch(t, dispatchSeedAccessors,
 		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")), "only the NATS seed's accessors exist")
 }
 
@@ -2629,7 +2681,7 @@ func TestDispatchSecretCarriesNoBrokerOrAppKeyUnset(t *testing.T) {
 func TestDispatchStoresNoBrokerTokenWhenSet(t *testing.T) {
 	m, err := runDispatch(t, dispatchBrokerAndAppArgs(t), true)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
+	require.ElementsMatch(t, dispatchSeedAccessors,
 		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")))
 	var classes []string
 	for _, r := range m.Registrations() {
@@ -2862,7 +2914,7 @@ func TestDispatchGrantsTheAzureKeyAccessorOnlyWithTheKeyForm(t *testing.T) {
 	setAzureKey(args)
 	m, err := runDispatch(t, args, true)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-azure-embed-key-accessor"},
+	require.ElementsMatch(t, append(slices.Clone(dispatchSeedAccessors), "example-dispatch-azure-embed-key-accessor"),
 		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")))
 	inputs := m.Named(t, "gcp:secretmanager/secretIamMember:SecretIamMember", "example-dispatch-azure-embed-key-accessor").Inputs.Mappable()
 	require.Equal(t, azureEmbedKeySecret, inputs["secretId"])
@@ -2881,7 +2933,7 @@ func TestDispatchGrantsTheAzureKeyAccessorOnlyWithTheKeyForm(t *testing.T) {
 	setAzureFederation(args)
 	m, err = runDispatch(t, args, true)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
+	require.ElementsMatch(t, dispatchSeedAccessors,
 		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")), "only the NATS seed's accessors exist")
 }
 
@@ -2969,7 +3021,7 @@ func TestDispatchRegistersTheChatTokenSecretOnlyWithTheEndpointForm(t *testing.T
 	spec := class["spec"].(map[string]any)
 	require.Equal(t, "gke", spec["provider"])
 	require.Equal(t, "- resourceName: "+chatTokenSecret+"/versions/latest\n  path: token\n", spec["parameters"].(map[string]any)["secrets"])
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor", "example-dispatch-chat-token-accessor"},
+	require.ElementsMatch(t, append(slices.Clone(dispatchSeedAccessors), "example-dispatch-chat-token-accessor"),
 		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")))
 	inputs := m.Named(t, "gcp:secretmanager/secretIamMember:SecretIamMember", "example-dispatch-chat-token-accessor").Inputs.Mappable()
 	require.Equal(t, chatTokenSecret, inputs["secretId"])
@@ -2984,7 +3036,7 @@ func TestDispatchRegistersTheChatTokenSecretOnlyWithTheEndpointForm(t *testing.T
 	setAzureChat(args)
 	m, err = runDispatch(t, args, true)
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
+	require.ElementsMatch(t, dispatchSeedAccessors,
 		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")), "only the NATS seed's accessors exist")
 	for _, r := range m.Registrations() {
 		require.NotEqual(t, "example-dispatch-chat-token", r.Name)

@@ -29,6 +29,7 @@ import (
 // below, each row of the table is a status, and statusGroup gives each status the group of its
 // row. A status added to the lifecycle fails this test until it has a row.
 func TestEveryStatusFallsInOneGroup(t *testing.T) {
+	t.Parallel()
 	groups := map[string]group{
 		"triage":       groupNotStarted,
 		"icebox":       groupNotStarted,
@@ -70,6 +71,7 @@ func TestEveryStatusFallsInOneGroup(t *testing.T) {
 // Each case seeds issues of its own, a parent before its child, so each seed keeps the rule
 // and only the case's own write breaks it.
 func TestEveryWriteOfAStatusOrAParentKeepsTheRule(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{parentStatusRule: true})
 	agent := newBrokerCaller(t)
 	const brokerToken = "a-token-that-writes-statuses"
@@ -432,6 +434,7 @@ func ruleRefusalBody(holders []ruleHolder) map[string]any {
 // parent. Each refusal names the issue that holds the rule, with its status. Closed from the
 // bottom up, each issue of a chain is closed once each child of it is done.
 func TestAParentIsDoneOnlyWhenEachChildIsDone(t *testing.T) {
+	t.Parallel()
 	rig := newRuleRig(t, true)
 	requireRuleRefusals(t, rig, parentDoneBreaches)
 	root := rig.file(t, "Root closed last", "in_progress", "")
@@ -453,6 +456,7 @@ func TestAParentIsDoneOnlyWhenEachChildIsDone(t *testing.T) {
 // while a child of it is in work, and a child's move into work is refused under a parent that is
 // not in work. Each refusal names the issues that hold the rule, with their statuses.
 func TestAChildInWorkKeepsItsParentInWork(t *testing.T) {
+	t.Parallel()
 	requireRuleRefusals(t, newRuleRig(t, true), childInWorkBreaches)
 }
 
@@ -461,6 +465,7 @@ func TestAChildInWorkKeepsItsParentInWork(t *testing.T) {
 // and so is a create under a done parent. A create under a parent that has not started is taken,
 // since a new issue is in triage.
 func TestAReparentAndACreateAreCheckedToo(t *testing.T) {
+	t.Parallel()
 	rig := newRuleRig(t, true)
 	requireRuleRefusals(t, rig, reparentAndCreateBreaches)
 	parent := rig.file(t, "Parent still on the backlog", "backlog", "")
@@ -481,6 +486,7 @@ func TestAReparentAndACreateAreCheckedToo(t *testing.T) {
 // which judges only its pair with the child, and the unlink of the child, R25's first step, while
 // an issue in work is still under the child.
 func TestTheRuleJudgesOnlyThePairsAWriteChanges(t *testing.T) {
+	t.Parallel()
 	rig := newRuleRig(t, true)
 	parent := rig.file(t, "Parent closed before the rule", "in_progress", "")
 	child := rig.file(t, "Child left open", "todo", parent)
@@ -514,6 +520,7 @@ func TestTheRuleJudgesOnlyThePairsAWriteChanges(t *testing.T) {
 // done, and retro over that child, which R24 takes, is 409 FOREIGN_CHILD_OPEN. Done over a child
 // in icebox, which the open-child check alone takes, is still R24's refusal.
 func TestTheParentStatusRuleDecidesBeforeTheOpenForeignChildCheck(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, parentStatusRule: true})
 	rig := ruleRig{handler: handler, database: database, deps: deps}
 	parent := createListedIssues(t, handler, "CORE", 1)[0]
@@ -559,6 +566,7 @@ func TestTheParentStatusRuleDecidesBeforeTheOpenForeignChildCheck(t *testing.T) 
 // the first of the two writes takes. Each wait is on the backend of the write under test
 // (oneConnectionHandler), which pg_locks shows queued behind the test's transaction.
 func TestACreateRacingItsParentsCloseIsRefusedEitherWay(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// race starts write through a handler of one connection of its own while hold is open, waits
 	// until that connection's backend waits on a lock that hold owns, commits hold and answers
@@ -669,6 +677,7 @@ func awaitNoSettlementOwed(t *testing.T, database *store.Store) {
 // that the rule's tests above see refused is taken, on the PATCH, on the create and on the
 // status-change route, whose call with no option writes the status alone and moves no child.
 func TestTheParentStatusRuleWaitsForItsSetting(t *testing.T) {
+	t.Parallel()
 	rig := newRuleRig(t, false)
 	for _, breaches := range [][]ruleBreach{parentDoneBreaches, childInWorkBreaches, reparentAndCreateBreaches} {
 		for _, breach := range breaches {
@@ -709,6 +718,7 @@ func TestTheParentStatusRuleWaitsForItsSetting(t *testing.T) {
 // of those rows (their xmin), and the write answers the comment's event as its last on the issue.
 // The event of a system author wakes nobody.
 func TestAStepAndItsCommentCommitTogether(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newRuleRig(t, true)
 	parent := rig.file(t, "Parent closed with a comment", "in_progress", "")

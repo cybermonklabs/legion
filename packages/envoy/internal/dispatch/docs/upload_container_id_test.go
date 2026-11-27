@@ -33,6 +33,8 @@ const containerListItems = 1980
 // well, so the edit's blocks are read once indexed, whether the write indexed them or left them to
 // the reconciliation (deferBlockIndexBlocks).
 func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	// A claim whose serves points at any block, so a pointer may name the list.
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(pmdoc.BlockAttributes{{
 		Name: "serves", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeBlockList},

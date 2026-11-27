@@ -433,6 +433,8 @@ func refusedForRole(t *testing.T, what string, response *httptest.ResponseRecord
 // (1), (2), (5) and (6) and one more, (7); (3) and (4) are the reply routes' alone, in
 // internal/dispatch/api.
 func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T) {
+	// Not parallel: it sets GCE_METADATA_HOST for the whole process (t.Setenv in row (11)), and
+	// rows (6) and (7) hold 2 s and 3 s quiet windows (received) for a copy that must not arrive.
 	rig := newRoleRouteRig(t)
 	key := rig.issueKey(t, "Role-route sends")
 

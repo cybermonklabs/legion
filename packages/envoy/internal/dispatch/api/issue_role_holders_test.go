@@ -243,6 +243,7 @@ func requireStoredRoleHolders(t *testing.T, stored []storedRoleHolder, want []is
 // publication of that set unmarks every pair again: the mark is the last publication's. A row
 // that an older build inserts, which names no mark, reads unmarked.
 func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
+	t.Parallel()
 	set := []issueRoleHolder{{Role: "tester", Session: "ses-a"}, {Role: "implementer", Session: "ses-b"}}
 	publication := func(holders []issueRoleHolder) map[string]any { return map[string]any{"holders": holders} }
 

@@ -415,6 +415,44 @@ test("RepoControl refuses a value that is not owner/name without writing it", as
   }
 });
 
+/** The line `refusal` stands in, and whether it is an item of its own there, apart from the box. */
+function lineOf(refusal: HTMLElement) {
+  let line = box().parentElement;
+  while (line !== null && !line.contains(refusal)) line = line.parentElement;
+  if (line === null) throw new Error("expected the box and the refusal on one line");
+  const item = (node: Element) => {
+    let at: Element = node;
+    while (at.parentElement !== line && at.parentElement !== null) at = at.parentElement;
+    return at;
+  };
+  return { line, ownItem: item(refusal) !== item(box()), placeFills: item(box()).classList };
+}
+
+// Today's Repository line wraps, so either refusal it draws moves whole onto the next line under
+// the box, which fills its line, rather than squeezing it (dispatch://INFRA-5200, c-review F3).
+// `e2e/issue.e2e.ts` measures it at 360 px in an open Details.
+test("RepoControl's line wraps, and each refusal is an item of its own beside a box that fills the line", async () => {
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_ISSUE", error: "repo refused by the server" })
+  );
+  const { unmount, user } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    await write(user, "acme gadgets");
+    const own = lineOf(await screen.findByRole("alert"));
+    expect(own.line.classList.contains("flex-wrap")).toBe(true);
+    expect(own.ownItem).toBe(true);
+    expect(own.placeFills.contains("w-full")).toBe(true);
+
+    await write(user, "acme/gadgets");
+    const server = lineOf(await screen.findByText("repo refused by the server"));
+    expect(server.line.classList.contains("flex-wrap")).toBe(true);
+    expect(server.ownItem).toBe(true);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
 // The box holds what is typed to GitHub's own grammar, which is what the server holds it to:
 // a name GitHub could hold no repository at reaches the box's refusal rather than a round trip,
 // and a name GitHub does hold is written whatever its case, its leading dot or its `.git`.
@@ -513,7 +551,9 @@ test("RepoControl describes the repository the issue resolves to", async () => {
 test("RepoControl says No repository when nothing resolves", async () => {
   const { unmount } = renderControl({ repo: null, resolvedRepo: null }, noCoreDefault);
   try {
-    expect(await screen.findByText("Repository:")).toBeTruthy();
+    // The control is the value of the Repository row of the header's Details, which names it.
+    await screen.findByLabelText("Repository of CORE-1");
+    expect(screen.queryByText("Repository:")).toBeNull();
     expect(box().placeholder).toBe("owner/name");
     expect(box()).toHaveAccessibleDescription("No repository");
   } finally {
@@ -522,7 +562,7 @@ test("RepoControl says No repository when nothing resolves", async () => {
 });
 
 // A project with no default repository has nothing to suggest, and its issues take a repository
-// all the same, so the rail carries the item with an empty suggestion list.
+// all the same, so Details carries the item with an empty suggestion list.
 test("RepoControl shows the item for an issue whose project has no default repository", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
@@ -540,7 +580,7 @@ test("RepoControl shows the item for an issue whose project has no default repos
       expect(queryClient.getQueryData<Project[]>(["projects"])).toEqual(noCoreDefault)
     );
     await act(async () => {});
-    expect(screen.getByText("Repository:")).toBeTruthy();
+    expect(screen.getByLabelText("Repository of CORE-1")).toBeTruthy();
     expect(suggestions()).toEqual([]);
     await write(user, "zed/elsewhere");
     await waitFor(() =>
@@ -716,7 +756,7 @@ test("a restricted member's RepoControl draws the repository as text, with no bo
       ],
       [{ repo: null, resolvedRepo: null }, "No repository"],
     ] as const) {
-      const { q, unmount } = renderSignedIn(
+      const { container, q, unmount } = renderSignedIn(
         { login: "bob@outside.example", member_kind: "restricted" },
         own
       );
@@ -724,7 +764,7 @@ test("a restricted member's RepoControl draws the repository as text, with no bo
         expect(q.queryByRole("combobox", { name: "Repository of CORE-1" })).toBeNull();
         expect(q.queryByRole("textbox")).toBeNull();
         expect(q.queryByRole("button")).toBeNull();
-        expect(q.getByText("Repository:").parentElement?.textContent).toBe(`Repository:${drawn}`);
+        expect(container.textContent).toBe(drawn);
         if (own.resolvedRepo !== null) {
           // The repository in the box's font, the words around it in the line's.
           expect(q.getByText(own.resolvedRepo)).toHaveClass("font-mono");
