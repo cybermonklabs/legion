@@ -470,18 +470,9 @@ func GuardJJ(dir string) error {
 	if err != nil {
 		return err
 	}
-	if err := disarmLegacyConfig(guarded.jjDir, guarded.repo); err != nil {
-		return err
-	}
-	fix := FixDir(located.Dir)
-	if beside, err := HoldsJJ(fix); err != nil || !beside {
-		return err
-	}
-	guardedFix, err := guardWorkspace(fix, located.Clone, true)
-	if err != nil {
-		return err
-	}
-	return disarmLegacyConfig(guardedFix.jjDir, guardedFix.repo)
+	// CONTROL (fb8-fixguard): the guards hold the workspace alone, and the fix's copy is read
+	// with its legacy configuration where it is.
+	return disarmLegacyConfig(guarded.jjDir, guarded.repo)
 }
 
 // refuseSymlinkedLayout refuses an operation at root when dir, or any of the directories above it
