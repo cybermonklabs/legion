@@ -1838,6 +1838,10 @@ func TestWorkspaceInitProvisionLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "ghs_test") {
 		t.Fatalf("provision logged the provisioning token:\nstdout %q\nstderr %q", stdout, stderr)
 	}
+	// The user name git's URL carries, which the rule removes with the token.
+	if strings.Contains(stdout+stderr, "x-access-token") {
+		t.Fatalf("provision logged the URL's user name:\nstdout %q\nstderr %q", stdout, stderr)
+	}
 	if want := redact.URLCredentials("workspace-init: fetch attempt 1 failed; retrying in 5s: " + scrubbed(unreachable)); stdout != want {
 		t.Fatalf("stdout %q, want %q", stdout, want)
 	}

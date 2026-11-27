@@ -56,7 +56,8 @@ func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
 func TestACommandsFlagRefusalPrintsNoCredentialItsValueCarries(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	value := "https://x-access-token:" + stderrToken + "@github.com/acme/widgets.git"
+	const user = "x-access-token"
+	value := "https://" + user + ":" + stderrToken + "@github.com/acme/widgets.git"
 	code := run(context.Background(), []string{"legion", "state", "--port", value}, &stdout, &stderr)
 	shown := strings.ReplaceAll(stdout.String()+stderr.String(), stderrToken, "<the token>")
 	if code != 2 {
@@ -64,6 +65,9 @@ func TestACommandsFlagRefusalPrintsNoCredentialItsValueCarries(t *testing.T) {
 	}
 	if strings.Contains(stdout.String()+stderr.String(), stderrToken) {
 		t.Errorf("legion state printed the token its flag's value carries: %s", shown)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), user) {
+		t.Errorf("legion state printed the user name its flag's value carries: %s", shown)
 	}
 	if want := redact.URLCredentials(`"` + value + `"`); !strings.Contains(stderr.String(), want) {
 		t.Errorf("legion state printed %q, want it to quote the value as %s", shown, want)
