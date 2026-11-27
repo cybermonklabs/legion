@@ -2,7 +2,6 @@ package plan
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 )
 
@@ -35,6 +34,12 @@ type Place struct {
 //
 // It errs where task blocks stand under each other in a cycle, which gives none of them a place,
 // naming them from the first in the document's order, and where a task block stands under itself.
+// The reason quotes each id (quoted) and lists at most MostReasons of them (listed).
+//
+// It takes time linear in the blocks: one walk up each chain settles every block it passes
+// (cycleOf), and each place is read once (placeOf), so a plan of one long chain of parents, which
+// a document of 1 MiB holds to about 14,000 blocks, reads in one pass
+// (TestEachParentOfAPlanIsReadInLinearTime).
 //
 // Before Dispatch serves the tree of an issue, each parent comes from the block's `parent`
 // (ParentOf), and the version Dispatch gives holds its typed blocks alone. So a `parent` that
@@ -43,18 +48,22 @@ type Place struct {
 // each block stands under, and a task block under a heading is then a task at the top.
 func Places(blocks []Block, parents map[string]string) (map[string]Place, error) {
 	tasks := make(map[string]Block, len(blocks))
-	for _, block := range blocks {
+	order := make(map[string]int, len(blocks))
+	for at, block := range blocks {
 		if block.Type == TaskBlockType {
 			tasks[block.ID] = block
+			order[block.ID] = at
 		}
 	}
-	for _, block := range blocks {
-		switch cycle := parentCycle(block, tasks, parents); {
-		case len(cycle) == 1:
-			return nil, fmt.Errorf("task block %s stands under itself, so it has no place in the plan", block.ID)
-		case cycle != nil:
-			return nil, fmt.Errorf("task blocks %s stand under each other, so none of them has a place in the plan", strings.Join(cycle, ", "))
+	switch cycle := cycleOf(blocks, tasks, parents, order); {
+	case len(cycle) == 1:
+		return nil, fmt.Errorf("task block %s stands under itself, so it has no place in the plan", quoted(cycle[0]))
+	case cycle != nil:
+		names := make([]string, len(cycle))
+		for i, id := range cycle {
+			names[i] = quoted(id)
 		}
+		return nil, fmt.Errorf("task blocks %s stand under each other, so none of them has a place in the plan", listed(names))
 	}
 	places := make(map[string]Place, len(tasks))
 	var placeOf func(id string) Place
@@ -82,26 +91,60 @@ func Places(blocks []Block, parents map[string]string) (map[string]Place, error)
 	return places, nil
 }
 
-// parentCycle is the task blocks of the cycle that block's chain of parents closes back at block,
-// in the order of the chain from block, or nil where block is no task block or its chain closes
-// no cycle through it. tasks is the version's task blocks by id, and parents each one's parent
-// (Places). A chain that runs into a cycle it is not on answers nil: the walk from a block of that
-// cycle finds it.
-func parentCycle(block Block, tasks map[string]Block, parents map[string]string) []string {
-	if block.Type != TaskBlockType {
-		return nil
-	}
-	chain := []string{block.ID}
-	for above, ok := tasks[parents[block.ID]]; ok; above, ok = tasks[parents[above.ID]] {
-		if above.ID == block.ID {
-			return chain
+// cycleOf is the task blocks of the cycle of parents whose first block in the document's order
+// (order) comes first of every cycle's, in the order of the chain from that block, or nil where no
+// chain of parents closes a cycle. tasks is the version's task blocks by id, and parents each
+// one's parent (Places). It walks up from each task block in the document's order and stops at a
+// block an earlier walk settled, so each block joins one walk: a walk that meets a block of its
+// own closes the cycle from that block on, and every block of a walk is settled at its end. So it
+// takes time linear in the blocks, where a walk from every block to the top that scanned the chain
+// it had walked at each step took time cubic in a chain.
+func cycleOf(blocks []Block, tasks map[string]Block, parents map[string]string, order map[string]int) []string {
+	const walking, settled = 1, 2
+	state := make(map[string]int8, len(tasks))
+	at := make(map[string]int, len(tasks))
+	var first []string
+	var walk []string
+	for _, block := range blocks {
+		if block.Type != TaskBlockType || state[block.ID] != 0 {
+			continue
 		}
-		if slices.Contains(chain, above.ID) {
-			return nil
+		walk = walk[:0]
+		for id := block.ID; ; {
+			if state[id] == settled {
+				break
+			}
+			if state[id] == walking {
+				if cycle := fromFirst(walk[at[id]:], order); first == nil || order[cycle[0]] < order[first[0]] {
+					first = cycle
+				}
+				break
+			}
+			state[id], at[id] = walking, len(walk)
+			walk = append(walk, id)
+			above, ok := tasks[parents[id]]
+			if !ok {
+				break
+			}
+			id = above.ID
 		}
-		chain = append(chain, above.ID)
+		for _, id := range walk {
+			state[id] = settled
+		}
 	}
-	return nil
+	return first
+}
+
+// fromFirst is cycle, a chain of parents that closes back at its start, begun at its block that
+// comes first in the document's order (order), in a slice of its own.
+func fromFirst(cycle []string, order map[string]int) []string {
+	start := 0
+	for i, id := range cycle {
+		if order[id] < order[cycle[start]] {
+			start = i
+		}
+	}
+	return append(append(make([]string, 0, len(cycle)), cycle[start:]...), cycle[:start]...)
 }
 
 // ParentOf reads a task block's `parent` value before Dispatch serves the tree: the id of the
@@ -120,13 +163,13 @@ func ParentOf(value, document string) (string, error) {
 	case len(words) == 0:
 		return "", nil
 	case len(words) > 1 || !strings.HasPrefix(words[0], "dispatch://"):
-		return "", fmt.Errorf("its parent %q is not one dispatch:// reference", value)
+		return "", fmt.Errorf("its parent %q is not one dispatch:// reference", quoted(value))
 	case !strings.HasPrefix(words[0], document+"#b-"):
 		return "", nil
 	}
 	id := neededID(words[0])
 	if id == "" {
-		return "", fmt.Errorf("its parent %q names a block of this document by an id that does not decode", value)
+		return "", fmt.Errorf("its parent %q names a block of this document by an id that does not decode", quoted(value))
 	}
 	return id, nil
 }

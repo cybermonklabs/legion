@@ -62,6 +62,8 @@ func TestChangedTasksReadsStepsTextAndAttributes(t *testing.T) {
 // is refused, with a reason that names the task and says that it runs. So is a change of the block
 // its `parent` names, from one requirement to another, and a parent added or removed. A pin of the
 // same parent (`@v<N>`) names a version of the same block and no other block, so it changes nothing.
+// A `needs` word added is refused wherever FromBlocks files it: as a task of the version (Needs),
+// as an element of it (ElementNeeds), or as a word that names neither (Unresolved).
 func TestARunningTaskTakesAChangeOfItsTextAlone(t *testing.T) {
 	attributes := func(changes ...string) map[string]string {
 		held := map[string]string{"steps": "implementer reviewer", "serves": "dispatch://ACME-1/spec#b-r1"}
@@ -87,7 +89,11 @@ func TestARunningTaskTakesAChangeOfItsTextAlone(t *testing.T) {
 		{name: "the text alone", next: planOf(t, 2, task(attributes(), "Text two."))},
 		{name: "serves alone", next: planOf(t, 2, task(attributes("serves", "dispatch://ACME-1/spec#b-r2"), "Text one."))},
 		{name: "the steps", next: planOf(t, 2, task(attributes("steps", "implementer tester reviewer"), "Text one.")), refused: true},
-		{name: "needs", next: planOf(t, 2, task(attributes("needs", "dispatch://ACME-1/artifact/plan-md#b-b"), "Text one.")), refused: true},
+		{name: "a need of a task of the version", next: planOf(t, 2, task(attributes("needs", "dispatch://ACME-1/artifact/plan-md#b-b"), "Text one."),
+			Block{ID: "b", Type: TaskBlockType, Attributes: attributes(), Text: "Text of b."}), refused: true},
+		{name: "a need of an element", next: planOf(t, 2, task(attributes("needs", "dispatch://ACME-1/artifact/plan-md#b-e1"), "Text one."),
+			withParent(Block{ID: "e1", Type: TaskBlockType, Text: "An element of a."}, "a")), refused: true},
+		{name: "a need that names no task", next: planOf(t, 2, task(attributes("needs", "dispatch://ACME-1/artifact/plan-md#b-gone"), "Text one.")), refused: true},
 		{name: "owner", next: planOf(t, 2, task(attributes("owner", "sub-architect"), "Text one.")), refused: true},
 		{name: "the task it is a part of", next: planOf(t, 2, Block{ID: "f", Type: TaskBlockType, Attributes: map[string]string{"owner": "sub-architect"}, Text: "Text of f."},
 			withParent(Block{ID: "a", Type: TaskBlockType, Attributes: attributes(), Text: "Text one."}, "f")), refused: true},

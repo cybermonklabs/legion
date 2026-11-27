@@ -453,9 +453,9 @@ func cycleFrom(needs [][]int, component, parent []int, task int) (path []int) {
 // implementer, and each step of a role that reads the implementer's pull request with no
 // implementer step before it. Its steps stand in any other order: the planner at any place, and
 // the tester, the reviewer and the acceptance in any order after the implementer. A task that
-// names no steps runs the project's
-// default steps, which the configuration loader holds to these same checks, so none of its step
-// causes apply. Its reasons are bounded as reasons bounds each kind.
+// names no steps runs the project's default steps, which the configuration loader holds to these
+// same checks, so none of its step causes apply. Its reasons are bounded as reasons bounds each
+// kind.
 func Supported(p Plan) []Refusal {
 	var found reasons
 	if len(p.Tasks) > 1 {

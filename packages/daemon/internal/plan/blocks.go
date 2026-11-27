@@ -69,11 +69,14 @@ func FromBlocks(artifactID, document string, version int, blocks []Block) (Plan,
 			continue
 		}
 		if !steprecord.TaskIDHolds(block.ID) {
-			// The error gives no length of its own: quoted's mark gives the length of what the URL
-			// rule left of a cut id, and the length of the id as written would give away the length
-			// of a credential it holds.
-			return Plan{}, fmt.Errorf("the task %s has an id outside the form of a task id, %s, so Dispatch could record none of its steps",
-				quoted(block.ID), steprecord.TaskIDRule)
+			// Every task block holds the task form, an element too: a later version can move an
+			// element to the top, where it is a task whose steps Dispatch records by its id, and each
+			// id of a task block reaches a reason and a refusal's task as it is written. The error
+			// gives no length of its own: quoted's mark gives the length of what the URL rule left of
+			// a cut id, and the length of the id as written would give away the length of a credential
+			// it holds.
+			return Plan{}, fmt.Errorf("the task %s has an id outside the form of a task id, %s, so Dispatch could record none of its steps. "+
+				"A task block under another holds the form too, because a later version can move it to the top", quoted(block.ID), steprecord.TaskIDRule)
 		}
 		parent, err := ParentOf(block.Attributes["parent"], document)
 		if err != nil {
@@ -108,7 +111,7 @@ func FromBlocks(artifactID, document string, version int, blocks []Block) (Plan,
 		task.PartOf = place.Task
 		p.Tasks = append(p.Tasks, task)
 	}
-	return resolveNeeds(elementNeeds(p, document)), nil
+	return resolveNeeds(elementNeeds(p, document), document), nil
 }
 
 // taskOf is one `plan_task` block as a task, before Places says where it stands. `needs` is its
@@ -186,20 +189,22 @@ func elementNeeds(p Plan, document string) Plan {
 	return p
 }
 
-// resolveNeeds is p with each task's Needs as task ids: each word's id after its last "#b-",
-// decoded as Dispatch encodes a block id (neededID), or the word itself where it holds no "#b-".
-// The ids keep the order the block writes the words in, and a task a block names twice is needed
-// once. A word whose id is no task of p stays in Task.Unresolved, once however often the block
-// writes it, and Validate refuses it. It reads the words elementNeeds left, so a word that names
-// an element is never one of them.
-func resolveNeeds(p Plan) Plan {
+// resolveNeeds is p with each task's Needs as task ids: each word's id read against document
+// (idInDocument), the id of the block after its last "#b-", decoded as Dispatch encodes a block
+// id (neededID), or the word itself where it holds no "#b-". So a reference to a block of another
+// document or another issue names no task of p, whatever its id, as elementNeeds reads it. The ids
+// keep the order the block writes the words in, and a task a block names twice is needed once. A
+// word that names no task of p stays in Task.Unresolved, once however often the block writes it,
+// and Validate refuses it. It reads the words elementNeeds left, so a word that names an element
+// is never one of them.
+func resolveNeeds(p Plan, document string) Plan {
 	ids := make(map[string]bool, len(p.Tasks))
 	for _, task := range p.Tasks {
 		ids[task.ID] = true
 	}
 	tasks := make([]Task, len(p.Tasks))
 	for i, task := range p.Tasks {
-		task.Needs, task.Unresolved = resolved(task.Needs, ids)
+		task.Needs, task.Unresolved = resolved(task.Needs, ids, document)
 		tasks[i] = task
 	}
 	p.Tasks = tasks
@@ -218,20 +223,20 @@ func idInDocument(word, document string) string {
 	return neededID(word)
 }
 
-// resolved is one task's `needs` words as the ids of the tasks of ids they name, and the words
-// that name none, each kept once in the block's order. Each word is looked up in a set of what
-// is kept already, so the read takes time linear in the words, where a scan of the kept list for
-// each word would be quadratic in the words of one block, and one `needs` attribute within
-// Dispatch's document limit holds hundreds of thousands of words.
+// resolved is one task's `needs` words as the ids of the tasks of ids they name, read against
+// document (idInDocument), and the words that name none, each kept once in the block's order. Each
+// word is looked up in a set of what is kept already, so the read takes time linear in the words,
+// where a scan of the kept list for each word would be quadratic in the words of one block, and
+// one `needs` attribute within Dispatch's document limit holds hundreds of thousands of words.
 // TestEachNeedOfAPlanIsReadInLinearTime holds the read to its thread's CPU time, since no count
 // kept here would see a scan.
-func resolved(words []string, ids map[string]bool) (needs, unresolved []string) {
+func resolved(words []string, ids map[string]bool, document string) (needs, unresolved []string) {
 	if len(words) == 0 {
 		return nil, nil
 	}
 	needed, left := map[string]bool{}, map[string]bool{}
 	for _, word := range words {
-		id := neededID(word)
+		id := idInDocument(word, document)
 		switch {
 		case !ids[id]:
 			if !left[word] {
@@ -316,9 +321,10 @@ func sameBlock(a, b Task) bool {
 // steps, `needs`, `owner` and `merges`, the same task they are a part of, and the same parent
 // (sameParent). It is the one rule of a change that is only text: the change a running task takes
 // (RunningChange). Every `needs` word is compared, each where FromBlocks put it: a task it names
-// (Needs), an element it names (ElementNeeds), and a word that names neither (Unresolved). So a
-// version that changes a word of the last two is no change of the text alone either, though
-// Validate refuses it later.
+// (Needs), an element it names (ElementNeeds), and a word that names neither (Unresolved).
+// register_plan's Validate refuses a version that holds a word of the last two before the workflow
+// compares it, and a held plan, read from stored rows, holds neither, so in Legion the two compare
+// empty with empty; a caller of RunningChange on two versions FromBlocks read sees all three.
 func sameBesideText(a, b Task) bool {
 	return a.PartOf == b.PartOf && sameParent(a.ParentRef, b.ParentRef) && a.Owner == b.Owner && a.Merges == b.Merges &&
 		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.ElementNeeds, b.ElementNeeds) &&

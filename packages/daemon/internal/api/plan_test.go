@@ -423,6 +423,9 @@ func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock 
 func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	// The words name plan.md as an artifact of LEGION-208, so the document is filed under that slug:
+	// a need is read against the plan's own document (plan.FromBlocks).
+	statuses.approvals[planDoc] = dispatch.Approval{State: "none", LatestVersion: 2, Slug: "plan-md"}
 	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"),
 		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
 	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), needing(taskBlock("b", "implementer reviewer"), "x"))
@@ -445,6 +448,7 @@ func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.approvals[planDoc] = dispatch.Approval{State: "none", LatestVersion: 1, Slug: "plan-md"}
 	statuses.givePlan(planDoc, 1, needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
 		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
 
