@@ -32,8 +32,8 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
   A run still going fails no round: say so in `implementerProof.how`.
 
 - A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) does not run without it.
-  The implementer adds the label, `full-ci` or that job's own `lane:<output>`, then pushes, because the workflow starts on a push and not on a label.
-  The label stays on while a `ci_check` of the issue names such a job.
+  The implementer adds that job's own `lane:<output>` label, never `full-ci`, then pushes, because the workflow starts on a push and not on a label.
+  The label stays on while a `ci_check` of the issue names such a job, and comes off when none does: the merge queue runs every held-back job before the change lands, so a held-back job that no check names needs no label.
   On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite, and a check naming it for those steps passes under its label with none of them run.
 
 ## A name that no run answers

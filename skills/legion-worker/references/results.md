@@ -35,6 +35,11 @@
   The newest counting result chooses the commit whose verdicts decide the check.
   A pass and a fail at that commit leave the check not known until one is retracted.
 
+## The rules every phase's evidence follows
+
+- The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.
+  Lint, types and the unit and integration suites are CI's: read on GitHub the ones the head ran, rerun no lane as evidence, and wait for none; a suite the repository holds back for its merge queue has no run at the head, and that is no gap.
+
 ## Never waiting on CI
 
 - The implementer re-runs once a red check whose failure is not in this pull request's code, with `gh run rerun <run-id> --failed`, and is woken by its settlement as `skill://envoy` says, never by sleeping.
