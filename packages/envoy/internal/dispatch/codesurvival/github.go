@@ -544,8 +544,8 @@ type listedPull struct {
 // page by page as each page's Link header names the next, and stops after the first page whose
 // last pull request was updated before d0, the oldest selected day: a pull request merged on or
 // after d0 was updated then too. The list names no base: a pull request merged into another
-// branch, one of a stack, lands on the branch's chain when that branch does, as PR #1284 of
-// cybermonklabs/legion landed as fb96b8da on main with its base legion/LEGION-208-4b-predicates.
+// branch, one of a stack, lands on the branch's chain when that branch does, as a stacked pull
+// request of cybermonklabs/legion (#1284) landed on main as fb96b8da with a base of its own.
 // A closed pull request that never merged is no change, whatever commit GitHub names for it,
 // neither is one that merged as no commit of chain, and a commit no pull request landed as -- a
 // push, or the earlier commits of a rebase merge, whose last commit alone is its
