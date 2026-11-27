@@ -9,7 +9,7 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import type { ViewportAnchor } from "../shell/ViewportAnchor";
 import { ENTRY_CONTROLS } from "./details-leaves";
 import { type HistoryDay, type HistoryInput, type HistoryTurn, threadOf } from "./history-model";
-import { LANDING_WAIT_MS, type LandingSight, newOwnNode, useOutlineWriter } from "./outline-writer";
+import { type HeldLanding, LANDING_WAIT_MS, type LandingSight, newOwnNode } from "./outline-writer";
 import { scrollingAncestor } from "./scroll-box";
 
 /** The event the history's heading raises, bubbling, once a following of `/activity`
@@ -205,42 +205,54 @@ export function useHistoryLandings({
 
 /**
  * Lands a write from the line at the foot that answered a turn of a thread the history drawn in
- * `list` holds, which is the history's to land (`HeldLanding.in`), as every other write's is the
- * outline's: the reader is taken to their new turn in that thread - or, for a `self` landing, back
- * to the turn they answered - focused, and wholly in Details' view by the least scroll of
- * Details' box, never of the page, as a hand-on brings what it focuses there (`handTo`), the turn
- * first (`bringIntoBox`) and then its first control, which takes the focus. The send has landed
- * when the line asks, but the read that draws the new turn is still out, so the turns the thread
- * holds are noted first, and the reader's turn that is new is gone to once a read has brought it
- * and the list has drawn it, by the one rule the outline goes to their new row by
- * (`newOwnNode`). A landing the writer already holds as the history mounts was asked for while it
- * was not drawn, with Details shut, and the reader has been elsewhere since, unless the writer
- * opened Details for it, on a phone, where a turn's Reply shut it (`HeldLanding.opensDetails`):
- * the history is drawn from the commit that holds that landing, down to the thread the landing
- * answers (`IssueHistory`'s `landingPlace`), and lands it as one asked for while it is drawn. One
- * asked for while Details is shut around the list (`open`) has no turn on screen to go to, and nor
- * has one whose thread this history no longer holds, as an agents' post a person wrote in, which
- * the outline draws from then on. Each of these ends with the focus where it is, as the outline
- * ends a landing under a node it draws no row of, but for one whose reply takes that node out of
- * this history (`HeldLanding.leavesHistory`), and so does one whose new turn no read has drawn
- * once the read's wait is out (`LANDING_WAIT_MS`).
+ * `list` holds, which is the history's to land (`landing`, `HeldLanding.in`), as every other
+ * write's is the outline's: the reader is taken to their new turn in that thread - or, for a
+ * `self` landing, back to the turn they answered - focused, and wholly in Details' view by the
+ * least scroll of Details' box, never of the page, as a hand-on brings what it focuses there
+ * (`handTo`), the turn first (`bringIntoBox`) and then its first control, which takes the focus.
+ * The send has landed when the line asks, but the read that draws the new turn is still out, so
+ * the turns the thread holds are noted first, and the reader's turn that is new is gone to once a
+ * read has brought it and the list has drawn it, by the one rule the outline goes to their new
+ * row by (`newOwnNode`). A landing the writer already holds as the history mounts was asked for
+ * while it was not drawn, with Details shut, and the reader has been elsewhere since, unless the
+ * writer opened Details for it, on a phone, where a turn's Reply shut it
+ * (`HeldLanding.opensDetails`): the history is drawn from the commit that holds that landing,
+ * down to the thread the landing answers (`IssueHistory`'s `landingPlace`), and lands it as one
+ * asked for while it is drawn. That thread can stand on a page of the log not read yet, as `older`
+ * says: the log's pages can have left the cache while Details was shut, and the log read anew
+ * holds its first page alone, which leaves out a thread older than every event on it
+ * (`HistoryInput.loadedFrom`). The landing then waits while the history reads on for it
+ * (`IssueHistory`'s `seeksThread`). One asked for while Details is shut around the list (`open`)
+ * has no turn on screen to go to, and nor has one whose thread this history no longer holds, as
+ * an agents' post a person wrote in, which the outline draws from then on. Each of these ends with
+ * the focus where it is, as the outline ends a landing under a node it draws no row of, but for
+ * one whose reply takes that node out of this history (`HeldLanding.leavesHistory`), and so does
+ * one whose new turn no read has drawn once the read's wait is out (`LANDING_WAIT_MS`), and one
+ * still waiting as the history goes.
  */
 export function useHistoryLanding({
   bringIntoBox,
   days,
+  endLanding,
   handTo,
+  landing,
   list,
+  older,
   open,
 }: {
   readonly bringIntoBox: (element: HTMLElement) => void;
   readonly days: readonly HistoryDay[];
+  /** Ends the writer's landing (`OutlineWriter.landed`); undefined where no writer is drawn. */
+  readonly endLanding: (() => void) | undefined;
   readonly handTo: (element: HTMLElement) => void;
+  /** The writer's landing where it is the history's (`HeldLanding.in`). */
+  readonly landing: HeldLanding | undefined;
   readonly list: RefObject<HTMLElement | null>;
+  /** Whether older pages of the log are left to read. */
+  readonly older: boolean;
+  /** Whether Details is open around the list (`IssueHistory`'s `open`). */
   readonly open: boolean;
 }): void {
-  const writer = useOutlineWriter();
-  const landing = writer?.landing?.in === "history" ? writer.landing : undefined;
-  const endLanding = writer?.landed;
   const landingAtMount = useRef(landing);
   const endsAtMount = landing === landingAtMount.current && landing?.opensDetails !== true;
   const landingFrom = useRef<LandingSight | undefined>(undefined);
@@ -250,10 +262,14 @@ export function useHistoryLanding({
   const reader = signedIn.data?.login;
   useLayoutEffect(() => {
     if (landing === undefined || endLanding === undefined) return;
+    if (endsAtMount || !open) {
+      endLanding();
+      return;
+    }
     const answered = landing.under?.id;
     const thread = answered === undefined ? undefined : threadOf(days, answered);
-    if (endsAtMount || !open || thread === undefined) {
-      endLanding();
+    if (thread === undefined) {
+      if (!landing.opensDetails || !older) endLanding();
       return;
     }
     const turns = [thread.root, ...thread.replies];
@@ -275,9 +291,32 @@ export function useHistoryLanding({
     const control = landedOn.querySelector<HTMLElement>(ENTRY_CONTROLS);
     if (control !== null) handTo(control);
   });
+  // A landing waits for the read that draws the reader's new turn no longer than
+  // `LANDING_WAIT_MS`, and no longer than the history it waits in: one still waiting as the
+  // history goes - Details shut before a read drew that turn, as a reader on a phone shuts the
+  // sheet the writer opened for it - ends then. Only this history can end it, as the outline
+  // takes none of its landings, and held on, it would be taken up by the next history to mount at
+  // any later open of Details: one the writer opened Details for would draw that history down to
+  // its thread and take a new turn of the reader's there. A landing that ends, or a newer one in
+  // its place, runs this effect again rather than ending anything, so only the going of the
+  // history ends a landing, and only the one it waited on. React runs a mount's effects a second
+  // time under StrictMode, their cleanups between, within the same task, so whether the history
+  // went is read a microtask on (`onPage`).
+  const onPage = useRef(false);
+  useEffect(() => {
+    onPage.current = true;
+    return () => {
+      onPage.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (landing === undefined || endsAtMount || endLanding === undefined) return;
     const late = window.setTimeout(endLanding, LANDING_WAIT_MS);
-    return () => window.clearTimeout(late);
+    return () => {
+      window.clearTimeout(late);
+      queueMicrotask(() => {
+        if (!onPage.current) endLanding();
+      });
+    };
   }, [endLanding, endsAtMount, landing]);
 }

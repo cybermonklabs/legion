@@ -12,7 +12,7 @@ import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { issueProject } from "../web/src/lib/issue-key";
 import { baseUrl, e2eAgentToken, getIssue } from "./api";
-import { gotoIssue, marginShell, openDetails } from "./issue-page";
+import { gotoIssue, issuePage, marginShell, openDetails } from "./issue-page";
 import { focusRow, nodeRow, unfoldEveryBranch } from "./issue-page-g";
 import { focusedNodeId, openEveryDeeperBranch } from "./issue-page-i";
 import { settledState } from "./settled";
@@ -21,8 +21,9 @@ import { settledState } from "./settled";
  * What the rows of `e2e/issue-page-m.e2e.ts` read of Details on the new issue page: the
  * history, the runs and the handoffs it holds, the facts of the focused row, and the way to them;
  * `putStepExperiment` and `putPlan`, the two writes of their seeds that `e2e/api.ts` has no
- * wrapper for, and `referencesTo`, the read of what references a node that a seed waits on;
- * and `daemonOf`, the Legion daemon of a project as their seed's writes name it.
+ * wrapper for; `referencesTo`, the read of what references a node that a seed waits on;
+ * `daemonOf`, the Legion daemon of a project as their seed's writes name it; and
+ * `expectDashboardDrawn`, the check that the new page stands with Dashboard drawn in it.
  *
  * This file is those rows' own, and the reading list's drivers of Details' history
  * (`e2e/reading-conversation.e2e.ts`) take its `historyItem`, `historyPanel` and `daemonOf`, as
@@ -292,6 +293,16 @@ export async function primarySpec(key: string): Promise<ArtifactWithTrees> {
   const spec = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
   if (spec === undefined) throw new Error(`${key} holds no spec`);
   return spec;
+}
+
+/** Waits for the new page to stand with Dashboard drawn in it: one `[data-issue-page]`, and
+ *  `[data-dashboard]` in sight. `what` names what the row did to get there, in both failures. */
+export async function expectDashboardDrawn(page: Page, what: string): Promise<void> {
+  await expect(issuePage(page), `${what} drew no [data-issue-page]`).toHaveCount(1);
+  await expect(
+    page.locator("[data-dashboard]"),
+    `${what} drew no Dashboard on the new page`
+  ).toBeVisible();
 }
 
 /** One run of the issue's steps, by its record's id: its entry in the history. */
