@@ -6,4 +6,4 @@ body: |-
     role, where a daemon of an earlier release sends them.
 time: 2026-11-24T13:23:18Z
 custom:
-    Issue: pr5407
+    Issue: pr5866

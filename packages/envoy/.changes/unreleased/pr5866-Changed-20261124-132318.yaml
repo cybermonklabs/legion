@@ -5,4 +5,4 @@ body: |-
     controller notices to the controller's role topic, `notifications.role.legion-<project>-controller`.
 time: 2026-11-24T13:23:18Z
 custom:
-    Issue: pr5407
+    Issue: pr5866

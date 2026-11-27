@@ -2707,10 +2707,10 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 //
 // The notice is published only once the session that holds the project's controller registration
 // is the controller role's live holder at the listener (controllerHolds), and without keep. Until
-// then the row waits on its backoff, with no time bound, and a row that waited is published to the
-// next live holder whatever its age. The rules that decide whether a controller row is written at
-// all while no controller is registered stay with their writers (admit's wakeController, the
-// pause's notice).
+// then the row waits on its backoff, with no time bound, and a row that waited is published once
+// the registered controller session holds the controller's role live, whatever its age. The rules
+// that decide whether a controller row is written at all while no controller is registered stay
+// with their writers (admit's wakeController, the pause's notice).
 //
 // The listener resolves the role at the publish itself (sendToRole,
 // packages/envoy/cmd/listener/confirmed.go): it stores the notice on the live holder's own agent
