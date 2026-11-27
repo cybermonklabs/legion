@@ -173,18 +173,22 @@ func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {
 // role that is not an issue role or names one twice, a variants list that is missing, no list or
 // empty, one variant where the mode draws, a weight that is not a whole number above zero, an
 // overlay or an instructions path no role could load, a mode on that names no on_variant, an
-// on_variant that is no variant of its experiment, and the three shapes of `experiments.memory`
-// the name memory forbids: beside the block, with other variants, and drawn for each issue.
+// on_variant that is no variant of its experiment, and the four shapes of `experiments.memory`
+// the name memory forbids: beside the block, naming `plan`, with other variants, and drawn for each
+// issue. The other rules of `plan` are refused as well, each by a row of
+// TestThePlanOfAVariantIsRefused.
 func TestProjectExperimentsRefusals(t *testing.T) {
 	cases := []struct{ name, block, body, extra, want string }{
 		{name: "the key is not a mapping", block: "[alpha]",
 			want: "projects.DEMO.experiments must be a mapping of an experiment's name to its block"},
+		// A name of no key's shape (an upper-case letter, or none) is named by its line, as any
+		// unknown key of that shape is: it can be a credential pasted where a name goes.
 		{name: "an experiment name outside the pattern", block: "{Alpha: {variants: [{name: only}]}}",
-			want: `projects.DEMO.experiments key "Alpha" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
-		{name: "an experiment name of 33 characters", block: "{" + strings.Repeat("a", 33) + ": {variants: [{name: only}]}}",
-			want: `projects.DEMO.experiments key "` + strings.Repeat("a", 33) + `" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
+			want: "unknown key at line 7 under projects.DEMO.experiments, whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit): an experiment's name must match ^[a-z0-9-]{1,32}$, since it is recorded with every draw it makes"},
+		{name: "an experiment name of 33 characters", block: "{" + strings.Repeat("x", 33) + ": {variants: [{name: only}]}}",
+			want: `projects.DEMO.experiments key "` + strings.Repeat("x", 33) + `" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
 		{name: "an empty experiment name", block: `{"": {variants: [{name: only}]}}`,
-			want: `projects.DEMO.experiments key "" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
+			want: "unknown key at line 7 under projects.DEMO.experiments, whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit): an experiment's name must match ^[a-z0-9-]{1,32}$, since it is recorded with every draw it makes"},
 		{name: "an experiment named twice", block: "{alpha: {variants: [{name: only}]}, alpha: {variants: [{name: other}]}}",
 			want: "projects.DEMO.experiments names alpha twice"},
 		{name: "an experiment that is not a mapping", block: "{alpha: [only]}",
@@ -264,6 +268,12 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			want: "projects.DEMO.experiments.memory names the variants memory, nothing: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse"},
 		{name: "experiments.memory drawn for each issue", block: "{memory: {unit: issue, variants: [{name: memory}, {name: none}]}}",
 			want: "projects.DEMO.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it"},
+		// experiments.memory naming plan gets the one refusal of its own, whatever its unit, and
+		// never the plan rules' advice to write unit: issue, which the memory rule would refuse next.
+		{name: "experiments.memory naming plan, unit left out", block: "{memory: {mode: random, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}",
+			want: "projects.DEMO.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own"},
+		{name: "experiments.memory naming plan, drawn for each issue", block: "{memory: {mode: random, unit: issue, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}",
+			want: "projects.DEMO.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own"},
 		{name: "a variant's overlays beside a role on claude",
 			block: "{alpha: {mode: random, variants: [{name: only, config_files: [/etc/a.yml]}, {name: other}]}}",
 			extra: "worker_backends: {implementer: claude}\n",
@@ -282,6 +292,81 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			_, err := Load(writeConfigFile(t, file), noEnv)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// planningBlock declares the experiment `planning`, drawn for each issue, whose arm `a` takes the
+// plan its issue's owner gives and whose arm `b` runs the project's default steps.
+const planningBlock = "planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}"
+
+// A variant names how the issues drawn into it are done (`plan`), and the declared list carries
+// that word on each arm, so an experiment whose arms name it says it sets how an issue is done.
+// The `memory` experiment, which every project declares and which names no plan, sets none. The
+// fault caught is a loader that reads the key into nothing, which leaves both arms at "".
+func TestAVariantNamesHowItsIssuesAreDone(t *testing.T) {
+	cfg, err := Load(writeConfigFile(t, experimentsFile("{"+planningBlock+"}", "")), noEnv)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	declared := cfg.ExperimentsDeclared()
+	if len(declared) != 2 || declared[0].Name != MemoryExperimentName || declared[1].Name != "planning" {
+		t.Fatalf("declared experiments = %+v, want memory then planning", declared)
+	}
+	planning := declared[1]
+	if got := planning.Variants[0].Plan; got != PlanGroupOwner {
+		t.Errorf("variant a's plan = %q, want %q", got, PlanGroupOwner)
+	}
+	if got := planning.Variants[1].Plan; got != PlanGroupDefault {
+		t.Errorf("variant b's plan = %q, want %q", got, PlanGroupDefault)
+	}
+	if !planning.SetsPlan() {
+		t.Error("planning.SetsPlan() = false, want true: its arms name plan")
+	}
+	if declared[0].SetsPlan() {
+		t.Error("memory.SetsPlan() = true, want false: no arm of it names plan")
+	}
+}
+
+// Each rule of `plan` refuses its own fault with its own words: a word that is none of the three,
+// an arm that names none beside an arm that does, an experiment that sets it and draws for a
+// whole tree, two experiments of one project that both set it, and `owner-alone`, which this
+// release does not carry out. Each row's control is its file with the fault taken out, which
+// loads.
+func TestThePlanOfAVariantIsRefused(t *testing.T) {
+	cases := []struct{ name, block, fixed, want string }{
+		{name: "a word that is none of the three",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  `projects.DEMO.experiments.planning.variants.a.plan must be owner or default (got "alone")`},
+		{name: "an arm that names no plan beside one that does",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning.variants.b names no plan: each variant of an experiment that sets plan names how its issues are done"},
+		{name: "an experiment that sets plan and draws for a tree",
+			block: "{planning: {mode: random, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning sets plan and is unit tree: an experiment that sets how an issue is done draws for each issue, so write unit: issue"},
+		{name: "two experiments that set plan",
+			block: "{" + planningBlock + ", steps: {mode: random, unit: issue, variants: [{name: x, plan: owner}, {name: y, plan: default}]}}",
+			fixed: "{" + planningBlock + ", steps: {mode: random, unit: issue, variants: [{name: x}, {name: y}]}}",
+			want:  "projects.DEMO.experiments.planning and projects.DEMO.experiments.steps both set plan: one experiment sets how an issue is done"},
+		{name: "the owner alone",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: owner-alone}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning.variants.b.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, experimentsFile(tc.block, "")), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+		})
+		t.Run(tc.name+", taken out", func(t *testing.T) {
+			if _, err := Load(writeConfigFile(t, experimentsFile(tc.fixed, "")), noEnv); err != nil {
+				t.Fatalf("Load of the file with its fault taken out: %v", err)
 			}
 		})
 	}

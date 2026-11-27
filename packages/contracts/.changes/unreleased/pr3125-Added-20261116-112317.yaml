@@ -1,0 +1,5 @@
+kind: Added
+body: '`AskAnswerWithTrees` gains `selected_trees`, the display tree of each label `selected` holds, at the label''s own index, for a caller that sends `Dispatch-Trees: 1`.'
+time: 2026-11-16T11:23:17.112074318Z
+custom:
+    Issue: pr3125

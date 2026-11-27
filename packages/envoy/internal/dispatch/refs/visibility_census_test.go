@@ -47,6 +47,7 @@ import (
 // readsWithoutAViewer, which names it with the reason it answers no reader. A read in neither
 // place fails here, named, and so does an entry of that table that names no such read.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if SeedStoreThroughItsWriters == nil {
@@ -147,7 +148,10 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 // answers no reader, or it answers no node at all, or it reads one node its caller has already
 // read through a read that binds that node's predicate and answers nothing of any other node. A
 // read whose answer reaches a reader and names a node is none of these: it takes the acting
-// person instead, and the census above holds it to the registry.
+// person instead, and the census above holds it to the registry. The one other reason is a rule
+// of a write that must hold over every node, seen or not (IssueAncestors, IssueDescendantRows):
+// such a read binds no predicate, because a rule that skipped a node would let the write break
+// it, and its entry says which nodes the write names to the caller who asked for it.
 const (
 	serverWork = "the server's own work: a pass or a write calls it, and its answer reaches no reader"
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
@@ -162,8 +166,10 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
+	"BlockIndexing.KeepRespelled": serverWork + " - a version write's read phase reads the texts recorded for the blocks its index plan names as candidates, " +
+		"to decide which keep their changed version across another renderer version's spelling",
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
 	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
 		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
@@ -175,12 +181,22 @@ var readsWithoutAViewer = map[string]string{
 	"ExcerptsMoved":        serverWork + " - a write's read phase works out which of its document's excerpts the update it queues moves",
 	"HeldTargets":          serverWork + " - a write's read phase reads the edges of the source its reconciliation replaces",
 	"IssueAncestors": "every caller is a rule of a write - a reparent's cycle refusal, an issue event's ancestors, the near-copy " +
-		"gate's exclusion, a block pointer's ancestor rule and the scope a result's check resolves in - and a rule that " +
-		"skipped an issue it may not see would let a cycle through that issue or route an event short of its root",
+		"gate's exclusion, a block pointer's ancestor rule, the scope a result's check resolves in and a status change's " +
+		"include_parent plan, which moves each ancestor that is not in work into work so that the parent status rule (R24) " +
+		"holds - and a rule that skipped an issue it may not see would let a cycle through that issue, route an event short " +
+		"of its root or leave an ancestor out of work above an issue in work; the status change's plan names the ancestors " +
+		"it will move to the caller who asked to move them, in its dry run, its answer and its 403 PROJECT_SCOPE",
+	"IssueDescendantRows": "every caller is a rule of a write - a status change's plan, which moves or unlinks every open " +
+		"issue under the parent so that the parent status rule (R24) holds, and the move check of who writes a Legion-run " +
+		"issue's spec, which judges each issue of the moved subtree that Legion runs - and a plan that skipped an issue it " +
+		"may not see would leave that issue open under a done parent, and a move check that skipped one would let a writer " +
+		"take that issue by moving the issue above it; the plan names the issues it will move or unlink to the caller who " +
+		"asked to move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
 	"IssueRepository":  noNode,
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
+	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
@@ -196,6 +212,7 @@ var readsWithoutAViewer = map[string]string{
 	"RemovedBlockNode":   nodeDetail,
 	"ScopeSources":       serverWork,
 	"SourceText":         serverWork,
+	"StillOwed":          serverWork + " - a drain's read phase checks the queue row it listed is still owed under the source's owner lock",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -312,7 +329,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	}
 	for _, kind := range nodeKinds {
 		record("TargetNames", "TargetNames of kind "+kind, func() error {
-			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}}, "")
 			return err
 		})
 		record("Node", "Node of kind "+kind, func() error {
@@ -337,7 +354,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		})
 	}
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
-		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
+		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec", "")
 		return err
 	})
 	// A message's blocks record no revisions, so no block of one is ever removed and
@@ -357,7 +374,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, err := Closure(ctx, recorder, who, "CORE-1")
+		_, err := Closure(ctx, recorder, who, "CORE-1", "")
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -391,7 +408,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
 	} {
 		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
-			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked})
+			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked}, "")
 			return err
 		})
 	}
@@ -461,7 +478,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
 	located := text.ExtractAt(markdown, "https://dispatch.example")
-	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil)
+	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil, "")
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}

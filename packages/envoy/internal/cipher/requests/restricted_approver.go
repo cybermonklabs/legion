@@ -34,7 +34,10 @@
 // person as its operator, asking Dispatch nothing; a grant on a session that acts for no person (a
 // service's pod, a person's pod BROKER_POD_OPERATORS no longer maps, or a machine's own session) is
 // ended through the broker by nobody but its named approver until Dispatch answers. A machine with
-// no client of Dispatch asks nothing, and every approver stands as before.
+// no client of Dispatch asks nothing, and every approver stands as before. The broker's client
+// keeps each answer (projectaccess.Client.Keep), so while Dispatch does not answer a person it last
+// answered a full member reads as one, and stands as an approver on every route above as while
+// Dispatch answers; only a person kept restricted, or of whom no kind is kept, meets the failure.
 package requests
 
 import (
@@ -74,9 +77,12 @@ func (m *Machine) approvesSecrets(ctx context.Context, login string) (bool, erro
 // approverStanding is what a route that may act as an approver read of its person's member kind
 // before its transaction (revokeApproves, dismissApproves): whether they may stand as an approver
 // of what the row is, and whether that is false because Dispatch calls them a restricted member,
-// whose refusal says so in its own words.
+// whose refusal says so in its own words. unchecked is true only for the revoke of the person a
+// grant names as its approver that goes ahead while Dispatch does not answer (revokeApproves):
+// they stand as its approver with their member kind unread, and the grant.revoked audit row says
+// so (revokeJudged).
 type approverStanding struct {
-	approves, restricted bool
+	approves, restricted, unchecked bool
 }
 
 // approvesAsReadBy is the approverStanding of approvesSecrets' answer.

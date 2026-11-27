@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The Hocuspocus message kinds a Peer reads and writes: the outer type after the document's name.
@@ -78,9 +80,13 @@ type Peer struct {
 	// clocks is the clock of the last state SetAwareness sent for each client.
 	clocks map[uint64]uint64
 	scope  string
-	// endedAt and closeCode are written by the reader before Ended closes, and read after.
+	// endedAt, closeCode, frameCode and readErr are written by the reader before Ended closes, and
+	// read after: frameCode by the close handler DialContext sets, which gorilla calls in the
+	// reader's read.
 	endedAt   time.Time
 	closeCode int
+	frameCode int
+	readErr   error
 }
 
 // AwarenessEntry is one client's state in an awareness update: its client id, its clock, and its
@@ -105,21 +111,65 @@ type authReply struct {
 // Dial connects a peer to artifactID's room at url, the document websocket's full address with its
 // schema_version, with header naming the caller, starts its reader, and asks the room for what doc
 // lacks. doc is the peer's copy of the document: a new one, or the copy a reconnecting browser
-// kept. The room's answer arrives on Answers. The connection closes when t ends.
+// kept. The room's answer arrives on Answers. The connection closes when t ends. The handshake
+// carries no span of its own: its one bound is the test binary's deadline less dialMargin, so a
+// room a loaded machine answers late still opens the peer, and one that never answers fails the
+// test by name, as the deadline's error.
 func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *crdt.Doc) *Peer {
 	t.Helper()
-	peer, err := DialContext(context.Background(), url, header, artifactID, doc)
+	ctx := context.Background()
+	if test, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if deadline, bounded := test.Deadline(); bounded {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, deadline.Add(-dialMargin))
+			defer cancel()
+		}
+	}
+	peer, err := DialContext(ctx, url, header, artifactID, doc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(peer.Close)
+	testcleanup.Add(t, peer.Close)
 	return peer
 }
 
-// DialContext is Dial for a caller that is not a test, such as a load driver: ctx bounds the
-// connection's opening, a failure is returned, and the caller closes the peer.
+// dialMargin is how long before the test binary's deadline Dial gives up on the handshake, the
+// margin testwait's waits leave: the time the failing test's cleanups and the failure itself have
+// to run in before go test's alarm.
+const dialMargin = 30 * time.Second
+
+// DialContext is Dial for a caller that is not a test, such as a load driver: ctx alone bounds the
+// connection's opening (gorilla's own 45 s handshake bound is dropped), a failure is returned, and
+// the caller closes the peer. Gorilla uses ctx only for the TCP connect and its deadline, not for
+// its read of the upgrade's answer, so the raw connection is closed when ctx ends while the
+// handshake is under way, and left alone once it is done.
 func DialContext(ctx context.Context, url string, header http.Header, artifactID string, doc *crdt.Doc) (*Peer, error) {
-	connection, response, err := gws.DefaultDialer.DialContext(ctx, url, header)
+	dialer := *gws.DefaultDialer
+	dialer.HandshakeTimeout = 0
+	var (
+		mu   sync.Mutex
+		stop func() bool
+	)
+	dialer.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		var plain net.Dialer
+		raw, err := plain.DialContext(dialCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		stop = context.AfterFunc(ctx, func() { raw.Close() })
+		mu.Unlock()
+		return raw, nil
+	}
+	connection, response, err := dialer.DialContext(ctx, url, header)
+	mu.Lock()
+	detach := stop
+	mu.Unlock()
+	if detach != nil && !detach() && err == nil {
+		// ctx ended as the handshake finished: its close of the raw connection already ran.
+		connection.Close()
+		err = fmt.Errorf("the handshake's context ended: %w", context.Cause(ctx))
+	}
 	if err != nil {
 		if response != nil {
 			// A refused handshake's response carries the server's reason in its status and body.
@@ -134,6 +184,14 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 		artifactID: artifactID, connection: connection, auth: make(chan authReply, 4),
 		awareness: make(map[uint64]AwarenessEntry), awarenessChanged: make(chan struct{}), clocks: make(map[uint64]uint64),
 	}
+	// Gorilla calls the close handler with the room's close frame before its read returns that
+	// frame's CloseError, and never for the CloseError it makes up for a connection that dropped
+	// (CloseFrame). The handler then answers the frame as gorilla's own does.
+	answerClose := connection.CloseHandler()
+	connection.SetCloseHandler(func(code int, text string) error {
+		peer.frameCode = code
+		return answerClose(code, text)
+	})
 	go func() {
 		peer.read(answers, awareness)
 		peer.endedAt = time.Now()
@@ -320,12 +378,41 @@ func (p *Peer) EndedAt() time.Time {
 	return p.endedAt
 }
 
-// CloseCode is the websocket close code the connection ended with: the room's close frame's, 1006
-// for a connection that dropped without one, or 0 for one this side closed (Close). It waits for
-// Ended.
+// CloseCode is the websocket close code the connection ended with, as gorilla reports it: the
+// room's close frame's, 1006 for a connection whose stream ended without one, or 0 for one this
+// side closed (Close), one the transport reset, or a reader that stopped without a failed read.
+// CloseFrame reports the code from a received frame. CloseCode waits for Ended.
 func (p *Peer) CloseCode() int {
 	<-p.Ended
 	return p.closeCode
+}
+
+// CloseFrame is the code of the close frame the room sent, 1005 for one that carried no code, or 0
+// when none arrived. Unlike CloseCode it takes no code from gorilla's own reading of a connection
+// that dropped: the end of the stream, which gorilla reports as a 1006 no frame carried, and a
+// reset, which it reports with no code. It waits for Ended.
+func (p *Peer) CloseFrame() int {
+	<-p.Ended
+	return p.frameCode
+}
+
+// DroppedWithoutCloseFrame reports whether the peer received no valid close frame and its read
+// ended on the transport (ReadEndedOnTransport). It returns the last read error for diagnostics.
+// It waits for Ended.
+func (p *Peer) DroppedWithoutCloseFrame() (bool, error) {
+	<-p.Ended
+	return p.frameCode == 0 && ReadEndedOnTransport(p.readErr), p.readErr
+}
+
+// ReadEndedOnTransport reports whether err, the error that ended a gorilla read of a websocket,
+// says the connection under it ended: the end of the stream, which gorilla reports as a 1006 no
+// frame carried, or a failed read of the connection, such as a reset. It excludes a timeout, a
+// close this side made, and a protocol or parse error. It reads err alone, so a test of any
+// websocket client can take it.
+func ReadEndedOnTransport(err error) bool {
+	var transport *net.OpError
+	return gws.IsCloseError(err, gws.CloseAbnormalClosure) ||
+		(errors.As(err, &transport) && transport.Op == "read" && !transport.Timeout() && !errors.Is(transport, net.ErrClosed))
 }
 
 // read applies every sync frame the room sends and answers its sync step 1, keeps every awareness
@@ -335,6 +422,7 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 	for {
 		_, message, err := p.connection.ReadMessage()
 		if err != nil {
+			p.readErr = err
 			if closed := (*gws.CloseError)(nil); errors.As(err, &closed) {
 				p.closeCode = closed.Code
 			}

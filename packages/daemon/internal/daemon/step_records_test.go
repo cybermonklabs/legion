@@ -197,10 +197,14 @@ var stepRecordsSeven = []stepWant{
 // run is open and the outbox holds the issue's step records and its other writes unsent, beside a
 // count of starts of each step that ran. With the daemon stopped, the operator's way back runs as
 // the roll forward's header carries it (internal/textcheck holds it to docs/kubernetes.md), and
-// every outbox row and every count stands after it as it stood before. The earlier release's move
+// every outbox row and every count stands after it as it stood before. The earlier release came
+// before the owner's plan too, so the rollback also takes the way back of the plan's migration
+// (rollBackOwnersPlans), which drops the issue's plan rows: kept, the place of its task would stand
+// at implementing while the earlier release moves the issue to testing. The earlier release's move
 // is then written as the rows this release reads of it: the issue in testing, and the tester's
 // entry raised again with its last handoff cleared; none of that release's deliveries stands in
-// the store. The newer image boots, its Migrate applying the roll forward. The walk ends at done,
+// the store. The newer image boots, its Migrate applying the roll forward and the plan's migration
+// again, which leaves the issue with no plan rows, so it walks today's line. The walk ends at done,
 // and the read holds the implementer's run that the earlier release ended stopped at the moment
 // the way back kept, under the id its start wrote, the tester's run that release started as a
 // record of its own at the next count, started when its entry was raised, and the tester's run
@@ -230,6 +234,10 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	}) {
 		t.Fatalf("at the rollback the outbox holds %d step records and %d other rows and step_starts holds %q; want both kinds of row unsent and implementing's second start open, or the way back runs over nothing it could lose",
 			stepRows, otherRows, starts)
+	}
+	var tasks int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from plan_tasks where issue = $1`, r.key).Scan(&tasks); err != nil || tasks != 1 {
+		t.Fatalf("at the rollback %s holds %d plan tasks (%v), want its one task default: a way back that drops nothing proves nothing", r.key, tasks, err)
 	}
 	r.rollBackStepRecords()
 	// The way back keeps the moment of the rollback beside the issue's witness, and the roll forward
@@ -267,6 +275,14 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 		got.Entry != testerRow.Entry+1 || !got.EntryRaisedAt.Equal(earlierStart) {
 		t.Fatalf("the tester's row the earlier release moved into testing is %+v, want its last round's handoff cleared and its entry raised at %s, the rest of %+v kept",
 			got, earlierStart, testerRow)
+	}
+	// The way back of the plan's migration drops the columns this release's read of a phases row
+	// names, so it runs once the reads above are done; the earlier release's writes name neither
+	// those columns nor the plan's tables, so the store is the same as had it run first.
+	r.rollBackOwnersPlans()
+	var left *string
+	if err := r.st.Pool().QueryRow(context.Background(), `select to_regclass('plan_tasks')::text`).Scan(&left); err != nil || left != nil {
+		t.Fatalf("after the way back of the owner's plan the store holds the table %v (%v), want none", left, err)
 	}
 	r.dispatch.start()
 	r.reboot()
@@ -364,6 +380,34 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 		r.t.Fatalf("read the way back of the roll forward: %v", err)
 	}
 	r.exec(block)
+}
+
+// rollBackOwnersPlans runs the way back of the migration that adds the plan rows
+// (inFlightPlanMigration) as an operator runs it with the daemon stopped: the transaction that
+// ends its header (migrations.WayBack), with <PROJECT> the run's project. A rollback of the
+// release whose owner's plan picks the steps to any release before it takes that way back too
+// (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
+// the plan's tables and columns, so the roll forward creates them again empty. The way back of the
+// givers of a plan version, in the header of the migration whose name ends
+// _plan_earlier_givers.up.sql, runs too, here before it (the guide allows either order), so the
+// roll forward adds its column again to the table it creates.
+func (r *stepRecordsRig) rollBackOwnersPlans() {
+	r.t.Helper()
+	all, err := migrations.All()
+	if err != nil {
+		r.t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, suffix := range []string{"_plan_earlier_givers.up.sql", inFlightPlanMigration} {
+		at := slices.IndexFunc(all, func(migration migrations.Migration) bool { return strings.HasSuffix(migration.Name, suffix) })
+		if at < 0 {
+			r.t.Fatalf("no embedded migration ends %s", suffix)
+		}
+		block, err := migrations.WayBack(all[at].Version)
+		if err != nil {
+			r.t.Fatalf("read the way back of %s: %v", all[at].Name, err)
+		}
+		r.exec(strings.ReplaceAll(block, "<PROJECT>", r.cfg.Project))
+	}
 }
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns

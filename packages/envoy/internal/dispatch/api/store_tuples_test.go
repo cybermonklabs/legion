@@ -50,6 +50,7 @@ import (
 //     signs a DPoP proof per request, so the driver carries every other row and this test
 //     carries this one.
 func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -393,7 +394,7 @@ func requireADeletedBlockStaysGone(t *testing.T, database *store.Store, artifact
 			t.Fatalf("begin the index of version %d: %v", version, err)
 		}
 		defer tx.Rollback(ctx)
-		_, won, written, err := refs.IndexBlocks(ctx, tx, artifactID, version, time.Now().UTC(), markdown, blocks, nil, nil)
+		_, won, written, err := refs.IndexBlocks(ctx, tx, artifactID, version, time.Now().UTC(), markdown, blocks, nil, nil, "")
 		if err != nil {
 			t.Fatalf("index version %d: %v", version, err)
 		}

@@ -108,6 +108,28 @@ func adoptionsOf(rt *fake.Runtime, token claim.Token) []string {
 	return made
 }
 
+// resumeTaskOf is the resume task engine sends the worker of key's phase, as the record holds
+// the issue now: workflow's Engine.ResumeTask, the one place every resume is composed, read in a
+// transaction it rolls back.
+func resumeTaskOf(t testing.TB, pool *store.Pool, engine *workflow.Engine, key string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := record.NewStore().Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", key, err)
+	}
+	return task
+}
+
 // The boot's start of a daemon-suspended phase owner resumes it by rule. If that owner can never
 // launch, the resume spends its launch budget and the claim fails; the start row then finishes
 // rather than retrying the failed claim with fresh budgets (RequestRetry), so the owner is launched
@@ -131,8 +153,10 @@ func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
 	clock := time.Now()
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
 		now: func() time.Time { return clock }}
+	// The row the boot's resume by rule writes, carrying the task the engine composes for it.
+	engine := workflow.New(records, workflow.Config{Project: issue.Project}, quietLogger())
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester,
-		Generation: 1, Phase: phase.Testing, Task: workflow.ResumePhaseTask(issue), ResumeTask: true, RuleResume: true}, clock))
+		Generation: 1, Phase: phase.Testing, Task: resumeTaskOf(t, pool, engine, issue.Key), ResumeTask: true, RuleResume: true}, clock))
 
 	for tick := range 6 {
 		if err := runner.RunOnce(context.Background()); err != nil {
@@ -232,11 +256,11 @@ func TestAStartWaitsForTheOperatorToResumeAClaimItSuspended(t *testing.T) {
 	}
 	if waits := strings.Count(logged.String(), `"msg":"outbox row waits"`); waits != 1 ||
 		!strings.Contains(logged.String(), `"level":"INFO","msg":"outbox row waits"`) ||
-		!strings.Contains(logged.String(), "suspended by operator; it waits for the operator's resume: the suspension holds until the operator resumes the claim") {
+		!strings.Contains(logged.String(), "suspended by operator; its agent waits for the operator's resume: the suspension holds until the operator resumes the agent") {
 		t.Fatalf("the waiting start logged %q, want one Info line naming the operator's suspension", logged.String())
 	}
 
-	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester}); err != nil {
+	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's resume: %v", err)
 	}
 	clock = clock.Add(2 * time.Minute)
@@ -317,7 +341,7 @@ func TestTheControllerKeeperResumesEveryControllerButOneTheOperatorSuspended(t *
 					t.Fatalf("the operator's suspend: %v", err)
 				}
 			}
-			keeper := newControllerKeeper(context.Background(), sup, "legion", time.Minute, quietLogger())
+			keeper := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, quietLogger())
 			if err := keeper.keep(); err != nil {
 				t.Fatalf("keep the controller: %v", err)
 			}
@@ -450,7 +474,7 @@ func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T)
 		t.Fatalf("parked architect = %+v, want failed with its session still recorded", failed)
 	}
 	if err := architectMachine.Handle(context.Background(), supervise.RequestForgetSession{
-		Claim: architect, Session: architectMachine.Claim().Session,
+		Claim: architect, Session: architectMachine.Claim().Session, By: supervise.SuspendedByOperator,
 	}); err != nil {
 		t.Fatalf("forget the architect session: %v", err)
 	}
@@ -491,7 +515,7 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 	}
 	for _, token := range []claim.Token{architect, implementer} {
 		machine, _ := sup.Machine(token)
-		if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: token}); err != nil {
+		if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
 			t.Fatalf("the operator's resume of %s: %v", token, err)
 		}
 	}
@@ -502,12 +526,12 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 	}
 }
 
-// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue, the
-// admission slot its phase keeps (record.KeepsSlot: none past its review) and its tree's lifecycle,
-// as admission leaves a root it promoted — and each of claims, bound to that lifecycle as the
-// daemon binds a claim it admits, its pending delivery written too when it carries one (AdmitClaim
-// alone writes only the claim row). Each tree takes the next free slot, so a test may seed more
-// than one running tree.
+// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue,
+// the admission slot its phase keeps (record.KeepsSlot: none in accepting, retro or merging) and
+// its tree's lifecycle, as admission leaves a root it promoted — and each of claims, bound to that
+// lifecycle as the daemon binds a claim it admits, its pending delivery written too when it
+// carries one (AdmitClaim alone writes only the claim row). Each tree takes the next free slot,
+// so a test may seed more than one running tree.
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
 	st, err := store.Open(context.Background(), dsn)

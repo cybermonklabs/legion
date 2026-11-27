@@ -21,6 +21,7 @@ import (
 // The negative control for the trim is a route that reads the value untrimmed, which refuses
 // ` Acme/Widgets.git\n`.
 func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"x/..",
 		"x/.",

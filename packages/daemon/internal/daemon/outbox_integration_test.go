@@ -302,6 +302,9 @@ func (d *blockingDispatch) PutStep(context.Context, string, string, dispatch.Ste
 func (d *blockingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *blockingDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *blockingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -504,6 +507,9 @@ func (d *refusingDispatch) PutStep(context.Context, string, string, dispatch.Ste
 func (d *refusingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *refusingDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *refusingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -511,11 +517,13 @@ func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.De
 	return nil
 }
 
-// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
+// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies,
+// and keeps each message posted to it, in order.
 type boardDispatch struct {
 	noArtifacts
 	status   string
 	failures int
+	posted   []string
 }
 
 func (d *boardDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -541,7 +549,10 @@ func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error 
 func (d *boardDispatch) ReleaseClaim(context.Context, string) error {
 	return errors.New("boardDispatch releases no claim")
 }
-func (d *boardDispatch) PostMessage(context.Context, string, string) error { return nil }
+func (d *boardDispatch) PostMessage(_ context.Context, _ string, body string) error {
+	d.posted = append(d.posted, body)
+	return nil
+}
 func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
@@ -566,6 +577,9 @@ func (d *boardDispatch) PutStep(context.Context, string, string, dispatch.StepWr
 	return nil
 }
 func (d *boardDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *boardDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
 	return nil
 }
 func (d *boardDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {

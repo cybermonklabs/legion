@@ -114,9 +114,10 @@ func TestAClientWithNoSeedIsRefusedByAServerThatRequiresOne(t *testing.T) {
 	}
 }
 
-// A seed configured but unusable is an error before any dial, naming the variable and the path,
-// never a fallback to NATS_NKEY_SEED or to connecting without a credential. The URL is one nothing
-// listens on, so an attempted dial would fail differently.
+// A seed configured but unusable is an error before any dial, naming the variable, and the path of
+// a file that was read (a file that could not be read is named by the variable and the system's
+// reason alone), never a fallback to NATS_NKEY_SEED or to connecting without a credential. The URL
+// is one nothing listens on, so an attempted dial would fail differently.
 func TestAnUnusableSeedIsAnErrorNamingItsVariable(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.seed")
 	blank := seedFile(t, " \n")
@@ -138,7 +139,7 @@ func TestAnUnusableSeedIsAnErrorNamingItsVariable(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		{"a missing file", map[string]string{"NATS_NKEY_SEED_FILE": missing, "NATS_NKEY_SEED": userSeed}, "NATS_NKEY_SEED_FILE names " + missing + ", which could not be read"},
+		{"a missing file", map[string]string{"NATS_NKEY_SEED_FILE": missing, "NATS_NKEY_SEED": userSeed}, "NATS_NKEY_SEED_FILE names a file that could not be read: open: no such file or directory"},
 		{"a blank file", map[string]string{"NATS_NKEY_SEED_FILE": blank}, "NATS_NKEY_SEED_FILE names " + blank + ", which is empty"},
 		{"an empty pointer", map[string]string{"NATS_NKEY_SEED_FILE": ""}, "NATS_NKEY_SEED_FILE is set but empty"},
 		{"a file holding no seed", map[string]string{"NATS_NKEY_SEED_FILE": notASeed}, "NATS_NKEY_SEED_FILE (" + notASeed + ") does not hold a valid nkey seed"},
@@ -195,6 +196,7 @@ func TestASeedAgainstAServerWithoutUsersIsRefused(t *testing.T) {
 // on the others). A value that is no seed is not found, and neither is any clean value of the
 // same shapes.
 func TestHoldsSeed(t *testing.T) {
+	t.Parallel()
 	// nats-io's vector: nkeys v0.4.15 README.md line 45, and its public key, line 49.
 	const seed = "SUAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD43IZY"
 	const publicKey = "UD466L6EBCM3YY5HEGHJANNTN4LSKTSUXTH7RILHCKEQMQHTBNLHJJXT"
@@ -372,12 +374,15 @@ func costInputs() []struct{ name, text string } {
 // a runner slower and busier than that workstation still passes it, while a quadratic regression
 // cannot.
 func TestHoldsSeedCostIsLinear(t *testing.T) {
+	t.Parallel()
 	const costBound = 10 * time.Second
 	for _, in := range costInputs() {
 		t.Run(in.name, func(t *testing.T) {
 			done := make(chan bool, 1)
 			start := time.Now()
 			go func() { done <- bus.HoldsSeed(in.text) }()
+			// The bound under test, not a wait: costBound separates a linear cost from a quadratic
+			// one (above), so it stays a fixed span.
 			select {
 			case found := <-done:
 				if found {

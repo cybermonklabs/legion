@@ -32,6 +32,7 @@ import (
 //     200 and O's frames resume: the write after the refusal reads the key from the leader, reads
 //     the record as the server's, and replaces it at its true sequence with O's own row.
 func TestAServerWrittenRecordReadsAsAbsent(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const outside, inHouse = "ses_written_outside", "ses_written_in_house"
 	const privTopic = "notifications.dispatch.issue.PRIV.>"
@@ -140,6 +141,7 @@ func TestAServerWrittenRecordReadsAsAbsent(t *testing.T) {
 // (session.SessionRegistry.StoredByWriter), finds the server's message, and refreshes the entry
 // with the projects of the token this claim was made with (registeringProjects).
 func TestAnEdgeRoleClaimWritesNoForgedProjectsBack(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	if !rig.edgeOn() {
 		t.Skip("the listener serves no project, so no edge confirmation applies")

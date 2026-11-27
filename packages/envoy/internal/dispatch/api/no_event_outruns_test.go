@@ -125,6 +125,7 @@ func commentNodeReadable(t *testing.T, handler http.Handler, ref string) bool {
 // publish before the commit, and a publish for a write that rolled back, each fail here, and the
 // failure prints the event and the node address it could not read.
 func TestNoEventOutrunsItsNode(t *testing.T) {
+	t.Parallel()
 	handler, _, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")

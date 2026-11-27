@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/httpoutage"
+
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -71,9 +73,10 @@ type Lease struct {
 
 // TransientError is a GitHub answer that says nothing about the App or its installation, so the
 // same request may pass when it is made again: no answer at all (a transport failure, including a
-// request or a body read cut off by its deadline), a 5xx, or a rate limit (a 429, or a 403 that
-// says it is one). Every other failure is GitHub's definitive answer, or one about the
-// configuration, and asking again changes nothing.
+// request or a body read cut off by its deadline), an outage (httpoutage.Is: a 5xx, a 408 for
+// a request the server did not take in time, or a 429), or a rate limit (a 403 that says it is
+// one). Every other failure is GitHub's definitive answer, or one about the configuration, and
+// asking again changes nothing.
 type TransientError struct{ Err error }
 
 func (e *TransientError) Error() string { return e.Err.Error() }
@@ -105,12 +108,13 @@ func (m *Manager) answered(response *http.Response, body []byte, err error) *Ans
 	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, body)}
 }
 
-// transient marks a response, whose body is body, as GitHub's trouble rather than an answer: a
-// 5xx, or a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body for
-// a secondary limit GitHub names there alone). Either way err carries GitHub's answer (answered).
+// transient marks a response, whose body is body, as GitHub's trouble rather than an answer: an
+// outage (httpoutage.Is: a 5xx, a 408 or a 429), or a rate limit (the answer's RateLimited,
+// githubrest.RateLimited, which reads the body for a secondary limit GitHub names there alone).
+// Either way err carries GitHub's answer (answered).
 func (m *Manager) transient(response *http.Response, body []byte, err error) error {
 	refused := m.answered(response, body, err)
-	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
+	if httpoutage.Is(response.StatusCode) || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
 	return refused
@@ -230,6 +234,11 @@ type Manager struct {
 	// token mode has no entry: its read is the token_command's run, which runTokenCommand shares.
 	pendingInstallations map[AppRole]*pendingInstallations
 	commands             map[scope]*commandRun
+	// loginReleases holds, per App role in token mode, the installation AppLogin took from the
+	// command's release of every installation and has not yet read the App's login under
+	// (loginRelease): a later AppLogin of the role reads under it while it is fresh, so a login
+	// read that failed after its release runs the command no second time for it.
+	loginReleases map[AppRole]releasedInstallation
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
 	keys map[string]*rsa.PrivateKey
 
@@ -285,10 +294,13 @@ type pendingInstallations struct {
 // as a Source, which the build holds it to wherever it is handed over. Forgetter is taken by
 // type assertion instead (internal/daemon's openWorkflow and leakCheckSource), so a Forget
 // renamed without its interface would fail the daemon's boot, or leave the leak check serving
-// a token GitHub refused, rather than fail the build.
+// a token GitHub refused, rather than fail the build. KnownIdentities is taken by type
+// assertion too (internal/daemon's workflowRuntime.knownIdentity), and a source that answers
+// none, such as a test's fake, is one whose every identity is read through a mint.
 var (
-	_ Source    = (*Manager)(nil)
-	_ Forgetter = (*Manager)(nil)
+	_ Source          = (*Manager)(nil)
+	_ Forgetter       = (*Manager)(nil)
+	_ KnownIdentities = (*Manager)(nil)
 )
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
@@ -334,6 +346,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		pendingIdentities:    map[string]*pendingIdentity{},
 		pendingInstallations: map[AppRole]*pendingInstallations{},
 		commands:             map[scope]*commandRun{},
+		loginReleases:        map[AppRole]releasedInstallation{},
 		keys:                 map[string]*rsa.PrivateKey{},
 		refusals:             map[scope]refusedNarrowingAt{},
 		saidShortfalls:       map[saidShortfall]bool{},
@@ -383,6 +396,28 @@ func (m *Manager) Forget(role AppRole, owner string) {
 	maps.DeleteFunc(m.refusals, func(key scope, _ refusedNarrowingAt) bool {
 		return key.role == role && key.owner == forgotten
 	})
+}
+
+// KnownIdentities answers the bot identity of an App that a token source already holds, with no
+// mint and no call to GitHub.
+type KnownIdentities interface {
+	KnownIdentity(role AppRole) (GitIdentity, bool)
+}
+
+// KnownIdentity is the bot identity of the App role's App that a lease of that App already
+// fetched (identity, which caches it by App id for the Manager's life), and false when none has:
+// before the App's first mint, or for an App role that no App is configured for. It reads that
+// cache alone, under mu, and asks GitHub nothing, so a caller that needs the identity and no
+// token — a launch's table of every role's identity, for the other App's roles — costs no mint.
+func (m *Manager) KnownIdentity(role AppRole) (GitIdentity, bool) {
+	app, err := m.app(role)
+	if err != nil {
+		return GitIdentity{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	identity, known := m.identities[app.AppID]
+	return identity, known
 }
 
 // forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner

@@ -105,17 +105,30 @@ lacking() {
 
 # real_tools DIR NAME...: a link in DIR to the real program behind each NAME. A version manager's
 # shim (mise's, or a wrapper that calls mise) finds its program through the caller's HOME, and the
-# children a leg starts under a HOME of their own have none, so they run the real programs.
+# children a leg starts under a HOME of their own have none, so they run the real programs. Prints
+# each program it found and could not link, with the reason, or nothing, and fails when it prints:
+# a link it could not make leaves the children to find a shim, or another program, on PATH. A NAME
+# found nowhere is tool_problem's to name.
 real_tools() {
-  local dir=$1 name found
+  local dir=$1 name found why out=''
   shift
-  mkdir -p "$dir" || return
+  if ! why=$(mkdir -p "$dir" 2>&1); then
+    printf 'mkdir -p %s failed, so no program is linked there: %s' "$dir" "$why"
+    return 1
+  fi
   for name in "$@"; do
     found=''
     if command -v mise >/dev/null 2>&1; then found=$(mise which "$name" 2>/dev/null </dev/null); fi
     [ -n "$found" ] || found=$(command -v "$name" 2>/dev/null)
-    case $found in /*) ln -sf "$found" "$dir/$name" ;; esac
+    case $found in
+      /*)
+        why=$(ln -sf "$found" "$dir/$name" 2>&1) ||
+          out="${out:+$out; }$name ($found) was not linked into $dir: ${why:-ln failed}"
+        ;;
+    esac
   done
+  printf '%s' "$out"
+  [ -z "$out" ]
 }
 
 # Every background child a leg starts is started so that `$!` is the child itself: a simple command
@@ -169,42 +182,66 @@ forget() {
   background=$kept
 }
 
-# shellcheck disable=SC2034 # child_exit is await_child's answer, which the leg that sources this file reads
-# await_child PID SECONDS INTERVAL: waits up to SECONDS, looking every INTERVAL s, for the child PID
-# to end. Once it has, waits for it, forgets it and sets child_exit to its exit status; while it
-# still runs, child_exit is empty and the child stays on the list.
-await_child() {
+# A wait ends the moment what it waits for holds, and its bound only says how long it may take
+# before the leg goes on without it: each wait looks at its fact every `pause`, a child's end as
+# much as a file, a socket or a screen. A child's end is not waited for with a `wait PID` that a
+# trapped signal ends at the bound: under bash 3.2 a trapped signal that ends a `wait` can leave
+# SIGCHLD blocked, and the shell then sleeps for good with no child left, as one of eight stress
+# runs of 60 such waits did at its eleventh (INFRA-3904).
+
+# pause: the time between two looks at a state a wait is for, a tenth of a second.
+pause() { sleep 0.1; }
+
+# end_within PID SECONDS: waits for the child PID to end, for at most SECONDS (none at all for 0 or
+# less), and returns within a pause of its end. Once it has ended, waits for it: end_within_exit is
+# its exit status; while it still runs, end_within_exit is empty. await_child, stop_child and reap
+# hold end_within_exit local, so a wait through them sets no variable the leg's own code can read
+# or clash with. It leaves `background` as it is.
+end_within() {
   local deadline
   deadline=$(($(now) + $2))
-  child_exit=''
-  while running_child "$1" && [ "$(now)" -lt "$deadline" ]; do sleep "$3"; done
+  end_within_exit=''
+  while running_child "$1" && [ "$(now)" -lt "$deadline" ]; do pause; done
   running_child "$1" && return 0
-  wait "$1"
-  child_exit=$?
-  forget "$1"
+  wait "$1" 2>/dev/null
+  end_within_exit=$?
+}
+
+# shellcheck disable=SC2034 # child_exit is await_child's answer, which the leg that sources this file reads
+# await_child PID SECONDS: waits for the child PID to end, for at most SECONDS, and returns within
+# a pause of its end (end_within). Once it has, forgets it and sets child_exit to its exit status;
+# while it still runs, child_exit is empty and the child stays on the list.
+await_child() {
+  local end_within_exit
+  end_within "$1" "$2"
+  child_exit=$end_within_exit
+  [ -z "$child_exit" ] || forget "$1"
+}
+
+# kill_child PID: KILL to the child PID while it still runs, and waits for it.
+kill_child() {
+  running_child "$1" && kill -9 "$1" 2>/dev/null
+  wait "$1" 2>/dev/null
 }
 
 # stop_child PID: stops one background child of the leg, if it still runs: TERM, up to 10 s for it
-# to end, then KILL, and waits for it, so it writes nothing after the leg goes on; and forgets it.
+# to end (end_within), then KILL, and waits for it, so it writes nothing after the leg goes on; and
+# forgets it.
 stop_child() {
-  local _
+  local end_within_exit
   forget "$1"
   running_child "$1" || return 0
   kill "$1" 2>/dev/null
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    running_child "$1" || break
-    sleep 1
-  done
-  running_child "$1" && kill -9 "$1" 2>/dev/null
-  wait "$1" 2>/dev/null
+  end_within "$1" 10
+  kill_child "$1"
   return 0
 }
 
 # reap: stops every child `background` names that still runs, as stop_child stops one, all of them
-# at once, and empties the list. A pid of the list that bash no longer counts as running is left
-# alone.
+# at once, within one 10 s, and empties the list. A pid of the list that bash no longer counts as
+# running is left alone.
 reap() {
-  local pid alive live='' _
+  local pid live='' deadline end_within_exit
   [ -n "${background:-}" ] || return 0
   for pid in $background; do
     running_child "$pid" && live="$live $pid"
@@ -212,39 +249,35 @@ reap() {
   background=''
   [ -n "$live" ] || return 0
   for pid in $live; do kill "$pid" 2>/dev/null; done
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    alive=''
-    for pid in $live; do running_child "$pid" && alive=yes; done
-    [ -n "$alive" ] || break
-    sleep 1
-  done
+  deadline=$(($(now) + 10))
   for pid in $live; do
-    running_child "$pid" && kill -9 "$pid" 2>/dev/null
-    wait "$pid" 2>/dev/null
+    end_within "$pid" $((deadline - $(now)))
+    kill_child "$pid"
   done
 }
 
 # stop_tmux SOCKET: stops the tmux server at SOCKET and waits up to 10 s for its pane's process to
-# exit, since an exiting Oh My Pi writes under its HOME and its session directory.
+# exit, since an exiting Oh My Pi writes under its HOME and its session directory. That process is
+# the server's child, not the leg's, so its end is looked at every pause.
 stop_tmux() {
-  local pane _
+  local pane deadline
   [ -S "$1" ] || return 0
   pane=$(tmux -S "$1" display-message -p '#{pane_pid}' 2>/dev/null)
   tmux -S "$1" kill-server 2>/dev/null
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    { [ -n "$pane" ] && kill -0 "$pane" 2>/dev/null; } || break
-    sleep 1
-  done
+  [ -n "$pane" ] || return 0
+  deadline=$(($(now) + 10))
+  while kill -0 "$pane" 2>/dev/null && [ "$(now)" -lt "$deadline" ]; do pause; done
 }
 
 # omp_clear_screens SOCKET TARGET: OMP_SKIP_SETUP keeps Oh My Pi's setup wizard shut; any
 # first-run screen a fresh HOME still opens (its splash) is skipped as a person who skips it
 # would: a setup screen with Escape, the splash with Enter. One screen can follow another a
-# moment later, so it returns only after three checks in a row, 2 s apart, show neither (at most
-# 40 s).
+# moment later, so it returns only after three checks in a row, 2 s apart, show neither: at once
+# after the third, which is the answer (at most 20 checks, 38 s). The 2 s between two checks is
+# the quiet the answer is read over, not a wait for something to happen.
 omp_clear_screens() {
   local checks=0 clear=0
-  while [ "$checks" -lt 20 ] && [ "$clear" -lt 3 ]; do
+  while :; do
     checks=$((checks + 1))
     case $(tmux -S "$1" capture-pane -p -t "$2" 2>/dev/null) in
       *'exit setup'*)
@@ -257,6 +290,7 @@ omp_clear_screens() {
         ;;
       *) clear=$((clear + 1)) ;;
     esac
+    [ "$clear" -lt 3 ] && [ "$checks" -lt 20 ] || return 0
     sleep 2
   done
 }

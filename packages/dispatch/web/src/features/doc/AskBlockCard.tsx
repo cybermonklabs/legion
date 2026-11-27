@@ -19,8 +19,9 @@ import { URGENCY_LABELS } from "../inbox/ask-urgency";
 import { AgentName } from "../refs/AgentName";
 import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildReferencePath, itemRoute, parseNodeReference, shortForm } from "../refs/routes";
+import { itemRoute, parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { type AskBlockFacts, type AskBlockHost, askBlockFacts } from "./typed-block-drawing";
 
 const PILL_CLASS = "rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase";
@@ -187,7 +188,7 @@ export function AskBlockCard({
               frame="block"
             />
           ) : (
-            <AttributeRecord facts={facts} />
+            <AttributeRecord ask={ask} facts={facts} />
           )}
           {inBody ? (
             <p className={`mt-3 text-sm ${textMutedOnSurfaceMuted}`} data-dispatch-ask-text-only="">
@@ -240,20 +241,23 @@ function CopiedFromLink({
   state: string;
 }): ReactNode {
   const route = parseNodeReference(copied.document);
+  const href = route === undefined ? undefined : referenceHref(route);
+  // A reference naming no page of this dashboard - a person (R5) among them - is no link: the
+  // words it would have shown stand on their own.
+  const words =
+    route === undefined
+      ? "another document"
+      : route.kind === "spec"
+        ? "the spec"
+        : shortForm(route);
   const there = COPY_STATE_LABELS[state] ?? "closed there";
   return (
     <span className="inline-flex items-center gap-x-2" data-dispatch-ask-copied-from={copied.ask}>
       <span aria-hidden="true">·</span>
       <span>
         Copied from{" "}
-        {route === undefined ? (
-          "another document"
-        ) : (
-          <Link to={`${buildReferencePath(route)}${blockFragment(blockId)}`}>
-            {route.kind === "spec" ? "the spec" : shortForm(route)}
-          </Link>
-        )}
-        , {there}
+        {href === undefined ? words : <Link to={`${href}${blockFragment(blockId)}`}>{words}</Link>},{" "}
+        {there}
       </span>
     </span>
   );
@@ -261,14 +265,28 @@ function CopiedFromLink({
 
 /** What the block's own attributes record: its options with the chosen ones ticked, and the
  * note. A still-open decision shows its options with nothing chosen. */
-function AttributeRecord({ facts }: { facts: AskBlockFacts }): ReactNode {
+function AttributeRecord({
+  ask,
+  facts,
+}: {
+  ask: Ask | undefined;
+  facts: AskBlockFacts;
+}): ReactNode {
   const otherText =
     facts.state === "answered" && facts.options.length > 0 && facts.selected.length === 0
       ? facts.answerText
       : "";
   return (
     <div className="mt-3 space-y-2" data-dispatch-ask-record="">
-      <AskOptionList options={facts.options} rowClassName={surfaceBg} selected={facts.selected} />
+      {/* The block's own attributes, read from the document's text: where the server has indexed
+          the block into an ask, that ask is the record a `#id` in an option resolves against, as
+          on its own card; a block with no ask row behind it has none, and its `#id`s stay text. */}
+      <AskOptionList
+        options={facts.options}
+        rowClassName={surfaceBg}
+        selected={facts.selected}
+        source={textSourceOf("ask", ask?.id, ask?.issue_key)}
+      />
       {otherText === "" ? null : (
         <p className={`text-sm font-medium ${textPrimaryOnSurface}`}>Other</p>
       )}

@@ -1,7 +1,8 @@
-"""The sources check-ts-filters.sh derives the TypeScript half of each Bun gate's reads from: a
-filter of ci.yaml's changes job and either the tsc project the job that filter gates typechecks
-(PROGRAMS) or the entry a step of that job runs with Bun (BUNDLES). The script's header says what
-it proves, which gates it leaves out and why.
+"""The sources the TypeScript half of each Bun gate's reads is derived from: a filter of ci.yaml's
+changes job and either the tsc project the job that filter gates typechecks (PROGRAMS) or the
+entry a step of that job runs with Bun (BUNDLES). The changes job's filter generation lists them
+(ci_ts_listing.py) into the LISTED blocks, and check-ts-filters.sh, whose header says what it
+proves, which gates it leaves out and why, holds every filter to them.
 
 Each entry of PROGRAMS is (filter, project, why):
   filter   a filter of the changes job, the gate of the job whose typecheck this program is
@@ -13,24 +14,31 @@ Each entry of PROGRAMS is (filter, project, why):
 
 The pairs are hand-kept and few; the files of each program are derived, which is the point. A
 job that typechecks a second project is a second entry (the dispatch-ui job typechecks the proof
-editor beside the dashboard, and the test job the four script directories that are no workspace).
+editor beside the dashboard, and the tooling-checks job the five script directories that are no
+workspace).
 """
 
 
-def at(job: str, step: str) -> str:
+def at(job: str, step: str, held_by: str = "") -> str:
     """A `why` naming a step of a ci.yaml job, in the file that holds it: ci.yaml's job of that
-    id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, where the steps are. A job
-    whose steps are in a file of another name writes its own `why`, as the docs row does."""
-    return f"ci-job-{job}.yaml's {job} job: {step}"
+    id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, where the steps are, or, for
+    the half of a split job, the file of the other half, `held_by` (ci_job_reads.py's
+    SHARED_FILE). A job whose steps are in a file of another name writes its own `why`, as the
+    docs row does."""
+    return f"ci-job-{held_by or job}.yaml's {job} job: {step}"
 
 
 PROGRAMS = [
     ("contracts", "packages/contracts", at("contracts", "Typecheck contracts (bun run typecheck: bunx tsc --noEmit)")),
     ("envoy_client", "packages/envoy-client", at("envoy-client", "Typecheck Envoy client")),
+    # approve-check's session (packages/envoy/scripts/approve/session.ts) runs on envoy-client's
+    # credential and Dispatch client, so the job that typechecks envoy-client typechecks it too.
+    ("envoy_client", "packages/envoy/scripts/approve",
+     at("envoy-client", "Typecheck approve-check's session (bunx tsc --noEmit -p ../envoy/scripts/approve)")),
     ("broker_client", "packages/cipher-client", at("broker-client", "Typecheck the broker client")),
     ("pi_shared", "packages/pi-shared", at("pi-shared", "Typecheck pi-shared")),
     ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
-    ("pi_legion", "packages/pi-legion", at("pi-legion", "Typecheck pi-legion")),
+    ("pi_legion_build", "packages/pi-legion", at("pi-legion-build", "Typecheck pi-legion", "pi-legion")),
     ("claude_envoy", "packages/claude-envoy", at("claude-envoy", "Typecheck Claude Envoy plugin")),
     ("dispatch_ui", "packages/dispatch", at("dispatch-ui", "Typecheck dispatch dashboard")),
     # The proof editor's and the docs site's steps run the same `bun run typecheck`, whose recipe
@@ -41,16 +49,16 @@ PROGRAMS = [
      "docs-site.yaml's build job: Typecheck the docs site (bun run typecheck: tsc --noEmit -p tsconfig.tools.json), "
      "which ci.yaml's docs job calls"),
     ("conflicts_script", "scripts/conflicts", at("conflicts-script", "Typecheck the conflict measurement script")),
-    ("test", "scripts/dispatch",
-     at("test", "Typecheck the Dispatch census script (bunx tsc --noEmit -p scripts/dispatch)")),
-    ("test", "scripts/github-apps",
-     at("test", "Typecheck the GitHub App registration script (bunx tsc --noEmit -p scripts/github-apps)")),
-    ("test", "scripts/sessions",
-     at("test", "Typecheck the session message-wait script (bunx tsc --noEmit -p scripts/sessions)")),
-    ("test", "scripts/approval-eval",
-     at("test", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)")),
-    ("test", "scripts/e2e/lib",
-     at("test", "Typecheck the plan ratings read test (bunx tsc --noEmit -p scripts/e2e/lib)")),
+    ("tooling_checks", "scripts/dispatch",
+     at("tooling-checks", "Typecheck the Dispatch census script (bunx tsc --noEmit -p scripts/dispatch)", "test")),
+    ("tooling_checks", "scripts/github-apps",
+     at("tooling-checks", "Typecheck the GitHub App registration script (bunx tsc --noEmit -p scripts/github-apps)", "test")),
+    ("tooling_checks", "scripts/sessions",
+     at("tooling-checks", "Typecheck the session message-wait script (bunx tsc --noEmit -p scripts/sessions)", "test")),
+    ("tooling_checks", "scripts/approval-eval",
+     at("tooling-checks", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)", "test")),
+    ("tooling_checks", "scripts/e2e/lib",
+     at("tooling-checks", "Typecheck the plan ratings read test (bunx tsc --noEmit -p scripts/e2e/lib)", "test")),
 ]
 
 # The entries a step runs with Bun rather than typechecks: what such a step loads is the entry's
@@ -69,19 +77,20 @@ PROGRAMS = [
 #           refusal carries
 BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
-     at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:42-46 runs "
+     at("dispatch-two-builds", "Two-build tests of the Dispatch server (`packages/envoy/cmd/dispatch/twobuild_cli_test.go#currentCLI` runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
+    ("envoy_go_checks", "packages/envoy/scripts/approve/scan.ts",
+     at("envoy-go-checks", "Scan tests of approve-check's session (bun test scripts/approve/, whose tests spawn "
+                           "`bun scripts/approve/scan.ts`)")),
 ]
 
-# The trees a filter names file by file rather than whole: check-ts-filters.sh writes into the
-# filter a listed block holding one pattern per file under `tree` that the programs PROGRAMS pairs
-# with filters `sources` compile or the bundles BUNDLES pairs with them load, in sorted order, and
-# refuses a committed block that is not exactly those files. A filter that took the whole tree
-# would select its job for a change to a module no program or bundle of it reaches; a hand-kept
-# list of the modules would go stale the day one more is imported. Derived, it moves with the
-# imports: a new one fails the lint job on the pull request that writes it until
-# `.github/scripts/check-ts-filters.sh write` adds it, and a module no longer imported is dropped
-# by the same command rather than kept.
+# The trees a filter names file by file rather than whole: the changes job's generation writes
+# into the filter a listed block holding one pattern per file under `tree` that the programs
+# PROGRAMS pairs with filters `sources` compile or the bundles BUNDLES pairs with them load, in
+# sorted order, and check-ts-filters.sh lists them again in the lint job and refuses a block that
+# is not exactly those files. A filter that took the whole tree would select its job for a change
+# to a module no program or bundle of it reaches; a hand-kept list of the modules would go stale
+# the day one more is imported. Derived when the changes job runs, it moves with the imports.
 #
 # Each entry is (filter, tree, sources, why):
 #   filter   the changes filter whose list holds the block
@@ -96,28 +105,38 @@ BUNDLES = [
 LISTED = [
     ("dispatch_ui", "packages/contracts/src", ("dispatch_ui",),
      "the dashboard's and the proof editor's typechecks, tests and SPA build compile the contracts modules "
-     "these two programs import and what those import, and no other: packages/dispatch/web/vite.config.ts:117-123 "
-     "aliases the three entries the dashboard imports to the same sources"),
+     'these two programs import and what those import, and no other: `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, '
+     '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` '
+     'and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the four entries the dashboard imports to the same sources'),
     # The browser suite has no tsc program of its own. Its rows drive the SPA built from
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles: that
     # much of @legion/contracts is dispatch_ui's set. Its rows also spawn the dispatch command:
-    # packages/dispatch/e2e/dispatch-cli.ts:8,39 runs `bun packages/envoy-client/bin/dispatch.ts`
+    # `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` runs `bun packages/envoy-client/bin/dispatch.ts`
     # for the inbox-cli, asked-of-cli, asked-of and doc specs, and ci_job_reads.py's
     # dispatch_browser gate declares that entry as a read. The contracts modules that command
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
-    # which bundles the three entries the dashboard imports (web/vite.config.ts:117-123 aliases the
-    # same three) and so compiles nothing outside dispatch_ui's set: not
+    # which bundles the four entries the dashboard imports (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
+    # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"`
+    # and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four) and so compiles nothing outside dispatch_ui's set: not
     # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
     # change that breaks the package's full `build` fails the contracts job's own
     # `Build contracts` step, whose filter takes the whole tree.
     ("dispatch_browser", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the browser suite runs the SPA built from packages/dispatch and the Playwright config and e2e helpers of "
      "packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its rows spawn "
-     "the dispatch command (packages/dispatch/e2e/dispatch-cli.ts:8,39 runs `bun packages/envoy-client/bin/dispatch.ts`) "
+     "the dispatch command (`packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` runs `bun packages/envoy-client/bin/dispatch.ts`) "
      "whose bundle dispatch_two_builds_go's row builds; no step loads any other"),
+    # The browser suite's pull-request lane runs the same file under ci.yaml's dispatch-browser-pr
+    # job, so its filter takes the same block for the same reason.
+    ("dispatch_browser_pr", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
+     "the browser suite's pull-request lane runs the SPA built from packages/dispatch and the Playwright config "
+     "and e2e helpers of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, "
+     "and its rows spawn the dispatch command (`packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry` runs "
+     "`bun packages/envoy-client/bin/dispatch.ts`) whose bundle dispatch_two_builds_go's row builds; no step loads "
+     "any other"),
     # The two-build job's Go step reaches packages/contracts through the one dispatch command its
     # twobuild_cli_test.go runs, which BUNDLES builds.
     ("dispatch_two_builds_go", "packages/contracts/src", ("dispatch_two_builds_go",),

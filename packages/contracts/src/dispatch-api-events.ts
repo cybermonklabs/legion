@@ -13,6 +13,7 @@ import type {
   ArchitectureSyncFailedEventPayload,
   DisplayTree,
   PriorityUpdatedEventPayload,
+  ProjectAccessChangedEventPayload,
   ProjectDefaultAssigneeUpdatedEventPayload,
   RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
@@ -32,6 +33,7 @@ import type {
   CheckResultRetractedEventPayload,
   ChildEventPayload,
   ChildStatusEventPayload,
+  DeployRecordedEventPayload,
   IssueClaimEventPayload,
   IssueDeployedEventPayload,
   IssueEventPayload,
@@ -151,6 +153,10 @@ export type DispatchEvent =
       readonly type: "priority.updated";
       readonly payload: PriorityUpdatedEventPayload;
     })
+  | (DispatchEventBase & {
+      readonly type: "project.access_changed";
+      readonly payload: ProjectAccessChangedEventPayload;
+    })
   | (DispatchEventBase & { readonly type: "issue.created"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.updated"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.closed"; readonly payload: IssueEventPayload })
@@ -165,6 +171,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "issue.deployed";
       readonly payload: IssueDeployedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "deploy.recorded";
+      readonly payload: DeployRecordedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "handoff.recorded";
@@ -283,6 +293,14 @@ export type DispatchEvent =
       readonly type: "comment.edited";
       readonly payload: CommentEventPayload;
     })
+  /** The author withdrew the comment: its body is cleared, and the payload carries the routing
+   *  fields its `comment.created` carried with `deleted_at` and `deleted_by` in place of every
+   *  body. A reply's carries no text of the post it answers: its `reply_block` keeps every field
+   *  but `text`, which is empty. */
+  | (DispatchEventBase & {
+      readonly type: "comment.deleted";
+      readonly payload: CommentEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "suggestion.accepted";
       readonly payload: CommentEventPayload;
@@ -305,6 +323,20 @@ export type DispatchEvent =
     })
   | (DispatchEventBase & {
       readonly type: "message.answered";
+      readonly payload: MessageEventPayload;
+    })
+  /** The author replaced the body of an issue message, as `comment.edited` does for a comment.
+   *  The payload carries the new body. */
+  | (DispatchEventBase & {
+      readonly type: "message.edited";
+      readonly payload: MessageEventPayload;
+    })
+  /** The author withdrew the issue message: its body is cleared, and the payload carries the
+   *  routing fields its `message.created` carried with `deleted_at` and `deleted_by` in place of
+   *  every body. A reply's carries no text of the post it answers: no `reply_body`, and its
+   *  `reply_block` keeps every field but `text`, which is empty. */
+  | (DispatchEventBase & {
+      readonly type: "message.deleted";
       readonly payload: MessageEventPayload;
     })
   | (DispatchEventBase & {
@@ -367,11 +399,13 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.anchor_refreshed": true,
   "comment.answered": true,
   "comment.created": true,
+  "comment.deleted": true,
   "comment.delivery": true,
   "comment.edited": true,
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
+  "deploy.recorded": true,
   "handoff.recorded": true,
   "issue.claimed": true,
   "issue.closed": true,
@@ -383,8 +417,11 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "message.accepted": true,
   "message.answered": true,
   "message.created": true,
+  "message.deleted": true,
   "message.delivery": true,
+  "message.edited": true,
   "priority.updated": true,
+  "project.access_changed": true,
   "project.created": true,
   "project.updated": true,
   "result.recorded": true,

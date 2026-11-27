@@ -1,8 +1,10 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -22,9 +24,10 @@ func (h *harness) turnOutcome(req claim.TurnOutcomeRequest) (*httptest.ResponseR
 
 // A session that holds its registration's secret reports each turn it ends on the claim's own
 // route, and the answer says what the daemon derived: the run of refused turns the reports now
-// end with, and whether this one failed the claim. Three refusals in a row fail it, with the
-// cause naming the provider and its last message.
-func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsTheClaim(t *testing.T) {
+// end with, counted up to the launch failure limit. A run of refusals fails no claim, however long
+// it is (dispatch://INFRA-4508), so the answer's `failed` is false at the limit and past it, and
+// the claim keeps the provider's words for the newest refusal.
+func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsNoClaim(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
 	registered := h.registered(boot, "ses_architect")
@@ -45,14 +48,18 @@ func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsTheClaim(t *testin
 		t.Fatalf("the second refusal answered %+v, want a run of 2", answer)
 	}
 
-	recorder, answer := report(4, claim.TurnRefused, "the provider refused the request")
-	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true}) {
-		t.Fatalf("the third refusal = %d %+v, want 200 with a run of 3 that failed the claim", recorder.Code, answer)
+	for sequence := uint64(4); sequence <= 6; sequence++ {
+		recorder, answer := report(sequence, claim.TurnRefused, "the provider refused the request")
+		if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 3}) {
+			t.Fatalf("refusal %d = %d %+v, want 200 with the run at the limit of 3 and no failure", sequence-1, recorder.Code, answer)
+		}
 	}
 	stored := h.stored(token)
-	want := "the provider refused 3 turns in a row: the provider refused the request"
-	if stored.State != supervise.StateFailed || stored.Failure != want {
-		t.Fatalf("the claim is %s with failure %q, want failed with %q", stored.State, stored.Failure, want)
+	if stored.State == supervise.StateFailed || stored.Failure != "" {
+		t.Fatalf("the claim is %s with failure %q, want it live: a run of refused turns fails no claim", stored.State, stored.Failure)
+	}
+	if got := stored.LastRefusal(); got != "the provider refused the request" {
+		t.Fatalf("the claim keeps %q as the newest refusal, want the provider's words", got)
 	}
 }
 
@@ -173,6 +180,34 @@ func TestATurnOutcomeTheRouteCannotActOnIsRefusedAndRecordsNothing(t *testing.T)
 	}
 }
 
+// A status outside the HTTP range is no status a provider answered, and the rollout of the field
+// is warn-first: the report is taken, as one whose status cannot be read, and the daemon warns
+// naming the number rather than refusing it. So a turn that ran no prompt of the daemon's, refused
+// with 1400, counts in the claim's run of provider-error turns and fails nothing, as a refusal
+// with no status does, where a 400 would fail the claim.
+func TestATurnOutcomeWithAStatusOutsideTheHTTPRangeIsTakenAsNoStatusWithAWarning(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	registered := h.registered(boot, "ses_architect")
+
+	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+		ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+		Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: "the provider refused the reminder's turn",
+		HTTPStatus: 1400, Unprompted: true,
+	})
+
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
+		t.Fatalf("the report = %d %+v, want 200 with a run of 1 and the claim not failed", recorder.Code, answer)
+	}
+	if stored := h.stored(token); stored.State == supervise.StateFailed || stored.ProviderErrorRun != 1 {
+		t.Fatalf("the claim is %s with a run of %d provider errors, want it live with 1: a refusal with no status",
+			stored.State, stored.ProviderErrorRun)
+	}
+	if lines := h.serverLog.lines("level=WARN", "taken as no status", "httpStatus=1400"); len(lines) != 1 {
+		t.Fatalf("the route warned %q, want one line naming the status it took as none", h.serverLog.lines("httpStatus"))
+	}
+}
+
 // A report of a generation the claim has left is not stale: it is a turn of that generation, and
 // the run is derived over the reports in generation order, so it counts where it belongs.
 func TestAReportOfAnEarlierGenerationIsRecordedInItsOwnPlace(t *testing.T) {
@@ -191,5 +226,93 @@ func TestAReportOfAnEarlierGenerationIsRecordedInItsOwnPlace(t *testing.T) {
 	kept := h.stored(token).TurnOutcomes
 	if len(kept) != 1 || kept[0].Generation != 1 || kept[0].Sequence != 9 {
 		t.Fatalf("the claim keeps %+v, want the report under its own (generation, sequence)", kept)
+	}
+}
+
+// The report of a turn that ran no prompt of the daemon's is that turn's one record, so the daemon
+// judges the turn from it (supervise's turnOutcome): refused with a status that can clear, it
+// fails nothing, and refused with one that cannot, a 400, it fails the claim, and the answer's
+// `failed` says so (claim.TurnOutcomeResponse).
+func TestAnUnpromptedTurnsReportIsJudgedAndAnswersWhetherItFailedTheClaim(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	registered := h.registered(boot, "ses_architect")
+	report := func(sequence uint64, status int) (*httptest.ResponseRecorder, claim.TurnOutcomeResponse) {
+		return h.turnOutcome(claim.TurnOutcomeRequest{
+			ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+			Generation: 1, Sequence: sequence, Outcome: claim.TurnRefused, Message: "the provider refused the reminder's turn",
+			HTTPStatus: status, Unprompted: true,
+		})
+	}
+
+	if recorder, answer := report(1, 529); recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
+		t.Fatalf("the 529 = %d %+v, want 200 with a run of 1 and no failure", recorder.Code, answer)
+	}
+	if stored := h.stored(token); stored.State == supervise.StateFailed || stored.ProviderErrorRun != 1 {
+		t.Fatalf("after the 529 the claim is %s with a run of %d provider errors, want it live with 1", stored.State, stored.ProviderErrorRun)
+	}
+
+	recorder, answer := report(2, 400)
+
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 2, Failed: true}) {
+		t.Fatalf("the 400 = %d %+v, want 200 with a run of 2 and the claim failed", recorder.Code, answer)
+	}
+	if stored := h.stored(token); stored.State != supervise.StateFailed || stored.FailureCause != supervise.CauseProviderError {
+		t.Fatalf("after the 400 the claim is %s (%q), want it failed by a provider error", stored.State, stored.FailureCause)
+	}
+}
+
+// A report of a turn that ran no prompt of the daemon's can carry the class pi-legion gave the
+// refusal with Oh My Pi's own classifier: `code: "cyber_policy"`, OpenAI's refusal of the
+// session's content. It fails the claim under cause cyber_policy whatever the status says — here
+// none, and a gateway's 503 — and the answer's `failed` says so: without it, the daemon reads a
+// refusal with no status or a 503 as one that can clear and fails nothing, and the claim's next
+// prompt sends the refused content to OpenAI again.
+func TestAnUnpromptedTurnsCyberPolicyCodeFailsTheClaimUnderItsOwnCause(t *testing.T) {
+	for _, status := range []int{0, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprintf("HTTP %d", status), func(t *testing.T) {
+			h := newHarness(t)
+			token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+			registered := h.registered(boot, "ses_architect")
+
+			recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+				ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+				Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: "cyber_policy: synthetic refusal text",
+				HTTPStatus: status, Unprompted: true, Code: claim.TurnCodeCyberPolicy,
+			})
+
+			if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1, Failed: true}) {
+				t.Fatalf("the report = %d %+v, want 200 with a run of 1 and the claim failed", recorder.Code, answer)
+			}
+			if stored := h.stored(token); stored.State != supervise.StateFailed || stored.FailureCause != supervise.CauseCyberPolicy ||
+				!strings.Contains(stored.Failure, "cyber_policy") {
+				t.Fatalf("the claim is %s (%q, %q), want it failed under cause cyber_policy", stored.State, stored.FailureCause, stored.Failure)
+			}
+		})
+	}
+}
+
+// The daemon reads one class off a report, `cyber_policy`; a report naming another is taken as one
+// that names none, as a status outside the HTTP range is, and the route warns naming it rather
+// than refusing the report, so the turn is still counted.
+func TestATurnOutcomeWithAnUnknownCodeIsTakenAsNoCodeWithAWarning(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	registered := h.registered(boot, "ses_architect")
+
+	recorder, answer := h.turnOutcome(claim.TurnOutcomeRequest{
+		ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+		Generation: 1, Sequence: 1, Outcome: claim.TurnRefused, Message: "the provider refused the reminder's turn",
+		Unprompted: true, Code: "cost_cap",
+	})
+
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
+		t.Fatalf("the report = %d %+v, want 200 with a run of 1 and no failure", recorder.Code, answer)
+	}
+	if stored := h.stored(token); stored.State == supervise.StateFailed {
+		t.Fatalf("the claim failed (%q) on a code the daemon reads none of", stored.FailureCause)
+	}
+	if lines := h.serverLog.lines("level=WARN", "taken as no code", "code=cost_cap"); len(lines) != 1 {
+		t.Fatalf("the route warned %q, want one line naming the code it took as none", h.serverLog.lines("code="))
 	}
 }

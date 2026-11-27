@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/internal/dispatch/specgraph/testdata/** fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary lists and its built binary reads
+
 import (
 	"encoding/json"
 	"errors"
@@ -14,6 +16,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // noList is the line tree writes after the directory when it reads no --retired list: the
 // instrument says what it did not read.
@@ -356,6 +360,8 @@ func TestTheBuiltBinary(t *testing.T) {
 			{[]string{"print", "--id", "order"}, "print: --approved is required"},
 			{[]string{"guard"}, "guard: --root is required"},
 			{[]string{"guard", "--root", valid, "extra"}, `guard: takes no argument but its flags, got "extra"`},
+			{[]string{"state"}, "state: --scenario is required"},
+			{[]string{"state", "--scenario", valid, "extra"}, `state: takes no argument but its flags, got "extra"`},
 		} {
 			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "spec-check: " + row.line + "\n" + usage + "\n"})
 		}
@@ -393,11 +399,23 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 }
 
 // runBinaryIn is runBinary with the variables extra, each "NAME=value", added to the environment.
+// In dir, PWD names dir made absolute, as a shell's cd sets it, and as os/exec sets it for a command
+// with no Env of its own: the command prints a relative path made absolute against its working
+// directory as PWD names it, and a PWD that named the test's own directory would make it print the
+// path with each symbolic link of dir resolved, so that a row would pass or fail by how the
+// checkout was reached.
 func runBinaryIn(t *testing.T, binary, dir string, extra []string, args ...string) result {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir
 	cmd.Env = childEnv(extra...)
+	if dir != "" {
+		pwd, err := filepath.Abs(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd.Env = append(slices.DeleteFunc(cmd.Env, func(v string) bool { return strings.HasPrefix(v, "PWD=") }), "PWD="+pwd)
+	}
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

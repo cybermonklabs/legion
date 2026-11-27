@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -101,6 +103,7 @@ func issueReferencesQueryRequest(t *testing.T, handler http.Handler, issueKey, q
 // matches and a new version of the member changes. Diagram PNG, which only that member links to,
 // is two hops from the issue and no member, since the read reads one hop.
 func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -163,6 +166,7 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 }
 
 func TestIssueReferencesExcludeOwnArtifactsAndDanglingTargets(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -183,6 +187,7 @@ func TestIssueReferencesExcludeOwnArtifactsAndDanglingTargets(t *testing.T) {
 // is never cut. The test keeps the name it had when the read walked eight hops and marked a ninth
 // truncated, the name plan.md's and verification.md's lists of checks give it.
 func TestIssueReferencesTruncateBeyondDepthEight(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -220,6 +225,7 @@ func TestIssueReferencesTruncateBeyondDepthEight(t *testing.T) {
 // ?versions=all is the full answer, byte for byte and under the same ETag, as no parameter is;
 // any value but all and latest is refused, and so is a versions given more than once.
 func TestIssueReferencesVersionsAllIsTheFullAnswerAndOtherValuesAreRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -253,6 +259,7 @@ func TestIssueReferencesVersionsAllIsTheFullAnswerAndOtherValuesAreRefused(t *te
 }
 
 func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -274,7 +281,116 @@ func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
 	}
 }
 
+// A document's Referenced by cuts each citer's excerpt as the graph read cuts the head of a text
+// beside an edge: around this deployment's dashboard URLs as references (refs.itemExcerpt). A
+// comment whose dashboard URL crosses the 240-rune bound is listed with its words before the URL,
+// read through GET /api/v1/artifacts/{id}/references as through GET /api/v1/references, and not
+// with the URL cut in half, as a read that knew no deployment would cut it.
+func TestArtifactReferencesCutAnExcerptAroundADashboardURL(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	design := createProjectDocument(t, handler, "CORE", "Design notes", "# Design\n")
+	// 229 runes and a space, so the dashboard URL after them starts before the cut at 240 and
+	// ends after it.
+	words := strings.Repeat("x", 229)
+	citer := createReferenceAPIComment(t, handler, issue.Key,
+		words+" "+testServerURL+"/issues/"+issue.Key+" follows dispatch://CORE/artifact/design-notes")
+	quoter := createReferenceAPIComment(t, handler, issue.Key, "See dispatch://"+issue.Key+"/comment/"+citer.ID)
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+design.ID+"/references", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("get artifact references: status=%d body=%s", response.Code, response.Body.String())
+	}
+	referencedBy := decodeBody[model.ArtifactReferences](t, response).ReferencedBy
+	if len(referencedBy) != 1 || referencedBy[0].ID != citer.ID {
+		t.Fatalf("referenced by = %#v; want the citing comment alone", referencedBy)
+	}
+	if got := referencedBy[0].Excerpt; got != words {
+		t.Errorf("the citing comment's excerpt through the document's references = %q; want %q, the dashboard URL the cut falls inside left out whole", got, words)
+	}
+	outgoing := graphEdges(t, handler, url.Values{"from": {"dispatch://" + issue.Key + "/comment/" + quoter.ID}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.ID != citer.ID || outgoing.Edges[0].Excerpt == nil {
+		t.Fatalf("outgoing edges = %#v; want one mention of the citing comment with an excerpt", outgoing.Edges)
+	}
+	if got := outgoing.Edges[0].Excerpt.Text; got != words {
+		t.Errorf("the citing comment's excerpt through the graph read = %q; want %q", got, words)
+	}
+}
+
+// A references answer to a caller that sends no Dispatch-Trees header is the bytes the route
+// wrote before an edge's excerpt carried a tree: each edge written as model.GraphEdge writes it,
+// `excerpt` between `block` and `created_at`. The read shape declares the edge's fields itself
+// (graphEdgeRead), so it is also held to declare model.GraphEdge's own fields, in the edge's
+// order, which is what a field added to the edge and not to the shape would break.
+func TestAReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": "Ship the **reference** graph?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": "Decided in " + askRef + ".", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	for _, query := range []url.Values{{"to": {askRef}}, {"from": {messageRef}}} {
+		response := treesRequest(t, handler, "/api/v1/references?"+query.Encode(), false)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/references?%s: status=%d body=%s", query.Encode(), response.Code, response.Body.String())
+		}
+		// The answer as the route wrote it before: the node as it stands, and each edge as
+		// model.GraphEdge, encoded as WriteJSON encodes.
+		var before struct {
+			Node         json.RawMessage   `json:"node"`
+			Edges        []model.GraphEdge `json:"edges"`
+			UnknownKinds []string          `json:"unknown_kinds,omitempty"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &before); err != nil {
+			t.Fatalf("decode GET /api/v1/references?%s: %v", query.Encode(), err)
+		}
+		if len(before.Edges) != 1 || before.Edges[0].Excerpt == nil {
+			t.Fatalf("GET /api/v1/references?%s edges = %#v; want the one mention with its excerpt", query.Encode(), before.Edges)
+		}
+		var want bytes.Buffer
+		if err := json.NewEncoder(&want).Encode(before); err != nil {
+			t.Fatalf("encode the answer as it was written before: %v", err)
+		}
+		if !bytes.Equal(response.Body.Bytes(), want.Bytes()) {
+			t.Errorf("GET /api/v1/references?%s without the trees header =\n\t%s\nwant the bytes model.GraphEdge writes\n\t%s",
+				query.Encode(), response.Body.String(), want.String())
+		}
+	}
+
+	if got, want := jsonFieldNames(reflect.TypeOf(graphEdgeRead{})), jsonFieldNames(reflect.TypeOf(model.GraphEdge{})); !slices.Equal(got, want) {
+		t.Errorf("graphEdgeRead declares %v, want model.GraphEdge's own fields in its order, %v", got, want)
+	}
+}
+
+// jsonFieldNames is the JSON name of each field shape declares, in its order.
+func jsonFieldNames(shape reflect.Type) []string {
+	var fields []string
+	for index := range shape.NumField() {
+		name, _, _ := strings.Cut(shape.Field(index).Tag.Get("json"), ",")
+		fields = append(fields, name)
+	}
+	return fields
+}
+
 func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// Authentication comes before the versions parameter: a value the route refuses still
 	// answers 401 to a caller with no identity.
@@ -287,12 +403,31 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 	}
 }
 
-// A closure walk that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT at about
-// that bound and gives its connection back. refs is locked in another connection, so the walk,
-// which reads refs, waits however fast it would run, and the bound is what ends it. The control
-// is the first read, before the lock: the same request answers 200.
+// A closure read that runs past referencesClosureBound answers 503 REFERENCES_TIMEOUT naming that
+// bound, and gives its connection back. refs is locked in another connection until the test ends,
+// so the read, which reads refs, waits however fast it would run, and only the bound can end it: a
+// read with no bound never answers, and the wait for the answer fails. The answer names the
+// constant whatever ended the read, so the read is held to its bound from both sides:
+//   - From below, on the test's own clock around the request: the read starts inside the request,
+//     and the bound ends it only once the bound has passed since it started, less the millisecond
+//     setStatementBudget rounds down: the statement it cuts was given what was left of the bound,
+//     and the budget is spent (errClosureBudgetSpent) only with less than a millisecond left. A
+//     loaded machine only lengthens that clock, so it cannot fail a read that keeps its bound.
+//   - On the server's own statements on the read's connection (requireReadEndedAtItsBudget): its
+//     first budget statement gives no more than the bound; each later budget statement gives no
+//     more than what is left of the bound once the read has run from its first budget statement
+//     to the end of the statement before; from its last budget statement to the rollback
+//     boundedClosure sends once the read has ended, the read runs at least the budget that
+//     statement gave, less a millisecond; and it ends on Postgres's statement timeout, which the
+//     budget sets, not on the context. Each of these holds however late this process runs the
+//     product's goroutines, so the test's own setup and scheduling count for nothing.
+//
+// A read ended sooner or later than its bound fails. The control is the first read, before the
+// lock: the same request answers 200.
 func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	t.Parallel()
+	span := &requestSpan{}
+	handler, database, _ := newTestServer(t, testServerOptions{tracer: span})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	if response := issueReferencesRequest(t, handler, issue.Key, ""); response.Code != http.StatusOK {
@@ -300,25 +435,158 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 	}
 	holdLock(t, database, "lock table refs in access exclusive mode")
 	acquired := database.Pool.Stat().AcquiredConns()
-	started := time.Now()
-	response := issueReferencesRequest(t, handler, issue.Key, "")
-	took := time.Since(started)
+	span.arm()
+	type answer struct {
+		response *httptest.ResponseRecorder
+		took     time.Duration
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		began := time.Now()
+		response := issueReferencesRequest(t, handler, issue.Key, "")
+		answered <- answer{response: response, took: time.Since(began)}
+	}()
+	got := testwait.Receive(t, "the answer of references past the bound while refs stays locked", answered)
+	response := got.response
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("references past the bound: status=%d body=%s, want 503", response.Code, response.Body.String())
 	}
 	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
 		t.Errorf("references past the bound answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
 	}
-	if took < referencesClosureBound || took > referencesClosureBound+3*time.Second {
-		t.Errorf("references past the bound answered after %s, want about its %s bound", took, referencesClosureBound)
+	if lower := referencesClosureBound - time.Millisecond; got.took < lower {
+		t.Errorf("references past the bound answered %s after the request began, before %s, its %s bound less the millisecond its budget rounds down", got.took, lower, referencesClosureBound)
 	}
-	var conns int32
-	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
-		conns = database.Pool.Stat().AcquiredConns()
-		return conns <= acquired
+	requireReadEndedAtItsBudget(t, span, "references past the bound")
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the walk to give its connection back: the pool's acquired connections down to the %d it held before the request", acquired), func() (int32, bool) {
+		conns := database.Pool.Stat().AcquiredConns()
+		return conns, conns <= acquired
 	})
-	if conns > acquired {
-		t.Errorf("the pool holds %d acquired connections after the answer, more than the %d it held before the request: the walk kept its connection", conns, acquired)
+}
+
+// requestSpan is a tracer on the server's pool (testServerOptions.tracer) that reads one bounded
+// closure read on the server's own statements, from the hooks pgx calls as each starts and ends:
+// from the read's first budget statement after arm (setStatementBudget, which closureBudget sends
+// before each statement of the read, starting it with refs.ClosureTag) to the start of the
+// rollback boundedClosure sends on that same connection once the read has ended. It keeps the
+// first budget the read gave and the last, each with when its statement started and when the
+// statement before it on that connection ended, and the error of the first statement to fail on
+// that connection, the one the bound cut. Statements of other connections, the server's
+// background work among them, count for nothing.
+type requestSpan struct {
+	mu    sync.Mutex
+	armed bool
+	// conn is the read's connection; first and last are its first and its latest budget
+	// statements; lastEnd is when the latest statement on conn ended; ended is when the rollback
+	// started, and err the first error a statement on conn answered.
+	conn        *pgx.Conn
+	first, last spanBudget
+	lastEnd     time.Time
+	ended       time.Time
+	err         error
+}
+
+// spanBudget is one budget statement of the read: the statement_timeout it gave, as set_config
+// takes it ("1998ms"), when it started, and when the statement before it on the read's connection
+// ended (zero for the read's first budget statement).
+type spanBudget struct {
+	gave    string
+	started time.Time
+	after   time.Time
+}
+
+// arm starts the span at the next budget statement the server's pool starts.
+func (s *requestSpan) arm() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.armed = true
+}
+
+func (s *requestSpan) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	budget := strings.HasPrefix(data.SQL, refs.ClosureTag) && strings.Contains(data.SQL, "set_config('statement_timeout'")
+	switch {
+	case budget && s.armed && (s.conn == nil || conn == s.conn) && s.ended.IsZero():
+		statement := spanBudget{started: time.Now(), after: s.lastEnd}
+		if len(data.Args) == 1 {
+			statement.gave, _ = data.Args[0].(string)
+		}
+		if s.conn == nil {
+			s.conn, s.first = conn, statement
+		}
+		s.last = statement
+	case s.conn != nil && conn == s.conn && s.ended.IsZero() && data.SQL == "rollback":
+		s.ended = time.Now()
+	}
+	return ctx
+}
+
+func (s *requestSpan) TraceQueryEnd(_ context.Context, conn *pgx.Conn, data pgx.TraceQueryEndData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn == nil || conn != s.conn || !s.ended.IsZero() {
+		return
+	}
+	s.lastEnd = time.Now()
+	if s.err == nil && data.Err != nil {
+		s.err = data.Err
+	}
+}
+
+// spanReading is what requestSpan read of the read: its first and last budget statements, when
+// its rollback started (zero when none did), and the first error a statement of it answered.
+type spanReading struct {
+	first, last spanBudget
+	ended       time.Time
+	err         error
+}
+
+func (s *requestSpan) read() spanReading {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return spanReading{first: s.first, last: s.last, ended: s.ended, err: s.err}
+}
+
+// requireReadEndedAtItsBudget requires the bounded closure read span timed, which what names, to
+// have kept its budget, on the server's own statements on the read's connection: its first budget
+// statement gave no more than referencesClosureBound; its last budget statement gave no more than
+// what was left of the bound once the read had run from its first budget statement to the end of
+// the statement before the last (the read started before the first, and closureBudget reads the
+// time left only after the statement before has ended, so on the one clock of this process the
+// product had spent at least that span, whenever it ran); from its last budget statement to its
+// rollback it ran at least the budget that statement gave, less a millisecond, since the statement
+// that budget was for starts after it; and it ended on Postgres's statement timeout (57014), which
+// the budget sets. Under pgx's default context handler a statement the context ends answers an
+// error of pgx's own, so a read the context ended fails here. No check reads how long the read
+// took: a process that runs the product late only widens the margins these checks leave.
+func requireReadEndedAtItsBudget(t *testing.T, span *requestSpan, what string) {
+	t.Helper()
+	read := span.read()
+	switch {
+	case read.first.gave == "":
+		t.Errorf("%s gave its read no statement_timeout budget on the server's pool (setStatementBudget): the read is not bounded in the database", what)
+		return
+	case read.ended.IsZero():
+		t.Errorf("%s never rolled back its read's transaction on the read's connection", what)
+		return
+	}
+	if ms, err := strconv.ParseInt(strings.TrimSuffix(read.first.gave, "ms"), 10, 64); err != nil || ms > referencesClosureBound.Milliseconds() {
+		t.Errorf("%s gave the read's first statement a statement_timeout of %q, want at most its %s bound", what, read.first.gave, referencesClosureBound)
+	}
+	ms, err := strconv.ParseInt(strings.TrimSuffix(read.last.gave, "ms"), 10, 64)
+	if kept := time.Duration(ms)*time.Millisecond - time.Millisecond; err != nil || read.ended.Sub(read.last.started) < kept {
+		t.Errorf("%s ended its read (%v) %s after its last budget statement, which gave %q: it did not keep that budget, less a millisecond", what, read.err, read.ended.Sub(read.last.started), read.last.gave)
+	}
+	if !read.last.after.IsZero() {
+		spent := read.last.after.Sub(read.first.started)
+		if left := referencesClosureBound - spent; time.Duration(ms)*time.Millisecond > left {
+			t.Errorf("%s gave its last budget statement %q after its read had run at least %s, more than the %s left of its %s bound: its statements do not share the one bound", what, read.last.gave, spent, left, referencesClosureBound)
+		}
+	}
+	var timeout *pgconn.PgError
+	if !errors.As(read.err, &timeout) || timeout.Code != "57014" || !strings.Contains(timeout.Message, "statement timeout") {
+		t.Errorf("%s ended its read with %v, want Postgres's statement timeout (57014) that its budget sets, not its context", what, read.err)
 	}
 }
 
@@ -328,14 +596,20 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 // they run after the out and in statements. events is locked, and refs is locked for 1.5 s, from
 // other connections: the out statement waits out the lock on refs, and a loader then waits on
 // events. A read that gave each statement the whole bound would wait 1.5 s and then 2 s more, and
-// the context's 3 s would end it; with one budget the loader's statement ends at 2 s and the route
-// answers 503 REFERENCES_TIMEOUT then. The read gives its connection back: the pool then holds
-// exactly the connections it held with events locked, the lock's own among them. The control is
-// the first read, before the locks: the same request answers 200.
+// the context's 3 s would end it; with one budget the loader's statement ends at 2 s, on the
+// statement timeout the budget set, and the route answers 503 REFERENCES_TIMEOUT then
+// (requireReadEndedAtItsBudget reads which ended it, on the server's own statements). The 1.5 s
+// is a hold the test releases: load only delays the release, and a release after the budget is
+// spent makes the out statement the one the bound cuts, on the same statement timeout, which a
+// correct read still answers. The read gives its connection back: the pool then holds exactly the
+// connections it held with events locked, the lock's own among them. The control is the first
+// read, before the locks: the same request answers 200.
 func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
+	t.Parallel()
 	// No document settles during the test, so no write of the server's own waits on events with a
-	// connection of the pool.
-	handler, database := blockIndexHandler(t)
+	// connection of the pool (blockIndexHandler's server, here with requestSpan on its pool).
+	span := &requestSpan{}
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour, tracer: span})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
 	linked := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -358,28 +632,28 @@ func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
 		releaseRefs()
 	}()
 	// Cleanups run last first, so this wait ends before holdLock's own release of refs runs.
-	t.Cleanup(func() { <-refsReleased })
+	t.Cleanup(func() { testwait.Receive(t, "the release of refs", refsReleased) })
+	span.arm()
 	started := time.Now()
 	response := issueReferencesRequest(t, handler, issue.Key, "")
 	took := time.Since(started)
-	<-refsReleased
+	testwait.Receive(t, "the release of refs, 1.5 s after the read began", refsReleased)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("references with events locked: status=%d after %s body=%s, want 503 after %s", response.Code, took, response.Body.String(), referencesClosureBound)
 	}
 	if refusal := decodeBody[apiErrorBody](t, response); refusal.Code != "REFERENCES_TIMEOUT" || !strings.Contains(refusal.Error, referencesClosureBound.String()) {
 		t.Errorf("references with events locked answered %s, want REFERENCES_TIMEOUT naming the %s bound", response.Body.String(), referencesClosureBound)
 	}
-	if limit := referencesClosureBound + 500*time.Millisecond; took < referencesClosureBound || took >= limit {
-		t.Errorf("references with events locked answered after %s, want at least its %s bound and less than %s", took, referencesClosureBound, limit)
+	// From below on the test's own clock, which load only lengthens; the rest on the server's own
+	// statements.
+	if lower := referencesClosureBound - time.Millisecond; took < lower {
+		t.Errorf("references with events locked answered after %s, before %s, its %s bound less the millisecond its budget rounds down", took, lower, referencesClosureBound)
 	}
-	var conns int32
-	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
-		conns = database.Pool.Stat().AcquiredConns()
-		return conns == acquired
+	requireReadEndedAtItsBudget(t, span, "references with events locked")
+	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("the read to give its connection back: the pool's acquired connections back to the %d it held with events locked", acquired), func() (int32, bool) {
+		conns := database.Pool.Stat().AcquiredConns()
+		return conns, conns == acquired
 	})
-	if conns != acquired {
-		t.Errorf("the pool holds %d acquired connections after the answer, want the %d it held with events locked", conns, acquired)
-	}
 }
 
 // recordingTx is a transaction that records each statement sent through it before sending it.
@@ -408,6 +682,7 @@ func (r *recordingTx) QueryRow(ctx context.Context, sql string, args ...any) pgx
 // the timeout off, and sets the timeout to 1ms at 1 ms left. The transaction starts with a
 // statement_timeout of its own, 1234ms, which the refusal must leave as it is.
 func TestReferencesBudgetRefusesUnderOneMillisecond(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	// The read of the setting runs under the 1ms it set, so a backend kept off the CPU that long
 	// cancels it (SQLSTATE 57014). Such an attempt shows nothing of the setting, and the case runs
@@ -568,6 +843,7 @@ func insertRemovedBlockLink(t *testing.T, database *store.Store, kind, id, toKin
 // later and when the comment X's checks link to is edited, and neither moves X's last_seq or the
 // kinds and via of any row.
 func TestIssueReferencesLinksListEachNodeOnce(t *testing.T) {
+	t.Parallel()
 	// No document settles during the test, so no version but the test's own moves the ETag.
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
@@ -824,6 +1100,171 @@ func TestIssueReferencesLinksListEachNodeOnce(t *testing.T) {
 	}
 }
 
+// issueReferencesNameRows is the one row of each list an issue's references read gives for
+// issueReferencesNameFixture.
+type issueReferencesNameRows struct {
+	link, linkedFrom model.ReferenceLink
+}
+
+// issueReferencesNameFixture makes an issue whose references read lists one row in each list, a
+// comment whose body holds a bare issue address: in links, a comment of another issue that the
+// issue's own comment links to, and in linked_from, a comment of that other issue that links to
+// the issue. It answers the handler, the issue's key and the two rows as the read lists them,
+// each named by its comment's whole body, which the read's cut keeps whole at this length.
+// Each issue is in a project of its own: the issues route refuses a second issue of one title in
+// one project as a possible duplicate.
+func issueReferencesNameFixture(t *testing.T) (http.Handler, string, issueReferencesNameRows) {
+	t.Helper()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	createReferenceAPIProject(t, handler, "OPS")
+	createReferenceAPIProject(t, handler, "SRE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	named := createReferenceAPIIssue(t, handler, "OPS")
+	other := createReferenceAPIIssue(t, handler, "SRE")
+	linkedBody := "Decided in dispatch://" + named.Key + " on **Friday**."
+	linked := createReferenceAPIComment(t, handler, other.Key, linkedBody)
+	own := createReferenceAPIComment(t, handler, issue.Key, "See dispatch://"+other.Key+"/comment/"+linked.ID+" here.")
+	citingBody := "dispatch://" + named.Key + " waits on dispatch://" + issue.Key + "."
+	citing := createReferenceAPIComment(t, handler, other.Key, citingBody)
+	return handler, issue.Key, issueReferencesNameRows{
+		link: model.ReferenceLink{
+			Node: model.GraphNode{Kind: "comment", ID: linked.ID}, Name: linkedBody,
+			Kinds: []string{"mentions"}, Via: model.ReferenceVia{Kind: "comment", ID: own.ID},
+		},
+		linkedFrom: model.ReferenceLink{
+			Node: model.GraphNode{Kind: "comment", ID: citing.ID}, Name: citingBody,
+			Kinds: []string{"mentions"}, Via: model.ReferenceVia{Kind: "issue", ID: issue.Key},
+		},
+	}
+}
+
+// Under `Dispatch-Trees: 1` each row of an issue's references read carries name_tree, the tree
+// pmdoc.DisplayJSON makes of exactly that row's name, in links and in linked_from alike, and the
+// document the route table emits declares that tree where the answer carries it. Each name here
+// is a comment's body holding a bare issue address, which the tree reads as a reference: the
+// Artifacts tab draws the row's name from it, the address read as its target's name.
+func TestIssueReferencesRowsCarryTheTreeOfTheirNamesUnderTheHeader(t *testing.T) {
+	t.Parallel()
+	handler, issueKey, want := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	response := treesRequest(t, handler, target, true)
+	var answer struct {
+		Links      []referenceLinkRead `json:"links"`
+		LinkedFrom []referenceLinkRead `json:"linked_from"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode GET %s with the header: %v", target, err)
+	}
+	for _, list := range []struct {
+		name string
+		rows []referenceLinkRead
+		want model.ReferenceLink
+	}{{"links", answer.Links, want.link}, {"linked_from", answer.LinkedFrom, want.linkedFrom}} {
+		if len(list.rows) != 1 {
+			t.Fatalf("%s holds %d rows, want the one comment of the fixture: %s", list.name, len(list.rows), response.Body.String())
+		}
+		row := list.rows[0]
+		if row.Node.Kind != list.want.Node.Kind || row.Node.ID != list.want.Node.ID || row.Name != list.want.Name ||
+			!slices.Equal(row.Kinds, list.want.Kinds) || row.Via != list.want.Via {
+			t.Fatalf("%s holds %s %s named %q [%s] via %s %s, want %s %s named %q [%s] via %s %s", list.name,
+				row.Node.Kind, row.Node.ID, row.Name, strings.Join(row.Kinds, ","), row.Via.Kind, row.Via.ID,
+				list.want.Node.Kind, list.want.Node.ID, list.want.Name, strings.Join(list.want.Kinds, ","), list.want.Via.Kind, list.want.Via.ID)
+		}
+		if row.NameTree == nil {
+			t.Fatalf("under the header, the %s row named %q carries no name_tree: %s", list.name, row.Name, response.Body.String())
+		}
+		got := sameShape(t, json.RawMessage(row.NameTree))
+		wantTree := sameShape(t, pmdoc.DisplayJSON(row.Name, pmdoc.DisplayLatest))
+		if !bytes.Equal(got, wantTree) {
+			t.Errorf("the %s row's name_tree is\n\t%s\nwant the tree of its name %q\n\t%s", list.name, got, row.Name, wantTree)
+		}
+	}
+	node, _ := readOpenAPITree(t)
+	document, _ := node.(map[string]any)
+	for _, treePath := range []string{"links.0.name_tree", "linked_from.0.name_tree"} {
+		requireTreeInAnswerSchema(t, document, "/api/v1/issues/{key}/references", treePath)
+	}
+}
+
+// An issue's references answer to a caller that sends no Dispatch-Trees header is the bytes the
+// route wrote before a row carried its name's tree: no row carries name_tree, and the body is
+// what model.IssueReferences writes of itself. The read shapes declare the model's fields
+// themselves (issueReferencesRead, referenceLinkRead), so they are also held to declare the
+// model's own fields in its order, a row's tree after them, which is what a field added to the
+// model and not to a shape would break.
+func TestIssueReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
+	t.Parallel()
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	response := treesRequest(t, handler, target, false)
+	var rows struct {
+		Links      []map[string]json.RawMessage `json:"links"`
+		LinkedFrom []map[string]json.RawMessage `json:"linked_from"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode GET %s without the header: %v", target, err)
+	}
+	if len(rows.Links) != 1 || len(rows.LinkedFrom) != 1 {
+		t.Fatalf("GET %s without the header holds %d links and %d linked_from, want one of each: %s",
+			target, len(rows.Links), len(rows.LinkedFrom), response.Body.String())
+	}
+	for _, row := range slices.Concat(rows.Links, rows.LinkedFrom) {
+		if tree, carried := row["name_tree"]; carried {
+			t.Errorf("without the header, the row named %s carries name_tree %s", row["name"], tree)
+		}
+	}
+	var want bytes.Buffer
+	if err := json.NewEncoder(&want).Encode(decodeBody[model.IssueReferences](t, response)); err != nil {
+		t.Fatalf("encode the answer as model.IssueReferences writes it: %v", err)
+	}
+	if !bytes.Equal(response.Body.Bytes(), want.Bytes()) {
+		t.Errorf("GET %s without the trees header =\n\t%s\nwant the bytes model.IssueReferences writes\n\t%s", target, response.Body.String(), want.String())
+	}
+	if got, want := jsonFieldNames(reflect.TypeOf(issueReferencesRead{})), jsonFieldNames(reflect.TypeOf(model.IssueReferences{})); !slices.Equal(got, want) {
+		t.Errorf("issueReferencesRead declares %v, want model.IssueReferences' own fields in its order, %v", got, want)
+	}
+	if got, want := jsonFieldNames(reflect.TypeOf(referenceLinkRead{})), append(jsonFieldNames(reflect.TypeOf(model.ReferenceLink{})), "name_tree"); !slices.Equal(got, want) {
+		t.Errorf("referenceLinkRead declares %v, want model.ReferenceLink's own fields in its order, then name_tree: %v", got, want)
+	}
+}
+
+// A caller that asks for the rows' name trees and one that sends no header never share a
+// validator of an issue's references: the reading is hashed into the ETag (referencesETag), so
+// neither can be answered 304 against the other's.
+func TestIssueReferencesTreesRequestAndOneWithoutNeverShareAnETag(t *testing.T) {
+	t.Parallel()
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	with := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target+" with trees")
+	without := listETagOf(t, listRead(t, handler, target, listReadOptions{}), "GET "+target+" without trees")
+	if with == without {
+		t.Fatalf("GET %s answers one ETag %s for both readings", target, with)
+	}
+	crossed := listRead(t, handler, target, listReadOptions{etag: with})
+	if crossed.Code != http.StatusOK {
+		t.Errorf("GET %s without trees, holding the trees reading's ETag: status=%d, want 200", target, crossed.Code)
+	}
+}
+
+// A deploy that reads markdown differently moves an issue's references validator, however the
+// answer itself comes out: the display parser version is hashed into it, so no ETag the build
+// before it gave is matched by this one.
+func TestADeployOfANewDisplayParserVersionChangesTheIssueReferencesETag(t *testing.T) {
+	// Not parallel: it moves the process's display parser version (pmdoc.SetDisplayTreeVersionForTest).
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	before := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target)
+
+	restore := pmdoc.SetDisplayTreeVersionForTest(pmdoc.DisplayTreeVersion + 1)
+	defer restore()
+	answered := listRead(t, handler, target, listReadOptions{trees: true, etag: before})
+	what := fmt.Sprintf("GET %s at display parser version %d", target, pmdoc.DisplayTreeVersionNow())
+	if got := listETagOf(t, answered, what); got == before {
+		t.Errorf("%s answers the ETag %s the version before it gave", what, before)
+	}
+}
+
 func graphRequest(t *testing.T, handler http.Handler, query url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	return dispatchRequest(t, handler, http.MethodGet, "/api/v1/references?"+query.Encode(), nil, "alice")
@@ -844,6 +1285,7 @@ func graphEdges(t *testing.T, handler http.Handler, query url.Values) model.Grap
 // the message.created write. Read from the message, the same edge points out at the ask. Filters
 // narrow it and malformed input is 400.
 func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -939,8 +1381,8 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	// The read waits for an observation taken after it to be proven safe, so it answers the
 	// message committed before it. A read that answered inside referencesSinceWait had that
 	// proof, so its answer is final and a wrong one fails the test at once; awaitSinceRead reads
-	// again only a read held past that wait, which an open transaction elsewhere on the shared
-	// test cluster can cause.
+	// again only a read held past that wait, which an event write of the server's database held
+	// open that long can cause, as a loaded machine can keep one.
 	since := awaitSinceRead(t, database, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
 		func() model.GraphReferences {
 			return graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
@@ -969,6 +1411,96 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	}
 }
 
+// The heads an edge shows are cut where no reference crosses the cut: the 240-rune head of the
+// ask an outgoing edge reaches (refs.itemExcerpt), and the 480-rune excerpt of the message block
+// and of the document block an incoming edge comes from (refs.BlockExcerpt). A key either bound
+// falls inside is left out whole, rather than shown as `CORE-12`, a working link to another issue.
+func TestReferencesExcerptsCutNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	// 232 runes, so a key after them starts before the cut at 240 and ends after it.
+	question := strings.Repeat("x", 231)
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": question + " CORE-1234 or not?", "options": []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	// 472 runes with the space after them, so a key after them crosses the cut at 480.
+	cites := "Decided in " + askRef + " "
+	block := cites + strings.Repeat("y", 471-len(cites))
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": block + " CORE-1234 follows.", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	outgoing := graphEdges(t, handler, url.Values{"from": {messageRef}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.Ref != askRef || outgoing.Edges[0].Excerpt == nil {
+		t.Fatalf("outgoing edges = %#v; want one mention of the ask with an excerpt", outgoing.Edges)
+	}
+	if got := outgoing.Edges[0].Excerpt.Text; got != question {
+		t.Fatalf("the ask's excerpt = %q; want %q, the key the cut falls inside left out whole", got, question)
+	}
+
+	incoming := graphEdges(t, handler, url.Values{"to": {askRef}})
+	if len(incoming.Edges) != 1 || incoming.Edges[0].Excerpt == nil {
+		t.Fatalf("incoming edges = %#v; want the message's block with an excerpt", incoming.Edges)
+	}
+	if got := incoming.Edges[0].Excerpt.Text; got != block {
+		t.Fatalf("the message block's excerpt = %q; want %q, the key the cut falls inside left out whole", got, block)
+	}
+
+	design := createProjectDocument(t, handler, "ACME", "Design notes", "# Design\n\n"+block+" CORE-1234 follows.\n")
+	mention := documentMention(t, handler, askRef, design.ID, design.RefKey)
+	if mention.Excerpt == nil || mention.Excerpt.Text != block {
+		t.Fatalf("the document block's excerpt = %#v; want %q, the key the cut falls inside left out whole", mention.Excerpt, block)
+	}
+}
+
+// A text that opens with a URL longer than the 240-rune bound keeps its rune cut beside an edge:
+// a URL of anywhere else names nothing Dispatch holds, so the cut does not move back over it, and
+// a cut never empties the head, so the backlink is never drawn with an empty paragraph.
+func TestReferencesKeepTheExcerptOfATextOpeningWithALongURL(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "LEGION")
+	createReferenceAPIProject(t, handler, "ACME")
+	legion := createReferenceAPIIssue(t, handler, "LEGION")
+	acme := createReferenceAPIIssue(t, handler, "ACME")
+	question := "https://example.com/" + strings.Repeat("x", 300) + " - yes or no?"
+	askResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+legion.Key+"/asks", map[string]any{
+		"question": question,
+		"options":  []map[string]string{{"label": "Yes"}, {"label": "No"}},
+	}, "alice")
+	if askResponse.Code != http.StatusCreated {
+		t.Fatalf("create ask: status=%d body=%s", askResponse.Code, askResponse.Body.String())
+	}
+	askRef := "dispatch://" + legion.Key + "/ask/" + decodeBody[model.Ask](t, askResponse).ID
+	messageResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+acme.Key+"/messages", map[string]any{
+		"body": "Decided in " + askRef + ".", "actor": sessionActor(),
+	})
+	if messageResponse.Code != http.StatusCreated {
+		t.Fatalf("create message: status=%d body=%s", messageResponse.Code, messageResponse.Body.String())
+	}
+	messageRef := "dispatch://" + acme.Key + "/message/" + decodeBody[model.Message](t, messageResponse).ID
+
+	outgoing := graphEdges(t, handler, url.Values{"from": {messageRef}})
+	if len(outgoing.Edges) != 1 || outgoing.Edges[0].Node.Ref != askRef {
+		t.Fatalf("outgoing edges = %#v; want one mention of the ask", outgoing.Edges)
+	}
+	if excerpt := outgoing.Edges[0].Excerpt; excerpt == nil || excerpt.Text != question[:240] {
+		t.Fatalf("the ask's excerpt = %#v; want its first 240 runes, %q", excerpt, question[:240])
+	}
+}
+
 // awaitSinceRead reads again until holds accepts the answer, because a since read answers only
 // the edges at or below the event log's safe horizon (awaitHorizonRead). The what argument names
 // the read in a failure, and database is the one the server reads. It returns the answer holds
@@ -987,21 +1519,21 @@ func awaitSinceRead(
 }
 
 // awaitHorizonRead reads again until holds accepts the answer, for a route that answers only what
-// stands at or below the event log's safe horizon (sinceHorizon): any transaction holding a
-// transaction id on the Postgres instance holds that horizon back - in this package, storetest's
-// own "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other package's.
+// stands at or below the event log's safe horizon (sinceHorizon): an event write of the server's
+// database holds that horizon back for as long as it stays open - the test's own fixtures, the
+// server's own request writes - and a transaction in another database, or one that writes no
+// event, holds nothing (events.Horizon).
 // Such a read waits out referencesSinceWait and then answers at the horizon it was left with,
-// which may be short of what committed before it, so it is read again for as long as the horizon
-// says it is held back (horizontest.Watch), however long that is; database is the one the server
-// reads. A read that answered within referencesSinceWait was not held back: what it answered is
-// what it owed, so holds failing on it is a product failure and fails the test at once. what names
-// the read and show its answer in either failure.
+// which may be short of what committed before it, so it is read again until the answer is whole,
+// however long that is: the watch reads no warning, and only a hold of database past
+// horizontest.OwnHoldBound or the drain before the run's deadline ends it
+// (horizontest.NewWatchInProcess); database is the one the server reads. A read that answered
+// within referencesSinceWait was not held back: what it answered is what it owed, so holds failing
+// on it is a product failure and fails the test at once. what names the read and show its answer
+// in either failure.
 func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, read func() T, holds func(T) bool, show func(T) string) T {
 	t.Helper()
-	warnings, stop := horizontest.Listen(t)
-	defer stop()
-	watch := horizontest.NewWatch(t, warnings, database.Pool.Config().ConnConfig.Database, database.Pool)
+	watch := horizontest.NewWatchInProcess(t, database)
 	for {
 		started := time.Now()
 		answer := read()
@@ -1025,6 +1557,7 @@ func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, r
 // proven so far would answer nothing here, the first after boot, and each later read would stop
 // at the previous read's observation, however old. awaitSinceRead settles which answer is final.
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -1054,6 +1587,7 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 // Once a commits it answers both. Each edit indexes its comment's body as a comment write does
 // (planFoundReferences and the replacement it plans, then refs.Stamp with the edit's event).
 func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	broker := deps.Events
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1152,6 +1686,7 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 // the same mention points out at the issue; read from the issue's spec the structural edge points
 // out at it.
 func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -1215,6 +1750,78 @@ func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) 
 	}
 }
 
+// Under `Dispatch-Trees: 1` every excerpt an edge shows carries the display tree of its text, the
+// tree pmdoc.DisplayJSON makes of exactly that text, and without the header none does. That
+// holds for the block holding a document's mention, which the dashboard draws through the
+// renderer, and for the child's title (child_of) and the document's name (attached_to) too,
+// which it draws as the characters they are and whose tree it never reads: one rule for every
+// excerpt keeps the answer's promise that a text with a `_tree` beside it has one.
+func TestReferencesExcerptsCarryTheirTreesOnlyUnderTheHeader(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	createReferenceAPIProject(t, handler, "OPS")
+	parent := createReferenceAPIIssue(t, handler, "CORE")
+	child := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": "CORE", "title": "Child **work**", "parent": parent.Key,
+	}, "alice")
+	if child.Code != http.StatusCreated {
+		t.Fatalf("create child issue: status=%d body=%s", child.Code, child.Body.String())
+	}
+	createProjectDocument(t, handler, "OPS", "Design notes", "# Design\n\nThe *plan* lives in dispatch://"+parent.Key+" and nowhere else.\n")
+
+	target := "/api/v1/references?" + url.Values{"to": {"dispatch://" + parent.Key}}.Encode()
+	excerpts := func(trees bool) map[string]graphExcerptRead {
+		t.Helper()
+		var answer struct {
+			Edges []struct {
+				Kind    string            `json:"kind"`
+				Excerpt *graphExcerptRead `json:"excerpt"`
+			} `json:"edges"`
+		}
+		if err := json.Unmarshal(treesRequest(t, handler, target, trees).Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode GET %s (trees=%v): %v", target, trees, err)
+		}
+		byKind := make(map[string]graphExcerptRead, len(answer.Edges))
+		for _, edge := range answer.Edges {
+			if edge.Excerpt == nil {
+				t.Fatalf("GET %s (trees=%v): the %s edge carries no excerpt", target, trees, edge.Kind)
+			}
+			byKind[edge.Kind] = *edge.Excerpt
+		}
+		if len(byKind) != 3 {
+			t.Fatalf("GET %s (trees=%v) excerpts = %+v, want a mention, a child_of and an attached_to", target, trees, byKind)
+		}
+		return byKind
+	}
+
+	for kind, excerpt := range excerpts(false) {
+		if excerpt.TextTree != nil {
+			t.Errorf("without the header, the %s excerpt %q carries a tree %s", kind, excerpt.Text, excerpt.TextTree)
+		}
+	}
+	with := excerpts(true)
+	for _, row := range []struct{ name, kind, text string }{
+		{"a body's head", "mentions", "The *plan* lives in dispatch://" + parent.Key + " and nowhere else."},
+		{"a title", "child_of", "Child **work**"},
+		{"a name", "attached_to", "spec.md"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			excerpt := with[row.kind]
+			if excerpt.Text != row.text {
+				t.Fatalf("the %s excerpt = %q, want %q", row.kind, excerpt.Text, row.text)
+			}
+			want := sameShape(t, pmdoc.DisplayJSON(excerpt.Text, pmdoc.DisplayLatest))
+			if excerpt.TextTree == nil {
+				t.Fatalf("under the header, the %s excerpt %q carries no tree", row.kind, excerpt.Text)
+			}
+			if got := sameShape(t, json.RawMessage(excerpt.TextTree)); !bytes.Equal(got, want) {
+				t.Errorf("the %s excerpt's tree is\n\t%s\nwant the tree of %q\n\t%s", row.kind, got, excerpt.Text, want)
+			}
+		})
+	}
+}
+
 // insertUnknownKindEdges plants refs rows whose other end is a node kind this build does not
 // know, as a newer build sharing the database would write them.
 func insertUnknownKindEdges(t *testing.T, database *store.Store, edges [][4]string) {
@@ -1232,6 +1839,7 @@ func insertUnknownKindEdges(t *testing.T, database *store.Store, edges [][4]stri
 // the graph read skips it in both directions instead of answering 500, and the issue header's
 // count is the number of edges its panel lists, not one more.
 func TestReferencesAnswerAroundAnEdgeOfAKindThisBuildCannotAddress(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -1286,6 +1894,7 @@ func TestReferencesAnswerAroundAnEdgeOfAKindThisBuildCannotAddress(t *testing.T)
 // sides: its referenced-by list is the comment that cites it, and its outgoing list is what its
 // text cites, the known issue and the missing document both unresolved as before.
 func TestArtifactReferencesSkipANodeKindThisBuildCannotAddress(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -1318,6 +1927,7 @@ func TestArtifactReferencesSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 // that owns it: the issue node writes no mention, and each target's backlink names the spec's
 // block holding it.
 func TestSeededSpecCitationsInMarkdownDelimitersAreDocumentMentions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -1364,6 +1974,7 @@ func TestSeededSpecCitationsInMarkdownDelimitersAreDocumentMentions(t *testing.T
 // seeded spec and the author's edit answered 500, and a rebuild stopped at the first stored body
 // that held one.
 func TestCitationsOfAnIDDecodingToNULDoNotFailTheWrite(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -1424,6 +2035,7 @@ func readRefRows(t *testing.T, database *store.Store) []refRow {
 // keeping the provenance of every edge it did not have to recreate, and a second rebuild is a
 // no-op.
 func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")

@@ -33,6 +33,7 @@ import (
 // too, which puts the settle counter at its number while all 100 forwards are still outstanding -
 // the window a read of the settle counter took for the gauge - and the test alone ends it.
 func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOutcomes(t *testing.T) {
+	t.Parallel()
 	const perHolder = 50
 	harness := newListenerDeliveryHarness(t)
 	silent, live := contracts.LegacyAgentSubject("ses_forwarder_silent"), contracts.LegacyAgentSubject("ses_forwarder_live")
@@ -68,7 +69,7 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 			forwarder.enqueue(roleForward{item: item, sessionID: sessionID})
 		}
 	}
-	waitFor(t, 10*time.Second, "every forward published and the live holder's waits counted", func() bool {
+	waitFor(t, "every forward published and the live holder's waits counted", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(published[silent]) == perHolder && len(published[live]) == perHolder && settled.Load() == perHolder
@@ -88,7 +89,7 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 	// The live holder's waits are let go: each is reported as it ends, and the gauge - the one
 	// number that says so - comes down to the silent holder's forwards, which the lane still holds.
 	close(settling)
-	waitFor(t, 10*time.Second, fmt.Sprintf("the live holder's %d forwards reported", perHolder), func() bool {
+	waitFor(t, fmt.Sprintf("the live holder's %d forwards reported", perHolder), func() bool {
 		return forwarder.outstanding() == perHolder
 	})
 
@@ -243,10 +244,12 @@ func roleForwardsLogged(role string, listeners ...*listenerProcess) int {
 	return total
 }
 
-// settledRoleForwards waits, up to 10 s, until the listeners logged want forwards on role's lane,
-// then a second more for any past it, and returns how many they logged.
-func settledRoleForwards(role string, want int, listeners ...*listenerProcess) int {
-	for deadline := time.Now().Add(10 * time.Second); roleForwardsLogged(role, listeners...) < want && time.Now().Before(deadline); {
+// settledRoleForwards waits until the listeners logged want forwards on role's lane, with the test
+// binary's deadline as its only bound, then a second more for any past it, and returns how many
+// they logged.
+func settledRoleForwards(t *testing.T, role string, want int, listeners ...*listenerProcess) int {
+	t.Helper()
+	for deadline := time.Now().Add(listenerWaitBound(t)); roleForwardsLogged(role, listeners...) < want && time.Now().Before(deadline); {
 		time.Sleep(50 * time.Millisecond)
 	}
 	time.Sleep(time.Second)
@@ -290,6 +293,7 @@ func metricValue(t *testing.T, listener *listenerProcess, name string) int64 {
 // message on the holder's agent subject, and the two listeners forwarded 100 in all. In machine
 // groups each listener forwards every message, 200 in all, and the holder receives each twice.
 func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testing.T) {
+	t.Parallel()
 	const messages = 100
 	uri := testnats.URL(t)
 	listeners := startRoleLaneListeners(t, uri, nil, "role-lane-once-a", "role-lane-once-b")
@@ -306,7 +310,7 @@ func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testi
 		t.Fatalf("flush the role messages: %v", err)
 	}
 	frames := gatherForwards(holderFrames, messages, 10*time.Second, time.Second)
-	forwards := settledRoleForwards(role, messages, listeners...)
+	forwards := settledRoleForwards(t, role, messages, listeners...)
 	stored := storedForwards(t, client, contracts.LegacyAgentSubject(holderID))
 	t.Logf("%d role messages: the holder received %d forwards, the listeners logged %d, the stream stores %d", messages, len(frames), forwards, stored)
 	if len(frames) != messages || forwards != messages || stored != messages {
@@ -322,6 +326,8 @@ func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testi
 // and neither listener reports a slow consumer. A handler that forwarded inline, waiting for the
 // stream's acknowledgement of each message before reading the next, stalls behind every one.
 func TestRoleLaneForwardsOneRoleWithoutDelayingAnother(t *testing.T) {
+	// Not parallel: it requires the busier role's forwards to reach their holder within 1 s of
+	// their publish at the 99th percentile.
 	const (
 		rate     = 40
 		duration = 10 * time.Second
@@ -406,6 +412,8 @@ func TestRoleLaneForwardsOneRoleWithoutDelayingAnother(t *testing.T) {
 // each forward carries the message's event id and the holder's subject as its Nats-Msg-Id (its
 // dedupe key is the sender's choice, so roleForward.msgID names it by its event id).
 func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv of
+	// NATS_NKEY_SEED).
 	const messages = 20
 	machines := []string{"role-lane-grant-a", "role-lane-grant-b"}
 	seed, public := testnats.User(t)
@@ -444,7 +452,7 @@ func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *t
 			t.Fatalf("the holder received event %s %d times live, want once from each listener (%d forwards for %d messages)", item.EventID, perEvent[item.EventID], len(received), messages)
 		}
 	}
-	if forwards := settledRoleForwards(role, 2*messages, listeners...); forwards != 2*messages {
+	if forwards := settledRoleForwards(t, role, 2*messages, listeners...); forwards != 2*messages {
 		t.Fatalf("the listeners logged %d forwards, want %d, every message from each", forwards, 2*messages)
 	}
 	if stored := storedForwards(t, client, contracts.LegacyAgentSubject(holderID)); stored != messages {
@@ -456,6 +464,7 @@ func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *t
 // the agent subjects taken out of the stream, no acknowledgement comes back, and the listener
 // reports the role message delivery_failed.
 func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	listener := startRoleLaneListeners(t, uri, nil, "role-lane-unstored")[0]
 	role := "role-lane-unstored-" + id.New()
@@ -487,7 +496,7 @@ func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
 		t.Fatalf("the holder received %d forwards live, want the one; the test proves nothing about a forward the stream did not acknowledge", len(live))
 	}
 	assertDeliveryException(t, exceptions, item, "delivery_failed")
-	waitFor(t, 5*time.Second, "the listener to log the failed forward", func() bool {
+	waitFor(t, "the listener to log the failed forward", func() bool {
 		return countRecords(listener, "listener role forward failed", func(record map[string]any) bool {
 			return record["event_id"] == item.EventID && strings.Contains(fmt.Sprint(record["error"]), bus.ErrForwardNotStored.Error())
 		}) == 1

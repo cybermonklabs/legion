@@ -84,6 +84,9 @@ func refusesItsRendering(markdown string) (refuses bool, panicked string) {
 		}
 	}()
 	SetBlockIDGenerator(counterBlockIDs())
+	// The generator is the whole process's: put the default back, or every later parse in this
+	// binary mints counter ids (a heavy-bodies row read its encoded size off them).
+	defer SetBlockIDGenerator(nil)
 	_, err := gateWrite(markdown)
 	return errors.Is(err, ErrMisreadRendering) || errors.Is(err, ErrRenderingRefused), ""
 }

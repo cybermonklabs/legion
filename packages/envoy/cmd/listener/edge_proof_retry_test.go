@@ -42,6 +42,7 @@ func (s *switchableSpentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jt
 // starting") is answered before apiAuth reads the request, and a broker or a spent-proof store
 // that did not answer is the 503 of a check that stopped before the proof was recorded.
 func TestEdgeRetryOfAProofAfterAPreAuth503IsServed(t *testing.T) {
+	t.Parallel()
 	logger := logging.NewWithWriter("test-machine", io.Discard)
 	caller := ciphertokentest.NewCaller(t)
 	broker := edgeLBBroker(t, caller)
@@ -184,6 +185,7 @@ func (r *edgeLBRig) send(p edgeLBPresentation, peer string) *httptest.ResponseRe
 // status at or past 500, and the 500's retry is served; give no proof back, and the 503s' retries
 // are refused.
 func TestEdgeRetryOfAProofAfterAPostAuth503(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLBRig(t, true)
 	for _, tc := range []struct {
 		name, method, path, body string
@@ -216,6 +218,7 @@ func TestEdgeRetryOfAProofAfterAPostAuth503(t *testing.T) {
 // more request. Its route's 503 keeps the proof spent, and its client sends the request again with
 // a fresh proof.
 func TestEdgeAloneGivesAProofBackOnA503(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeLBRig(t, false)
 	p := presentEdgeLB(t, rig.caller, http.MethodGet, "/v1/sessions", edgeLBToken, "")
 	if got := rig.send(p, "35.191.7.7:40001"); got.Code != http.StatusServiceUnavailable {
@@ -231,14 +234,15 @@ func TestEdgeAloneGivesAProofBackOnA503(t *testing.T) {
 // marker's revision, and of two presentations doing so at once the one that loses gets the
 // server's wrong-last-sequence error from that second write: 10071 on a bucket of one copy, 10164
 // on a replicated one. Either reads as a proof another presentation holds, a replay, and not as a
-// store that did not answer, whose 503 would be no refusal: wrongLastSequence reads both codes,
+// store that did not answer, whose 503 would be no refusal: bus.IsCASConflict reads both codes,
 // and the store answers a create refused with either as spent. The race itself is not driven
 // here: nothing orders the two writes of one create against another's, so the store's bucket
 // answers the second write's refusal itself. Control: the store reading only nats.ErrKeyExists as
 // spent; the lost create reads as a store that did not answer, and the row fails naming it.
 func TestEdgeSpentProofsReadALostCreateAfterAReleaseAsSpent(t *testing.T) {
+	t.Parallel()
 	for _, code := range []nats.ErrorCode{nats.JSErrCodeStreamWrongLastSequence, nats.JSErrCodeStreamWrongLastSequenceConstant} {
-		if err := fmt.Errorf("record the proof: %w", &nats.APIError{Code: http.StatusBadRequest, ErrorCode: code}); !wrongLastSequence(err) {
+		if err := fmt.Errorf("record the proof: %w", &nats.APIError{Code: http.StatusBadRequest, ErrorCode: code}); !bus.IsCASConflict(err) {
 			t.Errorf("a create refused with error code %d reads as no replay", code)
 		}
 		store := spentProofs{kv: bus.NewKeyValue(lostCreate{code: code}, nil, nil)}
@@ -247,7 +251,7 @@ func TestEdgeSpentProofsReadALostCreateAfterAReleaseAsSpent(t *testing.T) {
 		}
 	}
 	for _, err := range []error{errors.New("nats: timeout"), &nats.APIError{Code: http.StatusServiceUnavailable, ErrorCode: nats.JSErrCodeInsufficientResourcesErr}} {
-		if wrongLastSequence(err) {
+		if bus.IsCASConflict(err) {
 			t.Errorf("%v reads as a replay, want a store that did not answer", err)
 		}
 	}
@@ -272,6 +276,7 @@ func (k lostCreate) Create(string, []byte) (uint64, error) {
 // spent. Control: the release's delete made against no revision; it deletes the later record, and
 // the proof reads unspent.
 func TestEdgeReleaseDeletesOnlyTheRecordItsRequestWrote(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t, bus.WithStreamMessageReads())
 	js, err := client.Conn.JetStream()
 	if err != nil {
@@ -314,6 +319,7 @@ func TestEdgeReleaseDeletesOnlyTheRecordItsRequestWrote(t *testing.T) {
 // replay (401), and A's is served (the balancer's retry). Control: one proofSpend shared by every
 // request; A's 503 gives back B's proof, which is served again, and A's retry is refused.
 func TestEdgeGivesBackOnlyItsOwnRequestsProof(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t, bus.WithStreamMessageReads())
 	caller := ciphertokentest.NewCaller(t)
 	broker := edgeLBBroker(t, caller)

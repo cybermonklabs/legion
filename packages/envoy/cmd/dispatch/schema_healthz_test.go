@@ -29,6 +29,7 @@ const schemaHealthWait = 30 * time.Second
 // as a deployment's newer pod would write it, so what is read is the server's own wake, its own
 // installer and its own probe.
 func TestAStoreSchemaAboveTheBuildAnswersHealthzOK(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	server := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -58,11 +59,14 @@ func TestAStoreSchemaAboveTheBuildAnswersHealthzOK(t *testing.T) {
 // row of the server process registry, which every process's document socket admission reads
 // (docs.readSchemaFleet), this process's own among them; a row left at its boot's numbers would
 // admit the reconnects the switch's socket close brings against a schema the process no longer
-// serves. The store's migration here moves check's ci_check, read from this build's version, to
-// creatable only from the next one, and raises the store to that version: this build installs it
-// at its own version and may no longer create ci_check. The numbers the row must reach are the
-// ones this build's own install of that store answers, read in the test's process.
+// serves. The store's migration here moves, to creatable only from the next version, every element
+// that gives this build its creatable number - each block type, attribute and choice whose since
+// is that number - and raises the store to that version: this build installs it at its own version
+// and may no longer create those elements. The migration finds them by their since in the store,
+// so it names none: which element is newest changes with blocks.json. The numbers the row must
+// reach are the ones this build's own install of that store answers, read in the test's process.
 func TestAReinstallRefreshesThisProcesssRegistryRow(t *testing.T) {
+	// Not parallel: it installs pmdoc's process-wide block schema.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	server := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -75,13 +79,17 @@ func TestAReinstallRefreshesThisProcesssRegistryRow(t *testing.T) {
 
 	if _, err := database.Pool.Exec(ctx, `
 		update graph_nodes
-		set attributes = case
-			when kind = 'attribute' then jsonb_set(attributes, '{creatable_since}', to_jsonb($1::int))
-			else jsonb_set(attributes, '{version}', to_jsonb($1::int)) end
-		where (kind = 'attribute' and id = 'check/ci_check')
-			or (kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false))
-	`, built+1); err != nil {
-		t.Fatalf("move ci_check to creatable from version %d: %v", built+1, err)
+		set attributes = case when kind = 'supertag' then jsonb_set(attributes, '{version}', to_jsonb($1::int)) else attributes end
+			|| case when coalesce((attributes->>'since')::int, 1) = $2::int then jsonb_build_object('creatable_since', $1::int) else '{}'::jsonb end
+			|| case when kind = 'attribute' and jsonb_typeof(attributes->'choice_versions') = 'object' and attributes->'choice_versions' <> '{}'::jsonb
+				then jsonb_build_object('choice_versions', (
+					select jsonb_object_agg(choice, case when coalesce((versions->>'since')::int, 1) = $2::int
+						then versions || jsonb_build_object('creatable_since', $1::int) else versions end)
+					from jsonb_each(attributes->'choice_versions') as entry(choice, versions)))
+				else '{}'::jsonb end
+		where kind = 'attribute' or (kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false))
+	`, built+1, before.creatable); err != nil {
+		t.Fatalf("move the elements read from version %d to creatable from version %d: %v", before.creatable, built+1, err)
 	}
 	want := installedNumbersOf(t, ctx, database.Pool)
 	if want == before {

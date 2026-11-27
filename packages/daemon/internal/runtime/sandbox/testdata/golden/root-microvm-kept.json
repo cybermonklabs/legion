@@ -18,7 +18,7 @@
           "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
           "karpenter.sh/do-not-disrupt": "true",
           "legion.dev/leak-checker-manifest-sha256": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
-          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"3\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"19Gi\"},\"requests\":{\"cpu\":\"3\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"19Gi\"}},\"disk\":\"20Gi\",\"sandbox\":{\"runtime_class\":\"microvm\",\"compute_class\":\"example-microvm\",\"storage_class\":\"example-microvm-rwo\",\"keep_volume\":true,\"metadata\":{\"workload_pool\":\"example-project.svc.id.goog\",\"identity_provider\":\"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster\"}}}"
+          "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"2\",\"ephemeral-storage\":\"80Gi\",\"memory\":\"8Gi\"},\"requests\":{\"cpu\":\"2\",\"ephemeral-storage\":\"6Gi\",\"memory\":\"8Gi\"}},\"disk\":\"20Gi\",\"sandbox\":{\"runtime_class\":\"microvm\",\"compute_class\":\"example-microvm\",\"storage_class\":\"example-microvm-rwo\",\"keep_volume\":true,\"metadata\":{\"workload_pool\":\"example-project.svc.id.goog\",\"identity_provider\":\"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster\"}}}"
         },
         "labels": {
           "legion.dev/issue": "LEGION-208",
@@ -74,14 +74,14 @@
             "name": "roles",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -278,14 +278,14 @@
             "name": "workspace-fetch",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -361,14 +361,14 @@
             "name": "workspace-init",
             "resources": {
               "limits": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "80Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               },
               "requests": {
-                "cpu": "3",
+                "cpu": "2",
                 "ephemeral-storage": "6Gi",
-                "memory": "19Gi"
+                "memory": "8Gi"
               }
             },
             "securityContext": {
@@ -402,8 +402,7 @@
           }
         ],
         "nodeSelector": {
-          "cloud.google.com/compute-class": "example-microvm",
-          "legion.dev/pool": "legion"
+          "cloud.google.com/compute-class": "example-microvm"
         },
         "priorityClassName": "legion",
         "restartPolicy": "Always",
@@ -417,12 +416,6 @@
         },
         "terminationGracePeriodSeconds": 30,
         "tolerations": [
-          {
-            "effect": "NoSchedule",
-            "key": "legion.dev/pool",
-            "operator": "Equal",
-            "value": "legion"
-          },
           {
             "effect": "NoSchedule",
             "key": "cloud.google.com/compute-class",

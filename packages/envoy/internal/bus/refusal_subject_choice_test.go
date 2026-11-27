@@ -14,6 +14,7 @@ import (
 // server are also sent to a real one (TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends);
 // the rows of the other versions have no server here to send to, so they are read off jsm.go.
 func TestAConsumerCreateSubjectIsTheOneNatsGoPicks(t *testing.T) {
+	t.Parallel()
 	const stream, name, filter = "S", "c", "events.x"
 	durable := nats.ConsumerConfig{Durable: name}
 	durableFiltered := nats.ConsumerConfig{Durable: name, FilterSubject: filter}

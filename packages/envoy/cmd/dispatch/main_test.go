@@ -1,17 +1,21 @@
 package main
 
+//ci:reads packages/envoy/internal/dispatch/store/migrations/* TestHealthzReportsAnUnstampedCommitAsNull
+
 import (
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -26,7 +30,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
@@ -40,12 +48,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // signInEnvironment is a cookie-identity boot environment with all four sign-in settings.
@@ -143,6 +153,7 @@ func iapWhoami(handler http.Handler, assertion string, headers map[string]string
 }
 
 func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": " iap "})))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
@@ -157,6 +168,7 @@ func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
 // an audience of the shape IAP signs for, and no dev sign-in; the audience is refused under any
 // other identity, which would leave it unread.
 func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
+	t.Parallel()
 	for name, value := range map[string]string{
 		"DISPATCH_SIGNIN_ISSUER":        "https://accounts.google.com",
 		"DISPATCH_SIGNIN_CLIENT_ID":     "dispatch-client",
@@ -213,6 +225,7 @@ func noSignInEnvironment(overrides map[string]string) map[string]string {
 }
 
 func TestResolveBootConfigReadsTheFourSignInSettings(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(signInEnvironment(nil)))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
@@ -239,6 +252,7 @@ func googleSignInEnvironment(overrides map[string]string) map[string]string {
 }
 
 func TestResolveBootConfigReadsTheDomainSignIn(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_DOMAIN": " example.com "})))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
@@ -253,6 +267,7 @@ func TestResolveBootConfigReadsTheDomainSignIn(t *testing.T) {
 // was given, and the ones it still misses. The case below is the issuer, the client and the
 // secret with neither a group nor a domain, which admits nobody.
 func TestResolveBootConfigRefusesAPartialSignIn(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{"DISPATCH_SIGNIN_GROUP": ""})))
 	if want := "Google sign-in needs DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET and one of DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN: DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET set, DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN missing"; err == nil || err.Error() != want {
 		t.Fatalf("sign-in with neither a group nor a domain: err = %v, want %q", err, want)
@@ -263,9 +278,12 @@ func TestResolveBootConfigRefusesAPartialSignIn(t *testing.T) {
 // trips two checks gets the first: both set, a partial set, a domain under another issuer, a
 // malformed domain, a group under Google's issuer.
 func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
+	t.Parallel()
 	const lead = "Google sign-in needs DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET and one of DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN: "
 	const both = "DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set; set one: a Cognito pool's group, or a Google Workspace domain"
 	noSignIn := map[string]string{"DATABASE_URL": "postgres://dispatch", "DISPATCH_AGENT_TOKEN": "agent-token"}
+	issuerUserinfo := "madeUpIssuerUser0123:madeUpIssuerSecret0123" + "@"
+	const queryToken = "madeUpQueryToken0123456789"
 	with := func(base, overrides map[string]string) map[string]string {
 		values := map[string]string{}
 		for name, value := range base {
@@ -291,12 +309,30 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			lead + "DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID set, DISPATCH_SIGNIN_CLIENT_SECRET, DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN missing"},
 		{"a domain under a Cognito pool", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
+		// The issuer is printed through redact.URL: a value with no scheme is no plain http(s) URL.
 		{"a domain under Google's schemeless issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "accounts.google.com"}),
-			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is accounts.google.com"},
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is (not printed: the value carries a credential or is not a plain http(s) URL)"},
+		// A made-up token percent-encoded in the issuer's path, which loads: the domain refusal
+		// prints no part of it.
+		{"a domain under an issuer with an encoded token in its path", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/%6DadeUpPathToken0123456789"}),
+			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is (not printed: the value carries a credential or is not a plain http(s) URL)"},
 		{"a malformed domain under another issuer", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_DOMAIN": "Example.com"}),
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
 		{"a group under Google's issuer", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com"}),
 			"DISPATCH_SIGNIN_GROUP is a Cognito pool's group, and a token from https://accounts.google.com carries none; set DISPATCH_SIGNIN_DOMAIN instead"},
+		// A made-up user name and password in either issuer: refused naming the setting alone.
+		{"a sign-in issuer holding a credential", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://" + issuerUserinfo + "issuer.example/pool"}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has"},
+		{"a service-token issuer holding a credential", with(noSignIn, map[string]string{"DISPATCH_OIDC_ISSUER": "https://" + issuerUserinfo + "oidc.example/id/CLUSTER", "DISPATCH_OIDC_AUDIENCE": "dispatch"}),
+			"DISPATCH_OIDC_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has"},
+		// A made-up token in an issuer's query or fragment, which no issuer identifier has: refused
+		// naming the setting alone, before the domain refusal would print the issuer.
+		{"a sign-in issuer with a token in its query", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/?token=" + queryToken}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
+		{"a sign-in issuer with a token in its fragment", googleSignInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/#" + queryToken}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
+		{"a service-token issuer with a token in its query", with(noSignIn, map[string]string{"DISPATCH_OIDC_ISSUER": "https://oidc.example/id/CLUSTER?token=" + queryToken, "DISPATCH_OIDC_AUDIENCE": "dispatch"}),
+			"DISPATCH_OIDC_ISSUER cannot be read: it holds a query or a fragment, which no issuer identifier has"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := resolveBootConfig(envGetter(tc.env)); err == nil || err.Error() != tc.want {
@@ -319,6 +355,7 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 
 // A setting a release removed is refused, never silently ignored.
 func TestResolveBootConfigRefusesRemovedSettings(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"DISPATCH_ALLOWED_LOGINS", "DISPATCH_APP_CLIENT_SECRET", "COHERE_API_KEY", "DISPATCH_AGENT_SECRETS_TOKEN", "DISPATCH_AGENT_SECRETS_TOKEN_FILE", "DISPATCH_ASSET_STORE_BUCKET", "DISPATCH_REPO_PROJECTS", "DISPATCH_DEFAULT_PROJECT"} {
 		_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{name: "value"})))
 		if err == nil || !strings.Contains(err.Error(), name+" is no longer read") {
@@ -344,6 +381,7 @@ func TestResolveBootConfigRefusesRemovedSettings(t *testing.T) {
 }
 
 func TestResolveBootConfigFencesHeaderIdentityToTrustedLocalHarnesses(t *testing.T) {
+	t.Parallel()
 	withoutAcknowledgement := headerIdentityEnvironment(map[string]string{
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "",
 	})
@@ -370,6 +408,7 @@ func TestResolveBootConfigFencesHeaderIdentityToTrustedLocalHarnesses(t *testing
 }
 
 func TestDevSignInRefusesTheSignInSettings(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
 		"DISPATCH_SIGNIN_ISSUER": "https://issuer.example/pool", "DISPATCH_SIGNIN_CLIENT_ID": "c",
 		"DISPATCH_SIGNIN_CLIENT_SECRET": "s", "DISPATCH_SIGNIN_GROUP": "g",
@@ -393,6 +432,7 @@ func TestDevSignInRefusesTheSignInSettings(t *testing.T) {
 }
 
 func TestResolveBootConfigDisablesNATS(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "agent-token",
@@ -409,6 +449,7 @@ func TestResolveBootConfigDisablesNATS(t *testing.T) {
 }
 
 func TestResolveBootConfigDefaultsAndValidatesEnvoyURL(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "t",
@@ -439,6 +480,7 @@ func TestResolveBootConfigDefaultsAndValidatesEnvoyURL(t *testing.T) {
 // The credential-request UI feature is off by default (no broker URL configured), and
 // resolveBootConfig must not require a token when the URL is unset.
 func TestResolveBootConfigLeavesAgentSecretsOffByDefault(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "agent-token",
@@ -451,6 +493,7 @@ func TestResolveBootConfigLeavesAgentSecretsOffByDefault(t *testing.T) {
 }
 
 func TestResolveBootConfigAcceptsAgentSecretsURLAndTokenFile(t *testing.T) {
+	t.Parallel()
 	boot, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                              "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":                      "agent-token",
@@ -476,6 +519,7 @@ func TestResolveBootConfigAcceptsAgentSecretsURLAndTokenFile(t *testing.T) {
 // ENVOY_URL check but additionally refusing a path component: the broker's client builds every
 // call by appending a fixed path to this base.
 func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"DATABASE_URL":                              "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":                      "agent-token",
@@ -497,8 +541,10 @@ func TestResolveBootConfigRejectsAgentSecretsURLWithPathOrBadScheme(t *testing.T
 
 // Both DISPATCH_AGENT_SECRETS_URL refusals - a shape refusal (a path, or a value that does not
 // parse) and the dev sign-in's refusal of a remote broker - name a clean URL as it is and any
-// other value as redact.NotPrinted: user info, a query, escapes, a control byte.
+// other value as redact.NotPrinted: escapes, a control byte. User info, an "@" past the host and a
+// query are refused before either, by the setting alone (agentSecretsURLRefusal).
 func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *testing.T) {
+	t.Parallel()
 	shape := func(brokerURL string) settingValues {
 		return envGetter(map[string]string{
 			"DATABASE_URL":                              "postgres://dispatch",
@@ -521,10 +567,10 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 	}{
 		"a clean path":                     {shape("https://broker.example.com/v1"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com/v1"`},
 		"a clean remote broker":            {remote("https://broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="https://broker.example.com"`},
-		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
-		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
+		"a path":                           {shape("https://tokuser9f3:hunter2pw@broker.example.com/v1?token=qtok77"), "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password"},
+		"a remote broker":                  {remote("https://tokuser9f3:hunter2pw@broker.example.com?token=qtok77"), "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password"},
+		"an '@' in a query value":          {shape("https://broker.example.com/?password=hunter@2pwSECRET"), `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
+		"a remote broker, '@' in a query":  {remote("https://broker.example.com?a=1&token=qtok@77SECRET&b=2"), `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
 		"a literal '@' and an escaped one": {shape("https://ada@corp.example:hunter2pw%40127.0.0.1:1"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a double-escaped '@'":             {shape("https://tokuser9f3:hunter2pw%2540broker.example.com"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
 		"a newline forging a line":         {shape("https://broker.example.com\nFORGED"), `DISPATCH_AGENT_SECRETS_URL="` + redact.NotPrinted + `"`},
@@ -542,9 +588,176 @@ func TestResolveBootConfigRefusesAgentSecretsURLWithoutNamingItsCredential(t *te
 	}
 }
 
+// A DISPATCH_AGENT_SECRETS_URL with no path that carries a credential booted, and Dispatch logged
+// it in every failed introspection, since net/http masks a password but not a user name or a
+// query: a made-up token as the user name, as a password, in the query, after an "@" past the host,
+// and in the fragment. Each is refused now by the setting alone, before anything connects.
+func TestResolveBootConfigRefusesACredentialInAgentSecretsURLByTheSettingAlone(t *testing.T) {
+	const token = "madeUpBrokerToken0123"
+	for name, row := range map[string]struct{ brokerURL, want string }{
+		"a token as the user name": {"http://" + token + "@127.0.0.1:1", "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of"},
+		"a token as the password":  {"http://dispatch:" + token + "@127.0.0.1:1", "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a user name or a password, which the broker's URL has none of"},
+		"a token in the query":     {"http://127.0.0.1:1?token=" + token, "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a query or a fragment, which the broker's URL has none of"},
+		"an @ past the host":       {"http://127.0.0.1:1?" + token + "@broker.invalid", `DISPATCH_AGENT_SECRETS_URL cannot be read: an "@" stands after its host`},
+		"a token in the fragment":  {"http://127.0.0.1:1#" + token, "DISPATCH_AGENT_SECRETS_URL cannot be read: it holds a query or a fragment, which the broker's URL has none of"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveBootConfig(envGetter(map[string]string{
+				"DATABASE_URL":                              "postgres://dispatch",
+				"DISPATCH_AGENT_TOKEN":                      "agent-token",
+				"DISPATCH_IDENTITY":                         "header:X-Dispatch-User",
+				"DISPATCH_IDENTITY_HEADER_TRUSTED":          "1",
+				"DISPATCH_AGENT_SECRETS_URL":                row.brokerURL,
+				"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": "/var/run/secrets/broker/token",
+			}))
+			if err == nil || !strings.HasPrefix(err.Error(), row.want) {
+				t.Fatalf("resolveBootConfig = %v, want %q", err, row.want)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("the refusal %q holds part of the token", err)
+			}
+		})
+	}
+}
+
+// Dispatch's shape refusals of a URL setting print the value through redact.URL, so a credential
+// in a value no credential refusal can read (one with no http scheme, written <name>:<secret>@<host>,
+// where net/url finds an opaque part and no user) prints in none: ENVOY_URL and the embeddings and
+// chat endpoints. Each still names its setting.
+func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
+	const secret = "madeUpEndpointSecret0123"
+	at := "@"
+	_, envoyErr := resolveBootConfig(envGetter(map[string]string{
+		"DATABASE_URL":                     "postgres://dispatch",
+		"DISPATCH_AGENT_TOKEN":             "agent-token",
+		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
+		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
+		"ENVOY_URL":                        "dispatch:" + secret + at + "envoy.invalid:9020",
+	}))
+	_, embedErr := resolveAzureEmbedder(envGetter(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": "embed:" + secret + at + "resource.openai.azure.com/models"}))
+	_, chatErr := chatEndpoint(envGetter(map[string]string{"DISPATCH_CHAT_ENDPOINT": "chat:" + secret + at + "chat.example/v1"}), "DISPATCH_CHAT_ENDPOINT", "endpoint")
+	for setting, err := range map[string]error{"ENVOY_URL=": envoyErr, "DISPATCH_AZURE_EMBED_ENDPOINT=": embedErr, "DISPATCH_CHAT_ENDPOINT=": chatErr} {
+		if err == nil || !strings.Contains(err.Error(), setting) {
+			t.Errorf("the refusal = %v, want one naming %s", err, setting)
+			continue
+		}
+		if strings.Contains(err.Error(), secret[:10]) {
+			t.Errorf("the refusal %q holds part of the secret", err)
+		}
+	}
+}
+
+// ENVOY_URL, the three model endpoints and DISPATCH_GITHUB_API_BASE refuse a user name, a
+// password, an "@" past the host, a query and a fragment, each by the setting alone, as
+// DISPATCH_AGENT_SECRETS_URL does (credentialURLRefusal): each URL booted with any of them, and
+// Dispatch's clients printed it in their errors, which reach the API's answers (the listener
+// client's 503 and 502, the GitHub App client's 502) and, for the GitHub base, the GitHub read
+// record /healthz serves. A made-up token stands in each.
+func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
+	const token = "madeUpURLToken0123"
+	at := "@"
+	shapes := map[string]struct{ value, refusal string }{
+		"a token as the user name": {"https://" + token + at + "host.example/v1", "it holds a user name or a password"},
+		"a token as the password":  {"https://dispatch:" + token + at + "host.example/v1", "it holds a user name or a password"},
+		"an @ past the host":       {"https://host.example/" + token + at + "other.example/v1", natsurl.UserinfoPastHostReason},
+		"a token in the query":     {"https://host.example/v1?key=" + token, "it holds a query or a fragment"},
+		"a token in the fragment":  {"https://host.example/v1#" + token, "it holds a query or a fragment"},
+	}
+	settings := map[string]func(value string) map[string]string{
+		"ENVOY_URL": func(value string) map[string]string {
+			return signInEnvironment(map[string]string{"ENVOY_URL": value})
+		},
+		"DISPATCH_AZURE_EMBED_ENDPOINT": func(value string) map[string]string {
+			return azureEmbedEnvironment(map[string]string{"DISPATCH_AZURE_EMBED_ENDPOINT": value})
+		},
+		"DISPATCH_AZURE_CHAT_ENDPOINT": func(value string) map[string]string {
+			return azureChatEnvironment(map[string]string{"DISPATCH_AZURE_CHAT_ENDPOINT": value})
+		},
+		"DISPATCH_CHAT_ENDPOINT": func(value string) map[string]string {
+			return endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": value})
+		},
+		"DISPATCH_GITHUB_API_BASE": func(value string) map[string]string {
+			return signInEnvironment(map[string]string{"DISPATCH_GITHUB_API_BASE": value})
+		},
+	}
+	for setting, environment := range settings {
+		for shape, row := range shapes {
+			t.Run(setting+"/"+shape, func(t *testing.T) {
+				_, err := resolveBootConfig(envGetter(environment(row.value)))
+				if err == nil || !strings.HasPrefix(err.Error(), setting+" cannot be read: "+row.refusal) {
+					t.Fatalf("resolveBootConfig = %v, want a refusal by %s: %s", err, setting, row.refusal)
+				}
+				if strings.Contains(err.Error(), token[:10]) {
+					t.Errorf("the refusal %q holds part of the token", err)
+				}
+			})
+		}
+	}
+}
+
+// redeliver-webhooks reads DISPATCH_GITHUB_API_BASE too, and refuses a credential in it by the
+// setting alone before it opens the database or connects to NATS: the DATABASE_URL here names a
+// database that does not exist, which the run never reaches. A made-up token stands in the base.
+func TestRedeliverWebhooksRefusesACredentialInTheGitHubAPIBase(t *testing.T) {
+	const token = "madeUpGitHubToken0123"
+	at := "@"
+	for name, base := range map[string]string{
+		"a user name and a token":  "https://ghuser:" + token + at + "ghe.invalid/api/v3",
+		"a token as the user name": "https://" + token + at + "ghe.invalid/api/v3",
+		"a token in the query":     "https://ghe.invalid/api/v3?access_token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			code := redeliverWebhooks(t.Context(), []string{"--since", "1h"}, envGetter(map[string]string{
+				"DATABASE_URL":             "postgres://dispatch@127.0.0.1:1/nonexistent",
+				"DISPATCH_GITHUB_API_BASE": base,
+			}), &out)
+			if code != 2 || !strings.HasPrefix(out.String(), "redeliver-webhooks: DISPATCH_GITHUB_API_BASE cannot be read: ") {
+				t.Fatalf("redeliverWebhooks = %d, %q; want 2 and the refusal by DISPATCH_GITHUB_API_BASE", code, out.String())
+			}
+			if strings.Contains(out.String(), token[:10]) {
+				t.Errorf("the output %q holds part of the token", out.String())
+			}
+		})
+	}
+}
+
+// With DISPATCH_DEV_SIGNIN=1 the fence that holds the database to this machine parses DATABASE_URL
+// before the store opens it. A DSN pgdsn refuses (a password holding an "@", or digits and a "/",
+// which pgx reads as the host or the port) is refused first, by the setting alone, and one pgx
+// cannot parse (a keyword DSN's `password = <secret>`, a password holding an escaped space) is
+// named through pgdsn.ConnectError, never by pgx's text, which quotes the DSN. Each password is
+// made up and built from parts.
+func TestDevSignInRefusesADatabaseURLPrintingNoPartOfItsPassword(t *testing.T) {
+	at := "@"
+	for name, row := range map[string]struct{ dsn, want string }{
+		"a password holding an @": {"postgres://dispatch:madeuphead0123" + at + "zqtail0123" + at + "127.0.0.1:5432/dispatch",
+			`DATABASE_URL cannot be read: it holds an "@" after its user name and password`},
+		"digits and a / in the password": {"postgres://dispatch:48213579/zqtail0123" + at + "127.0.0.1:5432/dispatch",
+			`DATABASE_URL cannot be read: it holds an "@" after its user name and password`},
+		"spaces around password's =": {"host=127.0.0.1 user=dispatch password = zqsecret0123 dbname=dispatch sslmode=requir",
+			"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN"},
+		"an escaped space in the password": {`host=127.0.0.1 password=zqhead\ zqtail0123 sslmode=bogus`,
+			"connect to Postgres: DATABASE_URL cannot be parsed as a Postgres DSN"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DATABASE_URL": row.dsn}))
+			if err == nil || !strings.HasPrefix(err.Error(), row.want) {
+				t.Fatalf("resolveBootConfig = %v, want %q", err, row.want)
+			}
+			for _, part := range []string{"madeuphead", "zqtail", "zqsecret", "zqhead", "48213579"} {
+				if strings.Contains(err.Error(), part) {
+					t.Errorf("the refusal %q holds %q of the password", err, part)
+				}
+			}
+		})
+	}
+}
+
 // A broker URL with no token file must refuse to boot rather than construct a client that
 // authenticates with an empty bearer.
 func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "agent-token",
@@ -557,10 +770,106 @@ func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *t
 	}
 }
 
+// TestDispatchReadsItsProofOrigins: DISPATCH_PROOF_ORIGINS adds origins a broker token's proof may
+// name to DISPATCH_SERVER_URL's, and they reach the verifier main builds: brokerTokenVerifier, from
+// resolveBootConfig and the server URL loadEnvoyConfig reads. A value of production's shape, which
+// lists DISPATCH_SERVER_URL's origin again beside the in-cluster one, starts Dispatch with the two:
+// a proof signed for either is accepted, and one for an origin neither setting names is refused.
+// Unset, DISPATCH_SERVER_URL's origin is the only one. An entry with a path, and one with another
+// scheme, each refuse the start naming it.
+func TestDispatchReadsItsProofOrigins(t *testing.T) {
+	const (
+		public    = "https://dispatch.example"
+		inCluster = "http://dispatch.internal.example:8766"
+		elsewhere = "https://dispatch.elsewhere.example"
+		route     = "/api/v1/whoami"
+		token     = "a-session-token-the-broker-issued"
+	)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
+	broker.Says(token, ciphertoken.Introspection{
+		Active:       true,
+		Session:      "ses_proof_origins",
+		Person:       "alice",
+		ProjectScope: ciphertoken.ProjectScopeNamed,
+		Projects:     []string{"INFRA"},
+		Scope:        "dispatch.write",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   caller.JKT(),
+	})
+	accountToken := writeFile(t, "account-token", "dispatchs-own-account-token")
+	// start is what main does with values: the boot config, the server URL, the verifier.
+	start := func(t *testing.T, values map[string]string) ([]string, *ciphertoken.Verifier) {
+		t.Helper()
+		values["DISPATCH_SERVER_URL"] = public
+		values["DISPATCH_AGENT_SECRETS_URL"] = broker.Server.URL
+		values["DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"] = accountToken
+		env := bootEnvironment(values)
+		boot, err := resolveBootConfig(env)
+		if err != nil {
+			t.Fatalf("resolve boot config: %v", err)
+		}
+		envoyConfig, err := loadEnvoyConfig(env, config.LoadOptions{CWD: t.TempDir(), HomeDir: envoyJSONHome(t)})
+		if err != nil {
+			t.Fatalf("load envoy config: %v", err)
+		}
+		serverURL := envoyConfig.Dispatch.ServerURL
+		verifier, err := brokerTokenVerifier(boot, storetest.Open(t), serverURL)
+		if err != nil {
+			t.Fatalf("build the broker token verifier: %v", err)
+		}
+		return proofOrigins(serverURL, boot.ProofOrigins), verifier
+	}
+	verify := func(t *testing.T, verifier *ciphertoken.Verifier, origin string) error {
+		t.Helper()
+		_, err := verifier.Verify(t.Context(), caller.Signed(t, http.MethodGet, origin+route, token))
+		return err
+	}
+
+	t.Run("production's shape", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{"DISPATCH_PROOF_ORIGINS": " " + public + " , " + inCluster + " "})
+		if !slices.Equal(origins, []string{public, inCluster}) {
+			t.Fatalf("the verifier's origins are %q, want %q and %q, each once", origins, public, inCluster)
+		}
+		for _, origin := range []string{public, inCluster} {
+			if err := verify(t, verifier, origin); err != nil {
+				t.Errorf("a proof for %s was refused: %v", origin, err)
+			}
+		}
+		if err := verify(t, verifier, elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("a proof for %s, which no setting names, answered %v, want ErrProofInvalid", elsewhere, err)
+		}
+	})
+
+	t.Run("unset", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{})
+		if !slices.Equal(origins, []string{public}) {
+			t.Fatalf("the verifier's origins are %q, want DISPATCH_SERVER_URL's %q alone", origins, public)
+		}
+		if err := verify(t, verifier, public); err != nil {
+			t.Errorf("a proof for DISPATCH_SERVER_URL's origin was refused: %v", err)
+		}
+		if err := verify(t, verifier, inCluster); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+			t.Errorf("unset, a proof for %s answered %v, want ErrProofInvalid", inCluster, err)
+		}
+	})
+
+	t.Run("an entry that is no origin", func(t *testing.T) {
+		for entry, naming := range map[string]string{
+			inCluster + "/dispatch":           `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + inCluster + `/dispatch"`,
+			"ftp://dispatch.internal.example": `DISPATCH_PROOF_ORIGINS entry 2 of 2 is "` + redact.NotPrinted + `"`,
+		} {
+			refusedWith(t, map[string]string{"DISPATCH_PROOF_ORIGINS": public + "," + entry}, naming)
+		}
+	})
+}
+
 // The issuer and the audience are one setting in two variables: half of it is a
 // misconfiguration a deployment must not boot with, and neither means the server
 // verifies no service-account token at all.
 func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
 		"DISPATCH_AGENT_TOKEN":             "agent-token",
@@ -603,6 +912,7 @@ func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
 }
 
 func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
+	t.Parallel()
 	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -620,6 +930,7 @@ func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 // probe answers 200 with `ok` true and reports the bus in `nats` alone: a readiness probe that
 // failed with the bus would take every server process out of service at once.
 func TestDispatchHandlerReportsDisconnectedNATS(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil)
 	response := httptest.NewRecorder()
@@ -645,6 +956,7 @@ type untouchedFiles struct{ files.Store }
 // never reached. It is what the liveness and startup probes ask, which must not wait on or fail
 // with a dependency.
 func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
+	t.Parallel()
 	router := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
@@ -662,6 +974,7 @@ func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
 // path it does not know with the dashboard's HTML shell, so a scraper would otherwise collect a
 // page instead of the outbox's publish failures.
 func TestDispatchHandlerServesMetrics(t *testing.T) {
+	t.Parallel()
 	router := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, "<!doctype html><title>dispatch</title>")
@@ -688,6 +1001,7 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 // on the health page and not only as failed uploads. The bucket never decides `ok`: the load
 // balancer would replace the one task, taking documents and asks down with the files.
 func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	probe := func(store files.Store) (int, map[string]any) {
 		t.Helper()
@@ -718,6 +1032,7 @@ func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
 // configured, false until its discovery document has been read, true after. Neither decides `ok`:
 // a process whose issuer is down still serves agents and the people whose confirmation stands.
 func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	probe := func(configured issuers) (int, map[string]any) {
 		t.Helper()
@@ -759,6 +1074,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 // image applied shows up at once, which is the only reading under which comparing it with a
 // commit's migrations tests anything.
 func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil)
@@ -798,6 +1114,7 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 // the ones nothing filled as null, outbox_publisher false - a process with NATS disabled publishes
 // nothing - and idempotency_keys true, the binary's own fact.
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
+	t.Parallel()
 	response := httptest.NewRecorder()
 	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health map[string]any
@@ -827,6 +1144,7 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 // githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
 // does not answer leaves the entries as the copy has them beside its 503.
 func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	succeededAt := time.Date(2026, 11, 18, 3, 4, 5, 678901000, time.FixedZone("UTC+2", 2*60*60))
 	failedAt := succeededAt.Add(90 * time.Second)
@@ -964,6 +1282,7 @@ func jsonObjectKeys(t *testing.T, raw json.RawMessage) []string {
 // publisher hold, false while it stands by for the other process's, and false again once it has
 // stopped and released the hold. It never decides ok.
 func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
+	t.Parallel()
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	type process struct {
@@ -1043,6 +1362,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 // database down, closed or never configured - carries it in its body as a 200 does, and the check
 // reads the body whatever the status.
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
+	t.Parallel()
 	closed := storetest.Open(t)
 	closed.Pool.Close()
 	for name, probe := range map[string]struct {
@@ -1098,6 +1418,7 @@ func highestMigrationFile(t *testing.T) int {
 // sixty-four while the other packages' tests share the server would push a default Postgres
 // past its hundred.
 func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	config := storetest.Open(t).Pool.Config().Copy()
 	config.MaxConns = 4
@@ -1149,6 +1470,8 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 // makes this the cold case; the warm one, which production actually runs, is the unbounded
 // one and is measured against the real binary rather than here.
 func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 5 s timeout
+	// around a 2 s unanswered probe).
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -1210,6 +1533,8 @@ func (unansweringBucket) Healthy(ctx context.Context) error {
 // run one after the other they took four, and the compose healthcheck and the deploy script
 // read that silence as a dead process; run side by side they take two.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 3 s timeout
+	// around a 2 s probe and a 2 s bucket).
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -1350,17 +1675,90 @@ func envGetter(values map[string]string) settingValues {
 // under the `memory` tag) drive a real Dispatch process and read its own resident memory.
 const memoryTestServeEnv = "DISPATCH_MEMORY_TEST_SERVE"
 
+// dispatchTestParallelism is how many of this package's parallel tests run at once when the
+// command line names no -parallel (TestMain). Most of them wait - on a Dispatch process they
+// started, on Postgres, on a product timer - rather than compute: serially the test binary and its
+// processes kept about a tenth of a core busy (41 CPU-s over 376 s, 4 CPUs, build pod). go test's
+// default, GOMAXPROCS, is four on CI's runner; eight lets the tests that start no process run
+// beside the ones that hold the four process slots (dispatchSlots).
+//
+// The memory build sets it to zero, which keeps go test's default (parallelism_memory_test.go):
+// its tests measure processes' memory against a runner's 16 GB and were sized at that default.
+var dispatchTestParallelism = 8
+
 // TestMain runs the package's tests, or, run by a memory test with memoryTestServeEnv set, is that
-// test's Dispatch server.
+// test's Dispatch server. It sets the package's default -parallel (dispatchTestParallelism); go
+// test parses its flags inside m.Run, so a -parallel on the command line still wins. Only TestMain
+// makes a server of a copy a test starts: in a build of these tests without it, such a copy runs
+// the tests, each of which starts copies that run them again. dispatchCopy refuses to start a copy
+// in such a process (dispatchCopyRefusal), and TestACopyStartedAsTheServerRunsMain fails in such a
+// build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(memoryTestServeEnv) == "1" {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(storetest.Main(m))
+	if dispatchTestParallelism > 0 {
+		if err := flag.Set("test.parallel", strconv.Itoa(dispatchTestParallelism)); err != nil {
+			panic("set this package's default -parallel: " + err.Error())
+		}
+	}
+	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
+}
+
+// dispatchCopy is the path of this test binary, which a memory test runs as its Dispatch server
+// with memoryTestServeEnv=1 in the copy's environment. It fails t where dispatchCopyRefusal
+// refuses.
+func dispatchCopy(t *testing.T) string {
+	t.Helper()
+	if err := dispatchCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	return os.Args[0]
+}
+
+// dispatchCopyRefusal is why this process may start no copy of this test binary, nil when it may.
+// A process that has memoryTestServeEnv=1 was started as a Dispatch server, and TestMain runs such
+// a process as the server, so one that runs the tests runs in a build without TestMain, and a copy
+// started there would run the tests again.
+func dispatchCopyRefusal() error {
+	if os.Getenv(memoryTestServeEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a test started it as a Dispatch server, but it runs the tests: this build of the tests has no TestMain that runs the server, and a copy started here would run the tests again", memoryTestServeEnv)
+	}
+	return nil
+}
+
+// dispatchCopyRefusal, which dispatchCopy asks before any copy starts, refuses a process that has
+// memoryTestServeEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test
+// is what holds the refusal.
+func TestAProcessStartedAsTheServerStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, memoryTestServeEnv)
+	if err := dispatchCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", memoryTestServeEnv, err)
+	}
+	t.Setenv(memoryTestServeEnv, "1")
+	if err := dispatchCopyRefusal(); err == nil || !strings.Contains(err.Error(), memoryTestServeEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", memoryTestServeEnv, err)
+	}
+}
+
+// A copy started with memoryTestServeEnv=1 runs main: given -h, main reads it as a subcommand it
+// does not know and refuses it, exit 2. In a build without TestMain, the testing package reads -h
+// before any test runs, prints its own flag usage and exits 0, so this test fails there by name and
+// its copy starts no copy of its own.
+func TestACopyStartedAsTheServerRunsMain(t *testing.T) {
+	t.Parallel()
+	cmd := exec.Command(dispatchCopy(t), "-h")
+	cmd.Env = append(os.Environ(), memoryTestServeEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if want := `envoy-dispatch: unknown subcommand "-h"`; !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.HasPrefix(string(out), want) {
+		t.Fatalf("a copy started as the Dispatch server with -h: %v, want exit 2 and a refusal that starts %q\n%s", err, want, out)
+	}
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	writeBlockIDBackfillReport(&output, docs.BlockIDBackfill{
 		ArtifactID: "artifact-1",
@@ -1373,6 +1771,7 @@ func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
 }
 
 func TestWriteBlockIDBackfillReportLabelsDocumentErrors(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	if writeBlockIDBackfillReport(&output, docs.BlockIDBackfill{
 		ArtifactID: "artifact-1",
@@ -1387,6 +1786,7 @@ func TestWriteBlockIDBackfillReportLabelsDocumentErrors(t *testing.T) {
 }
 
 func TestWriteAnchorBlockBackfillReport(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	writeAnchorBlockBackfillReport(&output, docs.AnchorBlockBackfill{Asks: 2, Comments: 3, Skipped: 1})
 	const want = "backfill-anchor-blocks: asks=2 comments=3 skipped=1\n"
@@ -1398,6 +1798,7 @@ func TestWriteAnchorBlockBackfillReport(t *testing.T) {
 // An empty dashboard origin would make every URL-form mention unrecognisable and the rebuild
 // would delete them all, so the subcommand refuses before it opens the database.
 func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", &output); code != 1 {
 		t.Fatalf("rebuild-refs without server URL exited %d, want 1", code)
@@ -1416,6 +1817,7 @@ func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
 // otherwise apply the very migrations the census was to inspect. backfill-embeddings is one such
 // argument now: the server's embedding queue keeps coverage itself.
 func TestRunSubcommandRefusesAnUnknownSubcommand(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"cenus", "backfill-embeddings"} {
 		var stdout, stderr bytes.Buffer
 		code := runSubcommand(context.Background(), []string{name}, envGetter(nil), &stdout, &stderr)
@@ -1436,6 +1838,7 @@ func TestRunSubcommandRefusesAnUnknownSubcommand(t *testing.T) {
 // The census exits 2 when it could not be taken and 0 when nothing refuses, and prints the report
 // to stdout.
 func TestCensusSubcommandExitCodes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var out, errOut bytes.Buffer
 	if code := census(ctx, nil, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
@@ -1462,6 +1865,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 // pgmigrate.Census already prefixes its errors with "census:", so the command prints that
 // prefix once when a census cannot be taken.
 func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	var out, errOut bytes.Buffer
 	if code := census(context.Background(), nil, database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
@@ -1476,6 +1880,7 @@ func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
 // A database at 52 holding a row 0053's check refuses is refused by the embedded 0053 census,
 // exit 1, and the report names the migration, the count and the census file.
 func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
@@ -1485,6 +1890,9 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 		-- delivery_settings.production_job_name; a database at 52 still has both.
 		create table users (login text primary key);
 		alter table delivery_settings add column production_job_name text;
+		-- CORE's default assignee has signed in, so 20261116015736's census counts no project
+		-- the owner fill would leave without an owner, and 0053's is the one refusal.
+		insert into people (email) values ('alice');
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U');
@@ -1515,6 +1923,7 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 // migrated, and 1 when a recorded version names another file, which it prints. The control is the
 // migrated database itself, read before the row is changed.
 func TestVersionsSubcommandExitCodes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var out, errOut bytes.Buffer
 	if code := versions(ctx, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
@@ -1537,6 +1946,7 @@ func TestVersionsSubcommandExitCodes(t *testing.T) {
 }
 
 func TestWriteRebuildRefsReport(t *testing.T) {
+	t.Parallel()
 	var output bytes.Buffer
 	writeRebuildRefsReport(&output, refs.Rebuild{Documents: 4, Asks: 3, Comments: 2, Messages: 1, Orphans: 5, Edges: 9, BlocksOwed: 4, ItemsOwed: 6})
 	const want = "rebuild-refs: documents=4 asks=3 comments=2 messages=1 orphans=5 edges=9 blocks_owed=4 items_owed=6\n"
@@ -1568,6 +1978,7 @@ func devSignInEnvironment(overrides map[string]string) settingValues {
 }
 
 func TestResolveBootConfigDevSignInFlagValue(t *testing.T) {
+	t.Parallel()
 	// Off (getenv answers "" for an unset variable as for an empty one), the fence asks nothing of
 	// the rest of the environment.
 	boot, err := resolveBootConfig(devSignInEnvironment(map[string]string{
@@ -1594,6 +2005,7 @@ func TestResolveBootConfigDevSignInFlagValue(t *testing.T) {
 }
 
 func TestResolveBootConfigDevSignInRequiresCookieIdentity(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
 		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
@@ -1606,6 +2018,7 @@ func TestResolveBootConfigDevSignInRequiresCookieIdentity(t *testing.T) {
 // The fence checks the address the server binds, not a second reading of the variable: every
 // spelling it accepts yields boot.ListenAddr, listenAddress's one value, which main binds.
 func TestResolveBootConfigDevSignInChecksTheAddressItBinds(t *testing.T) {
+	t.Parallel()
 	for _, host := range []string{"", "0.0.0.0", "::", "10.0.0.5", "localhost", "::ffff:127.0.0.1", "[::1%lo]", "]]::1[[", "[[::1]]", "127.0.0.1:9000", "[::1]:9000"} {
 		boot, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DISPATCH_LISTEN_HOST": host}))
 		if err == nil || !strings.Contains(err.Error(), "DISPATCH_LISTEN_HOST") {
@@ -1647,6 +2060,7 @@ func TestResolveBootConfigDevSignInChecksTheAddressItBinds(t *testing.T) {
 // serves: a socket on every interface is refused, naming the variable, though DISPATCH_LISTEN_HOST
 // names that socket's address correctly, and a loopback one is accepted.
 func TestResolveBootConfigDevSignInChecksTheListenSocket(t *testing.T) {
+	t.Parallel()
 	wildcard, address := listeningFD(t, "tcp4", "0.0.0.0:0")
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DISPATCH_LISTEN_FD": wildcard, "DISPATCH_LISTEN_HOST": "0.0.0.0"}))
 	if err == nil || !strings.Contains(err.Error(), "DISPATCH_DEV_SIGNIN=1 is for a loopback server only") ||
@@ -1679,6 +2093,7 @@ func listeningFD(t *testing.T, network, address string) (string, *net.TCPAddr) {
 }
 
 func TestResolveBootConfigDevSignInRequiresALoopbackDatabase(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process.
 	for _, tc := range []struct{ databaseURL, host string }{
 		{databaseURL: "postgres://postgres:x@db.example.com:5432/d", host: "db.example.com"},
 		{databaseURL: "postgres://u@10.0.0.5/d", host: "10.0.0.5"},
@@ -1712,6 +2127,7 @@ func TestResolveBootConfigDevSignInRequiresALoopbackDatabase(t *testing.T) {
 }
 
 func TestResolveBootConfigDevSignInRefusesAConfiguredSigningKey(t *testing.T) {
+	t.Parallel()
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DISPATCH_SIGNING_KEY": "abc"}))
 	if err == nil || !strings.Contains(err.Error(), "DISPATCH_SIGNING_KEY") {
 		t.Fatalf("configured signing key: err = %v, want a refusal naming DISPATCH_SIGNING_KEY", err)
@@ -1721,6 +2137,7 @@ func TestResolveBootConfigDevSignInRefusesAConfiguredSigningKey(t *testing.T) {
 // With the flag a loopback client acts as any person it names, so the process may not publish
 // into another machine's NATS.
 func TestResolveBootConfigDevSignInRefusesRemoteNATS(t *testing.T) {
+	t.Parallel()
 	if _, err := resolveBootConfig(devSignInEnvironment(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1"})); err == nil || !strings.Contains(err.Error(), "ENVOY_ALLOW_REMOTE_NATS") {
 		t.Fatalf("ENVOY_ALLOW_REMOTE_NATS=1 with NATS on: err = %v, want a refusal naming ENVOY_ALLOW_REMOTE_NATS", err)
 	}
@@ -1735,6 +2152,7 @@ func TestResolveBootConfigDevSignInRefusesRemoteNATS(t *testing.T) {
 // With the flag a loopback client acts as any person it names, so the process may not decide
 // another machine's secrets broker requests as one.
 func TestResolveBootConfigDevSignInRefusesARemoteAgentSecretsBroker(t *testing.T) {
+	t.Parallel()
 	broker := func(brokerURL string) map[string]string {
 		return map[string]string{
 			"DISPATCH_AGENT_SECRETS_URL":                brokerURL,
@@ -1761,6 +2179,7 @@ func TestResolveBootConfigDevSignInRefusesARemoteAgentSecretsBroker(t *testing.T
 // With the flag a loopback client acts as any person it names, so the process may not deliver
 // that human's mentions through another machine's Envoy listener.
 func TestResolveBootConfigDevSignInRefusesARemoteEnvoyListener(t *testing.T) {
+	t.Parallel()
 	for _, listenerURL := range []string{"https://listener.example.com", "http://10.0.0.5:9020"} {
 		if _, err := resolveBootConfig(devSignInEnvironment(map[string]string{"ENVOY_URL": listenerURL})); err == nil || !strings.Contains(err.Error(), "ENVOY_URL") {
 			t.Errorf("ENVOY_URL=%s: err = %v, want a refusal naming ENVOY_URL", listenerURL, err)
@@ -1782,15 +2201,25 @@ const devSignInOrigin = "http://127.0.0.1:8799"
 
 // With the flag a loopback client acts as any person it names, and a person can have the App probe
 // and import any repository it is installed on, so an App private key from the environment may
-// sign calls only to a loopback host.
+// sign calls only to a loopback host. The refusal quotes the base through redact.URL, which
+// prints a plain http(s) URL as written. A base with user info, a query or a fragment, and one
+// that is no absolute http(s) URL with a host (one that does not parse among them), never reaches
+// it: boot refuses each by the setting alone (TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone,
+// TestGitHubAPIBaseRefusesAValueThatIsNoHTTPURL).
 func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
+	t.Parallel()
 	withKey := &auth.AppConfig{ClientID: "Iv1.app", PEM: "app private key"}
 	fromEnv := appCredentialSource{}
 	// Unset, the App calls https://api.github.com.
-	for _, base := range []string{"", "https://api.github.com", "http://10.0.0.5:9022", "http://127.0.0.1@api.github.com"} {
+	for base, shown := range map[string]string{
+		"":                               "",
+		"https://api.github.com":         "https://api.github.com",
+		"http://10.0.0.5:9022":           "http://10.0.0.5:9022",
+		"https://ghe.example.com/api/v3": "https://ghe.example.com/api/v3",
+	} {
 		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base}), devSignInOrigin, withKey, fromEnv)
-		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(base)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
-			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE and DISPATCH_APP_PEM_B64", base, err)
+		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(shown)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
+			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE=%q and DISPATCH_APP_PEM_B64", base, err, shown)
 		}
 	}
 	// The e2e harness points the App at its fake GitHub on 127.0.0.1 (packages/dispatch/e2e/run-server.sh).
@@ -1813,6 +2242,7 @@ func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 // The dashboard origin comes from envoy.json, which main reads after the environment, so the fence
 // over loaded values checks it, before anything connects.
 func TestDevSignInLoadedFenceRefusesAPublicOrigin(t *testing.T) {
+	t.Parallel()
 	const public = "https://dispatch.example.com"
 	if err := devSignInLoadedFence(devSignInBoot(t, nil), public, nil, appCredentialSource{}); err == nil || !strings.Contains(err.Error(), "DISPATCH_SERVER_URL") {
 		t.Errorf("origin %s with the flag: err = %v, want a refusal naming DISPATCH_SERVER_URL", public, err)
@@ -1827,6 +2257,7 @@ func TestDevSignInLoadedFenceRefusesAPublicOrigin(t *testing.T) {
 // base, naming the file and the environment key that replaces it, while a throwaway key in the
 // environment with a loopback fake boots, as packages/dispatch/e2e/run-server.sh's does.
 func TestDevSignInRefusesAnAppJSONKeyWhateverTheBase(t *testing.T) {
+	t.Parallel()
 	const fake = "http://127.0.0.1:9022"
 	dataDir := t.TempDir()
 	path := filepath.Join(dataDir, "app.json")
@@ -1874,6 +2305,7 @@ func devSignInBoot(t *testing.T, overrides map[string]string) bootConfig {
 }
 
 func TestListenAddressJoinsAnIPv6LoopbackHost(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ host, port, want string }{
 		{host: "::1", port: "", want: "[::1]:8766"},
 		{host: "::1", port: "8799", want: "[::1]:8799"},
@@ -1952,6 +2384,7 @@ func runBackfillFiles(t *testing.T, database *store.Store, bucket string, args .
 // one does not. Those exit codes are what an operator's script reads before it trusts that the
 // rows' bytes are safe to have cleared.
 func TestBackfillFilesExitsNonZeroUntilEveryFileReadsBackFromTheBucket(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process.
 	database := storetest.Open(t)
 	const bucket = "example-files-bucket"
 	fake := filestest.ServeS3(t, bucket)
@@ -2010,6 +2443,7 @@ func TestBackfillFilesExitsNonZeroUntilEveryFileReadsBackFromTheBucket(t *testin
 // fleet columns, which registers no file_store. --verify-only and --restore, which take no bytes
 // out of a row, still run. Once those rows lapse, the backfill moves the row.
 func TestBackfillFilesRefusesWhileAProcessWithoutABucketIsLive(t *testing.T) {
+	// Not parallel: it sets environment variables for the whole process.
 	database := storetest.Open(t)
 	const bucket = "example-files-bucket"
 	filestest.ServeS3(t, bucket)
@@ -2050,6 +2484,7 @@ func TestBackfillFilesRefusesWhileAProcessWithoutABucketIsLive(t *testing.T) {
 }
 
 func TestExplainMigrateErrorNamesTheDeploymentBootstrapOnAVectorPermissionDenial(t *testing.T) {
+	t.Parallel()
 	pgErr := &pgconn.PgError{Code: "42501", Message: `permission denied to create extension "vector"`}
 	original := fmt.Errorf("apply migration 72: execute migration: migration 0072_embeddings_core.up.sql: %w", pgErr)
 	explained := explainMigrateError(original)
@@ -2062,6 +2497,7 @@ func TestExplainMigrateErrorNamesTheDeploymentBootstrapOnAVectorPermissionDenial
 }
 
 func TestExplainMigrateErrorPassesThroughAnUnrelatedMigrationFailure(t *testing.T) {
+	t.Parallel()
 	cases := map[string]error{
 		"a different SQLSTATE entirely": fmt.Errorf(
 			"apply migration 42: execute migration: migration 0042_something.up.sql: %w",
@@ -2108,6 +2544,8 @@ const (
 // none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
 // although 200 events wait for their rows.
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the boot's wait of
+	// LiveWindow + HeartbeatInterval + 30 s past the refusing row).
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
@@ -2229,6 +2667,7 @@ const keywordFillTablesEmpty = "search_text_versions_rows=none search_text_versi
 // and the cursor row, and logs no deferral; the same read that finds none of them in the off row
 // counts each of them there.
 func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
+	t.Parallel()
 	t.Run("off", func(t *testing.T) {
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
@@ -2280,6 +2719,7 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 // with the read's error, and the cursor's field still reads. The steps run in order on one
 // database, each on what the one before left.
 func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, step := range []struct {
@@ -2316,6 +2756,7 @@ func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
 // and the cursor holds a row, and then serves: it answers its health check and the registry of
 // live server processes admits it.
 func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	for _, statement := range []string{
 		`insert into search_text_versions_fill (id, event_id, rules) values (1, 0, 1)`,
@@ -2344,6 +2785,8 @@ func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) 
 // then serves: it answers its health check and the registry of live server processes admits it,
 // and still no backend waits for the lock.
 func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break
+	// (requireTheServerEndsTheRead's 10 s over a 5 s lock timeout).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
@@ -2380,6 +2823,8 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 // process booted with DISPATCH_SEARCH_FILL=off on that database logs the same fields once, then
 // serves: it answers its health check and the registry of live server processes admits it.
 func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break
+	// (requireTheServerEndsTheRead's 10 s over a 6 s statement timeout).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, statement := range []string{

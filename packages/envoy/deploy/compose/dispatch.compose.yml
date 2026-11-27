@@ -50,6 +50,9 @@ services:
       DISPATCH_LISTEN_HOST: ${DISPATCH_LISTEN_HOST:-127.0.0.1}
       DISPATCH_PORT: ${DISPATCH_PORT:-8766}
       DISPATCH_APP_CLIENT_ID: ${DISPATCH_APP_CLIENT_ID:-}
+      # The App that writes legion-verdict: the CI reconcile pass leaves its check suites out of
+      # the CI record. Give it the listener's ENVOY_VERDICT_APP_ID, or a head is published twice.
+      DISPATCH_VERDICT_APP_ID: ${DISPATCH_VERDICT_APP_ID:-}
       DISPATCH_AGENT_TOKEN: ${DISPATCH_AGENT_TOKEN:?set DISPATCH_AGENT_TOKEN}
       DISPATCH_SERVER_URL: ${DISPATCH_SERVER_URL:?set DISPATCH_SERVER_URL (the browser origin)}
       NATS_URLS: ${NATS_URLS:?set NATS_URLS}

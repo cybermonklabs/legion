@@ -39,6 +39,10 @@ on:
       - "scripts/go-third-party-notices.sh"
       - "scripts/assemble-third-party-notices.sh"
       - ".github/go-release-targets.json"
+      # The daemon API contract's two scripts: legion_build's stamp, pi_legion_build's number, and
+      # the worker image, which reads both (worker_image below).
+      - "scripts/daemon-contract-order.sh"
+      - "scripts/daemon-contract.sh"
       # The worker image's remaining inputs (worker_image below).
       - ".omp-pin"
       - ".bun-version"
@@ -103,17 +107,19 @@ env:
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
-    packages/envoy/cipheraddr/ packages/envoy/cipherclient/ packages/envoy/dispatchbody/
+    packages/envoy/cipheraddr/ packages/envoy/cipherclient/ packages/envoy/dispatchblocks/
+    packages/envoy/dispatchbody/ packages/envoy/fileerr/ packages/envoy/httpoutage/
     packages/envoy/internal/cipher/oauthwire/ packages/envoy/internal/cipherclient/
-    packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
+    packages/envoy/internal/clock/ packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
-    packages/envoy/internal/dispatch/text/ packages/envoy/internal/fold/
+    packages/envoy/internal/dispatch/text/ packages/envoy/internal/dpopproof/ packages/envoy/internal/fold/
     packages/envoy/internal/googleidentity/ packages/envoy/internal/id/
-    packages/envoy/internal/oauthrefusal/ packages/envoy/internal/redact/
+    packages/envoy/internal/oauthrefusal/ packages/envoy/internal/oidc/ packages/envoy/internal/redact/
     packages/envoy/internal/redirects/ packages/envoy/internal/tlsalert/ packages/envoy/listenerwire/
     packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
+    packages/envoy/migrationid/ packages/envoy/natsconn/ packages/envoy/natsurl/ packages/envoy/natsversion/ packages/envoy/pgdsn/
+    packages/envoy/roleholder/
     packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json
@@ -168,6 +174,17 @@ jobs:
       - name: Resolve plugin versions for the smoke test and worker image
         id: plugin_versions
         run: .github/scripts/release-plugin-versions.sh
+      # The stamp of this commit's contract entries in main's merge order, which the build links in
+      # (.github/scripts/release-build-legion.sh says why it refuses to build without one). The
+      # checkout's fetch-depth 0 holds this commit's history and main's: it fetches every branch
+      # into refs/remotes/origin, so refs/remotes/origin/main is there, the main the script reads.
+      # As the tags are, it is read before setup-go, so no dependency code has run yet.
+      - name: Read the contract entries' merge order
+        id: contract_order
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          stamp=$(bash scripts/daemon-contract-order.sh --stamp HEAD)
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: steps.version.outputs.skip != 'true'
@@ -178,6 +195,7 @@ jobs:
           cache: false
       # ci.yaml's go-daemon, restored and never saved: .github/workflows/ci-caches.yaml fills that
       # family on a push to main.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.version.outputs.skip != 'true'
         with:
@@ -193,13 +211,23 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PI_LEGION_VERSION: ${{ steps.plugin_versions.outputs.pi_legion_version }}
           PI_ENVOY_VERSION: ${{ steps.plugin_versions.outputs.pi_envoy_version }}
+          LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: .github/scripts/release-build-legion.sh
+
+      # `legion version` names the release, the commit and the linked plugin pair. Then `legion
+      # version --contracts` is held line by line to the stamp the build linked: `contract` L plus
+      # the stamp's count of ids, L the greatest number of
+      # packages/contracts/fixtures/daemon-api/released-contracts.json; `order stamped`, for the
+      # stamp `v1:` of no entry too; and each id of the stamp in its order, the k-th numbered L + k
+      # and followed by its slug. An archive linked with no stamp prints `order id`, so it fails
+      # here even where its ids fall in the stamp's order.
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           PI_LEGION_VERSION: ${{ steps.plugin_versions.outputs.pi_legion_version }}
           PI_ENVOY_VERSION: ${{ steps.plugin_versions.outputs.pi_envoy_version }}
+          LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: |
           version=$(out/legion-linux-amd64/legion version)
           echo "$version"
@@ -207,6 +235,11 @@ jobs:
           test "$lines" -eq 2
           test "$(printf '%s\n' "$version" | sed -n '1p')" = "legion v$VERSION commit $GITHUB_SHA"
           test "$(printf '%s\n' "$version" | sed -n '2p')" = "plugins @sjawhar/pi-legion $PI_LEGION_VERSION @sjawhar/pi-envoy $PI_ENVOY_VERSION"
+          contracts=$(out/legion-linux-amd64/legion version --contracts)
+          echo "$contracts"
+          last=$(jq -e max packages/contracts/fixtures/daemon-api/released-contracts.json)
+          want=$(printf '%s\n' "$LEGION_CONTRACT_ORDER" | awk -F, -v l="$last" 'sub(/^v1:/, "") { print "contract", l + NF; print "order stamped"; for (k = 1; k <= NF; k++) print $k, l + k }')
+          test "$(printf '%s\n' "$contracts" | awk 'NR > 2 && NF == 3 { print $1, $2; next } 1')" = "$want"
       # The archives, exactly as built and smoke-tested, for publish.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.version.outputs.skip != 'true'
@@ -435,12 +468,16 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         run: bun install --frozen-lockfile
 
+      # The committed manifest declares no contract number: the pack writes the one of this tree
+      # (scripts/daemon-contract.sh), which the prepack's bundle inlines with the rest of the
+      # manifest, as it writes the version.
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          jq --arg v "$VERSION" '.version = $v' \
+          contract=$(bash scripts/daemon-contract.sh)
+          jq --arg v "$VERSION" --argjson c "$contract" '.version = $v | .legion.daemonApiVersion = $c' \
             packages/pi-legion/package.json > tmp.json \
             && mv tmp.json packages/pi-legion/package.json
 

@@ -15,6 +15,7 @@ import (
 // What the looser reading still refuses is here beside them: an owner that opens with something
 // other than a letter or a digit, and one past GitHub's 39 characters.
 func TestAnOwnerGitHubServesIsTakenThoughTheSignUpFormWouldRefuseIt(t *testing.T) {
+	t.Parallel()
 	for value, want := range map[string]string{
 		"hello--world/x":               "hello--world/x",
 		"foo--bar/x":                   "foo--bar/x",

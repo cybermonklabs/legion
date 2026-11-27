@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -49,6 +51,10 @@ type podKind interface {
 	// resources are the reservation every container of the pod carries, its init containers'
 	// included (Options.Resources).
 	resources(r *Runtime) corev1.ResourceRequirements
+	// serviceAccount is the ServiceAccount the pod runs as, "" for the namespace's default: the
+	// one its template names (podTemplate) and the one a live pod of the kind is held to
+	// (accountDrift).
+	serviceAccount(r *Runtime) string
 	// initContainers are the pod's init containers, and initVolumes the volumes only they mount,
 	// besides the pod's own volume and config home.
 	initContainers(r *Runtime, l launch) []corev1.Container
@@ -153,6 +159,11 @@ func (issuePod) container() string { return runtime.IssuePodContainer }
 // resources is the one issue-pod reservation.
 func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Issue }
 
+// serviceAccount is the operator's runtime.kubernetes.pod.service_account, the account every pod
+// runs as but the controller's where controller_service_account names one, and a repository
+// cache's while its bucket is on (cachePodAccount).
+func (issuePod) serviceAccount(r *Runtime) string { return r.pod.ServiceAccount }
+
 func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
 	return claim.NewToken(project, issue, role)
 }
@@ -170,12 +181,25 @@ func (issuePod) prepare(l *launch) error {
 	if spec.Repository.IsZero() {
 		return errors.New("no repository: a pod's init container provisions the issue's workspace from one")
 	}
-	working, err := workspace.Location(TreeRoot, spec.Repository, spec.Issue)
+	dir, err := WorkspaceDir(spec.Repository, spec.Issue)
 	if err != nil {
 		return err
 	}
-	l.workspace = working.Dir
+	l.workspace = dir
 	return nil
+}
+
+// WorkspaceDir is the directory of issue's workspace of repository in its pod: its place on the
+// issue's disk (workspace.Location under TreeRoot), the working directory of every role container
+// of the pod (issuePod.prepare), and so the directory each agent of the issue starts in. The
+// workflow engine names it in every task it composes (workflow.Config.WorkspaceDir, which the
+// daemon reads from here).
+func WorkspaceDir(repository ghrepo.Repository, issue string) (string, error) {
+	working, err := workspace.Location(TreeRoot, repository, issue)
+	if err != nil {
+		return "", err
+	}
+	return working.Dir, nil
 }
 
 // labels carry the pod's tree and issue and no role: a role belongs to a process locator, not to a
@@ -555,6 +579,13 @@ func (controllerPod) container() string { return runtime.ControllerPodContainer 
 
 // resources is the controller's pod's reservation.
 func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Controller }
+
+// serviceAccount is runtime.kubernetes.pod.controller_service_account where the operator names one,
+// and runtime.kubernetes.pod.service_account, the issue pods' account, where not, so a deployment
+// that names no controller account runs its controller as it always did.
+func (controllerPod) serviceAccount(r *Runtime) string {
+	return cmp.Or(r.pod.ControllerServiceAccount, r.pod.ServiceAccount)
+}
 
 func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {
 	return claim.ControllerToken(project), nil

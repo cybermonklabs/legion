@@ -15,10 +15,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -29,10 +31,10 @@ import (
 // role's five are recorded on the issue Sandbox when the daemon starts a generation, one annotation
 // per role, which a later daemon reads from its informer cache (evaluate).
 //
-// A record names each address without its credentials — its scheme, host and port, `xxxxx@` when it
-// carries userinfo, never its path, query or fragment — and holds the sha256 of its whole value,
-// which is what is compared. The raw values travel only in the start command, so a URL's
-// credentials never land in a cluster object.
+// A record names each address without its credentials — its scheme, host and port, or its scheme
+// and `[a URL with credentials]` when it carries userinfo, never its path, query or fragment — and
+// holds the sha256 of its whole value, which is what is compared. The raw values travel only in the
+// start command, so a URL's credentials never land in a cluster object.
 
 // addressesAnnotation is the Sandbox annotation that records the addresses role's running
 // generation was started with.
@@ -40,10 +42,19 @@ func addressesAnnotation(role claim.Role) string {
 	return "legion.dev/addresses-" + string(role)
 }
 
-// addressRecord is one role generation's recorded addresses.
+// addressRecord is one role generation's recorded addresses, and whether its start carried a
+// Dispatch token.
+//
+// DispatchToken is whether the generation's start command carried DISPATCH_TOKEN in its Files
+// (the shared bearer, or the transition token under dispatch_token_broker), which the launcher
+// writes into the generation's private directory and deletes when the generation ends: what a
+// restarted daemon counts its live Dispatch tokens from (Runtime.DispatchTokens). No comparison
+// reads it — movedEnvironment compares Addresses alone — so it moves no generation to
+// StaleAddress. Nil in a record a daemon before the field wrote (recordedDispatchToken).
 type addressRecord struct {
-	Generation uint64            `json:"generation"`
-	Addresses  []recordedAddress `json:"addresses"`
+	Generation    uint64            `json:"generation"`
+	Addresses     []recordedAddress `json:"addresses"`
+	DispatchToken *bool             `json:"dispatchToken,omitempty"`
 }
 
 // recordedAddress is one address of a record: the variable that carries it, its name as
@@ -98,8 +109,10 @@ func addressDigest(value string) string {
 // its annotation holds it. enrolled is the launch's own enrollment decision for the pod that
 // generation runs in (launch.enrolls, Runtime.enrollsIn), so a generation started in a kept pod
 // that carries no enrollment is recorded as carrying no broker URL — which is what it was handed.
-func (r *Runtime) recordFor(role claim.Role, generation uint64, enrolled bool) (string, error) {
-	record := addressRecord{Generation: generation}
+// dispatchToken is whether the generation's start carries DISPATCH_TOKEN, the launch's own
+// Dispatch decision (prepare's bearer, dispatchCredential's transition token).
+func (r *Runtime) recordFor(role claim.Role, generation uint64, enrolled, dispatchToken bool) (string, error) {
+	record := addressRecord{Generation: generation, DispatchToken: &dispatchToken}
 	for _, a := range r.environmentAddresses(role, enrolled) {
 		record.Addresses = append(record.Addresses, recordedAddress{Variable: a.name, Name: r.addressName(a), SHA256: addressDigest(a.value)})
 	}
@@ -111,13 +124,14 @@ func (r *Runtime) recordFor(role claim.Role, generation uint64, enrolled bool) (
 }
 
 // recordAddresses records on s, the issue Sandbox as read, the addresses a generation of role
-// started now with the enrollment decision enrolled is handed: a merge patch of role's one
-// annotation, so the other roles' records stand.
+// started now with the enrollment decision enrolled is handed, and whether its start carries
+// DISPATCH_TOKEN (dispatchToken): a merge patch of role's one annotation, so the other roles'
+// records stand.
 // The patch carries s's uid, which the API server refuses to change on a live object, so a Sandbox
 // deleted and recreated in between is never written. It runs before the generation's start command
 // is sent, so a generation that runs has its record.
-func (r *Runtime) recordAddresses(ctx context.Context, s *sandbox, role claim.Role, generation uint64, enrolled bool) error {
-	record, err := r.recordFor(role, generation, enrolled)
+func (r *Runtime) recordAddresses(ctx context.Context, s *sandbox, role claim.Role, generation uint64, enrolled, dispatchToken bool) error {
+	record, err := r.recordFor(role, generation, enrolled, dispatchToken)
 	if err != nil {
 		return err
 	}
@@ -132,6 +146,19 @@ func (r *Runtime) recordAddresses(ctx context.Context, s *sandbox, role claim.Ro
 		return fmt.Errorf("record the addresses of %s generation %d on sandbox %s: %w", role, generation, s.Name, err)
 	}
 	return nil
+}
+
+// recordedDispatchToken is whether a generation carried DISPATCH_TOKEN as its record says, nil
+// for a generation with no record of its own. A record without the field, and a generation with
+// no record at all, were written by a daemon before the field, which gave every launch the token
+// whenever Dispatch was configured, so they read as carrying it exactly when this runtime has a
+// Dispatch URL. Read as carrying, a generation is counted until it ends, which keeps a deployment
+// waiting for it rather than removing the transition token under a role still holding one.
+func (r *Runtime) recordedDispatchToken(record *addressRecord) bool {
+	if record == nil || record.DispatchToken == nil {
+		return r.dispatchURL != ""
+	}
+	return *record.DispatchToken
 }
 
 // movedAddress is one thing a role process holds that one launched now is not handed: where it
@@ -162,19 +189,22 @@ func describeMoved(moved []movedAddress) string {
 // nothing to compare: a generation started before records existed is never read as stale for want
 // of one. A record that cannot be read is an error, which proves nothing about the generation's
 // addresses: evaluate reads it as stale, and the relaunch that follows writes a fresh one.
-func (r *Runtime) movedEnvironment(s *sandbox, pod *corev1.Pod, role claim.Role, generation uint64) ([]movedAddress, error) {
+//
+// dispatchToken is, from the same read, whether the generation's start carried DISPATCH_TOKEN
+// (recordedDispatchToken), which no comparison here reads: a generation with no record of its
+// own, or an unreadable one, reads as one whose record lacks the field.
+func (r *Runtime) movedEnvironment(s *sandbox, pod *corev1.Pod, role claim.Role, generation uint64) (moved []movedAddress, dispatchToken bool, err error) {
 	raw, ok := s.Annotations[addressesAnnotation(role)]
 	if !ok {
-		return nil, nil
+		return nil, r.recordedDispatchToken(nil), nil
 	}
 	var record addressRecord
 	if err := json.Unmarshal([]byte(raw), &record); err != nil {
-		return nil, fmt.Errorf("the address record %s is unreadable (%v)", addressesAnnotation(role), err)
+		return nil, r.recordedDispatchToken(nil), fmt.Errorf("the address record %s is unreadable (%v)", addressesAnnotation(role), err)
 	}
 	if record.Generation != generation {
-		return nil, nil
+		return nil, r.recordedDispatchToken(nil), nil
 	}
-	var moved []movedAddress
 	for _, a := range r.environmentAddresses(role, r.enrollsIn(&pod.Spec, role)) {
 		i := slices.IndexFunc(record.Addresses, func(held recordedAddress) bool { return held.Variable == a.name })
 		switch {
@@ -184,7 +214,7 @@ func (r *Runtime) movedEnvironment(s *sandbox, pod *corev1.Pod, role claim.Role,
 			moved = append(moved, movedAddress{a.name, record.Addresses[i].Name, r.addressName(a)})
 		}
 	}
-	return moved, nil
+	return moved, r.recordedDispatchToken(&record), nil
 }
 
 // movedStream compares the stream the launcher in pod's container named container dials with the
@@ -963,11 +993,14 @@ func sessionStoreName(kind ompsessions.StoreKind, dsnSecret string, proxy []stri
 // namedURL is the log boundary for one endpoint value: an existing pod or record can hold a value a
 // previous daemon accepted, or a direct Options caller supplied, even when this daemon's current
 // loader no longer accepts it. It names "(unset)" for none; otherwise it constructs the name from
-// exactly the scheme, host and port it accepts to show, adding xxxxx@ when the URL carries userinfo.
-// Path, query and fragment never enter it. An endpoint that cannot yield a scheme and host is xxxxx
-// whole, so unexpected input cannot make the name a credential reader. api.endpointOf is the same
-// mask as the state renders it, which keeps the path: there the value is a setting its reader acts
-// on, where this one is only a name.
+// exactly the scheme, host and port it accepts to show, or, when the URL carries userinfo or an
+// "@" past its host (natsurl.UserinfoPastHost: a credential holding a "/", "?" or "#" written as the
+// user, its head read as the host), the scheme and redact.URLWithCredentials, nothing after the last
+// "@" (a password holding an unencoded "@" leaves its tail there, read as a host). Path, query and
+// fragment never enter it. An endpoint that cannot yield a scheme and host is xxxxx whole, so
+// unexpected input cannot make the name a credential reader. api.endpointOf is the same mask as the
+// state renders it, which keeps the path: there the value is a setting its reader acts on, where
+// this one is only a name.
 func namedURL(address string) string {
 	if address == "" {
 		return "(unset)"
@@ -976,16 +1009,17 @@ func namedURL(address string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
 	}
-	name := u.Scheme + "://"
-	if u.User != nil {
-		name += "xxxxx@"
+	if u.User != nil || natsurl.UserinfoPastHost(u) {
+		return u.Scheme + "://" + redact.URLWithCredentials
 	}
-	return name + u.Host
+	return u.Scheme + "://" + u.Host
 }
 
 // namedNATSURLs names ENVOY_NATS_URL from the distinct values r.natsURLs holds, the entries
 // readNatsURLs accepted, before mainEnvironment comma-joined them: each is one endpoint, so namedURL
-// parses it whole. The joined value is never split, since raw commas are valid in userinfo.
+// parses it whole. readNatsURLs refuses an entry holding a comma, since the NATS client reads one as
+// the end of a server URL, so the joined value splits back into these entries; it is named from
+// them all the same, never by splitting it.
 func namedNATSURLs(urls []string) string {
 	if len(urls) == 0 {
 		return "(unset)"

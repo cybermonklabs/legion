@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -55,6 +55,7 @@ func bothInstalledBundle(t *testing.T) (root, defaultDir string) {
 // the pair moved one repository and not the account. R2: a role can push to any repository its
 // App is installed on.
 func TestARenamedRepositoryKeepsItsNewOwnersLeaseWhileTheAppIsInstalledOnBothOwners(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable gitCredentialStdin (runGitCredentialHere).
 	for _, tc := range []struct{ path, token string }{
 		{"/sjawhar/legion.git", "ghs_implement_write_cybermonklabs"},
 		{"/cybermonklabs/legion.git", "ghs_implement_write_cybermonklabs"},
@@ -95,6 +96,7 @@ func TestARenamedRepositoryKeepsItsNewOwnersLeaseWhileTheAppIsInstalledOnBothOwn
 // repository and one directory, and runs with cybermonklabs's. A command naming one repository,
 // moved or not, and one naming the owner alone run as they did before.
 func TestLegionGhRefusesACommandWhoseRepositoriesRouteToTwoDirectories(t *testing.T) {
+	t.Parallel()
 	run := bothInstalledGh(t)
 	for _, tc := range []struct {
 		name  string
@@ -103,7 +105,7 @@ func TestLegionGhRefusesACommandWhoseRepositoriesRouteToTwoDirectories(t *testin
 		named []string // what the refusal names
 	}{
 		{"the moved repository beside a sibling", []string{"search", "prs", "--repo", "sjawhar/legion", "--repo", "sjawhar/ygo"}, "",
-			[]string{"more than one owner", "cybermonklabs (--repo sjawhar/legion)", "sjawhar (--repo sjawhar/ygo)", "sends no token"}},
+			[]string{"more than one owner", "cybermonklabs (a -R value naming sjawhar/legion)", "sjawhar (a -R value naming sjawhar/ygo)", "sends no token"}},
 		{"the moved repository by both of its names", []string{"search", "prs", "--repo", "cybermonklabs/legion", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
 		{"the moved repository alone", []string{"search", "prs", "--repo", "sjawhar/legion"}, "ghs_implement_write_cybermonklabs", nil},
 		{"a sibling alone", []string{"search", "prs", "--repo", "sjawhar/ygo"}, "ghs_implement_write_sjawhar", nil},
@@ -144,11 +146,11 @@ func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, stri
 	bin := t.TempDir()
 	write := func(name, script string) {
 		t.Helper()
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	write("legion", "#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n")
+	write("legion", "#!/bin/sh\n"+testMainEnv+"=1 exec '"+legionCopy(t)+"' \"$@\"\n")
 	write("gh", "#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n")
 	write("real-gh", "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --help|-h|help|--version) exec '"+gh+"' \"$@\";; esac; done\n"+
 		"case \"$*\" in *'--jq .visibility'*) echo private; exit 0;; esac\n"+
@@ -159,10 +161,9 @@ func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, stri
 		t.Helper()
 		// By the absolute path of the `gh` this helper wrote, never the bare name: Go resolves a
 		// bare name against the PATH of the process making the call and never against the one the
-		// child's Env holds (docs/testing.md), and realGHForCapture has put a `gh` of its own
-		// first on this process's PATH (ghWrapperFirstOnPath), so a bare name ran that one and
-		// the script written here never ran at all. The child's PATH still holds bin first, so
-		// every gh the wrapper resolves for itself is this helper's.
+		// child's Env holds (docs/testing.md), so a bare name would run whatever gh this machine
+		// has first on its PATH. The child's PATH holds bin first, so every gh the wrapper resolves
+		// for itself is this helper's.
 		cmd := exec.Command(filepath.Join(bin, "gh"), args...)
 		cmd.Dir = home
 		cmd.Env = []string{

@@ -92,14 +92,11 @@ func newMocks() *pulumitest.Mocks {
 			case "kubernetes:core/v1:Secret":
 				// The API server sets a Secret's resourceVersion on every write; the state keeps the
 				// metadata the program registered, with it added.
-				metadata := resource.PropertyMap{}
-				if registered, ok := args.Inputs["metadata"]; ok && registered.IsObject() {
-					for key, value := range registered.ObjectValue() {
-						metadata[key] = value
-					}
-				}
-				metadata["resourceVersion"] = resource.NewProperty(args.Name + "-resource-version")
-				out["metadata"] = resource.NewProperty(metadata)
+				out["metadata"] = resource.NewProperty(registeredMetadataWith(args, "resourceVersion", args.Name+"-resource-version"))
+			case "kubernetes:core/v1:ServiceAccount":
+				// The API server gives a ServiceAccount its uid when it creates it, which a grant
+				// by uid names; the state keeps the registered metadata, with it added.
+				out["metadata"] = resource.NewProperty(registeredMetadataWith(args, "uid", mockServiceAccountUID(args.Name)))
 			}
 			return "", out
 		},
@@ -129,6 +126,22 @@ func newMocks() *pulumitest.Mocks {
 		},
 	}
 }
+
+// registeredMetadataWith is the metadata args registered, with key set to value, as the API
+// server adds a field it computes to an object's metadata.
+func registeredMetadataWith(args pulumi.MockResourceArgs, key, value string) resource.PropertyMap {
+	metadata := resource.PropertyMap{}
+	if registered, ok := args.Inputs["metadata"]; ok && registered.IsObject() {
+		for k, v := range registered.ObjectValue() {
+			metadata[k] = v
+		}
+	}
+	metadata[resource.PropertyKey(key)] = resource.NewProperty(value)
+	return metadata
+}
+
+// mockServiceAccountUID is the uid the mocks give the ServiceAccount registered as name.
+func mockServiceAccountUID(name string) string { return name + "-uid" }
 
 // getClusterToken is the gcp provider's getCluster invoke, which gcp:Dispatch looks the cluster
 // existingCluster names up with.

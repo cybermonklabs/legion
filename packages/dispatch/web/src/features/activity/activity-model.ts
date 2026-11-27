@@ -1,7 +1,10 @@
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
+
 import type { Actor, DispatchEvent } from "../../api/types";
 import { queuedWait } from "../conversation/delivery";
 import { blockInvalidDescription } from "../issue/event-description";
-import { type AgentPart, askResolutionParts } from "../refs/AgentName";
+import { textSourceOf } from "../refs/text-references";
+import { askQuestionProse, askResolvedParts, eventProse, type SentencePart } from "./SentenceParts";
 
 export function dateKey(iso: string): string {
   const date = new Date(iso);
@@ -37,14 +40,18 @@ function sameActor(left: Actor, right: Actor): boolean {
   return left.kind === right.kind && left.id === right.id;
 }
 
-/** One line of the Activity tab, as `AgentPart`s: an agent it names keeps its identity until
- *  `ActivityLine` draws it through `AgentName`. */
-export function activityDescription(event: DispatchEvent, previousStatus?: string): AgentPart[] {
+/** One line of the Activity tab, as `SentencePart`s: an agent it names keeps its identity until
+ *  `ActivityLine` draws it through `AgentName`, and a text of the record it quotes - an ask's
+ *  question, a resolution's reason - stays a part the one reader draws (`SentenceParts`). */
+export function activityDescription(event: DispatchEvent, previousStatus?: string): SentencePart[] {
   const description = describe(event, previousStatus);
   return typeof description === "string" ? [description] : description;
 }
 
-function describe(event: DispatchEvent, previousStatus: string | undefined): string | AgentPart[] {
+function describe(
+  event: DispatchEvent,
+  previousStatus: string | undefined
+): string | SentencePart[] {
   switch (event.type) {
     case "project.created":
       return `created project ${event.payload.key}`;
@@ -82,6 +89,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return "kept a decision";
     case "priority.updated":
       return `${event.payload.change} priority ${event.payload.id}`;
+    case "project.access_changed":
+      return `changed access: ${event.payload.change.replace("_", " ")}`;
     case "issue.created":
       return "created the issue";
     case "issue.updated":
@@ -108,6 +117,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     }
     case "issue.deployed":
       return `deployed ${event.payload.repo}#${event.payload.number} to production (run ${event.payload.run_id})`;
+    case "deploy.recorded":
+      return `recorded a deploy of ${event.payload.program} in ${event.payload.repo} at ${event.payload.commit}, deployed ${event.payload.deployed_at}.`;
     case "handoff.recorded":
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
@@ -122,15 +133,30 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `edited ${event.payload.name} v${event.payload.from_version} to v${event.payload.to_version}`;
     case "comment.created":
       if (event.payload.ask_id !== null) {
-        return `replied to “${event.payload.ask_question ?? "an ask"}”`;
+        return event.payload.ask_question === undefined
+          ? "replied to “an ask”"
+          : [
+              "replied to “",
+              eventProse(
+                event,
+                "payload.ask_question",
+                event.payload.ask_question,
+                textSourceOf("ask", event.payload.ask_id, event.issue_key)
+              ),
+              "”",
+            ];
       }
       if (event.payload.reply_to !== null) return "replied to a comment";
+      // The quote is the document's own words where the comment was left, shown as the
+      // characters they are: the reading list's `anchor-quote` (`DISPATCH_READING_SURFACES`).
       return `commented on ${event.payload.artifact_name}: “${event.payload.anchor?.quote ?? ""}”`;
     case "comment.answered":
       return "answered a comment";
     // Same rule as the issue timeline's line. A queued mention is the listener holding it for a
     // session that is not running, which is neither delivered nor refused, so it reads as queued
-    // first, a queued repeat included; a repeat the stream recognised says so next.
+    // first, a queued repeat included; a repeat the stream recognised says so next. A failure
+    // carrying the delete's words is the receipt the post's delete appended for a send it ended,
+    // which says nothing of whether that send reached the session.
     case "comment.delivery":
       if (event.payload.state === "queued") {
         return `queued a comment mention for ${event.payload.target}, which ${queuedWait}`;
@@ -138,9 +164,12 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       if (event.payload.duplicate === true) {
         return `already delivered a comment mention to ${event.payload.target}`;
       }
-      return event.payload.state === "failed"
-        ? `could not deliver a comment mention to ${event.payload.target}`
-        : `delivered a comment mention to ${event.payload.target}`;
+      if (event.payload.state !== "failed") {
+        return `delivered a comment mention to ${event.payload.target}`;
+      }
+      return event.payload.error === DELETED_POST_DELIVERY_ERROR
+        ? `the post's delete ended a comment mention to ${event.payload.target}`
+        : `could not deliver a comment mention to ${event.payload.target}`;
     case "comment.resolved":
       return `resolved a comment on ${event.payload.artifact_name}`;
     case "comment.anchor_refreshed":
@@ -155,43 +184,68 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `requested changes on ${event.payload.name} v${event.payload.version}`;
     case "comment.edited":
       return `edited a comment on ${event.payload.artifact_name}`;
+    case "comment.deleted":
+      return `deleted a comment on ${event.payload.artifact_name}`;
     case "suggestion.accepted":
       return `accepted a suggestion on ${event.payload.artifact_name}`;
     case "suggestion.rejected":
       return `rejected a suggestion on ${event.payload.artifact_name}`;
     case "ask.resolved":
-      return askResolutionParts(event.payload.resolution);
+      return askResolvedParts(event);
     case "ask.opened":
-      return `asked “${event.payload.question}”`;
+      return ["asked “", askQuestionProse(event), "”"];
     case "ask.anchor_refreshed":
-      return event.payload.anchor?.orphaned
-        ? `made an ask lose its quote: “${event.payload.question}”`
-        : `re-anchored an ask after an edit: “${event.payload.question}”`;
+      return [
+        event.payload.anchor?.orphaned
+          ? "made an ask lose its quote: “"
+          : "re-anchored an ask after an edit: “",
+        askQuestionProse(event),
+        "”",
+      ];
     case "ask.edited":
-      return `edited the question "${event.payload.question}"`;
+      return ['edited the question "', askQuestionProse(event), '"'];
     case "ask.handed_back":
-      return `handed “${event.payload.question}” back for approval`;
+      return ["handed “", askQuestionProse(event), "” back for approval"];
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
       // project's default assignee while the issue holds nobody.
-      return `handed “${event.payload.question}” to ${event.payload.asked_of ?? "the issue's assignee"}`;
+      return [
+        "handed “",
+        askQuestionProse(event),
+        `” to ${event.payload.asked_of ?? "the issue's assignee"}`,
+      ];
     case "ask.answered":
-      return event.payload.previous_answer === undefined
-        ? `answered “${event.payload.question}”`
-        : `changed the answer to “${event.payload.question}”`;
+      return [
+        event.payload.previous_answer === undefined ? "answered “" : "changed the answer to “",
+        askQuestionProse(event),
+        "”",
+      ];
     case "message.created":
       return "sent a message";
-    case "message.delivery":
-      // A message the listener holds for a session that is not running is not delivered yet.
+    case "message.delivery": {
+      const target = event.payload.target ?? `session:${event.payload.session_id}`;
+      // A message the listener holds for a session that is not running is not delivered yet. A
+      // failed one reads as a mention's does: the delete's words mark a send the post's delete
+      // ended, and any other failure a send that did not deliver it.
       if (event.payload.state === "queued") {
-        return `queued a message for ${event.payload.target ?? `session:${event.payload.session_id}`}, which ${queuedWait}`;
+        return `queued a message for ${target}, which ${queuedWait}`;
       }
-      return "delivered a message";
+      if (event.payload.state !== "failed") {
+        return "delivered a message";
+      }
+      return event.payload.error === DELETED_POST_DELIVERY_ERROR
+        ? `the post's delete ended a message to ${target}`
+        : `could not deliver a message to ${target}`;
+    }
     case "message.accepted":
       return "took a message as its own turn";
     case "message.answered":
       return "answered a message";
+    case "message.edited":
+      return "edited a message";
+    case "message.deleted":
+      return "deleted a message";
     case "child.status":
       return `moved ${event.payload.child_key} from ${event.payload.from} to ${event.payload.to}`;
     case "child.added":
@@ -232,6 +286,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "result.recorded":
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
     case "result.retracted":
+      // The reason is shown as the characters it is, as the result it withdraws is: the reading
+      // list's `check-retraction-reason` (`DISPATCH_READING_SURFACES`).
       return `retracted the result of check ${event.payload.check_block_id} at ${event.payload.commit_sha}: ${event.payload.reason}`;
     case "issue.pull_request_attribution_changed":
       return `moved pull request ${event.payload.repo}#${event.payload.number} from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
@@ -246,7 +302,7 @@ export type ActivityItem =
       id: string;
       at: string;
       author: Actor;
-      description: AgentPart[];
+      description: SentencePart[];
       event: DispatchEvent;
       seq: number;
     }

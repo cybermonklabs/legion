@@ -5,6 +5,8 @@
 // one breaks tools that read paths a line at a time.
 package main
 
+//ci:reads packages/envoy/internal/dispatch/architecture/notes/testdata/** testdataDir joins ../../internal/dispatch/architecture/notes/testdata, which TestTheBuiltBinary's built binary reads
+
 import (
 	"bytes"
 	"context"
@@ -21,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 )
+
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
 
 // The bound refuses a set holding a note of notes.MaxFileSize + 1 bytes before any note is read,
 // so the note beside it, whose front matter holds an unknown key, is never parsed and its problem

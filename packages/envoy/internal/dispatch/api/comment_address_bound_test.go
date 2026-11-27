@@ -20,6 +20,7 @@ import (
 // graph_edges answers its owned_by edge, rather than the tuple arm answering it short that edge.
 // The write leaves no node and no tuple end past the bound anywhere in the store either.
 func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, database, _ := newTestServer(t, testServerOptions{})
 
@@ -52,7 +53,7 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	stored, err := commentStored(ctx, tx, commentID, author, time.Now().UTC(), nil, &artifactID)
+	stored, err := commentStored(ctx, tx, commentID, author, time.Now().UTC(), nil, &artifactID, "CB", nil)
 	if err != nil {
 		t.Fatalf("read what the comment states: %v", err)
 	}
@@ -100,6 +101,7 @@ func TestACommentOwnedByALongRefKeyLeavesOutItsTuple(t *testing.T) {
 // is a session past the store's address bound names an author the store cannot key: AuthorFacts
 // writes no session node, no authored_by tuple and no alias, and the comment keeps its own row.
 func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "CA")
@@ -114,7 +116,7 @@ func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T)
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	stored, err := commentStored(ctx, tx, commentID, author, time.Now().UTC(), nil, nil)
+	stored, err := commentStored(ctx, tx, commentID, author, time.Now().UTC(), nil, nil, "CA", nil)
 	if err != nil {
 		t.Fatalf("read what the comment states: %v", err)
 	}

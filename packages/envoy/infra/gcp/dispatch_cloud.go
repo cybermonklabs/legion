@@ -12,6 +12,7 @@ import (
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/secretmanager"
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/servicenetworking"
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/sql"
+	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	random "github.com/pulumi/pulumi-random/sdk/v4/go/random"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
@@ -101,7 +102,12 @@ type dispatchDatabase struct {
 	agentToken    *random.RandomPassword
 	listenerToken *random.RandomPassword
 	principal     pulumi.StringOutput
-	seedAccessor  *secretmanager.SecretIamMember
+	// poolRoot is the path every principal of the cluster's Workload Identity pool starts with,
+	// principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool>:
+	// principal adds /subject/ns/<namespace>/sa/<hostname>, a ServiceAccount by its name, and
+	// newDispatchSeedGrantByUID adds /kubernetes.serviceaccount.uid/<uid>, one by its uid.
+	poolRoot     pulumi.StringOutput
+	seedAccessor *secretmanager.SecretIamMember
 	// listenerSeedAccessor is the NATS seed's grant to the listener's own account,
 	// ServiceAccount <hostname>-listener, the one grant that account holds.
 	listenerSeedAccessor *secretmanager.SecretIamMember
@@ -417,14 +423,15 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	// included, and that wait needs roles/cloudsql.client already granted, so the consumer grants
 	// that role from the principal's known form, not from the output; whether IAM accepts it
 	// before the pool exists is the same unproven question.
+	poolRoot := pulumi.All(project.Number(), cloud.pool).ApplyT(func(values []interface{}) (string, error) {
+		parts, err := outputStrings(dispatch, values, "the project's number", "the cluster's Workload Identity pool")
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s", parts[0], parts[1]), nil
+	}).(pulumi.StringOutput)
 	principalOf := func(account string) pulumi.StringOutput {
-		return pulumi.All(project.Number(), cloud.pool).ApplyT(func(values []interface{}) (string, error) {
-			parts, err := outputStrings(dispatch, values, "the project's number", "the cluster's Workload Identity pool")
-			if err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/subject/ns/%s/sa/%s", parts[0], parts[1], s.namespace, account), nil
-		}).(pulumi.StringOutput)
+		return pulumi.Sprintf("%s/subject/ns/%s/sa/%s", poolRoot, s.namespace, account)
 	}
 	principal := principalOf(s.hostname)
 	seedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn(cloud.waitFor))
@@ -460,9 +467,48 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	return &dispatchDatabase{
 		connectionName: connectionName, waitFor: waitFor, password: password, signing: signing,
 		agentToken: agentToken, listenerToken: listenerToken,
-		principal: principal, seedAccessor: seedAccessor, listenerSeedAccessor: listenerSeedAccessor,
+		principal: principal, poolRoot: poolRoot, seedAccessor: seedAccessor, listenerSeedAccessor: listenerSeedAccessor,
 		azureKeyAccessor: azureKeyAccessor, chatTokenAccessor: chatTokenAccessor,
 	}, nil
+}
+
+// dispatchServiceAccountUID is account's metadata.uid as the cluster's API server gave it, the
+// one check of that value: the NATS seed's grant by uid and the serviceAccountUid output both take
+// it from here. In an update an account with no uid fails the apply, naming it, since no grant can
+// name it by uid. In a preview, pulumi-kubernetes' Create answers a ServiceAccount it cannot
+// dry-run with the registered inputs alone, which hold metadata and no uid: a namespace the same
+// update creates (turning Dispatch on after clusterOnly, the move onto existingCluster without
+// existingNamespace, a change of namespace), a cluster the preview cannot reach, or server-side
+// apply's AlreadyExists. There the uid is unknown, and so is everything built from it, rather than
+// a refusal that would fail the preview and so `pulumi up`. A dry run that succeeds answers a
+// dry-run uid, which the create replaces.
+func dispatchServiceAccountUID(ctx *pulumi.Context, dispatch, accountName string, account *corev1.ServiceAccount) pulumi.StringOutput {
+	return account.Metadata.Uid().ApplyT(func(uid *string) (pulumi.StringOutput, error) {
+		switch {
+		case uid != nil && *uid != "":
+			return pulumi.String(*uid).ToStringOutput(), nil
+		case ctx.DryRun():
+			return pulumi.UnsafeUnknownOutput(nil).ApplyT(func(any) string { return "" }).(pulumi.StringOutput), nil
+		}
+		return pulumi.StringOutput{}, fmt.Errorf("%s: ServiceAccount %s has no uid, so no grant can name it by uid", dispatch, accountName)
+	}).(pulumi.StringOutput)
+}
+
+// newDispatchSeedGrantByUID registers the NATS seed's grant that names ServiceAccount accountName
+// by uid, SecretIamMember <accountName>-nats-seed-uid-accessor, roles/secretmanager.secretAccessor
+// on natsSeedSecret alone, beside the grant by name that newDispatchDatabase registers. A member
+// by name, <pool>/subject/ns/<namespace>/sa/<name>, is every pod that runs as a ServiceAccount of
+// that namespace and name in any cluster of the project's pool, so whoever can make one in
+// another cluster of the project reads the seed. A member by uid,
+// <pool>/kubernetes.serviceaccount.uid/<uid>, is the one object the cluster's API server gave
+// that uid; uid is dispatchServiceAccountUID's, so the grant registers after its account, and an
+// account made again, which gets a new uid, replaces it. The grants by name stay in this release,
+// so a pod mounts the seed through either while a consumer moves; a later release drops them. The
+// grant waits for the cluster half's resources, as the grants by name do.
+func newDispatchSeedGrantByUID(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, cloud *dispatchCluster, database *dispatchDatabase, accountName string, uid pulumi.StringOutput) (*secretmanager.SecretIamMember, error) {
+	dispatch := dispatchType + " " + name
+	member := pulumi.Sprintf("%s/kubernetes.serviceaccount.uid/%s", database.poolRoot, uid)
+	return secretmanager.NewSecretIamMember(ctx, accountName+"-nats-seed-uid-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: member}, pulumi.Parent(comp), pulumi.DependsOn(cloud.waitFor))
 }
 
 // newDispatchOwnInstance registers the component's own Cloud SQL instance, which

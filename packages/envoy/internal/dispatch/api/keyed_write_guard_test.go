@@ -169,6 +169,7 @@ func writingCallOf(functions []string) *regexp.Regexp {
 // whose SQL it cannot read at all is refused too, since it cannot be told from a write.
 // keyedWriteGuardStops and keyedWriteGuardAllowed name, with their reasons, what it leaves.
 func TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks(t *testing.T) {
+	t.Parallel()
 	var offences []string
 	for _, offence := range newKeyedWriteGuard(t).offences() {
 		offences = append(offences, offence.at+" in "+offence.function+": "+offence.why)
@@ -190,6 +191,7 @@ func TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks(t *testing.T) {
 // takes its SQL as a parameter, the work a handler hands a Go method or starts with a go statement,
 // and a select of a SQL function that writes.
 func TestTheKeyedWriteGuardSeesWhatItGuards(t *testing.T) {
+	t.Parallel()
 	guard := newKeyedWriteGuard(t)
 	guard.offences()
 	var want []string
@@ -325,11 +327,7 @@ func (g *keyedWriteGuard) walk(fn *lockFunction) {
 // presumed to run after the handler (detached), so a bare write anywhere else - a timer's callback
 // included - is named, and moves into a transaction or onto goDetached.
 func (g *keyedWriteGuard) callees(call *ast.CallExpr) []*lockFunction {
-	callees := g.graph.callees(call)
-	for _, argument := range call.Args {
-		callees = append(callees, g.graph.functionValue(argument)...)
-	}
-	return callees
+	return g.graph.calleesAndPassed(call)
 }
 
 // ownCalls is every call fn's own body makes, a go statement's included, but none inside a function
