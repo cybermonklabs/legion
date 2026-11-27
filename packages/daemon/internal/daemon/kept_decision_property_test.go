@@ -801,6 +801,9 @@ type keptRun struct {
 	// crashed is the lease each crash the run simulated left on a row, by row (noteCrash): the one
 	// lease heldNoStaleLease lets stand at the end of a step while no run holds it.
 	crashed map[int64]keptCrashLease
+	// audit holds each row the run leases to the lanes' claim rule (keptLaneAudit). It is nil, and
+	// audits nothing, unless TestTheKeptModelRunsOnlyRowsALaneWouldClaim sets it.
+	audit *keptLaneAudit
 }
 
 // A person's decision on a tree nobody in it can hear reaches an architect of that tree exactly
@@ -2048,7 +2051,7 @@ func (r *keptRun) runRow() {
 	if err != nil {
 		r.fatalf("decode outbox row %d: %v", row.ID, err)
 	}
-	runErr := r.runOne(&row, payload)
+	runErr := r.runOne(keptSiteRunRow, &row, payload)
 	crashed := runErr == nil && r.rng.IntN(6) == 0
 	if runErr == nil && !crashed {
 		if err := r.finishRow(row); err != nil {
@@ -2093,7 +2096,9 @@ func (r *keptRun) runTogether() {
 	errs := make([]error, count)
 	var wg sync.WaitGroup
 	for i := range rows {
+		r.audit.before(keptSiteTogether, rows[i])
 		rows[i].LeaseToken = leaseOutboxRow(r.t, r.pool, rows[i].ID)
+		r.audit.ran(keptSiteTogether, rows[i])
 	}
 	for i := range rows {
 		wg.Add(1)
@@ -2147,7 +2152,7 @@ func (r *keptRun) raceRow() {
 	race.mode = []keptPublishMode{keptDelivers, keptReceiptTimeout}[r.rng.IntN(2)]
 	answered := r.publisher.answers()
 	r.publisher.arm(race)
-	runErr := r.runOne(&row, payload)
+	runErr := r.runOne(keptSiteRaceCatchUp, &row, payload)
 	r.publisher.disarm()
 	if runErr == nil {
 		if err := r.finishRow(row); err != nil {
@@ -2270,7 +2275,9 @@ func (r *keptRun) prepareRace(op keptRaceOp) *keptRace {
 		}
 	case "row":
 		row := op.row
+		r.audit.before(keptSiteRaceOpRow, row)
 		row.LeaseToken = leaseOutboxRow(r.t, r.pool, row.ID)
+		r.audit.ran(keptSiteRaceOpRow, row)
 		race.run = func() error {
 			runErr := r.runner.execute(r.ctx, row)
 			if runErr == nil {
@@ -2302,11 +2309,14 @@ func (r *keptRun) prepareRace(op keptRaceOp) *keptRace {
 
 // runOne leases the row and runs it as its lane would, settles a run that returned an error as the
 // lane settles it (retryRow), and records what the run did to the architect's claim and to what
-// the row named (noteRun). A row that ran without error is the caller's to finish.
-func (r *keptRun) runOne(row *record.OutboxRow, payload record.OutboxPayload) error {
+// the row named (noteRun). A row that ran without error is the caller's to finish. site is the
+// caller's place among keptRowSites, which the audit names (keptLaneAudit).
+func (r *keptRun) runOne(site string, row *record.OutboxRow, payload record.OutboxPayload) error {
 	tree := r.treeRow(row.Issue)
 	state, answered := r.claimState(tree), r.publisher.answers()
+	r.audit.before(site, *row)
 	row.LeaseToken = leaseOutboxRow(r.t, r.pool, row.ID)
+	r.audit.ran(site, *row)
 	runErr := r.runner.execute(r.ctx, *row)
 	r.waitMachines()
 	if runErr != nil {
@@ -2760,7 +2770,7 @@ func (r *keptRun) handOverInsideAHeldTask(over keptHandOver) {
 		if request, ok := payload.(record.SuperviseRequest); !ok || request.Op != "start" {
 			continue
 		}
-		if runErr := r.runOne(&row, payload); runErr == nil {
+		if runErr := r.runOne(keptSiteHandOverStarts, &row, payload); runErr == nil {
 			if err := r.finishRow(row); err != nil {
 				r.fatalf("finish the start row %d that sends the held task: %v", row.ID, err)
 			}
@@ -3264,7 +3274,7 @@ func (r *keptRun) runLeftoverRow() {
 	if err != nil {
 		r.fatalf("decode outbox row %d: %v", row.ID, err)
 	}
-	runErr := r.runOne(&row, payload)
+	runErr := r.runOne(keptSiteLeftovers, &row, payload)
 	if runErr == nil {
 		if err := r.finishRow(row); err != nil {
 			r.fatalf("finish outbox row %d: %v", row.ID, err)
