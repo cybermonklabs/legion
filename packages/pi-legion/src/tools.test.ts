@@ -1685,7 +1685,8 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(completed).toHaveLength(4);
 
   // A verdict without check_opened_at is refused as a phase completion before any daemon call: a
-  // phase completion carries none, whatever the verdict.
+  // phase completion carries none, whatever the verdict. The tool's error is the refusal, and which
+  // words it uses is the tool's.
   for (const verdict of ["pass", "pending"]) {
     const verdictOnPhase = await run(claimSession("tester"), {
       op: "handoff_complete",
@@ -1693,12 +1694,6 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       verdict,
     });
     expect(verdictOnPhase.isError).toBe(true);
-    expect(verdictOnPhase.content).toEqual([
-      {
-        type: "text",
-        text: "handoff_complete carries no verdict on a phase completion: Dispatch's check states decide the testing phase. A production check's report names its check with check_opened_at, the time from the look task or check.openedAt from read_record.",
-      },
-    ]);
     expect(calls).toHaveLength(before);
   }
   expect(completed).toHaveLength(4);

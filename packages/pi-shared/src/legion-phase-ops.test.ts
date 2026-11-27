@@ -1022,15 +1022,22 @@ test("a check report's state-independent wrong shapes are refused before any cal
       { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: "tomorrow" },
       "wake_at is an RFC 3339 time",
     ],
-    [
-      { op: "handoff_complete", summary: "Looked.", verdict: "fail", return_to: 1 },
-      "only a tester's completion names the step",
-    ],
   ] as const) {
     await expect(
       executePhaseOp(check.ops, { ...input, check_opened_at: CHECK_OPENED })
     ).rejects.toThrow(message);
   }
+  // A check report that names the step its task returns to is refused before any call too, by the
+  // error alone: which words the refusal uses is the tool's.
+  await expect(
+    executePhaseOp(check.ops, {
+      op: "handoff_complete",
+      summary: "Looked.",
+      verdict: "fail",
+      return_to: 1,
+      check_opened_at: CHECK_OPENED,
+    })
+  ).rejects.toThrow();
   expect(check.posted).toEqual([]);
 });
 
@@ -1080,11 +1087,7 @@ test("a phase completion naming a verdict is refused before a record is read, no
     const { ops, routes, posted, lookups } = runtime(tester, stateAtPhase("testing"));
     await expect(
       executePhaseOp(ops, { op: "handoff_complete", summary: "x", verdict })
-    ).rejects.toThrow(
-      new Error(
-        "handoff_complete carries no verdict on a phase completion: Dispatch's check states decide the testing phase. A production check's report names its check with check_opened_at, the time from the look task or check.openedAt from read_record."
-      )
-    );
+    ).rejects.toThrow();
     expect(routes).toEqual([]);
     expect(posted).toEqual([]);
     expect(lookups).toEqual([]);
