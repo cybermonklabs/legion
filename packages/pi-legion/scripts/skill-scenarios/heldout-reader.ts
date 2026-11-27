@@ -59,10 +59,10 @@
  * `change`), which a frozen trace holds none of and which stay in outcome.json. An item that holds
  * an Envoy message, a Dispatch read, a task agent's start, a probe of production or a diff read
  * (`envoy`, `dispatch-read`, `agent`, `probe`, `diff-read`), a staged Job's `job`, `source`,
- * `bundle` or `report`, `workspace` or `documents` adds CARRIED_INSTRUCTION to the instruction,
- * which describes them; a batch with none is sent INSTRUCTION alone. A DIVERGED run is given only
- * through the call of its first difference (heldout-reader-receipt.ts): its outcome with no later
- * action, no last words and no report, its effects with no list of differences, and
+ * `snapshot`, `bundle` or `report`, `workspace` or `documents` adds CARRIED_INSTRUCTION to the
+ * instruction, which describes them; a batch with none is sent INSTRUCTION alone. A DIVERGED run is
+ * given only through the call of its first difference (heldout-reader-receipt.ts): its outcome with
+ * no later action, no last words and no report, its effects with no list of differences, and
  * `observedThrough` last, the seq of the last action it holds; a batch that holds one adds
  * OBSERVED_INSTRUCTION to the instruction, under which the reader grades a line of such a run null
  * where only a later action could decide it. A run
@@ -189,8 +189,8 @@ export const OBSERVED_INSTRUCTION = [
 
 /** What a batch's instruction adds where an item's record holds what INSTRUCTION does not
  * describe, so a batch with none of it is sent INSTRUCTION alone: an action of kind `envoy`,
- * `dispatch-read`, `agent`, `probe` or `diff-read`, the `job`, `source`, `bundle` and `report` of a
- * `staging` action, `workspace`, or `documents`. */
+ * `dispatch-read`, `agent`, `probe` or `diff-read`, the `job`, `source`, `snapshot`, `bundle` and
+ * `report` of a `staging` action, `workspace`, or `documents`. */
 export const CARRIED_INSTRUCTION = [
   "Beside the kinds the instruction names, an action's `kind` can be:",
   "- `envoy`: an Envoy message the run sent with its Envoy tool and the tool accepted. `tool` is `publish` (to the topic `target`) or `send` (to the session `target`), and `fields` holds the call's other arguments (`message`, `expects_reply`).",
@@ -198,7 +198,7 @@ export const CARRIED_INSTRUCTION = [
   "- `agent`: a task agent the run started with its `task` tool, one action for each agent. `agent` is its kind, `name` its name, `fields` what the run gave it, and `endedAt`, where there is one, the time of its last entry.",
   "- `probe`: a read of the revision production runs, through the probe the run was given. `target` is the address it read, and `revision` the revision that read answered.",
   "- `diff-read`: a diff the run read, with a `jj diff`, `jj show`, `jj interdiff`, `git diff` or `git show` that succeeded in its workspace or one of its scratch copies. `command` is the command, `source` the checkout it read (named as a staging action's `source` is), and `paths` the paths it named, relative to that checkout, empty where it named none.",
-  "A `staging` action can also hold `job`, the name the run gave the Job, and `source`, the checkout the snapshot was taken from, so two Jobs staged from separate checkouts differ in `source`; and `bundle` and `report`, the input bundle and the report path the run gave the Job, each named as `source` is. `outcome.workspace`, where there is one, lists each jj operation of the run's workspace in the order it ended: its `description`, its time `at`, and `standingOn`, the commits the workspace stood on after it, in the order the run made them.",
+  "A `staging` action can also hold `job`, the name the run gave the Job, and `source`, the checkout the snapshot was taken from, so two Jobs staged from separate checkouts differ in `source`; and `snapshot`, `bundle` and `report`, the staging directory, the input bundle and the report path the run gave the Job, each named as `source` is. `outcome.workspace`, where there is one, lists each jj operation of the run's workspace in the order it ended: its `description`, its time `at`, and `standingOn`, the commits the workspace stood on after it, in the order the run made them.",
   "`outcome.documents`, where there is one, lists each document of the issue that the run wrote: its file `name`, the last `version` of it the run wrote, and that version's text, `body`.",
   "These records show what the run did and when; an action of any kind counts as evidence for a rubric line where the line's text asks for it.",
 ].join("\n");
@@ -464,8 +464,8 @@ function batchMessage(batch: Batch): string {
 }
 
 /** Whether an item's record holds what INSTRUCTION does not describe: an action of a carried kind,
- * a staged Job's `job`, `source`, `bundle` or `report`, the workspace's operations, or the
- * documents the run wrote. */
+ * a staged Job's `job`, `source`, `snapshot`, `bundle` or `report`, the workspace's operations, or
+ * the documents the run wrote. */
 function holdsCarried(item: Item): boolean {
   const { actions, workspace, documents } = item.outcome;
   return (
@@ -475,7 +475,7 @@ function holdsCarried(item: Item): boolean {
       (action) =>
         (CARRIED_KINDS as readonly string[]).includes(action.kind) ||
         (action.kind === "staging" &&
-          [action.job, action.source, action.bundle, action.report].some(
+          [action.job, action.source, action.snapshot, action.bundle, action.report].some(
             (field) => field !== undefined
           ))
     )
@@ -484,8 +484,8 @@ function holdsCarried(item: Item): boolean {
 
 /** The body of the batch's one call, as sent: INSTRUCTION as its system prompt, with
  * OBSERVED_INSTRUCTION after it where an item's record stops short and CARRIED_INSTRUCTION after
- * that where an item holds a carried action, a staged Job's `job`, `source`, `bundle` or `report`,
- * `workspace` or `documents`. */
+ * that where an item holds a carried action, a staged Job's `job`, `source`, `snapshot`, `bundle`
+ * or `report`, `workspace` or `documents`. */
 export function requestOf(batch: Batch): string {
   const appendices = [
     batch.items.some((item) => item.observedThrough !== undefined) ? OBSERVED_INSTRUCTION : "",

@@ -401,15 +401,15 @@ export function namedSource(
 
 /** stage-job records the current checked-out files (tracked and non-ignored untracked files),
  * not HEAD. Both the index and new objects go into a disposable repository, not the source. The
- * record names the job and the checkout root it was taken from, and the input bundle and the report
- * path the role gave it (`paths.bundle`, `paths.report`, each absent where it gave none), each
- * written by the name the role was given for the run's directory that holds it (namedSource). It
- * runs no Job. */
+ * record names the job and the checkout root it was taken from, and the staging directory, the
+ * input bundle and the report path the role gave it (`paths.snapshot`, `paths.bundle`,
+ * `paths.report`, each absent where it gave none), each written by the name the role was given for
+ * the run's directory that holds it (namedSource). It runs no Job. */
 export function stageJob(
   dir: string,
   job: string,
   source = process.cwd(),
-  paths: { readonly bundle?: string; readonly report?: string } = {}
+  paths: { readonly snapshot?: string; readonly bundle?: string; readonly report?: string } = {}
 ) {
   if (!job.trim()) throw new Error("stage-job needs a job name");
   const root = realpathSync(source);
@@ -462,6 +462,7 @@ export function stageJob(
       tree,
       files: staged,
       source: namedSource(root, dir),
+      ...(paths.snapshot === undefined ? {} : { snapshot: namedSource(paths.snapshot, dir) }),
       ...(paths.bundle === undefined ? {} : { bundle: namedSource(paths.bundle, dir) }),
       ...(paths.report === undefined ? {} : { report: namedSource(paths.report, dir) }),
     };

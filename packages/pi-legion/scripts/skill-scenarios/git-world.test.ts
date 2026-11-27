@@ -340,13 +340,17 @@ test("a staged source is written by the name the role was given for the run's di
   // A directory only shares a name's prefix with the run's: it is not inside it.
   mkdirSync(path.join(run, "tmp-other"));
   expect(named(path.join(run, "tmp-other"))).toBe(path.join(run, "tmp-other"));
-  // A path nothing has made yet (the report a Job would write) is named by the run's directory that
-  // would hold it, through a symlink the role was given too, and a path no run directory holds is
-  // written as its absolute path, a relative one from the working directory.
+  // A path nothing has made yet (the report a Job would write, a staging directory the role names)
+  // is named by the run's directory that would hold it, through a symlink the role was given too,
+  // and a path no run directory holds is written as its absolute path, a relative one from the
+  // working directory.
   expect(named(path.join(run, "ws", "out", "report.json"))).toBe(
     "$LEGION_WORKSPACE/out/report.json"
   );
   expect(named(path.join(stageA, "bundle.tar"))).toBe("$TMPDIR/stage-a/bundle.tar");
+  expect(named(path.join(run, "tmp", "labels-queue", "snapshot"))).toBe(
+    "$TMPDIR/labels-queue/snapshot"
+  );
   expect(named("relative/report.json")).toBe(path.resolve("relative/report.json"));
   expect(named(path.join(elsewhere, "gone", "x.json"))).toBe(
     path.join(elsewhere, "gone", "x.json")

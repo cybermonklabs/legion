@@ -120,7 +120,8 @@
 # file before it starts anything, and refuses to start while one names a gap, naming each gap. A
 # devcase batch checks only that its case is in the file.
 # D1 gets $TMPDIR/stage-a and stage-b at the default branch's head and a local stage-job recorder
-# (`stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>]`, which runs no Job).
+# (`stage-job NAME [CHECKOUT] [--snapshot <path>] [--bundle <path>] [--report <path>]`, which runs
+# no Job).
 # The outcome also records an Envoy message the role sent (`envoy`, from its transcript, where the
 # tool answered without error), a `dispatch` command it ran that wrote nothing (`dispatch-read`: a
 # Legion pane's <state>/bin holds dispatch-recorder.ts as `dispatch`, in front of the plugin's,
@@ -129,10 +130,10 @@
 # answered), each `jj diff`, `jj show`, `jj interdiff`, `git diff` and `git show` that exited 0 in
 # its workspace or a scratch copy (`diff-read`: case-world.ts puts diff-recorder.ts in front of the
 # real `jj` and `git` in $R/bin; a call that names no diff subcommand goes to the real program at
-# once), the jj operations of its workspace (`workspace`), a staged Job's name, source, bundle and
-# report (`staging`), and each document of the issue it wrote, with the last version it wrote and
-# that version's text (`documents`, from seed.ts case-readback's `versions`). A case run's pane
-# reaches the batch's Envoy listener through envoy-standin.ts (the front run_case starts),
+# once), the jj operations of its workspace (`workspace`), a staged Job's name, source, snapshot,
+# bundle and report (`staging`), and each document of the issue it wrote, with the last version it
+# wrote and that version's text (`documents`, from seed.ts case-readback's `versions`). A case run's
+# pane reaches the batch's Envoy listener through envoy-standin.ts (the front run_case starts),
 # which answers a send to a session of the case's world as the listener answers a send to a live
 # session. A plain session records no `dispatch-read`: it has no launcher directory. The outcome
 # names each id the scratch Dispatch gave a handoff, a comment, an ask or a gate's document as the

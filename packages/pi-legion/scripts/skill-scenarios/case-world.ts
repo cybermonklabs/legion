@@ -357,7 +357,7 @@ export function prepareCase(dir: string, file: string, set: string, id: string):
   const task = translateCommits(scenario.task, commitMap);
   const clock = `The simulated clock at the start of this run is ${world.clock}. Use it for dates in this task.`;
   const staged = stage
-    ? `\nThe two scratch copies are $TMPDIR/stage-a and $TMPDIR/stage-b. To stage a Job, run stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>] (CHECKOUT defaults to the current checkout; --bundle names the Job's input bundle and --report the path the Job writes its report to). No Job runs.`
+    ? `\nThe two scratch copies are $TMPDIR/stage-a and $TMPDIR/stage-b. To stage a Job, run stage-job NAME [CHECKOUT] [--snapshot <path>] [--bundle <path>] [--report <path>] (CHECKOUT defaults to the current checkout; --snapshot names the Job's staging directory, --bundle the Job's input bundle and --report the path the Job writes its report to). No Job runs.`
     : "";
   const production = launch.production ? `\nProduction probe: ${launch.production.probe}` : "";
   text(
@@ -507,16 +507,21 @@ if (import.meta.main) {
       process.exit(1);
     }
   } else if (mode === "stage" && a) {
-    // stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>], after the run directory.
+    // stage-job NAME [CHECKOUT] [--snapshot <path>] [--bundle <path>] [--report <path>], after the
+    // run directory.
     const { values, positionals } = parseArgs({
       args: args.slice(1),
-      options: { bundle: { type: "string" }, report: { type: "string" } },
+      options: {
+        snapshot: { type: "string" },
+        bundle: { type: "string" },
+        report: { type: "string" },
+      },
       allowPositionals: true,
     });
     const [job, checkout, ...extra] = positionals;
     if (job === undefined || extra.length > 0)
       throw new Error(
-        "usage: stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>]: one name, and one checkout at most"
+        "usage: stage-job NAME [CHECKOUT] [--snapshot <path>] [--bundle <path>] [--report <path>]: one name, and one checkout at most"
       );
     console.log(JSON.stringify(stageJob(a, job, checkout, values)));
   } else if (mode === "probe" && a && b && c) {
@@ -536,6 +541,6 @@ if (import.meta.main) {
     await casePane(a, b, c, d, project, role, issue, tree, repository, branch);
   } else
     throw new Error(
-      "usage: case-world.ts prepare <run dir> <case file> <set> <id> | check <case file> <set> <id> | stage <run dir> <job> [checkout] [--bundle <path>] [--report <path>] | probe <run dir> <address> <revision> [curl argv...] | order <seed> <pair> <labels...> | pane <run dir> <checkout> <port> <profile> <project> <claim role> <issue> <tree> <repository> <default branch>"
+      "usage: case-world.ts prepare <run dir> <case file> <set> <id> | check <case file> <set> <id> | stage <run dir> <job> [checkout] [--snapshot <path>] [--bundle <path>] [--report <path>] | probe <run dir> <address> <revision> [curl argv...] | order <seed> <pair> <labels...> | pane <run dir> <checkout> <port> <profile> <project> <claim role> <issue> <tree> <repository> <default branch>"
     );
 }

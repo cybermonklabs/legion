@@ -1995,33 +1995,42 @@ describe.skipIf(withoutCaseTools)("lane R dry world builders", () => {
         .split("\n")
         .map((line) => JSON.parse(line))
     ).toEqual([before, after]);
-    // The prompt names the form that takes a bundle and a report path, and each is recorded by the
-    // role's own name for the run's directory that holds it, made or not; a Job staged with neither
-    // records neither, and a flag stage-job does not take stages nothing.
+    // The prompt names the form that takes a staging directory, a bundle and a report path, and
+    // each is recorded by the role's own name for the run's directory that holds it, made or not; a
+    // Job staged with none records none, a flag stage-job does not take stages nothing, and a
+    // second checkout is refused with the form named.
     expect(readFileSync(path.join(dir, "prompt.txt"), "utf8")).toContain(
-      "stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>]"
+      "stage-job NAME [CHECKOUT] [--snapshot <path>] [--bundle <path>] [--report <path>]"
     );
     const flagged = (...args: string[]) =>
       childSpawn([path.join(dir, "bin", "stage-job"), ...args]);
-    const both = flagged(
+    const all = flagged(
       "build",
       a,
+      "--snapshot",
+      path.join(dir, "tmp", "build", "snapshot"),
       "--bundle",
       path.join(a, "bundle.tar"),
       `--report=${path.join(dir, "tmp", "reports", "build.json")}`
     );
-    expect(both.exitCode).toBe(0);
-    expect(JSON.parse(both.stdout.toString())).toMatchObject({
+    expect(all.exitCode).toBe(0);
+    expect(JSON.parse(all.stdout.toString())).toMatchObject({
       job: "build",
       source: "$TMPDIR/stage-a",
+      snapshot: "$TMPDIR/build/snapshot",
       bundle: "$TMPDIR/stage-a/bundle.tar",
       report: "$TMPDIR/reports/build.json",
     });
     expect(flagged("build", a, "--image", "x").exitCode).not.toBe(0);
+    const twice = flagged("build", a, b);
+    expect(twice.exitCode).not.toBe(0);
+    expect(twice.stderr.toString()).toContain(
+      "usage: stage-job NAME [CHECKOUT] [--snapshot <path>] [--bundle <path>] [--report <path>]"
+    );
     const lines = readFileSync(path.join(dir, "staging.jsonl"), "utf8").trim().split("\n");
     expect(lines).toHaveLength(3);
-    expect(JSON.parse(lines[0] ?? "{}")).not.toHaveProperty("bundle");
-    expect(JSON.parse(lines[0] ?? "{}")).not.toHaveProperty("report");
+    for (const field of ["snapshot", "bundle", "report"])
+      expect(JSON.parse(lines[0] ?? "{}")).not.toHaveProperty(field);
   });
 
   // Catches: a probe the curl stand-in answered and recorded nowhere, which a grade would read as

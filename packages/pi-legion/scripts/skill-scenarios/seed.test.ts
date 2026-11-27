@@ -1669,10 +1669,12 @@ describe("case-world Dispatch", () => {
     ).toMatchObject({ "comment/c-1": comment?.id, "ask/a1": ask?.id });
   });
 
-  // Catches: a document the run wrote whose text no readback holds, so the outcome could carry no
-  // body for it. The readback reads the text of each version of a document of the issue that an
-  // event after the seed wrote, through Dispatch's own version route, and of no other.
-  test("the readback holds the text of each document version written after the seed", async () => {
+  // Catches: a document version whose text no readback holds, so the outcome could carry no body
+  // for a document the run wrote, and lane D's replay could not make the document again at a
+  // version an event wrote, the seed's first version of a document the run then edited among them.
+  // The readback reads the text of each version of a document of the issue that an event wrote,
+  // the seed's events included, once each, through Dispatch's own version route, and of no other.
+  test("the readback holds the text of each document version an event wrote", async () => {
     const p09 = parseSkillUseFile(example("skilluse")).cases.find(({ id }) => id === "P09");
     if (!p09) throw new Error("missing P09");
     const dir = runDir();
@@ -1689,25 +1691,46 @@ describe("case-world Dispatch", () => {
       markdown,
     });
     seeded.versions = [version(1, "seeded"), version(2, "the run's second"), version(3, "third")];
+    // The seed's own write of the document, at its first version, comes before the seed cursor.
+    const fixture = path.join(dir, "dispatch-fixture.json");
+    writeFileSync(
+      fixture,
+      JSON.stringify({ ...JSON.parse(readFileSync(fixture, "utf8")), seedThrough: 2 })
+    );
     dispatch.events.push(
       {
         seq: 2,
-        type: "artifact.version",
+        type: "artifact.created",
         created_at: at,
-        ...{ payload: { artifact_id: seeded.id, name: seeded.name, version: { number: 2 } } },
+        ...{
+          payload: { artifact: { id: seeded.id, name: seeded.name, versions: [{ number: 1 }] } },
+        },
       },
       {
         seq: 3,
         type: "artifact.version",
         created_at: at,
+        ...{ payload: { artifact_id: seeded.id, name: seeded.name, version: { number: 2 } } },
+      },
+      {
+        seq: 4,
+        type: "artifact.version",
+        created_at: at,
         ...{ payload: { artifact_id: seeded.id, name: seeded.name, version: { number: 3 } } },
       },
-      { seq: 4, type: "comment.created", created_at: at }
+      {
+        seq: 5,
+        type: "artifact.version",
+        created_at: at,
+        ...{ payload: { artifact_id: seeded.id, name: seeded.name, version: { number: 3 } } },
+      },
+      { seq: 6, type: "comment.created", created_at: at }
     );
     await seed.captureCaseDispatch(dir);
     const data = JSON.parse(readFileSync(path.join(dir, "dispatch-readback.json"), "utf8"));
-    expect(data.seedThrough).toBe(1);
+    expect(data.seedThrough).toBe(2);
     expect(data.versions).toEqual([
+      { artifact_id: seeded.id, number: 1, markdown: "seeded" },
       { artifact_id: seeded.id, number: 2, markdown: "the run's second" },
       { artifact_id: seeded.id, number: 3, markdown: "third" },
     ]);
@@ -1715,7 +1738,7 @@ describe("case-world Dispatch", () => {
       dispatch.calls.filter(({ path }) =>
         path.startsWith(`/api/v1/artifacts/${seeded.id}/versions/`)
       )
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   const at = (time: string) => `2030-01-07T${time}Z`;

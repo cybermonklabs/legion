@@ -5261,6 +5261,29 @@ It starts its own broker and Dispatch server, points the daemon's GitHub client 
 Each trace starts from its case's starting state, in a daemon of its own.
 Each daemon action of a trace is one `legion` call through the real pane, made at the action's case time.
 Each push, GitHub change and Dispatch write of a trace is made at its case time, before the next call or after the last call, by the writers that `--runs` uses.
+
+The replay makes each Dispatch write of a trace as the role's session makes it:
+
+- a handoff, a result and a question, by the writers that `--runs` uses;
+
+- a comment, a message, an issue update, an upload, a document edit, a plan review's approval and an approval request, through the real `dispatch` CLI (`comment`, `message`, `issue-update`, `artifact`, `doc-edit`, `plan-approve`, `request-approval`), each field the command's flag;
+
+- a comment's `reply_to` is `--reply-to`, its `ask_id` is `--reply-to-ask` with its `turn`, its `artifact_name` and its `anchor`'s `quote` are `--artifact` and `--quote`, which put it on those words of the issue's document of that file name, and its `id` is the case's own name for it, which the CLI is not given;
+
+- an upload's `force` is `--force`, and an upload's and an edit's `version` is the version the write makes, which Dispatch's answer must name and which is not sent;
+
+- a write on another issue of the world is made there, and a document edit can target another issue's document by its reference (`dispatch://ACME-30/spec`).
+
+A field that names a record by the case's own name (a comment, a question, a document) is given the id that the replay's Dispatch gave it.
+A `dispatch://` reference to a comment or a question in the text of a write is mapped in the same way.
+Lane D's seeding gives those ids to the world's comments and questions, which it writes on the case's issue in their case time order, and a comment that a trace names by its `id` joins them once Dispatch gives it an id.
+It writes a comment of the world on the words of a document of the world (`anchor`) and a reply in the thread of an earlier comment of the world (`replyTo`) as `seed.ts case-world` does, on the replay's document and comment.
+A bare `serves` or `needs` pointer in the text of an upload or an edit is written as the importer writes it in a starting document.
+A request-approval that Dispatch takes is a made write, and it carries no `refused`.
+Two refusals of a request-approval are refused writes, which change nothing and which `replay.json` records with their `refused`: Dispatch's `409 PLAN_APPROVED_BY_REVIEW` of a plan, and the CLI's own refusal of a document that the issue does not hold.
+Any other refusal of a write, by Dispatch or by the CLI, makes the trace `HARNESS`, and the reason names the command and Dispatch's code.
+A write on an issue that the world does not hold, a name that the replay's Dispatch holds no record of, and a field that the command takes no flag of make the trace `HARNESS` too.
+
 A GitHub action of a trace names its change in `change` where `outcome.ts` recorded one, and the replay makes that change.
 A frozen trace records only the request of its GitHub action (`command`, or `method` and `path`, and `fields`).
 The replay reads that request as `gh-standin.ts` reads it, and makes the change that `gh-standin.ts` keeps of the same request.
@@ -5269,7 +5292,7 @@ A staging action, and a GitHub call that reads (a `gh pr` read, a `gh` command o
 A GitHub write that no rule below covers is a change that the replay's GitHub cannot hold, never a no-op: a trace's REST write outside the pull request rules is a `request`, and a `gh` command of another group that does not read is refused.
 The real daemon must give each call the answer that the trace records: the same acceptance, or the same refusal code.
 A trace records no status, so the receipt gives the trace's answer the real daemon's status.
-The trace is `HARNESS` where the daemon gives another answer, where the call sends no request or two requests that it is judged on, where the trace holds a write that the replay does not make (a document, a reply, an issue update, or a write on another issue), where gh or GitHub refuses the request of a GitHub action (a `gh pr review` with no verdict or with two, a new pull request on a branch that the remote does not hold), and where the replay's GitHub cannot hold the change (below).
+The trace is `HARNESS` where the daemon gives another answer, where the call sends no request or two requests that it is judged on, where the trace holds a write that the replay does not make as the role makes it (above), where gh or GitHub refuses the request of a GitHub action (a `gh pr review` with no verdict or with two, a new pull request on a branch that the remote does not hold), and where the replay's GitHub cannot hold the change (below).
 Each trace writes `<case id>/<good or bad>/replay.json`, and, unless the trace is `HARNESS`, `effects.json` beside it, under the trace's own id and in the format of a run's records.
 The `end` list of a trace's `replay.json` holds the changes that the replay made after the last call.
 `heldout-reader.ts --controls <evidence directory>` gives these records to the control items of a lane D batch.
@@ -5353,7 +5376,16 @@ It does not wait for a comment, for a review of the case's world, or after any o
 Those objects go into the replay workspace's object store at the start, on no ref, so a commit the role made and never pushed keeps its id, parents and tree, and is seen only once its recorded move or push is applied; the run's own `remote.git` and `workspace`, where present, serve as further sources of pushed commits.
 A capture made before `outcome.ts` recorded the workspace has no `workspace-ops.jsonl`: run `bun packages/pi-legion/scripts/skill-scenarios/git-world.ts record <workspace> <dir>` on a copy of its original job archive's run directory first.
 Then the real pane and daemon answer the call and make its effects.
-The run is a harness failure, `HARNESS`, where its records cannot place a change a call needs or pair a request with its call: a change whose time touches a call's window, a push and a GitHub change that overlap, a GitHub change with no recorded end before a later call, a legion write the stand-in answered outside every call (or inside more than one), a record no `outcome.json` action holds or an `outcome.json` action no record holds, no `workspace-ops.jsonl`, a workspace that stood at the launch elsewhere than the world stands it or a move that began before the launch and ended after it, and a change the replay does not make (a workspace standing on several commits, any Dispatch write but a handoff, an issue comment, a comment anchored to words of a document of the issue, a reply in the thread of an earlier comment of the issue, a result, a question, or a document not changed after it was made).
+The run is a harness failure, `HARNESS`, where its records cannot place a change a call needs or pair a request with its call: a change whose time touches a call's window, a push and a GitHub change that overlap, a GitHub change with no recorded end before a later call, a legion write the stand-in answered outside every call (or inside more than one), a record no `outcome.json` action holds or an `outcome.json` action no record holds, no `workspace-ops.jsonl`, a workspace that stood at the launch elsewhere than the world stands it or a move that began before the launch and ended after it, and a change the replay does not make (a workspace standing on several commits, a claim, another change of the issue than its status, a comment anchored otherwise than on the quoted words of a document that the readback holds, a reply that is anchored, a reply to a block, a question of a document, a person's review, a file, or a version of a document whose text the readback does not hold).
+A run's Dispatch write is made through the API route that its `dispatch` command calls, by its author: a comment, a reply in a comment's thread and an answer on a question, a comment on the words of a document of the issue (its spec among them) on the replay's copy of that document, a message, a status of the issue, a question, an approval request, a plan review's approval, and each version of a document, from the text that `dispatch-readback.json`'s `versions` holds of that version.
+Dispatch gives each record a new id, and a later write that names the record by the run's id names the replay's id.
+An event that Dispatch itself writes in the request of a write is part of that write and never a write of its own: a reply's `comment.reopened`, a version's `ask.edited` (the move of an open approval request), a close's `ask.resolved` and `issue.released`, and an approval answer's `artifact.approved` or `artifact.changes_requested`.
+The replay joins it to the write by its actor and its time, and fails the run where its own write wrote other follow-on events.
+`outcome.ts` joins it to the write by the same rule, so it is no action of the role's.
+Both read the one route table, `packages/pi-legion/scripts/skill-scenarios/testdata/dispatch-follow-ons.json`, which cites the server's file and function of each route.
+A person's answer of a question (`ask.answered`) and a resolve of one (`ask.resolved`) are made again too, in the seed and in the run.
+`--controls` seeds the world's comments, questions and results as `seed.ts case-world` does: each comment and question by its author, and each result by the session `rig-seed-<role>`, at the replay's commit.
+`outcome.ts` records a run's approval request (an `ask.opened` whose ask has an `approval` part) as a `request-approval` action with the fields a trace states (`artifact` where it is not the spec, `include_verification`, `summary`), and a plan review's approval as a `plan-approve` action with its `version`.
 It is `HARNESS` too where the replayed call shows the replay's state is not the run's: a request one side sent alone, a request naming another commit or handoff record, or a tool refusal in other words.
 A request is a difference only when at least one side refused it: the real daemon refused a request that the stand-in accepted, the real daemon accepted a request that the stand-in refused, or the two refusals have a different status or code.
 A status of 400 or more is a refusal, and a `5xx` status is a refusal too.
@@ -5374,7 +5406,7 @@ The driver writes the fallback receipt only when it wrote no receipt for the run
 A run that is not `HARNESS` writes `<outcome id>/effects.json` too, whose `diverged` entries name each difference in call order: the daemon answer's place among `answers` (`seq`), its `route`, the original call's tool call id (`call`) and the `outcome.json` action of the stand-in's answer (`outcomeSeq`), and the stand-in's and the daemon's status and refusal code.
 Neither file is ever written over, and the replay writes no answers file.
 
-A lane R run's `outcome.json` holds, beside the actions of the kinds above (`daemon`, `dispatch`, `github`, `push`, `staging`), five kinds that lane D carries and never replays, a `workspace` field, a `documents` field, and four fields of a `staging` action.
+A lane R run's `outcome.json` holds, beside the actions of the kinds above (`daemon`, `dispatch`, `github`, `push`, `staging`), five kinds that lane D carries and never replays, a `workspace` field, a `documents` field, and five fields of a `staging` action.
 All are additive: a record without them parses and means what it meant.
 
 - `envoy`: an Envoy message that the role sent with `envoy_publish` or `envoy_send` (by the tool's name, or as a `write` to `xd://envoy_publish` or `xd://envoy_send`), read from the role's transcript.
@@ -5408,13 +5440,13 @@ All are additive: a record without them parses and means what it meant.
   Neither is a `git show` whose every object is a file or a tree of a revision (`git show HEAD:README.md`), which prints that file and no diff.
 
 - `staging` also holds `job`, the name given to `stage-job`, and `source`, the checkout root the snapshot was taken from, written with the run's own directories replaced by the names the role was given for them (`$TMPDIR/stage-a`, `$LEGION_WORKSPACE`).
-  It holds `bundle` and `report` too, the input bundle and the report path the role gave `stage-job NAME [CHECKOUT] [--bundle <path>] [--report <path>]`, named the same way, whether or not the path exists, and each absent where the role gave none.
+  It holds `snapshot`, `bundle` and `report` too, the staging directory, the input bundle and the report path the role gave `stage-job NAME [CHECKOUT] [--snapshot <path>] [--bundle <path>] [--report <path>]`, named the same way, whether or not the path exists, and each absent where the role gave none.
   `stage-job` runs no Job.
 
 - `workspace` is each jj operation of the run's workspace in the order it ended, from `workspace-ops.jsonl`: when it ended, its description, and the commits `@-` named in its view, as the world's commit ids where the world names them.
 
 - `documents` is each document of the case's issue that a session of the run wrote after the seed: its file name, the last version the run wrote, and that version's text.
-  `seed.ts case-readback` reads the text of each document version an event after the seed wrote, through Dispatch's own version read, into `dispatch-readback.json`'s `versions`, and `outcome.ts` takes those of the role's own sessions.
+  `seed.ts case-readback` reads the text of each document version an event wrote, the seed's among them, through Dispatch's own version read, into `dispatch-readback.json`'s `versions`, and `outcome.ts` takes those that the role's own sessions wrote after the seed.
   A document the run did not write has no entry, and a run that wrote none has no `documents`.
   A trace states the body that its recorded edits leave.
 
@@ -5427,11 +5459,14 @@ It writes a scratch id's first 8 characters as the world's id too, where no othe
 Lane D carries these actions and does not replay them.
 A replay of a run makes none again, a `--controls` trace makes none again and counts none as a control it must execute, and each action of another kind keeps its own `seq` and case time among them;
 `replay.json` and `effects.json` are unchanged, and the actions stay in `outcome.json` or in the trace as recorded.
-Where a trace states `documents`, the control reads each document back from the real Dispatch after the trace's last write, with each id the replay's Dispatch gave a document the world names written as the world's, and the replay is `HARNESS` where the latest version or its text is not the stated one (`teardownEffectsDocumentFaults`).
-The replay makes no document write yet, so a trace that writes one is `HARNESS` before that check.
+Where a trace states `documents`, the control reads each document back from the real Dispatch after the trace's last write, with each id the replay's Dispatch gave a record that the case names written as the case's name.
+The replay is `HARNESS` where the latest version or its text is not the stated one, and the reason names the document and the first line that differs (`teardownEffectsDocumentFaults`).
+It is `HARNESS` too where the replay wrote a document of the case's issue that the trace does not state, so a trace with `documents: []` fails where the replay wrote one.
+A trace with no `documents` key is checked for nothing.
+`internal/daemon/testdata/teardown-effects/dispatch-writes-cases.json` is T0's example with one synthetic case, `DW1`, whose two traces hold every Dispatch write above (its `.command` says how it was made and what `--controls --cases` on it must show).
 `internal/daemon/testdata/teardown-effects/carried-kinds-cases.json` is T0's example with actions of the five kinds among the actions of its four traces, each trace numbered again from 1 (its `.command` says how it was made):
 `--controls --cases` on it must write the same four `replay.json` and `effects.json`, each `ok`, with P05's completion at action 10 of its known-good trace and 8 of its known-bad one, P10's reports at actions 5 and 7, and P10's known-bad comment at action 3.
-`heldout-reader.ts` gives the reader each such action, `workspace` and `documents` under the same fresh ids and shuffle as the other records, and adds `CARRIED_INSTRUCTION` to its instruction only where an item holds one of them, or a staging action's `job`, `source`, `bundle` or `report`.
+`heldout-reader.ts` gives the reader each such action, `workspace` and `documents` under the same fresh ids and shuffle as the other records, and adds `CARRIED_INSTRUCTION` to its instruction only where an item holds one of them, or a staging action's `job`, `source`, `snapshot`, `bundle` or `report`.
 A record that stops short of the run's end holds a document only where the document's last write is among the actions it holds.
 
 A case's world also holds typed parts that a read a role makes through a tool answers from:

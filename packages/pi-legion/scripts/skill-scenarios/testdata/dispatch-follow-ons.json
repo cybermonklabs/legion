@@ -1,0 +1,29 @@
+{
+  "about": "Each event that Dispatch writes in the request of a write after that write's own event, by the write's event type, as packages/envoy/internal/dispatch writes them. Each is part of the write it follows: outcome.ts records no action of it, and lane D's replay makes it with the write and checks that its own write wrote the same. An event joins the write before it where its actor and its created_at (the events table's `created_at default now()`, store/migrations/0001_init.up.sql) are the write's and its type is on the write's list. A route that writes its one event alone has no entry: a handoff (api/handoffs.go), a result (api/results.go), a message (api/messages.go), a question (api/asks.go, createAsk; the asker's follow is a row), an approval request that opens one (api/reviews.go, openApprovalAsk; asks.QueueFollowAuthor is a row) and a plan review's approval (api/reviews.go, createArtifactPlanReview, docs.QueueReview).",
+  "writes": {
+    "comment.created": {
+      "followOns": ["comment.reopened"],
+      "source": "api/comment_create.go, createComment: a reply under a resolved thread reopens its root (reopenedRoot)."
+    },
+    "artifact.created": {
+      "followOns": ["ask.edited"],
+      "source": "api/artifacts.go, the upload: a version moves the document's open approval request to it (docs.MoveApprovalAsk; its rewording appends ask.edited in docs/approval_ask.go, rewriteApprovalAsk)."
+    },
+    "artifact.version": {
+      "followOns": ["ask.edited"],
+      "source": "api/artifacts.go, the upload, and an edit's version: docs.MoveApprovalAsk (docs/approval_ask.go, rewriteApprovalAsk's ask.edited)."
+    },
+    "issue.updated": {
+      "followOns": ["ask.resolved", "issue.released"],
+      "source": "api/issue_patch.go: a close withdraws the issue's open asks (recordWithdrawnAsksTx; api/issue_ask_lifecycle.go writes ask.resolved) and releases its claim (issue.released)."
+    },
+    "issue.closed": {
+      "followOns": ["ask.resolved", "issue.released"],
+      "source": "api/issue_patch.go: as issue.updated."
+    },
+    "ask.answered": {
+      "followOns": ["artifact.approved", "artifact.changes_requested"],
+      "source": "api/reviews.go, recordArtifactReview: the answer of an approval request closes its ask (closeAskTx) and records a review of each document it names (queueApprovalReviews)."
+    }
+  }
+}

@@ -2254,9 +2254,11 @@ test("a batch with no carried action, staged Job field, workspace or documents i
   expect(JSON.parse(requestOf(plain)).system).toBe(INSTRUCTION);
 
   // Each thing the appendix describes brings it alone: an action of each carried kind, a staging
-  // action's job, its source, its bundle and its report, the workspace's operations, and the
-  // documents the run wrote. A staging action with none of the four is the T0 one, and brings
-  // nothing.
+  // action's job, its source, its snapshot, its bundle and its report, the workspace's operations,
+  // and the documents the run wrote. A staging action with none of the five is the T0 one, and
+  // brings nothing. The appendix names each of the five.
+  for (const field of ["job", "source", "snapshot", "bundle", "report"])
+    expect(CARRIED_INSTRUCTION).toContain(`\`${field}\``);
   const staging = { kind: "staging" as const, seq: 6, at: "2030-01-07T15:05:00Z" };
   const staged = { tree: "a".repeat(40), files: ["app.ts"] };
   const withAction = (extra: Partial<OutcomeRecord>): Batch =>
@@ -2272,6 +2274,7 @@ test("a batch with no carried action, staged Job field, workspace or documents i
   const rows: [string, Partial<OutcomeRecord>][] = [
     ["a staged Job's name", { actions: [{ ...staging, ...staged, job: "build" }] }],
     ["a staged Job's source", { actions: [{ ...staging, ...staged, source: "$TMPDIR/stage-a" }] }],
+    ["a staged Job's snapshot", { actions: [{ ...staging, ...staged, snapshot: "$TMPDIR/s" }] }],
     ["a staged Job's bundle", { actions: [{ ...staging, ...staged, bundle: "$TMPDIR/b.tar" }] }],
     ["a staged Job's report", { actions: [{ ...staging, ...staged, report: "$TMPDIR/r.json" }] }],
     ["the workspace's operations", { workspace: [] }],
