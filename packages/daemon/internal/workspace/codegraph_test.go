@@ -133,7 +133,7 @@ func TestWarmCodegraphIndexInBackgroundNeverWaitsAndBuildsOncePerWorkspace(t *te
 	script := `#!/bin/sh
 echo "$1" >> '` + callLog + `'
 case "$1" in
-status) echo '{"initialized":false}' ;;
+status) sleep 11; echo '{"initialized":false}' ;;
 init) while [ ! -f '` + release + `' ] && [ -d '` + scratch + `' ]; do sleep 0.05; done ;;
 esac
 `
@@ -372,7 +372,7 @@ func TestWarmCodegraphIndexSkipsRepairWhileABuildIsLive(t *testing.T) {
 	script := `#!/bin/sh
 printf '%s\n' "$1" >> '` + callLog + `'
 case "$1" in
-status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
+status) sleep 61; echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
@@ -386,7 +386,7 @@ esac
 	// span of its own: the lock names a live builder for as long as the warm-up takes to read it.
 	builderScript := filepath.Join(binDir, "codegraph-builder")
 	hold := "while kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.05; done"
-	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sh -c '"+hold+"'\n"), 0o700); err != nil {
+	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nsleep 11\nexec -a codegraph sh -c '"+hold+"'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	builder := exec.Command(builderScript)
@@ -1232,7 +1232,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 	// first. Each row's cleanups let the stub's processes go whatever the row did, so a row that
 	// fails leaves none running.
 	t.Run("a build its own bound ended: the timeout named", func(t *testing.T) {
-		r := newBoundRow(t, fake, "echo 'parsing 512 files' >&2; : > '%[1]s/printed'; exec sleep 86400")
+		r := newBoundRow(t, fake, "sleep 1.5; echo 'parsing 512 files' >&2; : > '%[1]s/printed'; exec sleep 86400")
 		r.reached("the stub's init to print its line", "printed")
 		r.endTheBound()
 		r.answered("timed out after 1s: parsing 512 files")
@@ -1250,7 +1250,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		grace := codegraphStopGrace
 		codegraphStopGrace = testwait.Remaining(t)
 		t.Cleanup(func() { codegraphStopGrace = grace })
-		r := newBoundRow(t, fake, "echo 'parsing 512 files' >&2; : > '%[1]s/printed'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/go' ]; do sleep 0.01; done; "+
+		r := newBoundRow(t, fake, "sleep 1.5; echo 'parsing 512 files' >&2; : > '%[1]s/printed'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/go' ]; do sleep 0.01; done; "+
 			"( while kill -0 $$ 2>/dev/null; do sleep 0.01; done; : > '%[1]s/gone'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/release' ]; do sleep 0.01; done; : > '%[1]s/left' ) & kill -KILL $$")
 		r.reached("the stub's init to print its line", "printed")
 		r.c.AwaitArmed(t, "the init's bound, while the build's shell still runs", 1)
