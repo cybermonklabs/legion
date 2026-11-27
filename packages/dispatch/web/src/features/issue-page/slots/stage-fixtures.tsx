@@ -247,11 +247,28 @@ export async function goneLineTakesFocus(view: RenderResult, what: string): Prom
 /** An id that names no comment of the issue, which the comment's own read answers 404 for. */
 export const GONE_COMMENT = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
 
+/** The comment's own read's answer for an id that names no comment of the issue. */
+function noSuchComment(): ApiError {
+  return new ApiError(404, { code: "NOT_FOUND", error: "no such comment" });
+}
+
 /** The comment's own read, answering that no comment has the id it is asked for. */
 export function commentGone(): Mock<typeof api.getComment> {
-  return spyOn(api, "getComment").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
-  );
+  return spyOn(api, "getComment").mockRejectedValue(noSuchComment());
+}
+
+/** Answers each comment's own read (`GET /api/v1/comments/{id}`) from `comments`: the comment
+ *  and every comment that replies to it, as the server answers it, and that no comment has any
+ *  other id. */
+export function answerCommentReads(comments: readonly Comment[]): Mock<typeof api.getComment> {
+  return spyOn(api, "getComment").mockImplementation(async (id: string) => {
+    const comment = comments.find((one) => one.id === id);
+    if (comment === undefined) throw noSuchComment();
+    return {
+      comment,
+      replies: comments.filter((one) => one.reply_to === id),
+    } as never;
+  });
 }
 
 /** The tree read's answer for the issue holding `nodes` under it, each named as a case names it
@@ -308,7 +325,7 @@ export function inDocument(document: Pick<Artifact, "id" | "slug">, position = 0
 
 /** Every read the page's tree is built from, answered with nothing, and who is reading. The
  *  issue's comments are the tree read's own, so no comments list is answered: a read of one
- *  reaches the network, which fails the file (`__tests__/network-guard.ts`). */
+ *  reaches the network, which fails the file (`__tests__/network.ts`). */
 export function stubReads(): { mockRestore(): void }[] {
   return [
     spyOn(api, "getIssueCoverage").mockResolvedValue({

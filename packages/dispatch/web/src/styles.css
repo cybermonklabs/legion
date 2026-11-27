@@ -851,10 +851,11 @@ html:has([data-issue-page]) {
 }
 
 /* A block of the new issue page that takes typing says so: a row of the outline marked
-   `[data-editable]`, whose node takes typing (`useNodeEditing.ts`'s `nodeEditable`), and the box a
-   row's editor scrolls in, of the cue's one class, `dispatch-edit-cue` (`StagedDocument.tsx`'s
-   `EditorBox`), while the document in it takes typing, its article (`ProofDocument.tsx`'s
-   `.dispatch-doc`) marked `data-read-only="false"`. Under a pointer that hovers it draws the text
+   `[data-editable]`, whose node takes typing (`useNodeEditing.ts`'s `nodeTakesTyping`, with
+   `NodeRow`'s `useDocumentReadOnly`), and the box a row's editor scrolls in, of the cue's one
+   class, `dispatch-edit-cue` (`StagedDocument.tsx`'s `EditorBox`), while the document in it
+   takes typing, its article (`ProofDocument.tsx`'s `.dispatch-doc`) marked
+   `data-read-only="false"`. Under a pointer that hovers it draws the text
    cursor and the page's faint pane behind it - for a row, behind its card, where its focus is
    drawn too - and while the editor in it holds the focus, a 1 px rule in the page's ink, the rule
    the page's own boxes for words draw while they hold the caret (`theme/classes.ts`'s `pageField`

@@ -1412,6 +1412,16 @@ export function syncArchitectureSource(project: string, repo: string, options: A
   );
 }
 
+/** Imports every architecture source of `project` now, as the server's own import pass does;
+ *  200 answers each source's row, a failure in its own `last_error`. */
+export function syncArchitectureSources(project: string, options: ApiOptions = {}) {
+  return post(
+    "/api/v1/projects/{key}/architecture-sources/sync",
+    { params: { key: project } },
+    options
+  );
+}
+
 export function getArchitecture(project: string, options: ApiOptions = {}) {
   return get("/api/v1/projects/{key}/architecture", { params: { key: project } }, options);
 }

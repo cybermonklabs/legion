@@ -2,6 +2,7 @@ import type { CheckBlock, IssueCoverage } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
 import { type CheckState, coverageNotes, type StatementState } from "../page-words";
 import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../tree-drafts";
+import { nodesInOrder } from "../tree-keys";
 
 /**
  * How each statement of the issue stands, and the one commit the page names for its results.
@@ -160,15 +161,13 @@ export function verificationReading({
   const commit = namedCommit(checks);
   const statements: StatementReading[] = [];
   const seen = new Set<string>();
-  const walk = (node: TreeNode): void => {
-    if (isStatement(node) && !seen.has(node.id)) {
-      seen.add(node.id);
-      const readings = node.children.filter(isCheck).map(read);
-      statements.push({ checks: readings, node, state: statementState(readings) });
-    }
-    for (const child of node.children) walk(child);
-  };
-  for (const child of view.children) walk(child);
+  // Every node the view holds but its root, in document order, a node drawn twice once.
+  for (const node of nodesInOrder(view).slice(1)) {
+    if (!isStatement(node) || seen.has(node.id)) continue;
+    seen.add(node.id);
+    const readings = node.children.filter(isCheck).map(read);
+    statements.push({ checks: readings, node, state: statementState(readings) });
+  }
   return {
     ...(commit === undefined ? {} : { commit }),
     loose: view.children.filter(isCheck).map(read),

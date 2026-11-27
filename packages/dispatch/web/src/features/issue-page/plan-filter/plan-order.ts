@@ -214,13 +214,12 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
     places.set(group, place);
     return place;
   };
-  // Groups of one place and rank stand in the order the view hands them over. Two places that are
-  // the same infinity subtract to NaN, which `||` passes over as it does a tie.
+  // Groups of one place and rank stand in the order the view hands them over.
   return [...entries.keys()]
     .sort((one, other) => {
       const [place, rank] = placeOf(one);
       const [otherPlace, otherRank] = placeOf(other);
-      return place - otherPlace || rank - otherRank || one - other;
+      return (place === otherPlace ? 0 : place - otherPlace) || rank - otherRank || one - other;
     })
     .flatMap((group) => {
       const entry = entries.get(group);

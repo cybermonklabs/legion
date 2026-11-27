@@ -194,8 +194,8 @@ export interface DecisionChange {
   readonly body: string;
   readonly by: Actor;
   /** When the person last edited what they wrote (`Comment.edited_at`), which the row says
-   *  ` · edited` after the words for (`EditedMark`, INFRA-1523, R2); null for a change nobody
-   *  edited, and absent where the read the change comes from answers no edit mark. */
+   *  ` · edited` after the words for (`EditedMark`, INFRA-1523, R2); null or absent for a change
+   *  nobody edited, as the tree read's comment node leaves out a mark that is none. */
   readonly editedAt?: string | null;
   /** The comment's own id, which is its node's in the conversation. */
   readonly id: string;
@@ -203,7 +203,7 @@ export interface DecisionChange {
   readonly path: string;
   /** The record `body` is: the comment, on this issue. */
   readonly source: TextSource;
-  /** The server's reading of `body`, where the comments read sent one. */
+  /** The server's reading of `body`, where the tree read's comment node holds one. */
   readonly tree?: DisplayTree;
 }
 

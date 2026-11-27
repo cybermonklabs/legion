@@ -107,6 +107,7 @@ export function IssuePins({
   const unheldReads = useQueries({
     queries: unheld.map((id) => ({ ...commentQuery(id), ...EVENT_FRESH, enabled: open })),
   });
+  const unheldComments = new Map(unheld.map((id, at) => [id, unheldReads[at]?.data?.comment]));
   // The history's own filtered log, under its key (`IssueHistory.tsx`), which the history under
   // this list reads: watched here and never asked for, so a pinned line it holds is drawn from
   // its pages with no extra read.
@@ -145,7 +146,7 @@ export function IssuePins({
     }
     const post =
       kind === "comment"
-        ? (held.get(id) ?? unheldReads[unheld.indexOf(id)]?.data?.comment)
+        ? (held.get(id) ?? unheldComments.get(id))
         : kind === "message"
           ? (messages.data ?? [])
               .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])

@@ -214,6 +214,8 @@ async function inBursts<T, R>(
   return written;
 }
 
+export { inBursts };
+
 /** A paragraph of the spec: two to four sentences, one naming code. */
 function paragraph(n: number): string {
   const sentences = counted(2 + (n % 3)).map((at) => `${sentence(n + at * 7)}.`);

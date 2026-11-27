@@ -15,6 +15,7 @@ import { postDeletion } from "../refs/post-marks";
 import { parseNodeReference } from "../refs/routes";
 import type { DecisionNode } from "./decision-nodes/decision-nodes";
 import type { DecisionState } from "./page-words";
+import { olderCommentsBefore, splitPosition } from "./tree-read/comment-positions";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
@@ -22,7 +23,8 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * change.
  *
  * This module is pure and imports no code of the tree, only the types of a decision node and of
- * the tree read, so the tree (`tree-read/tree-nodes.ts`), the Decisions filter
+ * the tree read and the read's own comment positions (`tree-read/comment-positions.ts`), so the
+ * tree (`tree-read/tree-nodes.ts`), the Decisions filter
  * (`decisions-filter/decisions-parts.ts`) and the header's count of what waits on the reader
  * (`waiting.ts`) read one rule each and cannot disagree.
  *
@@ -48,8 +50,8 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 /** The fields of a Change the Decisions filter reads (`decisionsParts`), and when its author
  *  last edited it, which the Decisions view draws a Change with (`decisions-parts.ts`'s
  *  `DecisionChange`). A Change is a comment the tree read answers, which carries its author's
- *  edit mark only where the read answers it (`treeComments`): an absent mark is not known, never
- *  "not edited". */
+ *  edit mark only where it is set (`treeComments`): an absent mark is none, as the contract's
+ *  node declares it - "not edited". */
 export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "id"> &
   Partial<Pick<Comment, "edited_at">>;
 
@@ -96,7 +98,7 @@ export function treeComments(answer: TreeAnswer | undefined): readonly TreeComme
       body: node.text,
       ...(node.text_tree === undefined ? {} : { body_tree: node.text_tree }),
       created_at: node.made_at ?? "",
-      // An answer that omits a mark does not say whether the post was edited or deleted.
+      // An answer leaves out a mark that is none: the post was not edited, or not deleted.
       ...(node.deleted_at === undefined ? {} : { deleted_at: node.deleted_at }),
       ...(node.deleted_by === undefined ? {} : { deleted_by: node.deleted_by }),
       ...(node.edited_at === undefined ? {} : { edited_at: node.edited_at }),
@@ -400,18 +402,16 @@ function after(at: string, row: Partial<Pick<Decision, "changed_at" | "kept">>):
  * Whether a Change of `decision` may stand among the comments the tree read's `answer` does not
  * hold: the read pages the issue's comments, the newest first, and an answer with an older page
  * names where it starts (`comments_before`, `<made_at>,<id>` of the oldest comment it holds,
- * `tree-read/tree-nodes.ts`' `olderCommentsBefore`). A Change is newer than the decision's words
- * and its last Keep (`after`), so a comment older than the oldest held can be one only where that
- * oldest comment is newer than both. A decision drawn with no Change it may have then carries the
- * page's mark of a count with more to read (`tree-drafts.ts`' `markChangeUnread`), rather than
+ * `tree-read/comment-positions.ts`' `olderCommentsBefore`). A Change is newer than the decision's
+ * words and its last Keep (`after`), so a comment older than the oldest held can be one only where
+ * that oldest comment is newer than both. A decision drawn with no Change it may have then carries
+ * the page's mark of a count with more to read (`tree-drafts.ts`' `markChangeUnread`), rather than
  * reading as unchanged.
  */
 export function changeMayBeOlder(
   decision: Partial<Pick<Decision, "changed_at" | "kept">>,
   answer: TreeAnswer | undefined
 ): boolean {
-  const before = answer?.comments_before;
-  if (typeof before !== "string" || before === "") return false;
-  const comma = before.indexOf(",");
-  return after(comma < 0 ? before : before.slice(0, comma), decision);
+  const before = answer === undefined ? undefined : olderCommentsBefore(answer);
+  return before !== undefined && after(splitPosition(before)[0], decision);
 }
