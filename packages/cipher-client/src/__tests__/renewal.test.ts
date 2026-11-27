@@ -79,7 +79,7 @@ async function told(call: Promise<unknown>): Promise<unknown> {
  *  it waits on has failed: what that trade came to. Waited for through the shared wait, so a call
  *  that never answers fails at the row's deadline, naming it. */
 function answerOf(client: BrokerTokenClient): Promise<unknown> {
-  return told(settled("the retry loop's answer to a fail-fast caller", client.token()));
+  return settled("the retry loop's answer to a fail-fast caller", told(client.token()));
 }
 
 test("the token in hand is reused until the renewal window, then traded again", async () => {
