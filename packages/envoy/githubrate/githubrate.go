@@ -15,10 +15,12 @@
 package githubrate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Interval is how often a program reads each installation. LastMinute is the window in which a
@@ -86,12 +89,15 @@ var rateLimitPaths = map[string]bool{"/rate_limit": true, "/api/v3/rate_limit": 
 
 // Counter counts the calls a program makes to GitHub with the installation tokens it registered,
 // by installation, counter and caller kind, since each counter's last reset as GitHub's answers
-// name it. It keeps the SHA-256 of each token it is given, never the token.
+// name it, and notes the secondary limits GitHub answers those tokens with (SecondaryUntil). It
+// keeps the SHA-256 of each token it is given, never the token. It is the program's own: a
+// secondary limit another program, or another process of the same program, met is not in it.
 type Counter struct {
-	mu     sync.Mutex
-	now    func() time.Time
-	tokens map[[sha256.Size]byte]registration
-	counts map[window]*counted
+	mu        sync.Mutex
+	now       func() time.Time
+	tokens    map[[sha256.Size]byte]registration
+	counts    map[window]*counted
+	secondary map[string]time.Time
 }
 
 // registration is the installation a token was minted on, and when the Counter was told.
@@ -113,7 +119,10 @@ type counted struct {
 
 // NewCounter makes an empty Counter.
 func NewCounter() *Counter {
-	return &Counter{now: time.Now, tokens: map[[sha256.Size]byte]registration{}, counts: map[window]*counted{}}
+	return &Counter{
+		now: time.Now, tokens: map[[sha256.Size]byte]registration{}, counts: map[window]*counted{},
+		secondary: map[string]time.Time{},
+	}
 }
 
 // Register says token is an installation token of installation, so the calls made with it are
@@ -142,7 +151,8 @@ func (c *Counter) Register(token, installation string) {
 // an earlier window is ignored, so concurrent requests that finish out of order do not mix hours.
 // A request with no registered token, the App's JWT among them, is never counted; neither is
 // GitHub's GET /rate_limit endpoint (rateLimitPaths), which costs nothing, nor an answer of 304 Not
-// Modified, which GitHub charges an authenticated request nothing for.
+// Modified, which GitHub charges an authenticated request nothing for. It also notes each
+// secondary limit GitHub answers a registered token with (SecondaryUntil).
 func (c *Counter) Transport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
@@ -157,10 +167,115 @@ type countingTransport struct {
 
 func (t countingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := t.base.RoundTrip(request)
-	if err == nil && response.StatusCode != http.StatusNotModified && !rateLimitPaths[request.URL.Path] {
+	if err != nil {
+		return response, err
+	}
+	if response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests {
+		t.counter.noteSecondary(request, response)
+	}
+	if response.StatusCode != http.StatusNotModified && !rateLimitPaths[request.URL.Path] {
 		t.counter.count(request, response.Header)
 	}
-	return response, err
+	return response, nil
+}
+
+// longestSecondaryWait bounds the wait a secondary limit is noted for. GitHub counts its limits
+// within the hour, so an answer asking for longer is read as an hour, never as no wait.
+const longestSecondaryWait = time.Hour
+
+// limitPeek is how much of a refusal's body is read for GitHub's wording of a rate limit: its
+// refusal is a short JSON message, and the rest of the body is the caller's whether or not it was
+// read.
+const limitPeek = 64 << 10
+
+// secondaryWording is what GitHub's secondary limit says in its refusal's message: "You have
+// exceeded a secondary rate limit", and the older wording of the same limit, "You have triggered
+// an abuse detection mechanism". GitHub writes those sentences for nothing else.
+var secondaryWording = []string{"secondary rate limit", "abuse detection mechanism"}
+
+// noteSecondary notes the secondary limit GitHub answered request with, a 403 or 429 refusal,
+// under the installation of the registered token it carries, as GitHub's REST documentation
+// describes one: a refusal whose message names the secondary limit, whatever
+// X-RateLimit-Remaining says, as GitHub's own client (octokit's throttling plugin) reads it first;
+// else, with requests remaining (X-RateLimit-Remaining is not 0), one that carries Retry-After, is
+// a 429, or whose message names a rate limit. A refusal with no requests remaining and no such
+// message is the primary limit, whose refusal still names the spent counter, and is not noted; a
+// 403 that is none of these is GitHub refusing that request, not limiting the installation. The
+// wait is Retry-After's, in seconds or as an HTTP date, else the minute GitHub asks for when it
+// gives none, bounded by longestSecondaryWait, and the end noted is the latest any answer asked
+// for. The head of the body is read for the message and put back whole for the caller.
+func (c *Counter) noteSecondary(request *http.Request, response *http.Response) {
+	token, ok := bearer(request.Header.Get("Authorization"))
+	if !ok {
+		return
+	}
+	hash := sha256.Sum256([]byte(token))
+	c.mu.Lock()
+	held, registered := c.tokens[hash]
+	at := c.now()
+	c.mu.Unlock()
+	if !registered || at.Sub(held.at) > tokenLife {
+		return
+	}
+	message := strings.ToLower(peekBody(response))
+	named := false
+	for _, wording := range secondaryWording {
+		named = named || strings.Contains(message, wording)
+	}
+	retryAfter := response.Header.Get("Retry-After")
+	switch {
+	case named:
+	case response.Header.Get("X-RateLimit-Remaining") == "0":
+		return
+	case retryAfter == "" && response.StatusCode == http.StatusForbidden && !strings.Contains(message, "rate limit"):
+		return
+	}
+	until := at.Add(secondaryWait(retryAfter, at))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if until.After(c.secondary[held.installation]) {
+		c.secondary[held.installation] = until
+	}
+}
+
+// peekBody is the head of response's body, at most limitPeek bytes, put back in front of the rest
+// so the caller reads the body whole. A body that cannot be read is "".
+func peekBody(response *http.Response) string {
+	if response.Body == nil {
+		return ""
+	}
+	head, err := io.ReadAll(io.LimitReader(response.Body, limitPeek))
+	response.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), response.Body), response.Body}
+	if err != nil {
+		return ""
+	}
+	return string(head)
+}
+
+// secondaryWait is the wait a secondary limit asked for at at: Retry-After's seconds, or its HTTP
+// date, else a minute, bounded by longestSecondaryWait.
+func secondaryWait(retryAfter string, at time.Time) time.Duration {
+	wait := time.Minute
+	if seconds, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && seconds >= 0 {
+		wait = time.Duration(seconds) * time.Second
+	} else if date, err := http.ParseTime(retryAfter); err == nil {
+		wait = date.Sub(at)
+	}
+	return min(max(wait, 0), longestSecondaryWait)
+}
+
+// SecondaryUntil is the end of the latest secondary limit GitHub answered one of installation's
+// registered tokens with, and the zero time when none was. A time already past is a limit that
+// ended; the caller compares it with its own clock. It is this Counter's alone, so it holds the
+// limits the calls counted through it met: every client of a process that counts through the one
+// Counter, and no other process.
+func (c *Counter) SecondaryUntil(installation string) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.secondary[installation]
 }
 
 // count counts one answer, headers, to request (Transport).
@@ -305,11 +420,11 @@ type Reading struct {
 // App's id and slug, the installation's owner and id, how many installations the App's list held,
 // the installation's permissions as the list named them, whether it is the reading before a reset,
 // and each counter's used count, limit, reset (RFC 3339) and own counts by caller kind. A failed
-// reading carries its error instead of the counters, so a pass still writes one line for each
-// installation listed; it names the installation's permissions all the same, since the list named
-// them whatever the reading did after it. A line that names no installation, a failed or empty
-// list's, names no permissions; one that does names them as an object, {} where the list named
-// none.
+// reading carries its error instead of the counters, held to ErrorLimit bytes (errorText), so a
+// pass still writes one line for each installation listed; it names the installation's
+// permissions all the same, since the list named them whatever the reading did after it. A line
+// that names no installation, a failed or empty list's, names no permissions; one that does names
+// them as an object, {} where the list named none.
 func Write(log *slog.Logger, r Reading) {
 	attrs := []slog.Attr{
 		slog.String("program", r.Program),
@@ -330,12 +445,34 @@ func Write(log *slog.Logger, r Reading) {
 	}
 	attrs = append(attrs, slog.Bool("before_reset", r.BeforeReset))
 	if r.Error != "" {
-		attrs = append(attrs, slog.String("error", r.Error))
+		attrs = append(attrs, slog.String("error", errorText(r.Error)))
 	} else {
 		attrs = append(attrs, bucketAttrs(Core, r.Core)...)
 		attrs = append(attrs, bucketAttrs(GraphQL, r.GraphQL)...)
 	}
 	log.LogAttrs(context.Background(), slog.LevelInfo, Msg, attrs...)
+}
+
+// ErrorLimit is the most bytes a line's error holds, as a recorded GitHub read's cause does
+// (Dispatch's github_read_attempts). A refusal's error carries GitHub's whole body, up to a
+// megabyte, and a log store cuts a line that long short or drops it (Cloud Logging at 256 KiB).
+const ErrorLimit = 1024
+
+// errorText is value as valid UTF-8, each invalid byte U+FFFD, and where that is longer than
+// ErrorLimit bytes, its head cut at a whole character and ended with " … (cut from <n> bytes)", n
+// being the valid text's length, the whole inside the limit, so a reader sees that it was cut and
+// by how much.
+func errorText(value string) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if len(value) <= ErrorLimit {
+		return value
+	}
+	marker := " … (cut from " + strconv.Itoa(len(value)) + " bytes)"
+	cut := ErrorLimit - len(marker)
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut] + marker
 }
 
 func bucketAttrs(counter string, b Bucket) []slog.Attr {

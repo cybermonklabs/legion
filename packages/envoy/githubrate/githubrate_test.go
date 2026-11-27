@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -201,10 +202,10 @@ const (
 )
 
 // Both sides of resetDrift's edge, for one installation and counter: a reset named later by
-// GitHub's measured drift of a second, or by 4 min 59 s, keeps the counts as the same hour, and
-// one 5 min 1 s later starts them again. An answer naming a reset 4 min 59 s earlier than the one
-// held is counted in the held hour, and one 5 min 1 s earlier is a late answer from the hour
-// before, which is not counted.
+// GitHub's measured drift of a second, by 4 min 59 s or by exactly 5 minutes keeps the counts as
+// the same hour, and one 5 min 1 s later starts them again. An answer naming a reset 4 min 59 s
+// or exactly 5 minutes earlier than the one held is counted in the held hour, and one 5 min 1 s
+// earlier is a late answer from the hour before, which is not counted.
 func TestCountsStartAgainAtANewReset(t *testing.T) {
 	t.Run("an hour's drift and the next hour", testCountsStartAgainAtANewReset)
 	first := time.Unix(measuredReset, 0).UTC()
@@ -215,8 +216,10 @@ func TestCountsStartAgainAtANewReset(t *testing.T) {
 	}{
 		{"a reset GitHub's measured second later", time.Duration(measuredDrift) * time.Second, map[string]int{"outbox": 2}},
 		{"a reset 4 min 59 s later", 4*time.Minute + 59*time.Second, map[string]int{"outbox": 2}},
+		{"a reset exactly 5 min later", 5 * time.Minute, map[string]int{"outbox": 2}},
 		{"a reset 5 min 1 s later", 5*time.Minute + time.Second, map[string]int{"outbox": 1}},
 		{"a reset 4 min 59 s earlier", -(4*time.Minute + 59*time.Second), map[string]int{"outbox": 2}},
+		{"a reset exactly 5 min earlier", -5 * time.Minute, map[string]int{"outbox": 2}},
 		{"a reset 5 min 1 s earlier", -(5*time.Minute + time.Second), map[string]int{"outbox": 1}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -646,5 +649,136 @@ func TestGraphQLBucketRefusesAnAbsentOrNegativeUsedCount(t *testing.T) {
 	}
 	if bucket, err := GraphQLBucket([]byte(`{"resources":{"graphql":{"limit":5000,"used":0,"reset":1900000000}}}`)); err != nil || bucket.Used != 0 {
 		t.Errorf("GraphQLBucket refused a reported zero: %+v, %v", bucket, err)
+	}
+}
+
+// refusingServer answers every request with status, header and body, as GitHub answers a request
+// it refuses.
+func refusingServer(t *testing.T, status int, header http.Header, body string) string {
+	t.Helper()
+	return githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		for name, values := range header {
+			w.Header()[name] = values
+		}
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}}).URL
+}
+
+// A secondary limit GitHub answers a registered token with is noted for that token's installation
+// until the end GitHub asked for, from the answer alone: a 403 or 429 whose message names the
+// secondary limit, whatever X-RateLimit-Remaining says, or, with requests remaining, one that
+// carries Retry-After, is a 429, or whose message names a rate limit. The wait is Retry-After's
+// seconds, else a minute. A primary limit, no requests remaining and no secondary wording, is not
+// noted, since its refusal still names the spent counter; neither is a 403 that is a refusal and
+// no limit, nor an answer to a token nobody registered. A body the noting read is still the
+// caller's to read whole.
+func TestASecondaryLimitIsNotedForItsInstallationFromGitHubsAnswer(t *testing.T) {
+	now := time.Unix(measuredReset, 0).UTC().Add(-30 * time.Minute)
+	secondary := `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+	refusal := `{"message":"Resource not accessible by integration"}`
+	primary := `{"message":"API rate limit exceeded for installation ID 101."}`
+	for _, row := range []struct {
+		name        string
+		status      int
+		header      http.Header
+		body, token string
+		want        time.Duration
+		noted       bool
+	}{
+		{"a 403 with Retry-After", http.StatusForbidden, http.Header{"Retry-After": {"120"}, "X-Ratelimit-Remaining": {"4000"}}, secondary, "ghs_first", 2 * time.Minute, true},
+		{"a 429 with Retry-After", http.StatusTooManyRequests, http.Header{"Retry-After": {"30"}, "X-Ratelimit-Remaining": {"4000"}}, secondary, "ghs_first", 30 * time.Second, true},
+		{"a 403 naming a secondary limit with no Retry-After", http.StatusForbidden, http.Header{"X-Ratelimit-Remaining": {"4000"}}, secondary, "ghs_first", time.Minute, true},
+		{"a 429 with no Retry-After", http.StatusTooManyRequests, http.Header{"X-Ratelimit-Remaining": {"12"}}, `{}`, "ghs_first", time.Minute, true},
+		{"a 403 naming the secondary limit with no requests remaining", http.StatusForbidden, http.Header{"Retry-After": {"120"}, "X-Ratelimit-Remaining": {"0"}}, secondary, "ghs_first", 2 * time.Minute, true},
+		{"a 403 with no requests remaining", http.StatusForbidden, http.Header{"X-Ratelimit-Remaining": {"0"}}, primary, "ghs_first", 0, false},
+		{"a 429 with no requests remaining", http.StatusTooManyRequests, http.Header{"X-Ratelimit-Remaining": {"0"}}, primary, "ghs_first", 0, false},
+		{"a 403 that refuses and is no limit", http.StatusForbidden, http.Header{"X-Ratelimit-Remaining": {"4000"}}, refusal, "ghs_first", 0, false},
+		{"a 403 with Retry-After to a token nobody registered", http.StatusForbidden, http.Header{"Retry-After": {"120"}, "X-Ratelimit-Remaining": {"4000"}}, secondary, "ghs_someone_else", 0, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			url := refusingServer(t, row.status, row.header, row.body)
+			counter := NewCounter()
+			counter.now = func() time.Time { return now }
+			counter.Register("ghs_first", "101")
+			client := &http.Client{Transport: counter.Transport(nil)}
+			request, err := http.NewRequest(http.MethodGet, url+"/repos/acme/widgets/actions/workflows?per_page=1", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Authorization", "Bearer "+row.token)
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(response.Body)
+			response.Body.Close()
+			if err != nil || string(body) != row.body {
+				t.Errorf("the caller read %q, %v; want GitHub's whole body %q", body, err, row.body)
+			}
+			until := counter.SecondaryUntil("101")
+			if !row.noted {
+				if !until.IsZero() || len(counter.secondary) != 0 {
+					t.Errorf("SecondaryUntil = %s and the Counter noted %v, want nothing noted", until, counter.secondary)
+				}
+				return
+			}
+			if want := now.Add(row.want); !until.Equal(want) {
+				t.Errorf("SecondaryUntil = %s, want %s, %s after the answer", until, want, row.want)
+			}
+			if other := counter.SecondaryUntil("202"); !other.IsZero() {
+				t.Errorf("another installation's SecondaryUntil = %s, want none", other)
+			}
+		})
+	}
+}
+
+// A later secondary limit that asks for less never shortens one already noted: the end noted is
+// the latest any answer asked for.
+func TestASecondaryLimitNotedIsNeverShortened(t *testing.T) {
+	now := time.Unix(measuredReset, 0).UTC().Add(-30 * time.Minute)
+	long := refusingServer(t, http.StatusForbidden, http.Header{"Retry-After": {"300"}, "X-Ratelimit-Remaining": {"4000"}}, `{}`)
+	short := refusingServer(t, http.StatusForbidden, http.Header{"Retry-After": {"10"}, "X-Ratelimit-Remaining": {"4000"}}, `{}`)
+	counter := NewCounter()
+	counter.now = func() time.Time { return now }
+	counter.Register("ghs_first", "101")
+	client := &http.Client{Transport: counter.Transport(nil)}
+	call(t, client, long+"/repos/acme/widgets", "Bearer ghs_first", "api")
+	call(t, client, short+"/repos/acme/widgets", "Bearer ghs_first", "api")
+	if until, want := counter.SecondaryUntil("101"), now.Add(5*time.Minute); !until.Equal(want) {
+		t.Errorf("SecondaryUntil = %s, want the longer limit's end %s", until, want)
+	}
+}
+
+// A line's error is held to ErrorLimit bytes, as a recorded GitHub read's cause is: a refusal
+// carries GitHub's whole body, up to a megabyte, which a log store cuts or drops. It is cut at a
+// whole character, so its head is a prefix of the error and no broken character is written, and
+// ends with the length it was cut from; a shorter error is written whole. The two long errors put
+// their two-byte characters at odd and at even offsets, so one of them would be cut inside a
+// character wherever the limit falls.
+func TestWriteHoldsTheErrorToItsLimit(t *testing.T) {
+	for _, prefix := range []string{"GET /repos/acme/widgets: status 502: ", "GET /repos/acme/widgets: status 502:  "} {
+		long := prefix + strings.Repeat("é", 1<<19)
+		var out logtest.Buffer
+		Write(slog.New(slog.NewJSONHandler(&out, nil)), Reading{Program: "dispatch", InstallationID: "101", Error: long})
+		lines := logtest.JSONLines(t, out.String())
+		if len(lines) != 1 {
+			t.Fatalf("Write wrote %d lines, want 1", len(lines))
+		}
+		cut, _ := lines[0]["error"].(string)
+		marker := " … (cut from " + strconv.Itoa(len(long)) + " bytes)"
+		head, marked := strings.CutSuffix(cut, marker)
+		if len(cut) > ErrorLimit || !marked || !strings.HasPrefix(long, head) || len(head) < ErrorLimit-len(marker)-1 {
+			t.Errorf("the %d-byte error is written as %d bytes ending %q, want at most %d: a prefix of it cut at a whole character, then %q",
+				len(long), len(cut), cut[max(0, len(cut)-40):], ErrorLimit, marker)
+		}
+		if !utf8.ValidString(cut) {
+			t.Error("the cut error is not valid UTF-8")
+		}
+	}
+	var out logtest.Buffer
+	Write(slog.New(slog.NewJSONHandler(&out, nil)), Reading{Program: "dispatch", InstallationID: "101", Error: "short"})
+	if lines := logtest.JSONLines(t, out.String()); len(lines) != 1 || lines[0]["error"] != "short" {
+		t.Errorf("the short error is written as %v, want it whole", lines)
 	}
 }
