@@ -358,9 +358,10 @@ func answeredIn(key string, seq int64) json.RawMessage {
 	return issueEvent(key, seq, "ask.answered", alice, map[string]any{"id": "ask-" + key, "kind": "question"})
 }
 
-// A root Dispatch keeps refusing does not hold the boot: an error Dispatch may stop giving (a 5xx)
-// is read again a bounded number of times, a credential refusal (401, 403) not at all, and the root
-// is then skipped and released, so the next root is caught up and the catch-up finishes.
+// A root Dispatch keeps refusing does not hold the boot: an error Dispatch may stop giving (an
+// outage: a 5xx, a 408 or a 429) is read again a bounded number of times, a credential refusal
+// (401, 403) not at all, and the root is then skipped and released, so the next root is caught up
+// and the catch-up finishes.
 func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -369,6 +370,8 @@ func TestCatchUpSkipsARootDispatchKeepsRefusing(t *testing.T) {
 	}{
 		{status: http.StatusBadGateway, reads: catchUpAttempts},
 		{status: http.StatusServiceUnavailable, reads: catchUpAttempts},
+		{status: http.StatusRequestTimeout, reads: catchUpAttempts},
+		{status: http.StatusTooManyRequests, reads: catchUpAttempts},
 		{status: http.StatusUnauthorized, reads: 1},
 		{status: http.StatusForbidden, reads: 1},
 	} {
