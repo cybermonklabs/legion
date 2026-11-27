@@ -188,11 +188,18 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 // A RunCommand command that exits on its own did not time out while a child it left in its
 // process group holds its output pipes past procgroup.WaitDelay: its exit is its answer. With exit
 // 3 the run must say jj's own exit and no timeout; with exit 0, a run that took exec.ErrWaitDelay
-// for a failure would report that success as an error. The budget is the rest of the test
-// binary's deadline, far from the command's own exit on a loaded machine. (Ported with
-// RunCommand's own semantics from the shim's runAdoptionCommand, which the adoption now reaches
-// through RunCommand.)
+// for a failure would report that success as an error. (Ported with RunCommand's own semantics
+// from the shim's runAdoptionCommand, which the adoption now reaches through RunCommand.)
+//
+// The budget is the rest of the test binary's deadline, so a loaded machine that slows the command
+// does not cut it off. Main's form gave the exit 0 a minute from before the command started, and
+// that bound stays (commandBound), on RunCommand's own time and no stand-in's, for both exits: the
+// command records when the kernel made its process (testexec.MarkStart) and the moment just before
+// it exits (testexec.MarkNow), and what is left of the call is RunCommand's, from the call to that
+// start and from that exit to the return, less the procgroup.WaitDelay os/exec holds the child's
+// pipes after the command's reap, which main's budget, ending at that reap, never counted.
 func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t *testing.T) {
+	const commandBound = time.Minute
 	for name, testCase := range map[string]struct {
 		exit    int
 		wantErr string
@@ -204,14 +211,23 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t 
 			budget := testwait.Remaining(t)
 			ctx, cancel := context.WithTimeout(context.Background(), budget)
 			defer cancel()
-			script := "echo answered; echo refused >&2\n" + heldChild(t, false) + "\nexit " + strconv.Itoa(testCase.exit)
+			dir := t.TempDir()
+			mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
+			script := testexec.MarkStart(`"$1"`) + "\necho answered; echo refused >&2\n" + heldChild(t, false) + "\n" + testexec.MarkNow(`"$2"`) + "\nexit " + strconv.Itoa(testCase.exit)
 
+			called := testexec.SinceBoot(t)
 			started := time.Now()
-			out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", script})
+			out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", mark, exited})
+			returned := testexec.SinceBoot(t)
 			elapsed := time.Since(started)
 
 			if elapsed < procgroup.WaitDelay {
 				t.Fatalf("the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe, so this run proves nothing", elapsed)
+			}
+			began, after, held := testexec.StartedAfter(t, mark, called), returned-exitMark(t, exited), procgroup.WaitDelayNow()
+			if own := began + after - held; own > commandBound {
+				t.Errorf("RunCommand spent %s of its own, past main's %s: %s from the call to the command's start, and %s from the command's exit to the return, less the %s os/exec holds the child's pipes (procgroup.WaitDelay) (RunCommand = %q, %v)",
+					own, commandBound, began, after, held, out, err)
 			}
 			if testCase.wantErr == "" {
 				if err != nil || out != "answered" {
