@@ -110,9 +110,9 @@ export function IssuePropertiesRow({
   // A decision whose Change may stand on a page the read the count is taken from has not loaded
   // is left out of the count until that page is read (`waiting.ts`): the header reads the next
   // pages and then the older comment pages of that read - the decisions view read where the page
-  // holds it, else the outline read - once the page has drawn, until each such Change is held or
-  // no such page is left (decisions 563 (4) and 574 (B)), so the count is right on every view
-  // that holds either read.
+  // holds it, else the outline read - once the stage's view has drawn (`useTellViewDrawn`), until
+  // each such Change is held or no such page is left (decisions 563 (4) and 574 (B)), so the
+  // count is right on every view that holds either read.
   useReadUnloadedPages(issue, () => waiting.unread > 0, held);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.

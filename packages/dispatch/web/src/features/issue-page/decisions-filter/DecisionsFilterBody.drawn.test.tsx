@@ -60,6 +60,7 @@ import {
 } from "../row-name-fixtures";
 import { ViewStage } from "../slots/stage";
 import { AppProviders, inDocument } from "../slots/stage-fixtures";
+import { coverageRead } from "../spec-filter/spec-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
 import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import {
@@ -382,16 +383,6 @@ function publishedStatements(root: TreeNode): PublishedReferences {
   };
 }
 
-/** The coverage read, which places a decision whose statement the tree holds no node for: one
- *  that holds no statement, so each decision here is placed by the statements the tree holds. */
-const EMPTY_COVERAGE = {
-  gaps: [],
-  has_plan: false,
-  issue: KEY,
-  requirements: [],
-  spec_artifact_id: SPEC_DOCUMENT.id,
-};
-
 /** The body over the issue whose tree holds `children`, over the reads `HeldReads` holds as the
  *  cache holds them. It is drawn under the names store, with what the page publishes for the
  *  tree's statements published to it and handed to the body (`publishedStatements`), where a
@@ -474,7 +465,9 @@ function renderBody(
     client.setQueryData(viewKey(KEY, "decisions"), readView(), answered);
   }
   if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, answered);
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE, answered);
+  // The coverage read, which places a decision whose statement the tree holds no node for: one
+  // that holds no statement, so each decision here is placed by the statements the tree holds.
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]), answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {
@@ -971,7 +964,7 @@ async function renderReads(
   await hold(conversationTreeKey(KEY), reads.tree, treeAnswer(made));
   await hold(viewKey(KEY, "decisions"), reads.view, treeAnswer(made));
   await hold(["asks", KEY, "thread"], reads.asks, []);
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   const issue = issueDetails();
   const root = issueTree(reads.tree === "answered" ? children : []);
   const view = presetView(root, "decisions", "", new Set()).root;
@@ -1147,7 +1140,7 @@ test("Retry on the decisions' failed line reads them again and draws what they h
     return treeAnswer(made);
   });
   client.setQueryData(["asks", KEY, "thread"], []);
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   const issue = issueDetails();
   // The page's tree as `useIssueTree.ts` builds it from `children`: no node of the read before
   // the tree read answers, and the read's nodes once it has.
@@ -1599,7 +1592,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["asks", KEY, "thread"], []);
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   const failed = renderOver(client, [], { slot: true, stage: true });
   try {
     await waitFor(() => expect(failedLine(failed, "decisions")).not.toBeNull(), { timeout: 3000 });
@@ -1654,7 +1647,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     });
     bare.setQueryData(conversationTreeKey(KEY), treeAnswer([]));
     bare.setQueryData(viewKey(KEY, "decisions"), treeAnswer([]));
-    bare.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
+    bare.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
     await asksDown(bare);
     const noRow = renderOver(bare, [statement("s1")], { stage: true });
     await waitFor(() => expect(failedLine(noRow, "asks")).not.toBeNull());
@@ -1677,7 +1670,7 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     });
     held.setQueryData(conversationTreeKey(KEY), treeAnswer(made));
     held.setQueryData(viewKey(KEY, "decisions"), treeAnswer(made));
-    held.setQueryData(issueCoverageQuery(KEY).queryKey, EMPTY_COVERAGE);
+    held.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
     await asksDown(held);
     const partial = renderOver(held, [statement("s1"), decisionNode("first")]);
     await waitFor(() => expect(retryOf(partial, "asks")).not.toBeNull());

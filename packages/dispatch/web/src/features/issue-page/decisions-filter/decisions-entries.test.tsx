@@ -13,6 +13,7 @@ import type { TreeNode } from "../issue-tree";
 import { DECISIONS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { inDocument } from "../slots/stage-fixtures";
+import { coverageRead } from "../spec-filter/spec-fixtures";
 import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
@@ -70,13 +71,7 @@ function heldClient(asks: readonly DecisionsAsk[], tree: TreeAnswer): QueryClien
   client.setQueryData(["asks", KEY, "thread"], asks);
   // The coverage read, which places a decision whose statement the tree holds no node for: one
   // that holds no statement, so each decision here is placed by the statements the tree holds.
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, {
-    gaps: [],
-    has_plan: false,
-    issue: KEY,
-    requirements: [],
-    spec_artifact_id: SPEC_DOCUMENT.id,
-  });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   return client;
 }
 
@@ -422,17 +417,7 @@ test("answers older than the app's staleTime are not read again as the seam moun
     const given = { updatedAt: Date.now() - 31_000 };
     client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), given);
     client.setQueryData(["asks", KEY, "thread"], [], given);
-    client.setQueryData(
-      issueCoverageQuery(KEY).queryKey,
-      {
-        gaps: [],
-        has_plan: false,
-        issue: KEY,
-        requirements: [],
-        spec_artifact_id: SPEC_DOCUMENT.id,
-      },
-      given
-    );
+    client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]), given);
     const hook = await mountOver(
       client,
       [statement("s1"), openAsk("q-open"), decisionNode("minor")],
@@ -840,17 +825,7 @@ test("the seam mounted over reads older than the app's stale time sends no reque
   ];
   client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
   client.setQueryData(["asks", KEY, "thread"], [], { updatedAt: minuteAgo });
-  client.setQueryData(
-    issueCoverageQuery(KEY).queryKey,
-    {
-      gaps: [],
-      has_plan: false,
-      issue: KEY,
-      requirements: [],
-      spec_artifact_id: SPEC_DOCUMENT.id,
-    },
-    { updatedAt: minuteAgo }
-  );
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]), { updatedAt: minuteAgo });
   const never = () => new Promise<never>(() => {});
   const getIssueTree = spyOn(api, "getIssueTree").mockImplementation(never);
   const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockImplementation(never);

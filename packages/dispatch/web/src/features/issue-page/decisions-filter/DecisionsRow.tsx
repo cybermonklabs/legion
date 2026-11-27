@@ -56,6 +56,13 @@ interface RowPerson {
   readonly reader: boolean;
 }
 
+/** A statement's name as the body names it (`DecisionsFilterBody.tsx`'s `statementNames`): the
+ *  words its line draws, cut to a chip's room, and its whole words, which the line's title holds. */
+export interface StatementName {
+  readonly name: string;
+  readonly title: string;
+}
+
 /**
  * One row of the Decisions filter, drawn as the prototype's `.dcard` is: "outline lines, the
  * same as the conversation's".
@@ -151,10 +158,9 @@ export function DecisionsRow({
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
-  /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`): the
-   *  words its line draws, cut to a chip's room, and its whole words, which the line's title
-   *  holds. A statement the map holds no name for is not named yet. */
-  statementNames: ReadonlyMap<string, { readonly name: string; readonly title: string }>;
+  /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`). A
+   *  statement the map holds no name for is not named yet. */
+  statementNames: ReadonlyMap<string, StatementName>;
   /** Whether this row is the list's one tab stop. */
   tabStop: boolean;
   /** The thread whose newest write this row draws, which a dwell on the row marks read. */

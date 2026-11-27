@@ -273,7 +273,7 @@ function IssueScope(): null {
  *  as it mounts: the header is drawn here without the stage, and the page reads the pages the
  *  outline read has not loaded only once the stage says so. */
 function ViewDrawn(): null {
-  const tell = useTellViewDrawn("CORE-1");
+  const { tell } = useTellViewDrawn("CORE-1");
   useEffect(tell, [tell]);
   return null;
 }
@@ -576,6 +576,27 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
   }
 });
 
+/** The coverage read of the header's review-count cases: one statement, `r1`, of the fixtures'
+ *  spec. */
+function statementCoverage(): IssueCoverage {
+  return {
+    gaps: [],
+    has_plan: false,
+    issue: "CORE-1",
+    requirements: [
+      {
+        block_id: "r1",
+        checks: 1,
+        gaps: [],
+        plan_tasks: 0,
+        ref: specRef("r1"),
+        text: "The first.",
+      },
+    ],
+    spec_artifact_id: issue.primary_artifact_id,
+  };
+}
+
 // A Change the reader asked of a decision counts under the decision whose block of the spec holds
 // the block they wrote it in (`Anchor.block_id`), though another decision holds its words too: the
 // tree read hangs it under that decision's node, which the header reads to tell which
@@ -592,22 +613,7 @@ test("the header counts a Change under the decision whose block of the spec hold
     id: "change-1",
   };
   const restore = stubHeader(issue);
-  const coverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    gaps: [],
-    has_plan: false,
-    issue: "CORE-1",
-    requirements: [
-      {
-        block_id: "r1",
-        checks: 1,
-        gaps: [],
-        plan_tasks: 0,
-        ref: specRef("r1"),
-        text: "The first.",
-      },
-    ],
-    spec_artifact_id: issue.primary_artifact_id,
-  });
+  const coverage = spyOn(api, "getIssueCoverage").mockResolvedValue(statementCoverage());
   const comments = spyOn(api, "listComments").mockResolvedValue([]);
   // The tree read's answer, which the header reads in place of the spec's blocks and of the
   // decisions read: each decision a `decision` block of the spec, waiting for review, and the
@@ -672,22 +678,7 @@ test("the header counts a decision whose only Change the tree read answers delet
       document: { ...spec, position },
     });
   const restore = stubHeader(issue);
-  const coverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    gaps: [],
-    has_plan: false,
-    issue: "CORE-1",
-    requirements: [
-      {
-        block_id: "r1",
-        checks: 1,
-        gaps: [],
-        plan_tasks: 0,
-        ref: specRef("r1"),
-        text: "The first.",
-      },
-    ],
-    spec_artifact_id: issue.primary_artifact_id,
-  });
+  const coverage = spyOn(api, "getIssueCoverage").mockResolvedValue(statementCoverage());
   const comments = spyOn(api, "listComments");
   const tree = spyOn(api, "getIssueTree").mockResolvedValue(
     treeAnswer([
@@ -729,24 +720,7 @@ test("the header leaves a decision whose Change may stand on an older comment pa
     ...issue,
     open_asks: [{ ...openIssueAsk, last_reply: null, waiting_on: "human" as const }],
   });
-  const reads = [
-    spyOn(api, "getIssueCoverage").mockResolvedValue({
-      gaps: [],
-      has_plan: false,
-      issue: "CORE-1",
-      requirements: [
-        {
-          block_id: "r1",
-          checks: 1,
-          gaps: [],
-          plan_tasks: 0,
-          ref: specRef("r1"),
-          text: "The first.",
-        },
-      ],
-      spec_artifact_id: issue.primary_artifact_id,
-    }),
-  ];
+  const reads = [spyOn(api, "getIssueCoverage").mockResolvedValue(statementCoverage())];
   const older = Promise.withResolvers<TreeAnswer>();
   const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
     query?.comments_before === undefined
@@ -804,24 +778,7 @@ test("the header leaves a decision whose Change may stand on the tree read's nex
     ...issue,
     open_asks: [{ ...openIssueAsk, last_reply: null, waiting_on: "human" as const }],
   });
-  const reads = [
-    spyOn(api, "getIssueCoverage").mockResolvedValue({
-      gaps: [],
-      has_plan: false,
-      issue: "CORE-1",
-      requirements: [
-        {
-          block_id: "r1",
-          checks: 1,
-          gaps: [],
-          plan_tasks: 0,
-          ref: specRef("r1"),
-          text: "The first.",
-        },
-      ],
-      spec_artifact_id: issue.primary_artifact_id,
-    }),
-  ];
+  const reads = [spyOn(api, "getIssueCoverage").mockResolvedValue(statementCoverage())];
   const next = Promise.withResolvers<TreeAnswer>();
   const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
     query?.cursor === undefined
@@ -877,22 +834,7 @@ test("the header counts no decision while the tree read holds no answer and mark
     ...issue,
     open_asks: [{ ...openIssueAsk, last_reply: null, waiting_on: "human" as const }],
   });
-  const coverageAsked = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    gaps: [],
-    has_plan: false,
-    issue: "CORE-1",
-    requirements: [
-      {
-        block_id: "r1",
-        checks: 1,
-        gaps: [],
-        plan_tasks: 0,
-        ref: specRef("r1"),
-        text: "The first.",
-      },
-    ],
-    spec_artifact_id: issue.primary_artifact_id,
-  });
+  const coverageAsked = spyOn(api, "getIssueCoverage").mockResolvedValue(statementCoverage());
   const answer = Promise.withResolvers<TreeAnswer>();
   const tree = spyOn(api, "getIssueTree").mockReturnValue(answer.promise);
   const count = () => screen.getByTestId("issue-whose-turn").textContent;

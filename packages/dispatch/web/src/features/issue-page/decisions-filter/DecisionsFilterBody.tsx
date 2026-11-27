@@ -55,7 +55,7 @@ import type { DrawnRow, PageRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
-import { DecisionsRow } from "./DecisionsRow";
+import { DecisionsRow, type StatementName } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   conversationPath,
@@ -1225,13 +1225,6 @@ function NextEntries({
 /** The first `pages` pages of `entries`, `PAGE` entries each. */
 function pagesOf<Entry>(entries: readonly Entry[], pages: number): readonly Entry[] {
   return entries.slice(0, PAGE * pages);
-}
-
-/** A statement's name on a decision's "informs" line: the words its line draws, cut to a chip's
- *  room, and its whole line, which the line's title holds (`DecisionsRow`'s `statementNames`). */
-interface StatementName {
-  readonly name: string;
-  readonly title: string;
 }
 
 /** Names statement `id`, at address `reference`, in `names` by the line the names store holds

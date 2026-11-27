@@ -2,7 +2,7 @@ import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useEffect, useLayoutEffect, useState } from "react";
+import { Profiler, type ReactNode, useEffect, useLayoutEffect, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
@@ -716,5 +716,83 @@ test("no page the outline read has not loaded is read before the stage's view dr
       for (const spy of restore) spy.mockRestore();
       restore = [];
     }
+  }
+});
+
+/** How many commits drew `CountedView`, whose own props come straight from `StageSlot` without
+ *  `memo`, so each render of the stage draws it again. */
+let countedDraws = 0;
+
+/** A stand-in view that draws one row of its tree and records each commit that draws it. */
+function CountedView(): ReactNode {
+  return (
+    <Profiler
+      id="stage-counted-view"
+      onRender={() => {
+        countedDraws += 1;
+      }}
+    >
+      <div aria-label={CONTROL_LABELS.tree} role="tree">
+        <div aria-level={1} data-node-row="" role="treeitem" tabIndex={0}>
+          The first row.
+        </div>
+      </div>
+    </Profiler>
+  );
+}
+
+/** The stage with `CountedView` as its Decisions view, under the page's providers. */
+function CountedStage({ issue }: { issue: IssueDetails }): ReactNode {
+  const { pathname, search } = useLocation();
+  const route = parseIssuePath(pathname, search);
+  if (route === undefined) throw new Error(`${pathname} names no route`);
+  return (
+    <ProvidersSlot issue={issue} route={route}>
+      <StageSlot issue={issue} route={route} views={{ ...VIEW_SLOTS, decisions: CountedView }} />
+    </ProvidersSlot>
+  );
+}
+
+// `StageSlot` observes no read directly: `TellWhenSettled` watches `useReadsSettled` in a leaf
+// that draws nothing, so once the view has drawn, a refetch of the tree read does not render the
+// stage again.
+test("a refetch of the tree read after the view has drawn does not render the stage again", async () => {
+  restore = stubReads();
+  const tree = (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+    treeOf(commentNodes(TWO_THREADS))
+  );
+  const client = newClient();
+  countedDraws = 0;
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath(KEY, "decisions")]}>
+      <AppProviders client={client}>
+        <CountedStage issue={issueDetails()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => {
+      expect(
+        view.container.querySelector("[data-node-row]"),
+        "the view drew no row"
+      ).not.toBeNull();
+      expect(client.isFetching(), "a read of the load is still out").toBe(0);
+    });
+    await waitInAct(50);
+    const callsBefore = tree.mock.calls.length;
+    const drawsBefore = countedDraws;
+    expect(drawsBefore, "the stage's view never drew").toBeGreaterThan(0);
+    await act(() =>
+      client.refetchQueries({ queryKey: outlineQuery(KEY, "conversation").queryKey })
+    );
+    await waitFor(() =>
+      expect(tree.mock.calls.length, "the tree read did not refetch").toBeGreaterThan(callsBefore)
+    );
+    await waitFor(() => expect(client.isFetching(), "the refetch is still out").toBe(0));
+    await waitInAct(50);
+    expect(countedDraws - drawsBefore, "a tree refetch rendered the stage again").toBe(0);
+  } finally {
+    view.unmount();
+    client.clear();
   }
 });

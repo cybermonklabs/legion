@@ -709,7 +709,8 @@ type ReviewableChange = Partial<
  * header's count (`waiting.ts`) and the count of the Decisions view's review list, where it
  * stands drawn with the mark (`decisions-filter/decisions-parts.ts`' `reviewWaiting`), leave it
  * out of what waits, and the page reads the next pages and then the older comment pages for it
- * once it has drawn (`tree-read/tree-read.ts`' `useReadUnloadedPages`).
+ * once the stage's view has drawn (`tree-read/tree-read.ts`' `useTellViewDrawn`,
+ * `useReadUnloadedPages`).
  */
 export function changeUnread(
   decision: ReviewableChange,

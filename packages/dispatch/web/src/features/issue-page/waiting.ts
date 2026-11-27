@@ -43,12 +43,12 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * of a document and no comment list of its own. A Change may stand on a page of either read the
  * page has not loaded, a next page or an older comment page: a marked decision (`changeUnread`)
  * is not counted until those pages resolve it (decisions 563 (4) and 574 (B)), which the header
- * reads, the next pages and then the older comment pages of the read it counts, once the page's
- * view has drawn (`tree-read/tree-read.ts`' `useReadUnloadedPages`), as `unread` says. A Change
- * on a decision past Conversation's pages can still be read with its decision. A marked decision
- * that its ties put on the review list may wait on the reader once those pages are read, so
- * while one does the count is not shown as final: it takes "+" (`WaitingOnReader.mayWait`,
- * decisions 580 and 583 (1)), and the "+" goes once none is marked.
+ * reads, the next pages and then the older comment pages of the read it counts, once the stage's
+ * view has drawn (`tree-read/tree-read.ts`' `useTellViewDrawn`, `useReadUnloadedPages`), as
+ * `unread` says. A Change on a decision past Conversation's pages can still be read with its
+ * decision. A marked decision that its ties put on the review list may wait on the reader once
+ * those pages are read, so while one does the count is not shown as final: it takes "+"
+ * (`WaitingOnReader.mayWait`, decisions 580 and 583 (1)), and the "+" goes once none is marked.
  * A Change its author deleted asks nothing any more, as in the outline: the same
  * answer's comment nodes carry their author's marks, which say which were (`treeComments`,
  * `deletedPostIds`).

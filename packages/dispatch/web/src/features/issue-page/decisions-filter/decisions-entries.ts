@@ -39,9 +39,10 @@ import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./deci
  * under its node (`decision-review.ts`' `decisionNodeChanges`), and no quote is matched for it.
  * Either read can omit a Change, on a next page or an older comment page it has not loaded. A
  * decision that may have one (`changeUnread`) stays in the review list with "+" and is excluded
- * from the count until those pages resolve it. After the first drawing, the seam reads those
- * pages, the next pages and then the older comment pages, from the same read as its decisions
- * (`useReadUnloadedPages`, decisions 563 (4) and 574 (B)).
+ * from the count until those pages resolve it. After the stage's view has drawn
+ * (`useTellViewDrawn`), the seam reads those pages, the next pages and then the older comment
+ * pages, from the same read as its decisions (`useReadUnloadedPages`, decisions 563 (4) and
+ * 574 (B)).
  * The same read answers on each comment node what its author did to it (`treeComments`):
  * which Changes their author deleted (`deletedPostIds`), and when its author last edited a
  * Change, which its row draws. A view that holds no decision gives none, and no error.
