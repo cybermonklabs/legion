@@ -29,7 +29,10 @@ func baseSHAOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string,
 // base branch was at with the name: the `pull_request` envelope's base_sha, and base.sha of a
 // read of the pull request, here the read-through a recorded result makes. A later envelope that
 // carries another base revision stores it, and one that carries none, as an envelope of a
-// publisher older than the field, stores the revision as not known.
+// publisher older than the field sends, keeps the revision stored: the check states settler's
+// read of the pull request finds a base branch that moved since (delivery.CommitMembership.Stale),
+// and decides nothing on it, so a revision kept costs nothing, where a revision lost leaves every
+// candidate of the pull request unread until a reconcile stores one again.
 func TestEachWriterStoresTheBaseRevisionGitHubSent(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -77,8 +80,8 @@ func TestEachWriterStoresTheBaseRevisionGitHubSent(t *testing.T) {
 		t.Fatalf("a later envelope of #31 leaves the base revision %q, want %s: the base branch moved", got, baseLater)
 	}
 	envelope("", "2026-02-05T00:02:00Z")
-	if got := baseSHAOf(t, ctx, pool, "acme/gadgets", 31); got != "" {
-		t.Fatalf("an envelope that names no base revision leaves %q on #31, want none: the base branch may have moved since %s", got, baseLater)
+	if got := baseSHAOf(t, ctx, pool, "acme/gadgets", 31); got != baseLater {
+		t.Fatalf("an envelope that names no base revision leaves %q on #31, want %s, the revision stored before", got, baseLater)
 	}
 
 	if _, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, client, nil, "acme/gadgets", sha, time.Now()); err != nil {
