@@ -1025,10 +1025,18 @@ export function createLegionTool(deps: {
         "fresh_session (issue, role) starts one agent again in a new session, leaving behind the session it ran in: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the agent, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-        "The answer is empty when the agent came back and nothing else is to be said. phaseNotRestarted says why nothing " +
+        "The answer is empty when the agent came back and its start is under way or queued: the daemon answers once it has " +
+        "written the agent's claim launching, or once it has queued the start of the agent's phase, which runs at once while " +
+        "the issue holds its admission slot, and read_state shows how the start ended, running or failed with the start's failure. " +
+        "phaseNotRestarted says why nothing " +
         "restarted the agent's phase, where the agent came back owing no task and the workflow refused that restart: the " +
-        "agent is running, and no work was handed to it. It says what was refused, where this request stopped the agent " +
-        "and a step that would have started it again was refused, and the state its claim stands in after that: read that state " +
+        "agent is running, and no work was handed to it. It names a start that waits for an admission slot, where the issue " +
+        "holds none while its phase keeps one, and the issues the issue waits on: a suspended agent runs again at once and " +
+        "only its phase's task waits, and a failed or retired agent's claim stays failed or retired, with its session " +
+        "forgotten, until the slot comes; ask for nothing more of it. It names a start refused after the session was " +
+        "forgotten, which leaves the agent's claim failed, retired or suspended with no session. It says what was refused, " +
+        "where this request stopped the agent and a step that would have started it again was refused, and the state its " +
+        "claim stands in after that: read that state " +
         "in read_state, and ask for a fresh session again only where the claim is suspended. " +
         "It reaches an agent whose claim is stored working and that no process stands behind: the daemon reads that agent's " +
         "process when the request arrives, suspends the agent where it stands, and starts it again with the task its dead turn held. " +
@@ -1045,7 +1053,9 @@ export function createLegionTool(deps: {
         "whose suspension outranks yours, landed or waiting for a turn to end: the operator's, which only the operator " +
         "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the agent over while the request " +
         "runs ends it with the same code, after your own suspension of the agent ran: the agent keeps the session its " +
-        "claim recorded. " +
+        "claim recorded. The one exception is a fresh_session of an agent that was suspended before it, whose session " +
+        "was already left behind when that suspension refused its resume: the answer is a success with the refusal, " +
+        "naming the operator's command, in phaseNotRestarted. " +
         "compact (issue, role) shortens one agent's session instead: the daemon has Oh My Pi write a text summary of the " +
         "session so far, and the agent keeps its session, its workspace and everything it knows of its issue and is sent " +
         "whatever task it owes again. Try compact first for an agent whose session a provider keeps refusing, and " +
@@ -1075,19 +1085,24 @@ export function createLegionTool(deps: {
         "it instead. " +
         "retry starts an agent that failed, or that a stop retired, again in the session its claim recorded, with " +
         "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
-        "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
+        "phase's work, and the answer can show it failed or retired until that start runs. Where that start waits " +
+        "for an admission slot its issue does not hold, the answer's phaseNotRestarted says so, naming the issues " +
+        "its issue waits on, and the agent stays failed or retired until the slot comes. The daemon refuses " +
         "retry for an agent whose claim is stored working (CLAIM_IN_A_TURN) and for a suspended agent: resume_agent that agent instead, unless the operator suspended it. " +
         "suspend stops the agent and keeps its session and the task it owes. An agent in a turn " +
         "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
         "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the agent " +
         "again until your resume_agent or the operator's legion claims resume. " +
-        "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes. " +
+        "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes; " +
+        "it answers once that start is under way, with the claim launching, and read_state shows how the start ended. " +
         "The daemon refuses resume_agent for an agent whose claim is stored working (CLAIM_IN_A_TURN). " +
         "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for an agent the operator suspended, or whose " +
         "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of its " +
         "claim's state, and the request leaves the agent as it was, but where fresh_session's own suspension of the " +
         "agent ran first, or where fresh_session left behind the session its claim recorded, so the agent starts in a " +
         "new session once it is started: only the operator lifts the operator's suspension, so ask the operator. " +
+        "Where fresh_session had left that session behind before the operator's suspension refused its resume, the answer " +
+        "is a success, not SUSPENDED_BY_OPERATOR, with that refusal in phaseNotRestarted. " +
         "The controller's compact is not refused the operator's suspension, and refuses such an agent " +
         "in its own codes. The four " +
         "refuse role controller as fresh_session and compact do. " +
