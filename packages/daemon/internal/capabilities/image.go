@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"golang.org/x/sys/unix"
 )
 
 // Image is what the image-site checks read.
@@ -629,13 +630,29 @@ func (img Image) run(ctx context.Context, name string, args ...string) ran {
 func (img Image) runWithin(ctx context.Context, budget time.Duration, name string, args ...string) ran {
 	attempt, cancel := context.WithTimeoutCause(ctx, budget, errCommandTimeout)
 	defer cancel()
+	// CONTROL ONLY: a kill planted at the leader's exit. The budget is passed, with its own cause,
+	// as soon as the command's own process has exited (waitid with WNOWAIT, which reaps nothing),
+	// and Wait runs only once procgroup's stop has gone to what is left of the group.
+	attempt, pass := context.WithCancelCause(attempt)
+	defer pass(nil)
 	cmd := exec.CommandContext(attempt, name, args...)
 	cmd.Env = img.Env
 	cmd.Dir = img.WorkDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	killed := procgroup.Configure(cmd)
-	err := cmd.Run()
+	stopped := make(chan struct{})
+	stop := cmd.Cancel
+	cmd.Cancel = func() error { defer close(stopped); return stop() }
+	err := cmd.Start()
+	if err == nil {
+		var info unix.Siginfo
+		for errors.Is(unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil), unix.EINTR) {
+		}
+		pass(errCommandTimeout)
+		<-stopped
+		err = cmd.Wait()
+	}
 	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
