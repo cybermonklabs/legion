@@ -379,48 +379,61 @@ func VisibilityGraphQLArgs(slug string) []string {
 // ghReadEnv is what each of the guard's gh reads of slug carries beyond the guard's own names:
 // VisibilityReadVar, which `legion gh` lets exactly these reads through by; GH_HOST, which names
 // the host for a gh that has no configuration of its own to read it from, beside the --hostname
-// the argv already carries; and NO_COLOR=1 with CLICOLOR_FORCE=0, which keep gh's output plain. A
-// caller's CLICOLOR_FORCE=1 makes gh 2.98.0 colour the --include headers and the JSON body, and
-// neither read could then be read.
+// the argv already carries; NO_COLOR=1 with CLICOLOR_FORCE=0, which keep gh's output plain; and an
+// empty GH_DEBUG, which turns gh's debug output off. A caller's CLICOLOR_FORCE=1 makes gh 2.98.0
+// colour the --include headers and the JSON body, and neither read could then be read. A caller's
+// GH_DEBUG=api, or DEBUG=api, made gh 2.98.0 write 192 lines of its request and of GitHub's answer
+// on standard error, and an empty GH_DEBUG in gh's own environment turned that off under either
+// (measured on 2026-11-27). Each read takes its answer from standard output alone, so those lines
+// would change no answer, but the REST read takes a failure on gh's connection from standard
+// error, where it must be the one line there (ghTransportFailure): under a caller's GH_DEBUG that
+// failure would be refused, where without it the read goes on to curl.
 func ghReadEnv(slug string) []string {
-	return []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0"}
+	return []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0", "GH_DEBUG="}
 }
 
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its
 // own. gh runs under a bound of the guard's own (ghReadContext), which leaves part of the caller's
-// bound to the read through curl. A rate limit is a *rateLimitError. A failure on gh's connection
-// to GitHub with no answer from GitHub is a *transportError: one gh reports (ghTransportFailure),
-// or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A gh
-// that exited non-zero after GitHub's status line 404, and was no rate limit, is a *notFoundError.
-// A gh that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
-// another read.
+// bound to the read through curl. Its standard error is read apart from its standard output, as
+// the GraphQL read's is: the answer, its status line, its headers and its body, is read from
+// standard output alone, where --include writes them, so the diagnostics a caller's setting makes
+// gh write on standard error change no answer; a failure gh or `legion gh` reports on standard
+// error is read from there; and every error that quotes what gh printed quotes its standard error.
+// A rate limit is a *rateLimitError. A failure on gh's connection to GitHub with no answer from
+// GitHub is a *transportError: one gh reports (ghTransportFailure), or a stop by the guard's own
+// bound before GitHub sent a status line (ghStoppedByItsBound). A gh that exited non-zero after
+// GitHub's status line 404, and was no rate limit, is a *notFoundError. A gh that the caller's
+// bound stopped is the *stoppedError run answers, since no bound is left for another read.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	bounded, cancel := ghReadContext(ctx)
 	defer cancel()
+	var stderr bytes.Buffer
 	status, printed, err := g.run(bounded, child{
-		argv: append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
-		env:  ghReadEnv(slug),
+		argv:   append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
+		env:    ghReadEnv(slug),
+		stderr: &stderr,
 	})
+	said := stderr.String()
 	if err != nil {
-		if unreached := ghStoppedByItsBound(ctx, err, printed); unreached != nil {
+		if unreached := ghStoppedByItsBound(ctx, err, printed, said); unreached != nil {
 			return "", unreached
 		}
-		return "", procgroup.Said(err, printed)
+		return "", procgroup.Said(err, said)
 	}
 	if limited := rateLimitFrom(printed); limited != nil {
 		return "", limited
 	}
-	if unreached := ghTransportFailure(status, printed, slug); unreached != nil {
+	if unreached := ghTransportFailure(status, printed, said, slug); unreached != nil {
 		return "", unreached
 	}
 	if status != 0 {
-		if unserved := g.unservedOwner(status, printed, slug); unserved != nil {
+		if unserved := g.unservedOwner(status, printed, said, slug); unserved != nil {
 			return "", unserved
 		}
 		if httpStatus, _ := responseHeaders(printed); httpStatus == http.StatusNotFound {
 			return "", &notFoundError{slug: slug}
 		}
-		return "", fmt.Errorf("gh api repos/%s exited %d: %s", shownText(slug), status, strings.TrimSpace(printed))
+		return "", fmt.Errorf("gh api repos/%s exited %d: %s", shownText(slug), status, strings.TrimSpace(said))
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(visibilityBody(printed)))); visibility {
 	case Public, Private, Internal:
@@ -454,19 +467,21 @@ func ownerNotServedLine(owner, ownersDir string) string {
 	return "legion gh: " + (&OwnerNotServedError{Owner: owner, OwnersDir: ownersDir}).Error()
 }
 
-// unservedOwner is gh's answer to the guard's REST read of slug, its exit status and everything it
-// printed, read as the refusal `legion gh` makes of a repository whose owner the project's gh
-// bundle holds no directory for (OwnerNotServedError), and nil for any other answer. That refusal
-// is exit 2, runGh's status for a call it refuses before gh runs, and one line with nothing
-// before or after it (ownerNotServedLine): `legion gh: ` and OwnerNotServedError's words for
-// slug's owner, lowercased as `legion gh` names it, and for the bundle LEGION_GH_OWNERS_DIR names
-// in the guard's environment, which is the environment gh ran with. Anything else says nothing of
-// the owner and stays the failure it was: another refusal of `legion gh`, these words for another
-// owner or another bundle, these words beside other words in one line (the refusal of a
-// configured rename whose new owner the bundle holds no directory for, cmd/legion's
-// ghConfigDirFor), these words beside other output, and these words under another exit status.
-func (g *Guard) unservedOwner(status int, printed, slug string) *unservedOwnerError {
-	if status != 2 {
+// unservedOwner is gh's answer to the guard's REST read of slug, its exit status and what it
+// printed on its standard output and on its standard error, read as the refusal `legion gh` makes
+// of a repository whose owner the project's gh bundle holds no directory for
+// (OwnerNotServedError), and nil for any other answer. That refusal is exit 2, runGh's status for
+// a call it refuses before gh runs, nothing on standard output, and one line on standard error
+// with nothing before or after it (ownerNotServedLine): `legion gh: ` and OwnerNotServedError's
+// words for slug's owner, lowercased as `legion gh` names it, and for the bundle
+// LEGION_GH_OWNERS_DIR names in the guard's environment, which is the environment gh ran with.
+// Anything else says nothing of the owner and stays the failure it was: another refusal of
+// `legion gh`, these words for another owner or another bundle, these words beside other words in
+// one line (the refusal of a configured rename whose new owner the bundle holds no directory for,
+// cmd/legion's ghConfigDirFor), these words beside other output on either stream, and these words
+// under another exit status.
+func (g *Guard) unservedOwner(status int, stdout, stderr, slug string) *unservedOwnerError {
+	if status != 2 || stdout != "" {
 		return nil
 	}
 	ownersDir := value(g.base(), "LEGION_GH_OWNERS_DIR")
@@ -475,7 +490,7 @@ func (g *Guard) unservedOwner(status int, printed, slug string) *unservedOwnerEr
 	}
 	owner, _, _ := strings.Cut(slug, "/")
 	owner = strings.ToLower(owner)
-	if printed != ownerNotServedLine(owner, ownersDir)+"\n" {
+	if stderr != ownerNotServedLine(owner, ownersDir)+"\n" {
 		return nil
 	}
 	return &unservedOwnerError{slug: slug, owner: owner, ownersDir: ownersDir}
@@ -801,11 +816,12 @@ func (e *rateLimitError) Error() string {
 
 // rateLimitFrom is the rate limit the REST read's --include output, printed, reports, and nil
 // where it reports none, read from the error response alone with internal/githubrest's model
-// (githubrest.Limit): its status line, its headers and its body's message, never gh's own line.
-// A 429 is a limit, and so is a 403 with X-RateLimit-Remaining: 0, a Retry-After, or a message
-// naming the secondary limit or GitHub's abuse detection mechanism. The limit is the secondary
-// one where the message names it, whatever X-RateLimit-Remaining says, or where the response has a
-// Retry-After or leaves requests, and the core limit otherwise.
+// (githubrest.Limit): its status line, its headers and its body's message. printed is the read's
+// standard output, where gh and curl write those three; gh's own line goes to standard error,
+// which this never reads. A 429 is a limit, and so is a 403 with X-RateLimit-Remaining: 0, a
+// Retry-After, or a message naming the secondary limit or GitHub's abuse detection mechanism. The
+// limit is the secondary one where the message names it, whatever X-RateLimit-Remaining says, or
+// where the response has a Retry-After or leaves requests, and the core limit otherwise.
 func rateLimitFrom(printed string) *rateLimitError {
 	status, headers := responseHeaders(printed)
 	var body struct {
@@ -826,6 +842,10 @@ func rateLimitFrom(printed string) *rateLimitError {
 	return &rateLimitError{}
 }
 
+// responseHeaders is the HTTP status and the headers, each name lowercased, of the first status
+// line printed holds and the lines after it up to the first blank one: the answer a read's
+// --include output prints on standard output. A status line it cannot read is 0 with no headers,
+// and so is output that holds none.
 func responseHeaders(printed string) (int, map[string]string) {
 	lines := strings.Split(strings.ReplaceAll(printed, "\r\n", "\n"), "\n")
 	for i, line := range lines {
@@ -855,6 +875,9 @@ func responseHeaders(printed string) (int, map[string]string) {
 	return 0, map[string]string{}
 }
 
+// visibilityBody is the body of the answer printed holds, what follows the blank line after its
+// status line and its headers on a read's standard output, and printed whole where no status line
+// with a blank line after it is there.
 func visibilityBody(printed string) string {
 	lines := strings.Split(strings.ReplaceAll(printed, "\r\n", "\n"), "\n")
 	for i, line := range lines {

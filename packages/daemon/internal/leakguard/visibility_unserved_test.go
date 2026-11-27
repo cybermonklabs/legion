@@ -134,16 +134,20 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 	renameRefusal := "legion gh: the configured rename invented-org/invented-repo -> moved-org/invented-repo serves invented-org/invented-repo " +
 		"from moved-org's gh directory, and " + (&OwnerNotServedError{Owner: "moved-org", OwnersDir: owners}).Error() +
 		"; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it"
-	notFound := []string{"HTTP/2.0 404 Not Found", "", `{"message":"Not Found","status":"404"}`, "gh: Not Found (HTTP 404)"}
+	// GitHub's 404 as gh prints it: the status line and the body on standard output, and gh's own
+	// line on standard error (testdata/gh-rest-read/not-found).
+	notFound := printsResponse("HTTP/2.0 404 Not Found", nil, `{"message":"Not Found","status":"404"}`)
 	for _, tc := range []struct {
 		name string
-		// slug is the repository read, theRepo where it is empty; exit and lines are what the
-		// stand-in gh exits with and prints; env is what the guard's environment holds beyond the
-		// test's own, LEGION_GH_OWNERS_DIR=owners where it is nil.
-		slug  string
-		exit  int
-		lines []string
-		env   []string
+		// slug is the repository read, theRepo where it is empty; exit, stdout and lines are what
+		// the stand-in gh exits with, prints on standard output (sh that prints it) and prints on
+		// standard error; env is what the guard's environment holds beyond the test's own,
+		// LEGION_GH_OWNERS_DIR=owners where it is nil.
+		slug   string
+		exit   int
+		stdout string
+		lines  []string
+		env    []string
 		// public is whether the read answers public through ls-remote; a read that does not fails
 		// saying `gh api repos/<slug> <fails>`, or says where it is set.
 		public bool
@@ -170,7 +174,7 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 			name: "the refusal of a configured rename whose new owner has no directory", exit: 2,
 			lines: []string{renameRefusal}, fails: "exited 2: " + renameRefusal,
 		},
-		{name: "GitHub's own 404", exit: 1, lines: notFound, says: "GitHub answers 404 for " + theRepo},
+		{name: "GitHub's own 404", exit: 1, stdout: notFound, lines: []string{"gh: Not Found (HTTP 404)"}, says: "GitHub answers 404 for " + theRepo},
 		{name: "the refusal where no bundle is named", exit: 2, lines: []string{theRefusal}, env: []string{"LEGION_GH_OWNERS_DIR="}, fails: "exited 2: " + theRefusal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,7 +185,7 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 			}
 			bin, records := t.TempDir(), t.TempDir()
 			reads, record := filepath.Join(records, "reads"), filepath.Join(records, "git")
-			writeProgram(t, bin, "gh", ghAnswers(reads, tc.exit, tc.lines...))
+			writeProgram(t, bin, "gh", tc.stdout+ghAnswers(reads, tc.exit, tc.lines...))
 			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
 			visibility, err := New(Options{
 				Env: append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()), env...),

@@ -63,26 +63,30 @@ var ghTransportFailures = []string{
 }
 
 // ghTransportFailure is the transport failure that gh's REST read of slug reports, where gh exited
-// with status after it printed printed, and nil for any other outcome. It is one only where all of
-// these hold:
+// with status after it printed stdout on its standard output and stderr on its standard error,
+// and nil for any other outcome. It is one only where all of these hold:
 //
 //   - gh exited non-zero;
-//   - gh printed exactly one line, `Get "https://api.github.com/repos/<slug>": <cause>`, the form
-//     of Go's error for the request itself (net/url's Error), naming this read's own URL. So gh
-//     printed no status line, and GitHub sent no response: with --include, gh prints the status
-//     line of every response, an error response included, on a line of its own;
+//   - gh printed nothing on standard output, so no status line, and GitHub sent no response: with
+//     --include, gh prints the status line of every response there, an error response included;
+//   - gh printed exactly one line on standard error, `Get "https://api.github.com/repos/<slug>":
+//     <cause>`, the form of Go's error for the request itself (net/url's Error), naming this
+//     read's own URL;
 //   - and the cause ends with one of ghTransportFailures.
 //
-// gh 2.98.0 printed exactly that line, and exited 1, for a TLS handshake that never finished, for
-// a connection reset after the proxy's tunnel opened, and for a proxy that refused the connection
-// (measured on 2026-11-18 through a local proxy). Every other outcome stays what it was: a GitHub
-// error body, a 404, a 403 that is not a rate limit, a malformed answer, a refusal by `legion gh`,
-// and a failed DNS lookup, which gh prints as `error connecting to api.github.com`.
-func ghTransportFailure(status int, printed, slug string) *transportError {
-	if status == 0 {
+// gh 2.98.0 printed exactly that line on standard error, nothing on standard output, and exited 1,
+// for a TLS handshake that never finished, for a connection reset after the proxy's tunnel opened,
+// and for a proxy that refused the connection (measured on 2026-11-18 through a local proxy, and
+// the last again on 2026-11-27, testdata/gh-rest-read/transport). Every other outcome stays what it
+// was: a GitHub error body, a 404, a 403 that is not a rate limit, a malformed answer, a refusal by
+// `legion gh`, and a failed DNS lookup, which gh prints as `error connecting to api.github.com`. A
+// debug line gh wrote beside that line would make it no transport failure, which is why the REST
+// read runs with GH_DEBUG empty (ghReadEnv).
+func ghTransportFailure(status int, stdout, stderr, slug string) *transportError {
+	if status == 0 || strings.TrimSpace(stdout) != "" {
 		return nil
 	}
-	line := strings.TrimSpace(printed)
+	line := strings.TrimSpace(stderr)
 	if strings.ContainsAny(line, "\r\n") {
 		return nil
 	}
@@ -145,22 +149,24 @@ func stoppedByItsOwnBound(ctx context.Context, err error) (*stoppedError, bool) 
 }
 
 // ghStoppedByItsBound is the transport failure of a gh REST read that the guard's own bound
-// (ghReadContext) stopped: err is run's error, printed what gh printed before the stop, and ctx the
-// caller's context. It is one only where the stop was the guard's own bound (stoppedByItsOwnBound)
-// and where gh printed no status line, so GitHub sent no response. Anything else is nil: a stop by
-// the caller's deadline or by its cancel stays the error it is, since no bound is left for another
-// read, and so does a gh that heard GitHub's status line and then hung.
-func ghStoppedByItsBound(ctx context.Context, err error, printed string) *transportError {
+// (ghReadContext) stopped: err is run's error, stdout and stderr what gh printed on its standard
+// output and on its standard error before the stop, and ctx the caller's context. It is one only
+// where the stop was the guard's own bound (stoppedByItsOwnBound) and where gh printed no status
+// line on standard output, so GitHub sent no response. It names the stop and what gh said on
+// standard error. Anything else is nil: a stop by the caller's deadline or by its cancel stays the
+// error it is, since no bound is left for another read, and so does a gh that heard GitHub's
+// status line and then hung.
+func ghStoppedByItsBound(ctx context.Context, err error, stdout, stderr string) *transportError {
 	stopped, own := stoppedByItsOwnBound(ctx, err)
 	if !own {
 		return nil
 	}
-	if httpStatus, _ := responseHeaders(printed); httpStatus != 0 {
+	if httpStatus, _ := responseHeaders(stdout); httpStatus != 0 {
 		return nil
 	}
 	message := stopped.Error()
-	if line := strings.TrimSpace(printed); line != "" {
-		message += ": " + line
+	if said := strings.TrimSpace(stderr); said != "" {
+		message += ": " + said
 	}
 	return &transportError{program: "gh", said: message}
 }

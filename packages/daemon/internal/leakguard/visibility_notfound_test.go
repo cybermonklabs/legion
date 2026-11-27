@@ -146,10 +146,16 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 	}
 }
 
-// Every other failure of the REST visibility read stays the setup failure it was, with the words
-// it had: a 500 that gh reads (leakguardtest.GhReadServerError), which runs no other read, and a
-// 500 that curl reads after gh could not reach GitHub, which runs no ls-remote.
+// Every other failure of the REST visibility read stays the setup failure it was: a 500 that gh
+// reads (leakguardtest.GhReadServerError), which runs no other read and quotes gh's own line, and
+// a 500 that curl reads after gh could not reach GitHub, which runs no ls-remote.
 func TestAVisibilityRead500IsASetupFailure(t *testing.T) {
+	// gh prints the answer on standard output and its own line on standard error, as it printed
+	// the 404 (testdata/gh-rest-read/not-found), so the stand-in prints GhReadServerError so too:
+	// the guard quotes gh's standard error alone.
+	const serverErrorLine = "gh: Server Error (HTTP 500)"
+	ghServerError := "printf '%s' " + shQuote(strings.TrimSuffix(leakguardtest.GhReadServerError, serverErrorLine+"\n")) + "\n" +
+		printsToStderr(serverErrorLine) + "exit 1\n"
 	for _, tc := range []struct {
 		name       string
 		rest, curl string
@@ -159,8 +165,8 @@ func TestAVisibilityRead500IsASetupFailure(t *testing.T) {
 		curlRuns int
 	}{
 		{
-			name: "gh's REST read", rest: ghPrints(leakguardtest.GhReadServerError), curl: curlAnswers("private"),
-			says: []string{"gh api repos/" + theRepo + " exited 1: HTTP/2.0 500 Internal Server Error"},
+			name: "gh's REST read", rest: ghServerError, curl: curlAnswers("private"),
+			says: []string{"gh api repos/" + theRepo + " exited 1: " + serverErrorLine},
 		},
 		{
 			name: "the curl read after gh could not reach GitHub", rest: ghTLSTimeout, curl: curlServerError,

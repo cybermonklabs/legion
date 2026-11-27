@@ -427,11 +427,13 @@ type child struct {
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
 	files []*os.File
 	// stderr, where it is not nil, takes the child's standard error apart from the standard
-	// output run answers, which the GraphQL visibility read needs to read gh's body alone
-	// (Guard.graphQLVisibility), the read through curl to read curl's answer alone
-	// (Guard.CurlGet), the token read to quote gh's error without its output
-	// (Guard.ghToken), and a git read of a push's records to quote git's error without the push's
-	// content (Guard.git). Nil answers the two together.
+	// output run answers, so that what a read parses is the child's answer alone and a program's
+	// own diagnostics (GH_DEBUG, GIT_TRACE) cannot change it: the REST and GraphQL visibility
+	// reads read gh's answer alone (Guard.ghVisibility, Guard.graphQLVisibility), the read through
+	// curl curl's answer alone (Guard.CurlGet), the token read quotes gh's error without its output
+	// (Guard.ghToken), a git read of a push's records quotes git's error without the push's content
+	// (Guard.git), and the hook's read of git's own exec path reads git's answer alone
+	// (Guard.StaysLocal). Nil answers the two together.
 	stderr io.Writer
 }
 
