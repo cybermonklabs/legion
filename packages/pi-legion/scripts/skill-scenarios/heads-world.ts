@@ -52,16 +52,25 @@ const ciCheckWorld = (world: string) => /(^|-)ci-check-fail(-other-head)?$/.test
  * printed as `grep -cE 'widgets command'`, a command that prints 0 at the head, and a reviewer of
  * the body that holds that line requested changes on it. */
 export const K1_RUN = "grep -cE 'widgets --help. to list every command' docs/usage.md";
+/** The page #702 adds, which rig.sh's heads_fixture writes from the fixture. Where R1 asks the page
+ * to list each command `widgets --help` lists (the worlds of k2 or k3), it names three of the four
+ * commands the failed CI job's log names (rig-world.json): the miss is export, which only that
+ * job's log and the check's state show, never the three-line diff alone. Elsewhere nothing in the
+ * world names a command, so the page names none. k1's run counts the line of either page. */
+export const USAGE_PAGE = "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n";
+export const USAGE_PAGE_LISTED =
+  "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI: `add`, `list` and `remove`.\n";
 const HandoffRef = z.object({ id: z.string(), version: z.number().int() });
 /** What `heads-issue` writes, and `heads-events` and rig.sh's heads scenarios read: the run's issue,
- * its title and its Verification document, and once `heads-events` recorded them, its handoff
- * records and, by pull request number, the line of k1 that pull request's body carries: the line
- * Dispatch answered for the newest pass recorded at its head, or for the tester's fail at #703 in
- * sibling-fails. */
+ * its title, its Verification document and the page #702 adds, and once `heads-events` recorded
+ * them, its handoff records and, by pull request number, the line of k1 that pull request's body
+ * carries: the line Dispatch answered for the newest pass recorded at its head, or for the tester's
+ * fail at #703 in sibling-fails. */
 const HeadsFixture = z.object({
   issue: z.string(),
   title: z.string(),
   verification: z.string(),
+  page: z.string(),
   implement: HandoffRef.optional(),
   test: HandoffRef.optional(),
   review: HandoffRef.optional(),
@@ -128,7 +137,8 @@ async function agentPut(route: string, input: Record<string, unknown>): Promise<
  * delivery settings are written, as scripts/e2e/verification-results.ts writes them, since the
  * intake takes an event only while a settings row exists; then the issue, its spec, and its
  * Verification document, whose one check k1 carries `ci_check` in the case ci-only and in
- * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads. */
+ * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads,
+ * and the page #702 adds (USAGE_PAGE or USAGE_PAGE_LISTED), which heads_fixture writes. */
 export async function headsIssue(file: string, world: string): Promise<void> {
   await seedGithub({});
   await agentPut("/api/v1/projects/LWEVAL/default-repository", { repo: HEADS_REPO });
@@ -145,11 +155,13 @@ export async function headsIssue(file: string, world: string): Promise<void> {
   // a CI job runs, R1 holds that check's clause too: k1 proves that the page names `widgets
   // --help`, and the CI check that the page lists each command the CLI lists. R1 asking less than
   // the CI check asks let a role read the failing job as asking more than the issue does, and
-  // judge the round by that reading rather than by the rule its case measures.
-  const requirement =
-    ciCheckWorld(world) || testerWorld(world)
-      ? "**R1.** `docs/usage.md` names `widgets --help` and lists each command it lists. From: the issue."
-      : "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue.";
+  // judge the round by that reading rather than by the rule its case measures. The one flag
+  // chooses the page too: a page listing commands where nothing in the world names one states a
+  // list nothing supports, which a correct reviewer refuses.
+  const listsCommands = ciCheckWorld(world) || testerWorld(world);
+  const requirement = listsCommands
+    ? "**R1.** `docs/usage.md` names `widgets --help` and lists each command it lists. From: the issue."
+    : "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue.";
   const issue = await createIssue(
     {
       project: "LWEVAL",
@@ -222,6 +234,7 @@ export async function headsIssue(file: string, world: string): Promise<void> {
     issue: issue.key,
     title,
     verification: verification.artifact.id,
+    page: listsCommands ? USAGE_PAGE_LISTED : USAGE_PAGE,
   };
   writeFileSync(file, `${JSON.stringify(fixture)}\n`);
   // The log is the run's fixture.log, which its agent can read: it names no scenario and no case.

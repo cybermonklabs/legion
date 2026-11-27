@@ -25,7 +25,7 @@ import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, workerPane } from "./daemon-pane";
 import { headsCases } from "./heads-scenarios";
-import { K1_RUN } from "./heads-world";
+import { K1_RUN, USAGE_PAGE, USAGE_PAGE_LISTED } from "./heads-world";
 import { RIG_WORLD } from "./rig-world";
 import {
   JUDGE_OMP,
@@ -2892,9 +2892,12 @@ describe("ci_job_results", () => {
 // and heads_fixture's two pull request branches of one issue on it. worker_fixture, the
 // tester-proof world, builds on the same fixture_repo, and keeps its world as it was.
 describe("heads_fixture", () => {
-  function build(fixture: "heads_fixture" | "worker_fixture", page?: string) {
+  /** `fixture` run on a fresh run directory; heads_fixture's with the page seed.ts heads-issue
+   *  writes into $R/fixture.json, USAGE_PAGE (a world with neither k2 nor k3) unless `page` says. */
+  function build(fixture: "heads_fixture" | "worker_fixture", page = USAGE_PAGE) {
     const run = freshDir(`${fixture}-run`);
-    if (page !== undefined) writeFileSync(path.join(run, "fixture.json"), JSON.stringify({ page }));
+    if (fixture === "heads_fixture")
+      writeFileSync(path.join(run, "fixture.json"), JSON.stringify({ page }));
     const result = bash(
       [
         "set -euo pipefail",
@@ -3062,7 +3065,7 @@ describe("heads_fixture", () => {
   // failed (or failed where the case says it passed), a job whose log no read answers, a body that
   // carries k1's line alone, and an architect's world of the other head with #703 left out.
   test("heads_routes of the ci-check-fail worlds serve k2's job where it failed, its log, and both checks' lines", () => {
-    const { code, run } = build("heads_fixture");
+    const { code, run } = build("heads_fixture", USAGE_PAGE_LISTED);
     expect(code).toBe(0);
     const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
     const k1Line = (pr: string) =>
@@ -3155,7 +3158,7 @@ describe("heads_fixture", () => {
   // ended where the case says it still runs), a failed job whose log no read answers, a body that
   // carries k1's line alone, and a second pull request.
   test("heads_routes of tester-reads-no-ci serve #702 alone, k3's job still going in ci-late and failed with its log in ci-red", () => {
-    const { code, run } = build("heads_fixture");
+    const { code, run } = build("heads_fixture", USAGE_PAGE_LISTED);
     expect(code).toBe(0);
     const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
     const k1Line = `- Check k1 (before_merge): pass at ${String(head).slice(0, 12)} (implementer) on #702`;
@@ -3740,13 +3743,14 @@ describe("heads_fixture", () => {
     expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
   }, 600_000);
 
-  // Catches: a page at #702's head that the failed job's log does not describe. The log of k2's
-  // and k3's job says the page names 3 of the 4 commands `widgets --help` lists and leaves out
-  // export, and the page named none of them: the miss was then plain in the three-line diff, so a
-  // role could judge the round from the diff alone, with no state and no CI read, and the case
-  // measured that judgement rather than its rule. k1's run still counts the page's one line.
+  // Catches: a page at #702's head, in the worlds of k2 or k3, that the failed job's log does not
+  // describe. The log of k2's and k3's job says the page names 3 of the 4 commands `widgets --help`
+  // lists and leaves out export, and the page named none of them: the miss was then plain in the
+  // three-line diff, so a role could judge the round from the diff alone, with no state and no CI
+  // read, and the case measured that judgement rather than its rule. k1's run still counts the
+  // page's one line.
   test("the page at #702's head names each command the failed job's log says it names", () => {
-    const { code, run } = build("heads_fixture");
+    const { code, run } = build("heads_fixture", USAGE_PAGE_LISTED);
     expect(code).toBe(0);
     const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
     const page = childSpawn({ ...VCS_COMMAND, part: "git show" }, [
@@ -3771,6 +3775,7 @@ describe("heads_fixture", () => {
     for (const command of listed.filter((name) => name !== missing))
       expect(page).toContain(`\`${command}\``);
     expect(page).not.toContain(missing);
+    expect(page).toBe(USAGE_PAGE_LISTED);
     // k1's run, which no CI job runs, still counts the page's line at that head. The fixture's
     // workspace stands on #703, which carries no page, so the run reads the head's own bytes in a
     // copy of its own.
@@ -3789,8 +3794,7 @@ describe("heads_fixture", () => {
   // lists `add`, `list` and `remove` states what nothing in the world supports, and a correct
   // reviewer refused it. #702's page is the one the fixture names, byte for byte.
   test("in a world with neither k2 nor k3, the page at #702's head is the fixture's and names no command", () => {
-    const page = "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n";
-    const { code, run } = build("heads_fixture", page);
+    const { code, run } = build("heads_fixture", USAGE_PAGE);
     expect(code).toBe(0);
     const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
     const shown = childSpawn({ ...VCS_COMMAND, part: "git show" }, [
@@ -3806,7 +3810,7 @@ describe("heads_fixture", () => {
       .filter((command) => command !== "");
     expect(listed.length).toBeGreaterThan(0);
     expect(listed.filter((command) => shown.includes(`\`${command}\``))).toEqual([]);
-    expect(shown).toBe(page);
+    expect(shown).toBe(USAGE_PAGE);
   }, 600_000);
 });
 

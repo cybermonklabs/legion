@@ -9,6 +9,7 @@ import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type * as headsModule from "./heads-world";
+import { HEADS_SCENARIOS, headsCases } from "./heads-scenarios";
 import { RIG_WORLD } from "./rig-world";
 import { TestHandoff } from "./score";
 import { fileRowLimit } from "./test-limit";
@@ -225,12 +226,9 @@ test("architect-pass-and-fail: k1 serves R1, its words are R1's, and its run mat
     writeFileSync(path.join(dir, "docs/usage.md"), text);
     return Bun.spawnSync(["bash", "-c", run], { cwd: dir }).stdout.toString().trim();
   };
-  // The fixture's page (rig.sh heads_fixture), and a line that names the CLI but not R1.
-  expect(
-    grep(
-      "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI: `add`, `list` and `remove`.\n"
-    )
-  ).toBe("1");
+  // Both pages heads-issue gives #702 (rig.sh heads_fixture writes the fixture's), and a line that
+  // names the CLI but not R1.
+  for (const page of [heads.USAGE_PAGE, heads.USAGE_PAGE_LISTED]) expect(grep(page)).toBe("1");
   expect(grep("# Usage\n\nThe widgets CLI has commands.\n")).toBe("0");
 });
 
@@ -374,6 +372,48 @@ test("the worlds that hold k2 or k3: R1 asks what that check asks of the page", 
   expect(r1Of(String(calls.find((call) => call.path === "/api/v1/issues")?.body.spec))).toBe(
     "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue."
   );
+});
+
+// Catches: a page that names commands in a world whose R1 asks for none, as the shared page did in
+// every world with neither k2 nor k3, where nothing names a command; and a page that names none
+// where R1 asks for them and the failed job's log names them. One flag chooses R1 and the page, so
+// in every world of heads-scenarios.txt the page lists commands exactly where the document holds
+// k2 or k3 and R1 asks for the list.
+test("every heads world: the page lists commands exactly where R1 asks for them", async () => {
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  const listing: string[] = [];
+  const worlds: string[] = [];
+  for (const scenarioName of HEADS_SCENARIOS)
+    for (const which of headsCases(scenarioName)) {
+      const scenario = heads.headsWorld(scenarioName, which === "" ? undefined : which);
+      if (scenario === undefined) throw new Error(`no world of ${scenarioName} ${which}`);
+      const calls = stubFetch();
+      const file = path.join(dirOf(`page-${scenario}`), "fixture.json");
+      await heads.headsIssue(file, scenario);
+      const spec = String(calls.find((call) => call.path === "/api/v1/issues")?.body.spec);
+      const content = String(calls.find((call) => call.path.endsWith("/artifacts"))?.body.content);
+      const ciCheck = /:::check\{#k[23] /.test(content);
+      const r1 = spec.split("\n").find((line) => line.startsWith("**R1.**")) ?? "";
+      const { page } = JSON.parse(readFileSync(file, "utf8")) as { page?: string };
+      expect({ scenario, page, asksForTheList: r1.includes("lists each command it lists") }).toEqual({
+        scenario,
+        page: ciCheck ? heads.USAGE_PAGE_LISTED : heads.USAGE_PAGE,
+        asksForTheList: ciCheck,
+      });
+      worlds.push(scenario);
+      if (ciCheck) listing.push(scenario);
+    }
+  // The catalog's 19 worlds were read, and the six of k2 or k3 are the ones whose page lists.
+  expect(worlds).toHaveLength(19);
+  expect(listing.toSorted()).toEqual([
+    "architect-pass-and-fail-ci-check-fail",
+    "architect-pass-and-fail-ci-check-fail-other-head",
+    "ci-check-fail",
+    "ci-check-fail-other-head",
+    "tester-reads-no-ci-ci-late",
+    "tester-reads-no-ci-ci-red",
+  ]);
 });
 
 // Catches: a tester world whose k3 is not CI's (a tester's result of it would then decide it), whose
