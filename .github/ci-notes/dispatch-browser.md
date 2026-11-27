@@ -15,7 +15,8 @@ Every browser job of the Dispatch suite, in one place. ci.yaml calls it from thr
 with a literal lane: dispatch-browser-pr with the pull-request lane on a pull request,
 dispatch-browser with the full lane in the merge queue, on a dispatched run and on a pull request
 labelled `full-ci` or `lane:dispatch_browser`, and dispatch-references with the references lane
-on a pull request that changes what the reference rows test; the nightly workflow calls it with
+on a pull request that changes what the reference rows test and whose run does not run that full
+lane; the nightly workflow calls it with
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / real`) and which
 starts every artifact name, so two callers of one run share no artifact but the one build the
@@ -96,7 +97,8 @@ with main's parse-count walk beside them, on the binaries job, the shard job's t
 merge job alone: four jobs, or three when it takes the pull-request lane's build. The full
 lane runs seven and the pull-request lane runs four. The references lane lists 147 rows, so
 a pull request that changes the reference framework gets those rows from CI at its head rather
-than from a run by hand. It gates nothing:
+than from a run by hand. It runs only where its run does not run the full lane, whose `chromium`
+project already holds every one of those rows, and it gates nothing:
 .github/ci-notes/ci.md#the-reference-rows-preview-job
 says why. The lane's spec files are written in one place, the `references)` arm of
 .github/scripts/dispatch-browser-shard-suite.sh, the script the shard job's browser step runs.

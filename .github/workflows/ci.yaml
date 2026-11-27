@@ -637,7 +637,7 @@ jobs:
   # why: .github/ci-notes/ci.md#the-reference-rows-preview-job
   dispatch-references:
     needs: [changes, dispatch-browser-pr]
-    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.dispatch_references == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.changes.outputs.dispatch_references == 'true' && needs.changes.outputs.dispatch_browser != 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     permissions:
       contents: read
       actions: read
