@@ -27,6 +27,7 @@ test("print-identity-sources prints the registry", async () => {
     "kubernetes",
     "metadata",
     "pool",
+    "github-actions",
     "device-login",
   ]);
 });

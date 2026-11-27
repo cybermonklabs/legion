@@ -76,6 +76,7 @@ test("IDENTITY_SOURCES names today's values in today's order", () => {
     "kubernetes",
     "metadata",
     "pool",
+    "github-actions",
     "device-login",
   ]);
   // The broker provider whose tokens each source makes, as the server's registry names its kinds;
@@ -84,6 +85,7 @@ test("IDENTITY_SOURCES names today's values in today's order", () => {
     "kubernetes",
     "google",
     "google",
+    "github",
     null,
   ]);
 });
@@ -98,6 +100,11 @@ test("machineIdentity reads each source from the registry", () => {
       AGENT_SECRETS_POOL_AUDIENCE:
         "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/v",
       AGENT_SECRETS_POOL_ACCOUNT: "example-fleet@example-project.iam.gserviceaccount.com",
+    },
+    "github-actions": {
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://actions.example/token?run=1",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: fixtureSecret("actions"),
+      [MACHINE_AUDIENCE_VAR]: "example-audience",
     },
     "device-login": { [BROKER_URL_VAR]: "https://broker.test", HOME: "/home/ada" },
   };
