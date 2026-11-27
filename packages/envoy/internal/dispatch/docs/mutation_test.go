@@ -555,6 +555,7 @@ func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedCon
 // version, so an approval of that version still reads approved. An edit that stays is still
 // versioned.
 func TestSnapshotVersionWritesNoVersionForAnotherRendererVersionsSpellingOfTheSameTree(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	alice := model.Actor{Kind: "user", ID: "alice"}

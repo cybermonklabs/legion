@@ -143,7 +143,9 @@ func heldBlockPlacements(ctx context.Context, q Queryer, refKey string, ids []st
 // appended (graphstore.TupleChangedByRun), a decision's kept_by (the Keep's), a reading's
 // authored_by (PlanDecisionNodes, TypedFacts.indexedFacts) and an ask block copy's copied_from
 // (docs' claimCopies). No block_refs row projects any of them, so no pair of a version writes them
-// and no pass that drops a row retracts them.
+// and the reconcile of the links retracts none of them. A copy's copied_from is retracted where
+// its block goes instead, by the pass that states the block gone (heldCopiedFrom), or, where the
+// version's write deferred that pass, by a settlement's claim if one reads the block's row first.
 type heldLink struct{ kind, toKind, toID string }
 
 // heldLinkKinds is true of a tuple t of a kind a pair of a version writes into block_refs, the
@@ -155,6 +157,47 @@ type heldLink struct{ kind, toKind, toID string }
 // (graphcensus's blockRefKinds and tieKinds).
 func heldLinkKinds(blockRefKinds string) string {
 	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + store.QuoteLiterals(typedKinds) + `))`
+}
+
+// heldCopiedFrom is, for each of ids, blocks of the document refKey names that a version no longer
+// holds, the asks its node states it was copied from now (graphstore.TupleCopiedFrom, read the way
+// the store reads a current relation, graphstore.CurrentTupleRead), by block id, in far-end order.
+// A block whose node states none, or that is no node of the store, is absent. The index pass reads
+// it for the blocks it states gone (PlanBlocks), so a version indexed in its own write - an
+// agent's edit, an upload, a settlement's version - ends the relation of a copy it drops in that
+// write and under the same event: no later write reads that block's row, which the drop deletes,
+// to end it then. A version whose write defers its block index (docs' indexDeferredVersion, which
+// runs PlanDecisionNodes and no index pass) leaves the row and the relation standing, and the
+// first settlement to read the row, whose claim retracts the relation (docs' claimCopies), or the
+// block-index reconciliation's index pass ends it. One probe a block, through
+// graph_tuples_current, whose predicate the kind written into the text proves.
+func heldCopiedFrom(ctx context.Context, q Queryer, refKey string, ids []string) (map[string][]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select gone.id, copied.to_id
+		from unnest($2::text[]) as gone (id)
+		cross join lateral (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = $1 || '#' || gone.id
+			  and t.kind = '`+graphstore.TupleCopiedFrom+`' and t.to_kind = '`+graphstore.KindAsk+`'`)+`
+		) copied
+		where copied.asserted
+		order by gone.id, copied.to_id
+	`, refKey, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the copies the blocks of %s a version drops hold: %w", refKey, err)
+	}
+	defer rows.Close()
+	held := map[string][]string{}
+	for rows.Next() {
+		var id, ask string
+		if err := rows.Scan(&id, &ask); err != nil {
+			return nil, fmt.Errorf("scan a copy a block of %s a version drops holds: %w", refKey, err)
+		}
+		held[id] = append(held[id], ask)
+	}
+	return held, rows.Err()
 }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by

@@ -243,15 +243,18 @@ export function filterOfUndrawn(node: TreeNode): Filter | undefined {
 
 /**
  * The filter whose view answer the page holds (`TreeNode.views`) answers the block `target` names
- * as a node of that filter's own kinds (`ROW_KINDS`): the filter an address of a node
- * Conversation's read does not hold opens at that node (R9), a plan task's Plan, a result's
+ * as a node of the issue `key` of that filter's own kinds (`ROW_KINDS`): the filter an address of
+ * a node Conversation's read does not hold opens at that node (R9), a plan task's Plan, a result's
  * Verification. Undefined where no held view answers it.
  */
 export function filterHolding(
   views: TreeViews | undefined,
-  target: BlockTarget
+  target: BlockTarget,
+  key: string
 ): Filter | undefined {
-  return TREE_FILTERS.find((filter) => answerHolds(views?.[filter], target, ROW_KINDS[filter]));
+  return TREE_FILTERS.find((filter) =>
+    answerHolds(views?.[filter], target, key, ROW_KINDS[filter])
+  );
 }
 
 /** The block an address names: its id, and the document that holds it where the address names
@@ -262,18 +265,22 @@ interface BlockTarget {
 }
 
 /** Whether `answer` holds the block `target` names as a node of one of `kinds`, or of any kind
- *  where none is given: the node whose block id is `target.id`, in the document `target.document`
- *  names where it names one. Graph draws every node of its read (R10), so an address of a block
- *  Conversation's read holds none of opens Graph where Graph's read, as the page holds it,
- *  answers the block. */
+ *  where none is given: the node of the issue `key` whose block id is `target.id`, in the
+ *  document `target.document` names where it names one. An address of the issue names a block of
+ *  that issue, so a node of another issue (`isForeign`) - a child's plan task the Plan read
+ *  answers beside the issue's own, whose block id a task of this issue may hold too - is none it
+ *  names. Graph draws every node of its read (R10), so an address of a block Conversation's read
+ *  holds none of opens Graph where Graph's read, as the page holds it, answers the block. */
 export function answerHolds(
   answer: TreeAnswer | undefined,
   target: BlockTarget,
+  key: string,
   kinds?: readonly NodeType[]
 ): boolean {
   return (answer?.nodes ?? []).some(
     (node) =>
       (kinds === undefined || (kinds as readonly string[]).includes(node.supertag)) &&
+      !isForeign(node, key) &&
       blockIdOfNode(node) === target.id &&
       (target.document === undefined || node.document?.slug === target.document)
   );

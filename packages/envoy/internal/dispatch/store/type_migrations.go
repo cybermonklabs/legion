@@ -29,10 +29,12 @@ var TypeMigrations = []string{
 	// The issue-tree spec's `query` and `query version` supertags, as literal rows written after
 	// the store's backfill.
 	"20261123174750_issue_tree_query_supertags.up.sql",
-	// The decision and reading block types at version 6, creatable from version 7, the bump to
-	// version 7 that makes them creatable, and the issue-tree spec's block schema at version 8,
-	// each as literal rows written after the store's backfill.
+	// check's `subject` and `program`, read from block schema version 6; the decision and reading
+	// block types at version 7, creatable from version 8; the bump to version 8 that makes them
+	// creatable; and the issue-tree spec's block schema at version 9; each as literal rows written
+	// after the store's backfill.
+	"20261125125701_graph_supertags_check_subject.up.sql",
 	"20261125163555_graph_supertags_decision_reading.up.sql",
-	"20261126040700_graph_supertags_version_7.up.sql",
+	"20261126040700_graph_supertags_version_8.up.sql",
 	"20261126050010_issue_tree_block_schema.up.sql",
 }

@@ -81,6 +81,7 @@ func readChecks(t *testing.T, database *store.Store, issueKey string) checksStat
 // whether it creates the document, replaces it or edits it. A target the same write adds is read
 // as the write leaves it, and a target no document holds is refused too.
 func TestAWriteRefusesABlockPointerToADisallowedType(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	seedBlockPointerClaim(t, database)
@@ -141,6 +142,7 @@ func TestAWriteRefusesABlockPointerToADisallowedType(t *testing.T) {
 // a claim pointing at a callout the new document adds is refused and nothing is written, while
 // one pointing at a requirement it adds is created.
 func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	seedBlockPointerClaim(t, database)
@@ -162,6 +164,7 @@ func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
 // the attribute does not allow blocks neither the retype nor an unrelated edit of the citing
 // document, while a new pointer to the retyped target is refused.
 func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	seedBlockPointerClaim(t, database)
@@ -188,6 +191,7 @@ func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
 // a type the attribute does not allow is refused before anything is written, and one to an
 // allowed block is rebuilt.
 func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database, broken := newBrokenTestServer(t)
 	seedBlockPointerClaim(t, database)
@@ -221,6 +225,7 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 // so they are created unconverted, as the release before writes a child: a child born converted
 // under an issue whose requirements stand is a view, and its create with a requirement is refused.
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	seedBlockPointerClaim(t, database)
@@ -363,6 +368,7 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 // as any citation of an absent block is. checks.md plays no role, so it is a room of its own
 // (documentJoinsIssueRoom), whose settlement, and the row that says it is owed, are keyed by it.
 func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	documents, handler, database := browserDocumentService(t)
 	seedBlockPointerClaim(t, database)
@@ -425,6 +431,7 @@ func insertLiveBlocks(database *store.Store, documentService docs.API, artifactI
 // allowed block is taken. A browser's write is never refused
 // (TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved).
 func TestALiveRoomWriteRefusesABlockPointerItMayNotHold(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	// newTestServer, not blockIndexHandler: the document service this test calls is the
 	// dependencies', the very one the handlers write through. Its documents never settle during

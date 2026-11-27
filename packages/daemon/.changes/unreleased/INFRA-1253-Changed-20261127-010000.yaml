@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    The design gate names an issue's Verification document by the `verification` query of
+    Dispatch's issue read (`queries`) first: where the read carries `queries`, the query decides,
+    whatever its `verification_artifact_id` names, and an issue whose queries hold no verification
+    query holds no Verification document. For one release, an issue read with no `queries`, as a
+    Dispatch of the release before answers it, still names the document by its
+    `verification_artifact_id`.
+time: 2026-11-27T01:00:00Z
+custom:
+    Issue: INFRA-1253

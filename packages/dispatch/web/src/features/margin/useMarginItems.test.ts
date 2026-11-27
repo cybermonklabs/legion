@@ -12,6 +12,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { decisionsFromRead } from "../../api/decisions-tree";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type {
   Artifact,
@@ -1137,7 +1138,7 @@ test("an open and a declined ask are no decision beside the spec, and an answere
   try {
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
-        decisions: [["p-a", "answered-ask", false]],
+        decisions: [["p-a", "answered-ask", false, "choices-md-id"]],
         items: ["decision:answered-ask:CORE-1/spec#p-a"],
       })
     );
@@ -1147,7 +1148,7 @@ test("an open and a declined ask are no decision beside the spec, and an answere
   }
 });
 
-function DecisionItems({ document }: { document: Artifact }) {
+function DecisionItems({ document, issue }: { document: Artifact; issue?: DecisionDocuments }) {
   const { decisions, items } = useMarginItems(
     { key: "CORE-1", kind: "issue" },
     "comments",
@@ -1158,7 +1159,7 @@ function DecisionItems({ document }: { document: Artifact }) {
       ["p-a", { pos: 12, top: 72 }],
     ]),
     undefined,
-    { documentShown: true }
+    { documentShown: true, issue }
   );
   return createElement(
     "output",
@@ -1168,14 +1169,15 @@ function DecisionItems({ document }: { document: Artifact }) {
         item.blockId,
         item.decision.node.id,
         item.decision.uncertainty === "high",
+        item.documentId ?? null,
       ]),
       items: items.map(marginItemId),
     })
   );
 }
 
-function renderDecisionItems(document: Artifact) {
-  return renderMarginReads(createElement(DecisionItems, { document }));
+function renderDecisionItems(document: Artifact, issue?: DecisionDocuments) {
+  return renderMarginReads(createElement(DecisionItems, { document, issue }));
 }
 
 /** `element` on CORE-1's spec, under the reads of the margin a test does not answer, each held
@@ -1206,11 +1208,11 @@ test("each decision is a margin item beside every spec block it links, in the sp
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
         decisions: [
-          ["p-b", "CORE-1/choices-md#d-1", false],
-          ["p-b", "CORE-1/choices-md#d-2", true],
-          ["p-b", "CORE-1/notes-md#d-2", false],
-          ["p-a", "CORE-1/choices-md#d-1", false],
-          ["p-c", "CORE-1/choices-md#d-4", false],
+          ["p-b", "CORE-1/choices-md#d-1", false, "choices-md-id"],
+          ["p-b", "CORE-1/choices-md#d-2", true, "choices-md-id"],
+          ["p-b", "CORE-1/notes-md#d-2", false, "notes-md-id"],
+          ["p-a", "CORE-1/choices-md#d-1", false, "choices-md-id"],
+          ["p-c", "CORE-1/choices-md#d-4", false, "choices-md-id"],
         ],
         items: [
           "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-b",
@@ -1298,6 +1300,70 @@ test("a decision of a document no role names is an item of that document, found 
       }
     }
   } finally {
+    getIssueDecisions.mockRestore();
+  }
+});
+
+// A server of the release before answers the Decisions read with no `entries`: its decisions are
+// the sections of the issue's decisions document, an agent's or, where a section cites an ask, a
+// person's, each with the links it shaped. During a roll a page of this build can reach one: the
+// client reads its sections as the entries they are (`decisionsFromRead`), and the margin still
+// draws each beside the spec blocks it links, as it draws an entry. Such an entry names no
+// document, so its card's text resolves against the issue's document its address names, found
+// among the documents the issue read lists, as every other view finds it.
+test("a Decisions read of the release before, with no entries, still draws its decisions beside the spec", async () => {
+  const section = (
+    block: string,
+    to: string,
+    kind: string,
+    { replaced = false, unsure = false } = {}
+  ) => ({
+    asks: kind === "person" ? ["ask-1"] : [],
+    block_id: block,
+    changed_at: "2026-10-02T00:00:00Z",
+    changed_version: 2,
+    heading: `Decision ${block}`,
+    kept: null,
+    kind,
+    links: [decisionLink(block, to)],
+    ref: `dispatch://CORE-1/artifact/decisions-md#b-${block}`,
+    replaced,
+    text: `## Decision ${block}\n\nWe decided.`,
+    text_sha256: `sum-${block}`,
+    unsure,
+    waiting_review: kind === "agent" && !replaced,
+  });
+  const before: Parameters<typeof decisionsFromRead>[1] = {
+    decisions: [
+      section("h-agent", "p-a", "agent"),
+      section("h-person", "p-b", "person", { unsure: true }),
+      section("h-replaced", "p-a", "agent", { replaced: true }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    decisionsFromRead("CORE-1", before)
+  );
+  const view = renderDecisionItems(artifact, {
+    artifacts: [artifact, { id: "decisions-md-id", slug: "decisions-md" }],
+    key: "CORE-1",
+    primary_artifact_id: artifact.id,
+  });
+  try {
+    const agent = "dispatch://CORE-1/artifact/decisions-md#b-h-agent";
+    const person = "dispatch://CORE-1/artifact/decisions-md#b-h-person";
+    await waitFor(() =>
+      expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
+        decisions: [
+          ["p-b", person, true, "decisions-md-id"],
+          ["p-a", agent, false, "decisions-md-id"],
+        ],
+        items: [`decision:${person}:CORE-1/spec#p-b`, `decision:${agent}:CORE-1/spec#p-a`],
+      })
+    );
+  } finally {
+    view.unmount();
     getIssueDecisions.mockRestore();
   }
 });

@@ -9,13 +9,20 @@ import {
   type ChangeComment,
   decisionNodeChanges,
   deletedPostIds,
+  parentsIn,
   treeComments,
 } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeRead } from "../spec-filter/tree-read";
-import { coverageStatementOf, treeContext } from "../tree-drafts";
+import { changeUnread, coverageStatementOf, treeContext } from "../tree-drafts";
 import { holdsPlanTask } from "../tree-read/tree-nodes";
-import { outlineQuery, type TreeAnswer, useDecisionsView } from "../tree-read/tree-read";
+import {
+  outlineQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  useDecisionsView,
+  useReadOlderDecisionComments,
+} from "../tree-read/tree-read";
 import { issueMessagesQuery, viewTree } from "../useIssueTree";
 import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./decisions-parts";
 
@@ -29,12 +36,13 @@ import { askIdOf, type DecisionsParts, decisionsParts, placements } from "./deci
  * the issue's decisions wherever they are written. The page holds that view on the issue's node
  * (`TreeNode.views`), and each decision is read as every reader of a decision reads it
  * (`decisionNodes`). A decision's Change is the comment the read its decision is read from hangs
- * under its node (`decision-review.ts`' `decisionNodeChanges`): the view read carries each
- * comment on the text of a node it holds, so a Change stands with its decision whatever page of
- * Conversation's read holds it, and no quote is matched for it. The same read answers on each
- * comment node what its author did to it (`treeComments`): which Changes their author deleted,
- * which ask nothing any more (`deletedPostIds`), and when its author last edited a Change, which
- * its row draws. A view that holds no decision gives none, and no error.
+ * under its node (`decision-review.ts`' `decisionNodeChanges`), and no quote is matched for it.
+ * Either read can omit an older Change. A decision that may have one (`changeUnread`) stays in
+ * the review list with "+" and is excluded from the count until the older pages resolve it.
+ * After the first drawing, the seam reads those pages from the same answer as its decisions.
+ * The same read answers on each comment node what its author did to it (`treeComments`):
+ * which Changes their author deleted (`deletedPostIds`), and when its author last edited a
+ * Change, which its row draws. A view that holds no decision gives none, and no error.
  *
  * The nodes the parts stand on are that view read's too (R2): the tree its answer builds by the
  * page's one tree rule, as each filter's view read builds its own (`useDecisionsTree`,
@@ -289,6 +297,11 @@ export function useDecisionsEntries({
     },
     [readAsks, readTree, readView, treeRefused, viewRefused]
   );
+  const unread = useMemo(
+    () => decisions?.some((row) => changeUnread(row, changes.has(row.ref), held)) === true,
+    [changes, decisions, held]
+  );
+  useReadOlderDecisionComments(issue.key, held, unread, viewAnswer !== undefined);
   // How this issue addresses a node, which is the one rule the tree was built with, so a
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
@@ -359,10 +372,10 @@ export function useDecisionsEntries({
  * and a refused Keep the refusal it draws.
  *
  * The view read holds every question and every decision of the issue, whatever page of
- * Conversation's read the page has read so far, and each comment on the text of a node it holds,
- * so each Change under its decision; Conversation's read gives the tree only what the view read
- * leaves out (`viewWithContext`): each statement a tie names and each node a question or a
- * decision hangs under, where it holds it. So the tree waits for that read: without it those
+ * Conversation's read the page has read so far. It carries comments on the text of those nodes,
+ * newest first, in comment pages of its own. Conversation's read gives the tree each statement
+ * a tie names and each node a question or a decision hangs under, but not comments on decisions
+ * (`contextForDecisions`). So the tree waits for that read: without it those
  * nodes are missing, and the page's tree is the issue alone until then (`issue-tree.ts`'
  * `buildIssueTree`), so the view draws no decision until it can draw each with them. The tree is
  * built from the reads the page's tree is built from, under the keys it reads them by and each
@@ -404,7 +417,7 @@ export function useDecisionsTree(
         issue,
         messages,
         results,
-        tree,
+        tree: contextForDecisions(tree),
         viewer,
       },
       answer
@@ -413,15 +426,35 @@ export function useDecisionsTree(
   }, [answer, asks, coverage, issue, messages, planTaskHeld, results, root, tree, viewer, views]);
 }
 
+const decisionsContext = new WeakMap<TreeAnswer, TreeAnswer>();
+
+/** Conversation supplies context for decisions, not their Changes. Otherwise a Change that
+ *  Conversation holds but the decisions view has not read yet can clear the mark before the
+ *  view's own older page lands. Keep the filtered answer stable for both the list and its count. */
+function contextForDecisions(tree: TreeAnswer): TreeAnswer {
+  const held = decisionsContext.get(tree);
+  if (held !== undefined) return held;
+  const nodes = tree.nodes ?? [];
+  const excluded = new Set<TreeAnswerNode>();
+  for (const [node, parent] of parentsIn(nodes)) {
+    if (excluded.has(parent) || (node.supertag === "comment" && parent.supertag === "decision")) {
+      excluded.add(node);
+    }
+  }
+  const context =
+    excluded.size === 0 ? tree : { ...tree, nodes: nodes.filter((node) => !excluded.has(node)) };
+  decisionsContext.set(tree, context);
+  return context;
+}
+
 /**
  * The Change each of `decisions` waits on, by the decision's own address (`Decision.ref`), as
  * the parts read one (`decisionsParts`' `changes`): the comment `answer` hangs under the
  * decision's node that `decisionNodeChanges` gives it, with its words and the server's reading
  * of them where the read sent one, its author, the time it was made and the time its author
  * last edited it. `answer` is the read the decisions are read from, which answers each of their
- * nodes by the same id: the decisions view's wherever the page holds it, which carries each
- * comment on the text of a node it holds, so a Change on a decision past the pages of
- * Conversation's read held so far stands with its decision, and Conversation's read until then.
+ * nodes by the same id: the decisions view's wherever the page holds it, and Conversation's
+ * read until then. A Change past Conversation's pages may be in the decisions view's own pages.
  * Which Changes their author deleted, which ask nothing any more, and when its author last
  * edited one are the marks `answer` answers on the comment's node (`treeComments`,
  * `deletedPostIds`): a Change carries no edit time where the read answers no edit mark. None

@@ -143,6 +143,10 @@ the repository root show how CI runs each.
 `pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
 skip, except where `CI` is set, where they fail.
 
+`cmd/spec-check` tests run the repository's `.github/scripts/go-test-reads.sh`, which imports
+PyYAML, so `go test ./cmd/spec-check` needs `python3` with PyYAML (`pip install pyyaml`, or
+the `python3-yaml` package). Without it those tests fail.
+
 ## The edge listener
 
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.
@@ -250,6 +254,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   any other session gets the `404` of an unknown one.
   Each session shown is confirmed by its stored record as a send's target is.
   A Legion agent is shown only when its session is a session of its issue's project, a record bound to its key, so a gone agent of the token's own project is not shown either; its replacement is shown only when that is such a session too (`edgeScope.showsAgentConfirmed`).
+  `GET /v1/sessions/{session_id}/successors` names only the successors the token's projects show, each confirmed by its stored record as a send's target is (`shownSuccessors`).
   A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
 

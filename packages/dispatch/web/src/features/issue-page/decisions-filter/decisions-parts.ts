@@ -30,7 +30,9 @@ import { nodeReading } from "../presets";
  *    read from the ties alone (`decision-review.ts`'s `inReviewList`): a decision that waits and
  *    is tied to nothing, or to a node that is no statement, is no entry of it, and neither is
  *    one the reader sent a Change on, which waits on its agent. A decision a person decided is
- *    no agent's and never waits for review, whatever the read's `waiting_review` says.
+ *    no agent's and never waits for review, whatever the read's `waiting_review` says. A decision
+ *    whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`) stays in
+ *    the list with "+", but the list's count leaves it out until that page is read (`reviewWaiting`).
  * 3. **The reader's own decisions**, newest first: each ask the reader answered or declined,
  *    each decision whose `decided_by` names the reader, by the time its words last changed, and
  *    each agent decision a statement rests on that the reader kept or asked to change, by the
@@ -265,16 +267,27 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
 
 /**
  * Every entry that waits on the reader, in the filter's order: each open question whose turn
- * is the reader's, then each decision of the review list. It is what the header's count of
- * what waits walks: each press goes to the next of them (R13, the tester's F12).
- * No reader waits on an overtaken one (R2): its question's node does not wait
- * (`tree-read/tree-nodes.ts`' `draftAsk`), and its decision says it is overtaken.
+ * is the reader's, then each decision of the review list that waits on them (`reviewWaiting`).
+ * It is what the header's count of what waits walks: each press goes to the next of them (R13,
+ * the tester's F12). No reader waits on an overtaken one (R2).
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
   return [
     ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
-    ...parts.review.filter((entry) => entry.overtaken !== true).map((entry) => entry.node.id),
+    ...reviewWaiting(parts).map((entry) => entry.node.id),
   ];
+}
+
+/**
+ * The decisions of the review list that wait on the reader: neither an overtaken decision nor
+ * one whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`). Both
+ * stay in the list but count in neither its heading nor the header (`waiting.ts`), and the
+ * header's walk (`waitingOrder`) skips them.
+ */
+export function reviewWaiting(parts: Pick<DecisionsParts, "review">): readonly DecisionEntry[] {
+  return parts.review.filter(
+    (entry) => entry.overtaken !== true && entry.node.changeUnread !== true
+  );
 }
 
 /**

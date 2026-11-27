@@ -14,7 +14,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
-import type { DecisionKeep, IssueAskRow, MessageRead } from "../../../api/types";
+import type { Comment, DecisionKeep, IssueAskRow, MessageRead } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
@@ -24,7 +24,7 @@ import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { plainWrite, writesOf } from "../../writes/write-store";
 import { rowActionSelector } from "../DecisionActions";
 import { presetPath } from "../issue-address";
-import { framesByHand, TWO_THREADS, waitInAct } from "../outline-fixtures";
+import { framesByHand, readComment, TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { PROPERTY_LABELS } from "../page-structure";
 import { EMPTY_STATE_LINES, FILTER_SIGNAL_WORDS, STATE_LINES } from "../page-words";
@@ -47,7 +47,7 @@ import {
   watchDrawn,
 } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
-import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { commentNode, pagedAnswer, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
   outlineQuery,
   type TreeAnswer,
@@ -1445,4 +1445,143 @@ test("under the Decisions view, a failed names read draws the outline's names li
   );
   expect(names.mock.calls.length, "the Retry did not ask the names again").toBe(2);
   view.unmount();
+});
+
+/** The decisions of the older-Change cases (decision 563 (4)): each waits for review and is tied
+ *  to the statement `s1`. The first last changed before the oldest comment Conversation's first
+ *  page holds, so a Change of it may stand on the older page that answer names; the second
+ *  changed after it, so none of its Changes can. */
+const OLDER_DECISION = decision("older", {
+  decision: { changed_at: "2026-11-01T00:00:00Z", links: [shaped(specRef("s1"))] },
+  role: "query",
+});
+const NEWER_DECISION = decision("newer", {
+  decision: { changed_at: "2026-11-06T00:00:00Z", links: [shaped(specRef("s1"))] },
+  role: "query",
+});
+
+/** The reader's Change of the first decision, made after its words last changed and before
+ *  every comment the first page holds. */
+const OLDER_CHANGE: Comment = {
+  ...readComment("change-older", 0),
+  body: "Tie it to the plan instead.",
+  created_at: "2026-11-03T00:00:00Z",
+};
+
+/** Conversation's first page for those cases: the statement, the two decisions and the two
+ *  threads, and the position of its oldest comment, as older comments remain. */
+const OLDER_FIRST: TreeAnswer = {
+  ...treeOf([
+    treeNode("s1", "requirement", KEY, { ...inDocument(SPEC_DOCUMENT), text: "The statement." }),
+    OLDER_DECISION,
+    NEWER_DECISION,
+    ...commentNodes(TWO_THREADS),
+  ]),
+  comments_before: `${TWO_THREADS[0]?.created_at},${TWO_THREADS[0]?.id}`,
+};
+
+/** The older page: the Change, under the decision's node as the read hangs it, and no older
+ *  comment left. */
+const OLDER_PAGE: TreeAnswer = {
+  ...treeAnswer([commentNode(OLDER_CHANGE, `${KEY}/${SPEC_DOCUMENT.slug}#older`)]),
+  comments_before: null,
+};
+
+/** Holds the older page of one read out while the other cannot supply the Change. */
+function answerOlderChange(page: Promise<TreeAnswer>, fromView: boolean): () => number {
+  const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    if (query.comments_before !== undefined) return page;
+    if (query.view === "decisions") {
+      return fromView
+        ? { ...OLDER_FIRST, view: "decisions" }
+        : Promise.withResolvers<never>().promise;
+    }
+    return fromView
+      ? {
+          ...OLDER_FIRST,
+          comments_before: null,
+          nodes: [...(OLDER_FIRST.nodes ?? []), ...(OLDER_PAGE.nodes ?? [])],
+        }
+      : OLDER_FIRST;
+  });
+  return () => {
+    const requests = tree.mock.calls.flatMap(([, query]) =>
+      query?.comments_before === undefined ? [] : [query]
+    );
+    for (const query of requests) {
+      expect(query.view, "the older page came from the wrong read").toBe(
+        fromView ? "decisions" : undefined
+      );
+    }
+    return requests.length;
+  };
+}
+
+// Decision 563 (4), as INFRA-1196's architect ruled it at 11:23Z (choice (b)): a decision whose
+// Change may stand on a comment page its read has not loaded stays in the review list,
+// whether that read is the decisions view or Conversation's fallback,
+// drawn with the outline's mark ("+" after its state), and the list's count leaves it out until
+// that page is read. The view reads it once the page has drawn, and the decision then carries the
+// Change the page holds, which it waits on its agent for: it leaves the list then, and only then.
+test.each([
+  false,
+  true,
+])("a decision whose Change stands on an older comment page stays marked in the review list and out of its count until the page is read (decisions view: %s)", async (fromView) => {
+  const page = Promise.withResolvers<TreeAnswer>();
+  const pagesSent = answerOlderChange(page.promise, fromView);
+  const view = drawStage("");
+  const rowOf = (block: string) =>
+    view.container.querySelector<HTMLElement>(
+      `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
+    );
+  const review = () => view.container.querySelector<HTMLElement>('[data-decisions-part="review"]');
+  const reviewRows = () =>
+    [...(review()?.querySelectorAll<HTMLElement>("[data-node-row]") ?? [])].map(
+      (row) => row.dataset.nodeId
+    );
+  const reviewCount = () => review()?.querySelector("[data-decisions-count]")?.textContent;
+  await waitFor(() =>
+    expect(
+      rowOf("older")?.querySelector("[data-change-unread]")?.textContent,
+      `the decision is not drawn with the outline's mark; the stage drew ${drawnSlot(view)}`
+    ).toBe("+")
+  );
+  expect(reviewRows(), "the marked decision left the review list before its page answered").toEqual(
+    [decisionNode("newer").id, decisionNode("older").id]
+  );
+  expect(
+    reviewCount(),
+    "the review list's count counts the marked decision before its older page answers"
+  ).toBe("1");
+  await act(async () => page.resolve(OLDER_PAGE));
+  await waitFor(() =>
+    expect(rowOf("older")?.dataset.nodeState, "the decision does not carry its Change").toBe(
+      "change_requested"
+    )
+  );
+  await waitFor(() =>
+    expect(rowOf("older")?.querySelector("[data-change-words]")?.textContent).toBe(
+      OLDER_CHANGE.body
+    )
+  );
+  expect(rowOf("older")?.querySelector("[data-change-unread]"), "the mark stayed").toBeNull();
+  expect(reviewRows(), "the review list once the Change is held").toEqual([
+    decisionNode("newer").id,
+  ]);
+  expect(reviewCount()).toBe("1");
+  expect(pagesSent(), "the older page was read other than once").toBe(1);
+});
+
+// Decision 563 (4) under decision 538: the older comment pages are read only once the page has
+// drawn, so a load reads none. With the reads that mark the decision held as the page mounts, no
+// older page is asked for as it mounts, and one is in a frame after.
+test("no older comment page is read before the page's first drawing, and one is read after it", async () => {
+  const pagesSent = answerOlderChange(Promise.withResolvers<TreeAnswer>().promise, false);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(outlineQuery(KEY, "conversation").queryKey, OLDER_FIRST);
+  drawStage("", { client });
+  expect(pagesSent(), "an older comment page was read before the page's first drawing").toBe(0);
+  await waitFor(() =>
+    expect(pagesSent(), "no older comment page was read once the page had drawn").toBe(1)
+  );
 });

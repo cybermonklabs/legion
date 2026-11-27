@@ -1,0 +1,5 @@
+kind: Changed
+body: 'A before-merge check''s state is its state at each open head.'
+time: 2026-11-24T18:15:46Z
+custom:
+    Issue: pr5416

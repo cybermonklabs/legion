@@ -2714,6 +2714,8 @@ function layOut(height: number): () => void {
     configurable: true,
     get: () => height,
   });
+  // On Element, which owns the method: a spy on HTMLElement leaves an own property behind once
+  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`).
   const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 600, height)
   );
@@ -3366,9 +3368,12 @@ test("a press on a decision's cell or away from it changes what the body draws o
 // a key moves the focus to is scrolled down below the heads, by the rule's 8 px.
 test("a statement or a cell a key moves the focus to is scrolled down from under the column heads", async () => {
   const user = userEvent.setup();
+  // On Element, for the reason `layOut` gives; any other element keeps the empty box the DOM
+  // gives it.
   const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
+    this: Element
   ) {
+    if (!(this instanceof HTMLElement)) return new DOMRect();
     if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
     if (this.dataset.nodeId === "spec#b-r2") return new DOMRect(0, 27, 600, 48);
     if (this.parentElement?.hasAttribute("data-spec-cell") === true && this.tagName === "DIV") {
@@ -3421,9 +3426,12 @@ function layOutPage(
   scroll?: (delta: number) => void
 ) {
   const sizes = installResizeObserver();
+  // On Element, for the reason `layOut` gives; any other element keeps the empty box the DOM
+  // gives it.
   const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
+    this: Element
   ) {
+    if (!(this instanceof HTMLElement)) return new DOMRect();
     if (this.hasAttribute("data-spec-head")) return new DOMRect(0, 0, 1000, 31);
     return boxOf(this) ?? new DOMRect(0, 200, 600, 48);
   });

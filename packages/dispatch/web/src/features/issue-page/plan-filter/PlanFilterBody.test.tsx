@@ -2304,8 +2304,8 @@ test("a need the tree has not named draws no empty need and no '· needs' with n
   }
 });
 
-/** A drawn row by its node's id, whatever the id's shape: a task of another issue is drawn by its
- *  block id alone. */
+/** A drawn row by its node's id, whatever the id's shape: a task of another issue is drawn by the
+ *  read's id, `<KEY>/<slug>#<block id>`. */
 function rowById(view: RenderResult, id: string): HTMLElement {
   const row = view.container.querySelector<HTMLElement>(
     `[data-node-row][data-node-id="${CSS.escape(id)}"]`
@@ -2400,6 +2400,9 @@ test("a parent's plan draws the tasks of each issue under it in the order the re
   setViewport(1440);
   const child = "CORE-2";
   const own = (id: string): TreeNode => ({ ...task(id), readId: `${KEY}/${PLAN}#${id}` });
+  // A task of the issue under it is drawn by the read's id (`tree-read/tree-nodes.ts`'
+  // `treeIdOfNode`).
+  const childId = (id: string): string => `${child}/${PLAN}#${id}`;
   const childTask = (id: string, needs: readonly string[] = []): TreeNode => ({
     ...task(id),
     chips: needs.map((one) => ({
@@ -2407,8 +2410,8 @@ test("a parent's plan draws the tasks of each issue under it in the order the re
       reading: { words: `Task ${one}` },
       ref: `dispatch://${child}/artifact/${PLAN}#b-${one}`,
     })),
-    id,
-    readId: `${child}/${PLAN}#${id}`,
+    id: childId(id),
+    readId: childId(id),
     reference: `dispatch://${child}/artifact/${PLAN}#b-${id}`,
   });
   const answer = treeAnswer(
@@ -2452,7 +2455,7 @@ test("a parent's plan draws the tasks of each issue under it in the order the re
   };
   const whole = presetView(root, "plan", "");
   const view = renderBody(whole.root, { plan: whole.root.children });
-  const order = [D("a"), D("b"), "xb", "xa", "xc"];
+  const order = [D("a"), D("b"), childId("xb"), childId("xa"), childId("xc")];
   const href = buildIssuePath({ key: child, kind: "issue" });
   const marks = () =>
     order.map((id) => {
@@ -2469,12 +2472,12 @@ test("a parent's plan draws the tasks of each issue under it in the order the re
     await showSteps(view);
     expect(rowIds(view.container)).toEqual(order);
     expect(marks(), "the steps mark the tasks with their issue's key").toEqual(marked);
-    expect(stepFactsOf(rowById(view, "xa"))).toEqual([
+    expect(stepFactsOf(rowById(view, childId("xa")))).toEqual([
       [NODE_FACT_LABELS.issue, child],
       [BLOCK_ATTRIBUTE_LABELS.size, PLAN_WORDS.no_size],
     ]);
-    act(() => rowById(view, "xa").focus());
-    expect(focusedRow()).toBe("xa");
+    act(() => rowById(view, childId("xa")).focus());
+    expect(focusedRow()).toBe(childId("xa"));
     expect(marks()).toEqual(marked);
   } finally {
     view.unmount();

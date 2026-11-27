@@ -154,7 +154,8 @@ func NodeAnswerTextOf(ask string) string {
 // NodeAnswererOf is the person who answered the ask aliased ask as ApplyTo lays it over the row:
 // the node's answered_by on an ask the node holds answered, null on any other the node holds, and
 // the row's answer's user where the row names no node. The Replies list's unread count reads an
-// answer as a write in the ask's thread through it and NodeAnsweredAtOf.
+// answer as a write in the ask's thread through it and NodeAnsweredAtOf, and an issue's ask page
+// reads its answerer through it (api's askThreadPageStatement).
 func NodeAnswererOf(ask string) string {
 	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer->>'user' when ` +
 		NodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + StateAnswered + `' then ` +
@@ -165,14 +166,24 @@ func NodeAnswererOf(ask string) string {
 // node's answered_at on an ask the node holds answered, null on any other the node holds, and the
 // row's answer's at where the row names no node.
 func NodeAnsweredAtOf(ask string) string {
-	return `case when ` + ask + `.node_kind is null then (` + ask + `.answer->>'at')::timestamptz when ` +
-		NodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + StateAnswered + `' then (` +
-		NodeValueOf(ask, graphstore.TupleAnsweredAt) + `)::timestamptz end`
+	return `(` + NodeAnsweredAtTextOf(ask) + `)::timestamptz`
+}
+
+// NodeAnsweredAtTextOf is NodeAnsweredAtOf before its cast: the text the time is stored in, the
+// row's answer's at or the node's answered_at (AnsweredAtValue), each RFC 3339 with every
+// fraction of a second the time carries. An issue's ask page reads it so, to cut the time to
+// microseconds before a cast would round it (api's askThreadPageStatement).
+func NodeAnsweredAtTextOf(ask string) string {
+	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer->>'at' when ` +
+		NodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + StateAnswered + `' then ` +
+		NodeValueOf(ask, graphstore.TupleAnsweredAt) + ` end`
 }
 
 // NodeResolutionOf is the resolution of the ask aliased ask as ApplyTo lays it over the row, as
 // jsonb: the resolution value its node holds on an ask the node holds resolved, none on any other
-// the node holds, and the row's own where the row names no node.
+// the node holds, and the row's own where the row names no node. The write advice's declined asks
+// read a decline through it (api's readDeclinedAsks), and an issue's ask page a resolution's time
+// and actor (api's askThreadPageStatement).
 func NodeResolutionOf(ask string) string {
 	return `case when ` + ask + `.node_kind is null then ` + ask + `.resolution when ` +
 		NodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + StateResolved + `' then (` +
@@ -182,8 +193,10 @@ func NodeResolutionOf(ask string) string {
 // NodeAnswerJSONOf is the answer of the ask aliased ask as ApplyTo lays it over the row, as jsonb
 // of asks.answer's shape without its act: the answer, selection, answerer and time its node holds
 // on an ask the node holds answered - the selection the empty list where none is stated - null on
-// any other the node holds, and the row's own answer where the row names no node. The search text
-// reads the words of it (ask_search_suffix) and the session answers read the whole of it.
+// any other the node holds, and the row's own answer where the row names no node. Its two readers
+// are the search text, which reads the words of it (api's askSearchTextOf, ask_search_suffix), and
+// the session answers, which read the whole of it and hold it to their window by its time
+// (sessionanswers' query).
 func NodeAnswerJSONOf(ask string) string {
 	return `case when ` + ask + `.node_kind is null then ` + ask + `.answer when ` +
 		NodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + StateAnswered + `' then jsonb_build_object(

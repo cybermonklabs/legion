@@ -62,8 +62,8 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 		names[index] = typ.Name
 	}
 	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading", "criterion"}
-	if served.Version != 8 || !slices.Equal(names, want) {
-		t.Fatalf("schema = version %d, types %v; want version 8 and %v", served.Version, names, want)
+	if served.Version != 9 || !slices.Equal(names, want) {
+		t.Fatalf("schema = version %d, types %v; want version 9 and %v", served.Version, names, want)
 	}
 	if parent, declared := served.Types[7].Attributes.Lookup(pmdoc.ParentAttribute); !declared || parent.Kind != pmdoc.BlockAttributeBlockList ||
 		!slices.Equal(parent.Items, []pmdoc.BlockItemKind{pmdoc.BlockItemAsk, pmdoc.BlockItemComment, pmdoc.BlockItemMessage}) {
@@ -75,22 +75,31 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	if parents := served.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
 		t.Fatalf("reading parents = %v, want decision and ask", parents)
 	}
-	// decision and reading are read from version 6 and created from version 7: a build of version 6
+	// decision and reading are read from version 7 and created from version 8: a build of version 7
 	// reads a store this build wrote and refuses to create them (readers_first_test.go), and version
-	// 7, the slice that gives them nodes, creates them.
+	// 8, the slice that gives them nodes, creates them, as this build, at version 9, does.
 	for _, typ := range served.Types[5:7] {
-		if typ.Since != 6 || typ.CreatableSince != 7 {
-			t.Fatalf("typed block %s = since %d, creatable_since %d; want it read from version 6 and created from version 7", typ.Name, typ.Since, typ.CreatableSince)
+		if typ.Since != 7 || typ.CreatableSince != 8 {
+			t.Fatalf("typed block %s = since %d, creatable_since %d; want it read from version 7 and created from version 8", typ.Name, typ.Since, typ.CreatableSince)
 		}
 	}
-	if criterion := served.Types[7]; criterion.Since != 8 || criterion.CreatableSince != 8 {
-		t.Fatalf("typed block criterion = since %d, creatable_since %d; want it read and created from version 8", criterion.Since, criterion.CreatableSince)
+	if criterion := served.Types[7]; criterion.Since != 9 || criterion.CreatableSince != 9 {
+		t.Fatalf("typed block criterion = since %d, creatable_since %d; want it read and created from version 9", criterion.Since, criterion.CreatableSince)
 	}
-	if shaped, declared := served.Types[1].Attributes.Lookup("shaped"); !declared || shaped.Since != 6 || shaped.CreatableSince != 7 {
-		t.Fatalf("ask attribute shaped = %+v (declared %v), want it read from version 6 and created from version 7", shaped, declared)
+	if shaped, declared := served.Types[1].Attributes.Lookup("shaped"); !declared || shaped.Since != 7 || shaped.CreatableSince != 8 {
+		t.Fatalf("ask attribute shaped = %+v (declared %v), want it read from version 7 and created from version 8", shaped, declared)
 	}
 	if steps, declared := served.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
+	}
+	// check's subject and program are read from version 6 and created from version 10: this build
+	// reads them and creates neither until the release that records real deploys.
+	if subject, declared := served.Types[4].Attributes.Lookup("subject"); !declared || subject.Kind != pmdoc.BlockAttributeEnum ||
+		!slices.Equal(subject.Choices, []string{"code", "production", "graph"}) || subject.Since != 6 || subject.CreatableSince != 10 {
+		t.Fatalf("check attribute subject = %+v (declared %v), want an enum of code, production and graph, read from version 6 and created from 10", subject, declared)
+	}
+	if program, declared := served.Types[4].Attributes.Lookup("program"); !declared || program.Kind != pmdoc.BlockAttributeString || program.Since != 6 || program.CreatableSince != 10 {
+		t.Fatalf("check attribute program = %+v (declared %v), want a string read from version 6 and created from 10", program, declared)
 	}
 
 	types := map[string][]storeAttributeRead{}

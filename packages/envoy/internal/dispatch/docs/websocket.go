@@ -822,7 +822,16 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 // takes; an OnUpdate observer cannot, since it runs on the goroutine that committed, which can be
 // a settlement holding that lock.
 // An unbounded apply can fail after parking bytes, so its error does not skip the durable append.
+//
+// An update that holds a document of an issue's room as that document's own room held it before it
+// moved into the room is refused before it is applied (oldRoomDocument): nothing of it reaches the
+// room, another peer or the store, and ygo closes the socket that sent it.
 func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error) error {
+	if document, block := s.oldRoomDocument(info); document != "" {
+		slog.Warn("dispatch: refused a document socket's update that holds a document as its own room held it before the document moved into its issue's room; the socket is closed, and nothing of the update is applied",
+			"room", info.Room, "document", document, "block", block)
+		return fmt.Errorf("%w: block %s of document %s, under the own fragment of room %s", errOldRoomDocument, block, document, info.Room)
+	}
 	err := apply()
 	s.storeParked(info.Room)
 	return err

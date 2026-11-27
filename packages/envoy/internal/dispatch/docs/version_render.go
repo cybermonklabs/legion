@@ -992,11 +992,11 @@ func queueVersionRenderCut(b *store.WriteBatch, version statedVersion, owed bool
 // queryOfBand is the query whose record can cover the versions of an issue's document of each band
 // (refs.DocumentBandSQL, the one statement of which document plays which part): the spec, the
 // Verification document and the plan. A document of any other band - the issue room's own
-// fragment, an upload, a project's document - is covered by no query's record, and its versions
-// render from the tree with no digest (R15), but for the decisions query node, a document of the
-// last band whose node is a query node (rendersFrom). Of a document of one of these bands, a
-// query's record covers only a query version this build's version write made (madeQueryVersion);
-// every other version answers its stored bytes.
+// fragment, an upload, a project's document - is covered by no query's record, and the versions
+// this build's writer wrote of it render from the tree with no digest (R15), but for the decisions
+// query node, a document of the last band whose node is a query node (rendersFrom). Of a document
+// of one of these bands, a query's record covers only a query version this build's version write
+// made (madeQueryVersion); every other version answers its stored bytes.
 var queryOfBand = map[string]string{
 	string(refs.RankBandSpec):         graphstore.QuerySpec,
 	string(refs.RankBandVerification): graphstore.QueryVerification,
@@ -1012,20 +1012,23 @@ type statedVersion struct {
 
 // rendersFrom reports whether a version a pass stated renders from the tree, and the issue and
 // the query whose record covers it, of the document's issue, its band and the query of its node,
-// "" where that node is no query node, and of whether the version is a query version this build's
-// version write made (madeQueryVersion). A query version so made renders from the tree with its
-// record's digest, the record of its node's query. A version of a document whose node is no query
-// node, of a band no query covers - the issue room's own fragment, an upload, a project's document -
-// renders from the tree with no digest (R15): of is its issue, if any, with no query. Every other
-// version - one of a document of a query's band whose node is no query node, an issue's that has
-// not converted, and one of a query node's document that this build's version write did not make -
-// renders from its stored bytes, and takes no row.
-func rendersFrom(issue, band, query string, made bool) (queryOf, bool) {
+// "" where that node is no query node, of whether the version is a query version this build's
+// version write made (madeQueryVersion), and of whether this build's writer wrote the version
+// (written: the transaction queued it, or it holds the version_renders row its write left). A query
+// version so made renders from the tree with its record's digest, the record of its node's query.
+// A version this build's writer wrote of a document whose node is no query node, of a band no query
+// covers - the issue room's own fragment, an upload, a project's document - renders from the tree
+// with no digest (R15): of is its issue, if any, with no query. Every other version - one of such a
+// document that a build before the cutover wrote, which keeps the bytes it holds (R15), one of a
+// document of a query's band whose node is no query node, an issue's that has not converted, and
+// one of a query node's document that this build's version write did not make - renders from its
+// stored bytes, and takes no row.
+func rendersFrom(issue, band, query string, made, written bool) (queryOf, bool) {
 	switch {
 	case query != "":
 		return queryOf{issue: issue, query: query}, issue != "" && made
 	case queryOfBand[band] == "":
-		return queryOf{issue: issue}, true
+		return queryOf{issue: issue}, written
 	}
 	return queryOf{}, false
 }
@@ -1072,14 +1075,17 @@ func (l *Ledger) phaseTx() pgx.Tx {
 // is none; whether the store holds the version's node present, at the address graphstore.VersionID
 // gives it and at any state but gone, since a node held gone is no present node (graphcensus reads
 // a row at its address as a later row at a freed address), and whether that node holds
-// definition_version; whether the store holds the version's row; and what the version's node
-// takes of its document (graphstore.VersionOwnerColumns), as ReadVersionOwner reads it.
+// definition_version; whether the store holds the version's row, and whether it holds the
+// version's version_renders row, which only this build's writer writes (rendersFrom's written); and
+// what the version's node takes of its document (graphstore.VersionOwnerColumns), as
+// ReadVersionOwner reads it.
 var statedDocumentsStatement = `
 	select s.id::text, s.number, coalesce(d.issue_key, ''), ` + refs.DocumentBandSQL("d") + `,
 	       coalesce((select q.attributes->>'` + graphstore.AttributeQuery + `' from graph_nodes q
 	                 where q.kind = '` + graphstore.KindArtifact + `' and q.id = d.ref_key and q.supertag = '` + graphstore.SupertagQuery + `'), ''),
 	       n.id is not null, coalesce(n.attributes ? '` + graphstore.AttributeDefinitionVersion + `', false),
 	       exists (select 1 from artifact_versions v where v.artifact_id = s.id and v.number = s.number),
+	       exists (select 1 from version_renders r where r.artifact_id = s.id and r.number = s.number),
 	       ` + graphstore.VersionOwnerColumns("s.id") + `
 	from unnest($1::uuid[], $2::int[]) as s (id, number)
 	join artifacts d on d.id = s.id
@@ -1127,7 +1133,9 @@ func madeQueryVersion(held, defined, queued bool, owner graphstore.VersionOwner,
 // upload's repair of a role left null (api's storeArtifact), writes the role the row's slug already
 // gives it (refs.DocumentBandSQL). The owner it reads of a version the transaction queued is the
 // one the store holds before the batch, which is the one that version's writer read in the read
-// phase (ReadVersionOwner), and so the one its node takes.
+// phase (ReadVersionOwner), and so the one its node takes. A version of a stored document is this
+// build's writer's where the transaction queued it or it holds its version_renders row
+// (rendersFrom's written); one a build before the cutover wrote holds neither.
 func (l *Ledger) readCovered(ctx context.Context, tx pgx.Tx, versions []statedVersion) (map[statedVersion]queryOf, error) {
 	covered := map[statedVersion]queryOf{}
 	var ids []string
@@ -1143,7 +1151,7 @@ func (l *Ledger) readCovered(ctx context.Context, tx pgx.Tx, versions []statedVe
 		if query != "" {
 			owner.Query, owner.DefinitionVersion = true, graphstore.QueryDefinitionVersion
 		}
-		if of, renders := rendersFrom(address.IssueKey, string(address.Band), query, madeQueryVersion(false, false, true, owner, version.number)); renders {
+		if of, renders := rendersFrom(address.IssueKey, string(address.Band), query, madeQueryVersion(false, false, true, owner, version.number), true); renders {
 			covered[version] = of
 		}
 	}
@@ -1158,12 +1166,12 @@ func (l *Ledger) readCovered(ctx context.Context, tx pgx.Tx, versions []statedVe
 	for rows.Next() {
 		var version statedVersion
 		var issue, band, query string
-		var held, defined, stored bool
+		var held, defined, stored, rendered bool
 		var owner graphstore.VersionOwner
-		if err := rows.Scan(append([]any{&version.artifactID, &version.number, &issue, &band, &query, &held, &defined, &stored}, owner.Targets()...)...); err != nil {
+		if err := rows.Scan(append([]any{&version.artifactID, &version.number, &issue, &band, &query, &held, &defined, &stored, &rendered}, owner.Targets()...)...); err != nil {
 			return nil, fmt.Errorf("read which query's record covers the versions the passes stated: %w", err)
 		}
-		if of, renders := rendersFrom(issue, band, query, madeQueryVersion(held, defined, !stored, owner, version.number)); renders {
+		if of, renders := rendersFrom(issue, band, query, madeQueryVersion(held, defined, !stored, owner, version.number), !stored || rendered); renders {
 			covered[version] = of
 		}
 	}
@@ -1778,7 +1786,7 @@ func (s *Service) carryApprovalBeforeFill(ctx context.Context, tx pgx.Tx, versio
 		if open, err := earlierCarryOpen(ctx, tx, id, number); err != nil || !open {
 			return err
 		}
-		return s.carryUnmovedEarlier(ctx, tx, id, number, version.markdown, *newest, version.record.Digest)
+		return s.carryUnmovedEarlier(ctx, tx, id, number, *newest, version.record.Digest, func() (string, error) { return version.markdown, nil })
 	}
 	if newest.Version != number || newest.CarriedFromVersion != nil {
 		return nil
@@ -1811,25 +1819,36 @@ func earlierCarryOpen(ctx context.Context, tx pgx.Tx, id string, number int) (bo
 }
 
 // carryUnmovedEarlier carries newest, the document's newest review and an approval of a version
-// before number, to version number of the document id, stored as markdown, where digest - the
-// version's record digest, which the fill read at the version's cut or the first pass of a deferred
-// version recorded on its row - is the digest newest stands on (knownRecord, recordUnmoved): R14
-// carries every version whose record digest is the approved one. This is a version whose own
+// before number, to version number of the document id, only where digest - the version's record
+// digest, which the fill read at the version's cut or the first pass of a deferred version recorded
+// on its row - is the digest newest stands on (knownRecord, recordUnmoved), which it reads before
+// it reads the version's text through text: R14 carries every version whose record digest is the
+// approved one, and no version whose record moved, whatever its text. This is a version whose own
 // write's rule passed over it, unable to vouch for its record in its read phase: a mark of the
 // issue's queries stood, or the version before it still owed its digest (recordUnmoved's P1 and
 // P2), or the write hands its rule no facts (versionWriteRecord: the node route's move, the
 // decisions step), or its pass was deferred (R15), so no pass of its write stated it. Its caller
-// runs it only where earlierCarryOpen answers true, and it carries through
-// carryNewestApprovalNaming on that function's own conditions, so its reason names the version the
-// person approved (RecordCarryReason). Its artifact.approved follows the version's
-// artifact.version, which the version's write appended before its COMMIT, as the fill's carry of
-// an approval given before the fill does.
-func (s *Service) carryUnmovedEarlier(ctx context.Context, tx pgx.Tx, id string, number int, markdown string, newest model.ArtifactReview, digest string) error {
+// runs it only where earlierCarryOpen answers true, and once the digest holds it carries through
+// carryNewestApprovalNaming on that function's own conditions: the restore, carryVerdict's cases
+// and the record case, in that order, each reason naming the version the person approved
+// (approvalOrigin). Its artifact.approved follows the version's artifact.version, which the
+// version's write appended before its COMMIT, as the fill's carry of an approval given before the
+// fill does.
+func (s *Service) carryUnmovedEarlier(ctx context.Context, tx pgx.Tx, id string, number int, newest model.ArtifactReview, digest string, text func() (string, error)) error {
+	record := knownRecord(digest)
+	unmoved, err := recordUnmoved(ctx, tx, id, number, newest, record)
+	if err != nil || !unmoved {
+		return err
+	}
+	markdown, err := text()
+	if err != nil {
+		return err
+	}
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
 		return skipUnreadableVersion(id, number, err)
 	}
-	return carryNewestApprovalNaming(ctx, tx, s.events, id, number, markdown, tree, newest, s.serverURL, decisionStepCases{}, "", knownRecord(digest), eventSink(ctx))
+	return carryNewestApprovalNaming(ctx, tx, s.events, id, number, markdown, tree, newest, s.serverURL, decisionStepCases{}, "", record, eventSink(ctx))
 }
 
 // HoldFills sets hold to run at the start of every fill of the record digests a write left owed
@@ -1995,11 +2014,10 @@ func (s *Service) carryFirstStated(ctx context.Context, tx pgx.Tx, versions []fi
 			if !open {
 				continue
 			}
-			rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
-			if err != nil {
-				return nil, err
-			}
-			if err := s.carryUnmovedEarlier(ctx, tx, id, number, rendered.Markdown, *newest, stated.digest); err != nil {
+			if err := s.carryUnmovedEarlier(ctx, tx, id, number, *newest, stated.digest, func() (string, error) {
+				rendered, err := RenderVersion(ctx, tx, model.ServerReader, id, number)
+				return rendered.Markdown, err
+			}); err != nil {
 				return nil, err
 			}
 			continue

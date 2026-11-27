@@ -274,7 +274,7 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 	serving.brokerTokens = func(database *store.Store) *ciphertoken.Verifier {
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
-			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
+			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, credentialTestAccountToken)),
 			Origins:   []string{testServerURL},
 			Replay:    store.NewDPoPProofs(database.Pool),
 			// What Dispatch itself passes: the check keys its bucket on the address
@@ -1163,8 +1163,8 @@ func TestAServiceOnlyBrokerTokenIsRefusedEveryWrite(t *testing.T) {
 	}
 	for name, write := range writes {
 		t.Run(name, func(t *testing.T) {
-			if got := writeClasses[write.method+" "+write.pattern]; got != write.class {
-				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, got, write.class)
+			if route, _ := declaredRoute(write.method + " " + write.pattern); route.WriteClass != write.class {
+				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, route.WriteClass, write.class)
 			}
 			response := rig.serve(caller.presenting(t, write.method, write.path, token, write.body))
 			refusal := decodeBody[refusalAnswer](t, response)
@@ -1201,6 +1201,7 @@ func TestAServiceOnlyBrokerTokenIsRefusedEveryWrite(t *testing.T) {
 // (TestAServiceOnlyBrokerTokenIsRefusedEveryWrite), and so does a route that needs the person
 // scope, which such a token does not hold.
 func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-of-an-account-entry-naming-no-person"
@@ -1328,6 +1329,7 @@ func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
 // service and no person are tested elsewhere: a machine's answers true, and an account's and a
 // job's answer false (TestAPersonlessTokenWritesAsItsAccount, TestAJobBrokerTokenIsNamedByWhoami).
 func TestWhoamiSaysNoSignInForEveryCredentialThatMayWrite(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
 	caller := newBrokerCaller(t)
@@ -1401,6 +1403,7 @@ func TestAServiceOnlyBrokerTokenWithNoProofIsRefused(t *testing.T) {
 // access-log line names that session as its caller and the broker token as its credential, with
 // the identity under the `service:` prefix. It captures the default logger, so it runs alone.
 func TestAJobBrokerTokenWritesAsItsSessionForItsService(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-job-token-naming-one-project"
@@ -1516,8 +1519,8 @@ func TestAJobBrokerTokenWritesEveryClass(t *testing.T) {
 	}
 	for name, write := range writes {
 		t.Run(name, func(t *testing.T) {
-			if got := writeClasses[write.method+" "+write.pattern]; got != write.class {
-				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, got, write.class)
+			if route, _ := declaredRoute(write.method + " " + write.pattern); route.WriteClass != write.class {
+				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, route.WriteClass, write.class)
 			}
 			response := rig.serve(write.request(t))
 			if response.Code < 200 || response.Code > 299 {

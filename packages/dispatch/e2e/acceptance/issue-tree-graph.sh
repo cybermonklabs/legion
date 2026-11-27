@@ -20,7 +20,10 @@
 # same rows, with the hold settings lib-tree.sh gives every upgrade boot, waits for the backfill as
 # the Verification preamble states it (lib-tree.sh's tree_wait_backfill), and writes the head half,
 # the same shapes through this head's API, beside a criterion a person writes under a comment of
-# its own issue.
+# its own issue. The head half's child holds no requirement of its own, and its check serves its
+# parent's alone: an issue this head creates under an open parent that holds requirements is a
+# view on that parent's spec, and a requirement written on it is refused 409
+# REQUIREMENT_BELONGS_TO_ANCESTOR.
 #
 # The census, each half reported apart. For every document of every issue of PROJECT: the blocks
 # the server's blocks read answers and the block nodes the store holds (each node whose current
@@ -44,8 +47,9 @@
 # /api/v1/issues/{key}/results; issues.parent_key against the child_of tuples; issue_links against
 # the needs tuples between issues; artifacts and artifact_versions against the artifact, query and
 # document version nodes; components, component_depends and issue_component_members against the
-# component nodes and their part_of, depends_on and affects tuples; and node_search against the text
-# values. It prints each side's count and the symmetric difference, and reads `envoy-dispatch census
+# component nodes and their part_of, depends_on and affects tuples; and node_search, its rows of
+# the nodes that hold text against the text values and its document rows against the live
+# documents that hold markdown. It prints each side's count and the symmetric difference, and reads `envoy-dispatch census
 # --store`'s line of each of those kinds at zero differences each way and its `census: versions`
 # line at `tree_mismatch=0` and `tree_mismatch_repaired=0` (lib-tree.sh's tree_census_versions),
 # failing and printing that line otherwise, and prints the census's own class of the rows of issues
@@ -185,16 +189,26 @@ issue_tree_graph_write_half() {
   corpus_result "$section" "$shapes" c-shapes pass "$corpus_commit_one" tester
   corpus_result "$section" "$shapes" c-both fail "$corpus_commit_one" implementer
   corpus_result "$section" "$shapes" c-both pass "$corpus_commit_two" implementer
+  # The earlier release's child holds a requirement of its own, which its check serves beside its
+  # parent's. This head's child holds none: born under an open parent that holds requirements, it
+  # is a view on that parent's spec, and POST /api/v1/issues refuses a spec that holds a
+  # requirement (409 REQUIREMENT_BELONGS_TO_ANCESTOR); its check serves its parent's alone, and
+  # hangs under the child issue, since it serves no requirement of its own issue.
   {
-    printf ':::requirement{#r-child}\nThe child holds a requirement of its own.\n:::\n\n'
+    [[ "$half" != base ]] || printf ':::requirement{#r-child}\nThe child holds a requirement of its own.\n:::\n\n'
     corpus_shapes spec "$half-child-spec"
   } >"$work/$half-child-spec.md"
   corpus_issue "$section" "A child in the $half half" "$work/$half-child-spec.md" "$shapes"
   child="$corpus_key"
   tree_key "$section" "the child's key" "$child"
   {
-    printf ':::check{#c-child serves="dispatch://%s/spec#b-r-shapes dispatch://%s/spec#b-r-child" surface="cli" run="bash e2e/acceptance/issue-tree-graph.sh" negative_control="Serve the parent alone and the check hangs under the issue."}\nThe child proves its parent'"'"'s shapes and its own requirement.\n:::\n\n' \
-      "$shapes" "$child"
+    if [[ "$half" == base ]]; then
+      printf ':::check{#c-child serves="dispatch://%s/spec#b-r-shapes dispatch://%s/spec#b-r-child" surface="cli" run="bash e2e/acceptance/issue-tree-graph.sh" negative_control="Serve the parent alone and the check hangs under the issue."}\nThe child proves its parent'"'"'s shapes and its own requirement.\n:::\n\n' \
+        "$shapes" "$child"
+    else
+      printf ':::check{#c-child serves="dispatch://%s/spec#b-r-shapes" surface="cli" run="bash e2e/acceptance/issue-tree-graph.sh" negative_control="Serve a requirement of the child and the check hangs under it."}\nThe child proves its parent'"'"'s shapes.\n:::\n\n' \
+        "$shapes"
+    fi
     corpus_shapes verification.md "$half-child-verification"
   } >"$work/$half-child-verification.md"
   corpus_upload "$section" "$child" verification.md "$work/$half-child-verification.md"
@@ -218,9 +232,15 @@ issue_tree_graph_write_half() {
 # $work/HALF/ID.json, what the census reads of one document: its blocks as the blocks read answers
 # them, each block's rendering parent as its path names it (the nearest block above it that holds
 # an id, none at the top), each block node the store holds of it (its current in_document names
-# the document) and each document_blocks row that projects one (a row of the document, or of its
-# room's tree whose issue_room_blocks row names the document), with the parent the row holds and
-# the address of the row's artifact.
+# the document) and each document_blocks row that projects one (a row whose document it is, as
+# refs' BlockDocumentSQL reads a row's document: the one its issue_room_blocks row names, else the
+# row's own artifact), with the parent the row holds and the address of the row's artifact.
+#
+# An issue's tree artifact is read through the text read: the blocks read and the path read are a
+# document's alone (400 NOT_DOCUMENT for an artifact of kind tree), and the text read takes the
+# tree artifact as it takes a document (api's readsAsDocument) and answers, with ?blocks=true, the
+# blocks of its own fragment with their ranges. Its blocks' rendering parents are read off those
+# ranges: the nearest block before a block whose range holds it, a block of no bytes holding none.
 issue_tree_graph_document() {
   local section="$1" half="$2" id="$3" ref="$4" slug="$5" primary="$6" kind="$7" issue="$8"
   local address top block parent dir="$work/$2"
@@ -234,18 +254,29 @@ issue_tree_graph_document() {
   else
     top="artifact:$ref"
   fi
-  tree_send GET "/api/v1/artifacts/$id/blocks"
-  tree_want 200 "$section" "read the blocks of $ref"
-  jq -c '[.[] | {id, type, from, attrs: ([.attributes[]? | {(.name): .value}] | add // {})}]' "$work/body" >"$dir/$id.blocks" ||
-    fail "$section" "read the blocks of $ref" "no list of blocks: $(body)"
   : >"$dir/$id.parents"
-  while IFS= read -r block; do
-    tree_send GET "/api/v1/artifacts/$id/blocks/$(q "$block")"
-    tree_want 200 "$section" "read where $block stands in $ref"
-    parent="$(jq -r '[.path[:-1][] | select(.id != "") | .id] | last // ""' "$work/body")" ||
-      fail "$section" "read where $block stands in $ref" "no path in: $(body)"
-    printf '%s\t%s\n' "$block" "$parent" >>"$dir/$id.parents"
-  done < <(jq -r '.[].id' "$dir/$id.blocks")
+  if [[ "$kind" == tree ]]; then
+    tree_send GET "/api/v1/artifacts/$id/text?blocks=true"
+    tree_want 200 "$section" "read the text of $ref with its blocks"
+    jq -c '[.blocks[] | {id, type, from, attrs: ([.attributes[]? | {(.name): .value}] | add // {})}]' "$work/body" >"$dir/$id.blocks" ||
+      fail "$section" "read the blocks of $ref" "no list of blocks: $(body)"
+    jq -r '.blocks as $blocks | range(0; $blocks | length) as $i | $blocks[$i] as $b
+      | ([$blocks[:$i][] | select(.from <= $b.from and $b.to <= .to and .to > .from)] | last | .id // "") as $parent
+      | "\($b.id)\t\($parent)"' "$work/body" >"$dir/$id.parents" ||
+      fail "$section" "read where each block stands in $ref" "no ranges in: $(body)"
+  else
+    tree_send GET "/api/v1/artifacts/$id/blocks"
+    tree_want 200 "$section" "read the blocks of $ref"
+    jq -c '[.[] | {id, type, from, attrs: ([.attributes[]? | {(.name): .value}] | add // {})}]' "$work/body" >"$dir/$id.blocks" ||
+      fail "$section" "read the blocks of $ref" "no list of blocks: $(body)"
+    while IFS= read -r block; do
+      tree_send GET "/api/v1/artifacts/$id/blocks/$(q "$block")"
+      tree_want 200 "$section" "read where $block stands in $ref"
+      parent="$(jq -r '[.path[:-1][] | select(.id != "") | .id] | last // ""' "$work/body")" ||
+        fail "$section" "read where $block stands in $ref" "no path in: $(body)"
+      printf '%s\t%s\n' "$block" "$parent" >>"$dir/$id.parents"
+    done < <(jq -r '.[].id' "$dir/$id.blocks")
+  fi
   query "$section" "read the block nodes of $ref" "
     select split_part(c.from_id, '#', 2) || '|' || c.from_id
     from (
@@ -260,9 +291,8 @@ issue_tree_graph_document() {
   query "$section" "read the document_blocks rows of $ref" "
     select d.block_id || '|' || coalesce(d.node_address, '') || '|' || coalesce(d.parent_block_id, '') || '|' || a.ref_key
     from document_blocks d join artifacts a on a.id = d.artifact_id
-    where d.artifact_id = '$id'
-       or (a.kind = 'tree' and exists (select 1 from issue_room_blocks r
-             where r.tree_artifact_id = d.artifact_id and r.block_id = d.block_id and r.document_id = '$id'))"
+    where coalesce((select r.document_id from issue_room_blocks r
+                    where r.tree_artifact_id = d.artifact_id and r.block_id = d.block_id), d.artifact_id) = '$id'"
   printf '%s\n' "$answer" >"$dir/$id.rows"
   jq -n --arg id "$id" --arg ref "$ref" --arg address "$address" --arg issue "$issue" --arg top "$top" \
     --slurpfile blocks "$dir/$id.blocks" --rawfile parents "$dir/$id.parents" \
@@ -355,7 +385,7 @@ readonly census_program='
          | want($d; $b) as $want
          | ($h.part_of[$node] // []) as $have
          | (if placed($want; $have) then empty
-            else "parent \($node): the store places it under \($have | join(" and ") | if . == "" then "nothing" else . end), and the rendering and its author under \($want)" end),
+            else "parent \($node), a \($b.type): the store places it under \($have | join(" and ") | if . == "" then "nothing" else . end), and the rendering and its author under \($want)" end),
            (($d.rows[$b.id] // null) as $row
             | select($row != null)
             | (($have[0] // "") | if startswith("block:" + $row.artifact + "#") then ltrimstr("block:" + $row.artifact + "#") else "" end) as $tuple
@@ -574,13 +604,30 @@ section=upgrade
 tree_boot_head head
 base="$tree_head_url"
 tree_wait_backfill "$section"
+# Every id the earlier release's index held stands. This head's index holds rows beside them: a
+# list item is a block of its own to this head's renderer (pmdoc's renderer.list records each
+# item's range), which indexes it at the id the item held already, where the earlier release's
+# index held no row of an item. So each row the upgrade added must be a list item's, and a row of
+# any other type that the earlier release's index did not hold fails here.
 query "$section" "read the blocks the earlier release created, after the upgrade" "
-    select a.ref_key || '#' || d.block_id
+    select a.ref_key || '#' || d.block_id || ' ' || d.type
     from document_blocks d join artifacts a on a.id = d.artifact_id where a.issue_key = any($base_keys_sql)
     order by 1"
 printf '%s\n' "$answer" >"$work/blocks.after"
-sed 's/ parent=.*$//' "$work/capture/blocks" | diff - "$work/blocks.after" >"$work/blocks.diff" ||
-  fail "$section" "every block id the earlier release created stands after the upgrade" "$(head -n 20 "$work/blocks.diff")"
+sed 's/ parent=.*$//' "$work/capture/blocks" | grep . | LC_ALL=C sort >"$work/blocks.before" ||
+  fail "$section" "the earlier release created block ids" "the capture holds none"
+sed 's/ [^ ]*$//' "$work/blocks.after" | grep . | LC_ALL=C sort >"$work/blocks.after.ids" || true
+LC_ALL=C comm -23 "$work/blocks.before" "$work/blocks.after.ids" >"$work/blocks.lost"
+[[ ! -s "$work/blocks.lost" ]] ||
+  fail "$section" "every block id the earlier release created stands after the upgrade" \
+    "lost: $(head -n 20 "$work/blocks.lost" | paste -sd ';' -)"
+grep -v ' list_item$' "$work/blocks.after" | sed 's/ [^ ]*$//' | grep . | LC_ALL=C sort >"$work/blocks.after.other" || true
+LC_ALL=C comm -13 "$work/blocks.before" "$work/blocks.after.other" >"$work/blocks.added"
+[[ ! -s "$work/blocks.added" ]] ||
+  fail "$section" "each row the upgrade added to the earlier release's index is a list item's" \
+    "added, of another type: $(grep -F -f "$work/blocks.added" "$work/blocks.after" | head -n 20 | paste -sd ';' -)"
+printf 'the upgrade keeps the %s block ids the earlier release indexed and indexes %s list items beside them\n' \
+  "$(wc -l <"$work/blocks.before")" "$(LC_ALL=C comm -13 "$work/blocks.before" "$work/blocks.after.ids" | wc -l)"
 want_value "$section" "every ask the earlier release created stands after the upgrade" "$(<"$work/capture/asks")" \
   "select coalesce(string_agg(id::text || ' ' || issue_key, E'\n' order by id::text || ' ' || issue_key), '') from asks where issue_key = any($base_keys_sql)"
 query "$section" "read the citations after the upgrade" "select from_kind || ':' || from_id || '>' || to_kind || ':' || to_id from refs order by 1"
@@ -653,8 +700,12 @@ while IFS='|' read -r result issue check; do
     fail "$section" "the result $result the earlier release wrote is still listed under its check $check" "GET /api/v1/issues/$issue/results: $(body)"
 done <"$work/capture/result_checks"
 pass "$section" "each check_results row the earlier release wrote reads byte for byte as captured, and its check still lists it"
-# The component tables, which name a project and no issue, and node_search, whose rows name any
-# node that holds text, against the whole store.
+# The component tables, which name a project and no issue, and node_search, against the whole
+# store. node_search holds two kinds of row (R17, migration 20261125160000_issue_tree_node_search):
+# one for each node that holds text, which is held to the text values, and one for each live
+# document that holds a version with markdown (node_kind `artifact`), whose vector is that
+# version's and which no text value stands behind, held to those documents, as the store census's
+# own two kinds read the table (graphcensus' node_search and document_search_node).
 issue_tree_graph_sides "$section" project components \
   "select project_key || '/' || id from components where project_key = '$project'" \
   "select id from graph_nodes where kind = 'component' and state <> 'gone' and split_part(id, '/', 1) = '$project'"
@@ -667,7 +718,7 @@ issue_tree_graph_sides "$section" project component_depends \
   "select project_key || '/' || from_id || '>' || project_key || '/' || to_id from component_depends where project_key = '$project'" \
   "$links_sql"
 issue_tree_graph_sides "$section" store node_search \
-  "select node_kind || ':' || node_address from node_search" "
+  "select node_kind || ':' || node_address from node_search where node_kind <> 'artifact'" "
     select c.from_kind || ':' || c.from_id from (
       select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
       from graph_tuples t
@@ -676,6 +727,13 @@ issue_tree_graph_sides "$section" store node_search \
     ) c
     join graph_nodes n on n.kind = c.from_kind and n.id = c.from_id and n.state <> 'gone'
     where c.asserted"
+issue_tree_graph_sides "$section" store node_search.documents \
+  "select node_address from node_search where node_kind = 'artifact'" "
+    select a.ref_key from artifacts a
+    join graph_nodes n on n.kind = 'artifact' and n.id = a.ref_key and n.state <> 'gone'
+    where a.kind = 'doc' and a.retired_at is null
+      and (select v.search from artifact_versions v
+           where v.artifact_id = a.id and v.markdown is not null order by v.number desc limit 1) is not null"
 sections=$((sections + 1))
 
 # --- store: envoy-dispatch census --store over both halves ----------------------------------------

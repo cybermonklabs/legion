@@ -15,7 +15,7 @@ import (
 // FindNodeUnderIssue is the node the `{id}` of an `/api/v1/issues/{key}/nodes/{id}/…` route names,
 // read for who, which must stand under the issue key names. Every route of that shape decodes its
 // `{id}` here and nowhere else: `/state`, `/settle`, `/findings` and `/pointers`. Such a route's
-// idRoutes entry resolves no prefix, because the segment is a store address rather than an id a
+// ID resolves no prefix, because the segment is a store address rather than an id a
 // prefix shortens.
 //
 // id is the one path segment, which the client percent-encodes whole and the router decodes, so

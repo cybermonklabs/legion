@@ -1348,8 +1348,11 @@ type commentReplyInput struct {
 	Attempt int          `json:"attempt" required:"true"`
 	Body    *string      `json:"body"`
 	Error   *string      `json:"error"`
-	// ReplyToBlock is the id of the block of comment {id} the reply answers ("b2").
+	// ReplyToBlock is the id of the block of comment {id} the reply answers ("b2"), and Quote
+	// and Occurrence the words of that block the reply quotes, as commentInput's.
 	ReplyToBlock *string `json:"reply_to_block"`
+	Quote        *string `json:"quote"`
+	Occurrence   *int    `json:"occurrence"`
 }
 
 // commentReplyPlan is everything a delivery callback's reply is decided on, read and planned
@@ -1365,10 +1368,11 @@ type commentReplyPlan struct {
 }
 
 // planCommentReply plans one delivery callback's reply under the comment's owner lock and above
-// every row lock: the thread climb, the block the reply names with the index its comment owes,
-// the reply's own index and references, and what it is in the node and tuple store, for an id
-// and a created_at reserved here. Nothing it reads is read again below, and nothing it plans is
-// written here. who is the session replying, which a block it may not see is refused to.
+// every row lock: the thread climb, the block the reply names, with the words of it the reply
+// quotes (quote, occurrence), and the index its comment owes, the reply's own index and
+// references, and what it is in the node and tuple store, for an id and a created_at reserved
+// here. Nothing it reads is read again below, and nothing it plans is written here. who is the
+// session replying, which a block it may not see is refused to.
 //
 // The reply row is not inserted yet, so what no read of that row can answer is handed over: the
 // document its `#id`s resolve against, named by the fields that row will hold (planPendingItem,
@@ -1377,7 +1381,7 @@ type commentReplyPlan struct {
 // read that gives a stored reply its block would find no row yet, and addressing a document's
 // comment is itself a read (ownerAddress).
 func (s *server) planCommentReply(
-	ctx context.Context, tx pgx.Tx, who model.Actor, comment model.Comment, body string, replyToBlock *string,
+	ctx context.Context, tx pgx.Tx, who model.Actor, comment model.Comment, body string, replyToBlock, quote *string, occurrence *int,
 ) (commentReplyPlan, error) {
 	var plan commentReplyPlan
 	var err error
@@ -1387,7 +1391,7 @@ func (s *server) planCommentReply(
 		return plan, err
 	}
 	if replyToBlock != nil {
-		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT")
+		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT", quote, occurrence)
 		if err != nil {
 			plan.refusal, err = deferredRefusal(err)
 			return plan, err
@@ -1450,19 +1454,24 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
+	if err := replyQuoteRefusal("INVALID_COMMENT", "reply_to_block", input.ReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The mention the reply answers and the session its attempt names are read before the
-	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
-	// asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
-	// first, which is its only one wherever the transaction below takes a reply naming none. A
-	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500. An attempt past
-	// comment_deliveries.attempt's range names no delivery, so no read is made with it: the bound
-	// below (fitsIntegerColumn) answers it, where it always has.
+	// transaction, so a reply from a session the attempt does not name asks the listener, with
+	// nothing held, whether that session holds the role now, for a mention of a role, or replaced
+	// the attempt's session, for a mention of a session (lookUpRoleHolderReply). The mention is
+	// the one the request names, else the comment's first, which is its only one wherever the
+	// transaction below takes a reply naming none, and the session is that of the mention's own
+	// attempt, the one it was sent to. A read that finds nothing asks nothing: the transaction
+	// below answers that comment, mention or attempt as it always has. A read that fails is the
+	// route's 500. An attempt past comment_deliveries.attempt's range names no delivery, so no read
+	// is made with it: the bound below (fitsIntegerColumn) answers it, where it always has.
 	var roleReply roleHolderReply
 	var err error
 	if fitsIntegerColumn(input.Attempt) {
-		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+		roleReply, err = s.roleHolderReplyOf(r, actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
@@ -1506,7 +1515,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// route moves; every statement it plans is written with the reply's own writes.
 	var plan commentReplyPlan
 	if input.Body != nil {
-		if plan, err = s.planCommentReply(r.Context(), tx, actor, comment, *input.Body, input.ReplyToBlock); err != nil {
+		if plan, err = s.planCommentReply(r.Context(), tx, actor, comment, *input.Body, input.ReplyToBlock, input.Quote, input.Occurrence); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1576,10 +1585,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the mentioned
-	// role now, while it is live: a different session that took the role from the one the
-	// attempt names is handed what that session had not read (lookUpRoleHolderReply).
+	// role now, while it is live, and a session that replaced the one the attempt names: a
+	// different session that took the role, or that replaced the session, is handed what that
+	// session had not read (lookUpRoleHolderReply).
 	if (attempt.SessionID == nil || *attempt.SessionID != actor.ID) && !roleReply.allows(attempt.Target) {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "session may reply only to its own delivery, or to one sent for a role it holds while it is live")
+		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, replyForbiddenSession)
 		return
 	}
 	// A replay of a callback that already posted its reply writes nothing and answers the stored
@@ -1681,17 +1691,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// a reply left out of the store writes none.
 	var reply model.Comment
 	nodeKind, nodeAddress := plan.stored.rowNode()
+	quote, occurrence := replyQuote(plan.replyBlock)
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		if !plan.stored.unprojected {
 			graphstore.QueueNodes(b, plan.stored.written)
 		}
 		b.Queue("", `
-			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
-			select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block,
+			                      replies_to_quote, replies_to_occurrence, answers, node_kind, node_address, created_at)
+			select $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 			where `+graphstore.KeptHeadRows+`
 			returning `+commentColumns+`
 		`, plan.id, comment.IssueKey, comment.ArtifactID, author, *input.Body, plan.thread.ReplyTo, plan.thread.AskID, turn,
-			plan.thread.ReplyBlock.nodeID(), plan.thread.Answers, nodeKind, nodeAddress, plan.createdAt).QueryRow(func(row pgx.Row) error {
+			plan.thread.ReplyBlock.nodeID(), quote, occurrence, plan.thread.Answers, nodeKind, nodeAddress, plan.createdAt).QueryRow(func(row pgx.Row) error {
 			var err error
 			reply, err = scanComment(row)
 			return err

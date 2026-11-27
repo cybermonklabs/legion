@@ -2,8 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,25 +13,52 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // readersFirstVersion is the block schema version of the build that reads decision, reading and
-// ask's shaped and creates none of them: each is read from version 6 and created from version 7
-// (pmdoc/schema/blocks.json), and this build, at version 8, creates them.
-const readersFirstVersion = 6
+// ask's shaped and creates none of them: each is read from version 7 and created from version 8
+// (pmdoc/schema/blocks.json), and this build, at version 9, creates them.
+const readersFirstVersion = 7
 
-// useReadersFirstSchema makes this build's manifest, at readersFirstVersion, the one the process
-// reads and writes by until t ends (pmdoctest.UseBlockSchema): the manifest of the build that
-// reads the three elements before it creates them. The manifest is package-global, so a test
-// that calls it does not call t.Parallel.
+// useReadersFirstSchema makes this build's manifest as of readersFirstVersion (blockSchemaAsOf)
+// the one the process reads and writes by until t ends (pmdoctest.UseBlockSchema): the manifest of
+// the build that reads the three elements before it creates them, and knows nothing a later
+// version adds. The manifest is package-global, so a test that calls it does not call t.Parallel.
 func useReadersFirstSchema(t *testing.T) {
+	t.Helper()
+	pmdoctest.UseBlockSchema(t, blockSchemaAsOf(t, readersFirstVersion))
+}
+
+// blockSchemaAsOf is this build's manifest (pmdoc/schema/blocks.json) as the build of version
+// declared it: at that version, and holding no node, mark, typed block, attribute, enum choice or
+// item kind a later version reads (its since above version), none of which a manifest of version
+// can declare (pmdoc's validateElementVersions). An element it keeps keeps its creatable_since, so
+// one that build reads and does not create yet stays one it does not create.
+func blockSchemaAsOf(t *testing.T, version int) pmdoc.BlockSchema {
 	t.Helper()
 	var schema pmdoc.BlockSchema
 	if err := json.Unmarshal(pmdoc.SchemaJSON(), &schema); err != nil {
 		t.Fatalf("decode the block schema: %v", err)
 	}
-	schema.Version = readersFirstVersion
-	pmdoctest.UseBlockSchema(t, schema)
+	later := func(since int) bool { return since > version }
+	laterVersions := func(_ string, versions pmdoc.BlockElementVersions) bool { return later(versions.Since) }
+	schema.Version = version
+	schema.Nodes = slices.DeleteFunc(schema.Nodes, func(node pmdoc.BlockSchemaElement) bool { return later(node.Since) })
+	schema.Marks = slices.DeleteFunc(schema.Marks, func(mark pmdoc.BlockSchemaElement) bool { return later(mark.Since) })
+	schema.Types = slices.DeleteFunc(schema.Types, func(typ pmdoc.BlockTypeSchema) bool { return later(typ.Since) })
+	for index := range schema.Types {
+		typ := &schema.Types[index]
+		typ.Attributes = slices.DeleteFunc(typ.Attributes, func(attr pmdoc.BlockAttribute) bool { return later(attr.Since) })
+		for attrIndex := range typ.Attributes {
+			attr := &typ.Attributes[attrIndex]
+			attr.Choices = slices.DeleteFunc(attr.Choices, func(choice string) bool { return later(attr.ChoiceVersions[choice].Since) })
+			attr.Items = slices.DeleteFunc(attr.Items, func(item pmdoc.BlockItemKind) bool { return later(attr.ItemVersions[string(item)].Since) })
+			maps.DeleteFunc(attr.ChoiceVersions, laterVersions)
+			maps.DeleteFunc(attr.ItemVersions, laterVersions)
+		}
+	}
+	return schema
 }
 
 // The readers-first rule, held under the manifest of the build that reads the new elements before
@@ -39,6 +68,8 @@ func useReadersFirstSchema(t *testing.T) {
 // nodes, so a decision written beside a stored one is a decision node (refs' TypedFacts) even
 // under that manifest.
 func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
+	// Not parallel: it installs the readers-first manifest for the whole process
+	// (useReadersFirstSchema), which every test beside it would read and write by.
 	useReadersFirstSchema(t)
 	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 	const intro = "Introductory prose.\n\n"
@@ -143,7 +174,7 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 		t.Fatalf("fixture has no shaped ask: %s", seedAsk)
 	}
 	seed := intro + requirement + decision + "\n" + seedAsk
-	stored := newerversion.StoreNewerVersion(t, database.Pool, id, seed)
+	stored := newerversion.StoreNewerVersion(t, database, id, seed)
 	requireRead := func(prose string, version int) {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, path+"/text", nil)
@@ -165,15 +196,17 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 	// The stored ask block's shaped is read as this build reads it, under the readers-first manifest
 	// too: one block_refs row, and its tuple on the ask's node, where this build's node pass hangs an
 	// ask block's shaped (refs' TypedFacts), and none on the block's own node, where the build that
-	// reads it first, which has no node pass, states it.
+	// reads it first, which has no node pass, states it. The issue is born converted, so the spec's
+	// block rows and its blocks' nodes are those of the issue's room, keyed by the room's tree
+	// artifact (refs.DocumentRoomBlocksSQL, refs.DocumentRoomSQL).
 	requirePointer := func() {
 		t.Helper()
 		var projections, blockTuples, askTuples int
 		if err := database.Pool.QueryRow(t.Context(), `
-			select (select count(*) from block_refs where artifact_id = $1 and block_id = 'read-it' and kind = 'shaped'),
-			       (select count(*) from graph_tuples where from_kind = 'block' and from_id = a.ref_key || '#read-it' and kind = 'shaped'),
+			select (select count(*) from block_refs b where `+refs.DocumentRoomBlocksSQL("b", "$1::uuid")+` and b.block_id = 'read-it' and b.kind = 'shaped'),
+			       (select count(*) from graph_tuples where from_kind = 'block' and from_id = room.ref_key || '#read-it' and kind = 'shaped'),
 			       (select count(*) from graph_tuples where from_kind = 'ask' and from_id = $2 and kind = 'shaped' and asserted)
-			from artifacts a where a.id = $1
+			from artifacts room where room.id = `+refs.DocumentRoomSQL("$1::uuid")+`
 		`, id, asks["read-it"]).Scan(&projections, &blockTuples, &askTuples); err != nil || projections != 1 || blockTuples != 0 || askTuples != 1 {
 			t.Fatalf("shaped projection / block tuple / ask tuple = %d/%d/%d (%v), want 1/0/1", projections, blockTuples, askTuples, err)
 		}
@@ -200,7 +233,7 @@ func TestTheNewTypesAreReadButNotWrittenBeforeTheirNodePass(t *testing.T) {
 	// block with no typed tuple. This build is that pass, so the decision it writes beside the
 	// stored one is a decision node stating its uncertainty, under the readers-first manifest too.
 	var address string
-	if err := database.Pool.QueryRow(t.Context(), `select node_id from document_blocks where artifact_id = $1 and block_id = 'another'`, id).Scan(&address); err != nil {
+	if err := database.Pool.QueryRow(t.Context(), `select d.node_id from document_blocks d where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.block_id = 'another'`, id).Scan(&address); err != nil {
 		t.Fatalf("read the second decision's block address: %v", err)
 	}
 	node, found, err := graphstore.ReadNode(t.Context(), database.Pool, "block", address)

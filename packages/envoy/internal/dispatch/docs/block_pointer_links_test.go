@@ -198,6 +198,8 @@ func pointerRowsOf(t *testing.T, database *store.Store, artifactID string) []poi
 // an attribute node it holds gone, each stop answering, so the link they limited is listed with no
 // limit, as the installed schema, which declares no such attribute, lists it.
 func TestATargetsChangeReachesStoredPointersAtOnce(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	database, service := blockIndexService(t)
 	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
@@ -274,6 +276,8 @@ func requirePointerTargets(t *testing.T, database *store.Store, stage, nodeID, a
 // the attribute does not allow writes its version and stores the pointer, which the graph does not
 // list until its target has an allowed type.
 func TestABrowserWrittenPointerToADisallowedTypeIsStoredAndNotListed(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	database, service := blockIndexService(t)
 	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
@@ -314,6 +318,8 @@ func TestABrowserWrittenPointerToADisallowedTypeIsStoredAndNotListed(t *testing.
 // The reconciliation indexes a document's pointers as its version write did: re-indexing the same
 // version leaves every block_refs row as it was, the pointer's targets included.
 func TestTheReconciliationIndexesTheSamePointersAsTheVersionWrite(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	database, service := blockIndexService(t)
 	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
@@ -371,6 +377,8 @@ func TestTheReconciliationIndexesTheSamePointersAsTheVersionWrite(t *testing.T) 
 // tree, and that tree holds the list item's id. Only the pointers are read back from the markdown,
 // and the claim's opening line writes its id.
 func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	const (
 		r1 = "dispatch://CORE-1/artifact/target#b-r1"
 		r2 = "dispatch://CORE-1/artifact/target#b-r2"
@@ -474,6 +482,8 @@ func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
 // holds a space keeps its pointer on both. An id holding U+0000 is written U+FFFD, as markdown reads
 // that character, and both paths list the claim's pointer under the id as written.
 func TestATypedBlockIDReadsBackFromTheMarkdownAsTheTreeHoldsIt(t *testing.T) {
+	// Not parallel: it swaps pmdoc's block schema for the whole process and sets an environment
+	// variable to claim it (pmdoctest.UseBlockSchema, t.Setenv).
 	const r1 = "dispatch://CORE-1/artifact/target#b-r1"
 	for _, test := range []struct{ name, id, written string }{
 		{name: "an id holding a space", id: "a b", written: "a b"},

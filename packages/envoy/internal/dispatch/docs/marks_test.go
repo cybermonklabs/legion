@@ -1155,11 +1155,13 @@ func TestReplaceTextReanchorsOpenRows(t *testing.T) {
 	if _, err := joinedReplaceText(service, artifactID, "A quick brown dog and a slow brown cat", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
-	// The anchored ask and comment above schedule their own settlements, so version 2 can be the
-	// pre-replace snapshot; wait for the replacement's settled state, not a version number. The
-	// settlement that writes it queues behind the room's appends, so the wait ends on the
-	// orphaned anchor, bounded by the test binary's deadline alone.
-	testwait.Until(t, "the replacement's settlement to orphan the deleted quote's comment", func() (string, bool) {
+	// The replacement's own transaction refreshes the anchors against the tree it leaves
+	// (recordLiveOperation's writeVersionTx, refreshAnchors), so the deleted quote's comment is
+	// orphaned by the time joinedReplaceText returns, and the read finds it at once. The anchored
+	// ask and comments above schedule their own settlements, so version 2 can be the pre-replace
+	// snapshot; the read is of the anchor, not of a version number, and it is bounded by the test
+	// binary's deadline alone.
+	testwait.Until(t, "the replacement to orphan the deleted quote's comment", func() (string, bool) {
 		anchor := loadCommentAnchor(t, service, commentID)
 		return fmt.Sprintf("%#v", anchor), anchor.Orphaned
 	})
@@ -1740,6 +1742,8 @@ func TestAcceptSuggestionRefusesCodeWithAPipeAfterABackslashInATableCell(t *test
 // repeat as they found it. The upload stores what the base did: the id repair every upload runs
 // keeps the id for the first block in document order.
 func TestWritesBesideALiveRepeatedBlockIDAreTaken(t *testing.T) {
+	// Not parallel: it sets pmdoc's block ID generator, which every parse in the process draws from
+	// (pmdoc.SetBlockIDGenerator in installCounterIDs).
 	const seed = ":::callout{#note}\nOriginal.\n:::\n\n:::callout{kind=\"warning\"}\nCopy.\n:::\n\nThe quick brown fox\n"
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	accept := func(quote, replacement string) func(*testing.T, *Service, string) error {

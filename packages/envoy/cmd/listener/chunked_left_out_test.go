@@ -20,6 +20,8 @@ import (
 // with topics short enough to fit in one message. (The fifth kind does not arise at a registration
 // on a stream as this build deploys it: the route takes an uncaptured wildcard pair off first.)
 func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
+	// Not parallel: a registration of about 1.18 MB of topics must finish inside the route's own
+	// 3.5 s budget (sendRequestBudget), and load beside it stretched such a registration past it.
 	const (
 		fourth  = "*.team.chunked"
 		matched = "notifications.team.chunked"

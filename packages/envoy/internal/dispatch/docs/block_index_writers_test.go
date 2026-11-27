@@ -1044,12 +1044,14 @@ var indexPasses = map[string]string{
 	// the blocks and links that release dropped, so the plan also reads what the store still
 	// asserts of the document (heldDocumentBlocks); what it states of those - gone, retracted - is
 	// decided by the render that does not hold them, as the parents' plan reads the parents the
-	// store asserts to state the render's. Of each block whose row it writes first and whose node
-	// records its authors (T7 of the issue-tree plan), it reads the authors of the version that
-	// first holds it, off that version's own row, and whether the node states its authors already,
-	// off the store's own authored_by, which it reads only to add none where the node's first write
-	// did.
-	"refs/blocks.go#Queue": "the version's render, the authors of the versions its blocks first stand in, each decision's stored decided_by, the pointer tuples the store holds at each block the render drops, and where another release indexed the document since the store stated it, what the store still asserts against that render",
+	// store asserts to state the render's. Of each block the render no longer holds, the plan reads
+	// the copied_from its node states (heldCopiedFrom), only to retract it with the block: the
+	// render decides which blocks go, and the relation no row projects goes with them. Of each
+	// block whose row it writes first and whose node records its authors (T7 of the issue-tree
+	// plan), it reads the authors of the version that first holds it, off that version's own row,
+	// and whether the node states its authors already, off the store's own authored_by, which it
+	// reads only to add none where the node's first write did.
+	"refs/blocks.go#Queue": "the version's render, the authors of the versions its blocks first stand in, each decision's stored decided_by, the pointer tuples the store holds at each block the render drops, the copied_from each block the render drops states, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	// The parents of a version's blocks, from its render. An authored node's first parent is its
 	// author's (D4 of the issue-tree plan): the targets its parent attribute, its serves pointer
 	// and its From: line name in the render, read where they stand - a conversation item's issue

@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `register_gate` with a basis now waits until the latest saved version of the root's document records each answered ask block, an own ask or a copy, with the answer the server holds now: its state, who answered and when. A person can change an answer while the ask stays answered, and settlement then writes a new version, which would end a basis registered on the earlier one. Until the saved version holds that answer, the tool refuses the basis before it asks the daemon anything, and the refusal says to wait for that version. For a copy, the answer is its source ask's. A Dispatch of the release before sends no `asks` and writes a changed answer onto a copy's lines only at the copy's own settlement, so against it the tool reads the source ask by the copy's `copied_from`.
+time: 2026-11-27T07:29:02Z
+custom:
+    Issue: pr5542

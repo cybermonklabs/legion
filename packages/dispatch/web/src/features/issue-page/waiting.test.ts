@@ -361,7 +361,7 @@ test("what waits on the reader is their open questions, the review list and thei
     commentNode(change, "changed"),
   ]);
   const counted = waitingOnReader(issue, "alice", isCoverageStatement, { answer: tree });
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
+  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3, unread: 0 });
   expect(waitingIn(buildIssueTree({ coverage, issue, tree, viewer: "alice" }))).toEqual([
     "mine",
     "spec#b-listed",
@@ -394,7 +394,7 @@ test("a Change its author deleted leaves its decision on the review list and in 
     markedCommentNode(deleted, "changed"),
   ]);
   const counted = waitingOnReader(issue, "alice", isCoverageStatement, { answer: tree });
-  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4 });
+  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4, unread: 0 });
 
   const root = buildIssueTree({ coverage, issue, tree, viewer: "alice" });
   expect(waitingIn(root)).toEqual(["mine", "spec#b-listed", "spec#b-changed"]);
@@ -437,6 +437,7 @@ test("waitingOnReader counts a waiting decision node", () => {
     asks: 0,
     decisions: 1,
     total: 1,
+    unread: 0,
   });
   expect(waits(tree, coverage)).toEqual([1, ["spec#b-waits"]]);
   expect(waitingOnReader(quiet, "alice", isCoverageStatement).decisions).toBe(0);
@@ -494,6 +495,7 @@ test("an overtaken open question is not counted", () => {
     asks: 0,
     decisions: 0,
     total: 1,
+    unread: 0,
   });
   const root = buildIssueTree({ coverage, issue, tree, viewer: "alice" });
   expect(waitingIn(root)).toEqual([]);
@@ -563,7 +565,7 @@ test("a decision past Conversation's first page with the reader's Change in the 
   expect(
     waitingOnReader(quiet, "alice", isCoverageStatement, { answer: decisions }),
     "the count counts a decision whose Change the decisions view read hangs under it"
-  ).toEqual({ approvals: [], asks: 0, decisions: 1, total: 1 });
+  ).toEqual({ approvals: [], asks: 0, decisions: 1, total: 1, unread: 0 });
 });
 
 // A Change its author deleted asks nothing any more. The tree read's answer marks the delete on
@@ -817,4 +819,64 @@ test("a decision node no document holds waits on nobody", () => {
 
   expect(decisionsOf(tree)).toEqual([]);
   expect(waits(tree, coverage)).toEqual([0, []]);
+});
+
+// A person's comment remains a conversation turn, and a decision made by a person never
+// waits on an agent for a Change, even when the comment quotes that decision's words.
+test("a person's comment on a decision block a person decided asks no change of it", () => {
+  const decided = decisionNode("changed", ["r1"], { decision: { waiting_review: false } });
+  const tree = treeAnswer(
+    [
+      treeNode(KEY, "issue", null),
+      statement,
+      decided,
+      commentNode(change, KEY),
+      treeNode("bob", "person", null, { role: "context" }),
+    ],
+    [treeTuple("decided_by", "changed", "bob")]
+  );
+  const root = buildIssueTree({ coverage, issue, tree, viewer: "alice" });
+  expect(nodeIn(root, "spec#b-changed")?.state).toBeUndefined();
+  expect(parentsOf(root, change.id)).toEqual([root.id]);
+  expect(waitingOnReader(quiet, "alice", isCoverageStatement, { answer: tree }).decisions).toBe(0);
+});
+
+// The mark and the count agree until an older page brings the Change or shows that none remains.
+test("a decision whose Change may stand on an older comment page waits on no reader until that page is read, in the count as in the tree", () => {
+  const later: Comment = {
+    ...change,
+    anchor: null,
+    created_at: "2026-11-05T12:00:00Z",
+    id: "c-later",
+  };
+  const asked: Comment = { ...change, anchor: null, id: "c-older" };
+  const standing = (tree: TreeAnswer) => {
+    const root = buildIssueTree({ coverage, issue, tree, viewer: "alice" });
+    const counted = waitingOnReader(issue, "alice", isCoverageStatement, { answer: tree });
+    return {
+      counted: counted.decisions,
+      marked: nodesInOrder(root).flatMap((node) => (node.changeUnread === true ? [node.id] : [])),
+      unread: counted.unread,
+      waiting: waitingIn(root),
+    };
+  };
+  const nodes = [statement, decisionNode("older", ["r1"])];
+  const first: TreeAnswer = {
+    ...answerOf([...nodes, commentNode(later, KEY)]),
+    comments_before: `${later.created_at},${later.id}`,
+  };
+  expect(standing(first), "while the older page is out").toEqual({
+    counted: 0,
+    marked: ["spec#b-older"],
+    unread: 1,
+    waiting: [],
+  });
+  expect(
+    standing(answerOf([...nodes, commentNode(asked, "older"), commentNode(later, KEY)])),
+    "once the older page that holds its Change is read"
+  ).toEqual({ counted: 0, marked: [], unread: 0, waiting: [] });
+  expect(
+    standing(answerOf([...nodes, commentNode(later, KEY)])),
+    "once the older page that holds none of its Changes is read"
+  ).toEqual({ counted: 1, marked: [], unread: 0, waiting: ["spec#b-older"] });
 });

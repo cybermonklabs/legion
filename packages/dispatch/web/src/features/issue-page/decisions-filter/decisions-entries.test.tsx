@@ -185,8 +185,8 @@ const D = (block: string) => decisionNode(block).id;
 
 /** Two decisions that wait open with one paragraph, the reader's Change was asked on the second,
  *  and answers of the reader, of Bob and of one moment stand around them: the reads of the
- *  page's tree for the two cases below, with the Change's anchor quoting `quote`. */
-async function seamOf(quote: string) {
+ *  page's tree for the two cases below. */
+async function seamOf() {
   const tie = "2026-11-11T09:00:00Z";
   const opening = "The rail stays 56 px wide.";
   const reviewWords = `${opening}\n\nThe outline needs the room.`;
@@ -220,9 +220,8 @@ async function seamOf(quote: string) {
     decision("minor"),
   ];
   // The reader's Change on the second decision, made after both last changed, anchored on the
-  // spec with its anchor quoting `quote`. The decisions view and the tree read each hang it under
-  // the second decision, as the server's view carries each comment on the text of a node it
-  // returns.
+  // spec with an anchor quoting the paragraph both decisions open with. Both reads hang the
+  // Change under the second decision, which is all the seam reads to place it.
   const change: Comment = {
     ...commentDeliveryFields(),
     anchor: {
@@ -230,7 +229,7 @@ async function seamOf(quote: string) {
       block_id: null,
       mark_id: "mark-asked",
       orphaned: false,
-      quote,
+      quote: opening,
       version: 1,
     },
     ask_id: null,
@@ -275,7 +274,7 @@ test("the seam gives the model's parts from today's reads and makes no request",
   // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
   try {
-    const { change, parts } = await seamOf("A phone draws it over the body.");
+    const { change, parts } = await seamOf();
     const ids = idsOf(parts);
     expect(ids.yours).toEqual([D("asked"), "a-late", "a-early", "a-tie-mine"]);
     expect(ids.others).toEqual(["a-bob", "a-tie-bob"]);
@@ -283,7 +282,8 @@ test("the seam gives the model's parts from today's reads and makes no request",
     expect(ids.review).toEqual([D("review")]);
     expect(ids.agents).toEqual([D("minor")]);
     expect(ids.named).toEqual([]);
-    // The second decision carries the reader's Change, and the first carries none.
+    // The second decision carries the reader's Change, and the first, whose words hold the same
+    // quote, carries none.
     expect(parts.yours[0]).toMatchObject({
       change: { id: change.id },
       kind: "decision",
@@ -311,7 +311,7 @@ test("the seam gives the model's parts from today's reads and makes no request",
 // decision it was asked on, so no quote is matched, and the first decision, whose words hold the
 // same quote, carries none.
 test("a Change stands under the decision it was asked on, where another decision holds its quote too", async () => {
-  const { change, parts } = await seamOf("The rail stays 56 px wide.");
+  const { change, parts } = await seamOf();
   expect(idsOf(parts).yours[0]).toBe(D("asked"));
   expect(parts.yours[0]).toMatchObject({ change: { id: change.id }, kind: "decision" });
   expect(parts.review[0]).not.toHaveProperty("change");

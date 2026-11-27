@@ -468,6 +468,9 @@ func TestSettlementThatStampsAndRepairsReleasesItsSlots(t *testing.T) {
 // settlement holds, waits for the repair's commit to reach the room's persistence rather than
 // retiring the room's worker under it (roomServer, LEGION-498).
 func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
+	// Not parallel: it reads every goroutine's stack in the process (goroutinesIn, in
+	// closeWaitsForRepair) for a room close that waits on the repair, where a close of another
+	// test's service would count as its own.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	pause := pauseRepairCommits(service)
@@ -507,6 +510,9 @@ func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 // the settlement has. Shutdown's settlement is refused its broadcast once the room is shutting
 // down and fails the room, whose unstored updates its browsers send again when they reconnect.
 func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.T) {
+	// Not parallel: it reads every goroutine's stack in the process (goroutinesIn, in
+	// closeWaitsForRepair and its wait for consumeSuppressedPersistence), where another test's
+	// goroutines would count as its own.
 	for _, closer := range []struct {
 		name  string
 		close func(service *Service, artifactID string) error

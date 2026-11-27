@@ -1,11 +1,11 @@
-// openapi.go emits the OpenAPI 3.1 document of the Dispatch HTTP API from the route table and the
-// Go types routeShapes gives each of its rows (INFRA-1406). It is the one generator between the
+// openapi.go emits the OpenAPI 3.1 document of the Dispatch HTTP API from the route declarations
+// and the Go types each states as its Shape (INFRA-1406). It is the one generator between the
 // server and its clients: the dashboard's and the CLI's TypeScript types are rendered from the
 // document this file writes, so a route the table grows reaches them without anyone hand-writing a
 // type for it, and a shape that changes cannot quietly disagree with the handler that answers it.
 //
-// Nothing here reads the database or opens a listener, as WriteRouteIndex needs neither: the table
-// with its test hooks in, routeShapes beside it and reflection over the Go types are the whole
+// Nothing here reads the database or opens a listener, as WriteRouteIndex needs neither: the
+// declarations with the test hooks' in and reflection over the Go types they name are the whole
 // input. `envoy-dispatch openapi` prints it and `--check` holds the committed artifact to it.
 package api
 
@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -35,7 +34,7 @@ const openAPISchemaPrefix = "#/components/schemas/"
 
 // openAPISessionParameter is the one query parameter every operation carries. It is read by
 // actingPerson (server.go) on every route that resolves a person rather than by any one handler,
-// so it belongs to the whole API and routeShapes names it on no row.
+// so it belongs to the whole API and no route's Shape names it.
 const openAPISessionParameter = "the session the caller's credential acts for, where that " +
 	"credential proved none; a credential that proved a session is refused a parameter naming " +
 	"another (403 ACTOR_SESSION_MISMATCH)"
@@ -173,9 +172,9 @@ func openAPIRequestBodyTypes() (map[reflect.Type]bool, []reflect.Type) {
 			openAPIReach(reflect.TypeOf(value), into, carried)
 		}
 	}
-	// In the table's key order, so a refusal names the same type whichever run reads it.
-	for _, name := range slices.Sorted(maps.Keys(routeShapes)) {
-		shape := routeShapes[name]
+	// In the table's order, so a refusal names the same type whichever run reads it.
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		shape := route.Shape
 		if shape.Request != nil {
 			bodies = append(bodies, reflect.TypeOf(shape.Request))
 			reach(shape.Request, request, &bodies)
@@ -527,21 +526,21 @@ func (e *openAPIEmitter) define(name string, schema jsonschema.Schema) {
 
 // operation builds one row's operation: what it is called, what it says of itself, what it takes
 // and every answer it gives.
-func (e *openAPIEmitter) operation(route apiRoute, hook bool) (*openapi31.Operation, error) {
+func (e *openAPIEmitter) operation(route apiRoute) (*openapi31.Operation, error) {
 	name := route.Method + " " + route.Pattern
-	shape := routeShapes[name]
+	shape := route.Shape
 	operation := &openapi31.Operation{}
 	operation.WithID(openAPIOperationID(route.Method, route.Pattern))
 	operation.WithDescription(route.Description)
 
 	extensions := map[string]any{"x-auth": string(route.Auth)}
-	if route.Scope != "" {
-		extensions["x-write-scope"] = string(route.Scope)
+	if route.WriteClass != "" {
+		extensions["x-write-scope"] = string(route.WriteClass)
 	}
 	if len(route.OAuthScopes) > 0 {
 		extensions["x-oauth-scopes"] = []string(route.OAuthScopes)
 	}
-	if hook {
+	if route.TestHook {
 		extensions["x-test-hook"] = true
 	}
 	operation.WithMapOfAnything(extensions)

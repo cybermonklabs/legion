@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -76,12 +77,29 @@ func TestASummaryAsAnIssueKeepsItsLabels(t *testing.T) {
 	}
 }
 
+// issueReadQueries is the queries member of an issue read of key as a Dispatch of this release
+// answers it: the spec, verification, plan and decisions queries, each with the artifact its
+// argument of that name gives.
+func issueReadQueries(key, spec, verification, plan, decisions string) []map[string]any {
+	query := func(name, artifact string, takes ...string) map[string]any {
+		return map[string]any{"query": name, "artifact_id": artifact, "takes": takes, "subtree": "issue:" + key}
+	}
+	return []map[string]any{
+		query("spec", spec, "requirement"),
+		query("verification", verification, "check", "result"),
+		query("plan", plan, "plan_task", "plan_role"),
+		query("decisions", decisions, "decision", "reading"),
+	}
+}
+
 func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues/LEGION-8" {
 			t.Fatalf("request = %s %s, want GET /api/v1/issues/LEGION-8", r.Method, r.URL.Path)
 		}
 		assertBearer(t, r)
+		// A Dispatch of this release answers the issue's queries, and keeps the two role ids
+		// beside them for one release, for clients of the release before.
 		writeJSON(t, w, map[string]any{
 			"key":                      "LEGION-8",
 			"project":                  "LEGION",
@@ -91,6 +109,7 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 			"labels":                   []string{"repo:x", "LEGION"},
 			"parent":                   "LEGION-1",
 			"primary_artifact_id":      "artifact-8",
+			"queries":                  issueReadQueries("LEGION-8", "artifact-8", "artifact-9", "artifact-10", "artifact-11"),
 			"verification_artifact_id": "artifact-9",
 			"plan_artifact_id":         "artifact-10",
 			"last_seq":                 47,
@@ -109,6 +128,53 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 	}
 	if issue.Parent == nil || *issue.Parent != "LEGION-1" {
 		t.Fatalf("issue parent = %v, want LEGION-1", issue.Parent)
+	}
+}
+
+// TestTheDaemonNamesTheVerificationDocumentByTheIssueReadsQueries is R8 of the issue-tree spec on
+// the daemon: the issue's Verification document is the artifact its issue read's verification
+// query names, and where the answer carries queries the read's verification_artifact_id decides
+// nothing: an answer whose two name different documents is read by the query, and queries that
+// hold no verification query name no Verification document, whatever the kept id names. For one
+// release a Dispatch of the release before answers no queries, and there the daemon reads the
+// document from verification_artifact_id, "" where the issue holds none.
+func TestTheDaemonNamesTheVerificationDocumentByTheIssueReadsQueries(t *testing.T) {
+	queries := issueReadQueries("LEGION-8", "artifact-8", "artifact-9", "artifact-10", "artifact-11")
+	cases := []struct {
+		name   string
+		answer map[string]any
+		want   string
+	}{
+		{"queries present and the kept id naming another document: the query wins", map[string]any{
+			"queries": queries, "verification_artifact_id": "artifact-kept",
+		}, "artifact-9"},
+		{"queries present holding no verification query: no document", map[string]any{
+			"queries": queries[:1], "verification_artifact_id": "artifact-9",
+		}, ""},
+		{"queries absent and verification_artifact_id present: that id", map[string]any{
+			"verification_artifact_id": "artifact-9",
+		}, "artifact-9"},
+		{"queries absent and verification_artifact_id empty: no document", map[string]any{
+			"verification_artifact_id": "",
+		}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assertBearer(t, r)
+				answer := map[string]any{"key": "LEGION-8", "project": "LEGION", "primary_artifact_id": "artifact-8", "last_seq": 47}
+				maps.Copy(answer, c.answer)
+				writeJSON(t, w, answer)
+			}))
+			defer server.Close()
+			issue, err := New(server.URL, BearerTransport(dispatchToken, nil)).GetIssue(context.Background(), "LEGION-8")
+			if err != nil {
+				t.Fatalf("get issue: %v", err)
+			}
+			if issue.VerificationArtifactID != c.want {
+				t.Fatalf("the issue read %v names the Verification document %q, want %q", c.answer, issue.VerificationArtifactID, c.want)
+			}
+		})
 	}
 }
 

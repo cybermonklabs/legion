@@ -206,14 +206,39 @@ func heldTuples(kinds string, holders ...string) string {
 // an SQL expression) is read as, null where no marked asks row names that ask's node or its row
 // names no block. In the document the ask's row names (asks.block_artifact_id), it is the ask's
 // own block, the id that row names (asks.block_id). In any other document of its owner it is the
-// block node's own parent (document_blocks.parent_block_id), a copy of the ask: a reading in a
-// copy hangs on the source's node (refs.TypedSources.Shown), and the copy keeps the block id it
-// was copied under while the source can take a fresh one (docs' restore, R6's collision rule).
+// block node's own parent (document_blocks.parent_block_id) where that parent is a copy of the
+// ask: a reading in a copy hangs on the source's node (refs.TypedSources.Shown), and the copy
+// keeps the block id it was copied under while the source can take a fresh one (docs' restore,
+// R6's collision rule). The parent is a copy of the ask where its node states a current
+// copied_from to that ask (docs' claimCopies). The parent's id alone proves nothing, since it is
+// the row this census checks the part_of against: a reading whose part_of names another marked
+// ask than the one its parent copies reads null here, so the ask's address stays the link and
+// reads as a difference. Two states take the parent without that tuple: a document that owes a
+// settlement (doc_settlements_pending), since a version's typed-node pass hangs a copy's reading on
+// its source before the settlement after it claims the copy, in the write that deletes that row;
+// and a parent whose address is past the store's bound, which is no node to state one.
 func askBlockID(node, address string) string {
+	parent := `split_part(` + node + `, '#', 1) || '#' || d.parent_block_id`
 	return `(select case when own.ref_key = split_part(` + node + `, '#', 1) then k.block_id
-		             else (select d.parent_block_id from document_blocks d where d.node_id = ` + node + `) end
+		             else (select d.parent_block_id from document_blocks d
+		                   where d.node_id = ` + node + ` and ` + parentCopiesAsk(parent, `d.artifact_id`, address) + `) end
 		from asks k join artifacts own on own.id = k.block_artifact_id
 		where k.node_kind = '` + graphstore.KindAsk + `' and k.node_address = ` + address + ` and k.block_id is not null)`
+}
+
+// parentCopiesAsk is true where the block node at parent is read as a copy of the ask node at
+// address (each an SQL expression), by askBlockID's rule: the node states a current copied_from
+// to that ask (docs' claimCopies), or the document whose id artifactID is owes a settlement
+// (doc_settlements_pending), or parent is past the store's bound, which is no node to state one.
+// settledAsk reads a decision's parent by the same rule over the row.
+func parentCopiesAsk(parent, artifactID, address string) string {
+	return `(exists (select 1 from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
+		`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = `+parent+`
+		                           and t.kind = '`+graphstore.TupleCopiedFrom+`' and t.to_kind = '`+graphstore.KindAsk+`'
+		                           and t.to_id = `+address) + `
+		                       ) copied where copied.asserted)
+		                       or exists (select 1 from doc_settlements_pending owed where owed.artifact_id = ` + artifactID + `)
+		                       or octet_length(` + parent + `) > ` + addressBound + `)`
 }
 
 // readingParents is reading_parent's store side (heldTuples' shape): the part_of every reading's

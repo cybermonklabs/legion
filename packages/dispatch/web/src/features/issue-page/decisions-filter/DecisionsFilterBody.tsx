@@ -62,6 +62,7 @@ import {
   type DecisionsEntry,
   type DecisionsPart,
   type NamedEntry,
+  reviewWaiting,
   waitingOrder,
 } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
@@ -1052,8 +1053,9 @@ export function DecisionsFilterBody({
               role="group"
             >
               {/* The part's heading (the prototype's `.dgh`): its name and how many entries
-                  it holds. Its name is the group's; a tree holds rows and groups alone, so it
-                  is no element with a role of its own. */}
+                  it holds, the review list's those that wait on the reader (`reviewWaiting`).
+                  Its name is the group's; a tree holds rows and groups alone, so it is no
+                  element with a role of its own. */}
               <div
                 className="mt-[22px] mb-1 flex min-w-0 items-baseline gap-2.5 max-[761px]:mt-[18px]"
                 data-decisions-heading=""
@@ -1070,7 +1072,7 @@ export function DecisionsFilterBody({
                   data-decisions-count=""
                   {...authorText}
                 >
-                  {entries.length}
+                  {part === "review" ? reviewWaiting(parts).length : entries.length}
                 </span>
               </div>
               {pageDrawn.map((entry) => rowFor(entry, part))}

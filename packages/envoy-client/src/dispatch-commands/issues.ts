@@ -48,6 +48,7 @@ import {
   writeMayHaveLanded,
 } from "./failures";
 import { linkFor } from "./links";
+import { oneLineJson } from "./one-line-json";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
@@ -667,14 +668,11 @@ function breaksRow(value: string): boolean {
 }
 
 /** One part of a row as `breaksRow` says: as written, or quoted as JSON quotes it, with the three
- *  separators JSON leaves raw (U+0085, U+2028, U+2029) escaped too, so no quoted part splits the
- *  row for a reader that breaks lines on them. */
+ *  separators JSON leaves raw (U+0085, U+2028, U+2029) escaped too (`oneLineJson`), so no quoted
+ *  part splits the row for a reader that breaks lines on them. */
 function rowPart(value: string): string {
   if (!breaksRow(value)) return value;
-  return JSON.stringify(value).replace(
-    /[\u0085\u2028\u2029]/g,
-    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
-  );
+  return oneLineJson(value);
 }
 
 /** Whether the whole output of a call is one JSON object a program reads: `dispatch issues
@@ -907,9 +905,27 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   const checks = results.checks ?? [];
   const hasVerification =
     checks.length > 0 || (await hasVerificationDocument(client, issue, results));
+  // A basis omits the issue's own repository. Resolve it only for the two answers that name
+  // that repository, once per check owner, including a check inherited from an ancestor.
+  const repositories: Record<string, string> = {};
+  const owners = new Set(
+    checks
+      .filter(
+        (check) =>
+          check.pass_stands?.reason === "program_not_named" ||
+          check.pass_stands?.reason === "no_deploy"
+      )
+      .map((check) => check.issue_key)
+  );
+  await Promise.all(
+    [...owners].map(async (owner) => {
+      const issue = await client.getIssue(owner);
+      if (issue.resolved_repo != null) repositories[owner] = issue.resolved_repo;
+    })
+  );
   return {
     text: hasVerification
-      ? formatCheckResults(results, brief)
+      ? formatCheckResults(results, brief, repositories)
       : `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`,
     details: {
       issue,

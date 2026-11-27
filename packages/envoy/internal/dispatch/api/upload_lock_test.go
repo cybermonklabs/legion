@@ -78,6 +78,7 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 // commit (Ledger.Commit's recordLatestEditSource), after its event, would wait for the answer and
 // then finish; what fails this test is a lock the two come to share in opposite orders.
 func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTheirEvents(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	ctx := uploadLockContext(t)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -53,6 +54,9 @@ type itemBlockNode struct {
 // edited before blocks were recorded) and changed at its changed revision's time. It belongs to
 // its item at that revision. A block of a comment carries its comment's EditedAt and delete mark
 // (ItemKind.postMarkColumns), as the comment's own node does; a part of an ask carries neither.
+// A part of an ask whose maker is no actor is left out and logged, as loadAskNodes leaves out an
+// ask whose author is none; a block of a comment whose author is none fails the read, as its
+// comment's node does.
 //
 // Its predicate and its stored state and visibility are read in one probe of its `graph_nodes`
 // row rather than two (visibleStoredKind), as the block loader reads a document's blocks: the
@@ -105,6 +109,13 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 			return nil, fmt.Errorf("scan %s block node: %w", string(kind), err)
 		}
 		authors, err := storedActor(author)
+		if err != nil && kind == ItemAsk {
+			// A part of an ask whose maker is no actor is left out and logged, as an ask whose
+			// author is no actor is (loadAskNodes).
+			slog.Warn("dispatch: a part of an ask whose stored value does not parse is left out of the read",
+				"block", nodeID, "err", err)
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("decode the author of block %s: %w", nodeID, err)
 		}
