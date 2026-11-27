@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -65,6 +67,8 @@ type Image struct {
 	// from one its own commands decided. A copy of the Image keeps the same count; nil counts
 	// nothing.
 	cuts *atomic.Int32
+	// controlStall: CONTROL ONLY (controlHoldStderr).
+	controlStall bool
 }
 
 // commandTimeout bounds each command a check runs: a `--version` or a `--check` that has not
@@ -634,6 +638,9 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	cmd.Dir = img.WorkDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if img.controlStall { // CONTROL ONLY
+		defer controlHoldStderr(cmd, attempt).Close()
+	}
 	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
 	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
@@ -654,6 +661,31 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 		img.cuts.Add(1)
 	}
 	return r
+}
+
+// controlHoldStderr gives cmd a stderr pipe already full, which nothing reads until attempt has
+// ended and 50 ms more, so a command's first write there waits for its budget's stop. CONTROL
+// ONLY. It answers the pipe's write end, for the caller to close once the command is gone.
+func controlHoldStderr(cmd *exec.Cmd, attempt context.Context) *os.File {
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	size, _, errno := syscall.Syscall(syscall.SYS_FCNTL, w.Fd(), 1032, 0) // F_GETPIPE_SZ
+	if errno != 0 {
+		panic(errno)
+	}
+	if _, err := w.Write(make([]byte, size)); err != nil {
+		panic(err)
+	}
+	cmd.Stderr = w
+	go func() {
+		<-attempt.Done()
+		time.Sleep(50 * time.Millisecond)
+		_, _ = io.Copy(io.Discard, r)
+		_ = r.Close()
+	}()
+	return w
 }
 
 // oneLine is text as one printed line: its whitespace runs collapsed, and cut at maxDetail on a
