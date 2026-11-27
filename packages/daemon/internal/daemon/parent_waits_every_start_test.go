@@ -79,6 +79,7 @@ func waitingParentRunner(t *testing.T, publisher notify.Publisher) (*outbox, *su
 // attempt, since the record holds no merge forward any more (workflow.MergeForwardAt), with no
 // publish and no wake of the released implementer.
 func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
+	t.Parallel()
 	t.Run("the implementer's role message naming the dropped merge forward ends at a released implementer with no publish and no wake", func(t *testing.T) {
 		ctx := context.Background()
 		publisher := &outboxPublisher{}

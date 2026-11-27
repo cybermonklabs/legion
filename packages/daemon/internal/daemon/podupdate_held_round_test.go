@@ -91,6 +91,7 @@ func toldOn(t *testing.T, told map[string][]record.Notice, topic string) record.
 // The negative control is the hold told to the owning architect, which writes an architect's
 // notice and no controller notice.
 func TestPodUpdateTellsTheControllerAloneOfItsOwnOrTheOperatorsHold(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		by    supervise.SuspendSource
 		words string

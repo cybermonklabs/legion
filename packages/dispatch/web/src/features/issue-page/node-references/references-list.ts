@@ -7,15 +7,15 @@ import type {
   MessageWithTrees,
   ReferenceTarget,
 } from "../../../api/types";
+import { LINE_FEED } from "../../decision-card/stored-reading";
 import { isBlockItemKind } from "../../refs/block-reference";
 import { isPartyRoute } from "../../refs/party-references";
 import type { KnownReferences } from "../../refs/reference-names";
 import type { DispatchReferenceRoute, PartyRoute } from "../../refs/routes";
 import { firstWordedBlock, wordsOf } from "../../refs/tree-fragment";
-import { drawnLine, firstLineOf } from "../issue-tree";
+import { drawnLine, firstLineOf } from "../first-line";
 import { NODE_REFERENCES_WORDS } from "../page-words";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
-import { LINE_FEED } from "../stored-reading";
 
 /**
  * What references one node, as Details draws it: one row per node that points at the focused
