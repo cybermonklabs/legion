@@ -180,6 +180,7 @@ type lateAnswer struct {
 // approval moved the issue to accepting, each call made by the `legion` tool the panes load; then
 // judges the three late answers.
 func TestLateCompletionsThroughTheRealLegionToolLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newLateCompletionLive(t)
 	r.step("step1-the-implementer-pane-completes-implementing-through-the-real-tool-at-its-pushed-head", r.implementerCompletes)

@@ -537,8 +537,8 @@ func TestEnsureRepositoryCacheWaitsForTheStreamsToEndBeforeReplacingAPod(t *test
 	t.Cleanup(served.Close)
 	live := cachePod(cacheRepo, "uid-pod-old", "uid-cache", testImage, corev1.PodRunning)
 	live.Status.PodIP = "10.0.0.5"
-	g := newRig(t, []k8sruntime.Object{reserveCacheCPU(t, cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), "7"), live})
-	g.r.cacheDial = (&podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}).dial
+	g := newRig(t, []k8sruntime.Object{reserveCacheCPU(t, cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), "7"), live},
+		withCacheDial((&podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}).dial))
 	g.clearActions()
 	if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
 		t.Fatalf("EnsureRepositoryCache: %v", err)
@@ -1256,10 +1256,11 @@ func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *t
 		}
 		logs := &logBuffer{}
 		written := cacheObjectOf(t, configuredRuntime(t, sharedAccount), cacheRepo, "uid-cache", modeRunning, "")
-		g := newRig(t, []k8sruntime.Object{written, live}, withLog(logs), withOptions(sharedAccount))
+		options := []rigOption{withLog(logs), withOptions(sharedAccount)}
 		if routes != nil {
-			g.r.cacheDial = (&podNetwork{routes: routes}).dial
+			options = append(options, withCacheDial((&podNetwork{routes: routes}).dial))
 		}
+		g := newRig(t, []k8sruntime.Object{written, live}, options...)
 		g.clearActions()
 		return g, logs
 	}
@@ -1530,8 +1531,8 @@ func TestRepositoryCacheBucketAccountReconciliation(t *testing.T) {
 		live.Spec.ServiceAccountName, live.Status.PodIP = otherAccount, "10.0.0.5"
 		logs := &logBuffer{}
 		written := cacheObjectOf(t, configuredRuntime(t, off), cacheRepo, "uid-cache", modeRunning, "")
-		g := newRig(t, []k8sruntime.Object{written, live}, withLog(logs), withOptions(on))
-		g.r.cacheDial = (&podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}).dial
+		g := newRig(t, []k8sruntime.Object{written, live}, withLog(logs), withOptions(on),
+			withCacheDial((&podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}).dial))
 		g.clearActions()
 		ensure(t, g)
 		if writes := podWrites(g); len(writes) > 0 {
@@ -1667,13 +1668,14 @@ func TestEnsureRepositoryCacheReplacesACacheWhoseTemplateIsPlacedElsewhere(t *te
 			routes = map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}
 		}
 		logs := &logBuffer{}
-		g := newRig(t, []k8sruntime.Object{cache, live}, withLog(logs), withOptions(func(o *Options) {
+		options := []rigOption{withLog(logs), withOptions(func(o *Options) {
 			now := current()
 			o.Scheduling.NodeSelector, o.Scheduling.Tolerations = now.selector, now.tolerations
-		}))
+		})}
 		if routes != nil {
-			g.r.cacheDial = (&podNetwork{routes: routes}).dial
+			options = append(options, withCacheDial((&podNetwork{routes: routes}).dial))
 		}
+		g := newRig(t, []k8sruntime.Object{cache, live}, options...)
 		g.clearActions()
 		return g, logs
 	}
@@ -2008,8 +2010,7 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 			}
 			return []ghrepo.Repository{cacheRepo}
 		}
-	}))
-	g.r.cacheDial = network.dial
+	}), withCacheDial(network.dial))
 	for _, repo := range []ghrepo.Repository{cacheRepo, gadgets} {
 		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
 			t.Fatal(err)
@@ -2162,9 +2163,10 @@ func readyCache(t *testing.T, g *rig, podIP string) string {
 func TestTheHealthReadAsksThePodAddressWithNoCredential(t *testing.T) {
 	t.Parallel()
 	served, credentials := healthServer(t, cacheRepo.String())
-	g := newRig(t, nil)
 	network := &podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}
-	g.r.cacheDial = network.dial
+	// The test counts the health reads; the rig's runtime runs no refresher tick of its own
+	// (testOptions), which would read once more.
+	g := newRig(t, nil, withCacheDial(network.dial))
 	name := readyCache(t, g, "10.0.0.5")
 
 	g.r.readCacheHealth(g.ctx)
@@ -2193,8 +2195,8 @@ func TestTheHealthReadAsksThePodAddressWithNoCredential(t *testing.T) {
 func TestAStrangerAtTheCachePodsAddressGetsNoCredential(t *testing.T) {
 	t.Parallel()
 	stranger, credentials := healthServer(t, "acme/gadgets")
-	g := newRig(t, nil)
-	g.r.cacheDial = (&podNetwork{routes: map[string]string{"10.0.0.5:8418": stranger.Listener.Addr().String()}}).dial
+	// The test counts the stranger's requests; the rig's runtime runs no refresher tick of its own.
+	g := newRig(t, nil, withCacheDial((&podNetwork{routes: map[string]string{"10.0.0.5:8418": stranger.Listener.Addr().String()}}).dial))
 	readyCache(t, g, "10.0.0.5")
 
 	g.r.readCacheHealth(g.ctx)
@@ -2271,7 +2273,7 @@ func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T
 			service := cacheService(cache, "uid-cache")
 			tc.edit(service)
 			logs := &logBuffer{}
-			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs))
+			g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), service}, withLog(logs), withTestBootTimeout())
 
 			_, err := g.r.Spawn(g.ctx, spec)
 			if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache) || !strings.Contains(err.Error(), tc.says) {
@@ -2306,11 +2308,19 @@ func TestNoServiceIsTrustedWhileTheServiceWatchFails(t *testing.T) {
 	spec := rootSpec(t)
 	cache := CacheSandboxName(testProject, spec.Repository)
 	logs := &logBuffer{}
-	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs))
+	g := newRig(t, []k8sruntime.Object{cacheObject(t, spec.Repository, "uid-cache", modeRunning, ""), cacheService(cache, "uid-cache")}, withLog(logs), withTestBootTimeout())
 	g.r.serviceFeed.record(errors.New(`services is forbidden: User "legion-daemon" cannot watch resource "services"`), time.Now())
 	says := "cannot be checked: the Service store may be stale"
 
+	start := time.Now()
 	_, err := g.r.Spawn(g.ctx, spec)
+	// Remove the two-second bound and the launch waits on the stale Service store to the test
+	// deadline, then refuses with the same message: this row passes vacuously after about 210 s. The
+	// guard fails it by name instead; one minute is far above the single bounded wait and far below
+	// the deadline.
+	if elapsed := time.Since(start); elapsed > time.Minute {
+		t.Fatalf("Spawn took %s, want it bounded by the two-second boot timeout", elapsed)
+	}
 	if err == nil || !strings.Contains(err.Error(), "the repository cache's Service "+cache+" "+says) {
 		t.Fatalf("Spawn = %v, want the launch refused naming the Service %s and %q", err, cache, says)
 	}

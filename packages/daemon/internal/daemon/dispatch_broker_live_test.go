@@ -1341,6 +1341,7 @@ func decodedFact(fact intake.Fact, err error) string {
 // events; whoami names the project the role's token names; and with the setting off the same two
 // messages carry Bearer and are both accepted, and whoami says it runs under the shared token.
 func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
+	t.Parallel()
 	r := newDispatchBrokerRig(t, 15*time.Minute)
 	ctx := context.Background()
 	report := r.report("K2: the daemon writes as itself, on an issue of its project and on an issue of another")
@@ -1531,6 +1532,8 @@ var k3Writes = []time.Duration{0, 60 * time.Second, 200 * time.Second, 450 * tim
 //
 // It takes about fifteen minutes, so it runs only when LEGION_E2E_TOKEN_RENEWAL=1.
 func TestEveryClientRenewsAndStopsOnARefusal(t *testing.T) {
+	// Not parallel: its clients write at fixed moments of a 420 s token's life (k3Writes after its start,
+	// k3Lifetime), steps the wall clock orders, which the load of a rig beside it could push past a renewal.
 	if os.Getenv("LEGION_E2E_TOKEN_RENEWAL") != "1" {
 		t.Skip("LEGION_E2E_TOKEN_RENEWAL is not 1: this check waits out three token lifetimes, about fifteen minutes, so it runs only when that variable asks for it")
 	}
@@ -1965,6 +1968,7 @@ func (r *dispatchBrokerRig) statusScopeScript(client *dispatch.HTTPClient) ([]ri
 // restarts with the setting off, and the same writes are each taken: the refusals are the
 // setting's.
 func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
+	t.Parallel()
 	r := newDispatchBrokerRig(t, 15*time.Minute, legionStatusScope+"=on")
 	r.call(http.MethodPatch, "/api/v1/issues/"+r.pDaemon, true, map[string]any{"labels": []string{"legion"}}, http.StatusOK, nil)
 	since := time.Now()
@@ -2389,6 +2393,9 @@ type proxyClientRun struct {
 //
 // It takes about nine minutes past the rig's start, so it runs only when LEGION_E2E_PROXY=1.
 func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
+	// Not parallel: it holds each renewal to the half life of a 420 s token (proxyLifetime, within
+	// proxyHalfLifeSlack) and the run's trades to 1 + T / (L - 300 s), wall-clock bounds the load of a rig
+	// beside it could push past.
 	if os.Getenv("LEGION_E2E_PROXY") != "1" {
 		t.Skip("LEGION_E2E_PROXY is not 1: this check reads through the proxy for 480 s, past two renewals of a 420 s token, each at its half life, about nine minutes in all, so it runs only when that variable asks for it")
 	}
@@ -2673,6 +2680,7 @@ func TestTheProxyServesAToolRunWithOneTradeForEachRenewal(t *testing.T) {
 // gives up while the answer is still going out, is that case. A table must name such a request
 // with what the proxy saw of it, and since() must return once the client's call has.
 func TestTheRigsProxyLandsARecordWhoseAnswerBreaksOff(t *testing.T) {
+	t.Parallel()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Length", "100")
 		w.WriteHeader(http.StatusOK)

@@ -190,9 +190,8 @@ capacity, go to the controller, which asks a person before it re-files a child a
 cross-tree conflict goes to the other tree's architect, as a Dispatch comment on its issue that
 mentions its role. A problem outside the tree is never an issue you file. A clear defect is this
 tree's to fix, in whichever repository it is: in an open pull request of the tree, or in a child.
-It goes to another tree's architect only when the fix would collide with that tree's open pull
-request, or when it is in a repository this tree's token does not reach; when no tree owns that
-code, it goes to the controller of the project that repository maps to, or to your own project's
+When it is in a repository this tree's token does not reach, it goes to the controller of the
+project that repository maps to, or to your own project's
 controller when Dispatch maps it to none, to file. A defect that needs a person's
 decision, a deploy window or work much larger than this tree's own, and any other problem that
 needs a decision, is a `dispatch ask`

@@ -96,19 +96,25 @@ func (f Fence) Outlives(queued Fence) bool {
 // turn as well.
 func OutlivesPod(queued, pod string) bool { return runtime.OutlivesPod(queued, pod) }
 
-// reportOnly says whether payload's kind only tells somebody something: an architect's notice
-// (Notice) or the project's controller's (ControllerNotice). It names the run and the phase entry
-// it was queued at, as every effect does (R17 of dispatch://INFRA-3320): NewFencedRow stamps both
-// and NewOutboxRow requires them; its delivery is fenced by the run alone (the architect's ruling
-// of 2026-11-21 on dispatch://INFRA-3320): a notice of an earlier phase entry of the run its issue
-// stands in is still delivered, and one of an earlier run is not. Every other kind acts — it
-// changes a claim, a pod, Dispatch or GitHub — and does nothing at a later phase entry either.
-// A notice starts and resumes no claim: its delivery waits for an architect claim a stop
-// suspended, and wakes only one an idle release suspended (the daemon's deliverNotice).
+// reportOnly says whether payload only tells somebody something: an architect's notice (Notice),
+// the project's controller's (ControllerNotice), or the message on an issue that names its
+// undelivered hook prompts (MessagePost.HookPrompts), which tells the issue what words reached no
+// session. It names the run and the phase entry it was queued at, as every effect does (R17 of
+// dispatch://INFRA-3320): NewFencedRow stamps both and NewOutboxRow requires them; its delivery is
+// fenced by the run alone (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320): a
+// report of an earlier phase entry of the run its issue stands in is still delivered, and one of
+// an earlier run is not. Hook prompts fire at moves back, each of which opens a phase entry, so an
+// entry fence would drop that message in silence after the very moves that make it. Every other
+// kind acts — it changes a claim, a pod, Dispatch or GitHub — and does nothing at a later phase
+// entry either, every other message among them. A notice starts and resumes no claim: its
+// delivery waits for an architect claim a stop suspended, and wakes only one an idle release
+// suspended (the daemon's deliverNotice).
 func reportOnly(payload OutboxPayload) bool {
-	switch payload.(type) {
+	switch value := payload.(type) {
 	case Notice, ControllerNotice:
 		return true
+	case MessagePost:
+		return value.HookPrompts != nil
 	}
 	return false
 }

@@ -842,23 +842,25 @@ func (e *Engine) tellSetBack(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the claims the daemon publishes, and none from the tree an issue's record stores (R15 and R18 of
 // dispatch://INFRA-3320; decision 24 of dispatch://INFRA-4730):
 //   - The status is done, backlog, icebox or triage (record.OutOfWorkflow).
-//   - The session held a claim the daemon published to Dispatch as a role holder (registered,
-//     ready, working or idle, its session held) when Dispatch recorded the write (write.At), as
-//     the architect of an issue on issue's chain above it, the parent and the grandparent alike,
-//     whether those issues or issue itself are in Legion's work or not. It is the rule Dispatch
-//     applies to the same write once R26's refusal is on, over the holders the daemon had
-//     published then, so a write made before an idle release or a failure suspended the claim
-//     stands though the consumer applies it after (record.RoleHolderAt.PublishedAt, which names
-//     the rule's limits). A claim no crossing has stamped since this release began is judged
-//     against the project's conversion (record.TreeConversion.ConvertedAt), before which the
-//     release before published it. A write that carries no time is judged by the claims as they
-//     stand.
+//   - The session held a claim the daemon published to Dispatch as a role holder (one whose state
+//     and suspension source hold its role, supervise.HoldsRole, its session held) when Dispatch
+//     recorded the write (write.At), as the architect of an issue on issue's chain above it, the
+//     parent and the grandparent alike, whether those issues or issue itself are in Legion's work
+//     or not. It is the rule Dispatch applies to the same write once R26's refusal is on, over the
+//     holders the daemon had published then, so a write made before a failure or a suspension
+//     ended the claim's role stands though the consumer applies it after, and the idle release's
+//     suspension, a pause's stop and the launch that resumes their session end no role
+//     (record.RoleHolderAt.PublishedAt, which names the rule's limits). A claim no crossing has
+//     stamped since this release began is judged against the project's conversion
+//     (record.TreeConversion.ConvertedAt), before which the release before published it. A write
+//     that carries no time is judged by the claims as they stand.
 //
-// The issue's own architect is no issue above it, and a claim suspended or failed when the write
-// was made held no published role, so those writes are set back with every other. A move that
-// stands writes its own log line, which names the architect's issue, and so does a judgment
-// within a second of a crossing of the claim, where the skew between Dispatch's clock and the
-// database's can place the write on the wrong side of it.
+// The issue's own architect is no issue above it, and a claim failed, or suspended by any source
+// but the idle release or a pause's stop, when the write was made held no published role, so those
+// writes are set back with every other. A move that stands writes its own log line, which names
+// the architect's issue, and so does a judgment within a second of a crossing of the claim, where
+// the skew between Dispatch's clock and the database's can place the write on the wrong side of
+// it.
 func (e *Engine) architectAbovesMove(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue, write record.HeldSessionWrite) (bool, error) {
 	if !record.OutOfWorkflow(write.Status) {
 		return false, nil
@@ -875,7 +877,7 @@ func (e *Engine) architectAbovesMove(ctx context.Context, tx pgx.Tx, chains *rec
 			if holder.Role != claim.RoleArchitect || holder.Session != write.Session {
 				continue
 			}
-			published := supervise.HoldsCapability(holder.State)
+			published := supervise.HoldsRole(holder.State, holder.SuspendedBy)
 			if write.At.IsZero() {
 				e.logOnCommit(ctx, "workflow: a session's status write carries no Dispatch time; its claim is judged as it stands", "issue", issue.Key,
 					"session", write.Session, "architect", above, "state", holder.State, "published", published)

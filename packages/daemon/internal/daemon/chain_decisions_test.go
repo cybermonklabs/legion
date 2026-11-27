@@ -82,7 +82,7 @@ import (
 // The state of a fixture issue's architect claim; "" is an issue whose architect has no claim.
 const (
 	holdsItsRole        = "holds its role"
-	failedClaim         = "failed"
+	architectFailed     = "failed"
 	suspendedByOperator = "suspended by the operator"
 	releasedForIdle     = "released for being idle"
 )
@@ -219,7 +219,7 @@ var chainRows = []chainRow{
 	// Dispatch recorded it, takes it as the move of the architect above (decision 24 of
 	// dispatch://INFRA-4730), though the claim is released by the time the write is applied.
 	{key: "INFRA-9012", shape: "C in work under B, its architect failed",
-		parent: "INFRA-9011", status: "testing", phase: phase.Testing, tree: "INFRA-9010", slot: true, architect: failedClaim,
+		parent: "INFRA-9011", status: "testing", phase: phase.Testing, tree: "INFRA-9010", slot: true, architect: architectFailed,
 		notice: "INFRA-9011", noticeAbove: "INFRA-9011", place: heldPlace(record.HeldAwaitingChildren, "INFRA-9013"),
 		repairs: map[string]string{"INFRA-9011": personsMove, "INFRA-9012": setBack, outsideWriter: personsMove},
 		calls:   []chainCall{{opSignOff, "INFRA-9011", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
@@ -401,7 +401,7 @@ var chainRows = []chainRow{
 		repairs: map[string]string{"BET-59": personsMove, "BET-614": setBack},
 		calls:   []chainCall{{opSignOff, "BET-59", "SIGNOFF_OUTSIDE_ACCEPTING"}}},
 	{key: "BET-620", shape: "the place walk's root BET-620, accepting under BET-59, its architect failed",
-		parent: "BET-59", status: "needs_review", labelled: true, phase: phase.Accepting, tree: "BET-620", gate: true, lifecycle: true, architect: failedClaim,
+		parent: "BET-59", status: "needs_review", labelled: true, phase: phase.Accepting, tree: "BET-620", gate: true, lifecycle: true, architect: architectFailed,
 		notice: "BET-59", noticeAbove: "BET-59", place: heldPlace(record.HeldAtWork),
 		repairs: map[string]string{"BET-59": personsMove, "BET-620": setBack},
 		calls:   []chainCall{{opSignOff, "BET-59", taken}, {opSignOff, "BET-620", taken}}},
@@ -972,9 +972,10 @@ insert into step_starts_rollback (issue, tree, taken_at)
 	}
 	// A claim released for being idle is written live first and released after the moment every
 	// session write the table makes is written at (writtenAt), as an architect's write is made
-	// while it holds its role and its idle release follows: the release's write stamps the
-	// claim's leave of the published states (claims.unpublished_since) after that moment, so the
-	// repair judges the write by the holders published when Dispatch recorded it.
+	// while it holds its role and its idle release follows. The release keeps the claim's role
+	// (supervise.HoldsRole), so its write stamps no leave (claims.unpublished_since) and the claim
+	// stays published, and the repair judges the write by the holders published when Dispatch
+	// recorded it.
 	var released []supervise.Claim
 	for _, row := range d.rows {
 		if row.architect == "" {
@@ -984,7 +985,7 @@ insert into step_starts_rollback (issue, tree, taken_at)
 			Role: claim.RoleArchitect, Generation: 1, State: supervise.StateWorking, Session: sessionOf(row.key),
 			SessionFile: "/sessions/" + sessionOf(row.key) + ".jsonl", CapabilityHash: []byte("capability of " + row.key)}
 		switch row.architect {
-		case failedClaim:
+		case architectFailed:
 			c.State = supervise.StateFailed
 		case suspendedByOperator:
 			c.State, c.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByOperator
@@ -994,8 +995,8 @@ insert into step_starts_rollback (issue, tree, taken_at)
 		if err := d.st.PutClaim(ctx, c); err != nil {
 			t.Fatalf("seed the architect claim of %s: %v", row.key, err)
 		}
-		// The claim's session is held as its registration holds it, so a claim in a live state is
-		// one the daemon publishes as its role's holder (record.Store.LiveRoleHolders).
+		// The claim's session is held as its registration holds it, so a claim that holds its role
+		// is one the daemon publishes as its role's holder (record.Store.RoleHolders).
 		if _, err := d.st.HoldSessions(ctx, token, c.Token, supervise.RecordedHolds(c.Session, c.SessionFile)); err != nil {
 			t.Fatalf("hold the session of the architect claim of %s: %v", row.key, err)
 		}

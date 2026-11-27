@@ -309,10 +309,14 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // putClaim writes claim c inside tx, the transaction of a claim write and whatever goes with it,
 // and queues the publication of c's issue's role sessions in the same transaction when the write
 // changes the session the row names as the holder of c's role (storedRoleHolder, roleHolder,
-// EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves a
-// state that holds it — retired, failed, suspended, or launching again. A write that changes no
-// holder queues nothing, and neither does a write that can queue none (queuesRoleHolders), such as
-// a write of a claim of another project's issue, whose row only that project's daemon runs.
+// EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves the
+// states that hold it (supervise.HoldsRole) — it retires, fails, or is suspended by any source but
+// the idle release's — or comes back to them. The idle release's suspension and a pause's stop,
+// which both suspend as released, keep the session and its role, and so does the launch that
+// resumes that session, so none of them queues anything. A write that changes no holder queues
+// nothing, and neither does a write that can queue none
+// (queuesRoleHolders), such as a write of a claim of another project's issue, whose row only that
+// project's daemon runs.
 // A write that queued the publication wakes it once tx commits (wakeRoleHolders), as the hook of
 // tx's commit: no caller wakes it. Every claim write goes through here — PutClaim,
 // PutClaimAndDelivery, RetireDelivery, ReleaseHolds, AdmitClaim, and the pause's stop through
@@ -330,7 +334,7 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 	if err := upsertClaim(ctx, tx, c); err != nil {
 		return err
 	}
-	if roleHolder(c.State, c.Session) == stored {
+	if roleHolder(c.State, c.SuspendedBy, c.Session) == stored {
 		return nil
 	}
 	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC())
@@ -343,14 +347,10 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 	return nil
 }
 
-// capabilityStates is supervise.CapabilityStates as the text array upsertClaim's crossings read.
-var capabilityStates = func() []string {
-	states := make([]string, len(supervise.CapabilityStates))
-	for i, state := range supervise.CapabilityStates {
-		states[i] = string(state)
-	}
-	return states
-}()
+// roleHoldingStates and roleHoldingSources are the pairs of claims.state and claims.suspended_by
+// that hold a claim's role (supervise.RoleHoldingPairs), as the text arrays upsertClaim's crossings
+// read.
+var roleHoldingStates, roleHoldingSources = supervise.RoleHoldingPairs()
 
 // upsertClaim writes the row of claim c inside tx, putClaim's transaction.
 //
@@ -383,11 +383,13 @@ var capabilityStates = func() []string {
 // column existed (20261109191929_outbox_write_mark).
 //
 // published_since and unpublished_since are taken from SQL the same way, each on its own crossing
-// alone: the write that moves the claim into a state in which the daemon publishes its session as
-// its role's holder (supervise.CapabilityStates) stamps published_since, an insert in such a state
-// included, and the write that moves it out of one stamps unpublished_since. Every other write
-// leaves both where they stand, so a session's write in Dispatch can be judged at the time Dispatch
-// recorded it (record.Store.RoleHoldersAt).
+// alone: the write that moves the claim into a state and a suspension source that hold its role
+// (supervise.HoldsRole, the rule the daemon publishes its session as its role's holder by)
+// stamps published_since, an insert that holds it included, and the write that moves it out of
+// them stamps unpublished_since. Every other write leaves both where they stand, the idle
+// release's suspension, a pause's stop and the launch that resumes the session they kept among
+// them, so a session's write in Dispatch can be judged by the holders Dispatch was shown when it
+// recorded the write (record.Store.RoleHoldersAt).
 func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -477,7 +479,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
 		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end, $66, $67, $68,
-		case when $11 = any($69::text[]) then now() end)
+		case when ($11, $26) in (select * from unnest($69::text[], $70::text[])) then now() end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
 		launch_tree = excluded.launch_tree, issue_epoch = excluded.issue_epoch, holds_gate = excluded.holds_gate,
@@ -493,11 +495,13 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		-- retired and left alone by every other write (this function's doc).
 		retired_at_write_mark = case when excluded.state = 'retired' and claims.state <> 'retired'
 			then nextval('outbox_write_mark_seq') else claims.retired_at_write_mark end,
-		-- The times the claim last entered and left the states its session is published in,
-		-- each taken on its own crossing alone (this function's doc).
-		published_since = case when excluded.state = any($69::text[]) and claims.state <> all($69::text[])
+		-- The times the claim last began and stopped holding its role, each taken on its own
+		-- crossing alone (this function's doc).
+		published_since = case when (excluded.state, excluded.suspended_by) in (select * from unnest($69::text[], $70::text[]))
+				and (claims.state, claims.suspended_by) not in (select * from unnest($69::text[], $70::text[]))
 			then now() else claims.published_since end,
-		unpublished_since = case when excluded.state <> all($69::text[]) and claims.state = any($69::text[])
+		unpublished_since = case when (excluded.state, excluded.suspended_by) not in (select * from unnest($69::text[], $70::text[]))
+				and (claims.state, claims.suspended_by) in (select * from unnest($69::text[], $70::text[]))
 			then now() else claims.unpublished_since end,
 		serving_generation = excluded.serving_generation,
 		given_entry = excluded.given_entry,
@@ -580,7 +584,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
 		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt), sessionRun,
 		heldFor(c),
-		c.LaunchTree, int64(c.IssueEpoch), c.HoldsGate, capabilityStates,
+		c.LaunchTree, int64(c.IssueEpoch), c.HoldsGate, roleHoldingStates, roleHoldingSources,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)

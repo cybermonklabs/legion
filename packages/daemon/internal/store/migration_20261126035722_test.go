@@ -13,7 +13,7 @@ const claimsIssueVersion = 20261126035722
 
 // 20261126035722 adds claims_issue and claims_project, btree indexes of claims on issue and on
 // project, the columns the reads of an admission pass's claims go by (record.Store.SessionClaimsOf,
-// ArchitectLaunchesOf, ArchitectServedOf, RoleHoldersAt, LiveRoleHolders, IssuePodUID and
+// ArchitectLaunchesOf, ArchitectServedOf, RoleHoldersAt, RoleHolders, IssuePodUID and
 // ProjectClaims), and leaves every claim the table holds as it stands. It builds over a claim whose
 // session is 3,200 bytes of incompressible text, past the size of a btree row, which an index that
 // holds session too cannot be built over. The negative control is the store before the migration,

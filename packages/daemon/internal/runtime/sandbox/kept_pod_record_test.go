@@ -129,9 +129,6 @@ func TestAKeptPodTheStoreCannotRecordStartsNoRoleUntilItCan(t *testing.T) {
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
 		o.KeptPodStart = keptPodStart(faulted)
 	}))
-	// The start's bound is the boot timeout here, not the minutes a kept volume's attach may take,
-	// so a record the store retries while it refuses ends within seconds.
-	g.r.keptVolumeBound = 0
 	fault.Refuse(true)
 
 	spec := workerSpec(t)

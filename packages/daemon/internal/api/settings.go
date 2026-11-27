@@ -5,13 +5,18 @@ import (
 	"maps"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Settings is the daemon's resolved legion.yaml as `GET /legion/v1/state` carries it (contract
@@ -21,8 +26,8 @@ import (
 // out every credential, every source of one (a secretsd or Secret key, a key command) and every
 // path of a file holding one, and carries only what every pod may already know. Of the strings it
 // carries, the four address keys (`daemon_url`, `envoy_url`, `nats_urls`, `dispatch_url`) ride
-// endpointOf, which masks their userinfo as `xxxxx@`; a `runtime.kubernetes.plugins` source in
-// URL form rides it too (pluginSourceOf), losing its userinfo, query and fragment; and
+// endpointOf, which shows one with userinfo by its scheme and `[a URL with credentials]`; a
+// URL form rides it too (PluginSourceOf), losing its userinfo, query and fragment; and
 // `runtime.kubernetes.agent_secrets.url` rides as written, since the loader refuses userinfo, a
 // path, a query and a fragment on it. Every other string is a name, a path, a quantity or a
 // version, never a URL. SettingsOf is an allowlist: it names each field it emits, and a
@@ -43,7 +48,9 @@ type Settings struct {
 	AdmissionP0Bound *int   `json:"admission_p0_bound,omitempty"`
 	DaemonURL        string `json:"daemon_url"`
 	WorkerStreamPort int    `json:"worker_stream_port"`
-	// OmpInvocation is absent while the file sets none; OmpLaunchPrefix is `[]` then.
+	// OmpInvocation is absent while the file sets none; OmpLaunchPrefix is `[]` then, and otherwise
+	// the prefix's program and how many arguments follow (omplaunch.PrefixShown), never an
+	// argument, which can carry a credential (`env NAME=<token>`, a proxy URL with a password).
 	OmpInvocation   string   `json:"omp_invocation,omitempty"`
 	OmpLaunchPrefix []string `json:"omp_launch_prefix"`
 	// ProviderKeys are the variable names of `provider_keys`, in file order, and never the store
@@ -552,7 +559,7 @@ type HookSettings struct {
 // SettingsOf is cfg as the state shows it: every setting of the resolved file the audience of an
 // unauthenticated route may read, and no credential, credential source or credential file path
 // (Settings). Of the URLs it emits, the four address keys ride endpointOf and a plugin source in
-// URL form rides pluginSourceOf, so no userinfo reaches the wire; `agent_secrets.url` is the one
+// URL form rides PluginSourceOf, so no userinfo reaches the wire; `agent_secrets.url` is the one
 // URL that rides as written, which the loader has made safe by refusing userinfo, a path, a query
 // and a fragment on it (internal/config/kubernetes.go, readAgentSecrets). Every slice and map it
 // emits is non-nil, so the state marshals no `null` inside it.
@@ -569,7 +576,7 @@ func SettingsOf(cfg config.Config) Settings {
 		DaemonURL:                               endpointOf(cfg.DaemonURL),
 		WorkerStreamPort:                        cfg.WorkerStreamPort,
 		OmpInvocation:                           cfg.OmpInvocation,
-		OmpLaunchPrefix:                         stringsOf(cfg.OmpLaunchPrefix),
+		OmpLaunchPrefix:                         stringsOf(omplaunch.PrefixShown(cfg.OmpLaunchPrefix)),
 		ProviderKeys:                            make([]string, len(cfg.ProviderKeys)),
 		Instructions:                            cfg.InstructionsPath,
 		PrivateNameRulesFile:                    cfg.PrivateNameRulesFile,
@@ -755,7 +762,7 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds, ExchangeAudience: broker.ExchangeAudience}
 	}
 	if plugins := block.Plugins; plugins != nil {
-		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
+		settings.Plugins = &PluginsSettings{PiLegion: PluginSourceOf(plugins.PiLegion), PiEnvoy: PluginSourceOf(plugins.PiEnvoy)}
 	}
 	if microVM := block.Sandbox.MicroVM; microVM != nil {
 		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass, KeepVolume: microVM.KeepVolume}
@@ -821,14 +828,19 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 }
 
 // endpointOf is one address key's value as the state shows it: the scheme, the host and the path,
-// with the userinfo, where the loader has NATS and Envoy credentials live (`use URL userinfo or a
-// secret for credentials`), masked as `xxxxx@`. "" stays "" (`dispatch_url` may be unset); an
-// address that yields no scheme and host is `xxxxx` whole, never the raw string. The result is
-// composed from the parsed scheme, the userinfo mark, the host and EscapedPath, so a query or a
-// fragment never reaches the wire either: the loader refuses one on each of the four address keys,
-// and a plugin URL's pre-signed query (pluginSourceOf) is dropped here. runtime/sandbox's namedURL
-// is the same mask for a log line and keeps the host alone; this one keeps the path because a
-// setting is a value its reader acts on, where namedURL's result is only a name.
+// or, when the address carries userinfo, where the loader has NATS and Envoy credentials live (`use
+// URL userinfo or a secret for credentials`), the scheme, redact.URLWithCredentials in place of the
+// authority, and the path: nothing after the last "@" is shown, since a password holding an
+// unencoded "@" leaves its tail there, read as a host. An address with an "@" past its host
+// (natsurl.UserinfoPastHost), where a credential holding a "/", "?" or "#" written as the user
+// lands with its head read as the host, is its scheme and the mark alone, no path. "" stays ""
+// (`dispatch_url` may be unset); an address that yields no scheme and host is `xxxxx` whole,
+// never the raw string. The result is composed from the parsed scheme, the host or the mark, and
+// EscapedPath, so a query or a fragment never reaches the wire either: the loader refuses one on
+// each of the four address keys, and a plugin URL's pre-signed query (PluginSourceOf) is dropped
+// here. runtime/sandbox's namedURL is the same mask for a log line and keeps no path; this one
+// keeps the path because a setting is a value its reader acts on, where namedURL's result is only
+// a name.
 func endpointOf(address string) string {
 	if address == "" {
 		return ""
@@ -837,22 +849,53 @@ func endpointOf(address string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
 	}
-	endpoint := u.Scheme + "://"
-	if u.User != nil {
-		endpoint += "xxxxx@"
+	if natsurl.UserinfoPastHost(u) {
+		return u.Scheme + "://" + redact.URLWithCredentials
 	}
-	return endpoint + u.Host + u.EscapedPath()
+	if u.User != nil {
+		return u.Scheme + "://" + redact.URLWithCredentials + u.EscapedPath()
+	}
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
 }
 
-// pluginSourceOf is one `runtime.kubernetes.plugins` source as the state shows it. The loader
+// PluginSourceOf is one `runtime.kubernetes.plugins` source as the state shows it, and as `legion
+// config check`'s plugins line and the boot's plugins log line print it. The loader
 // (internal/config/kubernetes.go, readPluginSource) admits an exact version, an absolute tarball
 // path, or an http(s) URL stored whole, so a private or pre-signed tarball URL carries its
 // credential in userinfo or in a query (`X-Amz-Signature`): the URL form, told by the loader's own
 // shape test, rides endpointOf, which masks the userinfo and drops the query and fragment; a
-// version and a path carry no credential and pass through unchanged, never `xxxxx`.
-func pluginSourceOf(source string) string {
-	if u, err := url.Parse(source); err == nil && u.IsAbs() && (u.Scheme == "http" || u.Scheme == "https") {
+// version and a path carry no credential and pass through unchanged, never `xxxxx`. The one "@"
+// the loader admits past a plugin URL's host is a path segment that is the plugins' scope
+// (runtime.PluginScope, a registry tarball URL's `/@sjawhar/pi-legion/-/…`): such a URL keeps its
+// path, where endpointOf, for which any "@" past the host is a credential's, would show the mark.
+func PluginSourceOf(source string) string {
+	u, err := url.Parse(source)
+	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") {
+		return source
+	}
+	if !scopedOnly(u) {
 		return endpointOf(source)
 	}
-	return source
+	if u.User != nil {
+		return u.Scheme + "://" + redact.URLWithCredentials + u.EscapedPath()
+	}
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
+}
+
+// scopedOnly reports whether u's every "@" past its host is a path segment that is the plugins'
+// scope, and at least one is: none in the query or the fragment, none elsewhere in the path.
+func scopedOnly(u *url.URL) bool {
+	if strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@") {
+		return false
+	}
+	scoped := false
+	for _, segment := range strings.Split(u.Path, "/") {
+		switch {
+		case segment == runtime.PluginScope:
+			scoped = true
+		case strings.Contains(segment, "@"):
+			return false
+		}
+	}
+	return scoped
 }

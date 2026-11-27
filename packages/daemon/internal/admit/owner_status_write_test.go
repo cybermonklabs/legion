@@ -73,8 +73,8 @@ func treeClaims() []ownerClaim {
 
 // seedSessionClaims inserts each claim as the daemon records it, with the session that the store
 // finds a writer by (record.Store.SessionClaimsOf), and holds each name its record gives that
-// session (claim_sessions, supervise.RecordedHolds), as every registration does, so a claim in a
-// live state is one the daemon publishes as its role's holder (record.Store.LiveRoleHolders).
+// session (claim_sessions, supervise.RecordedHolds), as every registration does, so a claim that
+// holds its role is one the daemon publishes as its role's holder (record.Store.RoleHolders).
 func seedSessionClaims(t *testing.T, pool *pgxpool.Pool, claims ...ownerClaim) {
 	t.Helper()
 	project, err := claim.ProjectToken(testProject)
@@ -955,19 +955,20 @@ const (
 )
 
 // The repair takes a session's done, backlog, icebox or triage as a person's move where the session
-// held a claim the daemon published as a role holder (registered, ready, working or idle, its
-// session held) when Dispatch recorded the write (record.RoleHolderAt.PublishedAt), as the
-// architect of an issue above the written issue on its Dispatch chain, the parent's and the
-// grandparent's alike, whether or not the written issue or the issues above it are in Legion's
-// work, so that architect's backlog and then done ends at done (decision 24 of
-// dispatch://INFRA-4730, INFRA-3178's R3). It reads the chain the copy of Dispatch holds, never the
-// tree an issue's record stores, so the architect above a child moved under it in Dispatch takes it
-// whatever tree the child was first recorded under. It sets back the write of the issue's own
-// architect, of a sibling's architect, of another role of the parent and of an architect whose
-// claim was suspended or failed when the write was made, as every other write of an agent of the
-// tree. A claim no crossing has stamped since this release began is published at any time where it
-// is published now; where it is not, it was published only before the project's conversion
-// (tree_conversions.converted_at), and never where no conversion is recorded.
+// held a claim the daemon published as a role holder (its state and suspension source holding its
+// role, supervise.HoldsRole, its session held) when Dispatch recorded the write
+// (record.RoleHolderAt.PublishedAt), as the architect of an issue above the written issue on its
+// Dispatch chain, the parent's and the grandparent's alike, whether or not the written issue or the
+// issues above it are in Legion's work, so that architect's backlog and then done ends at done
+// (decision 24 of dispatch://INFRA-4730, INFRA-3178's R3). It reads the chain the copy of Dispatch
+// holds, never the tree an issue's record stores, so the architect above a child moved under it in
+// Dispatch takes it whatever tree the child was first recorded under. It sets back the write of the
+// issue's own architect, of a sibling's architect, of another role of the parent and of an
+// architect whose claim had failed, or was suspended by any source but the idle release, when the
+// write was made, as every other write of an agent of the tree. A claim no crossing has stamped
+// since this release began is published at any time where it is published now; where it is not,
+// it was published only before the project's conversion (tree_conversions.converted_at), and never
+// where no conversion is recorded.
 //
 // A write on an issue whose chain is unknown is held (record.Issue.HeldSessionWrites), and so is
 // each later session write, until the chain is known; then the list is judged in Dispatch's order,
@@ -983,7 +984,7 @@ const (
 // out of Legion's work: the architect's backlog and then done" ends at backlog; with it reading the
 // issue's stored tree (issues.tree) instead of the Dispatch chain, the architect above the moved
 // child is set back; with every claim whose published_since is null judged by the conversion's
-// time, the claim published since before this release and released after the write is set back;
+// time, the claim published since before this release and suspended after the write is set back;
 // with that judgment made of a claim published now too, the working claim written after the
 // conversion is set back; and with a claim no crossing stamped never published, the suspended
 // claim written before the conversion is set back.
@@ -1027,11 +1028,11 @@ func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
 		untimed bool
 		stands  bool
 	}{
-		{name: "written before its idle release and applied after it", state: supervise.StateSuspended,
+		{name: "written before its suspension and applied after it", state: supervise.StateSuspended,
 			published: before(time.Hour), unpublished: after(5 * time.Minute), stands: true},
-		{name: "published since before this release, written before its idle release and after the conversion", state: supervise.StateSuspended,
+		{name: "published since before this release, written before its suspension and after the conversion", state: supervise.StateSuspended,
 			unpublished: after(5 * time.Minute), converted: before(2 * time.Hour), stands: true},
-		{name: "written after its idle release", state: supervise.StateSuspended,
+		{name: "written after its suspension", state: supervise.StateSuspended,
 			published: before(time.Hour), unpublished: before(5 * time.Minute)},
 		{name: "left its published states after the write and back before it is applied", state: supervise.StateWorking,
 			published: after(10 * time.Minute), unpublished: after(5 * time.Minute), stands: true},
@@ -1041,7 +1042,7 @@ func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
 			published: after(5 * time.Minute)},
 		{name: "left its published states before the write, registered again before it is applied", state: supervise.StateRegistered,
 			published: after(5 * time.Minute), unpublished: before(10 * time.Minute)},
-		{name: "a write with no Dispatch time, released before it is applied", state: supervise.StateSuspended,
+		{name: "a write with no Dispatch time, suspended before it is applied", state: supervise.StateSuspended,
 			published: before(time.Hour), unpublished: after(5 * time.Minute), untimed: true},
 		{name: "working with no crossing stamped, written before the conversion", state: supervise.StateWorking,
 			converted: after(5 * time.Minute), stands: true},
@@ -1205,7 +1206,7 @@ func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
 		rig.judgeHeld(ownerChild)
 		rig.assertJudged(ownerChild, record.DoneStatus, record.ReassertStatusWrite(record.DoneStatus, before.Status, done.Seq))
 	})
-	t.Run("held on an unknown chain: the architect above's done written before its idle release, judged after it", func(t *testing.T) {
+	t.Run("held on an unknown chain: the architect above's done written before its suspension, judged after it", func(t *testing.T) {
 		rig := seedOwnerTree(t, nil)
 		rig.loseChainTop()
 		done := rig.writtenAt(ownerChild, record.DoneStatus, rootArchitect, at)

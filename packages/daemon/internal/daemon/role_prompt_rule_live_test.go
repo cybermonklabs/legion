@@ -215,6 +215,7 @@ type launchedPrompt struct {
 // is reported; and in the child's architect's, the sub-architect's own heading in place of the
 // root's, and the addressing clause that names the root's architect as the architect above it.
 func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newRolePromptRuleLive(t)
 	r.step("step1-every-role-of-the-tree-runs-a-pane-whose-own-argv-carries-a-system-prompt", r.everyPaneIsReady)

@@ -66,7 +66,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		}, "envoy_token_file names"},
 		{"a NATS nkey seed file that is not there", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = filepath.Join(c.StateDir, "absent")
-		}, "nats_nkey_seed_file names " + "{state}/absent, which could not be read"},
+		}, "nats_nkey_seed_file names a file that could not be read: it does not exist"},
 		{"a blank NATS nkey seed file", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = testnkeys.SeedFile(t, " \n")
 		}, "nats_nkey_seed_file names {seed}, which is empty"},
@@ -81,7 +81,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		}, "NATS_NKEY_SEED_FILE is set but empty"},
 		{"NATS_NKEY_SEED_FILE naming a missing file", func(c *config.Config, o *overrides) {
 			o.environ = []string{"NATS_NKEY_SEED_FILE=" + filepath.Join(c.StateDir, "absent")}
-		}, "NATS_NKEY_SEED_FILE names {state}/absent, which could not be read"},
+		}, "NATS_NKEY_SEED_FILE names a file that could not be read: it does not exist"},
 		{"a provider key naming the NATS nkey seed beside the daemon's", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			c.ProviderKeys = []config.ProviderKey{{Env: "NATS_NKEY_SEED", Secret: "NATS_NKEY_SEED_TESTS"}}
@@ -92,7 +92,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		{"a daemon NATS nkey seed file that is not there, beside a usable pane seed", func(c *config.Config, _ *overrides) {
 			c.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
 			c.NatsDaemonNkeySeedFile = filepath.Join(c.StateDir, "absent")
-		}, "nats_daemon_nkey_seed_file names {state}/absent, which could not be read"},
+		}, "nats_daemon_nkey_seed_file names a file that could not be read: it does not exist"},
 		{"a daemon NATS nkey seed file holding an account's seed", func(c *config.Config, _ *overrides) {
 			c.NatsDaemonNkeySeedFile = filepath.Join(c.StateDir, "daemon.seed")
 			if err := os.WriteFile(c.NatsDaemonNkeySeedFile, []byte(testnkeys.Account(t)), 0o600); err != nil {
@@ -113,7 +113,7 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 		{"a provider key that cannot be resolved", func(c *config.Config, o *overrides) {
 			c.ProviderKeys = []config.ProviderKey{{Env: "ABSENT_ENV", Secret: "ABSENT_KEY"}}
 			o.environ = []string{"PATH=" + t.TempDir()}
-		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so ABSENT_KEY cannot be read"},
+		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so the secretsd key it names cannot be read"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig(t)

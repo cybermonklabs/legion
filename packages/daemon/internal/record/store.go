@@ -2639,35 +2639,41 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 	return nil
 }
 
-// liveClaimStates are the claim states in which a claim's session holds its role: the states
-// supervise.HoldsCapability answers true for, a registered agent with a running process. A
-// suspended, a failed and a retired claim hold none, and neither does one still launching.
-var liveClaimStates = []string{
-	string(supervise.StateRegistered), string(supervise.StateReady), string(supervise.StateWorking), string(supervise.StateIdle),
-}
+// roleHoldingStates and roleHoldingSources are the claim rows whose session holds its role, as
+// pairs a statement reads together (claims.state, claims.suspended_by): each state and suspension
+// source, the empty source of a claim that is not suspended among them, that supervise.HoldsRole
+// answers true for, over every state and source the supervise package declares, which are every
+// value the claims table's checks allow (supervise.RoleHoldingPairs), so no statement spells the
+// rule again. So a claim the idle release or a pause's stop suspended
+// (supervise.SuspendedByReleased) holds its role, and so does one launched again over the session
+// it kept; a failed or a retired claim holds none, and neither does one any other source suspended.
+var roleHoldingStates, roleHoldingSources = supervise.RoleHoldingPairs()
 
-// RoleHolder is one live role of an issue and the session that holds it.
+// RoleHolder is one role of an issue and the session that holds it.
 type RoleHolder struct {
 	Role    claim.Role
 	Session string
 }
 
-// LiveRoleHolders is the session of each live claim of issue, by role: a claim in one of
-// liveClaimStates that records a session it holds. It is what a role-holder publication sends.
+// RoleHolders is the session of each claim of issue that holds its role, by role: a claim whose
+// state and suspension source hold it (supervise.HoldsRole, roleHoldingStates) and that records a
+// session it holds. It is what a role-holder publication sends. A claim the idle release suspended
+// is in it, so the release of an idle pod and the wake that brings it back leave Dispatch's set as
+// it was.
 //
 // A claim holds its session when claim_sessions holds every name its record gives the session
 // (supervise.RecordedHolds: the id, the file's name, the id an Oh My Pi file name gives, and the
 // Claude Code session a `<uuid>.jsonl` file names) for it, in its own project (internal/store's
 // HoldSessions, plan E's t-e-54), and none of those names is one no hold can cover
 // (supervise.UnholdableNames). Every session a registration records is held first, and the boot
-// holds every recorded name no row held before any machine exists. So a live claim's session is
-// left out only where the claim records a session it does not hold, which the boot suspends: a
+// holds every recorded name no row held before any machine exists. So a claim that holds its role
+// is left out only where it records a session it does not hold, which the boot suspends: a
 // name two claims recorded under a daemon from before the hold, or one past the bound, while that
 // claim's suspension waits for the end of its turn, or after a suspension the runtime refused.
 // Published, such a session would name the claim's role as the holder of another claim's session,
 // or of one no claim holds. The names are the supervise package's one rule, read here rather than
 // spelled again in SQL, and the holds of an issue's few claims are read in one statement.
-func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
+func (s *Postgres) RoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
 	held, err := heldRoleSessions(ctx, tx, issue, true)
 	if err != nil {
 		return nil, err
@@ -2683,35 +2689,38 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 }
 
 // RoleHoldersAt is each claim of issue, in any state, that records a session it holds by
-// LiveRoleHolders' rule, with its state and the times it last entered and left the states in
-// which the daemon publishes its session (RoleHolderAt.PublishedAt says whether it was published
-// at a moment).
+// RoleHolders' rule, with its state, its suspension source and the times it last began and
+// stopped holding its role, which are when Dispatch was shown its session and when it stopped
+// being shown it (RoleHolderAt.PublishedAt says whether it was published at a moment).
 func (s *Postgres) RoleHoldersAt(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolderAt, error) {
 	return heldRoleSessions(ctx, tx, issue, false)
 }
 
-// heldRoleSessions is each claim of issue that records a session it holds (LiveRoleHolders' rule),
-// by role, with its state and its crossing times: of the claims in liveClaimStates alone where
-// live, and of every claim otherwise.
-func heldRoleSessions(ctx context.Context, tx pgx.Tx, issue string, live bool) ([]RoleHolderAt, error) {
+// heldRoleSessions is each claim of issue that records a session it holds (RoleHolders' rule),
+// by role, with its state, its suspension source and its crossing times: of the claims that hold
+// their role (roleHoldingStates, roleHoldingSources) alone where holding, and of every claim
+// otherwise.
+func heldRoleSessions(ctx context.Context, tx pgx.Tx, issue string, holding bool) ([]RoleHolderAt, error) {
 	type candidate struct {
 		token, project, file string
 		holder               RoleHolderAt
 	}
-	var states []string
-	if live {
-		states = liveClaimStates
+	var states, sources []string
+	if holding {
+		states, sources = roleHoldingStates, roleHoldingSources
 	}
-	rows, err := tx.Query(ctx, `select c.token, c.project, c.role, c.session, c.session_file, c.state, c.published_since, c.unpublished_since
-		from claims c where c.issue = $1 and c.session <> '' and ($2::text[] is null or c.state = any($2))
-		order by c.role`, issue, states)
+	rows, err := tx.Query(ctx, `select c.token, c.project, c.role, c.session, c.session_file, c.state, c.suspended_by,
+			c.published_since, c.unpublished_since
+		from claims c where c.issue = $1 and c.session <> ''
+			and ($2::text[] is null or (c.state, c.suspended_by) in (select * from unnest($2::text[], $3::text[])))
+		order by c.role`, issue, states, sources)
 	if err != nil {
 		return nil, fmt.Errorf("read the role holders of %s: %w", issue, err)
 	}
 	candidates, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
 		var c candidate
 		err := row.Scan(&c.token, &c.project, &c.holder.Role, &c.holder.Session, &c.file, &c.holder.State,
-			&c.holder.PublishedSince, &c.holder.UnpublishedSince)
+			&c.holder.SuspendedBy, &c.holder.PublishedSince, &c.holder.UnpublishedSince)
 		return c, err
 	})
 	if err != nil {
@@ -2765,13 +2774,15 @@ func heldRoleSessions(ctx context.Context, tx pgx.Tx, issue string, live bool) (
 }
 
 // RoleHolderAt is one claim of an issue that records a session it holds (Store.RoleHoldersAt):
-// its role and session, its state now, and the times it last entered and left the states in which
-// the daemon publishes its session as its role's holder (claims.published_since and
-// unpublished_since, which internal/store's upsertClaim stamps on each crossing; nil where no
-// crossing stamped one, as on every claim the release before left).
+// its role and session, its state and suspension source now, and the times it last began and
+// stopped holding its role (supervise.HoldsRole), the rule the daemon publishes its session as its
+// role's holder by (claims.published_since and unpublished_since, which internal/store's
+// upsertClaim stamps on each crossing; nil where no crossing stamped one, as on every claim the
+// release before left).
 type RoleHolderAt struct {
 	RoleHolder
 	State                            supervise.ClaimState
+	SuspendedBy                      supervise.SuspendSource
 	PublishedSince, UnpublishedSince *time.Time
 }
 
@@ -2781,7 +2792,8 @@ type RoleHolderAt struct {
 // project's first boot on this release finished its conversion (TreeConversion.ConvertedAt), nil
 // where none is recorded.
 //
-// A claim published now was published at at where it entered no later than at, or where at comes
+// A claim published now, one whose state and suspension source hold its role
+// (supervise.HoldsRole), was published at at where it entered no later than at, or where at comes
 // before its last leave, so at fell before a leave and a re-entry; a nil PublishedSince is a claim
 // published since before this release stamped any entry, published at every at. A claim not
 // published now was published at at only where at comes before its last leave and it entered no
@@ -2802,7 +2814,7 @@ func (h RoleHolderAt) PublishedAt(at time.Time, convertedAt *time.Time) bool {
 	enteredBy := h.PublishedSince == nil || !h.PublishedSince.After(at)
 	beforeLeave := h.UnpublishedSince != nil && at.Before(*h.UnpublishedSince)
 	switch {
-	case supervise.HoldsCapability(h.State):
+	case supervise.HoldsRole(h.State, h.SuspendedBy):
 		return enteredBy || beforeLeave
 	case h.PublishedSince == nil && h.UnpublishedSince == nil:
 		return convertedAt != nil && at.Before(*convertedAt)
@@ -2827,7 +2839,7 @@ func (h RoleHolderAt) NearCrossing(at time.Time, within time.Duration) (time.Tim
 }
 
 // SessionHeld reports whether claim_sessions holds, for token in project, every name its record
-// gives session and sessionFile, by LiveRoleHolders' rule: every name supervise.RecordedHolds
+// gives session and sessionFile, by RoleHolders' rule: every name supervise.RecordedHolds
 // gives, none of them one supervise.UnholdableNames refuses. It only reads, in tx, which may be a
 // fact's transaction holding the fact lock (the daemon's step record): a savepoint, one select and
 // the savepoint's release, all on that transaction's own connection, so it waits on no other
@@ -2864,15 +2876,17 @@ func SessionHeld(ctx context.Context, tx pgx.Tx, project string, token claim.Tok
 }
 
 // RecentClaimIssues is every issue of the Dispatch project whose key starts `<project>-` and
-// that has a live claim, or a claim that changed at or after since (claims.updated_at, which every
-// claim write sets), in key order. The boot publishes each of them, for what a release that
-// published nothing left: the live ones because a daemon that starts over running sessions has
-// published nothing for them yet, and the recent ones because that release ended claims and
-// published none of those ends.
+// that has a claim that holds its role (roleHoldingStates), or a claim that changed at or after
+// since (claims.updated_at, which every claim write sets), in key order. The boot publishes each
+// of them, for what a release that published nothing, or published another set, left: the ones
+// whose role is held because a daemon that starts over their sessions has not published them yet,
+// a claim the idle release suspended under a release that left it out of the set among them, and
+// the recent ones because that release ended claims and published none of those ends.
 func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error) {
 	rows, err := tx.Query(ctx, `select distinct issue from claims
-		where starts_with(issue, $1 || '-') and (updated_at >= $2 or state = any($3))
-		order by issue`, dispatchProject, since, liveClaimStates)
+		where starts_with(issue, $1 || '-')
+			and (updated_at >= $2 or (state, suspended_by) in (select * from unnest($3::text[], $4::text[])))
+		order by issue`, dispatchProject, since, roleHoldingStates, roleHoldingSources)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of %s with a recent claim: %w", dispatchProject, err)
 	}
@@ -3874,6 +3888,58 @@ func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, 
 		return fmt.Errorf("finish outbox row %d: %w", id, err)
 	}
 	return nil
+}
+
+func (s *Postgres) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (time.Time, bool, error) {
+	// The window's lock first, held to the end of tx: a transaction that finds no window and
+	// opens one commits before the next look at the same window runs, so two finishes never both
+	// find none.
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, "hook-prompts-message:"+issue+":"+string(role)); err != nil {
+		return time.Time{}, false, fmt.Errorf("lock the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	// The lease test is read again once the row's lock is held (READ COMMITTED), so a run that
+	// leased the row while this waited for it leaves it out.
+	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox
+		where kind = $1 and issue = $2 and payload->'hook_prompts'->>'role' = $3
+			and attempts = 0 and created_at > $5
+			and next_at > $4 and (lease_until is null or lease_until <= $4)
+		order by id limit 1 for update`,
+		string(OutboxKindDispatchMessage), issue, string(role), now, now.Add(-window)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The message names the fence issue stands at, as every effect does (NewFencedRow). It only
+		// reports, so a later run makes it late and a later phase entry does not (LateAt, reportOnly).
+		opened, err := NewFencedRow(ctx, tx, s, issue, UndeliveredHookPrompts{Role: role, Paragraphs: []string{paragraph}}.Message(issue), now.Add(window))
+		if err != nil {
+			return time.Time{}, false, fmt.Errorf("open the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+		}
+		opened.CreatedAt = now
+		if err := s.Enqueue(ctx, tx, opened); err != nil {
+			return time.Time{}, false, err
+		}
+		return opened.NextAt, true, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	payload, err := DecodeOutboxPayload(row)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
+	}
+	// The query took a message row whose payload names role's undelivered prompts, so the payload
+	// is such a message. The joined message keeps the fence the open one was queued at.
+	post := payload.(MessagePost)
+	prompts := *post.HookPrompts
+	prompts.Paragraphs = append(prompts.Paragraphs, paragraph)
+	message := prompts.Message(issue)
+	message.Generation, message.Entry = post.Generation, post.Entry
+	joined, err := NewOutboxRow(issue, message, row.NextAt)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("name a prompt in the message of %s's undelivered hook prompts on %s, outbox row %d: %w", role, issue, row.ID, err)
+	}
+	if _, err := tx.Exec(ctx, `update outbox set payload = $2 where id = $1`, row.ID, string(joined.Payload)); err != nil {
+		return time.Time{}, false, fmt.Errorf("name a prompt in the message of %s's undelivered hook prompts on %s, outbox row %d: %w", role, issue, row.ID, err)
+	}
+	return row.NextAt, false, nil
 }
 
 // RetryOutbox returns row id to the outbox, due again at nextAt, while leaseToken holds it: one

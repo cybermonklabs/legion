@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -686,10 +687,10 @@ const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations
 // writerAudienceRefusal is the loader's answer to a writer_audience of another form than a
 // provider's full resource name. It spells the whole rule out, the gcp- prefix Google keeps for
 // itself included, so a refusal of a pool or provider id that starts with it says why.
-func writerAudienceRefusal(value string) string {
-	return fmt.Sprintf("runtime.kubernetes.session_database.writer_audience %q must be a workload identity provider's full resource name,"+
-		" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>,"+
-		" each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-", value)
+func writerAudienceRefusal(_ string) string {
+	return "runtime.kubernetes.session_database.writer_audience must be a workload identity provider's full resource name," +
+		" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>," +
+		" each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-"
 }
 
 // brokerAudienceRefusal is the loader's answer to a writer_audience that is the broker's audience
@@ -936,8 +937,8 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			// A file on the daemon's disk reaches no pod: under kubernetes a provider key is a key of
 			// the providers Secret every pod mounts.
 			name: "a provider key naming a file",
-			body: kubernetesFile + "provider_keys: {GEMINI_API_KEY: \"file:/etc/legion/providers/gemini\"}\n",
-			want: "provider_keys.GEMINI_API_KEY names the file /etc/legion/providers/gemini, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret",
+			body: kubernetesFile + "provider_keys: {GEMINI_API_KEY: \"file:/SUAMADEUPPASTEDSEEDSHAPE0123456789ABCDEFGHIJKLMNOPQRSTUV\"}\n",
+			want: "provider_keys.GEMINI_API_KEY names a file, which only runtime tmux reads: under runtime kubernetes a provider key is a key of the providers Secret",
 		},
 		{
 			name: "namespace absent",
@@ -1109,9 +1110,10 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "runtime.kubernetes.scheduling.tolerations[0] must be a mapping",
 		},
 		{
+			// A camelCase name is no key of the grammar, so it is named by its line.
 			name: "a toleration with an unknown member",
 			body: kubernetesFile + "    scheduling: {tolerations: [{key: spot, operator: Exists, effect: NoSchedule, tolerationSeconds: 5}]}\n",
-			want: "unknown key runtime.kubernetes.scheduling.tolerations[0].tolerationSeconds",
+			want: "unknown key at line 24 under runtime.kubernetes.scheduling.tolerations[0], whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit)",
 		},
 		{
 			name: "a toleration with no key",
@@ -1252,7 +1254,15 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "session_store postgres with a key no Secret can hold",
 			body: kubernetesWith("    session_dsn_secret: SESSION_DSN\n", "    session_dsn_secret: sessions/dsn\n"),
-			want: `runtime.kubernetes.session_dsn_secret "sessions/dsn" is not a Secret data key ([-._a-zA-Z0-9]+)`,
+			want: `runtime.kubernetes.session_dsn_secret is not a Secret data key ([-._a-zA-Z0-9]+)`,
+		},
+		{
+			// A DSN pasted where the key's name goes, its made-up password among it: the refusal
+			// names the key alone and quotes none of the value.
+			name: "session_store postgres with a DSN where its key goes",
+			body: kubernetesWith("    session_dsn_secret: SESSION_DSN\n",
+				"    session_dsn_secret: \""+(&url.URL{Scheme: "postgres", User: url.UserPassword("legion", "madeUpSessionPassword"), Host: "db.internal.example:5432", Path: "/sessions"}).String()+"\"\n"),
+			want: `runtime.kubernetes.session_dsn_secret is not a Secret data key ([-._a-zA-Z0-9]+)`,
 		},
 		{
 			name: "session_database with the postgres store",
@@ -1303,54 +1313,79 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			name: "session_database with an instance that is no connection name",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
-			want: `runtime.kubernetes.session_database.instance "example-instance" must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
 		},
 		{
 			name: "session_database with an instance missing a segment",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: \"example-project::example-instance\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
-			want: `runtime.kubernetes.session_database.instance "example-project::example-instance" must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
 		},
 		{
 			name: "session_database with an instance led by whitespace",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: \" example-project:us-central1:example-instance\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
-			want: `runtime.kubernetes.session_database.instance " example-project:us-central1:example-instance" must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+		},
+		{
+			// A key=value DSN pasted where the connection name goes: no "@", "/" or "?", so it
+			// reaches the shape check, whose refusal names the key alone. The password is made up.
+			name: "session_database with a key=value DSN where the instance goes",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: \"host=db user=legion password=madeUpKvPassword0123\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+		},
+		{
+			// A DSN pasted where the connection name goes, its made-up password among three ":",
+			// which ValidInstance would read as domain:project:region:instance: refused by the key
+			// alone, quoting none of it.
+			name: "session_database with a DSN where the instance goes",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: \"postgres://legion:" + "madeUpDsnPassword0123@db.internal.example:5432/sessions\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project; it holds an "@", "/" or "?", as a DSN or a URL does`,
 		},
 		{
 			name: "session_database impersonating the login form of a service account",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
 				" impersonate_service_account: legion-sessions@example-project.iam}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account "legion-sessions@example-project.iam" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a person's email",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: someone@example.com," +
 				" impersonate_service_account: someone@example.com}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account "someone@example.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a bare name",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
 				" impersonate_service_account: legion-sessions}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account "legion-sessions" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+		},
+		{
+			// A key pasted where the account goes, made up: the refusal names the key alone.
+			name: "session_database impersonating a pasted key",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+				" impersonate_service_account: madeUpPastedAccountKey0123456789}\n"),
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a service account in upper case",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: Legion-Sessions@example-project.iam," +
 				" impersonate_service_account: Legion-Sessions@example-project.iam.gserviceaccount.com}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account "Legion-Sessions@example-project.iam.gserviceaccount.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a service account led by whitespace",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
 				" impersonate_service_account: \" legion-sessions@example-project.iam.gserviceaccount.com\"}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account " legion-sessions@example-project.iam.gserviceaccount.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a blank service account",
@@ -1364,7 +1399,16 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: other@example-project.iam," +
 				" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com}\n"),
-			want: `runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.user must be "legion-sessions@example-project.iam": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`,
+		},
+		{
+			// A made-up token pasted where the login goes: the refusal names the key and the login
+			// the account takes, never the value.
+			name: "session_database signing in as a pasted token",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: madeUpPastedLoginToken0123456789," +
+				" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com}\n"),
+			want: `runtime.kubernetes.session_database.user must be "legion-sessions@example-project.iam": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`,
 		},
 		{
 			name: "daemon_url empty",
@@ -1395,6 +1439,18 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			name: "a nats_urls entry on loopback",
 			body: kubernetesWith("nats_urls: [nats://nats.internal.example:4222]", "nats_urls: [nats://nats.internal.example:4222, nats://127.0.0.2:4222]"),
 			want: "nats_urls nats://127.0.0.2:4222 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
+		},
+		// The refusal names the URL by its scheme and host: its userinfo is where these keys take a
+		// credential, and `legion stop` prints this error as it is.
+		{
+			name: "a nats_urls entry on loopback with a password",
+			body: kubernetesWith("nats_urls: [nats://nats.internal.example:4222]\n", withNATSPassword("madeUpNatsPassword", "127.0.0.2:4222")),
+			want: "nats_urls nats://127.0.0.2:4222 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
+		},
+		{
+			name: "envoy_url on loopback with a token as its user",
+			body: kubernetesWith("envoy_url: http://envoy-listener.internal.example:9020", "envoy_url: http://madeUpEnvoyToken@127.0.0.1:9020"),
+			want: "envoy_url http://127.0.0.1:9020 names a loopback host, which in a pod is the pod itself; name the host pods reach it at when runtime is kubernetes",
 		},
 		{
 			name: "dispatch_url on loopback",
@@ -1532,17 +1588,31 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "a pod variable that is no variable name",
 			body: kubernetesFile + "    pod:\n      env: {1PASSWORD: vault}\n",
-			want: `runtime.kubernetes.pod.env key "1PASSWORD" must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+			want: `runtime.kubernetes.pod.env entry 1: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
+		},
+		{
+			// A credential pasted where a variable name goes, a made-up one: the refusal names the
+			// entry by its position and quotes none of it.
+			name: "a pod variable that is a credential pasted as its name",
+			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: https://api.example, \"madeUp-pod-credential-0123456789\": x}\n",
+			want: `runtime.kubernetes.pod.env entry 2: its key must be an environment variable name (letters, digits, and underscores, not starting with a digit)`,
 		},
 		{
 			name: "a pod variable whose value is no string",
 			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: {host: x}}\n",
-			want: "runtime.kubernetes.pod.env value for OPENAI_BASE_URL must be a string",
+			want: "runtime.kubernetes.pod.env entry 1: its value must be a string",
+		},
+		{
+			// A credential made only of letters, digits and underscores passes the name rule; with
+			// a list value the refusal names the entry by position and quotes none of it.
+			name: "a pod variable with a token-shaped name and a list value",
+			body: kubernetesFile + "    pod:\n      env: {OPENAI_BASE_URL: https://api.example, madeUp_pod_credential_0123456789: [x]}\n",
+			want: "runtime.kubernetes.pod.env entry 2: its value must be a string",
 		},
 		{
 			name: "a credential-shaped pod variable",
 			body: kubernetesFile + "    pod:\n      env: {ANTHROPIC_API_KEY: sk-ant}\n",
-			want: "runtime.kubernetes.pod.env sets ANTHROPIC_API_KEY, a credential-shaped name: a credential comes from a Secret, so mount one with runtime.kubernetes.pod.volumes or name its key in provider_keys",
+			want: "runtime.kubernetes.pod.env entry 1 sets a credential-shaped variable: a credential comes from a Secret, so mount one with runtime.kubernetes.pod.volumes or name its key in provider_keys",
 		},
 		{
 			name: "pod volumes are not a sequence",
@@ -1602,37 +1672,43 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "an NFS server given as a URL",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 'nfs://nas.internal.example', path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "nfs://nas.internal.example" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+		},
+		{
+			// A made-up user name and password in the URL: the refusal quotes none of the value.
+			name: "an NFS server given as a URL with userinfo",
+			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 'nfs://madeUpNfsUser0123:" + "madeUpNfsPassword0123@nas.internal.example', path: /share}}]\n",
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server with a port",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 'nas.internal.example:2049', path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "nas.internal.example:2049" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server with the export in it",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: '10.0.0.2:/share', path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "10.0.0.2:/share" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in brackets",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: '[fd00::2]', path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "[fd00::2]" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's octal form",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 010.0.0.2, path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "010.0.0.2" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's short form",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 1.2.3, path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "1.2.3" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server in inet_aton's hexadecimal form",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: 0x0a000002, path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server "0x0a000002" must be an IP address or a DNS name, with no scheme, port, path or brackets`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets`,
 		},
 		{
 			name: "an NFS server on the node's loopback",
@@ -1647,7 +1723,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "an NFS server named localhost with the root's trailing dot",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: localhost., path: /share}}]\n",
-			want: "runtime.kubernetes.pod.volumes[0].nfs.server \"localhost.\" must be an IP address or a DNS name, with no scheme, port, path or brackets",
+			want: "runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or a DNS name, with no scheme, port, path or brackets",
 		},
 		{
 			name: "an NFS server of no address",
@@ -1657,12 +1733,12 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "an NFS server with a dotted capital I",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: \"nas.\u0130nternal.example\", path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or an ASCII DNS name; got "nas.\u0130nternal.example"`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`,
 		},
 		{
 			name: "an NFS server with a Kelvin sign",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: nas, nfs: {server: \"\u212Aube.example\", path: /share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or an ASCII DNS name; got "\u212aube.example"`,
+			want: `runtime.kubernetes.pod.volumes[0].nfs.server must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`,
 		},
 		{
 			name: "an NFS server as an IPv4-mapped IPv6 address",
@@ -2102,10 +2178,13 @@ func TestAgentSecretsBlockRefusals(t *testing.T) {
 		// kubelet projects it.
 		"no token_file":       {"    agent_secrets:\n      url: https://s\n", "runtime.kubernetes.agent_secrets.token_file is required"},
 		"relative token_file": {"    agent_secrets:\n      url: https://s\n      token_file: token\n", "runtime.kubernetes.agent_secrets.token_file must be an absolute path"},
-		"expiry too long":     {"    agent_secrets:\n      url: https://s\n" + tf + "      token_expiry_seconds: 7200\n", "runtime.kubernetes.agent_secrets.token_expiry_seconds must be between 600 and 3600"},
-		"expiry too short":    {"    agent_secrets:\n      url: https://s\n" + tf + "      token_expiry_seconds: 60\n", "runtime.kubernetes.agent_secrets.token_expiry_seconds must be between 600 and 3600"},
-		"blank audience":      {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: \"\"\n", "runtime.kubernetes.agent_secrets.audience must not be empty"},
-		"unknown key":         {"    agent_secrets:\n      url: https://s\n" + tf + "      token: abc\n", "unknown key runtime.kubernetes.agent_secrets.token"},
+		// A made-up token pasted where its path goes: the refusal is the whole text, so it holds
+		// none of the token.
+		"a token where token_file's path goes": {"    agent_secrets:\n      url: https://s\n      token_file: madeUpAgentSecretsToken0123\n", "runtime.kubernetes.agent_secrets.token_file must be an absolute path"},
+		"expiry too long":                      {"    agent_secrets:\n      url: https://s\n" + tf + "      token_expiry_seconds: 7200\n", "runtime.kubernetes.agent_secrets.token_expiry_seconds must be between 600 and 3600"},
+		"expiry too short":                     {"    agent_secrets:\n      url: https://s\n" + tf + "      token_expiry_seconds: 60\n", "runtime.kubernetes.agent_secrets.token_expiry_seconds must be between 600 and 3600"},
+		"blank audience":                       {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: \"\"\n", "runtime.kubernetes.agent_secrets.audience must not be empty"},
+		"unknown key":                          {"    agent_secrets:\n      url: https://s\n" + tf + "      token: abc\n", "unknown key runtime.kubernetes.agent_secrets.token"},
 		// A launcher credential is never read off disk: the old key must fail loudly, never parse
 		// as a silently-ignored unknown.
 		"the removed launcher_token_file key": {"    agent_secrets:\n      url: https://s\n" + tf + "      launcher_token_file: x\n", "unknown key runtime.kubernetes.agent_secrets.launcher_token_file"},
@@ -2119,6 +2198,9 @@ func TestAgentSecretsBlockRefusals(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "madeUpAgentSecrets") {
+				t.Fatalf("the refusal %q quotes the pasted token", err)
 			}
 		})
 	}
@@ -2209,6 +2291,8 @@ func TestNFSServerMayBeMixedCaseASCII(t *testing.T) {
 // A URL a pod is handed, and bind, are refused unless their host is ASCII: a pod's HTTP client maps
 // a full-width name to localhost (UTS-46), past the loopback refusal.
 func TestPodURLHostMustBeASCII(t *testing.T) {
+	// A made-up password holding a bare "@", built here so no source line holds a URL with one.
+	passwordAt := "legion:p" + "@"
 	for name, tc := range map[string]struct{ body, want string }{
 		"daemon_url with a long s": {kubernetesWith("daemon_url: http://10.0.0.5:13370", "daemon_url: http://localho\u017Ft:13370"),
 			`daemon_url host must be an IP address or an ASCII DNS name; got "localho\u017ft"`},
@@ -2219,11 +2303,16 @@ func TestPodURLHostMustBeASCII(t *testing.T) {
 		"dispatch_url with a long s": {kubernetesWith("dispatch_url: https://dispatch.internal.example", "dispatch_url: https://localho\u017Ft"),
 			`dispatch_url host must be an IP address or an ASCII DNS name; got "localho\u017ft"`},
 		"bind with a Kelvin sign": {kubernetesWith("bind: 10.0.0.5", "bind: \"\u212Aube.example\""),
-			`bind must be an IP address or an ASCII DNS name; got "\u212aube.example"`},
+			`bind must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
 		"bind with a Kelvin sign beside advertise_host": {kubernetesWith("bind: 10.0.0.5", "bind: \"\u212Aube.example\"\nadvertise_host: legion-daemon.legion.svc"),
-			`bind must be an IP address or an ASCII DNS name; got "\u212aube.example"`},
+			`bind must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
 		"agent_secrets.url with a long s": {kubernetesFile + "    agent_secrets:\n      url: http://localho\u017Ft:13380\n" + agentSecretsTokenFile,
 			`runtime.kubernetes.agent_secrets.url host must be an IP address or an ASCII DNS name; got "localho\u017ft"`},
+		// A made-up password holding a bare "@": url.Parse reads its tail as the host, which holds
+		// a character that is not ASCII. The refusal names the key alone, never that tail.
+		"envoy_url with a password holding an @ and a tail that is not ASCII": {kubernetesWith("envoy_url: http://envoy-listener.internal.example:9020",
+			"envoy_url: \"http://"+passwordAt+"sswmadeuptail0123\u00f6rd.example:9020\""),
+			`envoy_url host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
@@ -2231,6 +2320,32 @@ func TestPodURLHostMustBeASCII(t *testing.T) {
 				t.Fatalf("LoadForValidation error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// refuseNonASCIIHost quotes a host that is not ASCII only when the URL holds no credential: a
+// made-up password holding a bare "@" leaves its tail as the host, and a made-up token holding a
+// "/" or a "?" written as the user leaves its head there. Each is named by its key alone.
+func TestANonASCIIHostOfAURLWithACredentialIsNamedByItsKey(t *testing.T) {
+	const head, tail = "madeuphead0123\u00e4", "madeuptail0123\u00f6"
+	for name, raw := range map[string]string{
+		"a password holding an @":         "http://legion:p" + "@" + tail + ".example",
+		"a token holding a / as the user": "http://" + head + "/" + "x" + "@host.example",
+		"a token holding a ? as the user": "http://" + head + "?" + "x" + "@host.example",
+	} {
+		t.Run(name, func(t *testing.T) {
+			u, err := url.Parse(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := refuseNonASCIIHost("envoy_url host", u)
+			if want := "envoy_url host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII"; got == nil || got.Error() != want {
+				t.Fatalf("refuseNonASCIIHost(%q) = %v, want %q", raw, got, want)
+			}
+		})
+	}
+	if u, _ := url.Parse("http://\u212Aube.example"); refuseNonASCIIHost("envoy_url host", u).Error() != `envoy_url host must be an IP address or an ASCII DNS name; got "\u212aube.example"` {
+		t.Fatal("a host with no credential is no longer quoted")
 	}
 }
 
@@ -2313,6 +2428,77 @@ func TestPluginsBlockRefusals(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+tc.block), noEnv)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Each refusal of a plugin source's "@" after its host says what the operator changes: write the
+// credential's "?" or "#" percent-encoded for an "@" in the query or the fragment, and its "/" for
+// one in the path, which a "%40" in the path is too. The credential is made up.
+func TestAPluginSourcesAtRefusalSaysWhatToChange(t *testing.T) {
+	const madeUp = "madeUpPluginCredential0123"
+	for source, want := range map[string]string{
+		"https://cache.example/pi-legion.tgz?by=" + madeUp + "@x": `write such a credential percent-encoded (%3F, %23)`,
+		"https://" + madeUp + "/rest@cache.example/pi-legion.tgz": `write such a credential's "/" percent-encoded (%2F)`,
+		"https://cache.example/" + madeUp + "%40x/pi-legion.tgz":  `write such a credential's "/" percent-encoded (%2F)`,
+	} {
+		_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+source+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+		if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.plugins.pi_legion cannot be read: ") || !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal of a source with an @ past its host is %v, want it to say %q", err, want)
+		}
+		if err != nil && strings.Contains(err.Error(), madeUp) {
+			t.Errorf("the refusal %v quotes the source", err)
+		}
+	}
+}
+
+// A plugin source that carries a credential is refused naming the key alone: no refusal quotes
+// it. A source with userinfo and no http(s) scheme, one with a signed query and no host, a
+// scheme-relative one with userinfo, an http(s) one whose user is a token holding a "/" (so the
+// "@" lands in the path), one whose token ends in "/" (so a path segment opens with "@"), one
+// whose password is digits then a "/" (so the user and the digits read as a host and a port), and
+// one with an "@" in its query or fragment each carry a made-up credential here. A bare token in
+// the version slot is quoted no more either, nor is a dist-tag. A registry tarball URL whose path
+// holds the plugins' scope as a segment, in the forms an npm registry, Artifactory and GitHub
+// Packages serve and with the scope's "/" percent-encoded, still loads.
+func TestAPluginSourceRefusalQuotesNoCredential(t *testing.T) {
+	const madeUp = "madeUpPluginCredential0123"
+	for name, source := range map[string]string{
+		"userinfo with another scheme":       "s3://legion:" + madeUp + "@bucket/pi-legion.tgz",
+		"a signed query with no host":        "https:///pi-legion.tgz?signature=" + madeUp,
+		"a scheme-relative source with user": "//legion:" + madeUp + "@cache/pi-legion.tgz",
+		"a token holding a / as the user":    "https://" + madeUp + "/rest@cache.example/pi-legion.tgz",
+		"a token ending in / as the user":    "https://" + madeUp + "/mid/@cache.example/pi-legion.tgz",
+		"a password of digits and a /":       "https://" + madeUp + ":12/@cache.example/pi-legion.tgz",
+		"an @ in the query":                  "https://cache.example/pi-legion.tgz?by=" + madeUp + "@x",
+		"an @ in the fragment":               "https://cache.example/pi-legion.tgz#" + madeUp + "@x",
+		"a bare token in the version slot":   madeUp,
+		"a dist-tag":                         "latest",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+source+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+			if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.plugins.pi_legion") {
+				t.Fatalf("err %v, want a refusal naming runtime.kubernetes.plugins.pi_legion", err)
+			}
+			if strings.Contains(err.Error(), source) || strings.Contains(err.Error(), madeUp) || strings.Contains(err.Error(), "got") {
+				t.Fatalf("the refusal quotes the source: %v", err)
+			}
+		})
+	}
+	for name, scoped := range map[string]string{
+		"an npm registry":       "https://registry.example/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz",
+		"Artifactory":           "https://artifactory.example/api/npm/npm-remote/@sjawhar/pi-legion/-/@sjawhar/pi-legion-9.6.1.tgz",
+		"GitHub Packages":       "https://npm.pkg.github.com/download/@sjawhar/pi-legion/9.6.1/0123456789abcdef",
+		"the scope's / encoded": "https://registry.example/@sjawhar%2fpi-legion/-/pi-legion-9.6.1.tgz",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+scoped+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+			if err != nil {
+				t.Fatalf("a scoped package's registry tarball URL was refused: %v", err)
+			}
+			if got := cfg.Runtime.Kubernetes.Plugins.PiLegion; got != scoped {
+				t.Fatalf("PiLegion = %q, want %q", got, scoped)
 			}
 		})
 	}

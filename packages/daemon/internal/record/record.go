@@ -2889,16 +2889,17 @@ type Store interface {
 	// a run of changes queues no second row, a row that already says this set is left as it is,
 	// and a replacement takes the row from a lane holding it, whose send carries the older set.
 	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
-	// LiveRoleHolders is the session of each live claim of issue, by role, that the claim holds
-	// (claim_sessions holds every name of it for that claim): the set a role-holder publication sends.
-	LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
-	// RoleHoldersAt is each claim of issue, in any state, whose session it holds by
-	// LiveRoleHolders' rule, with its state and the times it last entered and left the states its
-	// session is published in, so a write in Dispatch is judged by the holders published when
-	// Dispatch recorded it (RoleHolderAt.PublishedAt).
+	// RoleHolders is the session of each claim of issue that holds its role
+	// (supervise.HoldsRole), by role, that the claim holds (claim_sessions holds every name of it
+	// for that claim): the set a role-holder publication sends.
+	RoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
+	// RoleHoldersAt is each claim of issue, in any state, whose session it holds by RoleHolders'
+	// rule, with its state and the times it last began and stopped holding its role, so a write in
+	// Dispatch is judged by the holders published when Dispatch recorded it
+	// (RoleHolderAt.PublishedAt).
 	RoleHoldersAt(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolderAt, error)
-	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
-	// changed at or after since, in key order: the issues the boot publishes.
+	// RecentClaimIssues is every issue of the Dispatch project with a claim that holds its role, or
+	// a claim that changed at or after since, in key order: the issues the boot publishes.
 	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
 	// Enqueue queues row. A row NewFencedRow filled a phase entry of, queued in a ctx that keeps
 	// its fact's fenced rows (WithFencedRows), is kept for that fact's settle (RefenceFactRows).
@@ -2974,6 +2975,19 @@ type Store interface {
 	// finish: a stale lease is ErrOutboxLeaseLost, so the caller rolls that effect back rather than
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
+	// NameUndeliveredHookPrompt names paragraph (HookPrompt.Undelivered) in the message on issue
+	// that names role's undelivered hook prompts, inside tx, and answers when that message posts
+	// and whether this call opened it. It takes tx's lock on that role's window of issue first,
+	// held until tx ends, so two prompts that end together never both open one. The window it
+	// joins is the oldest Dispatch message row of issue whose payload names role's undelivered
+	// prompts (MessagePost.HookPrompts) and that no run has had: never attempted, made after
+	// now less window, due after now, and under no live lease. A row a post already tried is no
+	// open window, though it is held for its retry, since that retry may find the post made and
+	// add nothing it carries. Joining appends paragraph to the row's data and renders its body
+	// again (UndeliveredHookPrompts.Message), leaving when it is due and its fence as they are.
+	// With no window to join it opens one: a new row made at now, due window after now, and fenced
+	// at the fence issue stands at (NewFencedRow).
+	NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, paragraph string, now time.Time, window time.Duration) (posts time.Time, opened bool, err error)
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	// OutboxAttempt is the attempt row id last sent on Dispatch's status-change route, the zero one
 	// for a row that sent none, and false for a row the outbox no longer holds.

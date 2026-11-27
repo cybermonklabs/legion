@@ -10,7 +10,7 @@
 -- Dispatch claim a session holds (workflow.Unresumable), under the one lock every fact takes, and
 -- which the repair of a session's held status writes reads too; ArchitectLaunchesOf and
 -- ArchitectServedOf read the architect claim of an issue by its issue and role, RoleHoldersAt and
--- LiveRoleHolders every claim of an issue that records a session, and IssuePodUID the pod the claims
+-- RoleHolders every claim of an issue that records a session, and IssuePodUID the pod the claims
 -- of an issue run in. record.Store.ProjectClaims reads the claims of the project that stand on an
 -- issue (`where project = $1 and issue <> ''`), which the admission pass's stalled-tree notice reads
 -- once a running root has been quiet past `stalled_tree_notice_hours` (admit's quietTrees). claims

@@ -419,7 +419,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
-		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
+		// starts no turn, so the pause lets it run: a claim that ends or changes its session while
+		// the project is paused changes those holders, which Dispatch should show. The pause's own
+		// stops suspend as released, which keeps each holder, so they queue none.
 		OutboxKindRoleHoldersPublish: "",
 		// A step record writes Dispatch one start or one end of a step of an issue
 		// (cybermonklabs/legion#4400) and starts no turn, so the pause lets it run as it does a
@@ -536,7 +538,8 @@ func setFenceField(field reflect.Value) bool {
 // an entry is late at a later phase entry of its run as well as in a later run, but for the kinds
 // that only tell somebody something (reportOnly, the architect's ruling of 2026-11-21 on
 // dispatch://INFRA-3320), an architect's notice and a controller's, which name their entry and
-// are late in a later run alone. A kind added there or taken away from it fails here until
+// are late in a later run alone, and so is a message that names undelivered hook prompts, the one
+// payload of its kind that reports. A kind added there or taken away from it fails here until
 // somebody decides it, so no kind that acts is fenced by its run alone.
 func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
@@ -739,6 +742,22 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 				t.Errorf("%s: NewOutboxRow takes a payload without its %s (%s), so such a row could be queued unfenced", kind, p.name, p.part.field)
 			}
 		}
+	}
+	// A dispatch_message row that names undelivered hook prompts (MessagePost.HookPrompts) only
+	// tells the issue what reached no session, so its delivery reads the run alone (reportOnly):
+	// hook prompts fire at moves back, and an entry fence would drop the message after the very
+	// moves that make it. Every other message acts as its kind decided above, late at a later entry
+	// of its run too.
+	queuedAt := Fence{Generation: 3, Entry: 5}
+	prompts := Fenced(UndeliveredHookPrompts{Role: claim.RoleImplementer, Paragraphs: []string{"Legion hook back-to-implementing fired at 1 moves back."}}.Message("LEGION-208"), queuedAt)
+	if LateAt(Fence{Generation: queuedAt.Generation, Entry: queuedAt.Entry + 1}, prompts) {
+		t.Errorf("the message of undelivered hook prompts of entry %d is late at entry %d of the same run, want it delivered: %s", queuedAt.Entry, queuedAt.Entry+1, tellsOnly)
+	}
+	if !LateAt(Fence{Generation: queuedAt.Generation + 1, Entry: queuedAt.Entry}, prompts) {
+		t.Errorf("the message of undelivered hook prompts of run %d is delivered in run %d, want it late: a report of an earlier run is no news", queuedAt.Generation, queuedAt.Generation+1)
+	}
+	if plain := Fenced(MessagePost{Body: "A message of one run."}, queuedAt); !LateAt(Fence{Generation: queuedAt.Generation, Entry: queuedAt.Entry + 1}, plain) {
+		t.Errorf("a message that names no hook prompts, of entry %d, still posts at entry %d of the same run, want it late: it is fenced by its run and its entry", queuedAt.Entry, queuedAt.Entry+1)
 	}
 	// The first boot's conversion stamps a row the release before queued with each part of its
 	// fence its kind carries (FencedKinds, StampReleaseBeforeFences), so that list names each kind
@@ -1630,6 +1649,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "The daemon did not delete the pod of LEGION-209 (pod pod-uid). No role process runs in this pod, so the pod's launcher read its workspace before the delete."},
 		{Kind: WorkspaceTakenNotice, Role: claim.RoleArchitect,
 			Reason: "The daemon replaced the pod of LEGION-209 (pod pod-uid). The read of the workspace before the replacement found one commit that no branch or tag on origin holds."},
+		{Kind: HookPromptUndeliveredNotice, Role: claim.RoleArchitect,
+			Reason: "Legion hook back-to-implementing's prompt to the implementer of LEGION-208 was not delivered, because the implementer's claim is failed."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

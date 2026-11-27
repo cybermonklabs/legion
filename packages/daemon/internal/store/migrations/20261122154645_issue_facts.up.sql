@@ -20,15 +20,15 @@
 -- claim's issue stored, for the release before (supervise.Claim.LaunchTree, decision 13 of
 -- dispatch://INFRA-4730). issue_epoch is the epoch of the claim's issue's own lifecycle it bound
 -- to, and holds_gate whether the claim's issue held its own gate at its last launch
--- (supervise.Claim.IssueEpoch, HoldsGate). published_since is when the claim last entered a state
--- in which the daemon publishes its session as its role's holder (registered, ready, working or
--- idle: supervise.CapabilityStates), and unpublished_since when it last left one; internal/store's
--- upsertClaim writes each on that crossing alone, and the repair reads them to judge a session's
--- write at the time Dispatch recorded it (record.RoleHolderAt.PublishedAt, decision 24 of
--- dispatch://INFRA-4730). Both are nullable with no default, so the release before's own claim
--- writes, which name neither, still insert and update. This migration stamps no claim and the
--- first boot's conversion writes neither, so a claim no crossing has stamped reads null, which
--- the repair reads against the conversion's time (tree_conversions.converted_at).
+-- (supervise.Claim.IssueEpoch, HoldsGate). published_since is when the claim last began to hold
+-- its role by its state and suspension source (supervise.HoldsRole), the rule the daemon
+-- publishes its session as its role's holder by, and unpublished_since when it last stopped;
+-- internal/store's upsertClaim writes each on that crossing alone, and the repair reads them to
+-- judge a session's write at the time Dispatch recorded it (record.RoleHolderAt.PublishedAt,
+-- decision 24 of dispatch://INFRA-4730). Both are nullable with no default, so the release
+-- before's own claim writes, which name neither, still insert and update. This migration stamps
+-- no claim and the first boot's conversion writes neither, so a claim no crossing has stamped
+-- reads null, which the repair reads against the conversion's time (tree_conversions.converted_at).
 --
 -- The issue lifecycle. issue_lifecycles is the admission and cleanup barrier of one issue, column
 -- for column what tree_lifecycles is for a tree (0033_tree_lifecycle), keyed by the normalized

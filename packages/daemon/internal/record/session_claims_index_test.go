@@ -48,7 +48,7 @@ var readsClaims = regexp.MustCompile(`(?i)\bfrom claims\b`)
 // SessionClaimsOf is read on every admission pass for each root waiting on a person whose Dispatch
 // claim a session holds (workflow.Unresumable), under the one lock every fact takes. The others are
 // the reads of an architect's launch and of what it last served (ArchitectLaunchesOf,
-// ArchitectServedOf), of the claims of an issue that hold a session (LiveRoleHolders,
+// ArchitectServedOf), of the claims of an issue that hold a session (RoleHolders,
 // RoleHoldersAt), of the pod an issue's claims run in (IssuePodUID), and of the claims of a project
 // that the stalled-tree notice reads (ProjectClaims).
 func TestTheClaimReadsOfTheAdmissionPassUseAnIndex(t *testing.T) {
@@ -88,8 +88,8 @@ func TestTheClaimReadsOfTheAdmissionPassUseAnIndex(t *testing.T) {
 			_, _, err := records.ArchitectServedOf(ctx, tx, issue)
 			return err
 		}, "claims_issue"},
-		{"LiveRoleHolders", func(tx pgx.Tx) error {
-			_, err := records.LiveRoleHolders(ctx, tx, issue)
+		{"RoleHolders", func(tx pgx.Tx) error {
+			_, err := records.RoleHolders(ctx, tx, issue)
 			return err
 		}, "claims_issue"},
 		{"RoleHoldersAt", func(tx pgx.Tx) error {
