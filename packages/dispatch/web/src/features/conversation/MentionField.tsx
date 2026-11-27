@@ -10,6 +10,7 @@ import {
   useEffect,
   useId,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -23,7 +24,12 @@ import {
 } from "../../theme/classes";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
-import { applyInsertion, isCompositionKey, type RefPickerInsertion } from "../refs/ref-picker";
+import {
+  applyInsertion,
+  isCompositionKey,
+  type RefPickerInsertion,
+  type RefPickerWords,
+} from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { TextEditRange } from "./block-spans";
 
@@ -31,6 +37,16 @@ import type { TextEditRange } from "./block-spans";
  *  `features/refs/party-options.ts`, not this file: the picker builds its agent and role rows
  *  from them, and this field hosts that picker, so holding them here would make the two modules
  *  import each other (`noImportCycles`). */
+
+/** How tall a box drawn in a host's look grows before it scrolls inside itself: the issue page's
+ *  line, as the prototype's `#ctext` does. */
+const LOOK_LINE_MAX = 150;
+
+/** Fits a box drawn in a host's look to what it holds, up to `LOOK_LINE_MAX`. */
+function fitLookLine(node: HTMLTextAreaElement): void {
+  node.style.height = "auto";
+  node.style.height = `${Math.min(LOOK_LINE_MAX, node.scrollHeight)}px`;
+}
 
 /** One edit of the field: the text now, and the edit the browser named, which a host following
  *  block spans maps its spans through (`followEdit`). */
@@ -70,6 +86,7 @@ export function MentionField({
   body,
   className,
   describedBy,
+  description,
   disabled = false,
   fieldClassName,
   fieldRef,
@@ -80,6 +97,7 @@ export function MentionField({
   label,
   labelClassName,
   labelHidden = false,
+  look,
   maxLength,
   onBlur,
   onChange,
@@ -88,10 +106,12 @@ export function MentionField({
   onKeyDown,
   onPaste,
   onPickerOpenChange,
+  pickerWords,
   placeholder,
   project,
   readOnly = false,
   rows = 1,
+  targets,
   writing,
 }: {
   /** Whether this box is an ask's answer box, which writes `data-ask-answer` on the textarea:
@@ -106,6 +126,10 @@ export function MentionField({
   /** Ids of the host's own text about this box, read out with the field's own hint: the count
    *  of what may still be written, where the host draws one. */
   readonly describedBy?: readonly string[];
+  /** The words read out as the box's own description, in place of its row's hint
+   *  (`writing.hint`): a host that says in words of its own what the box's keys do - the issue
+   *  page's box, whose line under the box is off screen (`look`). */
+  readonly description?: string;
   /** Takes no typing: a draft whose own send is out, which the host shows the reader rather than
    *  letting them write over what is already on the wire. The picker is shut with it. */
   readonly disabled?: boolean;
@@ -137,6 +161,14 @@ export function MentionField({
    *  grid row, a flex form - dresses this rather than the textarea. */
   readonly labelClassName?: string;
   readonly labelHidden?: boolean;
+  /** The class the box takes in place of the field's own, where a host draws it as one line of a
+   *  look of its own: the issue page's box at the foot of its outline (`pageComposer.field`). The
+   *  box then grows with what is typed, to `LOOK_LINE_MAX`, scrolls inside itself past that, and
+   *  shrinks back as the draft empties; the label draws no box of its own (`contents`, unless the
+   *  host dresses it), so the box is an item of the host's line; the list of mention targets and
+   *  the hint under the box are off screen, and still read out through `aria-describedby`; and an
+   *  open picker takes a row of its own at the end of the host's line, which wraps for it. */
+  readonly look?: string;
   /** The most the box takes, in the UTF-16 units the server counts, where the write has a bound
    *  a host says so at the box rather than leaving it to a refusal (the decline note's). */
   readonly maxLength?: number;
@@ -156,6 +188,9 @@ export function MentionField({
   /** Told whenever the picker opens or closes: a host lifts itself over whatever it floats
    *  above while the list is showing. */
   readonly onPickerOpenChange?: (open: boolean) => void;
+  /** The words the picker draws in this box (`RefPickerWords`), where the host has its own: the
+   *  issue page's box. With none, the picker's own. */
+  readonly pickerWords?: RefPickerWords;
   /** What the empty box says it takes, where the host has words for it (an ask's answer box
    *  names what the picked option asks of the reader). */
   readonly placeholder?: string;
@@ -168,6 +203,14 @@ export function MentionField({
   readonly readOnly?: boolean;
   /** How tall the box starts, in lines. */
   readonly rows?: number;
+  /** How the list of who this box's write is delivered to names itself and each of them, where
+   *  the host has words of its own (the issue page's box): its accessible name, and each target
+   *  by its name rather than its address. With none, the list is "Mention targets" and each
+   *  target is its address. */
+  readonly targets?: {
+    readonly label: string;
+    readonly nameOf: (target: string) => string;
+  };
   /** This box's row of the writing list, for the write it is making now: the line under the box
    *  is the row's `hint`, so the words a person reads and the list cannot disagree. */
   readonly writing: DispatchWritingBoxRow;
@@ -197,6 +240,7 @@ export function MentionField({
     issueKey,
     project,
     text: body,
+    words: pickerWords,
   });
   /** Who this box's write is delivered to, read from the text the reader can see
    *  (`draftParties`): a box whose write delivers nothing names nobody, whatever it cites. */
@@ -283,9 +327,40 @@ export function MentionField({
     };
   }, []);
 
+  // A box in a host's look grows with what is typed and shrinks back once a send or a discard
+  // empties it, so it is measured whenever the draft changes, the host's own writes included,
+  // rather than on the reader's input alone; past `LOOK_LINE_MAX` it scrolls inside itself.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the body is the trigger; the box is read as it stands
+  useLayoutEffect(() => {
+    const node = element.current;
+    if (look === undefined || node === null) return;
+    fitLookLine(node);
+  }, [body, look]);
+  // A fit holds for the width it was measured at: on a phone the issue page's line gives the box
+  // its whole width while it holds the focus and shares it with Send once the focus leaves, so a
+  // draft fitted while focused takes more lines after. The box is fitted again whenever its width
+  // changes; the fit's own change of height leaves the width as it is, so it does not loop.
+  useLayoutEffect(() => {
+    const node = element.current;
+    if (look === undefined || node === null || typeof ResizeObserver === "undefined") return;
+    let width = node.clientWidth;
+    const widths = new ResizeObserver(() => {
+      if (node.clientWidth === width) return;
+      width = node.clientWidth;
+      fitLookLine(node);
+    });
+    widths.observe(node);
+    return () => widths.disconnect();
+  }, [look]);
+
   return (
     <>
-      <label className={labelClassName ?? `block text-sm font-medium ${textSecondaryOnSurface}`}>
+      <label
+        className={
+          labelClassName ??
+          (look === undefined ? `block text-sm font-medium ${textSecondaryOnSurface}` : "contents")
+        }
+      >
         {labelHidden ? null : label}
         <textarea
           aria-activedescendant={picker.activeId}
@@ -293,13 +368,17 @@ export function MentionField({
           aria-describedby={[hintId, ...(describedBy ?? [])].join(" ")}
           aria-disabled={held || undefined}
           aria-label={label}
-          className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName ?? `${inputClasses(true)} ${textPrimaryOnSurface}`} ${className ?? ""}`}
+          className={
+            look === undefined
+              ? `mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName ?? `${inputClasses(true)} ${textPrimaryOnSurface}`} ${className ?? ""}`
+              : `${look} ${className ?? ""}`
+          }
           disabled={disabled}
           maxLength={maxLength}
           onChange={(event) => changed(event.target.value, event.target.selectionStart)}
           onDrop={onDrop}
           onInput={
-            inline
+            inline && look === undefined
               ? (event: SyntheticEvent<HTMLTextAreaElement>) => {
                   event.currentTarget.style.height = "auto";
                   event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
@@ -335,21 +414,39 @@ export function MentionField({
       </label>
       {parties.length === 0 ? null : (
         <ul
-          aria-label="Mention targets"
-          className={`flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}`}
+          aria-label={targets?.label ?? "Mention targets"}
+          className={
+            look === undefined ? `flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}` : "sr-only"
+          }
         >
           {parties.map((target) => (
             <li className="rounded-full border px-2 py-1" key={target}>
-              <code>{target}</code>
+              {targets === undefined ? <code>{target}</code> : targets.nameOf(target)}
             </li>
           ))}
         </ul>
       )}
-      <RefPickerList id={listboxId} onTake={takePick} picker={picker} />
+      {look === undefined ? (
+        <RefPickerList id={listboxId} onTake={takePick} picker={picker} words={pickerWords} />
+      ) : open ? (
+        // The host's line is one row of its own controls, so the open list takes a row of its own
+        // at the line's end, which the host's line wraps to. A flex item is no narrower than its
+        // content's min-content width (`min-width: auto`), so the wrapper takes `min-w-0`: a picker
+        // row's long label, cut to one line, would otherwise widen the page past a phone's screen.
+        <div className="order-last min-w-0 basis-full">
+          <RefPickerList id={listboxId} onTake={takePick} picker={picker} words={pickerWords} />
+        </div>
+      ) : null}
       {/* What this box does with a pick, in the writing list's own words, so the line under the
-          box and the list that drives the browser rows cannot drift apart. */}
-      <p className={hintClassName ?? `text-xs ${textMutedOnSurface}`} id={hintId}>
-        {writing.hint}
+          box and the list that drives the browser rows cannot drift apart - or, where the host
+          says what the box's keys do in its own words, those (`description`). */}
+      <p
+        className={
+          look === undefined ? (hintClassName ?? `text-xs ${textMutedOnSurface}`) : "sr-only"
+        }
+        id={hintId}
+      >
+        {description ?? writing.hint}
       </p>
     </>
   );

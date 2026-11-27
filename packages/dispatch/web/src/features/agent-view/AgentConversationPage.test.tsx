@@ -36,7 +36,6 @@ import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/cli
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
-import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
@@ -46,6 +45,7 @@ import {
   stoppedWriteNote,
 } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 import {
   AgentConversationPage,
   LEFT_LIST_TEXT,
