@@ -2559,6 +2559,141 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
   }
 });
 
+// dispatch://INFRA-3221 (the architect's decision of comment 8b253417, item 5): a claim chip that
+// wraps starts no line with its separator. At 1440 by 900, on each fault tab, the chip of a claim
+// held by a session whose title takes the chip onto three lines or more, and which the registry
+// does not list, so its state, "not running", holds a separator of its own: read off the
+// characters it draws, no line of the chip starts with "·", and the line of the claim's age holds
+// no part of the holder's name, so the age and the state stand on a line of their own. A
+// character is drawn where it has a box and its middle stands inside each box of the chip that
+// clips it; a space starts no line.
+// SLOW(>=2s): a priority and two issues written and claimed, and two tabs read.
+test("a claim chip that wraps on a fault tab at 1440 starts no line with its separator, and draws its age and state on a line of their own", async ({
+  browser,
+}) => {
+  await Promise.all([
+    createProject({ key: "OPS", name: "Ops" }),
+    createProject({ key: "WEB", name: "Web" }),
+  ]);
+  const priority = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  // A session named by a title with no "·" of its own, so each "·" the chip draws is one of its
+  // separators.
+  const holder = {
+    id: "019a1c12-9a7e-7bb3-8c6d-7d4e8f1a2b12",
+    kind: "session" as const,
+    origin: {
+      session_title:
+        "Legion implementer for INFRA-3221 on build host rack 42, reading the claim chips " +
+        "the priorities page draws in its fault lists",
+    },
+  };
+  const unplaced = await createIssue({ project: "OPS", title: "Claimed under no priority" });
+  const inBacklog = await createIssue({ project: "WEB", title: "Claimed and in backlog under #1" });
+  await patchIssue(unplaced.key, { status: "in_progress" });
+  await patchIssue(inBacklog.key, { advances: [priority.id], status: "backlog" });
+  for (const key of [unplaced.key, inBacklog.key]) {
+    await claimIssue(key, { actor: holder, as: "agent" });
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    await page.setViewportSize(WIDE);
+    await page.goto(PRIORITIES_PATH);
+    for (const [tab, name, key] of [
+      ["none", NO_PRIORITY_TABLE, unplaced.key],
+      ["backlog", BACKLOG_TABLE, inBacklog.key],
+    ] as const) {
+      await chooseTab(page, tab);
+      // The row by its own key: its name starts with the key and a space.
+      const chip = page
+        .getByRole("table", { exact: true, name })
+        .locator(`tr[data-issue-row][aria-label^="${key} "]`)
+        .getByTestId("issue-claim");
+      await expect(chip).toContainText("not running");
+      const read = await settledValue(`the ${tab} tab's claim chip`, () =>
+        chip.evaluate((element) => {
+          // The boxes of the chip, the chip among them, that cut what overflows them.
+          const clips = [element, ...element.querySelectorAll("*")].filter((box) => {
+            const style = getComputedStyle(box);
+            return style.overflowX !== "visible" || style.overflowY !== "visible";
+          });
+          // Whether a point of `node`'s text stands inside each box that clips it.
+          const drawnAt = (node: Node, x: number, y: number) =>
+            clips.every((box) => {
+              if (!box.contains(node)) return true;
+              const style = getComputedStyle(box);
+              const edge = box.getBoundingClientRect();
+              const left = edge.left + box.clientLeft;
+              const top = edge.top + box.clientTop;
+              return (
+                (style.overflowX === "visible" || (x >= left && x <= left + box.clientWidth)) &&
+                (style.overflowY === "visible" || (y >= top && y <= top + box.clientHeight))
+              );
+            });
+          const holderName = element.querySelector("[data-agent-name]");
+          const age = element.querySelector("time");
+          const half = Number.parseFloat(getComputedStyle(element).lineHeight) / 2 || 8;
+          const drawn: { age: boolean; char: string; left: number; name: boolean; top: number }[] =
+            [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            let end = 0;
+            for (const char of node.textContent ?? "") {
+              const start = end;
+              end += char.length;
+              if (char.trim() === "") continue;
+              const range = document.createRange();
+              range.setStart(node, start);
+              range.setEnd(node, end);
+              const rect = range.getBoundingClientRect();
+              if (rect.width === 0 || rect.height === 0) continue;
+              if (!drawnAt(node, rect.left + rect.width / 2, rect.top + rect.height / 2)) continue;
+              drawn.push({
+                age: age?.contains(node) === true,
+                char,
+                left: rect.left,
+                name: holderName?.contains(node) === true,
+                top: rect.top,
+              });
+            }
+          }
+          // The chip's lines: its drawn characters by their tops, two on one line when their tops
+          // lie within half a line of each other, each line's characters from left to right.
+          const lines: (typeof drawn)[] = [];
+          for (const one of [...drawn].sort((a, b) => a.top - b.top)) {
+            const line = lines[lines.length - 1];
+            if (line !== undefined && one.top - (line[0]?.top ?? one.top) <= half) line.push(one);
+            else lines.push([one]);
+          }
+          const ordered = lines.map((line) => [...line].sort((a, b) => a.left - b.left));
+          return {
+            lines: ordered.map((line) => line.map((one) => one.char).join("")),
+            nameBesideAge: ordered.some(
+              (line) => line.some((one) => one.age) && line.some((one) => one.name)
+            ),
+          };
+        })
+      );
+      const drawnLines = read.lines.join(" | ");
+      soft(
+        read.lines.length,
+        `the ${tab} tab's claim chip takes three lines or more (${drawnLines})`
+      ).toBeGreaterThanOrEqual(3);
+      soft(
+        read.lines.filter((line) => line.startsWith("·")),
+        `no line of the ${tab} tab's claim chip starts with "·" (${drawnLines})`
+      ).toEqual([]);
+      soft(
+        read.nameBesideAge,
+        `the ${tab} tab's claim chip draws its age on a line holding no part of the holder's name (${drawnLines})`
+      ).toBe(false);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 // INFRA-2947 R15 and check 0abe1d81 (Verification v69): a project's Issues tab, the one page
 // outside the priorities pages this change reaches. At 1280 by 800 the search box, Group by,
 // Columns and Filters each stand 34 px high; at 900 px wide the search box takes a row of its

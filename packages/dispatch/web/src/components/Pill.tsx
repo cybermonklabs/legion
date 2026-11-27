@@ -47,9 +47,11 @@ export const pillShapeClassName =
   "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap";
 
 /** A pill's colours alone, for a host that keeps the tone but not the one-line shape: a claim
- *  chip stacked on a Board card. */
-export function pillToneClassName(tone: PillTone): string {
-  return pillTones[tone];
+ *  chip stacked on a Board card, and a claim chip whose age and state stand under its holder.
+ *  `onPage` is a host's inside `NoTooltips`, which draws the tone in the new issue page's
+ *  colours, as `pillClassName`'s does. */
+export function pillToneClassName(tone: PillTone, onPage = false): string {
+  return onPage ? pagePillTones[tone] : pillTones[tone];
 }
 
 /** The pill's full class string, for a host that must stay one interactive element (a parent
@@ -76,7 +78,7 @@ export function pillClassName(
   const shape = wraps
     ? `inline-flex min-w-0 max-w-full flex-wrap items-center ${wrapped ? "rounded-lg" : "rounded-full"} px-2 py-1 text-xs font-medium [overflow-wrap:anywhere]`
     : pillShapeClassName;
-  return `${shape} ${onPage ? pagePillTones[tone] : pillToneClassName(tone)}`;
+  return `${shape} ${pillToneClassName(tone, onPage)}`;
 }
 
 /**

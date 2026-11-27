@@ -1166,20 +1166,29 @@ function textNode(words: string): string {
  *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string, and the holder's name
  *  sits in `TruncatedText` (dispatch://INFRA-5200), with no `title` of its own, since the chip's
  *  tooltip names the holder whole. Outside, the pill also carries the focus ring of the Tab stop
- *  that opens its tooltip (INFRA-3221's R9). */
+ *  that opens its tooltip (INFRA-3221's R9). Inside, the pill is the shape that wraps, in two
+ *  parts: "Claimed by" with the holder, and the age with the state, which a separator divides
+ *  on one line - the form the unit DOM, which lays nothing out, draws - and with a no-break space
+ *  before each separator of the age and state and a space after it, so none starts a line
+ *  (INFRA-3221). */
 const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, readonly string[]>>>> =
   {
     inside: {
       free: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] border-page-hair bg-page-pane text-page-muted min-w-0 max-w-full gap-1">',
-        '<span class="shrink-0">',
+        '<span class="min-w-0">',
+        '<span class="">',
         textNode(PROPERTY_LABELS.claim),
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        '<span class="min-w-0">',
         '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+        textNode("\u00a0"),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         textNode(CONTROL_LABELS.unresponsive),
         '<span class="">',
@@ -1190,49 +1199,67 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
       ],
       held: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
-        '<span class="shrink-0">',
+        '<span class="min-w-0">',
+        '<span class="">',
         textNode(PROPERTY_LABELS.claim),
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        '<span class="min-w-0">',
         '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
       ],
       lapsed: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] border-page-hair bg-page-pane text-page-muted min-w-0 max-w-full gap-1">',
-        '<span class="shrink-0">',
+        '<span class="min-w-0">',
+        '<span class="">',
         textNode(PROPERTY_LABELS.claim),
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        '<span class="min-w-0">',
         '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+        textNode("\u00a0"),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         textNode(CONTROL_LABELS.not_running),
       ],
       unchecked: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
-        '<span class="shrink-0">',
+        '<span class="min-w-0">',
+        '<span class="">',
         textNode(PROPERTY_LABELS.claim),
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        '<span class="min-w-0">',
         '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+        textNode("\u00a0"),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         textNode(CONTROL_LABELS.unchecked),
       ],
       waiting: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
-        '<span class="shrink-0">',
+        '<span class="min-w-0">',
+        '<span class="">',
         textNode(PROPERTY_LABELS.claim),
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        '<span class="min-w-0">',
         '<time class="min-w-0 [overflow-wrap:anywhere] max-w-full [overflow-wrap:anywhere]">',
+        textNode("\u00a0"),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
+        textNode(" "),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         textNode(CONTROL_LABELS.unresponsive),
         '<span class="">',
@@ -1326,9 +1353,9 @@ const BOX_DISPLAYS = ["flex", "inline-flex", "grid", "inline-grid"];
 
 // Inside `NoTooltips` a claim in a row of Details is plain words that wrap between words as a
 // sentence does (the prototype's `.frow .fv`): no flex box moves a piece that does not fit whole
-// to a line of its own, and a space stands between each two pieces. Outside `NoTooltips`, with
-// `inRow` or without, and inside it as the header's pill, the claim's markup is the one recorded
-// in `RECORDED_CLAIMS`.
+// to a line of its own, and a space stands between each two pieces, a no-break space before each
+// separator, so no line starts with one. Outside `NoTooltips`, with `inRow` or without, and
+// inside it as the header's pill, the claim's markup is the one recorded in `RECORDED_CLAIMS`.
 test("inRow draws the claim as a sentence that wraps between words", async () => {
   for (const state of CLAIM_STATES) {
     const read = await readClaim(state, "inside", true, (chip) => {
@@ -1358,7 +1385,9 @@ test("inRow draws the claim as a sentence that wraps between words", async () =>
       return {
         claimed,
         className: classOf(chip),
-        sentence: pieces[state].join(" "),
+        sentence: pieces[state]
+          .map((piece, at) => (at === 0 ? piece : `${piece === "·" ? "\u00a0" : " "}${piece}`))
+          .join(""),
         text: chip.textContent,
       };
     });

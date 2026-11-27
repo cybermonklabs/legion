@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { ALICE_DETAILS_KEY, openIssueDetails } from "../../__tests__/issue-details";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -697,6 +698,74 @@ test("a stacked chip writes Claimed by and the whole holder, then the age and st
   } finally {
     view.unmount();
     client.clear();
+    agents.mockRestore();
+  }
+});
+
+// A claim in a table that wraps its titles (`wraps`: the priorities page's fault lists, a
+// priority's work table) is two parts: "Claimed by" with the holder, and the age with the state,
+// whose words are text with a no-break space before each separator and a space after it, so they
+// break after a separator and never before one. On one line a separator stands between the two
+// parts. Once that line does not hold them, the age and the state stand under the holder with no
+// separator, and stay so at the room the chip split in, so it never flips back and forth there;
+// only a wider room in which both parts fit beside each other draws it on one line again. The
+// unit DOM lays nothing out, so each box is given the size a browser would measure, in lines of
+// 16 px; the browser row "a claim chip that wraps on a fault tab at 1440 starts no line with its
+// separator..." (`e2e/priorities.e2e.ts`) reads the lines a browser draws.
+test("a chip that wraps puts its age and state under its holder with no separator once one line does not hold them, and only a wider room draws it on one line again", async () => {
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sizes = installResizeObserver();
+  // Every box 100 px wide and `lines` lines of 16 px tall.
+  let lines = 1;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    () => new DOMRect(0, 0, 100, 16 * lines)
+  );
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <div data-testid="host" style={{ lineHeight: "16px" }}>
+          <ClaimChip claim={claim} wraps />
+        </div>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    expect(await screen.findByText("not running")).toBeDefined();
+    const chip = screen.getByTestId("issue-claim");
+    const parts = () => [...chip.children].map((part) => part.textContent);
+    // On one line: the holder, the separator, hidden from a screen reader, then the age and state.
+    const [holder, dot, state, ...more] = [...chip.children];
+    expect(more).toEqual([]);
+    expect(holder?.querySelector("time")).toBeNull();
+    expect(dot).toHaveAttribute("aria-hidden", "true");
+    const age = state?.querySelector("time");
+    expect(age?.getAttribute("datetime")).toBe(claim.at);
+    const ageAndState = `${age?.textContent}\u00a0· not running`;
+    expect(parts()).toEqual(["Claimed by Implementer", "·", ageAndState]);
+    // In a room of 400 px one line holds it no more (beside it, say, stands something else).
+    const host = screen.getByTestId("host");
+    const room = (width: number) =>
+      Object.defineProperty(host, "clientWidth", { configurable: true, value: width });
+    room(400);
+    lines = 2;
+    sizes.resize(chip);
+    expect(parts()).toEqual(["Claimed by Implementer", ageAndState]);
+    // Read again in that room, its two parts, 100 px each and on one line apiece, would fit there
+    // beside each other with the separator, but the line did not: it stays split.
+    lines = 1;
+    sizes.resize(chip);
+    expect(parts()).toEqual(["Claimed by Implementer", ageAndState]);
+    // A room grown past it, which holds both parts and the separator: one line again.
+    room(500);
+    sizes.resize(host);
+    expect(parts()).toEqual(["Claimed by Implementer", "·", ageAndState]);
+    expect(chip).toHaveAttribute("tabindex", "0");
+  } finally {
+    view.unmount();
+    client.clear();
+    rect.mockRestore();
+    sizes.restore();
     agents.mockRestore();
   }
 });
