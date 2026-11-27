@@ -329,6 +329,7 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 // built `legion` still names a variable the linker sets: a rename would make the linker drop the
 // -X without a word.
 func TestNoGuardOfTheseTestsReachesTheNetwork(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -359,15 +360,15 @@ func TestNoGuardOfTheseTestsReachesTheNetwork(t *testing.T) {
 			t.Run(legion.name+": "+tc.name, func(t *testing.T) {
 				program := legion.path(t)
 				stub := filepath.Join(t.TempDir(), "gh")
-				if err := os.WriteFile(stub, []byte(strings.Replace(ghStandInPrefix(help), "#!/bin/sh\n", "#!/bin/sh\n"+tc.stub, 1)), 0o700); err != nil {
+				if err := execfile.Write(stub, []byte(strings.Replace(ghStandInPrefix(help), "#!/bin/sh\n", "#!/bin/sh\n"+tc.stub, 1)), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				wrappers, calls := t.TempDir(), filepath.Join(t.TempDir(), "git-calls")
-				if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+program+"' gh \"$@\"\n"), 0o700); err != nil {
+				if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+program+"' gh \"$@\"\n"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				git := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>" + shellprefix.Literal(calls) + "\nexec " + shellprefix.Literal(fixturegit.CompiledGit(t)) + " \"$@\"\n"
-				if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(git), 0o700); err != nil {
+				if err := execfile.Write(filepath.Join(wrappers, "git"), []byte(git), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				cmd := exec.Command(program, append([]string{"gh"}, leakguard.VisibilityReadArgs(tc.slug)...)...)
