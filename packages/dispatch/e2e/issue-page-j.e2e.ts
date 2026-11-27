@@ -2799,13 +2799,14 @@ type Wanted =
 // against the place pressed. The kinds are a reference, a mention, a picture of an artifact,
 // inline HTML, a footnote's reference whose note the spec defines, a footnote call the spec
 // defines no note for, an autolink to an issue, an image from another website, a picture whose
-// reference names no artifact, inline HTML long enough to wrap onto a second line at 390 px, and
-// inline HTML whose last word before its closing `">` is Hebrew. Each kind is one statement of
-// three lines: `prior<n> K later<n> …`, a hard break, `… ends with<n> K`, a hard break, `… the
-// words end with<n> K`. So K stands inside a line, ends a line and ends the words. A press on
-// `prior<n>` or on `later<n>` puts the caret in that word. A press inside K puts it at K's start,
-// before an atom; the footnote call with no note is text the view draws and the editor holds as
-// its author wrote it, so a press on its third character puts the caret before that character.
+// reference names no artifact, inline HTML longer than a line of the words, which wraps onto the
+// next line at 1440 px as at 390 px, and inline HTML whose last word before its closing `">` is
+// Hebrew. Each kind is one statement of three lines: `prior<n> K later<n> …`, a hard break,
+// `… ends with<n> K`, a hard break, `… the words end with<n> K`. So K stands inside a line, ends a
+// line and ends the words. A press on `prior<n>` or on `later<n>` puts the caret in that word. A
+// press inside K puts it at K's start, before an atom; the footnote call with no note is text the
+// view draws and the editor holds as its author wrote it, so a press on its third character puts
+// the caret before that character.
 // Past the end of the line K ends, it goes before the hard break, after K. Past the end of the
 // words, it goes after K, where the block ends: past the footnote's reference that ends the
 // words, after the reference and not before it. The caret's place is read from the editor as the
@@ -2900,11 +2901,14 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
         selector: "a[data-dispatch-ref]",
         written: `![shot](dispatch://${cited.key})`,
       },
+      // Longer than a whole line of the words at 1440 px, about 716 px of 15 px type, so the tag
+      // wraps onto the next line at each of its three places at both widths, 1440 px and 390 px.
       {
         kind: "inline HTML that wraps",
         link: false,
         selector: '[data-type="html"]',
-        written: '<span title="a placeholder long enough to wrap onto a second line of the words">',
+        written:
+          '<span title="a placeholder longer than a whole line of the words, so that it wraps onto the next line at 1440 px as it does at 390 px">',
       },
       {
         kind: "inline HTML that ends in Hebrew",
@@ -3163,10 +3167,18 @@ test("a press on each inline kind of a Spec statement, at each place, puts the c
         await expect(row, "Back does not bring the Spec view back").toBeVisible();
       }
       // Escape closes the editor, and what a link opened in the page, such as a picture's view.
-      await page.keyboard.press("Escape");
-      await expect(row.locator("[data-editor-box]"), "Escape leaves the editor open").toHaveCount(
-        0
-      );
+      // What the editor opened at the caret takes an Escape first: a caret at the end of a link's
+      // text opens the link's popover, which the first Escape closes and leaves the editor open.
+      // So Escape is pressed until the editor closes, its box read once after each press. `toPass`
+      // keeps no expect timeout of its own, so it is given the one every other assertion of the
+      // row waits under.
+      await expect(async () => {
+        await page.keyboard.press("Escape");
+        expect(
+          await row.locator("[data-editor-box]").count(),
+          "Escape leaves the editor open"
+        ).toBe(0);
+      }).toPass({ timeout: expectTimeout });
     };
     const presses: { index: number; kind: InlineKind | undefined; place: PressPlace }[] = [];
     for (const [at, kind] of seeded.kinds.entries()) {
