@@ -561,11 +561,11 @@ describe("a removal that never ends", () => {
         `import { describe, mock, setDefaultTimeout, test } from "bun:test";
 
 const clock = await import(${clockModule});
-const { spawnWithin } = clock;
+const { spawnWithinAsync } = clock;
 mock.module(${clockModule}, () => ({
   ...clock,
-  spawnWithin: (wait: unknown, _command: string[], options: unknown) =>
-    spawnWithin(wait, ["sleep", "3600"], options),
+  spawnWithinAsync: (wait: unknown, _command: string[], options: unknown) =>
+    spawnWithinAsync(wait, ["sleep", "3600"], options),
 }));
 setDefaultTimeout(clock.fileLimit(${HUNG_LIMIT_MS}));
 // Imported after the mock: a static import runs before this file's body, so the fixture would

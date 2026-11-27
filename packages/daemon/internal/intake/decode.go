@@ -110,10 +110,18 @@ type envoyEnvelope struct {
 }
 
 // decodeMessage decodes the Envoy envelope first, then the subject's source-specific payload.
-// project is the daemon's Dispatch project: another project's issue event is a nil Fact.
-// repositories are its configured repositories: a GitHub event whose payload names another
-// repository is a nil Fact, whatever subject carried it.
+// project is the daemon's Dispatch project: another project's issue or document event is a nil
+// Fact. An issue event's project is decided from the issue key its subject names before the
+// envelope is read, so a message of another project's that does not decode is no give-up of this
+// daemon's, and no record of it (every daemon hears every project's issue events). A name in
+// neither form goes on to the decode, which refuses it (errIssueNameInNeitherForm). The document
+// events the Dispatch durable hears are this project's own (mergeHoldsSubject), so one that does
+// not decode is this daemon's give-up. repositories are its configured repositories: a GitHub
+// event whose payload names another repository is a nil Fact, whatever subject carried it.
 func decodeMessage(subject, project string, repositories []ghrepo.Repository, data []byte) (decodedMessage, error) {
+	if key, legacy, ok := subjectforms.IssueEventKey(subject); ok && !projectIssueKey(key, project) {
+		return decodedMessage{LegacyName: legacy}, nil
+	}
 	var envelope envoyEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return decodedMessage{}, fmt.Errorf("decode Envoy envelope: %w", err)
@@ -138,6 +146,11 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
 		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
+	case strings.HasPrefix(subject, dispatchDocumentPrefix):
+		if envelope.Source != "dispatch" {
+			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
+		}
+		fact, err = decodeDispatchDocumentFact(subject, project, envelope.factID(), envelope.Payload)
 	case strings.HasPrefix(subject, "notifications.github."):
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
@@ -272,7 +285,11 @@ func (e dispatchEvent) mark() record.EventMark {
 // daemonActor says whether the daemon made the event: its actor is the session the daemon writes
 // every Dispatch status and message of the event's issue under (dispatch.DaemonSession). It is the
 // one statement of that rule, which the decoder (DispatchIssue.DaemonActor) and the set-back's
-// check (StatusChange.DaemonActor) both read.
+// check (StatusChange.DaemonActor) both read. Each reads only issues of the daemon's own project:
+// the decoder skips another project's events (decodeDispatchIssueEvent), and the outbox sets back
+// only its own project's issues. So the session of the event's issue is the session of the
+// daemon's own project, the one its writes name with dispatch_token_broker off and the one its
+// broker token proves with it on (dispatch.WritesAs).
 func (e dispatchEvent) daemonActor() bool {
 	return e.Actor.Kind == "session" && e.Actor.ID == dispatch.DaemonSession(e.IssueKey)
 }
@@ -296,7 +313,7 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool,
 // rather than making the event poison: an event the workflow acts on is never lost to a field it
 // does not act on.
 func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, error) {
-	if keyProject, _, _ := strings.Cut(key, "-"); keyProject != project || !claim.IsIssueKey(key) {
+	if !projectIssueKey(key, project) {
 		return nil, nil, nil
 	}
 	var event dispatchEvent
@@ -317,6 +334,13 @@ func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, err
 	return fact, unread, nil
 }
 
+// projectIssueKey says whether key is an issue key of project, which the daemon decodes events
+// of; any other key is another daemon's.
+func projectIssueKey(key, project string) bool {
+	keyProject, _, _ := strings.Cut(key, "-")
+	return keyProject == project && claim.IsIssueKey(key)
+}
+
 // DecodeDispatchEvent decodes one event of issue key of project as Dispatch's issue event log
 // serves it (dispatch.Client.EventsAfter), which is the shape its durable stream carries: the
 // boot catch-up applies what the stream did not deliver through the live decoder, so each event
@@ -326,19 +350,38 @@ func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, err
 	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
+// issueEventTypes is every type of Dispatch event that is an issue event: one that carries the
+// issue as the event leaves it. decodeDispatchEvent reads a DispatchIssue from each such event,
+// and walkIssueEvents gives each such event of an issue's event log, so the two read one list,
+// and TestEveryIssueEventKindTheDaemonAdmitsFromCarriesTheResolvedShape ranges over it too, so a
+// type added here fails that test until a fixture of the resolved shape holds an event of it.
+var issueEventTypes = []string{"issue.created", "issue.updated", "issue.closed"}
+
+// isIssueEvent says whether a Dispatch event of type typ is an issue event (issueEventTypes).
+func isIssueEvent(typ string) bool {
+	return slices.Contains(issueEventTypes, typ)
+}
+
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
 // to unread each field it took as unknown.
 func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
-	switch event.Type {
-	case "issue.created", "issue.updated", "issue.closed":
+	if isIssueEvent(event.Type) {
 		var issue struct {
-			Key          string          `json:"key"`
-			Status       string          `json:"status"`
-			Title        string          `json:"title"`
-			Parent       *string         `json:"parent"`
-			Rank         string          `json:"rank"`
-			Labels       []string        `json:"labels"`
-			ResolvedRepo json.RawMessage `json:"resolved_repo"`
+			Key      string          `json:"key"`
+			Status   string          `json:"status"`
+			Title    string          `json:"title"`
+			Parent   *string         `json:"parent"`
+			Rank     string          `json:"rank"`
+			Priority json.RawMessage `json:"priority"`
+			// ResolvedPriority and PriorityFrom are the priority Dispatch resolves the issue to and
+			// the issue it comes from (J1 of dispatch://INFRA-5793); an event of a Dispatch release
+			// before it carries neither, and its resolved priority reads as unknown
+			// (issueEventResolved). Changed is the event's list of the fields it changed.
+			ResolvedPriority json.RawMessage `json:"resolved_priority"`
+			PriorityFrom     *string         `json:"priority_from"`
+			Changed          []string        `json:"changed"`
+			Labels           []string        `json:"labels"`
+			ResolvedRepo     json.RawMessage `json:"resolved_repo"`
 			// An event retained from a Dispatch that did not yet send blocked_by decodes to no
 			// blockers, as an issue waiting on nothing does: unlike a missing repository, which the
 			// consumer fills, nothing reads an absence here.
@@ -378,8 +421,12 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
-			HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels, ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
+			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
+			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
+			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
+	}
+	switch event.Type {
 	case "artifact.approved", "artifact.changes_requested":
 		var artifact struct {
 			ArtifactID string `json:"artifact_id"`
@@ -641,6 +688,62 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
 }
 
+// issueEventPriority reads one of an issue event's priorities, field, `priority` for the issue's
+// own and `resolved_priority` for the one Dispatch resolves it to: Dispatch's 0 for P0 to 3 for P3
+// or null, as the record keeps it (record.DecodePriority); an absent field is none. A value
+// Dispatch never writes, a level outside 0 to 3 or no integer at all, is none and named in unread,
+// under field's name, rather than making the event poison: the event can carry a status the
+// workflow acts on.
+func issueEventPriority(field string, raw json.RawMessage, unread *[]string) record.Priority {
+	if raw == nil {
+		return record.NoPriority
+	}
+	priority, read, err := record.DecodePriority(raw)
+	switch {
+	case err != nil:
+		*unread = append(*unread, fmt.Sprintf("%s %s is not a priority: %v", field, raw, err))
+	case !read:
+		*unread = append(*unread, fmt.Sprintf("%s %s is no level Dispatch writes", field, raw))
+	}
+	return priority
+}
+
+// issueEventResolved reads an issue event's resolved priority and the issue it comes from, as the
+// record keeps them (record.Resolved): unknown where the event carries no `resolved_priority`, as an
+// event of a Dispatch release before dispatch://INFRA-5793 does, and else read as the issue's own
+// priority is (issueEventPriority), a present null being no priority. `priority_from` is kept only
+// where it is an issue key, as `parent` is: the state serves it as `priorityFrom`, which its
+// readers take for an issue key (the plugin's schema refuses the whole state for one that is not).
+// One that is not is no issue and named in unread rather than making the event poison, for the
+// reason a bad level is; null or empty is none, with no note.
+func issueEventResolved(raw json.RawMessage, from *string, unread *[]string) record.Resolved {
+	if raw == nil {
+		return record.Resolved{}
+	}
+	resolved := record.Resolved{Priority: issueEventPriority("resolved_priority", raw, unread), Known: true}
+	if key := deref(from); claim.IsIssueKey(key) {
+		resolved.From = key
+	} else if key != "" {
+		*unread = append(*unread, fmt.Sprintf("priority_from %q is no issue key", key))
+	}
+	return resolved
+}
+
+// resolvedOnly says an issue event's `changed` names the resolved priority and nothing else: the
+// event Dispatch appends on an issue whose ancestor's priority or parent changed (J3 of
+// dispatch://INFRA-5793). An event that names no field changed nothing it says, and is not one.
+func resolvedOnly(changed []string) bool {
+	if len(changed) == 0 {
+		return false
+	}
+	for _, field := range changed {
+		if field != "resolved_priority" && field != "priority_from" {
+			return false
+		}
+	}
+	return true
+}
+
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself
 // (Dispatch's model.AskEventPayload and AskEditEventPayload): its id, its kind, the author of an
 // opening, settlement's restored mark, an approval request's document with the version it now
@@ -810,6 +913,13 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 			return nil, nil
 		}
 		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, nil
+	case "review_requested", "review_request_removed":
+		// A review request opened or withdrawn moves what a `blocked` head's round waits on, and
+		// the read it asks for counts the requests; one with no head names none to read for.
+		if sha == "" {
+			return nil, nil
+		}
+		return PullRequestReviewRequests{Repo: repo, Number: number, HeadSHA: sha}, nil
 	default:
 		return nil, nil
 	}

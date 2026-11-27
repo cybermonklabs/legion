@@ -160,7 +160,7 @@ func storeMerge(t *testing.T, database *store.Store, repo string, number int, sh
 // rename pairs, as the test server's own Attributor reads them.
 func headNumbersOf(t *testing.T, database *store.Store, issue string) []int {
 	t.Helper()
-	heads, err := delivery.NewAttributor(refs.Renames{}).HeadsAttributedTo(context.Background(), database.Pool, issue)
+	heads, err := delivery.NewAttributor(refs.Renames{}).HeadsAttributedTo(context.Background(), database.Pool, issue, delivery.HeadAnswers{})
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", issue, err)
 	}
@@ -199,6 +199,7 @@ func attributionMovesOf(t *testing.T, database *store.Store, issue, repo string,
 // before stored with none, which GitHub refuses to read: the removal takes it from the issue too.
 // A pull request the issue still links stays the issue's.
 func TestRemovingALinkTakesThePullRequestFromTheIssueAtOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		removedHead = "12c12c12c12c12c12c12c12c12c12c12c12c12c1"
 		keptHead    = "13d13d13d13d13d13d13d13d13d13d13d13d13d1"
@@ -245,6 +246,7 @@ func TestRemovingALinkTakesThePullRequestFromTheIssueAtOnce(t *testing.T) {
 // GitHub: the read stored that its head is a branch of its own repository. One whose head is in a
 // fork is no head, linked or not.
 func TestLinkingAMergedPullRequestMakesItTheIssuesAtOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		ownHead  = "14e14e14e14e14e14e14e14e14e14e14e14e14e1"
 		forkHead = "15f15f15f15f15f15f15f15f15f15f15f15f15f1"
@@ -281,6 +283,7 @@ func TestLinkingAMergedPullRequestMakesItTheIssuesAtOnce(t *testing.T) {
 // changed. A pull request whose head is in a fork is none, and one that cites another GitHub issue
 // is none.
 func TestLinkingAGitHubIssueGivesTheIssueThePullRequestsThatCiteIt(t *testing.T) {
+	t.Parallel()
 	const (
 		citedHead = "41a41a41a41a41a41a41a41a41a41a41a41a41a1"
 		forkHead  = "42b42b42b42b42b42b42b42b42b42b42b42b42b1"
@@ -323,6 +326,7 @@ func TestLinkingAGitHubIssueGivesTheIssueThePullRequestsThatCiteIt(t *testing.T)
 // since nothing stored says which citation that was. Before, the PATCH took every pull request the
 // issue held by a citation and read each from GitHub after its commit to give some back.
 func TestRemovingAnIssueLinkTakesThePullRequestsItGaveAtOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		removedLink = "https://github.com/acme/widgets/issues/71"
 		keptLink    = "https://github.com/acme/widgets/issues/82"

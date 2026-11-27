@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"os"
 	"regexp"
 	"slices"
@@ -11,11 +12,34 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The contract number the boot gate requires of the installed plugin is written where both sides
-// read it: `packages/pi-legion/src/daemon-api-version.test.ts` pins the plugin manifest's
-// `legion.daemonApiVersion` to this fixture, so a bump on one side alone fails a test.
-func TestDaemonAPIVersionGolden(t *testing.T) {
-	golden(t, "version.json", map[string]int{"daemonApiVersion": DaemonAPIVersion})
+// The numbers of the numbered entries are written where every reader with no Go toolchain reads
+// them: `released-contracts.json`, a JSON list of SupportedContracts' frozen list
+// (frozenContracts), the numbered entries from ServingFloor up, in strictly ascending order. Its
+// greatest number is L, to which `scripts/daemon-contract.sh`, `daemonContract()` of
+// packages/contracts and `legion-pins` add the count of entry fixtures to read a commit's
+// contract, and each of them refuses a file of another form. The list never moves, so neither
+// does the file; a new entry changes neither.
+func TestReleasedContractsGolden(t *testing.T) {
+	if greatest := frozenContracts[len(frozenContracts)-1]; greatest != LastNumberedContract {
+		t.Errorf("the frozen list ends at %d, want L (%d)", greatest, LastNumberedContract)
+	}
+	if !*updateGolden {
+		path := goldenPath("released-contracts.json")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s (run `go test ./internal/api/ -update`): %v", path, err)
+		}
+		var onFile []int
+		if err := json.Unmarshal(raw, &onFile); err != nil || onFile == nil {
+			t.Fatalf("%s is no JSON list of integers (%v), the one form its readers take", path, err)
+		}
+		for at := 1; at < len(onFile); at++ {
+			if onFile[at] <= onFile[at-1] {
+				t.Errorf("%s lists %d after %d: its readers take a list in strictly ascending order", path, onFile[at], onFile[at-1])
+			}
+		}
+	}
+	golden(t, "released-contracts.json", frozenContracts)
 }
 
 // The closed set of causes a claim can fail under is two hand-kept lists — the constants of
@@ -23,16 +47,16 @@ func TestDaemonAPIVersionGolden(t *testing.T) {
 // `packages/contracts/src/legion-api.ts`, which `failure.cause` and `pendingCause` are read
 // through — and a word added to the Go list alone would make every strict plugin refuse the
 // whole state body. So the Go roster is written where the contracts suite reads it, as the
-// contract number above is: this golden, which `legion-api.test.ts` holds equal to that enum,
+// numbered contracts above are: this golden, which `legion-api.test.ts` holds equal to that enum,
 // word for word and in order. A cause added to supervise leaves this fixture stale, and the
 // fixture written again (`go test ./internal/api/ -update`) then fails the contracts case until
 // the enum names the word too.
 //
-// The seven words are written out here beside it, so a constant renamed on the Go side — which
+// The eight words are written out here beside it, so a constant renamed on the Go side — which
 // would otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
 func TestFailureCausesGolden(t *testing.T) {
 	want := []supervise.FailureCause{"launch_refused", "died", "never_registered", "stale_plugin",
-		"prompt_retires_exhausted", "provider_error", "unrecorded"}
+		"prompt_retires_exhausted", "provider_error", "cyber_policy", "unrecorded"}
 	if !slices.Equal(supervise.FailureCauses, want) {
 		t.Fatalf("supervise.FailureCauses = %q, want the wire words %q", supervise.FailureCauses, want)
 	}
@@ -84,9 +108,9 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 		t.Fatalf("supervise.PodUpdateContract = %d, want %d, the contract whose entry in version.go introduced ready_for_update",
 			supervise.PodUpdateContract, introducedReadyForUpdate)
 	}
-	if supervise.PodUpdateContract > DaemonAPIVersion {
+	if supervise.PodUpdateContract > DaemonAPIVersion() {
 		t.Fatalf("supervise.PodUpdateContract = %d, above DaemonAPIVersion %d: no claim could answer an update round",
-			supervise.PodUpdateContract, DaemonAPIVersion)
+			supervise.PodUpdateContract, DaemonAPIVersion())
 	}
 }
 
@@ -103,9 +127,9 @@ func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
 		t.Fatalf("OwnerPlanContract = %d, want %d, the contract whose entry in version.go added register_plan, stop_task, returnTo and the two new hold reasons",
 			OwnerPlanContract, addedOwnerPlan)
 	}
-	if OwnerPlanContract > DaemonAPIVersion {
+	if OwnerPlanContract > DaemonAPIVersion() {
 		t.Fatalf("OwnerPlanContract = %d, above DaemonAPIVersion %d: no caller could be served the two new hold reasons",
-			OwnerPlanContract, DaemonAPIVersion)
+			OwnerPlanContract, DaemonAPIVersion())
 	}
 }
 
@@ -134,58 +158,53 @@ func numberedEntries(t *testing.T) map[int]bool {
 	return entries
 }
 
-// SupportedContracts (answers.go) is the list of contracts this daemon describes a shape for,
-// and version.go's numbered entries are what say which contracts exist. The two are held
-// together in both directions: an entry between the floor and this daemon's own contract that
-// the list omits is a contract no answer is shaped for, and a number in the list that no entry
-// names is a contract nothing ever shipped under. A number with no entry would be the second
-// case, which is why none is in the list.
+// The frozen list of SupportedContracts (answers.go's frozenContracts) is the list of the
+// numbered contracts this daemon describes a shape for, and version.go's numbered entries are
+// what say which numbered contracts exist. The two are held together in both directions, from the
+// floor to L: an entry in that range that the list omits is a contract no answer is shaped for,
+// and a number in the list that no entry names is a contract nothing ever shipped under. A number
+// with no entry would be the second case, which is why none is in the list. SupportedContracts
+// begins with the frozen list, and holds above it the numbers of the new entries alone
+// (contracts_test.go's wantNumbered).
 func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
 	entries := numberedEntries(t)
 	listed := map[int]bool{}
-	for _, contract := range SupportedContracts {
+	for _, contract := range frozenContracts {
 		listed[contract] = true
 	}
-	for contract := ServingFloor; contract <= DaemonAPIVersion; contract++ {
+	for contract := ServingFloor; contract <= LastNumberedContract; contract++ {
 		if entries[contract] && !listed[contract] {
-			t.Errorf("version.go has an entry for %d and SupportedContracts leaves it out", contract)
+			t.Errorf("version.go has an entry for %d and SupportedContracts' frozen list leaves it out", contract)
 		}
 	}
-	for _, contract := range SupportedContracts {
-		if contract < ServingFloor || contract > DaemonAPIVersion {
-			t.Errorf("SupportedContracts names %d, outside the floor %d and this daemon's own contract %d",
-				contract, ServingFloor, DaemonAPIVersion)
+	for _, contract := range frozenContracts {
+		if contract < ServingFloor || contract > LastNumberedContract {
+			t.Errorf("SupportedContracts' frozen list names %d, outside the floor %d and L (%d)",
+				contract, ServingFloor, LastNumberedContract)
 		}
 		if !entries[contract] {
-			t.Errorf("SupportedContracts names %d and version.go has no entry for it", contract)
+			t.Errorf("SupportedContracts' frozen list names %d and version.go has no entry for it", contract)
 		}
+	}
+	if supported := SupportedContracts(); !slices.Equal(supported[:len(frozenContracts)], frozenContracts) {
+		t.Errorf("SupportedContracts() = %v, want it to begin with the frozen list %v", supported, frozenContracts)
 	}
 }
 
-// contractsDeclaredAfterCheckStates is every contract declared on top of CheckStatesContract: a
-// contract whose plugin was built with the check states' change, so its tester sends no verdict.
-// None is yet. A change that declares its contract after this one names that contract's constant
-// here, which is how TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt tells it from a
-// contract a base declared before the check states' change.
-var contractsDeclaredAfterCheckStates = []int{}
-
-// A phase completion naming a verdict from a plugin at CheckStatesContract or above is refused
-// VERDICT_NOT_TAKEN; only a tester's plugin below it has its verdict ignored. A plugin built before
-// the check states' change still sends its tester's verdict, so every contract such a plugin can
-// state must be below CheckStatesContract: otherwise a merge of a base whose own contract has
-// passed it ships that refusal to the base's testers. So CheckStatesContract stands above every
-// contract this daemon declares but itself and those declared after it: each numbered entry of
-// version.go, each contract of SupportedContracts, and each named contract constant. They are read
-// from the declarations themselves and none is written here as a number, so a renumber on either
-// side of a merge moves what this test reads.
+// A phase completion naming a verdict from a plugin at the check states' entry's number or above is
+// refused VERDICT_NOT_TAKEN; only a tester's plugin below it has its verdict ignored. A plugin built
+// before the check states' change still sends its tester's verdict, so every contract such a plugin
+// can state must be below that number: otherwise a merge of a base whose own contract has passed it
+// ships that refusal to the base's testers. Each entry's number is L plus its rank in the build's
+// order (contracts.go), so an entry ranked before the check states' entry is numbered below it and
+// one ranked after it above it, by the registry's own construction, and DaemonAPIVersion() is the
+// last of them. What the registry does not order is every contract that is no entry: each numbered
+// entry of version.go, the frozen list of SupportedContracts, and each named contract constant.
+// They are read from the declarations themselves and none is written here as a number.
 func TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt(t *testing.T) {
-	after := map[int]bool{}
-	for _, contract := range contractsDeclaredAfterCheckStates {
-		if contract <= CheckStatesContract {
-			t.Errorf("contractsDeclaredAfterCheckStates names %d, at or below CheckStatesContract %d: a contract declared on top of the check states takes a number above them",
-				contract, CheckStatesContract)
-		}
-		after[contract] = true
+	checkStates := entryNumber(CheckStatesContract)
+	if version := DaemonAPIVersion(); checkStates > version {
+		t.Fatalf("the check states' entry is numbered %d, above this build's own contract %d: no plugin this build serves states it", checkStates, version)
 	}
 	var entries []int
 	for contract := range numberedEntries(t) {
@@ -197,7 +216,7 @@ func TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt(t *testing.T) {
 		contracts []int
 	}{
 		{"version.go's numbered entries", entries},
-		{"SupportedContracts", SupportedContracts},
+		{"SupportedContracts' frozen list", frozenContracts},
 		{"the named contract constants", []int{
 			supervise.PodUpdateContract, ServingFloor, memoryContract, treeContract, wakesWaitingContract, checkRoleContract,
 			gatedStepsContract, retiredStrandedContract, stallRecordContract, waitingLineContract, fixAttemptsContract,
@@ -205,7 +224,7 @@ func TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt(t *testing.T) {
 			stateMachineContract, leakCheckCauseContract, phaseEntriesContract, heldContract, processReadContract,
 			quietTimeContract, waitingOnIssueContract, mergeWaitContract, assignmentsContract, entryTimesContract,
 			repositoryAppsContract, PlanRatingContract, pauseContract, shapedAnswersContract, repositoriesLiveContract,
-			childRouteRemovedContract, DaemonAPIVersion,
+			childRouteRemovedContract,
 		}},
 	}
 	for _, source := range declared {
@@ -213,12 +232,11 @@ func TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt(t *testing.T) {
 			t.Errorf("%s hold no contract: this test read nothing from them", source.source)
 		}
 		for _, contract := range source.contracts {
-			if contract == CheckStatesContract || after[contract] || contract < CheckStatesContract {
+			if contract < checkStates {
 				continue
 			}
-			t.Errorf("%s declare contract %d, at or above CheckStatesContract %d: a tester's plugin at %d, built before the check states' change, sends a verdict and is refused VERDICT_NOT_TAKEN. "+
-				"Move the check states' entry to the lowest number above every contract its base declares that no open pull request declares, or, for a contract declared on top of the check states, name it in contractsDeclaredAfterCheckStates",
-				source.source, contract, CheckStatesContract, contract)
+			t.Errorf("%s declare contract %d, at or above the check states' entry's number %d: a tester's plugin at %d, built before the check states' change, sends a verdict and is refused VERDICT_NOT_TAKEN",
+				source.source, contract, checkStates, contract)
 		}
 	}
 }

@@ -64,7 +64,7 @@ type ownerStepsLive struct {
 func TestOwnerStepsLive(t *testing.T) {
 	l := newOwnerStepsLive(t, "scripts/e2e/owner-steps.sh", 5)
 	planned, byDefault, rowsDeleted, unplanned, anyOrder := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key, l.issues[4].key
-	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s, %s, %s, %s and %s; daemon at dispatch_url %s",
+	l.note("Dispatch %s (database of its own), project %s whose default repository is %s, issues %s, %s, %s, %s and %s; daemon at dispatch_url %s",
 		l.dispatch.base, l.cfg.Project, liveRepo, planned, byDefault, rowsDeleted, unplanned, anyOrder, l.cfg.DispatchURL)
 	var plan string
 	l.check("plan-written", func() {
@@ -187,7 +187,7 @@ func (l *ownerStepsLive) planWritten(steps []string) string {
 	if id == "" {
 		t.Fatalf("the documents of %s are %+v, want one of the slug plan-md", l.key, summary.Documents)
 	}
-	read, err := dispatch.New(l.dispatch.base, l.dispatch.token).PlanDocument(context.Background(), id, 1)
+	read, err := dispatch.New(l.dispatch.base, dispatch.BearerTransport(l.dispatch.token, nil)).PlanDocument(context.Background(), id, 1)
 	if err != nil {
 		t.Fatalf("read %s at version 1 as the daemon: %v", id, err)
 	}

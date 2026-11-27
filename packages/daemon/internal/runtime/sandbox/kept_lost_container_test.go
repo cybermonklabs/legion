@@ -17,6 +17,7 @@ import (
 // loss, which keeps the volume (R3), and not a fault on the volume (R6). So the next launch replaces
 // the pod and keeps the Sandbox and the claim that it owns.
 func TestAKeptVolumeOutlivesAnInitContainerTheKubeletLost(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
 	fetched := corev1.ContainerStatus{Name: fetchContainer, State: corev1.ContainerState{
 		Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"},

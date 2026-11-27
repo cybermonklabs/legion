@@ -256,11 +256,11 @@ func TestAStartWaitsForTheOperatorToResumeAClaimItSuspended(t *testing.T) {
 	}
 	if waits := strings.Count(logged.String(), `"msg":"outbox row waits"`); waits != 1 ||
 		!strings.Contains(logged.String(), `"level":"INFO","msg":"outbox row waits"`) ||
-		!strings.Contains(logged.String(), "suspended by operator; it waits for the operator's resume: the suspension holds until the operator resumes the claim") {
+		!strings.Contains(logged.String(), "suspended by operator; its agent waits for the operator's resume: the suspension holds until the operator resumes the agent") {
 		t.Fatalf("the waiting start logged %q, want one Info line naming the operator's suspension", logged.String())
 	}
 
-	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester}); err != nil {
+	if err := machine.Handle(ctx, supervise.RequestResume{Claim: tester, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's resume: %v", err)
 	}
 	clock = clock.Add(2 * time.Minute)
@@ -341,7 +341,7 @@ func TestTheControllerKeeperResumesEveryControllerButOneTheOperatorSuspended(t *
 					t.Fatalf("the operator's suspend: %v", err)
 				}
 			}
-			keeper := newControllerKeeper(context.Background(), sup, "legion", time.Minute, quietLogger())
+			keeper := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, quietLogger())
 			if err := keeper.keep(); err != nil {
 				t.Fatalf("keep the controller: %v", err)
 			}
@@ -474,7 +474,7 @@ func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T)
 		t.Fatalf("parked architect = %+v, want failed with its session still recorded", failed)
 	}
 	if err := architectMachine.Handle(context.Background(), supervise.RequestForgetSession{
-		Claim: architect, Session: architectMachine.Claim().Session,
+		Claim: architect, Session: architectMachine.Claim().Session, By: supervise.SuspendedByOperator,
 	}); err != nil {
 		t.Fatalf("forget the architect session: %v", err)
 	}
@@ -515,7 +515,7 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 	}
 	for _, token := range []claim.Token{architect, implementer} {
 		machine, _ := sup.Machine(token)
-		if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: token}); err != nil {
+		if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
 			t.Fatalf("the operator's resume of %s: %v", token, err)
 		}
 	}

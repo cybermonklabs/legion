@@ -1,10 +1,11 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 
 // refuse_leftovers (lib/leftovers.sh) is a stage driver's check that no earlier run of its stage left
 // a process running whose driver is gone: a process names its run by /tmp/<PREFIX>.<driver pid>. in
@@ -13,8 +14,10 @@ import { procRootOf } from "./proc-root";
 // (lib/proc-root.ts), so its time is its own and not the host's process count.
 const leftovers = join(import.meta.dir, "leftovers.sh");
 const dir = temporaryDirectory("leftovers-test");
-const skip = skipWithout("perl", "sleep", "find");
+const host = hostGate({ programs: ["perl", "sleep", "find"] });
 const prefix = "legion-e2e-leftovers-test";
+// sleeper waits for what it started to run its program, a wait that ends 20 s before the row's bound.
+const waits = rowWaits(libRowBoundMs);
 
 const started: number[] = [];
 afterEach(() => {
@@ -34,7 +37,7 @@ async function sleeper(
     stderr: "ignore",
   });
   started.push(child.pid);
-  await untilRunning(child.pid, options.argv?.[0] ?? "sleep");
+  await untilRunning(child.pid, options.argv?.[0] ?? "sleep", waits.end());
   return child.pid;
 }
 // A pid no process holds now: a process this row started and reaped, the driver of a run that is
@@ -57,12 +60,14 @@ function dockerListingNone(): string {
 }
 // check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given, and
 // answers its status and what its `fail` said (a driver's fail, here one that prints and returns).
-function check(root: string, bin = "") {
+// TRAPPED runs it from the shell's exit trap, after a clean end, as a driver's exit handler would.
+function check(root: string, bin = "", trapped = false) {
+  const call = `refuse_leftovers ${prefix}; echo "status $?"`;
   const ran = Bun.spawnSync(
     [
       "bash",
       "-c",
-      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\nrefuse_leftovers ${prefix}; echo "status $?"`,
+      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\n${trapped ? `trap '${call}' EXIT` : call}`,
     ],
     {
       env: {
@@ -76,7 +81,7 @@ function check(root: string, bin = "") {
   return { out: ran.stdout.toString(), err: ran.stderr.toString() };
 }
 
-test.skipIf(skip)(
+host.test(
   "names each process an earlier run left, by its command line, its environment or its working directory, and no process of a live run",
   async () => {
     const gone = goneDriver();
@@ -106,7 +111,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "starts no program for each process it reads: the working directories it needs are read by one find",
   async () => {
     // A tr, a readlink and a cat that record each call and then run the real one: a walk that ran
@@ -130,7 +135,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)("a proc root that lists no process is reported, and found no leftover", () => {
+host.test("a proc root that lists no process is reported, and found no leftover", () => {
   const empty = mkdtempSync(join(dir, "empty-"));
   mkdirSync(join(empty, "not-a-pid"));
   const r = check(empty);
@@ -150,7 +155,7 @@ function findStub(body: string) {
   writeFileSync(join(bin, "find"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   return bin;
 }
-test.skipIf(skip)(
+host.test(
   "a find that fails, that a signal ends or that is too old for -files0-from is reported with 2, and one that meets only unreadable entries is not",
   async () => {
     const root = procRootOf(dir, [await sleeper()]);
@@ -165,6 +170,9 @@ test.skipIf(skip)(
       out: `refuse_leftovers: find exited 137 reading the working directories under ${root}: find ended with status 137 and printed nothing\nstatus 2\n`,
       err: "",
     });
+    // The same find from a driver's exit trap after a clean end: there bash's bare `exit` in a
+    // process substitution exits with the status the trap was entered with, 0, not the find's.
+    expect(check(root, findStub("kill -KILL $$"), true)).toEqual(killed);
     const unreadable = said(
       findStub(`/usr/bin/find "$@"\necho "find: '$proc_root/1/cwd': Permission denied" >&2\nexit 1`)
     );

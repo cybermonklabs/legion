@@ -65,10 +65,14 @@ func (rig *recipientRig) unsubscribe(t *testing.T, sessionID string, topics []st
 // reap pass, which would need the registry's own clock moved past that allowance: both go through
 // deleteInterest, so the state they leave - no row in the bucket and none in the cache - is the
 // same, and that state is what the count reads.
+//
+// The delete is a case's setup, so it runs until the test binary's deadline (testwait.Context)
+// and not on a clock of its own: for a record past the NATS max payload it removes every chunk,
+// and beside 48 busy processes on four CPUs a fixed 5 s ran out, failing
+// TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted before it reached what it asks.
 func (rig *recipientRig) reapInterest(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := rig.harness.registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("remove %s's interest row: %v", sessionID, err)
 	}
@@ -107,7 +111,7 @@ func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic stri
 		t.Fatalf("register %s's interest: %v", sessionID, err)
 	}
 	storeSessionHeartbeat(t, rig.harness.client, sessionID, heartbeat)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		if _, state := rig.harness.sessions.Lookup(sessionID); state == want {
 			break
@@ -195,7 +199,7 @@ func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[s
 // awaitCopiesServable waits until every one of copies can be served.
 func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, what, func() bool {
+	waitFor(t, what, func() bool {
 		for _, cache := range copies {
 			if cache.Servable() != nil {
 				return false
@@ -213,6 +217,7 @@ func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what strin
 // stored, a team topic and a topic of another of the stream's subjects alike, and both carry the
 // counts.
 func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T) {
+	t.Parallel()
 	rig := newRecipientRig(t)
 	const topic = "notifications.team.recipient-count"
 	if !bus.StreamCaptures(topic) {
@@ -273,6 +278,7 @@ func TestAPublishCountsEverySessionTheTopicIsForOtherThanItsSender(t *testing.T)
 // filter (TestARefollowWritesTheKnownSessionRecord). After a clean stop nothing registers again,
 // so a record left stale here keeps the wrong count for the record's whole 30 days.
 func TestASessionThatUnsubscribesStopsBeingCounted(t *testing.T) {
+	t.Parallel()
 	rig := newRecipientRig(t)
 	const topic = "notifications.slack.channel.c-unsubscribed-count"
 	if !bus.StreamCaptures(topic) {
@@ -302,6 +308,7 @@ func TestASessionThatUnsubscribesStopsBeingCounted(t *testing.T) {
 // A role topic carries neither count: its answer names the holder the message was forwarded to,
 // which is what a role send's sender reads.
 func TestAPublishToARoleTopicCarriesNeitherCount(t *testing.T) {
+	t.Parallel()
 	rig := newRecipientRig(t)
 	const role = "recipient-count-holder"
 	claimRoleFor(t, rig.harness.registry, rig.harness.sessions, "ses_holder", role, nil)
@@ -328,6 +335,7 @@ func TestAPublishToARoleTopicCarriesNeitherCount(t *testing.T) {
 // with the live sessions alone: its sender sees an answer with no count key at all. The same
 // session, on a listener whose store answers, is counted, so the absence is the store's.
 func TestAListenerWithNoKnownSessionStoreCarriesNeitherCount(t *testing.T) {
+	t.Parallel()
 	rig := newRecipientRig(t)
 	const topic = "notifications.team.degraded-count"
 	rig.register(t, "ses_subscriber", []string{topic})
@@ -346,6 +354,7 @@ func TestAListenerWithNoKnownSessionStoreCarriesNeitherCount(t *testing.T) {
 // known-session store answers throughout, so each absence is the stale copy's, and a read of the
 // bucket that completes serves that copy, and both counts, again.
 func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
+	t.Parallel()
 	for _, stale := range []string{"session", "interest"} {
 		t.Run(stale+" copy", func(t *testing.T) {
 			rig := newRecipientRig(t)
@@ -390,6 +399,7 @@ func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
 // sends nothing else in the window (newQuietKnownSessionRig), so what the probe counts is the
 // publish path's, however long the publishes take.
 func TestAHundredPublishesSendNoJetStreamAPIRequest(t *testing.T) {
+	t.Parallel()
 	rig := &recipientRig{knownSessionRig: newQuietKnownSessionRig(t)}
 	const topic = "notifications.team.recipient-count-api-free"
 	rig.register(t, recipientSender, []string{topic})

@@ -13,7 +13,7 @@
 #
 #   RED           the test ran and failed
 #   BUILD-FAILED  the line's files do not build at the base, such as a test that calls code the base
-#                 does not have
+#                 does not have, or an e2e driver that reads it
 #   GREEN         the test ran and passed at the base, so it does not tell the base from the change
 #   NO-TEST       no test the line names ran to a pass or a fail: no test matched, each match
 #                 skipped, the run failed before a test started, or the base does not build there
@@ -78,8 +78,18 @@
 #        case of the line is RED, and so is a run that exits other than 0 after a case of the line
 #        started and before its ok. A run in which each case of the line started and passed is
 #        GREEN. A case that never started, or one that started and printed no ok in a run that
-#        exits 0 (it skipped, or reported nothing), makes the line NO-TEST. An e2e line reads no
-#        BUILD-FAILED.
+#        exits 0 (it skipped, or reported nothing), makes the line NO-TEST.
+#        The driver. An e2e script of this repository runs its cases with a driver it builds
+#        first, the e2e test binary of a Go package (go test -c -tags e2e), and a driver that does
+#        not build ends the run before any case starts. So the tool builds that binary itself, in
+#        each directory that holds a Go file of the line: before the copy, where the base builds a
+#        Go file there with the tag e2e, it builds the base's own driver, and a base whose driver
+#        does not build there without the line's files makes the line NO-TEST, as a go line's
+#        does; after the copy, a driver that does not build is the failure of the line's files,
+#        BUILD-FAILED, and the script does not run. That line names what the base lacks, as go's
+#        errors name it (undefined: <name>, <type> has no field or method <name>, unknown field
+#        <name> of <type>), and go's first error. A driver that builds runs the script, and its
+#        cases decide. A line with no Go file has no driver to build, and only its cases decide.
 #   cmd  a command: its words are what follows the field --, run as they are, with no shell, in
 #        <dir> of the worktree, after the line's files are copied. <name> names the line and
 #        nothing else. The command runs with no input and with TMPDIR set to an empty directory of
@@ -430,22 +440,84 @@ build_program() {
   ((status == 0)) || refuse "the tool could not build its $2 (its build is above)"
 }
 
-# check_base_package <dir>: result set to NO-TEST when the base's own package in dir builds a Go
-# file and does not build its test binary. A base that builds no Go file there, because dir is new
-# or a build constraint leaves each file out, has no package of its own to break.
+# check_base_package <dir> [<go build flag>...]: result set to NO-TEST when the base's own package
+# in dir builds a Go file, with the flags given, and does not build its test binary with them. A
+# base that builds no Go file there, because dir is new or a build constraint leaves each file out,
+# has no package of its own to break. A go line gives no flag, and an e2e line's driver -tags e2e.
 check_base_package() {
-  local dir=$1 files
+  local dir=$1 files with=''
+  shift
+  (($# == 0)) || with=" with $*"
   [[ -d ${wt}/${dir} ]] || return 0
-  run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" list -e \
+  run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" list -e "$@" \
     -f '{{len .GoFiles}} {{len .CgoFiles}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' .
   files="$(awk '/^[0-9]+ [0-9]+ [0-9]+ [0-9]+$/ { print $1 + $2 + $3 + $4; exit }' "$log")"
   if ((status == 0)) && [[ $files == 0 ]]; then
-    echo "   the base builds no Go file in $dir, so the line's files are the package there" >&2
+    echo "   the base builds no Go file in $dir$with, so the line's files are the package there" >&2
     return 0
   fi
-  run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" test -c -o /dev/null .
+  run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" test -c "$@" -o /dev/null .
   ((status == 0)) ||
-    result="NO-TEST"$'\t'"the base does not build in $dir without the line's files, so no failure there would be the test's: $(first_error)"
+    result="NO-TEST"$'\t'"the base does not build in $dir$with without the line's files, so no failure there would be the test's: $(first_error)"
+}
+
+# e2e_packages <file>...: each directory that holds a Go file of the line, once each and in the
+# line's order: the packages whose e2e driver an e2e line builds (the header's "The driver").
+e2e_packages() {
+  local path package seen=$'\n'
+  for path in "$@"; do
+    [[ $path == *.go ]] || continue
+    package="$(dirname -- "$path")"
+    [[ $seen != *$'\n'"$package"$'\n'* ]] || continue
+    seen+="$package"$'\n'
+    printf '%s\n' "$package"
+  done
+}
+
+# missing_symbols: what the build's errors say the base lacks, each once, in go's order:
+# "undefined: <name>"; "<type> has no field or method <name>", as <type>.<name>; and "unknown field
+# <name> in struct literal of type <type>", as <type>.<name>. A type is written as the last element
+# of its package's path and its name.
+missing_symbols() {
+  awk '
+    function short(type, n, part) {
+      gsub(/"/, "", type)
+      sub(/^\*/, "", type)
+      n = split(type, part, "/")
+      return part[n]
+    }
+    function add(name) {
+      if (name in seen) return
+      seen[name] = 1
+      out = out (out == "" ? "" : ", ") name
+    }
+    /: undefined: / {
+      name = $0; sub(/.*: undefined: /, "", name); sub(/[ \t].*/, "", name)
+      add(name)
+    }
+    / has no field or method / {
+      type = $0; sub(/.*\(type /, "", type); sub(/ has no field or method .*/, "", type)
+      name = $0; sub(/.* has no field or method /, "", name); sub(/[^A-Za-z0-9_].*/, "", name)
+      add(short(type) "." name)
+    }
+    /unknown field .* in struct literal of type / {
+      name = $0; sub(/.*unknown field /, "", name); sub(/ in struct literal.*/, "", name)
+      type = $0; sub(/.* in struct literal of type /, "", type); sub(/[ ,)].*/, "", type)
+      add(short(type) "." name)
+    }
+    END { print out }' "$log"
+}
+
+# check_line_driver <dir>: result set to BUILD-FAILED when the e2e driver in dir, the package's test
+# binary with the tag e2e, does not build with the line's files copied in; every error is printed
+# (-gcflags=-e), so that the line names all the base lacks.
+check_line_driver() {
+  local dir=$1 lacks
+  run_logged "$wt" env -u GOWORK GOPROXY=off go -C "${wt}/${dir}" test -c -tags e2e -gcflags=-e -o /dev/null .
+  ((status != 0)) || return 0
+  lacks="$(missing_symbols)"
+  ((${#lacks} <= 600)) || lacks="${lacks:0:600}..."
+  result="BUILD-FAILED"$'\t'"the e2e driver in $dir (go test -c -tags e2e) does not build with the line's files${lacks:+; what the base lacks: $lacks}: $(first_error)"
 }
 
 # bun_verdict <exit status>: "<VERDICT><tab><what decided it>" for a bun test run of one file, read
@@ -613,8 +685,15 @@ for i in "${!kinds[@]}"; do
   } >&2
   make_worktree
   result=''
+  drivers=()
   if [[ $kind == go ]]; then
     check_base_package "$dir"
+  elif [[ $kind == e2e ]]; then
+    mapfile -t drivers < <(e2e_packages "${files[@]}")
+    for driver in "${drivers[@]}"; do
+      [[ -z $result ]] || break
+      check_base_package "$driver" -tags e2e
+    done
   fi
   if [[ -z $result ]]; then
     copy_files "$number" "${files[@]}"
@@ -638,11 +717,17 @@ for i in "${!kinds[@]}"; do
       done
       ;;
     e2e)
-      name=${dir##*/}
-      name=${name%.sh}
-      name=${name^^}
-      run_logged "$wt" env "${name//[^A-Z0-9]/_}_E2E_CASES=${test}" bash "$dir"
-      result="$(e2e_verdict "$test" "$status")"
+      for driver in "${drivers[@]}"; do
+        [[ -z $result ]] || break
+        check_line_driver "$driver"
+      done
+      if [[ -z $result ]]; then
+        name=${dir##*/}
+        name=${name%.sh}
+        name=${name^^}
+        run_logged "$wt" env "${name//[^A-Z0-9]/_}_E2E_CASES=${test}" bash "$dir"
+        result="$(e2e_verdict "$test" "$status")"
+      fi
       ;;
     cmd)
       read -r -a command_line <<<"${commands[i]}"

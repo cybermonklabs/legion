@@ -95,7 +95,9 @@ func StoppedStepRole(issue record.Issue) claim.Role {
 // So its task cannot stop there, and the owner changes it with a later version of its plan, or
 // stops it once the person has answered (TaskAwaitsPerson). Every other place an issue of the
 // workflow stands is one a hold is from, held itself among them, since a held issue's place is
-// the phase its hold is from (record.StandsAt).
+// the phase its hold is from (record.StandsAt), except awaiting_children: no hold is from it
+// either (issues_held_from_check), and taskStopped refuses a stop there first, before it calls
+// stopTask (waitingRefusal).
 func stopRefusal(issue record.Issue, task string) *intake.Refusal {
 	if record.StandsAt(issue) == phase.AwaitingPerson {
 		return intake.TaskAwaitsPerson(issue.Key, task)
@@ -147,11 +149,15 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // stop, which refuses both states itself and would fail the whole fact, and before the linger a
 // root's leave begins, since the task's own state is the truer answer. A stop in a lingering tree
 // changes nothing and says so, and so does a stop where its hold cannot stand: a root that waits on
-// a person before its first step (stopRefusal).
+// a person before its first step (stopRefusal), and a parent waiting in awaiting_children, which no
+// hold is from either (issues_held_from_check): its stop is refused WAITING_ON_CHILDREN, naming
+// its open children and the architect's levers over them, as its sign-off and its move back are
+// (waitingRefusal, dispatch://INFRA-3320 R11).
 //
 // An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes no stop of its
 // tasks from that owner either: the experiment decides how the issue is done. The stop is
-// answered PLAN_NOT_TAKEN before anything else is read, and the task goes on as it stood.
+// answered PLAN_NOT_TAKEN before anything else is read, and the task goes on as it stood, so a
+// parent of such a group in awaiting_children is answered PLAN_NOT_TAKEN, not WAITING_ON_CHILDREN.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -175,7 +181,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	case !w.Stored && beforeItsWork(*issue):
 		// The stop's task is one of the plan the issue's first step would walk: the newest its
 		// owner gave, or the task default of the project's default steps.
-		waiting, err := e.store.OwnersNewestPlan(ctx, tx, *issue)
+		waiting, err := record.OwnersNewestPlan(ctx, e.store, tx, *issue)
 		if err != nil {
 			return intake.Result{}, err
 		}
@@ -196,6 +202,9 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 		return intake.Result{Refusal: intake.TaskNotFound(issue.Key, fact.Task, []string{w.Task})}, nil
 	case w.State == record.TaskStopped:
 		return intake.Result{}, nil
+	}
+	if issue.Phase == phase.AwaitingChildren {
+		return e.waitingRefusal(ctx, tx, *issue, w, actStopTask, claim.RoleArchitect)
 	}
 	if refusal := intake.FinishedTask(issue.Key, w.Task, w.State, intake.StopOfTask); refusal != nil {
 		return intake.Result{Refusal: refusal}, nil
@@ -242,6 +251,15 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // would otherwise hold back every later ask of its head (mergeForward asks once for each head).
 // The act is task_restarted, which the log line names: no row of the table moves a held issue.
 //
+// The start of step 1 is a phase start like any other (dispatch://INFRA-3320 R9): where a Dispatch
+// child of the issue is open and its pull request has not merged, the task moves to step 1 all the
+// same, and the issue waits in awaiting_children holding that start, with the task step 1's worker
+// would have been given and the restart's reason as its cause (awaitChildren), in place of the
+// start, so no role is started and Dispatch is written the status of awaiting_children over the
+// one it shows. The guard reads the start alone (childrenHoldingStart), since the restart raises
+// it from held whatever place the stop stood at, the retro or the merge among them. The return
+// starts step 1 once no child is open (ReturnFromChildren).
+//
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
 // for its stop is never done or left, since each write of done or left clears the issue's hold in
 // the same write (endTaskWithLeave, and the merge of an issue that awaits it).
@@ -261,7 +279,19 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		}
 	}
 	from, first := record.StandsAt(issue), steps[0]
-	status := PhaseStatus(first)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	open, err := e.childrenHoldingStart(ctx, tx, issue, first, pr)
+	if err != nil {
+		return err
+	}
+	to := first
+	if len(open) > 0 {
+		to = phase.AwaitingChildren
+	}
+	status := PhaseStatus(to)
 	if status != issue.DispatchStatus {
 		if err := e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.DispatchStatus, "")); err != nil {
 			return err
@@ -271,6 +301,18 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return err
 	}
 	issue.Hold, issue.Status = nil, status
+	told := func(at Standing) string { return task(issue, at, record.PhaseRow{}, pr, reason) }
+	if len(open) > 0 {
+		at, err := e.standingPart(ctx, tx, issue, w)
+		if err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: a stopped task's restart at its first step waits on the issue's open Dispatch children", "issue", issue.Key,
+			"tree", issue.Tree, "task", w.Task, "act", "task_restarted", "from", from, "holds", first, "reason", reason)
+		waiting := issue
+		waiting.Phase = from
+		return e.awaitChildren(ctx, tx, waiting, w, childrenHold{Start: first, Task: told(at), Cause: reason, Open: open})
+	}
 	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return err
 	}
@@ -285,13 +327,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil {
-		return err
-	}
-	if err := e.start(ctx, tx, issue, w, role, func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, reason)
-	}, true); err != nil {
+	if err := e.start(ctx, tx, issue, w, role, told, phase.Held, true); err != nil {
 		return err
 	}
 	if err := e.queueMovedNews(ctx, tx, issue); err != nil {

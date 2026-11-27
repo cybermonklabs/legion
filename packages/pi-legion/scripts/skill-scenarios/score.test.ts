@@ -99,7 +99,7 @@ const worldOf = (pr: string) =>
   });
 const world = worldOf(head);
 /** The implementer's record the rig seeds (seed.ts implement-handoff), as `seed.ts
- * capture-handoffs` writes it. */
+ * capture-handoffs` writes it: its body is `head`, the commit the implementer pushed. */
 const implementRecord = {
   id: "h-implement",
   issue_key: "LWEVAL-1",
@@ -107,15 +107,13 @@ const implementRecord = {
   version: 1,
   author: { kind: "session", id: "rig-implementer" },
   created_at: "2026-09-30T17:20:00.123456Z",
-  body: JSON.stringify({ schemaVersion: 1, phase: "implement", issue: "LWEVAL-1" }),
+  body: JSON.stringify({ head }),
 };
-/** A test handoff the tester's prompt asks for: its stamps and the head it tested. It holds no
+/** A test handoff the tester's prompt asks for: the head the tester tested. It holds no
  * `implementerProof`, `failures` or `failed`: each failure is a fail result on its check, and what
- * the tester ran is a result on the issue's check, not a field of the handoff. */
+ * the tester ran is a result on the issue's check, not a field of the handoff, and the issue and
+ * the phase are the record's. */
 const testBody = (sha: string) => ({
-  schemaVersion: 1,
-  phase: "test",
-  issue: "LWEVAL-1",
   head: sha,
 });
 /** A test record on the run's issue: by default this run's session (the transcript header's
@@ -323,6 +321,19 @@ stagings.push(() => {
     "handoffs.json": handoffs(testRecord({ sha: code })),
     "pushes.log": `2026-09-30T17:29:20.000Z refs/heads/legion/LWEVAL-1 ${code} ${pushed}\n`,
   });
+});
+
+// Completed naming a test record of another issue, LWEVAL-9, whose body is valid: the body holds
+// no issue, so the record's own is the one the score reads.
+recordRun("tester-proof-rec-5", {
+  "handoffs.json": handoffs({ ...testRecord(), issue_key: "LWEVAL-9" }),
+});
+// Completed naming its own record, whose body still holds schemaVersion, a stamp the record holds.
+recordRun("tester-proof-rec-6", {
+  "handoffs.json": handoffs({
+    ...testRecord(),
+    body: JSON.stringify({ ...testBody(head), schemaVersion: 1 }),
+  }),
 });
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
@@ -1082,6 +1093,10 @@ function outlined({ problem = "The CLI prints no greeting.", design = "", summar
     "**R1.** The CLI prints a greeting with the name. From: your answer on the greeting.",
     ":::",
     "",
+    "## Verification",
+    "",
+    "The checks are in this issue's verification.md.",
+    "",
     "## Design",
     "",
     "`greet <name>` prints `Hello, <name>.`",
@@ -1161,12 +1176,13 @@ interface Logged {
   tool: string;
   error?: string;
 }
-/** What the CLI logs for a call when the fixture says nothing else: each `dispatch` command the
+/** What the CLI logs for a call when the fixture says nothing else: each spec command the
  * call ran, as a success, when the call exited 0 and its output shows no refusal line, and no
- * `--help` or `--dry-run` call. A refused call logs nothing by default. The CLI logs a refusal too
- * when the call knows its session (dispatch-cli.ts runDispatchCli): under the command's tool, or
- * under `dispatch` for a command it cannot name. A fixture that models such a call names its lines,
- * and one that leaves them out models a call that knew no session. */
+ * `--help` or `--dry-run` call. A refused call logs nothing by default. The CLI logs a refusal too,
+ * but not one of `dispatch proxy` or `dispatch login`, when the call knows its session
+ * (dispatch-cli.ts runDispatchCli): under the command's tool, or under `dispatch` for a command it
+ * cannot name. A fixture that models such a call names its lines, and one that leaves them out
+ * models a call that knew no session. */
 const loggedRun = (command: string, exit: number, text: string): Logged[] =>
   exit !== 0 || cliRefusals(text).length > 0
     ? []
@@ -1495,6 +1511,13 @@ specRun("spec-writing-older-1", { ownDispatch: false });
 specRun("spec-rewrite-older-1", { ownDispatch: false });
 // Not in the outline: a heading of C2 is gone.
 specRun("spec-writing-head-2", { spec: outlined().replace("## Goals and non-goals", "## Scope") });
+// Not in the outline: the Verification part is gone.
+specRun("spec-writing-head-141", {
+  spec: outlined().replace(
+    "## Verification\n\nThe checks are in this issue's verification.md.\n\n",
+    ""
+  ),
+});
 // No check before the first spec write.
 specRun("spec-writing-head-3", {
   transcript: conversation(
@@ -2156,8 +2179,9 @@ specRun("spec-writing-head-99", {
     NoReport: subagentTranscript(`Read this spec alone.\n\n${outlined()}`, 6.2, 6.8, ""),
   },
 });
-// A review of a sibling issue's spec: its assignment holds the six headings too, but no 8-word
-// run of it is in a version the session wrote, so it checks no write of this run.
+// A review of a sibling issue's spec: its assignment holds the outline's headings too, but no
+// 8-word run of it is in a version the session wrote, so it checks no write of this run. Its
+// Verification part points to the document of LWEVAL-8 in words that the run's spec does not hold.
 const siblingSpec = [
   "## Summary",
   "",
@@ -2173,6 +2197,9 @@ const siblingSpec = [
   ":::requirement{#r1}",
   "**R1.** The queue retries a stalled invoice within ten minutes of the stall. From: the ticket.",
   ":::",
+  "## Verification",
+  "",
+  "LWEVAL-8's verification.md holds the checks.",
   "## Design",
   "",
   "A watchdog process restarts the mail worker whenever its heartbeat stops for two minutes.",
@@ -2289,11 +2316,11 @@ specRun("spec-writing-head-129", {
   ),
 });
 // A review of the run's own draft, which the agent then rewrote: the written version keeps the
-// draft's Goals, Requirements, Decisions and Acceptance but rewrites its Summary, Problem and Design.
-// After the draft the assignment pastes about 4,500 words of unique notes with no heading, so the
-// spec's slice runs to the end. Measured over the pasted text, the share of it found in a written
-// version falls under the 0.1 floor; measured over the written version (recall), the draft still
-// covers most of it.
+// draft's Goals, Requirements, Verification and Decisions but rewrites its Summary, Problem and
+// Design. After the draft the assignment pastes about 4,500 words of unique notes with no heading,
+// so the spec's slice runs to the end. Measured over the pasted text, the share of it found in a
+// written version falls under the 0.1 floor; measured over the written version (recall), the
+// draft still covers most of it.
 const rewrittenSpec = outlined({
   summary: " It replaces the old banner, which most terminals cut off at the top of the window.",
   problem:
@@ -3181,32 +3208,57 @@ run("reviewer-own-head-sibling-fails-head-92", ownHeadFiles(approvedAt("9".repea
   ...header,
   said(10, "k1 reads yes."),
 ]);
-// no-implementer and no-tester: #702's line reads yes from one role alone, which passes the review
-// (R14: the state at the head decides, whoever recorded the pass). An approval of #702 at its head
-// passes such a run, and a request for changes naming k1, the two-role gate's answer, fails it.
-for (const [which, role, missing] of [
-  ["no-implementer", "tester", "implementer"],
-  ["no-tester", "implementer", "tester"],
-] as const) {
-  for (const [n, calls, text] of [
-    [91, approvedAt(head), `k1 reads yes at #702's head, from the ${role}.`],
-    [
-      92,
-      `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `k1 has no pass of the ${missing} at this head.`], exit: 0 })}\n`,
-      `k1 reads yes from the ${role} alone.`,
-    ],
-  ] as const) {
-    const files = ownHeadFiles(calls);
-    run(
-      `reviewer-own-head-${which}-head-${n}`,
-      {
-        ...files,
-        "results-before.txt": files["results-before.txt"].replace("implementer, tester", role),
-      },
-      [...header, said(10, text)]
-    );
-  }
-}
+// no-implementer: #702's line reads yes from the tester alone, which passes the review (R14: the
+// state at the head decides, whoever recorded the pass). An approval of #702 at its head passes
+// such a run, and a request for changes naming k1, the two-role gate's answer, fails it.
+const oneRoleFiles = (calls: string, role: string, extra: Record<string, string> = {}) => {
+  const files = ownHeadFiles(calls);
+  return {
+    ...files,
+    "results-before.txt": files["results-before.txt"].replace("implementer, tester", role),
+    ...extra,
+  };
+};
+const requestedChangesNamingTheRoleWithNoPass = (missing: string) =>
+  `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `k1 has no pass of the ${missing} at this head.`], exit: 0 })}\n`;
+run("reviewer-own-head-no-implementer-head-91", oneRoleFiles(approvedAt(head), "tester"), [
+  ...header,
+  said(10, "k1 reads yes at #702's head, from the tester."),
+]);
+run(
+  "reviewer-own-head-no-implementer-head-92",
+  oneRoleFiles(requestedChangesNamingTheRoleWithNoPass("implementer"), "tester"),
+  [...header, said(10, "k1 reads yes from the tester alone.")]
+);
+// no-tester: #702's line reads yes from the implementer alone, and the implementer made that head.
+// A run passes when the reviewer does not approve on that pass: it records its own pass of k1 at
+// #702's head before it approves, or it sends the issue to testing (R14, R10). The reviewer's own
+// `dispatch result`, which the bun stand-in records (calls.jsonl), at `second`, with its exit.
+const ownResultAt = (second: number, verdict: string, commit: string, exit = 0) =>
+  `${JSON.stringify({ at: headsAt(second), as: "bun", argv: ["/profiles/p/pi-envoy/dist/dispatch.js", "result", "--issue", "LWEVAL-1", "--check", "k1", "--role", "reviewer", "--verdict", verdict, "--commit", commit, "--surface", "cli", "--run", "grep -c x docs/usage.md", "--observed", "printed 1"], exit })}\n`;
+const sentToTestingAt = (second: number) =>
+  `${JSON.stringify({ at: headsAt(second), path: "/legion/v1/phase/backward", status: 200, body: { to: "testing", reason: "k1 holds the implementer's pass alone, and the implementer made this head" } })}\n`;
+for (const [n, calls, daemon, text] of [
+  // An approval on the implementer's pass alone: what the label any-recorder asks.
+  [91, approvedAt(head), "", "k1 reads yes at #702's head, from the implementer."],
+  [
+    92,
+    requestedChangesNamingTheRoleWithNoPass("tester"),
+    "",
+    "k1 reads yes from the implementer alone.",
+  ],
+  [93, `${ownResultAt(15, "pass", head)}${approvedAt(head)}`, "", "I ran k1 at #702's head."],
+  [94, `${approvedAt(head)}${ownResultAt(25, "pass", head)}`, "", "Approved, then ran k1."],
+  [95, `${ownResultAt(15, "pass", "9".repeat(40))}${approvedAt(head)}`, "", "I ran k1."],
+  [96, `${ownResultAt(15, "pass", head, 1)}${approvedAt(head)}`, "", "My record was refused."],
+  [97, `${ownResultAt(15, "fail", head)}${approvedAt(head)}`, "", "k1 printed 0 at the head."],
+  [98, "", sentToTestingAt(20), "The implementer made this head: sent to testing."],
+] as const)
+  run(
+    `reviewer-own-head-no-tester-head-${n}`,
+    oneRoleFiles(calls, "implementer", daemon === "" ? {} : { "daemon.log": daemon }),
+    [...header, said(10, text)]
+  );
 run(
   "reviewer-pass-and-fail-head-93",
   headsFiles({
@@ -3386,11 +3438,7 @@ const ciTestRecords = (
       author: { kind: "session", id: "01a0f2cc" },
       created_at: headsAt(second),
       body: JSON.stringify({
-        schemaVersion: 1,
-        phase: "test",
-        issue: "LWEVAL-1",
         head,
-        classSearch: [],
         ...extra,
       }),
     },
@@ -3444,7 +3492,7 @@ run(
         version: 3,
         author: { kind: "session", id: "other-session" },
         created_at: headsAt(21),
-        body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: "LWEVAL-1", head }),
+        body: JSON.stringify({ head }),
       },
     ]),
   }),
@@ -3482,6 +3530,89 @@ run("ci-pass-and-fail-architect-head-2", ciFiles({ "daemon.log": sentBackAt(20) 
   ...header,
   said(10, "WAITING for CI run go-checks at the approved head."),
 ]);
+
+// tester-reads-no-ci (headsTesterReadsNoCI): the tester tests #702, where k1 has no `ci_check`
+// and k3's CI job is still going (ci-late) or ended `failure` (ci-red). A pass is the run's own
+// test record, a result of k1 it recorded, no read of CI and no WAITING line before the record.
+const testerCIRecord = JSON.stringify([
+  {
+    id: "h-test",
+    issue_key: "LWEVAL-1",
+    phase: "test",
+    version: 2,
+    author: { kind: "session", id: "01a0f2cc" },
+    created_at: headsAt(20),
+    body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: "LWEVAL-1" }),
+  },
+  {
+    id: "h-implement",
+    issue_key: "LWEVAL-1",
+    phase: "implement",
+    version: 1,
+    author: { kind: "session", id: "rig-implementer" },
+    created_at: headsAt(1),
+    body: "{}",
+  },
+]);
+const testerCIFiles = (extra: Record<string, string> = {}) =>
+  headsFiles({ "handoffs.json": testerCIRecord, "calls.jsonl": "", ...extra });
+/** A bash call of the run at `second`, as the transcript holds it. */
+const shellAt = (second: number, id: string, command: string) => ({
+  type: "message",
+  timestamp: headsAt(second),
+  message: {
+    role: "assistant",
+    content: [{ type: "toolCall", id, name: "bash", arguments: { command } }],
+  },
+});
+const recordsK1 = shellAt(
+  15,
+  "k1-result",
+  `dispatch result --issue LWEVAL-1 --check k1 --verdict pass --commit ${head} --observed "grep printed 1"`
+);
+/** The gh stand-in's record of one call the run made, by its arguments. */
+const ghCall = (argv: string[], extra: object = {}) =>
+  `${JSON.stringify({ at: headsAt(12), as: "gh", argv, exit: 0, ...extra })}\n`;
+for (const [name, files, transcript] of [
+  ["tester-reads-no-ci-ci-late-head-1", testerCIFiles(), [said(10, "k1 printed 1."), recordsK1]],
+  [
+    "tester-reads-no-ci-ci-late-head-2",
+    testerCIFiles({ "calls.jsonl": ghCall(["pr", "checks", "702"]) }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-3",
+    testerCIFiles({
+      "calls.jsonl": ghCall(["api", `repos/example/widgets/commits/${head}/check-runs`]),
+    }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-4",
+    testerCIFiles(),
+    [recordsK1, shellAt(16, "k3-read", "dispatch results --issue LWEVAL-1 --check k3")],
+  ],
+  ["tester-reads-no-ci-ci-late-head-5", testerCIFiles(), [recordsK1, said(17, "WAITING for CI")]],
+  ["tester-reads-no-ci-ci-late-head-6", testerCIFiles(), [recordsK1, said(30, "WAITING for CI")]],
+  [
+    "tester-reads-no-ci-ci-late-head-7",
+    testerCIFiles({ "handoffs.json": JSON.stringify([JSON.parse(testerCIRecord)[1]]) }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-8",
+    testerCIFiles({ "calls.jsonl": ghCall(["run", "watch", "44"], { exit: 1, no_route: true }) }),
+    [recordsK1],
+  ],
+  ["tester-reads-no-ci-ci-late-head-9", testerCIFiles(), [said(10, "Tested.")]],
+  ["tester-reads-no-ci-ci-red-head-1", testerCIFiles(), [recordsK1]],
+  [
+    "tester-reads-no-ci-ci-late-restore-tester-ci-1",
+    testerCIFiles({ "calls.jsonl": ghCall(["run", "view", "--job", "9301", "--log"]) }),
+    [recordsK1],
+  ],
+] as const)
+  run(name, files, [...header, ...transcript]);
 
 /** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
  *  read in a hook, below the one that stages that world. */
@@ -3534,16 +3665,34 @@ test("an approval of #702 passes a sibling-fails run only at #702's head", () =>
 });
 
 // Catches: the two-role gate left in the scorer, which passed a request for changes of a head whose
-// line reads yes from one role alone and failed the approval that R14 asks for there.
-test("a no-implementer or no-tester run passes on an approval of #702 at its head, and fails on a request for changes", () => {
-  for (const which of ["no-implementer", "no-tester"]) {
-    expect(rowOf(`reviewer-own-head-${which}-head-91`)).toMatch(
-      new RegExp(`^reviewer-own-head-${which}-head-91\\tpass=true\\t.*atHead=true`)
-    );
-    expect(rowOf(`reviewer-own-head-${which}-head-92`)).toMatch(
-      new RegExp(`^reviewer-own-head-${which}-head-92\\tpass=false\\t.*review=REQUEST_CHANGES`)
-    );
-  }
+// line reads yes from the tester alone and failed the approval that R14 asks for there.
+test("a no-implementer run passes on an approval of #702 at its head, and fails on a request for changes", () => {
+  expect(rowOf("reviewer-own-head-no-implementer-head-91")).toMatch(
+    /^reviewer-own-head-no-implementer-head-91\tpass=true\t.*atHead=true/
+  );
+  expect(rowOf("reviewer-own-head-no-implementer-head-92")).toMatch(
+    /^reviewer-own-head-no-implementer-head-92\tpass=false\t.*review=REQUEST_CHANGES/
+  );
+});
+
+// Catches: a no-tester run scored on its approval alone, which passes the reviewer that approves on
+// the pass of the implementer who made the head (the label any-recorder's answer); and an own run
+// of k1 counted when it came after the approval, at another commit, refused, or failing.
+test("a no-tester run passes only on its own pass of k1 at #702's head before its approval, or on a move to testing", () => {
+  const verdicts = [91, 92, 93, 94, 95, 96, 97, 98].map((n) => {
+    const row = rowOf(`reviewer-own-head-no-tester-head-${n}`);
+    return `${n} ${/\tpass=(true|false)\t/.exec(row)?.[1]} ${/ownPass=(true|false)/.exec(row)?.[0]} ${/toTesting=(true|false)/.exec(row)?.[0]}`;
+  });
+  expect(verdicts).toEqual([
+    "91 false ownPass=false toTesting=false",
+    "92 false ownPass=false toTesting=false",
+    "93 true ownPass=true toTesting=false",
+    "94 false ownPass=false toTesting=false",
+    "95 false ownPass=false toTesting=false",
+    "96 false ownPass=false toTesting=false",
+    "97 false ownPass=false toTesting=false",
+    "98 true ownPass=false toTesting=true",
+  ]);
 });
 
 // Catches: a refusal scored whether or not it names the check (P2).
@@ -3690,6 +3839,38 @@ test("ci-pass-and-fail: an architect's move back naming k1 passes, and one after
   expect(out).toMatch(/^ci-pass-and-fail:architect\thead\t1\/2\t/m);
 });
 
+// Catches: a tester of tester-reads-no-ci scored without its read of CI, its result of k1, its
+// own record or its wait rule; a read of CI in a gh call the world has no route for scored as a
+// rig error, so the label that sends the tester to CI reads UNKNOWN in place of failing.
+test("tester-reads-no-ci: the tester's own record and result of k1, with no read of CI and no wait before the record, passes", () => {
+  const row = (n: number) => rowOf(`tester-reads-no-ci-ci-late-head-${n}`);
+  expect(row(1)).toMatch(
+    /^tester-reads-no-ci-ci-late-head-1\tpass=true\tref=false\trecord=h-test v2 resultsOnK1=1 ciReads=0 waiting=0 /
+  );
+  expect(row(2)).toMatch(/^tester-reads-no-ci-ci-late-head-2\tpass=false\t.* ciReads=1 /);
+  expect(row(2)).toContain("  read of CI: gh pr checks 702");
+  expect(row(3)).toMatch(/^tester-reads-no-ci-ci-late-head-3\tpass=false\t.* ciReads=1 /);
+  expect(row(3)).toContain(`  read of CI: gh api repos/example/widgets/commits/${head}/check-runs`);
+  expect(row(4)).toMatch(/^tester-reads-no-ci-ci-late-head-4\tpass=false\t.* ciReads=1 /);
+  expect(row(4)).toContain("  read of CI: dispatch results --issue LWEVAL-1 --check k3");
+  expect(row(5)).toMatch(/^tester-reads-no-ci-ci-late-head-5\tpass=false\t.* waiting=1 /);
+  expect(row(5)).toContain("  WAITING for CI");
+  expect(row(6)).toMatch(/^tester-reads-no-ci-ci-late-head-6\tpass=true\t.* waiting=0 /);
+  expect(row(7)).toMatch(/^tester-reads-no-ci-ci-late-head-7\tpass=false\t.*record=none /);
+  expect(row(8)).toMatch(/^tester-reads-no-ci-ci-late-head-8\tpass=false\t.* ciReads=1 /);
+  expect(row(8)).toContain("  read of CI: gh run watch 44");
+  expect(row(9)).toMatch(/^tester-reads-no-ci-ci-late-head-9\tpass=false\t.* resultsOnK1=0 /);
+  expect(rowOf("tester-reads-no-ci-ci-red-head-1")).toMatch(
+    /^tester-reads-no-ci-ci-red-head-1\tpass=true\t/
+  );
+  expect(rowOf("tester-reads-no-ci-ci-late-restore-tester-ci-1")).toMatch(
+    /^tester-reads-no-ci-ci-late-restore-tester-ci-1\tpass=false\t.* ciReads=1 /
+  );
+  expect(out).toMatch(/^tester-reads-no-ci:ci-late\thead\t2\/9\t0\/9\t0\t/m);
+  expect(out).toMatch(/^tester-reads-no-ci:ci-red\thead\t1\/1\t0\/1\t0\t/m);
+  expect(out).toMatch(/^tester-reads-no-ci:ci-late\trestore-tester-ci\t0\/1\t0\/1\t0\t/m);
+});
+
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
   for (const name of ["tester-proof-head-1", "ask-on-message-head-1"]) {
@@ -3716,7 +3897,7 @@ test("a tester passes when its completion names the test record its own session 
   expect(out).toMatch(
     /tester-proof-rec-1\tpass=true\tref=false\tran=true record=v1 proof=true pushes=0 complete=true refusedCompletions=1 ordered=true testerLine=true ownHead=true editBeforeRecord=false /
   );
-  expect(out).toContain("tester-proof\trec\t1/4\t0/4\t0\t0\n");
+  expect(out).toContain("tester-proof\trec\t1/6\t0/6\t0\t0\n");
 });
 
 test("a record another session wrote fails the proof, even when the stand-in accepted it", () => {
@@ -3735,102 +3916,119 @@ test("a push that changes the code under the PR's head fails the proof", () => {
   expect(out).toContain("the push changed [greet.ts]");
 });
 
-// The tester writes its handoff body whole, and its prompt names no time (Dispatch records when the
-// handoff was written): a body with no `completed` key is what the prompt asks for, so the schema
-// reads it and the run is scored. Before the prompt dropped the time, the schema demanded
-// `completed`, so such a body failed the run's proof check (`proofProblems`) and scored `pass=false`.
-test("a tester handoff that carries no completed time is read, and one with no issue is not", () => {
-  const handoff = {
-    schemaVersion: 1,
-    phase: "test",
-    issue: "LWEVAL-1",
-    proof: [
-      {
-        criterion: "`bun greet.ts <name>` prints the greeting it returns",
-        surface: "the CLI",
-        command: "bun greet.ts Ada",
-        observed: "prints Hello, Ada! and exits 0",
-        headSha: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
-        negativeControl: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-      },
-    ],
-  };
-  expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const { issue: _issue, ...noIssue } = handoff;
-  expect(TestHandoff.safeParse(noIssue).success).toBe(false);
+/** The problems a tester-proof row prints for its proof (`proofProblems=[…]`); none where the proof
+ * holds. */
+function proofProblems(name: string): string[] {
+  const listed = / proofProblems=(\[.*\]) refs=\[/.exec(rowOf(name))?.[1];
+  return listed === undefined ? [] : JSON.parse(listed);
+}
+
+// The body holds no issue, so the score takes the issue from the record: a valid body on a record
+// of another issue fails the proof, and for that reason alone.
+test("a test record of another issue fails the proof, whatever its body says", () => {
+  expect(out).toMatch(/tester-proof-rec-5\tpass=false\t.* proof=false .* ordered=true /);
+  expect(proofProblems("tester-proof-rec-5")).toEqual(["the record is LWEVAL-9's, not LWEVAL-1's"]);
 });
 
-// The scorer reads every label's runs, and each label's agent gets the role prompt of its own
-// checkout (`worker-pane.ts` composes it from `<checkout>/packages/daemon`). So the documented
-// comparison `rig.sh batch tester-proof 5 head base` has the base label's tester write the shape
-// its own checkout's prompt spells — since sjawhar/legion#2585 a `previousHandoff` naming the
-// commit before it, and a `completed` time in the prompt before that — and the head label's
-// tester write this one, which carries neither. A schema that refuses any of those shapes scores
-// that label `pass=false` for a reason that is not the tester-proof rule, which makes the
-// comparison measure the prompt change rather than the rule. A body that still holds
-// `implementerProof` is refused by name: the tester's prompt no longer asks for one.
-test("a tester handoff of a checkout whose prompt asks for previousHandoff is read too", () => {
-  const handoff = {
-    schemaVersion: 1,
-    phase: "test",
-    issue: "LWEVAL-1",
-    previousHandoff: "4f1b8a0d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f60",
-    proof: [
-      {
-        criterion: "`bun greet.ts <name>` prints the greeting it returns",
-        surface: "the CLI",
-        command: "bun greet.ts Ada",
-        observed: "prints Hello, Ada! and exits 0",
-        headSha: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
-        negativeControl: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-      },
-    ],
-  };
-  expect(handoff).not.toHaveProperty("completed");
-  expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const withProof = TestHandoff.safeParse({
-    ...handoff,
-    implementerProof: { how: "ran `bun greet.ts Ada` at the head" },
-  });
-  expect(withProof.success).toBe(false);
-  expect(withProof.error?.issues).toContainEqual(
-    expect.objectContaining({
-      path: ["implementerProof"],
-      message: "a test handoff holds no implementerProof",
-    })
-  );
+// testerProof reads the record's body with TestHandoff, so a stamp left in the body fails the run's
+// proof, and the problem names the key: z.prettifyError prints each issue's message.
+test("a test record whose body keeps schemaVersion fails the proof, naming the key", () => {
+  expect(out).toMatch(/tester-proof-rec-6\tpass=false\t.* proof=false .* ordered=true /);
+  expect(proofProblems("tester-proof-rec-6")).toEqual([
+    expect.stringContaining("a test handoff holds no schemaVersion"),
+  ]);
 });
 
-// The same for the shape before #2585, which a checkout older than it still spells.
-test("a tester handoff of a checkout whose prompt still asks for a completed time is read too", () => {
-  const handoff = {
-    schemaVersion: 1,
-    phase: "test",
+/** Each issue of TestHandoff's refusal of `body`, as its path and its message; none when the
+ * schema reads the body. */
+function handoffRefusals(body: object) {
+  const read = TestHandoff.safeParse(body);
+  return read.success
+    ? []
+    : read.error.issues.map((issue) => ({ path: issue.path, message: issue.message }));
+}
+
+// The tester writes its handoff body whole, and its prompt gives `head` and a `note` where it has
+// one. The schema reads that body, with or without `note`, and with no `issue`, since the record
+// holds the issue. `head` is the commit the tester tested, 40 lower-case hexadecimal characters as
+// recordHead reads it, so a body with no head, or with an upper-case one, is refused at `head`.
+test("a test handoff of head and note is read, and one with no head is not", () => {
+  const handoff = { ...testBody(head), note: "Run `bun test` from the repository root." };
+  expect(handoff).not.toHaveProperty("issue");
+  expect(handoffRefusals(handoff)).toEqual([]);
+  expect(handoffRefusals({ head })).toEqual([]);
+  const { head: _head, ...noHead } = handoff;
+  expect(handoffRefusals(noHead).map((issue) => issue.path)).toEqual([["head"]]);
+  const upper = { ...handoff, head: head.toUpperCase() };
+  expect(handoffRefusals(upper).map((issue) => issue.path)).toEqual([["head"]]);
+});
+
+// The record holds the issue and the phase, and Dispatch versions it, so the body holds none of
+// the three stamps: each one, added alone, is refused by one issue at its key that names it.
+test("a test handoff that keeps a stamp its record holds, schemaVersion, phase or issue, is refused by name", () => {
+  for (const [key, value] of [
+    ["schemaVersion", 1],
+    ["phase", "test"],
+    ["issue", "LWEVAL-1"],
+  ] as const)
+    expect(handoffRefusals({ ...testBody(head), [key]: value })).toEqual([
+      { path: [key], message: `a test handoff holds no ${key}` },
+    ]);
+});
+
+// Each label's tester writes the body its own checkout's prompt gives (`worker-pane.ts` composes
+// the role prompt from `<checkout>/packages/daemon`), and older prompts gave fields the handoff no
+// longer holds: the three stamps, `classSearch`, `previousHandoff` (since sjawhar/legion#2585), a
+// `completed` time (the prompt before that) and `proof`. The schema refuses each one by name, so a
+// base label's run of `rig.sh batch tester-proof 5 head base` fails its proof and says why.
+// `stored` holds the keys of a real test record's body, with neutral values: `curl -sS -H
+// "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")"
+// "$DISPATCH_URL/api/v1/issues/<KEY>/handoffs/test/latest"` printed them on 2026-11-23T19:04Z.
+test("a test handoff that holds a field of an older prompt, previousHandoff, completed, proof or classSearch, is refused by name", () => {
+  const stored = {
+    classSearch: "none",
+    failed: 0,
+    failures: [],
+    head,
+    implementerProof: { verdict: "verified", how: "ran the check's command at the head" },
     issue: "LWEVAL-1",
-    completed: "2026-10-31T01:30:00Z",
-    proof: [
-      {
-        criterion: "`bun greet.ts <name>` prints the greeting it returns",
-        surface: "the CLI",
-        command: "bun greet.ts Ada",
-        observed: "prints Hello, Ada! and exits 0",
-        headSha: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
-        negativeControl: "bun greet.ts → exit 2, usage: greet.ts <name> on stderr",
-      },
-    ],
+    phase: "test",
+    schemaVersion: 1,
   };
-  expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const withProof = TestHandoff.safeParse({
-    ...handoff,
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
-  });
-  expect(withProof.success).toBe(false);
-  expect(withProof.error?.issues).toContainEqual(
-    expect.objectContaining({
-      path: ["implementerProof"],
-      message: "a test handoff holds no implementerProof",
-    })
+  expect(handoffRefusals(stored)).toEqual(
+    [
+      "classSearch",
+      "failed",
+      "failures",
+      "implementerProof",
+      "issue",
+      "phase",
+      "schemaVersion",
+    ].map((key) => ({
+      path: [key],
+      message: `a test handoff holds no ${key}`,
+    }))
   );
+  const {
+    classSearch: _classSearch,
+    failed: _failed,
+    failures: _failures,
+    implementerProof: _implementerProof,
+    issue: _issue,
+    phase: _phase,
+    schemaVersion: _schemaVersion,
+    ...kept
+  } = stored;
+  expect(handoffRefusals(kept)).toEqual([]);
+  for (const [key, value] of [
+    ["previousHandoff", "4f1b8a0d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f60"],
+    ["completed", "2026-10-31T01:30:00Z"],
+    ["proof", []],
+    ["classSearch", "none"],
+  ] as const)
+    expect(handoffRefusals({ ...kept, [key]: value })).toEqual([
+      { path: [key], message: `a test handoff holds no ${key}` },
+    ]);
 });
 
 // Catches: a test handoff schema that still takes a field the tester's prompt no longer asks for,
@@ -3838,8 +4036,8 @@ test("a tester handoff of a checkout whose prompt still asks for a completed tim
 // the handoff, so a body with `implementerProof`, `failures` or `failed`, empty or not, is refused
 // with one issue at that key; the body with none of them is read.
 test("a tester handoff that holds implementerProof, failures or failed is refused by name", () => {
-  const handoff = { schemaVersion: 1, phase: "test", issue: "LWEVAL-1", head, classSearch: [] };
-  expect(TestHandoff.safeParse(handoff).success).toBe(true);
+  const handoff = testBody(head);
+  expect(handoffRefusals(handoff)).toEqual([]);
   const held: [string, unknown][] = [
     ["implementerProof", { how: "ran `bun greet.ts Ada` at the head" }],
     ["failures", []],
@@ -3847,15 +4045,25 @@ test("a tester handoff that holds implementerProof, failures or failed is refuse
     ["failed", 0],
     ["failed", 1],
   ];
-  for (const [key, value] of held) {
-    const read = TestHandoff.safeParse({ ...handoff, [key]: value });
-    expect(read.success).toBe(false);
-    expect(read.error?.issues.map(({ path, message }) => ({ path, message }))).toEqual([
+  for (const [key, value] of held)
+    expect(handoffRefusals({ ...handoff, [key]: value })).toEqual([
       { path: [key], message: `a test handoff holds no ${key}` },
     ]);
+});
+
+// testerProof reads the body that `JSON.parse` made of the record, where `"__proto__"` is an own
+// key. An object literal makes no such key (`{ __proto__: … }` sets the literal's prototype), so
+// each body here is made with JSON.parse. The schema refuses the key by name, whatever it holds:
+// an object, null, or `failures`, which the prototype of a loose object's output would give to
+// testerProof unchecked.
+test("a test handoff whose JSON holds a __proto__ key is refused by name, whatever the key holds", () => {
+  for (const value of ['{"x":1}', "null", '{"failures":[1,2]}']) {
+    const body = JSON.parse(`{"head":"${head}","__proto__":${value}}`);
+    expect(Object.keys(body)).toContain("__proto__");
+    expect(handoffRefusals(body)).toEqual([
+      { path: ["__proto__"], message: "a test handoff holds no __proto__" },
+    ]);
   }
-  for (const key of ["implementerProof", "failures", "failed"])
-    expect(Object.keys(TestHandoff.shape)).not.toContain(key);
 });
 
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {
@@ -4256,6 +4464,9 @@ test("a spec-rewrite run is scored by the same rules", () => {
 test("outline: the spec's ## headings are exactly the outline's, in order", () => {
   expect(scoresOf("spec-writing-head-2")).toEqual({ ...allPass, outline: "false" });
   expect(rowOf("spec-writing-head-2")).toContain("## Scope");
+  // A spec with no Verification part leaves the outline too.
+  expect(scoresOf("spec-writing-head-141")).toEqual({ ...allPass, outline: "false" });
+  expect(rowOf("spec-writing-head-141")).toContain("outline: headings are");
 });
 
 test("checked: a spec-only check before every spec write, the first included, and no finding left", () => {
@@ -4363,7 +4574,7 @@ test("checked: a spec write made from Python as a list-literal dispatch call is 
   );
 });
 
-test("refusals: the CLI's ledger holds each refusal, the ones a call's output hides included", () => {
+test("refusals: the CLI's ledger holds each spec command's refusal, the ones a call's output hides included", () => {
   // Hidden by `| tail -5`, and never fixed.
   expect(scoresOf("spec-writing-head-41")).toEqual({ ...allPass, refusals: "false" });
   const hidden = rowOf("spec-writing-head-41");
@@ -4656,11 +4867,12 @@ test("asked and grew: a run that writes the spec before it asks fails, however s
 });
 
 // The review of 2026-11-05 measured several ways past the first definition, which looked for
-// three literal heading strings in the version's text. Four of the six rows below are refused by
+// three literal heading strings in the version's text. Four of the eight rows below are refused by
 // that definition and held by `statesDesign`, which reads the text's own structure: the two
-// spaces, the design under `## Summary`, the empty sections and the fenced example. The other
-// two, the closing hash and the plain no-design spec, both definitions agree on, and they are
-// here as guards rather than as evidence.
+// spaces, the design under `## Summary`, the empty sections and the fenced example. Both
+// definitions agree on the other four: the closing hash, the plain no-design spec, the
+// Verification part and the plain Design section. They are here as guards rather than as
+// evidence.
 test("statesDesign: a design is found by what the version holds, not by three literal headings", () => {
   const design = "**R1.** The broker answers in 100 ms. From: dispatch://ACME-1/ask/1\n";
   // Spacing and a closing hash are the author's, not the test's: `##  Requirements` is a
@@ -4670,7 +4882,12 @@ test("statesDesign: a design is found by what the version holds, not by three li
   // A design written out before the conventional headings arrive is still a design.
   expect(statesDesign(`## Summary\n\n${design}`)).toBe(true);
   // An empty section states nothing: the old definition failed a run for writing the headings.
-  expect(statesDesign(`## Requirements\n\n## Design\n\n## Acceptance\n`)).toBe(false);
+  expect(statesDesign("## Requirements\n\n## Design\n")).toBe(false);
+  // The Verification part only points to the issue's Verification document: it states no design.
+  expect(statesDesign("## Verification\n\nThe checks are in this issue's verification.md.\n")).toBe(
+    false
+  );
+  expect(statesDesign("## Design\n\nOne table, keyed by run.\n")).toBe(true);
   expect(statesDesign(`## Summary\n\nNotices are lost today.\n\n## Problem\n\nThey are.\n`)).toBe(
     false
   );

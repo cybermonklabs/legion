@@ -30,6 +30,7 @@ const discoveryFailedLine = "oidc: discover the issuer; retrying in the backgrou
 // accounts.google.com, which the listener's own HTTPS_PROXY makes unreachable here; the cluster's
 // stand-in is on loopback, which no proxy takes.
 func TestTheListenerServesWhileItsIssuersCannotBeDiscovered(t *testing.T) {
+	t.Parallel()
 	cluster := oidctest.New(t)
 	key := cluster.PublishKey(t, "listener-discovery-key")
 	cluster.FailDiscovery(http.StatusServiceUnavailable)
@@ -70,14 +71,14 @@ func TestTheListenerServesWhileItsIssuersCannotBeDiscovered(t *testing.T) {
 	wantIssuerHealth(t, base, false, false)
 
 	cluster.FailDiscovery(0)
-	deadline := time.Now().Add(45 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		status := call(projected).StatusCode
 		if status == http.StatusOK {
 			break
 		}
 		if status != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("a projected token once its issuer answers: status %d, want 200 within 45 s with no restart\n%s", status, listener.Output.String())
+			t.Fatalf("a projected token once its issuer answers: status %d, want 200 in time with no restart\n%s", status, listener.Output.String())
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

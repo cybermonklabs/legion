@@ -1,5 +1,7 @@
 package intake
 
+//ci:reads packages/contracts/fixtures/dispatch-events/check-state-changed.json TestTheIntakeDecodesACheckStateChangedEvent decodes both forms of the payload Envoy's golden writes
+
 import (
 	"encoding/json"
 	"os"

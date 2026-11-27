@@ -76,8 +76,8 @@ func (c liveClaim) writeTestHandoff(version int, serial int64) string {
 // verdict, whose key is the completion's with none, and the tester's phase row holds no verdict.
 // Another role below the contract is refused.
 func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
-	if DaemonAPIVersion < CheckStatesContract {
-		t.Fatalf("the daemon declares contract %d, below CheckStatesContract %d", DaemonAPIVersion, CheckStatesContract)
+	if DaemonAPIVersion() < entryNumber(CheckStatesContract) {
+		t.Fatalf("the daemon declares contract %d, below the check states' entry's number %d", DaemonAPIVersion(), entryNumber(CheckStatesContract))
 	}
 	t.Run("a tester's plugin at the contract", func(t *testing.T) {
 		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
@@ -111,9 +111,9 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		seedPullRequest(t, h, "LEGION-208", headSHA)
 		tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 		grant := tester.grant(t)
-		h.makeStale(t, tester.token, tester.session, tester.secret, CheckStatesContract-1)
-		if c := h.stored(tester.token); c.State != supervise.StateWorking || c.PluginContract != CheckStatesContract-1 {
-			t.Fatalf("the claim is %s at contract %d, want working at %d: this case proves nothing", c.State, c.PluginContract, CheckStatesContract-1)
+		h.makeStale(t, tester.token, tester.session, tester.secret, entryNumber(CheckStatesContract)-1)
+		if c := h.stored(tester.token); c.State != supervise.StateWorking || c.PluginContract != entryNumber(CheckStatesContract)-1 {
+			t.Fatalf("the claim is %s at contract %d, want working at %d: this case proves nothing", c.State, c.PluginContract, entryNumber(CheckStatesContract)-1)
 		}
 		written := tester.writeTestHandoff(1, 0)
 		completion(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "Every check passes.", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
@@ -150,7 +150,7 @@ func TestAPhaseCompletionCarriesNoVerdict(t *testing.T) {
 		seedIssueAt(t, h, "LEGION-208", phase.Reviewing)
 		reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 		grant := reviewer.grant(t)
-		h.makeStale(t, reviewer.token, reviewer.session, reviewer.secret, CheckStatesContract-1)
+		h.makeStale(t, reviewer.token, reviewer.session, reviewer.secret, entryNumber(CheckStatesContract)-1)
 		written := reviewer.writeHandoff("review", 1)
 		refused(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "reviewed", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}),
 			http.StatusBadRequest, "VERDICT_NOT_TAKEN")
@@ -183,9 +183,9 @@ func TestATestersCompletionNamesTheHeadItTested(t *testing.T) {
 			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 			grant := tester.grant(t)
 			if tc.below {
-				h.makeStale(t, tester.token, tester.session, tester.secret, CheckStatesContract-1)
-				if c := h.stored(tester.token); c.PluginContract != CheckStatesContract-1 {
-					t.Fatalf("the claim is at contract %d, want %d: this case proves nothing", c.PluginContract, CheckStatesContract-1)
+				h.makeStale(t, tester.token, tester.session, tester.secret, entryNumber(CheckStatesContract)-1)
+				if c := h.stored(tester.token); c.PluginContract != entryNumber(CheckStatesContract)-1 {
+					t.Fatalf("the claim is at contract %d, want %d: this case proves nothing", c.PluginContract, entryNumber(CheckStatesContract)-1)
 				}
 			}
 			written := tester.writeTestHandoff(1, 3)

@@ -27,6 +27,7 @@ import {
   planReviewBody,
   plansBody,
   prioritiesBody,
+  projectBody,
   reviewBody,
   SESSION,
   stepsBody,
@@ -36,7 +37,7 @@ import {
 import { fakeSearchResponse } from "./fake-search-response";
 
 /**
- * The surface every Dispatch command presents: for each command `dispatchToolSpecs` names, what
+ * The surface every spec command presents: for each command `dispatchToolSpecs` names, what
  * one valid call sends and prints, and what each refusal `argumentProblems` and
  * `ownerConflictProblems` can give it prints. The record is the golden file
  * `fixtures/command-surface.json`, so that the record taken before `executeDispatchTool` is split
@@ -265,6 +266,9 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
   if (segments[2] === "comments" && segments.length >= 4) {
     if (rest === "" || rest === "resolve") return response(commentBody());
   }
+  if (segments[2] === "messages" && segments.length >= 4) {
+    if (rest === "") return response(messageBody());
+  }
   if (segments[2] === "projects" && segments.length >= 4) {
     if (rest === "related") {
       return response({ outcome: "none", search: "meaning_and_keywords", related: [] });
@@ -273,6 +277,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest.startsWith("architecture-sources/")) return response(architectureSource());
     if (rest === "artifacts") return response([]);
     if (rest === "plans") return response(plansBody());
+    if (rest === "proven-sessions") return response(projectBody(method === "PUT"));
   }
   throw new Error(`unexpected request: ${route}`);
 }
@@ -556,7 +561,7 @@ function compare(left: RecordedRun, right: RecordedRun): number {
 }
 
 describe("the Dispatch command surface", () => {
-  test("records every command and every refusal it can give", async () => {
+  test("records every spec command and every refusal it can give", async () => {
     const runs: RecordedRun[] = [];
     for (const spec of dispatchToolSpecs) {
       runs.push(await runCommand(spec.name, "valid", { ...spec.example }));

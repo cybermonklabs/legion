@@ -109,11 +109,19 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 // KeptDecisionsTask is the text that names kept to the architect of tree, the one wording a start
 // task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
 // when an issue it names leaves that tree while the task waits to be sent (supervise's
-// Deps.RootTask, the daemon's rootTask): a task whose decisions have all left is written back to
-// "", which is a task that names nothing and is retired rather than sent. The approval is the
-// root's own, so it is named whenever kept carries one — the gate was read where it was first
-// kept — and it is named on the document of its own step (record.DesignStep.Document), which is
-// the document the person reviewed and the one whose approval the architect requests again.
+// Deps.RootTask, the daemon's rootTask, NarrowRootTask), beside the roots that rest on the root's
+// approval (ArchitectStart.Resting), and is "" when kept names nothing (NarrowRootTask says when a
+// rewritten task is retired). The approval is the root's own, so it is named whenever kept carries
+// one — the gate was read where it was first kept — and it is named on the document of its own
+// step (record.DesignStep.Document), which is the document the person reviewed and the one whose
+// approval the architect requests again.
+//
+// The approval kept is a person's approval of an earlier version of the root's own document,
+// never the version an ancestor's approval opened a step at (Admission.keepStaleApproval reads
+// record.DesignGate.ApprovedByPerson), so the task names no approval of the root's document that
+// a basis gave (dispatch://INFRA-3320, R2 and R3). Beside the request of the latest version it
+// names R1's path: a registration on an approved ancestor's approval, where the root is written
+// as a view on that ancestor.
 func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 	var parts []string
 	if len(kept.Decisions) > 0 {
@@ -125,9 +133,11 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 			root, strings.Join(named, "; ")))
 	}
 	if kept.Approved > 0 {
-		parts = append(parts, fmt.Sprintf("The %s is approved at version %d and is now at version %d: request approval of version %d, "+
-			"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says.",
-			kept.Step.Document(), kept.Approved, kept.Latest, kept.Latest))
+		document := kept.Step.Document()
+		parts = append(parts, fmt.Sprintf("A person approved version %d of the %s, and the %s is now at version %d. "+
+			"Request approval of version %d, as skill://legion-architect/references/design-gate.md (\"The armed gate\") says. "+
+			"The other way is to write %s as a view on an approved ancestor and register the step on that ancestor's approval, as the same page says.",
+			kept.Approved, document, document, kept.Latest, kept.Latest, root))
 	}
 	return strings.Join(parts, " ")
 }
@@ -145,18 +155,36 @@ func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.
 // no architect hands them over (HandOverKept). A nil kept enqueues payload as enqueueAt does.
 func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
 	kept *record.KeptDecisions, at time.Time) error {
+	if kept == nil {
+		row, err := queuedRow(ctx, tx, store, issue, payload, at)
+		if err != nil {
+			return err
+		}
+		return store.Enqueue(ctx, tx, row)
+	}
+	_, err := enqueueNamingID(ctx, tx, store, issue, tree, payload, kept, at)
+	return err
+}
+
+// enqueueNamingID is EnqueueNaming for a caller that needs the id of the row it writes: the row
+// is always written with that id kept (Store.EnqueueID), which refuses another project's key where
+// Store.Enqueue skips it, and kept, where it is not nil, is claimed for that row.
+func enqueueNamingID(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
+	kept *record.KeptDecisions, at time.Time) (int64, error) {
 	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
-		return err
-	}
-	if kept == nil {
-		return store.Enqueue(ctx, tx, row)
+		return 0, err
 	}
 	id, err := store.EnqueueID(ctx, tx, row)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return store.ClaimKeptDecisions(ctx, tx, tree, *kept, id)
+	if kept != nil {
+		if err := store.ClaimKeptDecisions(ctx, tx, tree, *kept, id); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
 }
 
 // EnqueueNaming is EnqueueNaming over the engine's store.
@@ -227,7 +255,7 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 		if !hears {
 			continue
 		}
-		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now, time.Time{}); err != nil {
+		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now); err != nil {
 			return err
 		}
 	}
@@ -278,6 +306,24 @@ func stepRef(key string, step record.DesignStep) string {
 		return "dispatch://" + key + "/artifact/" + dispatch.VerificationSlug
 	}
 	return "dispatch://" + key + "/spec"
+}
+
+// ChangesSuperseded says whether notice, a design-changes-requested notice on issue, is no longer
+// the changes request the gate of its document records as told, issue's gates being gates: the
+// gate records another (record.DesignGate.ToldChangesVersion and ToldChangesReason). The gate
+// records every changes request it applies as told (applyArtifact), and tells one a newer review
+// already replaced without recording it, as the person's words, when no approval followed it; so a
+// notice the gate's record does not match is of a request the person has since replaced. The
+// outbox's parkDecision relays no such notice to the controller: kept, it would take the place of
+// the newer decision kept under the same document's ref, and of the claim a start holds on it. A
+// gate that records no request, or no gate of the notice's document, says nothing against it.
+func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {
+	for step, gate := range gates {
+		if stepRef(issue, step) == notice.Ref {
+			return gate.ToldChangesVersion != nil && (*gate.ToldChangesVersion != notice.Version || gate.ToldChangesReason != notice.Reason)
+		}
+	}
+	return false
 }
 
 // itemRef is the Dispatch reference of an ask or comment of an issue.

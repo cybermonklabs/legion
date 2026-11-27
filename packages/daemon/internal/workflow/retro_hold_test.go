@@ -2,12 +2,10 @@ package workflow
 
 import (
 	"bytes"
-	"context"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -21,33 +19,16 @@ const heldParentChild = "LEGION-209"
 
 // heldParentReason is the reason of the retro-held notice LEGION-208 gets while heldParentChild is
 // in the workflow beneath it: it ends with the daemon's sentence on a status not taken yet and its
-// rules for ending a child, as the pr-merged notice does.
+// rules for ending a child, as the pr-merged notice does. retroHeldStarts is the sentence every
+// retro-held notice ends its own words with.
 const heldParentReason = "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
-	"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+	"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it. " + retroHeldStarts + " " +
 	record.StatusNotTakenYet + " " + record.EndChildRule
 
-// approveReview settles LEGION-208's review round as approved, as settleRound moves it: the
-// reviewer's phases row as the round left it, with the handoff the retro's task names written to
-// the store so a later read of the row finds it, and no reason (review.go's roundApproved).
+// approveReview settles LEGION-208's review round as approved (approvesReviewOf).
 func approveReview(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
-	row := roleRowOf(t, pool, engine, "LEGION-208", claim.RoleReviewer)
-	row.HandoffRecord, row.HandoffVersion, row.HandoffCommit, row.Summary = "review-record", 1, "c0ffee", "approved"
-	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		if err := engine.store.PutPhase(ctx, tx, row); err != nil {
-			return err
-		}
-		issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
-		if err != nil {
-			return err
-		}
-		pr, err := engine.store.PullRequest(ctx, tx, "LEGION-208")
-		if err != nil {
-			return err
-		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, "", row, pr, moveWhy{})
-	})
-
+	approvesReviewOf(t, pool, engine, "LEGION-208")
 }
 
 // retroStarts is the count of starts step_starts holds for the retro of key, and how many rows
@@ -106,6 +87,7 @@ func lastStepEnd(t *testing.T, pool *pgxpool.Pool, key, role string) string {
 // into its retro at the approval with no hold. The twin is an issue with no plan rows, which walks
 // today's line: its approval takes it to accepting, and the child's leave changes nothing of it.
 func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
+	t.Parallel()
 	// parent is LEGION-208 walking `implementer reviewer`, standing in reviewing at step 2, with
 	// heldParentChild in implementing beneath it where child is true.
 	parent := func(t *testing.T, child bool) (*pgxpool.Pool, *Engine, *bytes.Buffer) {
@@ -175,7 +157,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if got := noticesOf(t, pool, "LEGION-208", "retro-held"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the retro-held notices = %+v, want %+v", got, want)
 		}
-		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro for the issues beneath it") != 1 || !strings.Contains(line, heldParentChild) {
+		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro") != 1 || !strings.Contains(line, "hold="+signOffChildInWorkflow) || !strings.Contains(line, heldParentChild) {
 			t.Fatalf("the log of the approval = %q, want one line of the hold naming %s", line, heldParentChild)
 		}
 		statuses = statusWrites(t, pool, "LEGION-208")
@@ -263,15 +245,67 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 	})
 }
 
+// A parent whose plan has no acceptance step moves back out of merging into its retro, at its
+// merger's request, while an issue beneath it is in the workflow: Legion holds it before its retro
+// as the pass of its last step would (transition, holdBeforeRetro), and its owner's notice names
+// the move that entered the hold, a move back out of merging, and not a pass of its last step. A
+// later read of the same run words its notice by the same move: the child's leave leaves a Dispatch
+// child it never released holding the parent, and the settle tells that hold as a move back too.
+func TestAParentMovedBackOutOfMergingIsToldTheMoveThatHeldIt(t *testing.T) {
+	pool := migratedPool(t)
+	engine, _ := loggedEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	approveReview(t, pool, engine)
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
+	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+
+	if result := applyFacts(t, pool, engine)("merger-moves-back", intake.BackwardMove{Issue: root.Key, Requester: claim.RoleMerger, To: phase.Retro,
+		Reason: "the retro missed a finding"}); result.Refusal != nil {
+		t.Fatalf("the merger's move back was refused: %+v", result.Refusal)
+	}
+
+	if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
+		t.Fatalf("LEGION-208 after the merger's move back stands in %s with hold %+v, want held from retro for its children", held.Phase, held.Hold)
+	}
+	const movedBack = "LEGION-208 moved back from merging, and Legion holds it before its retro while "
+	beneath := record.Notice{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro, Reason: movedBack +
+		"these issues beneath it are still in the workflow: LEGION-209. " +
+		"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it. " + retroHeldStarts + " " +
+		record.StatusNotTakenYet + " " + record.EndChildRule}
+	if got := noticesOf(t, pool, root.Key, "retro-held"); !reflect.DeepEqual(got, []record.Notice{beneath}) {
+		t.Fatalf("the retro-held notices after the move back = %+v, want %+v", got, []record.Notice{beneath})
+	}
+
+	seedMirrorChild(t, pool, heldParentNeverReleased, "backlog", root.Key)
+	childLeavesDone(t, pool, engine)
+
+	if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
+		t.Fatalf("LEGION-208 after its child's leave stands in %s with hold %+v, want held for %s", held.Phase, held.Hold, heldParentNeverReleased)
+	}
+	open := record.Notice{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro, Reason: movedBack +
+		"these Dispatch children of it are open: LEGION-211 (backlog). " +
+		"A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. " +
+		"A child that runs as a tree of its own is moved by its own architect or a person. " + retroHeldStarts + " " +
+		record.StatusNotTakenYet + " " + record.EndChildRule}
+	if got := noticesOf(t, pool, root.Key, "retro-held"); !reflect.DeepEqual(got, []record.Notice{beneath, open}) {
+		t.Fatalf("the retro-held notices after the child's leave = %+v, want %+v", got, []record.Notice{beneath, open})
+	}
+}
+
 // A parent whose plan holds the owner's sign-off before another step passes the sign-off with no
 // issue beneath it in the workflow, and a child enters the workflow beneath it after that. No
-// sign-off is left to refuse the parent while the child runs, and its head proves its children's
-// merged work, so the pass of its last step, the reviewer's approval, holds it before its retro:
+// sign-off is left to refuse the parent while the child runs, and a parent is accepted after the
+// work beneath it, so the pass of its last step, the reviewer's approval, holds it before its retro:
 // issues.phase held, from retro for its children, its task at the retro's place, no retro
 // started, and its owner told once in a retro-held notice naming the child. The child's leave
 // starts the retro, told the review the reviewer passed. The known pass is a plan whose sign-off
 // is its last step, which the sign-off moves into its retro with no hold.
 func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
+	t.Parallel()
 	t.Run("the approval after the sign-off holds the parent before its retro, and the child's leave starts it", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
@@ -302,7 +336,7 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		if got := noticesOf(t, pool, root.Key, "retro-held"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the retro-held notices = %+v, want %+v", got, want)
 		}
-		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro for the issues beneath it") != 1 || !strings.Contains(line, heldParentChild) {
+		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro") != 1 || !strings.Contains(line, "hold="+signOffChildInWorkflow) || !strings.Contains(line, heldParentChild) {
 			t.Fatalf("the log of the approval = %q, want one line of the hold naming %s", line, heldParentChild)
 		}
 
@@ -360,6 +394,7 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 // its children stood where no role works, and the first report was refused too, so its handoff
 // never reached the step's record.
 func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := loggedEngine()
 	root := stepRoot(t, pool, phase.Admitted)

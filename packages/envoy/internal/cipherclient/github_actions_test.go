@@ -58,8 +58,8 @@ func TestMachineIdentityGitHubActionsReadsTheRunnersEndpoint(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"count": 1, "value": "job.oidc.token." + strconv.Itoa(n)})
 	})
 	env := map[string]string{
-		IdentityVar: IdentityGitHubActions, ActionsTokenURLVar: url,
-		ActionsTokenVar: runnerRequestToken, MachineAudienceVar: "example-audience",
+		IdentityVar: IdentityGitHubActions, ActionsIDTokenRequestURLVar: url,
+		ActionsIDTokenRequestTokenVar: runnerRequestToken, MachineAudienceVar: "example-audience",
 	}
 	getenv := func(name string) string { return env[name] }
 	source, err := MachineIdentity(getenv)
@@ -75,15 +75,15 @@ func TestMachineIdentityGitHubActionsReadsTheRunnersEndpoint(t *testing.T) {
 			t.Errorf("Token = %q, %q, want %q, %q", token, tokenType, want, oauthwire.SubjectTokenTypeGitHub)
 		}
 	}
-	wantAsked := runnerAsked{path: "/_apis/idtoken", apiVersion: "2.0", audience: "example-audience", authorization: "Bearer " + runnerRequestToken}
+	wantAsked := runnerAsked{path: "/_apis/idtoken", apiVersion: "2.0", audience: "example-audience", authorization: "bearer " + runnerRequestToken}
 	if got := asked(); len(got) != 2 || got[0] != wantAsked || got[1] != wantAsked {
 		t.Errorf("the endpoint was asked %+v, want %+v twice: once at every read", got, wantAsked)
 	}
-	if describe := source.Describe(); !strings.Contains(describe, ActionsTokenURLVar) || strings.Contains(describe, runnerRequestToken) {
-		t.Errorf("Describe = %q, want it to name %s and not the bearer", describe, ActionsTokenURLVar)
+	if describe := source.Describe(); !strings.Contains(describe, ActionsIDTokenRequestURLVar) || strings.Contains(describe, runnerRequestToken) {
+		t.Errorf("Describe = %q, want it to name %s and not the bearer", describe, ActionsIDTokenRequestURLVar)
 	}
 
-	for _, missing := range []string{ActionsTokenVar, MachineAudienceVar} {
+	for _, missing := range []string{ActionsIDTokenRequestTokenVar, MachineAudienceVar} {
 		without := func(name string) string {
 			if name == missing {
 				return ""
@@ -100,21 +100,21 @@ func TestMachineIdentityGitHubActionsReadsTheRunnersEndpoint(t *testing.T) {
 		}
 		return ""
 	}
-	if _, err := MachineIdentity(noEndpoint); err == nil || !strings.Contains(err.Error(), ActionsTokenURLVar+" is required by "+IdentityVar+"=github-actions") {
-		t.Errorf("MachineIdentity with no endpoint and no token file: %v, want a refusal naming %s", err, ActionsTokenURLVar)
+	if _, err := MachineIdentity(noEndpoint); err == nil || !strings.Contains(err.Error(), ActionsIDTokenRequestURLVar+" is required by "+IdentityVar+"=github-actions") {
+		t.Errorf("MachineIdentity with no endpoint and no token file: %v, want a refusal naming %s", err, ActionsIDTokenRequestURLVar)
 	}
 
 	refusing, _ := stubRunner(t, func(_ int, w http.ResponseWriter) {
 		http.Error(w, "denied for "+runnerRequestToken, http.StatusForbidden)
 	})
-	env[ActionsTokenURLVar] = refusing
+	env[ActionsIDTokenRequestURLVar] = refusing
 	refused, err := MachineIdentity(getenv)
 	if err != nil {
 		t.Fatalf("MachineIdentity: %v", err)
 	}
 	_, _, err = refused.Token(context.Background())
-	if err == nil || !strings.Contains(err.Error(), ActionsTokenURLVar) || !strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), runnerRequestToken) {
-		t.Errorf("Token from a refusing endpoint: %v, want an error naming %s and HTTP 403 and not the bearer", err, ActionsTokenURLVar)
+	if err == nil || !strings.Contains(err.Error(), ActionsIDTokenRequestURLVar) || !strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), runnerRequestToken) {
+		t.Errorf("Token from a refusing endpoint: %v, want an error naming %s and HTTP 403 and not the bearer", err, ActionsIDTokenRequestURLVar)
 	}
 }
 
@@ -140,15 +140,15 @@ func TestMachineIdentityGitHubActionsFollowsNoRedirect(t *testing.T) {
 			})
 			source, err := MachineIdentity(func(name string) string {
 				return map[string]string{
-					IdentityVar: IdentityGitHubActions, ActionsTokenURLVar: url,
-					ActionsTokenVar: runnerRequestToken, MachineAudienceVar: "example-audience",
+					IdentityVar: IdentityGitHubActions, ActionsIDTokenRequestURLVar: url,
+					ActionsIDTokenRequestTokenVar: runnerRequestToken, MachineAudienceVar: "example-audience",
 				}[name]
 			})
 			if err != nil {
 				t.Fatalf("MachineIdentity: %v", err)
 			}
 			token, _, err := source.Token(context.Background())
-			want := "the runner's OIDC token endpoint (" + ActionsTokenURLVar + ") answered HTTP " + strconv.Itoa(status)
+			want := "ask GitHub for this run's OIDC token at the URL " + ActionsIDTokenRequestURLVar + " names: the server answered HTTP " + strconv.Itoa(status)
 			if err == nil || err.Error() != want {
 				t.Errorf("%s: Token = %q, %v, want the refusal %q", label, token, err, want)
 			}

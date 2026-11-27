@@ -79,6 +79,7 @@ func (kv renewalMarkKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // moves to the registration's moment, and no whole read of the role claims completes in between,
 // since the watcher's scheduled read is held. The test logs the renewal before and after.
 func TestARenewOnSubscribeRenewsAClaimTheCopyLost(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_renew_copy_lost"
 		role   = "renew-copy-lost"
@@ -125,6 +126,7 @@ func TestARenewOnSubscribeRenewsAClaimTheCopyLost(t *testing.T) {
 // RefreshAt (storedTopics), and any the consumer filter fence adds; fewer than the three would say
 // the count is not counting.
 func TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_set_read_from_store"
 		role   = "set-read-from-store"
@@ -147,7 +149,7 @@ func TestTheSetReadFromTheStoreRenewsOnTheRegistrationsConflictPath(t *testing.T
 	if _, err := other.SetRoleWithPrevious(ctx, store.RoleClaimRequest{SessionID: holder, MachineID: "other-machine", ClientInstanceID: holdingProcess, Role: role}); err != nil {
 		t.Fatalf("grant %s to %s on the other listener: %v", role, holder, err)
 	}
-	waitFor(t, 10*time.Second, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
+	waitFor(t, fmt.Sprintf("%s's claim to reach the role claim copy", role), func() bool {
 		held, err := registry.RolesHeldBy(holder)
 		return err == nil && slices.Contains(held, role)
 	})

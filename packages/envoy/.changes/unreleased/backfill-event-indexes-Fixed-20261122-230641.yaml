@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+  `envoy-dispatch backfill-graph-store` no longer reads a whole table once for each batch or each
+  row it backfills, so its run time grows with the data rather than with the square of it. For
+  each document version of a block batch it reads the `artifact.version` event that recorded the
+  version, and for each comment of a comment batch the `comment.created` event that stored it; no
+  index served either read, so each one read every event. And it walks the block rows and the block
+  references naming no node in their address order, which no index kept (their address columns are
+  hash indexed), so each batch read and sorted every row still naming no node. Four indexes now
+  serve them: `events_artifact_version_number` (migration `20261119020700`),
+  `events_comment_created_id` (`20261119020800`), and `document_blocks_naming_no_node`
+  (`20261119020900`) and `block_refs_naming_no_node` (`20261119021000`), each of the last two
+  partial on the rows naming no node. All four are built concurrently at boot, which holds off no
+  write, and no migration pending before them runs a DO block, so the deploy census admits them
+  whatever their tables' size. Before its passes the run analyzes `node_kind` of the three tables
+  it walks, since the release that added those columns left them with no statistics, and without
+  them the planner read every row still naming no node for each batch. The block batch resolves
+  each document version's event once per batch in every plan, and the block-reference batch checks
+  each row's block node by its key. The run refuses to start, naming each, while any of the four
+  indexes is absent or invalid, and prints the statements that build each one again by hand: the
+  command migrates first, so such an index went missing after its version was recorded, and no
+  boot builds it again.
+time: 2026-11-22T23:06:41Z
+custom:
+    Issue: backfill-event-indexes

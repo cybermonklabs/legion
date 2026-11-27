@@ -15,10 +15,10 @@ import (
 )
 
 // The daemon's own engine reads every check at the testing move, those a CI job runs among them:
-// engineConfig wires TestingLeavesCI false, since until INFRA-5392's end hold makes the end of a
-// task hold the checks a CI job runs, a task whose steps after testing hold no review and no
-// acceptance would otherwise end with no gate on them; INFRA-5392 turns it on with that hold, and
-// changes this test then. ACME-1 is in testing on the daemon's engine; k1 and k2 read yes from the
+// engineConfig wires TestingLeavesCI false, since until the end of a task holds the checks a CI
+// job runs, a task whose steps after testing hold no review and no acceptance would otherwise end
+// with no gate on them; the change that builds that hold at the end of a task turns the setting
+// on, and changes this test then. ACME-1 is in testing on the daemon's engine; k1 and k2 read yes from the
 // tester at its head, and k3, a check a CI job runs, reads no for its job's failure, or no for no
 // result while its job goes on. The tester's completion sends the issue back for the failure and
 // waits for the job that goes on. An engine wired to leave those checks out would send ACME-1 to

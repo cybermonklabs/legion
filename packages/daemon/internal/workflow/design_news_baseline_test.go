@@ -43,6 +43,7 @@ func toldVersions(t *testing.T, pool *pgxpool.Pool, tree string) map[string]map[
 // the child starts, and the root, still at admitted with its row given back for the wait, has no
 // holder row: no work of its own has started to take a version.
 func TestTheFirstOpeningAndEachFirstEntryTakeTheApprovedVersionsAsTheirBaseline(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
@@ -154,6 +155,7 @@ func owedNewsOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, tree string) r
 // the very holder it is owed to. The member here is a child, whose baseline is its tree root's gate,
 // which is the gate its work stands on.
 func TestALaterEntryKeepsTheHolderRowItsFirstEntryWrote(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root, member := laterEntryRoot, laterEntryMember
 	engine, apply := seedTestedMember(t, pool, 3)
@@ -195,6 +197,7 @@ func TestALaterEntryKeepsTheHolderRowItsFirstEntryWrote(t *testing.T) {
 // does not know (From nil), which the reconcile reads from Dispatch's review history. Without the
 // row, that entry would take the reopened version as its baseline and the news would be lost.
 func TestAHolderRowThatKnowsNoVersionKeepsItAcrossTheNextEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root, member := laterEntryRoot, laterEntryMember
 	engine, apply := seedTestedMember(t, pool, 4)

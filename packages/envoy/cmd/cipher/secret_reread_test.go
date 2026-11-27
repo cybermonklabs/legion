@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -34,6 +35,7 @@ import (
 // identity, here a launcher's key directory, signs its reread with that session's proof, and
 // reads the broker's whole answer: `broker: serving` and exit 0.
 func TestASecretFormSignsItsRereadAsThisProcesssSession(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := secrets.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
@@ -55,6 +57,7 @@ func TestASecretFormSignsItsRereadAsThisProcesssSession(t *testing.T) {
 // secret's write reads its type tag back from the store, finds it, and exits 0 too, the one line
 // naming the retag to run where the command has an identity before any key is stored.
 func TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	t.Run("a stored secret", func(t *testing.T) {
 		local := secrets.NewLocal()
 		broker := startSecretBroker(t, servedBy(local))
@@ -183,6 +186,7 @@ func typedWrite(t *testing.T, local *secrets.Local, form string) []string {
 // with a broker identity reads the broker serving the secret as its type and exits 0, and one with
 // none exits 0 on the tag alone, with the one line that says the broker's view was not checked.
 func TestATypedWriteReadsItsTypeTagBack(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, form := range []string{"create", "set", "retag"} {
 		for _, found := range []string{policy.TypeAzureLogin, tagNone, ""} {
 			for _, identity := range []string{"a broker identity", "no broker identity"} {
@@ -248,6 +252,7 @@ func signOnceHelper(t *testing.T) string {
 // as main's form said of such a reread. Only a failed proof (TestATypedWriteExitsOnItsTagWhen
 // TheBrokersViewCannotBeChecked) is sent again unsigned.
 func TestARereadThatRanAndFailedIsNotSentAgainUnsigned(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []struct {
 		status int
 		code   string
@@ -281,6 +286,7 @@ func TestARereadThatRanAndFailedIsNotSentAgainUnsigned(t *testing.T) {
 // and the reason is never empty: before, the line printed "(<nil>)". A stored secret's write and a
 // type secret's both exit 0, the type secret's on its tag.
 func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_reread_test.go:307); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	because := errSignedRereadMissingProof.Error()
 	for _, form := range []string{"a stored secret's create", "a type secret's create"} {
 		t.Run(form, func(t *testing.T) {
@@ -320,9 +326,11 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 // session while another command holds its exclusive lock, as registerMachine does across its token
 // trade and enrollment, is no identity the reread holds now. The form does not wait for that lock:
 // it sends its reread unsigned and finishes, while the lock is still held. The lock is held until
-// the row ends, so a form that waited for it would not finish within the shared wait, which would
-// fail naming it.
+// the row ends, so a form that waited for it until it was released would not finish within the
+// shared wait, which would fail naming it; and a form that waited for it a while and then gave up
+// is late against a deadline of 0, beyond the time this process was held up (requireOnTime).
 func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	local := secrets.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
 	withNoBrokerIdentity(t)
@@ -339,6 +347,8 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 		code           int
 	}
 	done := make(chan result, 1)
+	meter := startStallMeter(t)
+	start := time.Now()
 	go func() {
 		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 		done <- result{stdout, stderr, code}
@@ -352,6 +362,7 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 			return false
 		}
 	})
+	requireOnTime(t, meter, "the create while another command held the machine cache's lock", start, 0)
 	if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") ||
 		!strings.Contains(got.stderr, "another command is registering this machine's session") {
 		t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0, the reread sent unsigned, and the registration in progress", got.code, got.stdout, got.stderr)
@@ -368,6 +379,7 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 // machine identity, even after the broker refuses the cached session. It falls back to the
 // unsigned reread and tells the operator to renew the machine's session with agent-secrets self.
 func TestASecretWriteWithALapsedMachineCacheSessionNamesTheMachineCure(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := secrets.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
 	broker.lapseSignedRereads()
@@ -421,6 +433,7 @@ func seedMachineCache(t *testing.T) string {
 // (a helper that refuses the sign), a broker that cannot check the proof (503), and one that does
 // not accept it (401). Before, each but the first exited 1 with no reread sent at all.
 func TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_reread_test.go:445); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []struct {
 		name    string
 		setup   func(t *testing.T, broker *secretBroker)
@@ -476,6 +489,7 @@ func TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked(t *testing.T)
 // wait is a day, so a form that waited without saying so would not come back within the shared
 // wait, which would fail naming it.
 func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_reread_test.go:504); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []string{"a launcher still enrolling", "a machine with no session yet"} {
 		t.Run(row, func(t *testing.T) {
 			local := secrets.NewLocal()
@@ -530,6 +544,7 @@ func TestASecretWriteWithNoIdentityTradesNothingAndWaitsOnNothing(t *testing.T) 
 // the store, names a tag the store did not keep beside the broker's own line, and exits 1: the
 // broker's answer says nothing of what the store holds, which the broker serves from its next read.
 func TestATypedWriteReadsItsTypeTagBackWhenTheBrokerFailsItsReread(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, row := range []struct {
 		name   string
 		broker func(t *testing.T, local *secrets.Local)

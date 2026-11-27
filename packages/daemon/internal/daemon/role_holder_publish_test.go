@@ -422,7 +422,9 @@ func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
 		state supervise.ClaimState
 		event func(claim.Token) supervise.Event
 	}{
-		{supervise.StateRetired, func(token claim.Token) supervise.Event { return supervise.RequestStop{Claim: token} }},
+		{supervise.StateRetired, func(token claim.Token) supervise.Event {
+			return supervise.RequestStop{Claim: token, By: supervise.SuspendedByOperator}
+		}},
 		{supervise.StateSuspended, func(token claim.Token) supervise.Event {
 			return supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByOperator}
 		}},
@@ -608,7 +610,7 @@ func TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt(t *testing.
 		_ = json.NewEncoder(w).Encode(map[string]any{"issue": issue, "holders": body.Holders})
 	}))
 	t.Cleanup(server.Close)
-	r.runner.dispatch = dispatch.New(server.URL, "agent-token")
+	r.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil))
 	run := func() {
 		t.Helper()
 		if drained, _ := r.runner.drain(r.ctx, "", []record.OutboxKind{record.OutboxKindRoleHoldersPublish}); !drained {

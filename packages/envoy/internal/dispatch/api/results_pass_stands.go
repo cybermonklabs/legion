@@ -47,15 +47,21 @@ func standingCommit(result model.CheckResult) string {
 //
 // A check whose repository Dispatch could not read answers unknown, since it could compare
 // nothing at all. So does a check CI proves with no subjects whose check runs GitHub could not be
-// read for: it holds no result, and the read that would have made one failed. A check CI proves
-// with subjects asks that of each subject alone, at its own head (subjectState). So does a check
-// whose standing pass is held up only by a commit Dispatch could not place. A check that compared
-// with nothing because there is no pull request and no branch answers no: there is nothing for a
-// pass to stand at, and that is a fact about the work rather than a failed read.
+// read for, for model.PassStandsReasonReadFailed: it holds no result, and the read that would have
+// made one failed. A check CI proves with subjects asks that of each subject alone, at its own head
+// (subjectState). So does a check whose standing pass is held up only by a commit Dispatch could
+// not place. A `before_merge` check of an issue whose merged pull requests Dispatch cannot order
+// (comparison.unordered) answers unknown for model.PassStandsReasonReadFailed too: it names no
+// subject, since it cannot tell which merged head is the newest, and a pass at any of them is no
+// pass that stands. A check that compared with nothing because there is no pull request and no
+// branch answers no: there is nothing for a pass to stand at, and that is a fact about the work
+// rather than a failed read.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
-	if compared.reason == model.ReasonRepositoryUnreadable ||
-		(len(compared.subjects) == 0 && check.CI != nil && check.CI.State == model.CIStateUnread) {
+	if compared.reason == model.ReasonRepositoryUnreadable {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
+	}
+	if (len(compared.subjects) == 0 && check.CI != nil && check.CI.State == model.CIStateUnread) || compared.unordered {
+		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: model.PassStandsReasonReadFailed}
 	}
 	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
 		return newestResultStands(check)

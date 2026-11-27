@@ -441,7 +441,7 @@ func embeddedMigration(t *testing.T, version int) string {
 // the reviewed commit's (20261116234034_phase_reviewed_head.up.sql) — and internal/daemon's
 // upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
 const (
-	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackHeredoc    = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
 )
 
@@ -490,7 +490,7 @@ func headerWayBack(t *testing.T, version int) string {
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
 // phaseVerdictGoneVersion is the migration that takes the tester's verdict out of the record
-// (20261121074614_phase_verdict_gone.up.sql): a rollback to a release before this one runs that
+// (20261126110301_phase_verdict_gone.up.sql): a rollback to a release before this one runs that
 // migration's way back first, the newest first as docs/kubernetes.md gives them, which the
 // roll-forward owes for phases.states_serial.
 const (
@@ -498,7 +498,7 @@ const (
 	stalledNoticesVersion   = 20261113181500
 	claimHandshakeVersion   = 20261114020537
 	entryVerbatimVersion    = 20261114061900
-	phaseVerdictGoneVersion = 20261121074614
+	phaseVerdictGoneVersion = 20261126110301
 )
 
 // wayBackVersions is every version the ways back delete: the phase verdict's removal's block
@@ -544,7 +544,7 @@ func versionsNotIn(a, b []int) []int {
 // A rollback and the roll-forward after it leave every root architect settled, as the first
 // upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, the newest
 // first, each as the one transaction its header carries: the phase verdict's removal's
-// (20261121074614_phase_verdict_gone, migrations.WayBack); then this migration's
+// (20261126110301_phase_verdict_gone, migrations.WayBack); then this migration's
 // (headerWayBack), which the headers of 20261113181500, 20261114020537 and 20261114061900 carry
 // as well, and the phase entry's after it. This
 // migration's block drops the phases row's mark and deletes 20261114061900's version

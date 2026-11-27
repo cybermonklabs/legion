@@ -10,15 +10,16 @@ import "github.com/sjawhar/envoy/internal/dispatch/model"
 // costs no read of the database or of GitHub and changes none of them.
 //
 // Once no client older than pi-envoy 17.1.0 is in use, remove this file and
-// results_currency_test.go, the answerCompatibilityCurrency call in listCheckResults,
+// results_currency_test.go, the answerCompatibilityCurrency call in answerIssueChecks,
 // model.CheckResult.Currency and model.Currency*, and the currency descriptions in
 // packages/envoy/cmd/dispatch/README.md and routes_table.go.
 // From the repository root, grep for `pi-envoy 17[.]1[.]0|Currency` in packages/envoy and
 // packages/contracts to find the compatibility code, tests and documentation together.
 // Regenerate packages/contracts/schemas/dispatch-openapi.json with
 // `go run ./cmd/dispatch openapi --out ../contracts/schemas/dispatch-openapi.json` from
-// packages/envoy, then packages/contracts/src/dispatch-api.generated.ts with
-// `bun run gen:api` from packages/contracts. Keep standingCommit: the gate uses it.
+// packages/envoy; `bun run gen:api` in packages/contracts (or any `bun install`) renders the
+// uncommitted packages/contracts/src/dispatch-api.generated.ts from it. Keep standingCommit: the
+// gate uses it.
 
 // answerCompatibilityCurrency adds only the field older clients print. A read that names a
 // commit answers none: no such client makes one, and current there would mean the commit the

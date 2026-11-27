@@ -13,6 +13,9 @@
 // can share it; Go cannot share test-only code across packages.
 package checkstatetest
 
+//ci:reads packages/contracts/fixtures/dispatch-events/check-state-changed.json ReadFixture reads each state event the api, daemon and workflow tests apply, the payload Envoy's golden writes
+//ci:reads packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json AfterAMove reads the events Envoy's TestAFormerHeadOfAnOpenPullRequestKeepsItsStates writes, which workflow's TestAResultAtTheTestedHeadAfterAMoveDecidesTheMove applies
+
 import (
 	"context"
 	"encoding/json"

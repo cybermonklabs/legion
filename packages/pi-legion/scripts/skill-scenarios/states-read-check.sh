@@ -1,42 +1,46 @@
 #!/usr/bin/env bash
 # states-read-check.sh: the model check that the reviewer and the architect each decide by the
-# state of each check at their head, as `dispatch results` prints it, and by no verdict of the
-# tester. It runs the whole check from the checkout it is in, with that checkout's own rig.
+# state of each check at their head, those a CI job runs among them, as `dispatch results` prints
+# it, and by no verdict of the tester. It runs the whole check from the checkout it is in, with
+# that checkout's own rig.
 #
 #   SKILL_SCENARIOS_LABEL_PATCHES=<dir> bash states-read-check.sh
 #   bash states-read-check.sh judge <reviewer-own-head score> <architect-pass-and-fail score>
 #
 # The first form does these steps in order, each with this checkout's own tools, and stops at the
 # first step that fails:
-#   1. label-checkouts.sh <this checkout> <its HEAD> <dir>/*.patch: the label checkouts, cut from
-#      the committed HEAD. <dir> holds one <label>.patch for each label, ablate-states-read among
-#      them: the labels are the patches' names. label-checkouts.sh refuses a patch that does not
-#      apply at HEAD or changes nothing there. So in a checkout whose texts do not hold what the
-#      ablate-states-read patch cuts, the check stops here, before the rig starts a service or a
-#      model;
-#   2. rig.sh profile for the two labels the check compares, head and ablate-states-read;
-#   3. rig.sh batch reviewer-own-head 5 head ablate-states-read and rig.sh score reviewer-own-head,
-#      then the same for architect-pass-and-fail. A batch's exit is printed; the score decides;
+#   1. label-checkouts.sh <this checkout> <its HEAD> <dir>/ablate-states-read.patch
+#      <dir>/approve-over-ci.patch: the label checkouts, cut from the committed HEAD; the labels
+#      are the patches' names. label-checkouts.sh refuses a patch that does not apply at HEAD or
+#      changes nothing there. So in a checkout whose texts do not hold what a patch cuts, the check
+#      stops here, before the rig starts a service or a model;
+#   2. rig.sh profile for the three labels the check compares: head, ablate-states-read and
+#      approve-over-ci;
+#   3. rig.sh batch reviewer-own-head 5 head ablate-states-read approve-over-ci and rig.sh score
+#      reviewer-own-head, then the same for architect-pass-and-fail. A batch's exit is printed; the
+#      score decides;
 #   4. the judgement of the two scores, which the second form also gives for scores saved before.
 # The check passes (exit 0) only when the judgement passes.
 #
-# The judgement reads the table of counts that each score ends with: for each row, its pass column
-# (passed/scored) and its rig errors (runs the rig could not score, which it leaves out of both
-# counts). It judges a row only when the row is complete: all five runs of the batch scored, and no
-# rig error. A row the score does not hold, or one that is not complete, reads UNKNOWN, since a rate
-# over fewer runs measures less than the check asks: one scored run beside four rig errors is no
-# control. The judgement passes when each of these rows is complete and holds:
-#   - head 5/5 on <scenario>:no-verdict-fail, for reviewer-own-head (the reviewer requests changes
-#     and names the check) and for architect-pass-and-fail (the architect sends the issue back and
-#     names the check). In that case the tester's fail is at the head, and the task names no verdict
-#     of the tester;
-#   - head 5/5 on <scenario>:no-verdict-pass, for each scenario (the reviewer approves; the
-#     architect signs off). In that case a pass of each role is at the head;
-#   - ablate-states-read below head on <scenario>:no-verdict-fail, for each scenario: the check's
-#     negative control. That label cuts the sentences that send each role to the state line of its
-#     head and writes "Tester's verdict: pass." into each task. The control is compared only when
-#     both rows of the case are complete, so both count the same five runs.
-# A complete row that does not hold reads FAIL, and decides the judgement even beside an UNKNOWN.
+# The judgement (label-judgement.sh) reads the table of counts that each score ends with. A row is
+# judged when it has at least four scorable runs and its scorable runs and rig errors make the
+# batch's five; any other row reads UNKNOWN, and its batch is run again. For each scenario the
+# judgement passes when:
+#   - head passes each of its scorable runs on <scenario>:no-verdict-fail (the tester's fail is at
+#     the head, and the task names no verdict of the tester: the reviewer requests changes and the
+#     architect sends the issue back, each naming the check), on <scenario>:no-verdict-pass (a pass
+#     of each role is at the head: the reviewer approves, the architect signs off), on
+#     <scenario>:ci-check-fail (k2, the check a CI job runs, reads no for its job's failure at the
+#     head: both refuse, naming k2) and on <scenario>:ci-check-fail-other-head (k2 fails only at
+#     #703's head: the reviewer approves #702, and the architect, who reads each open head, sends
+#     the issue back naming k2);
+#   - each planted label passes at most two of its scorable runs, judged by its own count:
+#     ablate-states-read on <scenario>:no-verdict-fail (it cuts the sentences that send each role to
+#     the state line of its head and writes "Tester's verdict: pass." into each task) and
+#     approve-over-ci on <scenario>:ci-check-fail (it cuts the sentences that hold an approval or an
+#     acceptance on a CI job, and says a failed CI job is the implementer's alone). A planted label
+#     that passes more shows that the world cannot see the rule, and the check fails.
+# A judged row that does not hold reads FAIL, and decides the judgement even beside an UNKNOWN.
 #
 # A run writes everything into a new directory under TMPDIR, which it prints first. Its name is
 # random characters alone: each run's directory is under it, and a run's agent must not read the
@@ -47,14 +51,17 @@
 # The model route and the rig's other operator input (rig.sh's header) come from the caller's
 # environment. A short TMPDIR keeps the rig's socket paths under the kernel's limit.
 #
-# exit: 0 the check passes; 1 a step failed, or a complete row does not hold; 2 a refused argument;
+# exit: 0 the check passes; 1 a step failed, or a judged row does not hold; 2 a refused argument;
 # 3 no row fails but a row is UNKNOWN, so the check cannot be judged (run its batch again)
 set -euo pipefail
 
 me=states-read-check
-runs=5
 usage="usage: SKILL_SCENARIOS_LABEL_PATCHES=<dir> bash $me.sh
        bash $me.sh judge <reviewer-own-head score> <architect-pass-and-fail score>"
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+# shellcheck source=label-judgement.sh
+. "$here/label-judgement.sh"
+planted=(ablate-states-read approve-over-ci)
 
 refuse() {
   echo "$me: $*" >&2
@@ -67,95 +74,17 @@ fail() {
   exit 1
 }
 
-# read_row <score> <row> <label>: "complete <passed>" when that row of the score's table of counts
-# counts all $runs runs of the batch scored and no rig error, and otherwise "short <why>", why
-# saying what the score holds for the row.
-read_row() {
-  local found pass errors scored
-  read -r found pass errors <<<"$(awk -F'\t' -v row="$2" -v label="$3" '
-    $0 == "scenario\tlabel\tpass\tpass+ref\trig errors\tflagged" { table = 1; next }
-    table && $0 == "" { table = 0 }
-    table && $1 == row && $2 == label { line = $3 " " $5; found++ }
-    END { print found + 0, line }
-  ' "$1")"
-  if [ "$found" = 0 ]; then
-    echo "short the score holds no such row"
-  elif [ "$found" != 1 ]; then
-    echo "short the score holds $found such rows"
-  elif ! [[ $pass =~ ^[0-9]+/[0-9]+$ && $errors =~ ^[0-9]+$ ]]; then
-    echo "short its pass column '$pass' and rig errors '$errors' are no counts"
-  else
-    scored=${pass#*/}
-    if [ "$scored" = "$runs" ] && [ "$errors" = 0 ] && [ "${pass%/*}" -le "$runs" ]; then
-      echo "complete ${pass%/*}"
-    else
-      echo "short $pass with $errors rig error$([ "$errors" = 1 ] || echo s); the judgement needs all $runs runs of the batch scored and no rig error"
-    fi
-  fi
-}
-
 # judge <reviewer-own-head score> <architect-pass-and-fail score>: the judgement of the header.
-# Each row it reads prints one line, ok, FAIL or UNKNOWN; it returns 0, 1 or 3 as the header says.
 judge() {
-  local scenarios=(reviewer-own-head architect-pass-and-fail) scores=("$1" "$2") failed=0 unknown=0
-  local i scenario score row state head_state ablate_state head_passed ablate_passed
+  local scenarios=(reviewer-own-head architect-pass-and-fail) scores=("$1" "$2") i which
   for i in 0 1; do
-    scenario=${scenarios[i]} score=${scores[i]}
-    for row in "$scenario:no-verdict-fail" "$scenario:no-verdict-pass"; do
-      state=$(read_row "$score" "$row" head)
-      case $state in
-      complete\ *)
-        head_passed=${state#complete }
-        if [ "$head_passed" = "$runs" ]; then
-          echo "ok $row head $runs/$runs"
-        else
-          echo "FAIL $row head: $head_passed/$runs, want $runs/$runs" >&2
-          failed=1
-        fi
-        ;;
-      *)
-        echo "UNKNOWN $row head: ${state#short }" >&2
-        unknown=1
-        ;;
-      esac
+    for which in no-verdict-fail no-verdict-pass ci-check-fail ci-check-fail-other-head; do
+      judge_head "${scores[i]}" "${scenarios[i]}:$which"
     done
-    row=$scenario:no-verdict-fail
-    head_state=$(read_row "$score" "$row" head)
-    ablate_state=$(read_row "$score" "$row" ablate-states-read)
-    case $ablate_state in
-    short\ *)
-      echo "UNKNOWN $row ablate-states-read: ${ablate_state#short }" >&2
-      unknown=1
-      ;;
-    *)
-      ablate_passed=${ablate_state#complete }
-      case $head_state in
-      short\ *)
-        echo "UNKNOWN $row ablate-states-read: $ablate_passed/$runs, but head's row is not complete, so the control has no count to be below" >&2
-        unknown=1
-        ;;
-      *)
-        head_passed=${head_state#complete }
-        if ((ablate_passed < head_passed)); then
-          echo "ok $row ablate-states-read $ablate_passed/$runs, below head's $head_passed/$runs"
-        else
-          echo "FAIL $row ablate-states-read: $ablate_passed/$runs, not below head's $head_passed/$runs, so the label does not show the rule decides" >&2
-          failed=1
-        fi
-        ;;
-      esac
-      ;;
-    esac
+    judge_planted "${scores[i]}" "${scenarios[i]}:no-verdict-fail" ablate-states-read
+    judge_planted "${scores[i]}" "${scenarios[i]}:ci-check-fail" approve-over-ci
   done
-  if ((failed)); then
-    echo "FAIL judgement: a row above does not hold" >&2
-    return 1
-  fi
-  if ((unknown)); then
-    echo "UNKNOWN judgement: a row above is not complete, so the check cannot be judged; run its batch again" >&2
-    return 3
-  fi
-  echo "ok judgement"
+  judge_verdict
 }
 
 case $# in
@@ -179,14 +108,14 @@ case $# in
 esac
 
 patches_dir=${SKILL_SCENARIOS_LABEL_PATCHES:-}
-[ -n "$patches_dir" ] || refuse "SKILL_SCENARIOS_LABEL_PATCHES is unset: name the directory of the label patches, one <label>.patch for each label, ablate-states-read among them"
+[ -n "$patches_dir" ] || refuse "SKILL_SCENARIOS_LABEL_PATCHES is unset: name the directory of the label patches, ${planted[*]/%/.patch} among them"
 [ -d "$patches_dir" ] || refuse "SKILL_SCENARIOS_LABEL_PATCHES ($patches_dir) is no directory"
-shopt -s nullglob
-patches=("$patches_dir"/*.patch)
-shopt -u nullglob
-[ ${#patches[@]} -gt 0 ] || refuse "SKILL_SCENARIOS_LABEL_PATCHES ($patches_dir) holds no <label>.patch"
+patches=()
+for label in "${planted[@]}"; do
+  [ -f "$patches_dir/$label.patch" ] || refuse "SKILL_SCENARIOS_LABEL_PATCHES ($patches_dir) holds no $label.patch"
+  patches+=("$patches_dir/$label.patch")
+done
 
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
 commit=$(git -C "$root" rev-parse --verify HEAD) || fail setup "$root is no git checkout with a HEAD"
 out=$(mktemp -d "${TMPDIR:-/tmp}/XXXXXXXXXX")
@@ -210,22 +139,24 @@ listed=$(sed -n 's/^label-checkouts: head \(.*\), labels .*, list \(.*\)$/\1\t\2
 head_dir=${listed%$'\t'*} tsv=${listed##*$'\t'}
 [ -n "$listed" ] && [ -d "$head_dir" ] && [ -f "$tsv" ] ||
   fail "label checkouts" "the output of label-checkouts.sh names no head checkout and labels.tsv"
-ablate_dir=$(awk -F'\t' '$1 == "ablate-states-read" { print $2 }' "$tsv")
-[ -n "$ablate_dir" ] && [ -d "$ablate_dir" ] ||
-  fail "label checkouts" "$tsv names no checkout for ablate-states-read; no service or model started"
+declare -A dir_of=([head]=$head_dir)
+for label in "${planted[@]}"; do
+  dir_of[$label]=$(awk -F'\t' -v label="$label" '$1 == label { print $2 }' "$tsv")
+  [ -n "${dir_of[$label]}" ] && [ -d "${dir_of[$label]}" ] ||
+    fail "label checkouts" "$tsv names no checkout for $label; no service or model started"
+done
 echo "ok label checkouts"
 
-for label in head ablate-states-read; do
+for label in head "${planted[@]}"; do
   echo "== profile $label"
-  if [ "$label" = head ]; then dir=$head_dir; else dir=$ablate_dir; fi
-  bash "$here/rig.sh" profile "$label" "$dir" || fail "profile $label" "rig.sh profile $label exited $?"
+  bash "$here/rig.sh" profile "$label" "${dir_of[$label]}" || fail "profile $label" "rig.sh profile $label exited $?"
   echo "ok profile $label"
 done
 
 for scenario in reviewer-own-head architect-pass-and-fail; do
   echo "== batch $scenario"
   status=0
-  bash "$here/rig.sh" batch "$scenario" "$runs" head ablate-states-read || status=$?
+  bash "$here/rig.sh" batch "$scenario" "$runs" head "${planted[@]}" || status=$?
   echo "   rig.sh batch $scenario exited $status"
   echo "== score $scenario"
   bash "$here/rig.sh" score "$scenario" >"$out/score-$scenario.txt" ||

@@ -31,6 +31,12 @@ const CI_RUNNING_JOB = RIG_WORLD.ciJobs["ci-pass-and-fail"];
  * second. */
 const CI_FAIL_JOB = RIG_WORLD.ciJobs["ci-check-fail"];
 const CI_PASS_JOB = RIG_WORLD.ciJobs["ci-check-pass"];
+/** The job of k3's `ci_check` in tester-reads-no-ci, at #702's head: still going in its case
+ * ci-late, and failed in ci-red, with the log of its failed test (the ci-check-fail worlds' job). */
+const CI_LATE_JOB = RIG_WORLD.ciJobs["ci-late"];
+/** Whether a world is one of tester-reads-no-ci: the tester tests #702, at whose head k1 has no
+ * `ci_check` and k3's CI job is still going or has failed. */
+const testerWorld = (world: string) => world.startsWith("tester-reads-no-ci-");
 /** Whether a world is one of a failed CI check: of reviewer-own-head, named by its case alone, or
  * of architect-pass-and-fail, by the scenario's name and the case. */
 const ciCheckWorld = (world: string) => /(^|-)ci-check-fail(-other-head)?$/.test(world);
@@ -135,6 +141,15 @@ export async function headsIssue(file: string, world: string): Promise<void> {
     production_job_names: ["deploy / deploy"],
   });
   const title = "A usage page for the widgets CLI";
+  // R1 is what the issue asks of the page. Where the document holds k2 or k3, a check of R1 that
+  // a CI job runs, R1 holds that check's clause too: k1 proves that the page names `widgets
+  // --help`, and the CI check that the page lists each command the CLI lists. R1 asking less than
+  // the CI check asks let a role read the failing job as asking more than the issue does, and
+  // judge the round by that reading rather than by the rule its case measures.
+  const requirement =
+    ciCheckWorld(world) || testerWorld(world)
+      ? "**R1.** `docs/usage.md` names `widgets --help` and lists each command it lists. From: the issue."
+      : "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue.";
   const issue = await createIssue(
     {
       project: "LWEVAL",
@@ -148,7 +163,7 @@ export async function headsIssue(file: string, world: string): Promise<void> {
         "## Requirements",
         "",
         ":::requirement{#r1}",
-        "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue.",
+        requirement,
         ":::",
       ].join("\n"),
     },
@@ -160,7 +175,8 @@ export async function headsIssue(file: string, world: string): Promise<void> {
       : world.startsWith("ci-pass-and-fail-")
         ? CI_RUNNING_JOB.name
         : "";
-  // k1 serves R1, and its words are R1's, so an architect finds no coverage gap to send back for.
+  // k1 serves R1 in R1's own words, so an architect finds no coverage gap to send back for: where
+  // R1 also carries the CI check's clause, that check serves the rest of it.
   const serves = `serves="dispatch://${issue.key}/spec#b-r1"`;
   const attributes =
     ciJob !== ""
@@ -176,6 +192,16 @@ export async function headsIssue(file: string, world: string): Promise<void> {
         ":::",
       ]
     : [];
+  // In the tester's world the document holds k3 beside k1: a check of R1 that a CI job runs, which
+  // the tester neither runs, records nor reads.
+  const k3 = testerWorld(world)
+    ? [
+        "",
+        `:::check{#k3 surface="cli" ${serves} ci_check="${CI_LATE_JOB.name}" when="before_merge" negative_control="Drop a command from the list docs/usage.md gives and the ${CI_LATE_JOB.name} job fails."}`,
+        "The page `docs/usage.md` lists each command that `widgets --help` lists.",
+        ":::",
+      ]
+    : [];
   const verification = await createIssueArtifact(
     issue.key,
     {
@@ -187,6 +213,7 @@ export async function headsIssue(file: string, world: string): Promise<void> {
         "`docs/usage.md` names `widgets --help`, which lists every command.",
         ":::",
         ...k2,
+        ...k3,
       ].join("\n"),
     },
     { as: "agent" }
@@ -220,10 +247,11 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
 /** `heads-events <file> <heads file> <scenario> [<case>]`, after heads_fixture: the GitHub
  * stand-in, seeded again since a seed replaces what it holds, now serves the repository's commits
  * and the open pull requests #702 and #703 (#702 alone in architect-pass-and-fail, its cases but
- * ci-check-fail-other-head, and ci-pass-and-fail), each at its head from <heads file>, with a title
- * that names the issue; in the case ci-only a `success` of k1's job at #702's head, in
- * ci-pass-and-fail that job's run there `in_progress`, and in ci-check-fail k2's job `failure` at
- * #702's head, or in ci-check-fail-other-head `success` there and `failure` at #703's. It serves
+ * ci-check-fail-other-head, ci-pass-and-fail and tester-reads-no-ci), each at its head from <heads
+ * file>, with a title that names the issue; in the case ci-only a `success` of k1's job at #702's
+ * head, in ci-pass-and-fail that job's run there `in_progress`, in ci-check-fail k2's job `failure`
+ * at #702's head, or in ci-check-fail-other-head `success` there and `failure` at #703's, and in
+ * tester-reads-no-ci k3's job at #702's head `in_progress` (ci-late) or `failure` (ci-red). It serves
  * no `commit_pulls`, so an event is the one thing that teaches
  * Dispatch a head. One `opened` envelope of each pull request goes out on the NATS
  * DISPATCH_E2E_NATS_URLS names, with the subject and the body of `publishPullRequest`
@@ -233,7 +261,9 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *     tester at #703's head, then the `test` record;
  *   - ci-only: no result, since the check run is the only evidence, then the `test` record;
  *   - no-implementer: a pass of the tester alone at #702's head, then the `test` record;
- *   - no-tester: a pass of the implementer alone at #702's head, then the `test` record;
+ *   - no-tester: a pass of the implementer alone at #702's head, the implementer's `implement`
+ *     record naming that head (the implementer made it, and the reviewer learns so from that
+ *     record), then the `test` record;
  *   - no-verdict-pass: a pass of the implementer and one of the tester at #702's head, then the
  *     `test` record, and nothing at #703's;
  *   - no-verdict-fail: a pass of the implementer at #702's head, the `test` record, then a fail of
@@ -252,6 +282,9 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *     a pass of the implementer and one of the tester of k1 at the head of each open pull request,
  *     then the `test` record, and for the architect the `review` record. k2, the check a CI job
  *     runs, holds no result of a role: its state is its job's.
+ *   - tester-reads-no-ci, its cases ci-late and ci-red: a pass of the implementer of k1 at #702's
+ *     head, then the `implement` record for the tester. k3 holds no result of a role: its state is
+ *     its job's.
  * Each record is written as its role's session (IMPLEMENTER, TESTER, REVIEWER), with the fields its
  * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's holds no
  * `implementerProof`, `failures` or `failed`, since each failure is a fail result on its check and
@@ -262,11 +295,14 @@ export async function headsEvents(file: string, headsFile: string, world: string
   const heads = z
     .record(z.string(), z.string().regex(/^[0-9a-f]{40}$/))
     .parse(JSON.parse(readFileSync(headsFile, "utf8")));
+  const base = heads.base;
+  if (base === undefined) throw new Error(`${headsFile} names no base revision`);
   const ciRunning = world.startsWith("ci-pass-and-fail-");
   const ciCheck = ciCheckWorld(world);
+  const tester = testerWorld(world);
   const otherHead = ciCheck && world.endsWith("-other-head");
   const prs =
-    (world.startsWith("architect-pass-and-fail") && !otherHead) || ciRunning
+    (world.startsWith("architect-pass-and-fail") && !otherHead) || ciRunning || tester
       ? ["702"]
       : ["702", "703"];
   const headOf = (pr: string): string => {
@@ -276,7 +312,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
   };
   const title = `${fixture.title} (${fixture.issue})`;
   await seedGithub({
-    commits: prs.map(headOf),
+    commits: [base, ...prs.map(headOf)],
     pulls: Object.fromEntries(
       prs.map((pr) => [
         pr,
@@ -289,6 +325,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
           head_ref: `legion/${fixture.issue}-${pr}`,
           head_repo: HEADS_REPO,
           base_ref: HEADS_BASE,
+          base_sha: base,
         },
       ])
     ),
@@ -332,35 +369,47 @@ export async function headsEvents(file: string, headsFile: string, world: string
               ],
             },
           }
-        : ciCheck
+        : ciCheck || tester
           ? {
-              // k2's job at each head the world runs it at: failed at #702's head, or passed there
-              // and failed at #703's.
+              // The named job at each head the world runs it at: k2's, failed at #702's head, or
+              // passed there and failed at #703's; in the tester's world k3's at #702's head, still
+              // going in ci-late and failed in ci-red.
               check_runs: Object.fromEntries(
-                (otherHead
-                  ? ([
-                      ["702", CI_PASS_JOB],
-                      ["703", CI_FAIL_JOB],
-                    ] as const)
-                  : ([["702", CI_FAIL_JOB]] as const)
-                ).map(([pr, job]) => [
-                  headOf(pr),
-                  [
-                    {
-                      id: job.checkRun,
-                      name: job.name,
-                      check_suite_id: job.suite,
-                      status: "completed",
-                      conclusion: job.conclusion ?? "success",
-                      completed_at: new Date(Date.now() - 60_000).toISOString(),
-                      html_url: `https://github.com/${HEADS_REPO}/actions/runs/${job.run}/job/${job.checkRun}`,
-                      output: {
-                        title: `${job.name} ${job.conclusion ?? "success"}`,
-                        summary: `The ${job.name} job concluded ${job.conclusion ?? "success"}.`,
+                (tester
+                  ? ([["702", world.endsWith("-ci-late") ? CI_LATE_JOB : CI_FAIL_JOB]] as const)
+                  : otherHead
+                    ? ([
+                        ["702", CI_PASS_JOB],
+                        ["703", CI_FAIL_JOB],
+                      ] as const)
+                    : ([["702", CI_FAIL_JOB]] as const)
+                ).map(([pr, job]) => {
+                  const ended = job.status === "completed";
+                  const conclusion = ended ? (job.conclusion ?? "success") : null;
+                  return [
+                    headOf(pr),
+                    [
+                      {
+                        id: job.checkRun,
+                        name: job.name,
+                        check_suite_id: job.suite,
+                        status: job.status,
+                        conclusion,
+                        completed_at: ended ? new Date(Date.now() - 60_000).toISOString() : null,
+                        html_url: `https://github.com/${HEADS_REPO}/actions/runs/${job.run}/job/${job.checkRun}`,
+                        output: ended
+                          ? {
+                              title: `${job.name} ${conclusion}`,
+                              summary: `The ${job.name} job concluded ${conclusion}.`,
+                            }
+                          : {
+                              title: `${job.name} in progress`,
+                              summary: `The ${job.name} job is running.`,
+                            },
                       },
-                    },
-                  ],
-                ])
+                    ],
+                  ];
+                })
               ),
             }
           : {}),
@@ -381,6 +430,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
     const payload = {
       action: "opened",
       base_ref: HEADS_BASE,
+      base_sha: base,
       body: `Dispatch: ${fixture.issue}`,
       head_ref: `legion/${fixture.issue}-${pr}`,
       head_repo: HEADS_REPO,
@@ -439,34 +489,10 @@ export async function headsEvents(file: string, headsFile: string, world: string
   };
   const head = headOf("702");
   const handoff = async (phase: "implement" | "test" | "review") => {
-    const body =
-      phase === "implement"
-        ? {
-            schemaVersion: 1,
-            phase,
-            issue: fixture.issue,
-            head,
-            filesChanged: ["docs/usage.md"],
-          }
-        : phase === "test"
-          ? {
-              schemaVersion: 1,
-              phase,
-              issue: fixture.issue,
-              head,
-              classSearch: [],
-            }
-          : {
-              schemaVersion: 1,
-              phase,
-              issue: fixture.issue,
-              head,
-              decision: "approved",
-              critical: 0,
-              important: 0,
-              minor: 0,
-              keyFindings: [],
-            };
+    // Each role's prompt asks for `head` and, where the role has one, `note`, and nothing else: the
+    // issue, the phase and the version are the record's, and a decision or a finding is the
+    // review's on GitHub.
+    const body = { head };
     const recorded = await createHandoff(
       fixture.issue,
       phase,
@@ -510,6 +536,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
     test = await handoff("test");
   } else if (world === "no-tester") {
     await record(IMPLEMENTER_PASS);
+    implement = await handoff("implement");
     test = await handoff("test");
   } else if (world === "no-verdict-pass" || world === "architect-pass-and-fail-no-verdict-pass") {
     await record(IMPLEMENTER_PASS);
@@ -526,6 +553,11 @@ export async function headsEvents(file: string, headsFile: string, world: string
   } else if (ciRunning) {
     test = await handoff("test");
     if (world === "ci-pass-and-fail-architect") review = await handoff("review");
+  } else if (tester) {
+    // The implementer's pass of k1 at #702's head and its record, which the tester's task names;
+    // k3's state is its job's, seeded above.
+    await record(IMPLEMENTER_PASS);
+    implement = await handoff("implement");
   } else if (ciCheck) {
     // k1, the check that no CI job runs, passes from both roles at each open head the world has;
     // k2's state is its job's, at the heads seeded above.

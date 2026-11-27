@@ -39,9 +39,9 @@ const (
 	// serveConnect and servePlain: a host that resolves nowhere, or somewhere this proxy never
 	// dials (checkedAddresses).
 	codeAddressRefused = "ADDRESS_REFUSED"
-	// serveConnect and servePlain: a CI run's result grant asked for a tunnel or a plain forward
-	// to anything but the one host its grant binds (resultHostOnly).
-	codeResultHostOnly = "RESULT_GRANT_HOST_ONLY"
+	// serveConnect and servePlain: a minted capability's grant asked for a tunnel or a plain
+	// forward to anything but the one host its grant binds (mintedHostOnly).
+	codeMintedHostOnly = "MINTED_GRANT_HOST_ONLY"
 	// servePlain: plain HTTP to a host a name of the grant is bound to.
 	codePlainHTTP = "PLAIN_HTTP_TO_BOUND_HOST"
 	// serveConnect's 500: a connection the outer server cannot hand over.
@@ -62,7 +62,7 @@ const (
 	codeAccessToken = "ACCESS_TOKEN_UNAVAILABLE"
 	// serveBound: a request proxyrules.Decide refuses, in its own words.
 	codeNotAllowed = "REQUEST_NOT_ALLOWED"
-	// serveBound: a request to a host whose entry is of kind dpop that does not carry the grant's
+	// serveBound: a request to a host a dpop block binds that does not carry the grant's
 	// placeholder as its one Authorization header, DPoP <placeholder>.
 	codeNoPlaceholder = "NO_PLACEHOLDER"
 	// serveBound: an AWS call the airlock will not sign again (signAWS).
@@ -193,7 +193,7 @@ func (w *answerWriter) carry() {
 // from there on bytes of the request may have reached the service, so an answer the proxy writes
 // itself after it - a transport error, the grant watcher's cut - says so (ownAnswer). Before it,
 // a refused or failed dial, a refused address, a TLS handshake that failed and a refusal of the
-// transport's own (resultTransport) sent nothing of the request.
+// transport's own (mintedTransport) sent nothing of the request.
 func leaving(w http.ResponseWriter, r *http.Request) *http.Request {
 	rec := answerOf(w)
 	if rec == nil {
@@ -254,7 +254,7 @@ func established(w http.ResponseWriter) []byte {
 // fail answers a call the proxy could not carry for a cause of its own rather than a refusal of
 // the caller: status is a 5xx, counted failed under code, and the answer writes no refusal line,
 // since the writer that knows the cause logs it where it is wanted. A transport error after the
-// request may have reached its service (badGateway) says so in Airlock-Forwarded (ownAnswer).
+// request may have reached its service (badGateway) says so in Cipher-Proxy-Forwarded (ownAnswer).
 func fail(w http.ResponseWriter, status int, code, message string) {
 	answerOf(w).note(code)
 	ownAnswer(w, code)
@@ -263,19 +263,19 @@ func fail(w http.ResponseWriter, status int, code, message string) {
 
 // The two headers that tell the command whether an answer is the proxy's own or a service's, and
 // what its own answer says of the request. The proxy's own answer (fail, refuse) names its code
-// in Airlock-Code and says Airlock-Forwarded: false when it was written before any byte of the
-// request left the proxy, so the request reached no service, and Airlock-Forwarded: unknown when
+// in Cipher-Proxy-Code and says Cipher-Proxy-Forwarded: false when it was written before any byte of the
+// request left the proxy, so the request reached no service, and Cipher-Proxy-Forwarded: unknown when
 // the request may have reached its service first (leaving): a connection that broke after the
 // write was sent, a grant that ended while the service held the call, a service's answer cut on
-// its way to the command. A service's answer the proxy carried says Airlock-Forwarded: true and
-// carries no Airlock-Code, whatever the service sent, so a service cannot pass for the proxy
+// its way to the command. A service's answer the proxy carried says Cipher-Proxy-Forwarded: true and
+// carries no Cipher-Proxy-Code, whatever the service sent, so a service cannot pass for the proxy
 // (serveBound's ModifyResponse), and an informational (1xx) answer it carried carries neither
 // header (statusWriter). dispatch's client reads them to tell a write the airlock
 // refused, which stored nothing, from one that may have been stored, which it asks again under
 // its key, and from one Dispatch answered.
 const (
-	forwardedHeader = "Airlock-Forwarded"
-	codeHeader      = "Airlock-Code"
+	forwardedHeader = "Cipher-Proxy-Forwarded"
+	codeHeader      = "Cipher-Proxy-Code"
 )
 
 // ownAnswer marks an answer the proxy writes itself, before its status is written.
@@ -289,8 +289,8 @@ func ownAnswer(w http.ResponseWriter, code string) {
 }
 
 // callerOf is the caller a refusal's line names: the grant the proxy password proved and the
-// enrollment it belongs to, as <grant>@<enrollment>, and empty before a grant is proved. A CI
-// run's result grant belongs to no enrollment, and is named by the grant alone.
+// enrollment it belongs to, as <grant>@<enrollment>, and empty before a grant is proved. A minted
+// capability's grant belongs to no enrollment, and is named by the grant alone.
 func callerOf(grant requests.AirlockConnection) string {
 	if grant.GrantID == "" {
 		return ""

@@ -2,8 +2,8 @@ kind: Changed
 body: |-
   A tester's phase completion names the head it tested. The completion route refuses one that
   names no commit `400 TESTED_HEAD_REQUIRED`, before anything is recorded, from a plugin at
-  contract 225 or below it, telling the tester to write a new `test` handoff naming under `head`
-  the commit it tested and complete again; a plugin below 225 that sends its head is taken, its
+  the contract of the entry `20261125203834` check-states or below it, telling the tester to write a new `test` handoff naming under `head`
+  the commit it tested and complete again; a plugin below that contract that sends its head is taken, its
   verdict ignored. The testing move reads the check states at that head and at no other: it no
   longer falls back to the pull request's current head, which can have moved while the tester
   worked, and a tester's row that names no head holds the move, its notice to the architect saying

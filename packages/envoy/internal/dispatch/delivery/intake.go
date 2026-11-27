@@ -73,11 +73,12 @@ type Intake struct {
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
 // holding its durable and taking it over under a hold and a lease it takes on leases, routing by
-// settings, and attributing each pull request by attributor. Each take-over first marks every
+// settings, and attributing each pull request by attributor, timed by tuning (intakeTuning):
+// production's values, which StartIntakes passes, or a test's. Each take-over first marks every
 // issue with an open head owed (markOpenHeadsOwed).
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+func newIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
 	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor}
-	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
+	in.heldDurable = newHeldDurable(tuning, natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	in.heldDurable.beforeTakeOver = in.markOpenHeadsOwed
 	return in
 }
@@ -100,23 +101,26 @@ type PushImports interface {
 // Run delivers GitHub events from the durable consumer while this process holds the durable's
 // hold, and stands by for the hold while another process holds it, until ctx is cancelled; then
 // it stops delivering and releases the hold (heldDurable.stop) under intakeStopBudget from ctx's
-// end before it returns. Idle until the settings cache holds settings. A push of a branch is one
-// more message it routes (handlePushEnvelope), so an intake idle for want of settings hands the
-// importer no push, and the importer's five-minute pass imports the source then.
+// end before it returns. It binds the durable whether or not delivery settings are saved: a pull
+// request's head row (recordPullRequestHead) and a push of a branch (handlePushEnvelope) read no
+// setting, and a deployment with none still compares its check results with pull request heads
+// (api/results_ci.go, NewestPullRequestHead). Only the delivery timeline's own work reads the
+// settings (route). It binds nothing before the settings cache's first read has answered
+// (SettingsCache.Read), whatever that read found: until then the cache holds nil, and a deployment
+// with settings would route a merge, a workflow run and the event freshness by no settings and drop
+// them. A Run whose ctx ends before that read returns at once, having bound and held nothing.
 //
 // The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
 // setting rebinds it. Each message is routed by the settings the cache holds when its handler
-// runs, so a settings change -- a different deploy repository or workflow path -- takes effect as
-// soon as the cache has read it, with no restart and no rebind. route does all the filtering,
-// from those settings.
+// runs, so a settings change -- saved settings, a different deploy repository or workflow path --
+// takes effect as soon as the cache has read it, with no restart and no rebind. route does all
+// the filtering, from those settings.
 //
 // Several envoy-dispatch processes run at once during a rolling release, of this build and of the
 // one before it, and exactly one of them delivers from the durable: the one holding its hold
 // (heldDurable). The others stand by, trying for the hold every durableBindInterval for the life
 // of the process, with no deadline, and take the durable over within seconds of the holder
-// releasing its hold, or of the hold lapsing when the holder dies. Two things wake a standby that
-// has nothing to route by yet: the cache storing settings, since an intake with none has nothing
-// to do with a message, and, once it has settings, that ticker. A holder checks every
+// releasing its hold, or of the hold lapsing when the holder dies. A holder checks every
 // intakeHoldRenew that the durable still delivers to it, and stops delivering the moment its hold
 // is lost.
 //
@@ -128,7 +132,12 @@ type PushImports interface {
 // them. Routed rather than ignored because it is the only live-update path for the fork case,
 // which does reach it.
 func (in *Intake) Run(ctx context.Context) {
-	in.run(ctx, in.settings.Changed, func() bool { return in.settings.Load() != nil })
+	select {
+	case <-in.settings.Read():
+	case <-ctx.Done():
+		return
+	}
+	in.run(ctx)
 }
 
 // route dispatches one envelope payload by its kind field: a pull request to
@@ -140,18 +149,24 @@ func (in *Intake) Run(ctx context.Context) {
 // empty payload, or one of a kind route does not handle, is discarded before any GitHub call or
 // write; only the string fields of a kind it handles are read, as the flat string map its handler
 // takes (flatPayload), and every other member is skipped (a CI settlement's hold arrays and
-// groups, cistore.Summary). handled reports whether the kind is one route hands to a handler of
-// the delivery timeline, whatever that handler then decides, so deliver records the event's time
-// for a pull request that was not merged or another repository's run as well. A push is no
-// delivery fact: route hands it to its handler and answers it not handled, with the handler's
-// error, so it records no issue.deployed and does not move the Delivery page's event freshness
-// (RecordEventAt). A payload that is not a JSON object, and a kind that is not a string, are
-// errMalformedPayload.
+// groups, cistore.Summary). settings is what the settings cache holds when the envelope arrives,
+// nil while no delivery_settings row is saved: a pull request and a CI settlement are handed to
+// their handlers either way, since neither the head row nor the check states' owed mark reads a
+// setting, and a workflow run is the delivery timeline's alone, so with no settings it is
+// discarded before any GitHub call (routeWorkflowEnvelope). handled reports whether the kind is
+// one route hands to a handler of the delivery timeline, whatever that handler then decides, so
+// deliver records the event's time for a pull request that was not merged or another
+// repository's run as well; with no settings it is false, since the event freshness is a column
+// of the delivery_settings row (RecordEventAt). A push is no delivery fact: route hands it to its
+// handler and answers it not handled, with the handler's error, so it records no issue.deployed
+// and does not move the Delivery page's event freshness. A payload that is not a JSON object, and
+// a kind that is not a string, are errMalformedPayload.
 //
 // An envelope whose handler stored a fact the issue.deployed rule reads (a pull request's row, a
 // run, its jobs) ends with recordDeployed, whether or not the handler then failed: a run written
 // before its jobs fetch failed may still be the run that shipped a pull request stored earlier.
-func (in *Intake) route(ctx context.Context, settings DeliverySettings, raw string) (handled bool, err error) {
+// A handler stores such a fact only by the settings, so one that reports it wrote had settings.
+func (in *Intake) route(ctx context.Context, settings *DeliverySettings, raw string) (handled bool, err error) {
 	if raw == "" {
 		return false, nil
 	}
@@ -165,7 +180,7 @@ func (in *Intake) route(ctx context.Context, settings DeliverySettings, raw stri
 			return false, fmt.Errorf("%w: kind: %w", errMalformedPayload, err)
 		}
 	}
-	var handle func(context.Context, DeliverySettings, map[string]string) (bool, error)
+	var handle func(context.Context, *DeliverySettings, map[string]string) (bool, error)
 	switch kind {
 	case "pr":
 		handle = in.handlePullRequestEnvelope
@@ -180,9 +195,9 @@ func (in *Intake) route(ctx context.Context, settings DeliverySettings, raw stri
 	}
 	wrote, err := handle(ctx, settings, flatPayload(fields))
 	if wrote {
-		in.recordDeployed(ctx, settings)
+		in.recordDeployed(ctx, *settings)
 	}
-	return true, err
+	return settings != nil, err
 }
 
 // handlePushEnvelope hands a push of a branch to the importer (PushImports): the payload's repo,
@@ -211,28 +226,29 @@ func (in *Intake) handlePushEnvelope(ctx context.Context, payload map[string]str
 func (in *Intake) recordDeployed(ctx context.Context, settings DeliverySettings) {
 	written, err := RecordDeployedEvents(ctx, in.pool, settings, in.events)
 	if err != nil {
-		slog.Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
+		in.tuning.log.Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
 	}
 	if written > 0 {
-		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
+		in.tuning.log.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "intake")
 	}
 }
 
 // routeWorkflowEnvelope hands a workflow run to handleWorkflowEnvelope as the run kind its file is
 // configured as. The runs this slice records are the deploy repository's own: another repository's
 // run of a file with the same path is not one of them, and routing it would fetch a run this slice
-// never stores. A run of a file neither setting names is not fetched either.
-func (in *Intake) routeWorkflowEnvelope(ctx context.Context, settings DeliverySettings, payload map[string]string) (bool, error) {
-	if payload["repo"] != settings.DeployRepo {
+// never stores. A run of a file neither setting names is not fetched either, and with no settings
+// (nil) no run is.
+func (in *Intake) routeWorkflowEnvelope(ctx context.Context, settings *DeliverySettings, payload map[string]string) (bool, error) {
+	if settings == nil || payload["repo"] != settings.DeployRepo {
 		return false, nil
 	}
 	switch payload["path"] {
 	case settings.DeployWorkflowPath:
-		return in.handleWorkflowEnvelope(ctx, settings, DeliveryRunKindDeploy, payload)
+		return in.handleWorkflowEnvelope(ctx, *settings, DeliveryRunKindDeploy, payload)
 	case settings.PRChecksWorkflowPath:
 		// A pr_checks run is no part of the shipping rule (shippingRunJoin reads deploy runs
 		// alone), so storing one can ship nothing: the envelope ends with no deployed pass.
-		_, err := in.handleWorkflowEnvelope(ctx, settings, DeliveryRunKindPRChecks, payload)
+		_, err := in.handleWorkflowEnvelope(ctx, *settings, DeliveryRunKindPRChecks, payload)
 		return false, err
 	default:
 		return false, nil
@@ -288,24 +304,26 @@ const githubIntakeSubject = "notifications.github.>"
 // either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored),
 // and one that falls on a settlement's mark or the reads before it (errCheckStatesNotMarked);
 // that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
-// A var so a test can shrink it.
-var intakeMessageTimeout = time.Minute
+// It is the default of the intake's own messageTimeout (intakeTuning), which a test shortens on
+// the intakes it builds.
+const intakeMessageTimeout = time.Minute
 
 // intakeMaxAckPending bounds how many messages NATS may have outstanding with this consumer at
 // once, and so how many handlers run at once: one per key (intakeKey), and every message of a key
 // waits for the one before it. All of them can be one key's, so the bound has to be what one
-// handler can acknowledge in turn well inside intakeAckWait; the server's own default of 1,000 is
-// far past it, and messages it redelivers under a handler still working accumulate in the
-// client's pending buffer until that buffer drops them. A var so a test can shrink it.
-var intakeMaxAckPending = 4
+// handler can acknowledge in turn well inside the ack wait (intakeTuning.ackWait); the server's
+// own default of 1,000 is far past it, and messages it redelivers under a handler still working
+// accumulate in the client's pending buffer until that buffer drops them. It is the default of
+// the intake's own maxAckPending (intakeTuning).
+const intakeMaxAckPending = 4
 
-// intakeAckWait is how long NATS waits for an acknowledgement before redelivering. Derived from
-// the two values above rather than chosen: when every outstanding message is one key's, the last
-// of intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
-// plus a minute for the acknowledgement itself to land. A function rather than a value so a test
-// that shrinks either input gets an ack wait derived from it.
-func intakeAckWait() time.Duration {
-	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + time.Minute
+// ackWait is how long NATS waits for an acknowledgement before redelivering. Derived from the
+// intake's maxAckPending and messageTimeout rather than chosen: when every outstanding message is
+// one key's, the last of maxAckPending waits for the ones before it, so the bound is their total
+// handling time, plus a minute for the acknowledgement itself to land. A test that shortens either
+// on its intakes gets an ack wait derived from what it set.
+func (t *intakeTuning) ackWait() time.Duration {
+	return time.Duration(t.maxAckPending)*t.messageTimeout + time.Minute
 }
 
 // deliveryConsumerConfig is the policy a take-over creates the durable with
@@ -314,19 +332,28 @@ func intakeAckWait() time.Duration {
 // until a subscriber attaches, so a restart with events waiting loses none of them and none of
 // them count against MaxAckPending in the meantime.
 //
+// It asks for new messages only (DeliverNewPolicy), which a take-over that creates the durable
+// with no start recorded turns into an explicit start at the stream's next sequence (takeOver;
+// takeOverStart says why the start is explicit): the first bind of a deployment that never had the
+// durable must not hand the intake the stream's whole retained history, 72 hours of every GitHub
+// event Envoy relays, none of which it ever processed. Its consumer generation, 2, is the job
+// durable's too (jobConsumerConfig).
+//
 // FilterSubject, AckWait and MaxAckPending keep the values of the build before generations: that
 // build's processes, still running during a rolling release, update a durable whose three differ
 // from theirs in place on every settings poll, so a change to any of them waits until no such
 // process is left. A change to this config takes a new consumerConfigGeneration and a new row in
-// TestTheConsumerConfigEqualsItsGenerationsPinnedRow.
-func deliveryConsumerConfig() natsgo.ConsumerConfig {
+// TestTheConsumerConfigEqualsItsGenerationsPinnedRow. Its AckWait and MaxAckPending are tuning's,
+// production's values outside tests.
+func deliveryConsumerConfig(tuning *intakeTuning) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchDeliveryDurable,
 		DeliverSubject: natsgo.NewInbox(),
 		FilterSubject:  githubIntakeSubject,
+		DeliverPolicy:  natsgo.DeliverNewPolicy,
 		AckPolicy:      natsgo.AckExplicitPolicy,
-		AckWait:        intakeAckWait(),
-		MaxAckPending:  intakeMaxAckPending,
+		AckWait:        tuning.ackWait(),
+		MaxAckPending:  tuning.maxAckPending,
 		Metadata:       consumerGenerationMetadata(),
 	}
 }
@@ -336,7 +363,7 @@ func deliveryConsumerConfig() natsgo.ConsumerConfig {
 // consumerGenerationKey metadata. A take-over that finds a durable of a higher generation
 // recreates it with the deployed config rather than this build's (takeOverConfig), so while two
 // builds run, the older one never reverts what the newer one set.
-const consumerConfigGeneration = 1
+const consumerConfigGeneration = 2
 
 // consumerGenerationKey is the consumer metadata key that holds the generation of its config. A
 // durable without it was last created by a build before generations: generation 0.
@@ -348,14 +375,16 @@ func consumerGenerationMetadata() map[string]string {
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// settings the cache holds under intakeMessageTimeout, and acks: a malformed envelope has nothing
-// to retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
-// next reconcile pass rather than by NATS redelivery -- see the package doc comment -- as a push
-// the importer failed to take is by the importer's own five-minute pass. One route error is not,
-// and is the second case below. The deadline is what makes intakeAckWait a bound rather than a
-// hope: without it one stuck GitHub call could hold an in-flight slot past the ack wait and have
-// the message redelivered underneath it. An envelope route answers not handled (an empty payload,
-// a kind route sends to no handler, or a push, which is no delivery fact) is acknowledged with no
+// settings the cache holds, or by none while no settings are saved, under the intake's
+// messageTimeout, and acks: a malformed envelope has nothing to retry, and a route error (a failed
+// GitHub call, or that deadline passing) is caught up by the next reconcile pass rather than by
+// NATS redelivery -- see the package doc comment -- as a push the importer failed to take is by
+// the importer's own five-minute pass. One route error is not, and is the second case below. The
+// deadline is what makes the ack wait
+// (intakeTuning.ackWait) a bound rather than a hope: without it one stuck GitHub call could hold an
+// in-flight slot past the ack wait and have the message redelivered underneath it. An envelope
+// route answers not handled (an empty payload, a kind route sends to no handler, a push, which
+// is no delivery fact, or any envelope while no settings are saved) is acknowledged with no
 // freshness write, and with no log line unless its handler failed. One it handles records the
 // event's time, whatever its handler decided.
 //
@@ -415,7 +444,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	handOwnBack := false
 	defer func() {
 		if handling.Err() != nil {
-			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
+			in.tuning.log.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
 			d.handBack(msg)
 			return
 		}
@@ -425,45 +454,41 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		d.acknowledge(msg)
 	}()
-	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
+	ctx, cancel := context.WithTimeout(handling, in.tuning.messageTimeout)
 	defer cancel()
 
 	envelope := message.envelope
 	if envelope == nil {
 		decoded, err := decodeEnvelope(msg.Data)
 		if err != nil {
-			slog.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
+			in.tuning.log.Error("dispatch delivery: decode envelope", "subject", msg.Subject, "error", err)
 			return
 		}
 		envelope = &decoded
 	}
-	settings := in.settings.Load()
-	if settings == nil {
-		return
-	}
-	handled, err := in.route(ctx, *settings, envelope.Payload)
+	handled, err := in.route(ctx, in.settings.Load(), envelope.Payload)
 	switch {
 	case errors.Is(err, errMalformedPayload):
-		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
+		in.tuning.log.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, ErrHeadNotStored):
-		handOwnBack = ownHandBackAllowed(msg, err,
+		handOwnBack = in.ownHandBackAllowed(msg, err,
 			"dispatch delivery: a pull request's head row could not be stored in the deliveries allowed; acknowledging the envelope, whose pull request now has no head row until a later `pull_request` event for it, or the read-through a recorded result makes, writes one",
 			"dispatch delivery: a pull request's head row was not stored; handing the envelope back")
 		return
 	case errors.Is(err, errCheckStatesNotMarked):
-		handOwnBack = ownHandBackAllowed(msg, err,
+		handOwnBack = in.ownHandBackAllowed(msg, err,
 			"dispatch delivery: a settled CI run's issue could not be marked owed in the deliveries allowed; acknowledging the envelope, whose issue keeps the published state of each check CI proves until another write of the issue marks it owed",
 			"dispatch delivery: a settled CI run's issue was not marked owed; handing the envelope back")
 		return
 	case err != nil:
-		slog.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
+		in.tuning.log.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
 		return
 	case !handled:
 		return
 	}
 	if err := RecordEventAt(ctx, in.pool); err != nil {
-		slog.Error("dispatch delivery: record event freshness", "error", err)
+		in.tuning.log.Error("dispatch delivery: record event freshness", "error", err)
 	}
 }
 
@@ -517,43 +542,46 @@ const ownHandBackAfter = 10 * time.Second
 // deliveries again after each take-over — at a take-over per rolling release, beside a cap
 // whose whole run is five minutes, that is a cost no reader of this slice can measure.
 //
-// A var so a test can shrink it, as intakeMessageTimeout and intakeMaxAckPending are vars for
-// the same reason: thirty deliveries of one envelope is minutes of wall clock no test should
-// spend.
-var ownHandBackMaxDeliveries uint64 = 30
+// It is the default of the intake's own ownHandBackMaxDeliveries (intakeTuning), which a test
+// lowers on the intakes it builds: thirty deliveries of one envelope is minutes of wall clock no
+// test should spend.
+const ownHandBackMaxDeliveries uint64 = 30
 
 // ownHandBackAllowed reports whether deliver hands msg back for err, the failure of a write
-// nothing else makes: while the server has delivered msg fewer times than
-// ownHandBackMaxDeliveries allows it logs handingBack at WARN, with the delivery and the delay,
-// and answers true; at the last of them it logs spent at ERROR, with the deliveries msg spent,
-// and answers false, so deliver acknowledges it.
-func ownHandBackAllowed(msg *natsgo.Msg, err error, spent, handingBack string) bool {
-	delivered, allSpent := ownHandBacksSpent(msg)
+// nothing else makes: while the server has delivered msg fewer times than the intake's
+// ownHandBackMaxDeliveries (intakeTuning) allows it logs handingBack at WARN, with the delivery
+// and the delay, and answers true; at the last of them it logs spent at ERROR, with the
+// deliveries msg spent, and answers false, so deliver acknowledges it. Both go to the intake's
+// logger.
+func (in *Intake) ownHandBackAllowed(msg *natsgo.Msg, err error, spent, handingBack string) bool {
+	allowed := in.tuning.ownHandBackMaxDeliveries
+	delivered, allSpent := ownHandBacksSpent(in.tuning.log, msg, allowed)
 	if allSpent {
-		slog.Error(spent, "subject", msg.Subject, "deliveries", delivered, "error", err)
+		in.tuning.log.Error(spent, "subject", msg.Subject, "deliveries", delivered, "error", err)
 		return false
 	}
-	slog.Warn(handingBack, "subject", msg.Subject, "delivery", delivered, "deliveries_allowed", ownHandBackMaxDeliveries,
+	in.tuning.log.Warn(handingBack, "subject", msg.Subject, "delivery", delivered, "deliveries_allowed", allowed,
 		"redeliver_after", ownHandBackAfter, "error", err)
 	return true
 }
 
 // ownHandBacksSpent reports how many times the server has delivered msg and whether that is
-// every delivery ownHandBackMaxDeliveries allows its write to fail in.
+// every delivery the intake allows its write to fail in (allowed, its ownHandBackMaxDeliveries),
+// writing a metadata read that fails to logger, the intake's.
 //
 // A message whose metadata cannot be read is not a JetStream message at all (Msg.Metadata
 // answers an error for one with no JetStream reply subject). No count can be read from it and
 // so no cap can be applied, and the answer is "not spent": the caller hands it back, which is
 // the answer that keeps the write's one chance of being made, and the ack wait bounds a
 // hand-back the server never takes.
-func ownHandBacksSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
+func ownHandBacksSpent(logger *slog.Logger, msg *natsgo.Msg, allowed uint64) (delivered uint64, spent bool) {
 	meta, err := msg.Metadata()
 	if err != nil {
-		slog.Error("dispatch delivery: read how often the envelope to hand back has been delivered",
+		logger.Error("dispatch delivery: read how often the envelope to hand back has been delivered",
 			"subject", msg.Subject, "error", err)
 		return 0, false
 	}
-	return meta.NumDelivered, meta.NumDelivered >= ownHandBackMaxDeliveries
+	return meta.NumDelivered, meta.NumDelivered >= allowed
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,
@@ -574,12 +602,14 @@ func ownHandBacksSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
 // envelope delivered again fails on the same name. A read of GitHub the App refused for any
 // other reason is no failure of this write at all: the row is written from the envelope
 // alone, incomplete and unstamped, and the reconcile's own pass reads it again.
+// The head write reads no setting, so it runs with no settings saved (settings nil) as well.
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline
-// after that; its author and excluded-repository checks run on the envelope's own fields, so a
-// merge by anyone outside the population costs no GitHub call of its own. It reports whether
-// it stored the pull request's delivery row: a head write is not one, and neither is a row it
-// deleted or a pull request outside the population, so neither ships with anything.
-func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings DeliverySettings, payload map[string]string) (wrote bool, err error) {
+// after that, and only by the settings; its author and excluded-repository checks run on the
+// envelope's own fields, so a merge by anyone outside the population costs no GitHub call of its
+// own. It reports whether it stored the pull request's delivery row: a head write is not one, and
+// neither is a row it deleted or a pull request outside the population, so neither ships with
+// anything.
+func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *DeliverySettings, payload map[string]string) (wrote bool, err error) {
 	if payload["kind"] != "pr" {
 		return false, nil
 	}
@@ -592,13 +622,13 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 	// the same commits once rather than twice.
 	messages, headErr := in.recordPullRequestHead(ctx, payload, number)
 	if headErr != nil {
-		slog.Warn("dispatch delivery: record a pull request's head",
+		in.tuning.log.Warn("dispatch delivery: record a pull request's head",
 			"repo", repoFull, "number", number, "error", headErr)
 		if errors.Is(headErr, ErrHeadNotStored) {
 			return false, headErr
 		}
 	}
-	if payload["action"] != "closed" || payload["merged"] != "true" {
+	if settings == nil || payload["action"] != "closed" || payload["merged"] != "true" {
 		return false, nil
 	}
 	author := payload["author"]
@@ -628,7 +658,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 	}
 
 	raw := RawPullRequest{Repo: repoFull, Number: number, Title: fetched.Title, Author: fetched.Author, Labels: fetched.Labels, MergedAt: *fetched.MergedAt}
-	isPopulation, err := IsPopulationPR(raw, settings, liveIntakeWindow())
+	isPopulation, err := IsPopulationPR(raw, *settings, liveIntakeWindow())
 	if err != nil {
 		// IsTaskPR's "neither label" error: a deploy-repo PR GitHub's own classifier workflow has
 		// not labelled yet. Surfaced, not guessed; the reconcile retries this PR's label on its
@@ -655,7 +685,7 @@ var errCheckStatesNotMarked = errors.New("the check states of the settled pull r
 // handleChecksEnvelope processes one `kind:"checks"` envelope: the settlement the listener's CI
 // summary loop publishes once every check run of a commit of a pull request has finished
 // (cistore). It marks the check states of the issue the pull request's open head belongs to owed
-// (check_states_owe, migration 20261121000327), in a statement of its own, whose commit notifies
+// (check_states_owe, migration 20261126005334), in a statement of its own, whose commit notifies
 // the check states settler: the settler reads the check runs at the head from GitHub again and
 // publishes the state of each check CI proves that changed (api/check_states.go). The settlement's
 // own fields decide nothing past the pull request it names, since any caller of the listener's
@@ -668,7 +698,7 @@ var errCheckStatesNotMarked = errors.New("the check states of the settled pull r
 // read or the mark is errCheckStatesNotMarked, which deliver hands back; a number that does not
 // parse is not, since every delivery of the envelope carries it. It writes no row the
 // issue.deployed rule reads, so it reports wrote false.
-func (in *Intake) handleChecksEnvelope(ctx context.Context, _ DeliverySettings, payload map[string]string) (wrote bool, err error) {
+func (in *Intake) handleChecksEnvelope(ctx context.Context, _ *DeliverySettings, payload map[string]string) (wrote bool, err error) {
 	number, err := strconv.Atoi(payload["number"])
 	if err != nil {
 		return false, fmt.Errorf("checks envelope: malformed number %q: %w", payload["number"], err)
@@ -693,7 +723,7 @@ func (in *Intake) handleChecksEnvelope(ctx context.Context, _ DeliverySettings, 
 }
 
 // markOpenHeadsOwed marks owed the check states of every issue that holds an open pull request
-// head, in one statement, the backfill migration's (20261121000335). Each take-over of the
+// head, in one statement, the backfill migration's (20261126005342). Each take-over of the
 // durable runs it before it changes the durable (heldDurable.beforeTakeOver). The holder before
 // may be a build that acknowledges a settlement of a pull request's checks with no mark, as every
 // build before these marks does, and nothing else would read the run that settlement announced:

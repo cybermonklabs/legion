@@ -20,9 +20,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -164,21 +166,39 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 // GitHub names, which the stand-in for GitHub names for a pull request no test moves. The conflict
 // clause writes every column either caller means to write, so a second row for the same pull
 // request leaves none of them as the first write left it.
+//
+// A merged row holds a time of merge, mergedHeadsAt and its number in seconds, so of two merged
+// pull requests the one of the higher number merged later, as every caller means, and the rule
+// this build judges by (delivery.AttributionRuleVersion), so a read that orders merged rows has
+// no row to ask GitHub about. A row that is not merged holds no time of merge, and its rule is
+// the column's default or the one it held.
 func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey, baseRef string) {
 	t.Helper()
 	var attributed *string
 	if issueKey != "" {
 		attributed = &issueKey
 	}
+	var mergedAt *time.Time
+	rule := 0
+	if state == "merged" {
+		at := mergedHeadsAt.Add(time.Duration(number) * time.Second)
+		mergedAt, rule = &at, delivery.AttributionRuleVersion
+	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, base_sha, state, issue_key, event_at, checked_at)
-		values ($1, $2, $3, 'legion/work', $4, $7, $5, $6, now(), now())
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, base_sha, state, issue_key, event_at, checked_at,
+			merged_at, attribution_rule)
+		values ($1, $2, $3, 'legion/work', $4, $7, $5, $6, now(), now(), $8, $9)
 		on conflict (repo, number) do update set head_sha = excluded.head_sha, base_ref = excluded.base_ref,
-			base_sha = excluded.base_sha, state = excluded.state, issue_key = excluded.issue_key
-	`, repo, number, sha, baseRef, state, attributed, ciJobBaseSHA); err != nil {
+			base_sha = excluded.base_sha, state = excluded.state, issue_key = excluded.issue_key, merged_at = excluded.merged_at,
+			attribution_rule = case when excluded.state = 'merged'
+				then excluded.attribution_rule else pull_request_heads.attribution_rule end
+	`, repo, number, sha, baseRef, state, attributed, ciJobBaseSHA, mergedAt, rule); err != nil {
 		t.Fatalf("store the head of %s#%d on %s: %v", repo, number, baseRef, err)
 	}
 }
+
+// mergedHeadsAt is the time writeHeadOnBase's merged rows count their merge from.
+var mergedHeadsAt = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
 // recordMerge records one issue's merged pull request as production records a merge, through
 // the writer that seeds the one fact the merge itself proves: the base branch held the merge
@@ -691,17 +711,26 @@ func resultsGitHubAnswering(
 // delivery.BranchCommitStaleAfter and which a test can reach no other way, since it cannot
 // wait five minutes out. readThroughGitHub answers the same for the read-through's cache.
 // checkRuns, where it is not nil, answers `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`
-// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404.
+// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404. routes are further
+// routes the stand-in answers (gitHubRoute), such as a pull request's own read.
 func resultsGitHubServed(
 	t *testing.T,
 	repos, held map[string]bool,
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
-	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns))
+	handler, database, _, served := newRegisteredTestServer(t, resultsGitHubOptions(t, repos, held, defaultBranch, answer, checkRuns, routes...))
 	return handler, database, served
+}
+
+// gitHubRoute is one more route a results stand-in answers (resultsGitHubOptions): a
+// http.ServeMux pattern and its handler.
+type gitHubRoute struct {
+	pattern string
+	handler http.HandlerFunc
 }
 
 // resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
@@ -713,6 +742,7 @@ func resultsGitHubOptions(
 	defaultBranch string,
 	answer func(base, head string) (int, string),
 	checkRuns http.HandlerFunc,
+	routes ...gitHubRoute,
 ) testServerOptions {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -769,6 +799,9 @@ func resultsGitHubOptions(
 	})
 	if checkRuns != nil {
 		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
+	}
+	for _, route := range routes {
+		mux.HandleFunc(route.pattern, route.handler)
 	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return testServerOptions{
@@ -3345,6 +3378,105 @@ func TestARetractedPassDoesNotStand(t *testing.T) {
 	}
 }
 
+// respelledCheck is a Verification document as another renderer version stored it, in a
+// spelling no build writes that reads as the tree this build writes otherwise: check k1's
+// paragraph escapes the full stop that ends it, which needs no escape. A check holds paragraphs
+// alone, so this, and not a list, is how its text can be spelled otherwise.
+// respelledCheckParagraph and respelledCheckBlock are the paragraph's and the check's slices of
+// it, as that renderer's build indexed them, and checkParagraph is the paragraph as every build
+// writes it.
+const (
+	checkParagraph          = "The server records a result against a check."
+	respelledCheckParagraph = "The server records a result against a check\\."
+	respelledCheckBlock     = ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\n" + respelledCheckParagraph + "\n:::"
+	respelledCheck          = respelledCheckBlock + "\n\n" +
+		":::check{#k3 surface=\"cli\" run=\"go test ./...\"}\n" +
+		"A sibling check nobody reworded.\n" +
+		":::\n"
+)
+
+// respellVerification makes version number of Verification document artifactID, uploaded as
+// respelledCheck, what another renderer version stored and indexed: the version holds
+// respelledCheck, stamped with the renderer version before this build's, and check k1 and its
+// paragraph, changed at that version, carry the sums and excerpts of their slices of it, which
+// document_block_texts records as their texts there. Every other block's slice is the same in
+// both spellings.
+func respellVerification(t *testing.T, database *store.Store, artifactID string, number int) {
+	t.Helper()
+	ctx := context.Background()
+	var written, paragraph string
+	if err := database.Pool.QueryRow(ctx, `
+		select (select text from document_block_texts where artifact_id = $1 and block_id = 'k1' and version = $2),
+		       (select block_id from document_block_texts where artifact_id = $1 and version = $2 and text = $3)
+	`, artifactID, number, checkParagraph).Scan(&written, &paragraph); err != nil {
+		t.Fatalf("read check k1 and its paragraph at version %d: %v", number, err)
+	}
+	if written == respelledCheckBlock {
+		t.Fatalf("this build writes check k1 as %q; the test needs a spelling no build writes", written)
+	}
+	another := pmdoc.RendererVersion - 1
+	storeVersionAs(t, database, artifactID, number, respelledCheck, &another)
+	for id, body := range map[string]string{"k1": respelledCheckBlock, paragraph: respelledCheckParagraph} {
+		indexed, err := database.Pool.Exec(ctx, `
+			update document_blocks set text_sha256 = $3, excerpt = $4
+			where artifact_id = $1 and block_id = $2 and changed_version = $5
+		`, artifactID, id, refs.BlockTextSum(body), text.HeadRunes(body, refs.BlockExcerptRunes), number)
+		if err != nil || indexed.RowsAffected() != 1 {
+			t.Fatalf("index block %s as %q at version %d: %d rows (%v)", id, body, number, indexed.RowsAffected(), err)
+		}
+		recorded, err := database.Pool.Exec(ctx, `
+			update document_block_texts set text = $3 where artifact_id = $1 and block_id = $2 and version = $4
+		`, artifactID, id, body, number)
+		if err != nil || recorded.RowsAffected() != 1 {
+			t.Fatalf("record block %s as %q at version %d: %d rows (%v)", id, body, number, recorded.RowsAffected(), err)
+		}
+	}
+}
+
+// A pass recorded against a check whose version another renderer version stored keeps its
+// words when the next version, which rewords another check, writes the check in this build's
+// spelling: the check's digest moves, but its words did not, and the block index keeps its
+// changed version (refs.BlockIndexing.KeepRespelled), so the pass reads check_words_moved false
+// and stands. A version that rewords the check itself moves its words, and the pass no longer
+// stands.
+func TestAPassKeepsItsChecksWordsAcrossAnotherRenderersSpelling(t *testing.T) {
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
+		func(string, string) string { return "diverged" })
+	issue := issueInRepository(t, handler, "RESRS", "acme/widgets", "Respelled")
+	owner := "/api/v1/issues/" + issue.Key
+	uploaded := uploadDocument(t, handler, owner, "verification.md", respelledCheck)
+	writeHead(t, database, "acme/widgets", 65, headCommit, "open", issue.Key)
+	respellVerification(t, database, uploaded.Artifact.ID, uploaded.Version.Number)
+
+	pass := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+	if pass.Result.CheckVersion != uploaded.Version.Number || pass.Result.CheckSHA256 != refs.BlockTextSum(respelledCheckBlock) {
+		t.Fatalf("the pass recorded check version %d and digest %s, want version %d and the digest of %q",
+			pass.Result.CheckVersion, pass.Result.CheckSHA256, uploaded.Version.Number, respelledCheckBlock)
+	}
+
+	uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, "A sibling check nobody reworded.", "A sibling check, reworded.", 1))
+	read := readResults(t, handler, issue.Key)
+	standsAt(t, read, "k1", pass.Result.ID,
+		"a pass recorded against the check as another renderer version spelled it", model.CommitAtBasis, false)
+	check := checkOf(t, read, "k1")
+	if check.PassStands.Answer != model.PassStandsYes {
+		t.Errorf("the check answers pass_stands %+v after another check was reworded, want yes", check.PassStands)
+	}
+	if check.Version != pass.Result.CheckVersion || check.SHA256 == pass.Result.CheckSHA256 {
+		t.Errorf("the check is at version %d with digest %s, want the pass's version %d under a digest other than the pass's",
+			check.Version, check.SHA256, pass.Result.CheckVersion)
+	}
+
+	uploadDocument(t, handler, owner, "verification.md",
+		strings.Replace(respelledCheck, respelledCheckParagraph, "The server records a result against a check, reworded.", 1))
+	reworded := readResults(t, handler, issue.Key)
+	standsAt(t, reworded, "k1", pass.Result.ID, "a pass recorded before the check was reworded", model.CommitAtBasis, true)
+	if stood := checkOf(t, reworded, "k1").PassStands; stood.Answer != model.PassStandsNo {
+		t.Errorf("the reworded check answers pass_stands %+v, want no: a pass whose words moved does not stand", stood)
+	}
+}
+
 // A check CI proves takes no result from any role: a tester's and an implementer's are both
 // refused, 409 CHECK_PROVED_BY_CI naming the block and the CI job that records its result, and
 // nothing is stored. The refusal comes before the commit is asked of GitHub: the commit here is
@@ -3743,7 +3875,10 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 
 // A read Dispatch could not make is no verdict: GitHub's 500, a read held past the deadline and
 // a deployment holding no App key each leave the check with no result and a detail saying what
-// GitHub answered, never a pass and never a fail.
+// GitHub answered, never a pass and never a fail. The held read is cut at the deadline: the fake
+// answers a held read nothing until its caller gives up, and the test ends the read's bound once
+// the read has reached GitHub, so the deadline the read's context carries is the one thing that
+// ends it, and the detail names that deadline.
 func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
@@ -4115,6 +4250,362 @@ func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
 	if len(check.Results) != 0 {
 		t.Fatalf("c1 holds %+v at a head no run has reached, want no result", check.Results)
 	}
+}
+
+// TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter: a read-only caller's read of an
+// issue's results reads GitHub as a writer's read does, answers what a writer's read answers on
+// the same stored rows, stores nothing — no pull_request_heads row, no branch_commits row and no
+// event — and keeps nothing after its request (plan D32). So a second read-only read asks GitHub
+// all over again, as a writer's read with no row of its own would, and a writer's read after both
+// still asks GitHub and stores exactly what it stores at the base.
+//
+// Each row reads one issue three times on one state (readOnlyThenWriter). Since the read-only
+// reads store nothing and keep nothing, the second reads the state the first read, and the
+// writer's read reads the very state they read, which is what lets its answer stand as the one
+// theirs must equal.
+func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
+	t.Parallel()
+	t.Run("a before_merge result at the head of a pull request no row holds", func(t *testing.T) {
+		rig, github := readOnlyResultsRig(t)
+		issue := issueInRepository(t, rig.handler, "RORP", "acme/widgets", "Opened after the record")
+		uploadDocument(t, rig.handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+		recorded := decodeBody[recordedResult](t, recordResult(t, rig.handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+		// The pull request opens at the result's commit after the record, and nothing tells
+		// Dispatch: no row heads the commit, and the read asks GitHub.
+		github.answersPulls(openPullAt(91, issue.Key))
+
+		readOnly, writer := readOnlyThenWriter(t, rig, github, issue.Key, readOnlyDrive{
+			pullAsks: 1,
+			// The writer stores the pull request's head row and records its attribution to the
+			// issue: one event.
+			stored: storedRows{heads: 1, events: 1},
+		})
+		for _, answered := range []struct {
+			who  string
+			read issueResults
+		}{{"the read-only read", readOnly.read}, {"the writer's read", writer.read}} {
+			stands := standsAt(t, answered.read, "k1", recorded.Result.ID,
+				answered.who+" of a result at the head of a pull request no row held", model.CommitAtBasis, false)
+			if stands.Basis == nil || stands.Basis.PullRequest == nil || *stands.Basis.PullRequest != 91 {
+				t.Fatalf("%s stands the result at %+v, want pull request 91", answered.who, stands.Basis)
+			}
+		}
+	})
+
+	t.Run("after_merge and default_branch results beside a merge the read learns", func(t *testing.T) {
+		rig, github := readOnlyResultsRig(t)
+		issue := issueInRepository(t, rig.handler, "RORB", "acme/widgets", "Merged into an integration branch")
+		uploadDocument(t, rig.handler, "/api/v1/issues/"+issue.Key, "verification.md",
+			":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\nThe server records a result against a check.\n:::\n\n"+
+				afterMergeAndDefaultChecks)
+		record := func(check, commit string) string {
+			return decodeBody[recordedResult](t, recordResult(t, rig.handler, issue.Key, resultBody(check, "pass", commit, nil))).Result.ID
+		}
+		atHead := record("k1", headCommit)
+		atMerge := record("k4", baseMergeCommit)
+		onIntegration := record("k4", integrationCommit)
+		onTrunk := record("k5", mergeCommit)
+		// GitHub names one pull request for the head: merged into integration/x, its merge commit
+		// baseMergeCommit, which no event told Dispatch of. A writer's read stores its head row and
+		// the merge commit's yes on integration/x (delivery.UpsertPullRequestHead), and measures the
+		// after_merge check against integration/x and then main. Two compare reads are left:
+		// integration/x carries integrationCommit and main carries mergeCommit. The merge commit is
+		// answered by the merge itself and costs no compare read.
+		github.answersPulls(func(repo, sha string) string {
+			if sha != headCommit {
+				return `[]`
+			}
+			return fmt.Sprintf(`[{"number":50,"title":%q,"body":"","html_url":"https://github.com/%s/pull/50",
+				"state":"closed","merged_at":"2026-11-05T07:15:08Z","merge_commit_sha":%q,
+				"updated_at":"2026-11-05T07:15:08Z",
+				"head":{"ref":"legion/x","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"integration/x"}}]`,
+				issue.Key+" the work", repo, baseMergeCommit, headCommit, repo)
+		})
+		github.answersCompare(func(base, head string) string {
+			if (base == "integration/x" && head == integrationCommit) || (base == "main" && head == mergeCommit) {
+				return "behind"
+			}
+			return "diverged"
+		})
+
+		readOnly, writer := readOnlyThenWriter(t, rig, github, issue.Key, readOnlyDrive{
+			pullAsks:    1,
+			compareAsks: 2,
+			// The head row and its attribution event, and three branch answers: the merge's own
+			// yes and the two compare reads'. A branch answer records no event at the base.
+			stored: storedRows{heads: 1, branches: 3, events: 1},
+		})
+		for _, answered := range []struct {
+			who  string
+			read issueResults
+		}{{"the read-only read", readOnly.read}, {"the writer's read", writer.read}} {
+			if compared := checkOf(t, answered.read, "k4").ComparedWith; len(compared) != 2 ||
+				compared[0].Branch != "integration/x" || compared[1].Branch != "main" {
+				t.Fatalf("%s compared the after_merge check with %+v, want integration/x and then main", answered.who, compared)
+			}
+			stands := standsAt(t, answered.read, "k1", atHead, answered.who+" of the merged head", model.CommitAtBasis, false)
+			if stands.Basis == nil || stands.Basis.PullRequest == nil || *stands.Basis.PullRequest != 50 {
+				t.Fatalf("%s stands the merged head at %+v, want pull request 50", answered.who, stands.Basis)
+			}
+			for _, branched := range []struct{ check, result, what, branch string }{
+				{"k4", atMerge, "the merge commit", "integration/x"},
+				{"k4", onIntegration, "a commit integration/x carries", "integration/x"},
+				{"k5", onTrunk, "a commit main carries", "main"},
+			} {
+				stands := standsAt(t, answered.read, branched.check, branched.result,
+					answered.who+" of "+branched.what, model.CommitAtBasis, false)
+				if stands.Basis == nil || stands.Basis.Branch != branched.branch {
+					t.Fatalf("%s stands %s at %+v, want the branch %s", answered.who, branched.what, stands.Basis, branched.branch)
+				}
+			}
+		}
+	})
+}
+
+// readOnlyResultsGitHub is the GitHub TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter
+// reads. The App is installed on acme/widgets alone, whose default branch is main and which holds
+// every commit asked about. A commit's pull requests are what the test set last, none until it
+// sets any; each pull request's commit messages are an empty page; and a compare read answers the
+// status the test set last, diverged until it sets one. It counts the two reads a results read
+// makes for its answer: a commit's pull requests, and a compare.
+type readOnlyResultsGitHub struct {
+	mu          sync.Mutex
+	pulls       func(repo, sha string) string
+	compare     func(base, head string) string
+	pullAsks    int
+	compareAsks int
+}
+
+// answersPulls sets the JSON array of pull requests GitHub names for a commit from now on.
+func (g *readOnlyResultsGitHub) answersPulls(body func(repo, sha string) string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pulls = body
+}
+
+// answersCompare sets the compare status GitHub answers for a branch and a commit from now on.
+func (g *readOnlyResultsGitHub) answersCompare(status func(base, head string) string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.compare = status
+}
+
+// asks is how often GitHub has been asked for a commit's pull requests, and for a compare.
+func (g *readOnlyResultsGitHub) asks() (pulls, compares int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pullAsks, g.compareAsks
+}
+
+// readOnlyResultsRig is the package's test server with the stub broker beside it, whose GitHub is
+// a readOnlyResultsGitHub.
+func readOnlyResultsRig(t *testing.T) (*brokerTokenRig, *readOnlyResultsGitHub) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	github := &readOnlyResultsGitHub{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("owner")+"/"+r.PathValue("repo") != "acme/widgets" {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`)
+	})
+	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"sha":%q}`, r.PathValue("sha"))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
+		github.mu.Lock()
+		github.pullAsks++
+		answer := github.pulls
+		github.mu.Unlock()
+		if answer == nil {
+			fmt.Fprint(w, `[]`)
+			return
+		}
+		fmt.Fprint(w, answer(r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("sha")))
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `[]`)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
+		base, head, _ := strings.Cut(r.PathValue("basehead"), "...")
+		github.mu.Lock()
+		github.compareAsks++
+		status := github.compare
+		github.mu.Unlock()
+		answer := "diverged"
+		if status != nil {
+			answer = status(base, head)
+		}
+		fmt.Fprintf(w, `{"status":%q}`, answer)
+	})
+	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
+	rig := newBrokerTokenRigOn(t, testServerOptions{
+		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
+		githubAPIBase: upstream,
+	})
+	return rig, github
+}
+
+// storedRows counts what a read of an issue's results can store: pull request head rows, branch
+// answers and events.
+type storedRows struct {
+	heads, branches, events int
+}
+
+func countStoredRows(t *testing.T, database *store.Store) storedRows {
+	t.Helper()
+	var rows storedRows
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from pull_request_heads), (select count(*) from branch_commits),
+			(select count(*) from events)
+	`).Scan(&rows.heads, &rows.branches, &rows.events); err != nil {
+		t.Fatalf("count the stored rows: %v", err)
+	}
+	return rows
+}
+
+// readOnlyDrive is what one read of an issue costs GitHub and what a writer's read stores, where
+// nothing holds the read off: the reads of a commit's pull requests, the compare reads, and the
+// rows.
+type readOnlyDrive struct {
+	pullAsks, compareAsks int
+	stored                storedRows
+}
+
+// timedResultsRead is one read of an issue's results: the body as sent, decoded, and the moments
+// just before the request went out and just after its answer came back.
+type timedResultsRead struct {
+	body          string
+	read          issueResults
+	before, after time.Time
+}
+
+func readResultsTimed(t *testing.T, what string, serve func() *httptest.ResponseRecorder) timedResultsRead {
+	t.Helper()
+	before := time.Now()
+	response := serve()
+	after := time.Now()
+	if response.Code != http.StatusOK {
+		t.Fatalf("%s: status=%d body=%s", what, response.Code, response.Body.String())
+	}
+	return timedResultsRead{body: response.Body.String(), read: decodeBody[issueResults](t, response), before: before, after: after}
+}
+
+// readOnlyThenWriter reads issueKey's results three times on one state: with a read-only token,
+// with it again, and as a writer (alice), once every document has settled so nothing else writes
+// meanwhile. Each read-only read must make the GitHub reads drive names and store nothing: the
+// first keeps nothing after its request, so the second asks GitHub all over again. The writer's
+// read must still make the GitHub reads drive names and store the rows it names, as at the base.
+// Each read reads the state the first read-only read read, since the read-only reads stored
+// nothing, so each answer must be the first read-only answer, but for the moment each read learned
+// a pull request's head, which is each read's own clock (answerButReadTimes). It answers the first
+// read-only read and the writer's.
+func readOnlyThenWriter(
+	t *testing.T, rig *brokerTokenRig, github *readOnlyResultsGitHub, issueKey string, drive readOnlyDrive,
+) (readOnly, writer timedResultsRead) {
+	t.Helper()
+	caller := newBrokerCaller(t)
+	const token = "a-token-that-only-reads"
+	rig.broker.Says(token, readOnlyToken(caller.jkt))
+	path := "/api/v1/issues/" + issueKey + "/results"
+	awaitSettledDocuments(t, rig.database)
+	before := countStoredRows(t, rig.database)
+	drives := []struct {
+		what  string
+		serve func() *httptest.ResponseRecorder
+		drive readOnlyDrive
+	}{
+		{"the first read-only read", func() *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, http.MethodGet, path, token, nil))
+		}, readOnlyDrive{pullAsks: drive.pullAsks, compareAsks: drive.compareAsks}},
+		{"the second read-only read", func() *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, http.MethodGet, path, token, nil))
+		}, readOnlyDrive{pullAsks: drive.pullAsks, compareAsks: drive.compareAsks}},
+		{"the writer's read", func() *httptest.ResponseRecorder {
+			return dispatchRequest(t, rig.handler, http.MethodGet, path, nil, "alice")
+		}, drive},
+	}
+	reads := make([]timedResultsRead, 0, len(drives))
+	for _, step := range drives {
+		pulls, compares := github.asks()
+		reads = append(reads, readResultsTimed(t, step.what, step.serve))
+		pullsAfter, comparesAfter := github.asks()
+		if pullsAfter-pulls != step.drive.pullAsks || comparesAfter-compares != step.drive.compareAsks {
+			t.Fatalf("%s asked GitHub for a commit's pull requests %d times and made %d compare reads, want %d and %d",
+				step.what, pullsAfter-pulls, comparesAfter-compares, step.drive.pullAsks, step.drive.compareAsks)
+		}
+		after := countStoredRows(t, rig.database)
+		stored := storedRows{heads: after.heads - before.heads, branches: after.branches - before.branches, events: after.events - before.events}
+		if stored != step.drive.stored {
+			t.Fatalf("%s left %d more pull request heads, %d more branch answers and %d more events, want %d, %d and %d",
+				step.what, stored.heads, stored.branches, stored.events,
+				step.drive.stored.heads, step.drive.stored.branches, step.drive.stored.events)
+		}
+	}
+	first := answerButReadTimes(t, "the first read-only read", reads[0])
+	if second := answerButReadTimes(t, "the second read-only read", reads[1]); second != first {
+		t.Fatalf("the second read-only read answered\n%s\nwant the first's answer on the same state\n%s", second, first)
+	}
+	if writer := answerButReadTimes(t, "the writer's read", reads[2]); writer != first {
+		t.Fatalf("the read-only read answered\n%s\nwant the writer's answer on the same state\n%s", first, writer)
+	}
+	return reads[0], reads[2]
+}
+
+// answerButReadTimes is a read's answer as JSON with each moment a pull request head was read at
+// cleared, once that moment is shown to be the read's own: within the read, to the microsecond
+// the database keeps. It is cleared on each basis the answer names: those a check compared with,
+// those a result stands at and those a pass stands on (pass_stands.subjects). Every other member
+// is as the read answered it.
+func answerButReadTimes(t *testing.T, who string, answered timedResultsRead) string {
+	t.Helper()
+	var read issueResults
+	if err := json.Unmarshal([]byte(answered.body), &read); err != nil {
+		t.Fatalf("decode %s: %v", who, err)
+	}
+	clearReadTime := func(basis *model.CheckBasis) {
+		if basis == nil || basis.LearnedAt == nil || basis.LearnedAt.Kind != model.BasisLearnedReadAt {
+			return
+		}
+		if at := basis.LearnedAt.At; at.Before(answered.before.Truncate(time.Microsecond)) || at.After(answered.after) {
+			t.Fatalf("%s learned the head %s at %s, want a moment of its own, between %s and %s",
+				who, basis.Commit, at, answered.before, answered.after)
+		}
+		basis.LearnedAt.At = time.Time{}
+	}
+	for index := range read.Checks {
+		check := &read.Checks[index]
+		for basis := range check.ComparedWith {
+			clearReadTime(&check.ComparedWith[basis])
+		}
+		for result := range check.Results {
+			if stands := check.Results[result].CommitStands; stands != nil {
+				clearReadTime(stands.Basis)
+			}
+		}
+		for subject := range check.PassStands.Subjects {
+			clearReadTime(&check.PassStands.Subjects[subject].Basis)
+		}
+	}
+	encoded, err := json.Marshal(read)
+	if err != nil {
+		t.Fatalf("encode %s: %v", who, err)
+	}
+	return string(encoded)
 }
 
 // resultRowsOn is how many check_results rows the check's issue key holds.

@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The skill-scenario rig now builds the daemon with `go run -p 4` and `GOMAXPROCS=4`. A batch starts several runs at once on a cold build cache, and each run builds the daemon. At the host's width, six runs could not fork under a task cap of 4096.
+time: 2026-11-26T19:56:44Z
+custom:
+    Issue: rig-daemon-build-width

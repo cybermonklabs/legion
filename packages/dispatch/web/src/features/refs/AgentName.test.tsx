@@ -4,12 +4,13 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
+import { queryRetry } from "../../api/query-client";
 import type { Actor, Agent } from "../../api/types";
 import { liveDotBg, offlineDotBorder, unknownDotBorder } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
 import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "./AgentName";
-import { AGENT_REGISTRY_POLL_MS, AgentRegistryPoller } from "./agent-registry";
+import { AGENT_REGISTRY_POLL_MS, AgentRegistryPoller, agentRegistryPollMs } from "./agent-registry";
 
 /** One live session, as `GET /api/v1/agents` lists it. */
 function listed(sessionId: string, title: string, lastSeen = Date.now() - 3 * 60_000): Agent {
@@ -263,6 +264,40 @@ test("a registry read that fails before any success leaves the state unknown", a
   }
 });
 
+// A page draws an agent's name in many places. With the registry's read failed, the first name
+// costs one run of the dashboard's tries, and the names that mount after it read the failure
+// that is there rather than ask again: the shell's poller asks it again on its own interval.
+test("names that mount on a failed registry read cost one run of tries, not one each", async () => {
+  const agents = spyOn(api, "listAgents").mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "listener down" })
+  );
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: 0 } },
+  });
+  // The tries of one read: the request and the two retries `queryRetry` allows a 503.
+  const oneRun = 3;
+  const name = (id: string) => <AgentName actor={{ id, kind: "session" }} key={id} />;
+  const { view } = renderWith(name("s-1"), client);
+  try {
+    await waitFor(() => expect(client.getQueryState(["agents"])?.status).toBe("error"));
+    expect(agents).toHaveBeenCalledTimes(oneRun);
+
+    // A name that asks starts the read as it mounts, inside the render's own `act`, so the read
+    // stands idle after names that ask nothing.
+    view.rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>{["s-1", "s-2", "s-3"].map(name)}</QueryClientProvider>
+      </MemoryRouter>
+    );
+    expect(client.getQueryState(["agents"])?.fetchStatus).toBe("idle");
+    expect(agents).toHaveBeenCalledTimes(oneRun);
+    expect(agentNode(view.container, "s-3").getAttribute("data-agent-state")).toBe("unknown");
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+  }
+});
+
 test("a listed session is running, an unlisted one not running, and a failed refresh unknown", async () => {
   const agents = spyOn(api, "listAgents").mockResolvedValue([listed(LISTED_ID, "Planner")]);
   const { client, view } = renderWith(
@@ -441,7 +476,9 @@ test("a withdrawal names the closer once, the Legion daemon by its whole id", as
   }
 });
 
-test("a resolution's description parts carry its reason, except a withdrawal's", () => {
+test("a resolution's description parts name who resolved it and leave the reason out", () => {
+  // The reason is the resolver's own stored text: a builder adds it as a part the one reader
+  // draws (`askResolvedParts`), never as words of the sentence.
   const actor: Actor = { id: LISTED_ID, kind: "session" };
   const at = "2026-10-25T00:00:00Z";
   expect(
@@ -455,12 +492,12 @@ test("a resolution's description parts carry its reason, except a withdrawal's",
   expect(askResolutionParts({ actor, at, kind: "retracted", reason: "Duplicate." })).toEqual([
     "Retracted by ",
     { actor },
-    " - Duplicate.",
+    "",
   ]);
   expect(askResolutionParts({ actor, at, kind: "resolved", reason: "Done." })).toEqual([
     "Resolved by ",
     { actor },
-    " - Done.",
+    "",
   ]);
 });
 
@@ -569,6 +606,58 @@ test("names mounted at staggered times plus a polled useAgents caller fetch at m
     expect(fetchedAt.length).toBe(before);
   } finally {
     view.unmount();
+    jest.useRealTimers();
+    environmentManager.setIsServer(() => wasServer);
+    agents.mockRestore();
+  }
+});
+
+// The production cadence is 15 s, and the browser suite's seam (`__dispatchAgentRegistryPollMs`,
+// set before the page loads) is what moves it: unset, or set to nothing a timer can hold, the
+// poller keeps 15 s; set, it polls at that cadence, never closer.
+test("the poller keeps its 15 s cadence unless the browser suite set one of its own", async () => {
+  expect(AGENT_REGISTRY_POLL_MS).toBe(15_000);
+  window.__dispatchAgentRegistryPollMs = undefined;
+  expect(agentRegistryPollMs()).toBe(15_000);
+  for (const unusable of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    window.__dispatchAgentRegistryPollMs = unusable;
+    expect(agentRegistryPollMs()).toBe(15_000);
+  }
+
+  const wasServer = environmentManager.isServer();
+  environmentManager.setIsServer(() => false);
+  jest.useFakeTimers();
+  const start = Date.now();
+  jest.setSystemTime(start);
+  window.__dispatchAgentRegistryPollMs = 1_000;
+  const fetchedAt: number[] = [];
+  const agents = spyOn(api, "listAgents").mockImplementation(async () => {
+    fetchedAt.push(Date.now() - start);
+    return [listed(LISTED_ID, "Planner")];
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={newClient()}>
+        <AgentRegistryPoller />
+        <AgentName actor={{ id: LISTED_ID, kind: "session" }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await act(async () => {});
+    for (let second = 0; second < 10; second += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(1_000);
+      });
+    }
+    // A first load and a poll each second after it, none closer than the cadence set.
+    expect(fetchedAt.length).toBeGreaterThanOrEqual(10);
+    for (let index = 1; index < fetchedAt.length; index += 1) {
+      expect((fetchedAt[index] ?? 0) - (fetchedAt[index - 1] ?? 0)).toBeGreaterThanOrEqual(1_000);
+    }
+  } finally {
+    view.unmount();
+    window.__dispatchAgentRegistryPollMs = undefined;
     jest.useRealTimers();
     environmentManager.setIsServer(() => wasServer);
     agents.mockRestore();

@@ -5,8 +5,8 @@ body: |-
     row trigger on each table a state is computed from (`check_results`, `ci_check_results`,
     `check_result_retractions`, `ci_check_result_retractions`, `document_blocks` and
     `pull_request_heads`) marks the issue owed in the writer's own transaction and notifies
-    `dispatch_check_states_owed` (migrations `20261121000327` to `20261121000333`), so a write of
-    the release before this one is marked too; `20261121000335` marks every issue with an open
+    `dispatch_check_states_owed` (migrations `20261126005334` to `20261126005340`), so a write of
+    the release before this one is marked too; `20261126005342` marks every issue with an open
     attributed head owed once. In every process the settler (`api.Background.RunCheckStates`) is
     woken at the commit, settles each issue under its own lease (`check-states:<issue>`), computes
     its states as `GET /api/v1/issues/{key}/results` does, and appends an event for each state that
@@ -15,10 +15,10 @@ body: |-
     it settles a mark whose notification no process received, and a state that reads
     `read_failed` is read again 30 s later, doubling to 10 minutes. A `test` handoff waits up to
     30 s until the states its issue's due marks owe are published, stores and answers the serial
-    then as `check_states_serial` (`20261121000334`), and answers `503 CHECK_STATES_UNSETTLED`
-    past that. The settler takes one connection of the lease pool: `store.LeasePoolSize` is 26, a
-    server opens up to 117 connections to Postgres (`store.ConnectionsPerProcess`), and the app
-    pod's count in `infra/gcp` (`dispatchConnectionsPerPod`) is 117.
+    then as `check_states_serial` (`20261126005341`), and answers `503 CHECK_STATES_UNSETTLED`
+    past that. The settler takes one connection of the lease pool: `store.LeasePoolSize` is 28, a
+    server opens up to 119 connections to Postgres (`store.ConnectionsPerProcess`), and the app
+    pod's count in `infra/gcp` (`dispatchConnectionsPerPod`) is 119.
 time: 2026-11-21T00:53:44Z
 custom:
     Issue: check-states-settler

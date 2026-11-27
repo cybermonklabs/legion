@@ -158,12 +158,12 @@ const ROUTES: Record<string, unknown> = {
   },
 };
 
-function world() {
+function world(routes: Record<string, unknown> = ROUTES) {
   const sent: { url: URL; init: RequestInit }[] = [];
   const fetch = async (input: string, init: RequestInit): Promise<Response> => {
     const url = new URL(input);
     sent.push({ url, init });
-    const body = url.host === "dispatch.test" ? ROUTES[url.pathname] : undefined;
+    const body = url.host === "dispatch.test" ? routes[url.pathname] : undefined;
     return body === undefined
       ? new Response(JSON.stringify({ error: "not found", code: "NOT_FOUND" }), {
           status: 404,
@@ -282,7 +282,7 @@ test("an issue key and a project document each write their files; the document g
   expect(JSON.parse(read(path.join(document, "asks.json")))).toEqual([]);
 
   expect(run.stdout).toEqual([
-    `${issue}: title.txt, messages.md (5 entries), asks.json (2 asks), old-spec.md`,
+    `${issue}: title.txt, messages.md (5 entries, 0 deleted posts left out), asks.json (2 asks), old-spec.md`,
     `${document}: title.txt, messages.md (1 entries), asks.json (0 asks)`,
   ]);
 });
@@ -329,7 +329,7 @@ test("--agent-texts writes every message, comment and ask by a session in the wi
     },
   ]);
   expect(run.stdout).toEqual([
-    `${path.join(out, "agent-texts.json")}: 2 texts by sessions (1 messages, 1 comments, 0 asks) read from 2 issues`,
+    `${path.join(out, "agent-texts.json")}: 2 texts by sessions (1 messages, 1 comments, 0 asks) read from 2 issues, 0 deleted posts left out`,
   ]);
 
   const wider = io(world().fetch);
@@ -367,6 +367,94 @@ test("--agent-texts writes every message, comment and ask by a session in the wi
       origin_session_title: "widget work",
       created_at: "2026-10-16T16:00:00Z",
     },
+  ]);
+});
+
+// Dispatch answers a deleted post with an empty body and an edited one with the words the last
+// edit put there. A deleted post is left out of both files, as label-comments.ts leaves a deleted
+// comment out, and stdout counts it: no entry stands for a post with nothing of it left, not even
+// its quote. An edited post's words carry the mark every read of the dispatch command prints after
+// them, so they never reach a judge as words with nothing to say they were replaced.
+test("a deleted post is left out of messages.md and agent-texts.json and counted, and an edited one carries the edited mark", async () => {
+  const routes: Record<string, unknown> = {
+    ...ROUTES,
+    "/api/v1/issues": [{ key: "ACME-7", title: "Make the widget faster", status: "done" }],
+    "/api/v1/issues/ACME-7/messages": [
+      {
+        message: {
+          ...message("m1", alice, "", "2026-10-16T10:00:00Z"),
+          deleted_at: "2026-10-16T10:30:00Z",
+          deleted_by: alice,
+        },
+        replies: [
+          {
+            ...message("m2", agent(), "", "2026-10-16T12:00:00Z"),
+            deleted_at: "2026-10-16T12:30:00Z",
+            deleted_by: agent(),
+          },
+          {
+            ...message("m3", alice, "Thanks, twice.\n", "2026-10-16T14:00:00Z"),
+            edited_at: "2026-10-16T14:30:00Z",
+          },
+        ],
+      },
+    ],
+    "/api/v1/issues/ACME-7/comments": [
+      {
+        ...comment("c1", bob, "", "2026-10-16T11:00:00Z", "The widget waits 5 s."),
+        deleted_at: "2026-10-16T11:30:00Z",
+        deleted_by: bob,
+      },
+      {
+        ...comment("c2", agent(), "Fixed in 2 s.", "2026-10-16T13:00:00Z"),
+        edited_at: "2026-10-16T13:30:00Z",
+      },
+    ],
+    "/api/v1/issues/ACME-7/asks": [],
+  };
+  const out = path.join(dir("marks-run"), "sources");
+  const sources = io(world(routes).fetch);
+  expect(await main(["--out", out, "ACME-7"], sources.io)).toBe(0);
+  expect(sources.stderr).toEqual([]);
+  expect(read(path.join(out, "acme-7", "messages.md"))).toBe(
+    [
+      "<!-- message 2026-10-16T14:00:00Z -->",
+      "Thanks, twice. · edited 2026-10-16T14:30:00Z",
+      "",
+    ].join("\n")
+  );
+  expect(sources.stdout).toEqual([
+    `${path.join(out, "acme-7")}: title.txt, messages.md (1 entries, 2 deleted posts left out), asks.json (0 asks), old-spec.md`,
+  ]);
+
+  const texts = io(world(routes).fetch);
+  expect(
+    await main(
+      [
+        "--agent-texts",
+        "--since",
+        "2026-10-16T00:00:00Z",
+        "--until",
+        "2026-10-17T00:00:00Z",
+        "--out",
+        out,
+      ],
+      texts.io
+    )
+  ).toBe(0);
+  expect(texts.stderr).toEqual([]);
+  expect(JSON.parse(read(path.join(out, "agent-texts.json")))).toEqual([
+    {
+      issue: "ACME-7",
+      id: "c2",
+      kind: "comment",
+      body: "Fixed in 2 s. · edited 2026-10-16T13:30:00Z",
+      origin_session_title: null,
+      created_at: "2026-10-16T13:00:00Z",
+    },
+  ]);
+  expect(texts.stdout).toEqual([
+    `${path.join(out, "agent-texts.json")}: 1 texts by sessions (0 messages, 1 comments, 0 asks) read from 1 issues, 1 deleted posts left out`,
   ]);
 });
 

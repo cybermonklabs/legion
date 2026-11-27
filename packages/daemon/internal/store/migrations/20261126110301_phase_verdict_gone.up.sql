@@ -1,0 +1,66 @@
+-- 20261126110301_phase_verdict_gone.up.sql — a phase completion carries no verdict: the states
+-- Dispatch publishes of the issue's before_merge checks at the tested head decide the testing
+-- phase (workflow's decideTesting), so the record keeps no verdict of the tester's.
+--
+-- phases.verdict stays, for the release before. It held the tester's pass or fail on the tester's
+-- row, which moved the issue, named the tester's result in the reviewer's task and rode the
+-- architect's phase-finished notice. This release names it in no statement. The release before
+-- names it in each of its statements over a phase row (record.Postgres.Phases, PutPhase and the
+-- clear of a generation), and a rolling release runs that release beside this one on the database
+-- this one migrated, as a rollback runs it there again. So the column keeps its type and its not
+-- null and takes the default '', which each row this release inserts takes, and the release before
+-- reads such a row as a completion with no verdict. With no default the column would refuse this
+-- release's insert, and a nullable column would hand the release before a null, which it cannot
+-- scan into its string. A later release drops the column, once no running build reads it.
+--
+-- phases.states_serial is new: on the tester's row, the check states serial of the test record its
+-- completion named (record.PhaseRow.StatesSerial), through which the move waits until the daemon
+-- holds every state event of the issue (record.Store.StatesFenceReached). Every row takes 0, which
+-- passes that fence at once, as a record written before Dispatch kept a serial does, and so does
+-- each row the release before inserts, since it names the column in no statement. The column is
+-- nullable, with 0 for its default and its check kept: a migration that a rolling release runs adds
+-- only tables, nullable columns and non-unique indexes. No statement of this release writes a null,
+-- and its read of a phase row takes one as 0 (record.Postgres.Phases).
+--
+-- A phase-finished notice the release before queued names the tester's verdict under the key
+-- verdict, which record.Notice no longer has. The update strips the key from every queued notice,
+-- which is then sent with the rest of what it says: its kind, role, phase, summary and version.
+-- The outbox, which decodes a row strictly (record.DecodeOutboxPayload), drops that key too, for a
+-- notice a daemon of the release before queues on the shared database during the roll, after this
+-- update ran. The release before decodes a notice with no verdict, since its field is omitted when
+-- empty.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists. The release before runs on this release's schema as it stands, so the way
+-- back is owed to the roll-forward rather than to the release before. It is the one transaction
+-- below, run with this release's daemon stopped and before the release before starts. It empties
+-- phases.verdict, which this release never writes, so a tester's row this release completed no
+-- longer carries the verdict of an earlier completion the release before took: each tester's row
+-- reads as a completion with no verdict there, which moves no issue, and a tester whose completion
+-- stands while its issue is still in testing completes again under the release before. It drops
+-- states_serial, so that the roll-forward adds it again at 0 on every row and no row the release
+-- before completed carries a serial of this release's, and it deletes this migration's row, so the
+-- roll-forward's Migrate runs this file again. It deletes the keys head, waits_for, waiting and
+-- failing from each queued notice: this release's tester's phase-finished notice of the testing
+-- move carries under them what its reason names, the tested head, what a wait waits for and the
+-- checks it names (record.Notice's Head, WaitsFor, Waiting and Failing), and the release before
+-- decodes a notice strictly and has no field for any of them, so a queued notice that kept one
+-- would retry for ever under that release. No notice of the release before carries any of the
+-- four keys, and the notice keeps its reason, which names the same head and checks. It deletes
+-- the keys pull_request, head, check, ci_case, checks and statuses from each queued role message
+-- for the same reason: this release's message of a CI settlement and the implementer's of a
+-- failed CI job carry under them what their body names (record.RoleMessage's fields), and the
+-- release before decodes a role message strictly and has no field for any of them. No role
+-- message of the release before carries any of the six, and each keeps its body. The release
+-- before decodes a notice with no verdict, so the strip of verdict below needs no undoing.
+--
+-- begin;
+-- update phases set verdict = '' where verdict <> '';
+-- alter table phases drop column if exists states_serial;
+-- update outbox set payload = payload - 'head' - 'waits_for' - 'waiting' - 'failing' where kind = 'notice';
+-- update outbox set payload = payload - 'pull_request' - 'head' - 'check' - 'ci_case' - 'checks' - 'statuses' where kind = 'role_message';
+-- delete from schema_version where version = 20261126110301;
+-- commit;
+alter table phases alter column verdict set default '';
+alter table phases add column states_serial bigint default 0 check (states_serial >= 0);
+update outbox set payload = payload - 'verdict' where kind = 'notice' and payload ? 'verdict';

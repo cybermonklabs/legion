@@ -34,7 +34,7 @@ func TestBaseBranchMergedForReadsAMergeStoredUnderTheRepositorysOldName(t *testi
 	}
 	attributor := NewAttributor(renamesOf(t, ctx, pool))
 	for _, asked := range []string{gadgetsRepo, gadgetsOldRepo} {
-		branch, err := attributor.BaseBranchMergedFor(ctx, pool, issue, asked)
+		branch, err := attributor.BaseBranchMergedFor(ctx, pool, issue, asked, HeadAnswers{})
 		if err != nil {
 			t.Fatalf("BaseBranchMergedFor(%s, %s): %v", issue, asked, err)
 		}

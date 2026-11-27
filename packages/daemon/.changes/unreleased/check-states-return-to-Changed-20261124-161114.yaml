@@ -5,8 +5,8 @@ body: |-
   alone and refuses it on any other (`RETURN_TO_NEEDS_FAIL`), and a verdict beside it is refused
   as on every phase completion (`VERDICT_NOT_TAKEN`). The workflow refuses a step the task cannot
   go back to at the completion (`RETURN_REFUSED`), keeps the step on the tester's phases row
-  (`phases.return_to`, migration `20261123134347_phase_return_to`, whose way back runs before
-  that of `20261121074614_phase_verdict_gone`), and uses it only when the states fail the step: a
+  (`phases.return_to`, migration `20261126110302_phase_return_to`, whose way back runs before
+  that of `20261126110301_phase_verdict_gone`), and uses it only when the states fail the step: a
   fail returns the task to the step named, and with none named to the first implementation step
   before the tester. A pass goes on, and logs once, with its move, that the step named is not used.
   A new testing step names no step an earlier completion named.

@@ -1,0 +1,9437 @@
+#!/usr/bin/env bash
+#
+# check.sh is the gate of dispatch://INFRA-3134. It runs every command this reading
+# recorded, reads the judgement for its shape, resolves every citation, asserts each
+# landed step is in this tree with a passing proof, and proves its own bite.
+#
+#   bash docs/research/internet-of-cognition/check.sh --replay
+#   bash docs/research/internet-of-cognition/check.sh --shape
+#   bash docs/research/internet-of-cognition/check.sh --citations
+#   bash docs/research/internet-of-cognition/check.sh --landed
+#   bash docs/research/internet-of-cognition/check.sh --self-test
+#   bash docs/research/internet-of-cognition/check.sh --admitted
+#   bash docs/research/internet-of-cognition/check.sh --published
+#   bash docs/research/internet-of-cognition/check.sh --coverage
+#   bash docs/research/internet-of-cognition/check.sh --help
+#
+# The three endings. Every mode prints PASS and FAIL lines, each naming an assertion, and
+# ends in one of three ways, and this is the one place they are defined:
+#   all N assertions passed                exit 0: every assertion the mode declares passed
+#   F of N assertions failed: <names>      exit 1: one or more of them failed
+#   check.sh cannot run[ <what>]: <why>    exit 2: it could not run, so an assertion it
+#                                          declares is not judged, and none failed;
+#                                          <what> names the mode, as --replay, and <why>
+#                                          is the reason
+# N is the number of assertions the mode declares in the one assertion table below, not
+# the number of lines it printed. The mode runs in a subshell, and its verdict reads what
+# each declared assertion reported: one that reported a FAIL failed, and one that
+# reported nothing, because its code crashed, exited or was skipped, is a FAIL naming it,
+# so no assertion is passed by its silence; each prints its PASS only after all its parts
+# have run. check.test.sh ends the same three ways, counting its cases where a mode counts
+# its assertions: all N cases passed, F of N cases failed, or check.sh cannot run
+# check.test.sh with each case that could not run and why; a case whose run of the gate
+# could not run, in whole or in part, could not run itself, by the rule of the ending
+# record below, and is neither passed nor failed.
+#
+# A run cannot run only when something outside the evidence it judges is missing or does
+# not answer, and the reason it names is of one of four kinds, which its ending record
+# (below) carries: prerequisite, a prerequisite its table declares (a tool, a variable, the
+# history, the clone root) or a tool its ending is written with; gate, env.sh or the install
+# reader when it cannot load because env.sh is missing or python3 cannot start it, or a mode
+# that does not exist; environment, the environment env.sh builds from the package index and
+# the clones, the run's own scratch and record (below), or the machine the run is on, as
+# when a signal ends a child the gate waits on, coordination/count.py among them
+# (count_load), or a child runs past its bound ("Every child the gate waits on ends"
+# below); and source, the GitHub budget, a live source the gate reads itself, or the model
+# gateway a row's omp session reaches (the live-read rule below). What the evidence holds
+# is never such a reason: a line of claims.jsonl the one parse cannot read is a FAIL
+# (below), and a reader that loaded and then stopped is a failure of the gate. A run that
+# cannot run ends exit 2 with the reason as its last line, which names what is missing, and
+# for a missing prerequisite ends with what provides it; for --self-test it names the run of
+# the gate it made that could not run, ends with that run's own last line, and carries that
+# run's kind. One more kind marks an assertion that was not judged without ending a run
+# exit 2: evidence, each assertion --replay leaves after it failed claim-form on a row
+# env.sh reads a value from, since env.sh builds what every recorded command reads from
+# those rows (evidence_stops; "The one parse of claims.jsonl" below); that run ends exit 1
+# by its FAIL.
+#
+# Every child the gate waits on ends. Three bounds hold, by one rule. A mode runs whole
+# under its own bound (run_mode, mode_bound): check.sh runs the mode again as a child of
+# itself, under GNU timeout, in a process group of its own, which is sent TERM at the
+# bound and KILL BOUND_KILL seconds later. Each child that can wait on something outside
+# the run or start a child of its own runs under a bound of its own by bounded_run, the
+# same way: the programs of BOUND_PROGRAMS, run by name (python3, which runs the install
+# reader, git, curl, dispatch, uv and bash), so the children of live_read and env.sh's
+# builds and fetches among them; a program env.sh runs by the path it exports
+# (ioc_env_program); coordination/count.py; each recorded command of a row and each
+# committed proof of a landed step; and each run of the gate that --self-test and
+# check.test.sh make. When such a child ends, whatever is left of its group is killed, so
+# that nothing it started holds a pipe the gate reads to its end, as a command
+# substitution, a process substitution and a pipeline do. Each local text tool of
+# BOUND_TOOLS, jq, grep, sed, awk, cat and the rest, runs with no bound and no group of
+# its own, which would cost it a process, but its status is read where it runs, in
+# whichever substitution or stage of a pipeline (bound_tool). A child that a signal ends,
+# its status 128 and the number of a signal, or that its bound ends, ends the mode cannot
+# run, of the kind environment, naming what ran and the step that ran it, the signal or
+# the bound, and how many seconds it ran, from whichever subshell of the mode it ran in
+# (bound_stop), before the mode reads what the child printed, so a killed tool is never
+# read as an empty or a partial value: a row by its id, and so a program a row ran that a
+# signal ended, a program a row's xargs ran among them, which xargs reports by its status
+# 125 (run_recorded); a helper by its words; count.py by its own line (count_run); a run of the
+# gate by the record fixture_run or gate_run writes for it, of a run that could not run,
+# which its reader reads by the rule of the ending record below; and a mode past its own
+# bound by the record run_mode writes, every assertion it declares unrun. The ending of a
+# run, which runs in the run's own shell outside any mode's subshell, finish, run_ending
+# and run_mode's own reading of a mode past its bound among it, and check.test.sh's summary,
+# which run_ending writes, reads each tool's status by the same functions (ending_mode); a
+# tool a signal ends there stops the ending (ending_stop) rather than a mode, nothing more
+# is read, and the run writes that stop through its one record: exit 2, every unit it
+# declares that had not already stopped could not run, of the kind environment, for that
+# stop, the run itself when what it declares was not read whole, and the stop's line is its
+# last, a record whose own write a signal ended written again by printf alone. SIGPIPE alone
+# is outside it, since a reader that stopped reading, as head does, sends it; a child it
+# ends, and every other status, keep the meaning their caller gives them. git's 129, which
+# git exits with on a usage error, as `git --no-such-option` does, is no signal either,
+# though 128 and SIGHUP's number make it (GIT_USAGE): a git the gate runs, or a row runs,
+# that exits 129 exited by itself, and its status is read as any other is, so a row whose
+# git was given an option it does not know fails on that status; every other program's
+# status above 128 keeps the signal reading. The bounds, each at least three times the
+# slowest measured run of what it bounds, with where and when that was measured, are
+# written beside BOUND_PROGRAM below; IOC_CHILD_BOUND, a whole number of seconds, lowers
+# each bound of a child above it to it, and no bound of a
+# mode, so that a case of check.test.sh ends a run in seconds. A loop over every row reads
+# the rows from a file, since a program feeding the loop through a pipe would run as long
+# as the loop does. A mode whose input is a terminal reads /dev/null in its place, since a
+# terminal stops a program of another group that reads it, and an interrupt, a TERM or a
+# HUP a shell gets while it waits for a bounded child is passed to the child's group,
+# which then ends by that signal. What a mode runs before its prerequisites are read, the
+# prerequisites themselves, and what check.test.sh runs itself outside a run of the gate
+# before its summary are outside the rule.
+#
+# The ending record. Every run of a mode writes how it ended as one record beside its
+# text, a file of lines of tab-separated fields: status and its exit status; line and its
+# last line; declared and a name, one line per assertion the mode declares; and one line
+# per assertion it reported, passed or failed and the name, or unrun, the name, the kind of
+# the reason and the reason. One function, run_ending, derives the exit status from those
+# lines, which the run gathers in its own shell, by the precedence below, writes the record
+# whole in one write and prints the last line, and check.test.sh's summary writes its own
+# record by the same function, counting cases. The record goes to the file IOC_ENDING
+# names, which the caller of one run sets on that run's command alone, so that no two runs
+# share one, and otherwise under the run's scratch, removed with it; this script unsets
+# IOC_ENDING when it starts, so no run it makes writes into its caller's record. --help and
+# --coverage judge nothing and write no record. How a run ended is read from its record
+# alone, never from its exit status alone or from its text, by one function, ending_read,
+# which --self-test reads each run it makes by and check.test.sh each run its cases make;
+# the text says what each FAIL found. Each such run is made by fixture_run or gate_run,
+# which print the directory they made for it, holding its text, its record and the status
+# it exited with. A run that wrote no record, or that exited with a status its record does
+# not hold, crashed, and a crash is a failure, a bash syntax error among them; a run that a
+# signal or its bound ended holds the record fixture_run or gate_run writes for it, of a
+# run that could not run, of the kind environment ("Every child the gate waits on ends"
+# above); and a run whose directory takes no write, or that was never made because its
+# directory could not be made under a scratch that takes no write, could not run, of the
+# kind environment, since the place its record goes is its reader's own scratch.
+# check.test.sh reads the run of each case by one rule, case_read: a run that crashed
+# fails its case; a run an assertion or a case of which could not run for a reason the
+# case does not plant makes the case one that could not run when the reason's kind is from
+# outside the tree, prerequisite, environment or source, whatever its exit status, and a
+# failed case when it is gate or evidence, the tree's own files; and a case that plants one
+# failure asks that exactly that assertion failed. A reader who keeps a run's record sets
+# IOC_ENDING on its command and reads it in the same way.
+#
+# The run's own scratch and record. Every run that judges, a mode or a script that sources
+# this one as check.test.sh does, checks what its ending needs before anything else runs:
+# the tools it is written and read with (ENDING_TOOLS, which --help prints); its scratch,
+# made under TMPDIR and written once, so that a TMPDIR that is missing, cannot be written
+# or is full is found there; and the record IOC_ENDING names, written once. A run that
+# lacks one ends at once by early_end, which needs none of them: it prints the cannot-run
+# line naming what failed, writes the record, when IOC_ENDING names one that takes a
+# write, holding status 2 and the run itself, the mode or the script, declared and unrun
+# with the kind prerequisite or environment, since nothing of it was declared yet, and
+# exits 2 before anything writes under the scratch. A scratch that fills, or is removed,
+# while the run goes on is found at the end: when it takes no write as the run ends, what
+# the run wrote there may be lost, so nothing the run judged is read, every declared
+# assertion or case could not run, of the kind environment, and the run ends exit 2, its
+# last line naming the scratch. A record that cannot be written ends the run exit 2
+# whatever it judged, its last line naming the record and then quoting the line the record
+# would have held; its reader finds no record and reads it by the rule above. A scratch that
+# fails part-way and takes writes again before the run ends is outside this rule: a FAIL a
+# lost write caused then stands.
+#
+# Precedence. A run that reported any FAIL ends exit 1, and when part of it then could not
+# run, its last line names after the failures each assertion, or each case, that could not
+# run and why. Only a run with no FAIL and something that could not run ends exit 2. A run
+# whose every assertion, or every case, passed ends exit 0. A run whose own scratch or
+# record takes no write as it ends is no reading at all and ends exit 2 (above).
+#
+# Two rules hold what every mode reads, and this is the one place they are stated.
+#
+# The expected-set rule: no assertion passes on no input, and no count that decides a
+# floor is read from the live input alone. Every count an assertion holds over is held to
+# a committed expected set or floor: each step of sources.json's landed list to a page of
+# the judgement that carries the state the list commits for it, Landed, Landed: not made or
+# Not landed, and each page that carries a state to a step of that list; the
+# candidate pages to PAGE_FLOOR and PAGE_CAP, three and seven, and every assertion over the
+# pages (their eleven parts, their verdicts, what each commits us to, a refutation) to that
+# floor; the three fixed pages; the six named mas-lab directories and the three questions;
+# the four fixed interview rows; the three tests against our own records; the five
+# deep-read directories of the order of work; and the rows of claims.jsonl that cite each
+# record under check, which must be exactly the citations the record carries as it is read
+# now. Where no committed set exists the floor is one: a claims.jsonl with no row, no
+# command, no quotation or no absence search, a kind of citation with no row, a directory
+# naming no dispatch:// reference, a judgement stating no figure in a sentence that cites a
+# row, an empty landed list or an empty question list fails the assertion over it by name.
+#
+# The live-read rule: every read of a live source the gate makes itself goes through one
+# function, live_read, in the mode's own shell before any assertion over what it reads
+# judges: the judgement and the two records under check from Dispatch, whose copies every row
+# that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
+# Dispatch API, the GitHub budget, GitHub's own name for the deployment repository and its
+# answer to git ls-remote of that private repository rows read, the default branch and its
+# fetch, the branch's history and the fetch of the commit each landed step is read at by
+# --published, the fetch of each commit a landed step merged in another pull request names
+# for --landed, the fetch of each pinned clone, and the run of coordination/count.py, the
+# walker of the count, which reads the feed of the count's window, so that a read inside it
+# that fails is that feed not answering. A source that does not answer is a mode that cannot
+# run, naming the source, exit 2, or exit 1 after a FAIL, by the precedence above; it is
+# never an assertion's
+# failure. A source that answers that it holds no such thing has answered, and judges the
+# deliverable: Dispatch's "not found", "No block", "no version N of" or "document ... not
+# found" for a reference fails citation-dispatch, for the record of a step that is not landed
+# fails landed-proof, and for the judgement or a record under check leaves the text empty,
+# which every assertion over it then fails by its floor or its committed rows. One such
+# answer is read as no answer, on purpose: git answers the fetch of a commit GitHub does not
+# hold "upload-pack: not our ref", which live_read does not take for an answer, so a
+# merged-in step whose commit GitHub does not hold leaves --landed unable to run, of the kind
+# source, and never reaches landed-proof's FAIL that the fetch did not bring that commit;
+# check.test.sh's case 146 holds that. The live-read rule covers the gate's own reads. A
+# row's own failed read of a live source, GitHub, Dispatch or the model gateway, is read by
+# one rule of its own (source_answer), since only an answer from the source judges the
+# deliverable: a curl of GitHub's REST API or of the Dispatch API, by the status the row got,
+# curl's own error line, which the curl's record holds, and by one read of the gate's own of
+# the URL, with the header file the record names, for the source's message, and for the
+# status where the record holds none; a curl inside a script a row runs, as
+# evidence/concord-build-run.sh's two reads of GitHub are, by the same record, which the
+# script leaves; a dispatch command, by the first line it printed; a python3 of a row whose
+# command reads DISPATCH_URL, by the last urllib or transport error its output holds, where
+# the record holds no curl of a source beside it; and an omp session of a script a row runs,
+# as evidence/accord-skills-run.sh's is, by the line the script leaves in the same record
+# when the gateway gave no answer, which names the cause, HTTP 429, HTTP 5xx, a refusal of
+# the credential or no answer, and never omp's own message. A read that got no answer, a
+# server error (5xx) or a rate limit the row got, whatever a later read answers, and an
+# answer about the reader's credential (a 401, or a 403 that names authentication, a
+# permission or a token rather than a rate limit, or that a read again answers below 400) are
+# no verdict on the deliverable: the row prints no FAIL and the mode cannot run, of the kind
+# source, naming the row, the source, the read and the line that shows it, exit 2, or exit 1
+# after an earlier FAIL, by the precedence above ("The GitHub tokens stand on no command
+# line" below). Any other answer, such as a 404 or Dispatch's NOT_FOUND, is the source's
+# answer about the record, and the row fails, naming it; so does a row's failed read of
+# anything else. The one live read that is no input is the report of each published page's
+# live address, which reports an address that does not answer rather than stopping, as the
+# Verification document asks of it.
+#
+# Prerequisites. Nothing in CI runs this script, and a gate nobody else can start passes by
+# default, so each mode declares what it needs in one table, prerequisite_table below: the
+# tools on PATH, the history, the clones, the environment variables, a git or a grep that
+# reads a Perl-compatible regular expression where the mode reads a token an author wrote by
+# one (whole_token), and an omp whose --help starts a line with each flag the session of the
+# row i-skills-run passes, each with what provides it. One step, prerequisites, checks every
+# line of the mode before its first live read and its first assertion, and one that is
+# missing ends the mode exit 2, naming it and, at the end of the line, what provides it.
+# --help prints the same table after this header, from the same function, so the list a
+# reader reads is the list the mode checks. --self-test needs its own lines and every line
+# of --replay, --shape, --citations, --landed and --published, since it runs each of them,
+# but for --replay's omp, the flags its --help prints and IOC_OMP_MODELS: each fixture run it
+# makes is given the stub omp and its models.yml in place of the caller's (FIXTURE_OMP_STUB,
+# FIXTURE_OMP_MODELS), so it reads none of them (SELF_TEST_STUBBED). check.test.sh checks
+# the lines of --self-test alone before its first case, since each run a case makes checks
+# its own mode's. Before any of them, every run checks the tools its ending is written with
+# ("The run's own scratch and record" above), which --help prints first. GNU timeout is the
+# one line read before the mode starts, since the mode itself runs under it (run_mode): a run
+# with no timeout on PATH ends exit 2 there, of the kind prerequisite, every assertion the
+# mode declares unrun, naming timeout and what provides it by the mode's own line of the
+# table, never the 127 of a program that is not there.
+#
+# The row i-skills-run makes the one model session --replay spends on:
+# evidence/accord-skills-run.sh installs the two ACCORD skills into a new omp HOME and runs
+# one headless omp session on them, capped by the --max-cost its row's command passes, a flag
+# omp --help prints. It needs IOC_OMP_MODELS, the path of an omp models.yml that reaches a
+# model, omp, an omp whose --help prints every flag the session passes, and tar, four lines
+# of the prerequisite table for --replay; the credential in that file reaches no file of this
+# tree and no line the gate prints. The flags are read by the script itself (its
+# --omp-flags), which holds their one list, before any row runs, so an omp that lacks one
+# ends --replay cannot run, of the kind prerequisite, and never fails the row. --self-test
+# and check.test.sh run the row under tests/omp-stub/omp, a stub that plays the session on
+# canned replies (FIXTURE_OMP_STUB), with the models.yml beside it, which names no provider,
+# as IOC_OMP_MODELS (FIXTURE_OMP_MODELS), and no run of theirs reaches a model, so --self-test
+# needs tar alone of the four (SELF_TEST_STUBBED). A session whose gateway gave no answer is
+# a read of a source that did not answer, by the live-read rule above, and never a FAIL; so is
+# a session omp ended before the answer that ends it, at the script's own bound, timeout's 124
+# or, once the bound has passed, its KILL's 137, at omp's --max-time or, after the model
+# answered, on any other end but an answer of the model's own or omp's --max-cost; and one any
+# other signal ended, whatever the model answered, is a child a signal ended, of the kind
+# environment, by the status the script records for omp (run_recorded).
+#
+# --landed runs the committed proof of each landed step, the command sources.json commits
+# for it, from the root of this tree, and a proof that exits non-zero is the step failing, a
+# FAIL of landed-proof. The proofs of the two steps the landed list commits read the files of
+# fcc746a3, the commit both name, with git show in IOC_MERGED_REPO, the scratch repository
+# the mode fetches that commit into, so --landed needs git, which its table names, and
+# nothing installed: a checkout with no node_modules judges the steps as one after bun
+# install does.
+#
+# It reaches GitHub with git and the REST API and never with gh, which in a Legion pod is
+# scoped to this project's owners and refuses ioc-project; so does every recorded command
+# and every script one runs, and --admitted refuses a row that runs gh, since ADMITTED holds
+# no entry for it. A repository's files are read from a clone at the commits sources.json
+# pins, with git show, git log and git grep: the three projects' clones and the deployment
+# repository's, a private repository IOC_DEPLOYMENT_REPO names, since this public tree names
+# it nowhere, read as GitHub names it: GitHub reads an owner and a name without case, and
+# the rows compare the name with what GitHub and the repository write, so the value a reader
+# gives, in whatever case, is read once, before env.sh or any row, as GitHub's own full_name
+# for it, which IOC_DEPLOYMENT_REPO then holds for env.sh and every row; no line the gate
+# prints names the value, a stop of a run, a PASS or a FAIL line, which can quote a row's
+# command, the URL it read and what it printed, and a refusal of env.sh alike: each writes
+# the input, $IOC_DEPLOYMENT_REPO, in its place and in place of its address, in a line of
+# git's or curl's it quotes too (deployment_repository_read, deployment_hidden, pass and
+# fail, env.sh's ioc_env_hidden); env.sh fetches
+# that repository blobless through the
+# machine's git credential helper
+# (env.sh's ioc_env_clone_private). What only the REST API answers, a pull request's reviews,
+# its times and its size, is read with curl, sending the header file of the token git
+# credential fill gives for that repository ("The GitHub tokens stand on no command line"
+# below), or no header where it gives none, and then GitHub's sixty requests an hour for one
+# address bound the read.
+#
+# Where it writes. It clones under the directory IOC_CLONES names, $TMPDIR/ioc-clones by
+# default, at the commits sources.json pins. Everything env.sh builds is under IOC_CACHE,
+# $TMPDIR/infra3134 by default, and so is every cache a tool of a recorded command writes:
+# env.sh's ioc_env_cache_table names one variable per cache (go's GOMODCACHE and GOCACHE,
+# uv's cache and the interpreters it downloads, pip's, huggingface's, torch's compiler
+# cache, bun's, npm's and XDG_CACHE_HOME), env.sh exports each, and --replay exports them
+# by the same table when its fixture builds nothing. No row names a cache of its own, so a
+# fresh IOC_CACHE is a machine that never ran the replay; --help prints that table. Each
+# recorded command runs with TMPDIR set to an empty directory of its own under the run's
+# scratch, so no row reads what an earlier run or an earlier row left under $TMPDIR, and a
+# row reads every input through env.sh's variables. Its scratch, each run's and the
+# fixtures of --self-test with the IOC_CACHE of each, is under $TMPDIR and is removed when
+# the run ends. It writes nothing else, but for what a tool writes outside every cache,
+# which no cache variable moves, measured on 2026-11-15 over rows of every tool the replay
+# runs at a fresh IOC_CACHE and over --landed: dispatch writes the state of the session
+# that runs it (answers.json, results.jsonl and state.json) under DISPATCH_STATE_DIR on
+# each read, and go keeps its telemetry counters under the user's configuration directory
+# (go env GOTELEMETRYDIR), which its first run on a machine makes. No row reads either.
+#
+# Nothing a killed run leaves is trusted. A pod replacement kills a run part-way, and the
+# next run reads the same IOC_CACHE and IOC_CLONES, so every entry env.sh keeps there is
+# kept whole in one of three ways: it is written under a temporary name and renamed into
+# place only when it is whole; it carries a stamp written last, which the next run reads
+# before it reuses the entry, so an entry with no stamp, or with the stamp of other
+# inputs, is built again from nothing; or it is written again at every run, as
+# IOC_TM_OVERLAY is. IOC_OUR_TREE is kept both ways: renamed into place, and holding a
+# stamp. env.sh's header lists each entry with the way that keeps it. An environment env.sh
+# built is no longer its build once a row installs into it, so --replay removes env.sh's
+# stamp of each environment a row installs into, as the install reader reads the row,
+# before the row runs, and of each whose site-packages changed while it ran, after; the
+# next run builds that environment again. A tool keeps its own cache whole by its own
+# means, and what a row writes under IOC_CACHE is written again by a row of the same run
+# before any row reads it. An install into an environment that no row the reader reads
+# installs into, which a kill cuts short, is outside this rule, as an install the reader
+# cannot see is outside install-pinned. The run's scratch is made fresh by each run, so
+# what a killed run left there is never read.
+#
+# The fixture of --self-test. --self-test builds a small deliverable of its own under its
+# scratch and runs the gate over it, and check.test.sh does the same in each of its cases.
+# Each such run, fixture_run, has an environment of its own, made with env -i, and none
+# of the caller's:
+#   carried   PATH, without which a mode finds no tool; TMPDIR, under which the fixture's
+#             scratch goes; HOME, under which git, uv and go keep their configuration;
+#             DISPATCH_URL, DISPATCH_TOKEN_FILE, DISPATCH_HOST and DISPATCH_SESSION_ID,
+#             without any one of which dispatch refuses to read, and DISPATCH_STATE_DIR,
+#             without which it writes its session's state under HOME, each measured on
+#             2026-11-15 by running the fixture's four modes with one taken away; and,
+#             where they are set, IOC_CLONES, a place as TMPDIR and HOME are, under which
+#             --citations clones each repository at the commit sources.json pins and each
+#             clone's stamp holds, so that a fixture clones where the prerequisite line of
+#             --citations tells a reader to point it; the proxy variables git, curl and go
+#             read; and GOPROXY, GONOPROXY, GOSUMDB, GONOSUMDB, GOPRIVATE, GOINSECURE and
+#             GOTOOLCHAIN, by which go reaches a module (FIXTURE_CARRIED)
+#   set       IOC_ROOT, IOC_EVIDENCE and IOC_JUDGEMENT to the fixture's tree and judgement,
+#             IOC_NO_ENV=1, IOC_PUBLISHED_COMMIT to the fixture's head, IOC_ENDING to the
+#             record of that one run, IOC_CACHE to the fixture's own directory cache/,
+#             which the runs over that one fixture share and no run over another fixture
+#             reads, IOC_DEPLOYMENT_REPO to FIXTURE_DEPLOYMENT_REPO, a placeholder, since
+#             the fixture reads no deployment repository and a fixture's run never reads
+#             the caller's, and IOC_OMP_MODELS to FIXTURE_OMP_MODELS, the models.yml of
+#             tests/omp-stub/, which names no provider, with FIXTURE_OMP_STUB, that
+#             directory, first on PATH, whose omp plays a session on canned replies, so that
+#             no fixture reaches a model and the caller's models file is never read
+#   cleared   every other variable: IOC_HISTORY_REF, IOC_OUR_TREE, every variable env.sh
+#             exports and every cache of its table among them, so the fixture reads its
+#             own history and keeps its caches in its own IOC_CACHE
+# A case of check.test.sh plants a fault by setting one of FIXTURE_INPUTS on its own
+# command (IOC_HISTORY_REF, IOC_CACHE, IOC_OUR_TREE, IOC_EVID, IOC_TC_WORK, the five
+# program variables of PROGRAM_VARIABLES, IOC_FAKE_RATE_LIMIT, IOC_GITHUB_HEADER_AGE,
+# IOC_CHILD_BOUND, IOC_ACCORD_BOUND, UV_OFFLINE, UV_NO_INDEX and UV_FIND_LINKS), which
+# fixture_run passes on; --self-test, and a shell that sources this script as check.test.sh
+# does, unset the caller's values of them first, so a fixture reads one only from a case.
+# --published over the fixture reads the fixture's own Dispatch and not the caller's:
+# fixture_published sets DISPATCH_URL and DISPATCH_TOKEN_FILE on that one run to its address
+# and its token and puts its stub curl first on PATH, which answers the four reads the mode
+# makes from the files of the fixture's dispatch/ (fixture_build, fixture_delivery).
+# fixture_run prints the directory of each run it makes, which holds the run's text and its
+# ending record (above), and check.test.sh reads each case by that record. A run the
+# self-test makes that cannot run, over the fixture or of check.test.sh or --admitted, stops
+# the self-test there, naming the run and its reason, and ends it by the precedence above; it
+# is never counted as an assertion that failed.
+#
+# No recorded command may read the scratch of the pod this reading was made in, because
+# that pod's disk died with it. --replay therefore reads the two Dispatch records under
+# check itself, then sources env.sh once, before it runs the first recorded command, and
+# env.sh prepares the rest of what those commands read and this tree cannot hold: a python
+# environment with sentence-transformers, torch and rdflib, the pinned all-MiniLM-L6-v2
+# snapshot checked against the sha256 the evidence of the row s-model-checksum names,
+# mas-lab installed from its clone, the SHACL shapes graph of the scope clone, and the
+# review corpus one search reads, held to the corpus_floor the evidence of tc-corpus-1
+# names. It caches all of that under IOC_CACHE, $TMPDIR/infra3134 by default, builds each
+# thing once, by the rule above, and exports one variable per input, which every recorded
+# command reads beside IOC_CLONES; the records it takes from --replay as IOC_DESIGN and
+# IOC_COMMENT. env.sh's own header names each variable. A run whose environment env.sh
+# cannot build ends there, exit 2, or exit 1 after a FAIL, by the precedence above, with
+# env.sh's line naming what it could not build and, last, check.sh cannot run and the
+# reason.
+#
+# --shape and --landed read the history of this pull request: the commit that adds the
+# question list and the commits of the landed steps. After the squash merge the default
+# branch holds none of them, so both modes read IOC_HISTORY_REF in place of HEAD when it
+# is set: a ref that holds the pull request's history, such as the one a reader makes with
+#   git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771
+# and names as IOC_HISTORY_REF=refs/remotes/origin/pr-3771. A ref that names no commit of
+# this repository is a missing prerequisite of both modes.
+#
+# --landed runs no text it reads from Dispatch. sources.json's landed list is the list of
+# the steps R12 of the specification names, each with its state. A step whose state is
+# landed commits the page's title, its commit, its command and the sentences it published
+# in their files; the mode runs the committed command, reads each sentence in its file in
+# this checkout's own tree, ROOT, and fails a page whose Landed commit or Proven by command
+# differs from the committed entry for its title, and a sentence its file does not carry,
+# naming both. The page's Landed commit is the one word after the label, seven to forty
+# lowercase hexadecimal digits, and a word with anything else in it fails, naming the page
+# and the line, rather than being read as the digits it starts with. A landed step names
+# either a commit of this pull request or the merge commit on main of another pull request
+# of this tree, as the architect's reading of
+# c-landed-steps records (dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760):
+# an entry of the second kind carries merged_in, "<owner>/<repository>#<n>", and its
+# 40-hex commit, which the mode fetches from our_repository.url into a git directory of
+# its scratch through live_read, so a fetch that gets no answer is a mode that cannot run;
+# the commit's subject ends "(#<n>)", each published sentence stands in its file at that
+# commit, the page's Landed line names the commit and "(<owner>/<repository>#<n>)", and
+# the committed command passes with IOC_MERGED_REPO naming the fetched directory;
+# landed-no-refusal and landed-third-change read that commit's own diff beside this pull
+# request's. A merged-in step is held to the whole of what its commit added, and its proof
+# to the whole of what it publishes: landed-coverage reads each non-blank line the commit
+# added to a file a merged-in step's published list names, takes the backticks out of it
+# and out of each sentence a merged-in step of that commit publishes on that file, takes
+# those sentences out of the line, and fails the line, naming the steps, the file and the
+# line, when anything is left but whitespace and one list marker, -, * or <n>., and a bold
+# label as **Thermo:** is no list marker; and landed-proof-holds fails each published
+# sentence that the page's Proven by command, read from its code span with each '\'' read
+# as ', does not hold with its backticks taken out, naming the step, the file and the
+# sentence, since a proof that greps for less passes with a sentence gone. A step whose
+# state is not_landed commits the R12 condition that stops it, one of R12_CONDITIONS word
+# for word, and its records, the dispatch:// references and pull requests that record why;
+# its page says Not landed with that condition word for word and names each record, and
+# each dispatch:// record resolves through live_read, since --citations resolves the
+# references of this directory's files and not the judgement's.
+# A step whose state is refuted has a page that says Landed: not made with its Refuted by
+# line. A page carries one state: Landed with Proven by, Landed: not made with Refuted by,
+# or Not landed; a page carrying two, or a line of a state twice, fails, so no reader that
+# takes a page's first line of a kind is fooled by a second, and a page carrying a state
+# whose title the list does not name fails too, so the list stays the committed set of the
+# pages that carry one; the list names each step once, and a title it names twice fails.
+# Every page gives its first step one cost in engineer-days, on one Cost line, as R9 does:
+# --shape's page-parts and --landed both read it by cost_read, the whole word before the
+# first "engineer-day" on the line, its two words joined by a hyphen, an en dash, an em
+# dash or spaces, in digits, a whole number or one with a decimal point, or in words (one,
+# a, an, half a, half an, two to ten), and both fail a Cost line in no engineer-days or
+# with a figure the gate cannot read, as "1/2 engineer-day" or "0,5 engineer-days", naming
+# the page and the line. Every page at one engineer-day or less carries one of the three
+# states, as R12 asks, and a page carrying its Cost on more than one line or none fails;
+# the line that passes counts the pages at one engineer-day or less and those above.
+# The order of the two steps is judged only when every step of the list is landed, on the
+# one commit of this pull request that carries each step's subject, and two commits of one
+# subject fail, naming them; steps merged in another pull request are judged by their
+# commits, in the list's order: one commit holds the order, since a commit is its own
+# ancestor, and two are held to ancestry on main as fetched; a list that mixes steps of this
+# pull request with steps merged in another fails landed-order, since a commit of this pull
+# request that main does not hold has no ancestry to read against one main holds; otherwise
+# landed-order passes naming the steps that are not landed, and that the order is not judged
+# for that reason.
+#
+# --published reads the default branch and the record of the delivery R13 asks for, both
+# live. published-tree holds the default branch's commit, or the one IOC_PUBLISHED_COMMIT
+# names, to the evidence, the transcript, this script and every path under
+# docs/research/internet-of-cognition/ the judgement names, read over the whole document,
+# front page and pages, as the directory's name and the path characters after it with its
+# trailing dots and slashes taken off; a judgement that names no such path fails, by the
+# expected-set rule, and a path of another repository is not read. It reads the sentences
+# each landed step added in its files at a commit of the history of the default branch's
+# commit, as the architect's reading of c-published records
+# (dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6), and its reading A2
+# reads the two kinds of landed step apart: a step another pull request merged (merged_in)
+# at the step's own commit, which that history must hold, and a step of this pull request
+# at its own commit where that history holds it, and otherwise at the one commit of the
+# branch's first parents whose subject ends "(#<n>)", <n> being our_repository.pull_request
+# of sources.json, the squash that carries this pull request, since main holds none of the
+# pull request's own commits. A merged-in step whose commit the history does not hold
+# fails, naming the step, its commit and the branch's commit; a step of this pull request
+# fails, naming the step, when our_repository.pull_request is no positive whole number or
+# not one commit of the first parents ends its subject so, the count named; and main's tip
+# may hold other words on the step's files: later work of other trees on them is not this
+# check's subject. published-delivery reads this issue, its messages and its comments
+# and the comments of dispatch://INFRA-1098 from the Dispatch API, and holds them to the
+# judgement as Dispatch holds it, each part read by rule: the ranking, every item of the list
+# under "## The ranking", in order; the paragraph, the text under "## Where the authors'
+# account and the checked reading differ"; and each candidate page whose Cost cost_read reads
+# as above one engineer-day, its title and, after the last place the title stands in the
+# message and up to the title of another candidate, the text of its "Default if nobody
+# answers" line. Both sides are read after one normalisation: each run of whitespace one
+# space, Markdown emphasis and backticks taken out, and each row citation in square brackets
+# taken out with the space before it. A message reaches the assignee the issue names when the
+# assignee did not write it and it is addressed to no session or role, a reply among them;
+# one such message holds every part, and where none does, a FAIL names each part the newest
+# of them lacks. The gaps R8 found are the rows node-model.md's section "## 3. The gaps"
+# cites on the bold line of each gap: one comment of dispatch://INFRA-1098 names INFRA-3134
+# and cites each of them, or, where that section cites none, the judgement holds R8's
+# sentence, R8_NO_GAP, after the normalisation. The publication to the controller is judged
+# by its record, as the approved departure of the plan has it, and the mode prints that it
+# reads the record and not the publication: one comment of this issue names the topic
+# CONTROLLER_TOPIC, gives the time of the publication as a UTC time in RFC 3339 form, as
+# 2026-11-25T02:09:09Z, after no digit, and holds every item of the ranking, in order, as the
+# message must; where none does, a FAIL names each of the two the newest comment naming the
+# topic lacks.
+# --self-test runs the mode over its fixture's own Dispatch (fixture_published).
+#
+# --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
+# it classifies the command of every row of claims.jsonl, prints each entry with the
+# number of rows that use it, and fails an entry no row uses, a row the classifier refuses,
+# and a line of the table in the header above run_recorded that differs from the one it
+# measured; it fails as well a list of reserved names there that differs from the
+# reader's, and a name of the runner no reserved prefix covers. --self-test runs it as one
+# assertion.
+#
+# The one parse of claims.jsonl. Every mode that reads a row of claims.jsonl, --replay,
+# --citations and --admitted, and --self-test through its fixture and its run of
+# --admitted, first parses the whole file once, claims_judge, before it builds any
+# environment or starts any reader. A line holding only space is no row. Every other line
+# is a row when it is one JSON object, holds an id that is a string that is not empty and
+# that no row above it holds, and holds each of requirement, source, kind, claim, mark,
+# note, output and command only as a string and evidence only as an object, whose fields
+# sha256 and corpus_floor, where it holds them, are 64 lowercase hexadecimal digits and a
+# whole number, and checks only as an array of one or more objects, each holding row and
+# mark, strings that are not empty, and no key but those two and refines, a string, the
+# shape the list of keys below gives; expect may hold any value, since
+# predicate-form judges it. A line that is no row is the evidence being wrong, which
+# reading it again does not cure: it is one FAIL naming its line number and why, a second
+# row of an id naming the line of the first, and the mode reads on and ends with its
+# declared assertions counted, exit 1. In --replay the FAIL is claim-form's, since a line
+# that is no claim carries no form of evidence; in --admitted admitted-rows', since it is a
+# line the classifier reads no row of; in --citations citation-kinds', the assertion over
+# how the mode reads a citation rather than over what one of a kind resolves to, since a
+# line that is no row is a citation of no kind. Every reader after it, the install reader,
+# jq over the rows and env.sh's reads of claims.jsonl when --replay sources it, reads only
+# the rows the parse read (claims), so none of them meets a line it cannot read. --replay
+# judges claim-marks-agree from those rows alone, first, before it reads a source or
+# env.sh builds anything, so two rows that disagree on one claim are reported however the
+# rest of the run goes. env.sh reads a value of a row only as a named field of its
+# evidence, which this parse holds to its type, and never from its predicate: the sha256
+# of s-model-checksum and the corpus_floor of tc-corpus-1, which env.sh's
+# ioc_env_row_fields lists. The field and the predicate write one fact twice, so before
+# it sources env.sh, --replay fails claim-form, naming the row and the field, when no row
+# carries one of them or when the field is not a whole line of the value of its row's one
+# predicate (env_rows_judge); a pin that differs from the value its row records is the
+# evidence being wrong, never a refusal of env.sh. --replay then stops there, before
+# env.sh builds anything, and every assertion after claim-form but claim-marks-agree
+# could not run, of the kind evidence; the run ends exit 1. --shape, --landed and
+# --published read no row of claims.jsonl; --published asks only that the default branch
+# holds the file.
+#
+# The Dispatch bearer stands on no command line. A run writes it once as an HTTP header
+# into a file under its own scratch, readable by its owner alone, exports that file's path
+# as IOC_DISPATCH_HEADER, and every curl of the Dispatch API, the recorded ones included,
+# reads it with -H @"$IOC_DISPATCH_HEADER". The scratch is removed when the run ends.
+#
+# The GitHub tokens stand on no command line either. Before it sources env.sh, --replay
+# writes one header file per repository of env.sh's ioc_env_github_table under its own
+# scratch (github_headers): each is made with umask 077 before a byte of it is written, so
+# its owner alone reads it, and holds Authorization: Bearer and the token git credential
+# fill gives for that repository, or nothing when it gives none. It exports each file's path
+# as the variable the table names, IOC_GITHUB_AUTH_LEGION and IOC_GITHUB_AUTH_PRIVATE,
+# and env.sh's read of the review corpus, the read of GitHub's budget (github_budget) and
+# every recorded curl of GitHub's REST API send the file of the repository they read with
+# -H @"$<variable>". The files are written again while the run goes on: before each row,
+# when one of them is GITHUB_HEADER_AGE seconds old, ten minutes, all are written as before
+# into a directory beside them and each is renamed over its old file (github_headers_fresh),
+# so a reader meets a whole file and each variable names one path through the run. A
+# Legion pod's git credential fill gives a GitHub App installation token, which lives one
+# hour, and a replay from a clean clone runs longer: at 882b668c one ran 3723 s, and the five
+# rows that sent the file written at its start failed together after the hour. The pod's
+# helper answers from a bundle its daemon refreshes in place, so a file written again
+# carries a live token. A row whose curl of GitHub's REST API fails is read by the status
+# its curl got, curl's own line, "curl: (22) The requested URL returned error: 503", which
+# the curl's record holds, and once more by the gate itself, at the URL and with the header
+# file that record names (source_answer), since the row's own pipeline reads GitHub's
+# answer, so that its failure line names the first line of GitHub's message. Only an answer
+# about the record judges the row: a refusal for GitHub's rate limit, an answer about the
+# reader's credential, as a 401 for a token that expired, and a server error (5xx) the row
+# got are no verdict on the deliverable, whatever the gate's read again gets, and each ends
+# the mode, cannot run, of the kind source. So does an outage, a read that got no HTTP
+# answer: a row's curl that exited with any status but 22, the one --fail-with-body gives for
+# GitHub's HTTP error, such as a transport error (6, 7, 28, 35, 52 or 56), whatever the
+# gate's read again gets, and a read of the gate's own that gets no HTTP status where the
+# row's record holds none. Its line names the row, the URL, the status the row's curl exited
+# with and what the gate's read got, and no FAIL is printed. A row's curl of the Dispatch
+# API runs with --fail-with-body too, sending the Dispatch header file, and is read by the
+# same rule. No line the gate prints and no output a row records holds a token: a failure
+# names a header file by its path at most. The files go with the scratch, which the EXIT
+# trap removes however the run ends, and check.test.sh's case 117 holds both: a replay of
+# the rows that send them, with a token of the case's own, prints the token nowhere and
+# leaves no header file behind. Case 118 holds that a row meets the files written again,
+# case 119 that a failed read of GitHub's REST API names GitHub's answer, and that a 401 and
+# a refusal for its rate limit cannot run, case 121 that a read that reaches no GitHub
+# cannot run, case 122 that a row's read that got no HTTP answer cannot run though the gate's
+# read again is answered, case 125 that a read again answered 502 cannot run, case 149 that
+# a row's curl answered 503 cannot run though the gate's read again is answered 200, and
+# case 150 that a read inside tc-rng-2's script that reaches no GitHub cannot run. Cases 123
+# and 124 hold the same rule for a row's read of Dispatch: through the dispatch command, by
+# curl and through python3's urllib, and case 151 that a row whose curl of Dispatch feeds a
+# python3 is read by the curl.
+#
+# The evidence it reads:
+#
+#   claims.jsonl   one line per claim, one JSON object. Keys: id, requirement, source,
+#                  kind, claim, mark, evidence, command, expect, output, note, checks.
+#                  evidence is an object, and its fields sha256 and corpus_floor, the
+#                  two env.sh reads, are 64 lowercase hexadecimal digits and a whole
+#                  number.
+#                  checks is on a row that judges a claim of a record under check other
+#                  than its own: one or more objects, each naming one such claim and the
+#                  verdict this row gives it, as {"row": "d-17", "mark": "false"}. row
+#                  is the id of a citation row of a record under check, <label>-<n>
+#                  with <label> one of sources.json's records_under_check[].label; mark
+#                  is one of verified, false, unverified and not-externally-checkable,
+#                  the marks r1 fixes; and refines, where the row holds one part of the
+#                  claim or narrows it, is a sentence, five words or more ending with a
+#                  full stop, saying which part and why its verdict on that part differs
+#                  from the named row's. Each is a string, and an entry holds no other
+#                  key. claim-marks-agree holds each mark to the named row's: the two are
+#                  one mark or the entry names its part, no part of a claim marked
+#                  verified is marked otherwise, an entry marked false, with or without
+#                  refines, names a row marked false, since a claim with a part marked
+#                  false is false, and a record claim's own row carries no checks.
+#                  kind is one of project-code, our-code, behaviour, published, absence
+#                  and quotation, which are the five forms of the specification with the
+#                  quotation form marked as a claim of the project rather than of its
+#                  code. mark is one of verified, false, unverified,
+#                  not-externally-checkable, supported, unsupported and unreleased.
+#                  expect holds exactly one of equals, contains, matches, exit, at_most,
+#                  at_least and one_of, or exit beside one other, and then both hold. A
+#                  predicate written as a sentence fails here, and so does a value of
+#                  another shape than its key takes (predicate_is_a_sentence): equals,
+#                  contains and matches take a string, one_of a list of one or more
+#                  strings, a bound a number, -?[0-9]+(.[0-9]+)?, and exit a whole number,
+#                  [0-9]+, each of the last two as a JSON number or a string; matches,
+#                  each candidate of one_of, a bound and exit hold no newline, and none
+#                  but equals is empty. The output, and the value of an equals or a
+#                  contains, are read as text without their trailing newlines, which
+#                  carry no content; no value is handed to a tool as a list of patterns,
+#                  a bound compares the two numbers as exact decimals, and a status that
+#                  was never recorded meets no exit. What each key holds (evaluate):
+#                    equals s     the whole output is s.
+#                    contains s   s, every line of it, is one substring of the output.
+#                    matches r    some line of the output matches r, as grep -E reads it.
+#                    one_of [s]   the whole output is one of the strings s.
+#                    at_most n    the output is exactly one number, and it is at most n.
+#                    at_least n   the output is exactly one number, and it is at least n.
+#                    exit n       the exit status recorded for the command is n.
+#                  A predicate reads the line the row measures, never what a tool prints
+#                  of its own progress: where a tool can write download, build or install
+#                  lines into the stream a predicate reads on a machine whose caches are
+#                  cold (go, uv, pip, bun, npm, curl without -s, git clone, huggingface),
+#                  the row sends them where the predicate does not look, or its predicate
+#                  matches the measured line, as {"matches":"^rows 38$"} does beside go's
+#                  "go: downloading" lines.
+#                  The pinned-read rule: a row that reads a live node, of Dispatch, GitHub,
+#                  PyPI or any other address, is held to a fact fixed in time, such as a
+#                  version's content, an event by its id or bounded by a time, or a file at
+#                  a commit, never to the node's present state, and its predicate can still
+#                  fail as the node moves on, an exact value rather than a bound on the
+#                  side the node moves. A generator of committed evidence, a script whose
+#                  output this tree commits, is held to the same rule: it reads each live
+#                  source as it stood at a fixed instant, as coordination/count.py reads
+#                  the issue tree and the cited authors from the feed's rows written before
+#                  the window's end, so a later run measures what an earlier one measured;
+#                  --replay runs count.py again and holds what it prints to the committed
+#                  evidence/count.json, every figure but feed.events_read, the rows of the
+#                  whole feed it read up to its run, which is no figure of the window
+#                  (count-reruns).
+#                  The predicate of a row with a command holds every part its claim names,
+#                  and the claim names no more than that.
+#   questions.md   the question list, which every candidate page answers from
+#   judgement.md   read live from Dispatch, the document the reader reads
+#
+# The one assertion table below is where every PASS line, every planted fault of
+# --self-test and every line of --coverage comes from, so "a bad case of every kind the
+# gate reads" is true by construction rather than by two lists kept in step by hand.
+
+set -u
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The variables a fixture takes from its caller, and the gate's inputs a case of
+# check.test.sh sets on a fixture of its own (fixture_run; the header's "The fixture of
+# --self-test" says why each). A shell that runs fixtures, --self-test or one that sources
+# this script as check.test.sh does, first unsets its caller's FIXTURE_INPUTS, so that a
+# fixture reads one only from a case that sets it on its own command.
+FIXTURE_CARRIED="PATH HOME TMPDIR DISPATCH_URL DISPATCH_TOKEN_FILE DISPATCH_HOST DISPATCH_SESSION_ID DISPATCH_STATE_DIR IOC_CLONES http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY GOPROXY GONOPROXY GOSUMDB GONOSUMDB GOPRIVATE GOINSECURE GOTOOLCHAIN"
+FIXTURE_INPUTS="IOC_HISTORY_REF IOC_CACHE IOC_OUR_TREE IOC_EVID IOC_TC_WORK IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_FAKE_RATE_LIMIT IOC_GITHUB_HEADER_AGE IOC_CHILD_BOUND IOC_ACCORD_BOUND UV_OFFLINE UV_NO_INDEX UV_FIND_LINKS"
+# The deployment repository a fixture's run is given as IOC_DEPLOYMENT_REPO, a placeholder
+# and never the caller's value: the fixture reads no deployment repository, and this tree
+# names the real one nowhere. A case of check.test.sh sets FIXTURE_DEPLOYMENT_REPO on its
+# own command to run a fixture with another value, or empty to run it with none
+# (fixture_run), and gives it to a run of its own over this tree, as case 115's.
+FIXTURE_DEPLOYMENT_REPO=example-owner/deployment
+if [ "${BASH_SOURCE[0]}" != "$0" ] || [ "${1:-}" = --self-test ]; then
+    # shellcheck disable=SC2086
+    unset $FIXTURE_INPUTS
+fi
+ROOT="${IOC_ROOT:-$(cd "$HERE/../../.." && pwd)}"
+CLONES="${IOC_CLONES:-${TMPDIR:-/tmp}/ioc-clones}"
+EVIDENCE="${IOC_EVIDENCE:-$HERE}"
+# The stub omp, and the models.yml beside it that names no provider, a fixture's run is given
+# in place of the caller's: FIXTURE_OMP_STUB is put first on the fixture's PATH, and
+# FIXTURE_OMP_MODELS is its IOC_OMP_MODELS, so that a fixture's --replay meets the
+# prerequisites of the row i-skills-run (prerequisite_table) and no run over a fixture reaches
+# a model or reads the caller's models file. A case of check.test.sh sets either on its own
+# command, to a copy of the stub in another mode or to a file of its own, or empty to run a
+# fixture with none (fixture_run).
+FIXTURE_OMP_STUB="$EVIDENCE/tests/omp-stub"
+FIXTURE_OMP_MODELS="$FIXTURE_OMP_STUB/models.yml"
+# The bounds of the rule every child the gate waits on ends by (the header's "Every child
+# the gate waits on ends"), in seconds. Each is at least three times the slowest run of what
+# it bounds that was measured, and where a child was not measured alone, three times the
+# run that holds it; each line names the measurement, where and when it was made. "The
+# fresh-clone runs" are the runs of this issue the architect's message of round 46 gives:
+# --replay 3584 s, --self-test 5612 s and --citations 496 s at c55ed985 on 2026-11-20, and
+# --landed 21 s, --shape 12 s and --admitted 7 s; "the issue pod" is the pod of
+# dispatch://INFRA-3134 on 2026-11-21, where the tester's --replay of a fresh clone of
+# e7518312 ran from 16:18Z and its file times were read.
+#   mode_bound     each mode whole: --replay 11200, over three times 3697, its run on a fresh
+#                  clone of 7412da37 in the issue pod on 2026-11-23, a loaded pod slower than
+#                  the 3584 s of the fresh-clone runs; --self-test 27000, over three times 8895,
+#                  its run in that same pod and run; --citations 3100, over three times 1010,
+#                  its run in that same run; --landed 200,
+#                  three times 62, its run under this rule's first form in the issue pod at
+#                  17:27Z, beside 21 in the fresh-clone runs; --shape 120, three times 31,
+#                  its run without this rule in the issue pod at 17:28Z, beside 12; --admitted
+#                  150, three times 43, its run under this rule in the issue pod at 18:08Z,
+#                  beside 7; --published 600, which is not measured whole: its heaviest
+#                  read is the fetch of the default branch's history, its commits without
+#                  their trees, which took 1 s and 5.5 MB for the 4676 commits of main at
+#                  8ce41950 in the issue pod on 2026-11-25, beside fetches of one commit of
+#                  our repository at depth one, the read --landed makes in a run of 21 s whole.
+#   BOUND_PROGRAM  each program of BOUND_PROGRAMS a mode runs by name, and each program env.sh
+#                  runs by the path it exports. The slowest measured alone is env.sh's uv pip
+#                  sync of IOC_VENV, cold, at most 129 s with the two checks after it, from
+#                  16:33:42Z to 16:35:52Z of the tester's --replay in the issue pod, read
+#                  from the times env.sh wrote its entries; env.sh's four clones took 19 s
+#                  together and its 207 reads of the review corpus 152 s together. No program
+#                  of --citations is measured alone, and the whole mode ran 1010 s in the
+#                  implementer's fresh-clone run of 7412da37 on 2026-11-23, 3030 s three
+#                  times over.
+#   BOUND_ROW      each recorded command of a row and each committed proof of a landed step.
+#                  The slowest measured is tm-our-count, 338 s, cold, then m-ctl-our-row-count,
+#                  149 s, of the 644 rows that tester's --replay had run by 17:31Z, each from
+#                  the time it wrote the row's command to the time it wrote its status, 1014 s
+#                  three times over. The implementer's cold --replay of a fresh clone of
+#                  c7ba7ee3 in the issue pod, from 22:25Z on 2026-11-21, measured all 656 rows
+#                  it ran the same way: tm-our-count again the slowest, 212 s, and the 20 rows
+#                  the tester's run had not reached at most 53 s. --landed's proofs ran inside
+#                  its 21 s.
+#   BOUND_COUNT    coordination/count.py: 904 s, from 16:18:15Z to 16:33:19Z of that same
+#                  --replay, 2712 s three times over; it ran 721 s on 2026-11-18, and it walks
+#                  the whole feed, which grows.
+#   BOUND_RUN      a run of the gate that fixture_run makes, and one gate_run makes of a
+#                  mode but --self-test: the slowest measured, a fixture's --replay under
+#                  this rule's first form, 34.7 s, in case 1 of check.test.sh run alone in the
+#                  issue pod (19.9 s without the rule, in the run beside it), and --landed
+#                  over this tree, 21 s in the fresh-clone runs.
+#   BOUND_CASES    a run of check.test.sh or of --self-test that gate_run makes: the
+#                  --self-test that ran check.test.sh's cases inside it ran 8895 s on a fresh
+#                  clone of 7412da37 in the issue pod on 2026-11-23, 26685 s three times over.
+#   BOUND_KILL     the seconds between the TERM a child is sent at its bound and the KILL.
+BOUND_PROGRAM=3100
+BOUND_ROW=1800
+BOUND_COUNT=3600
+BOUND_RUN=900
+BOUND_CASES=27000
+BOUND_KILL=10
+mode_bound() {
+    case "$1" in
+    replay) printf 11200 ;;
+    self-test) printf 27000 ;;
+    citations) printf 3100 ;;
+    landed) printf 200 ;;
+    shape) printf 120 ;;
+    admitted) printf 150 ;;
+    *) printf 600 ;;
+    esac
+}
+# IOC_CHILD_BOUND, a whole number of seconds above zero, lowers each bound of a child above
+# it to it, read once here, after a shell that runs fixtures unset its caller's
+# (FIXTURE_INPUTS), so a case sets it on the one run it makes. BOUND_TIMEOUT is GNU
+# timeout's path, found once here, so a caller that sets PATH on one run of the gate, as
+# case 78 does, still finds it. MODE_INNER marks the run of a mode that run_mode makes
+# under the mode's bound, which runs the mode itself; it is read once and unset, so no run
+# this one makes reads it.
+CHILD_BOUND_CAP=""
+[[ "${IOC_CHILD_BOUND:-}" =~ ^[1-9][0-9]*$ ]] && CHILD_BOUND_CAP="$IOC_CHILD_BOUND"
+BOUND_TIMEOUT="$(type -P timeout 2>/dev/null)"
+MODE_INNER="${IOC_MODE_INNER:-}"
+unset IOC_MODE_INNER
+# BOUND_PROGRAMS are the programs a mode runs by name that can wait on something outside
+# the run or start a child of their own, each a function of its name in the mode's shell
+# that runs it under BOUND_PROGRAM (bound_program); BOUND_TOOLS are the local text tools,
+# each a function of its name that runs it and reads its status (bound_tool). A program
+# PATH does not hold is left as it is, so a tool that is missing is still missing.
+BOUND_PROGRAMS="bash curl dispatch git python3 uv"
+BOUND_TOOLS="awk cat chmod cmp comm cp cut date diff dirname env find grep head jq mkdir mktemp mv paste rm sed seq sha256sum sort stat tail tar touch tr uniq wc"
+# GIT_USAGE is the status git exits with on a usage error, as `git --no-such-option` does,
+# 129, which is also 128 and the number of SIGHUP: a git's 129 is git's own exit and no
+# signal, read as any other status a program exits with, wherever the gate reads one by
+# its program (bounded_run, run_recorded); every other program's status above 128 keeps
+# the signal reading (the header's "Every child the gate waits on ends").
+GIT_USAGE=129
+# The run's own scratch and record (the header's "The run's own scratch and record"): what
+# the ending of a run needs is checked here, before anything else runs, and a run that
+# lacks it ends at early_end, which needs none of it. ENDING_GIVEN is the record the
+# caller named. RUN_WHAT names this run in a cannot-run line that no mode prints: the
+# mode, as --admitted, when this script runs one, and else the script that sourced it, as
+# check.test.sh. ENDING_TOOLS are the programs the ending is written and read with: cat
+# and awk read the tables, grep, cut and sort read what each assertion reported, mktemp,
+# mv and rm make the scratch and write the record, and tail and head quote a run's line.
+ENDING_GIVEN="${IOC_ENDING:-}"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    RUN_WHAT="${1:-}"
+else
+    RUN_WHAT="${0##*/}"
+fi
+ENDING_TOOLS="mktemp rm mv cat awk grep cut sort tail head"
+ENDING_TOOLS_FROM="apt-get install coreutils grep gawk"
+# write_probe <directory>; writes one line into a new file of the directory and removes it,
+# so that a directory that is missing, cannot be written or is full fails here. It prints
+# why when it fails.
+write_probe() {
+    local why
+    why="$({ printf 'probe\n' >"$1/.write-probe"; } 2>&1)" || {
+        why="${why##*: }"
+        printf '%s' "${why:-the write failed}"
+        return 1
+    }
+    rm -f -- "$1/.write-probe"
+}
+# scratch_lost; the one probe of the run's own scratch as the run ends, made by finish, or
+# by run_ending when no finish ran, as for check.test.sh: it sets SCRATCH_LOST to why the
+# scratch takes no write, or to nothing when it takes one, and probes once per run, so the
+# two read one answer.
+scratch_lost() {
+    [ -n "${SCRATCH_LOST+set}" ] && return 0
+    SCRATCH_LOST="$(write_probe "$RUN_SCRATCH")" || :
+}
+# early_end <kind> <reason>; the ending of a run that stops before it has a scratch, a
+# record or the tools to write them, made by bash's printf alone: it writes the record, in
+# one write, to the file IOC_ENDING names when the caller named one, holding status 2, the
+# line, and the run itself, RUN_WHAT, as declared and as one unrun of <kind> with that
+# line, since the run stopped before it declared what it judges; it prints the cannot-run
+# line and exits 2. A record it cannot write is named at the end of the line.
+early_end() {
+    local line="check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: ${2//[$'\t\n']/ }" why
+    if [ -n "$ENDING_GIVEN" ]; then
+        why="$({ printf 'status\t2\nline\t%s\ndeclared\t%s\nunrun\t%s\t%s\t%s\n' "$line" "$RUN_WHAT" "$RUN_WHAT" "$1" "$line" >"$ENDING_GIVEN"; } 2>&1)" ||
+            line="$line; and its ending record, $ENDING_GIVEN, which IOC_ENDING names, cannot be written: ${why##*: }"
+    fi
+    printf '%s\n' "$line"
+    exit 2
+}
+# scratch_make; the one check of what the ending needs, made by every run that judges, a
+# mode or a script that sources this one, before anything else writes: each tool of
+# ENDING_TOOLS on PATH, a prerequisite; the scratch, made under TMPDIR and written once, so
+# that a scratch that is missing, cannot be written or is full ends here, naming it; and
+# the record IOC_ENDING names, written once and removed; the last two of the kind
+# environment.
+scratch_make() {
+    local tool missing="" why
+    for tool in $ENDING_TOOLS; do
+        command -v "$tool" >/dev/null 2>&1 || missing="$missing, $tool"
+    done
+    [ -z "$missing" ] ||
+        early_end prerequisite "the tools its ending record is written and read with are not on PATH: ${missing#, }; provided by: $ENDING_TOOLS_FROM"
+    RUN_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/ioc-run.XXXXXX" 2>&1)" ||
+        early_end environment "its own scratch cannot be made under TMPDIR, ${TMPDIR:-/tmp}: ${RUN_SCRATCH##*: }"
+    trap 'rm -rf "$RUN_SCRATCH"' EXIT
+    why="$(write_probe "$RUN_SCRATCH")" ||
+        early_end environment "its own scratch $RUN_SCRATCH, made under TMPDIR, takes no write: $why"
+    if [ -n "$ENDING_GIVEN" ]; then
+        why="$({ printf 'probe\n' >"$ENDING_GIVEN.new"; } 2>&1)" || {
+            ENDING_GIVEN=""
+            early_end environment "its ending record, $IOC_ENDING, which IOC_ENDING names, cannot be written: ${why##*: }"
+        }
+        rm -f -- "$ENDING_GIVEN.new"
+    fi
+}
+# This run's scratch, made fresh here and removed when the run ends, so that what one
+# run reads from Dispatch is never read by the next. --help and --coverage judge nothing,
+# write nothing and make none; every other run, a mode or a script that sources this one,
+# makes it before anything else runs.
+RUN_SCRATCH=""
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    scratch_make
+else
+    case "${1:---help}" in
+    --help | -h | --coverage) ;;
+    *) scratch_make ;;
+    esac
+fi
+# This run's ending record (the header's "The ending record"): the file IOC_ENDING names,
+# which the caller of this one run sets on its command, and otherwise one under this run's
+# scratch. IOC_ENDING is unset here, so that no run this one makes writes into it, and
+# what an earlier run left at that path is removed, so it is never read as this run's.
+# ENDING_LINES gathers the record's lines in this shell until run_ending writes it whole,
+# SCRATCH_LOST, unset until scratch_lost probes the scratch as the run ends, holds that
+# probe's answer, and ENDING_STOP the line of the first stop of the ending (ending_stop),
+# empty until a tool of the ending is ended by a signal.
+ENDING="${ENDING_GIVEN:-${RUN_SCRATCH:+$RUN_SCRATCH/ending}}"
+ENDING_LINES=""
+ENDING_STOP=""
+unset IOC_ENDING SCRATCH_LOST
+[ -z "$ENDING" ] || rm -f -- "$ENDING" "$ENDING.new"
+# Every PASS and FAIL a mode reports is also written here, one line each, so its verdict
+# reads them after the mode's subshell ends, however it ended.
+REPORTED="$RUN_SCRATCH/reported"
+[ -z "$RUN_SCRATCH" ] || : >"$REPORTED"
+MODE=""  # the mode run_mode runs, which live_read names when a source does not answer
+
+# family | mode | what it asserts | the fault --self-test plants, or - for none. A mode
+# declares the assertions it runs by this table: the rows of its mode, and for
+# --self-test its own rows and every row with a planted fault.
+assertion_table() {
+    cat <<'TABLE'
+claim-form|replay|every line of claims.jsonl is a claim the one parse reads, and every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
+claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
+claim-marks-agree|replay|every row that checks a claim of a record under check names that claim's row and gives it the mark that row carries, or names the part of it the row holds, no part of a claim marked verified is marked otherwise, no part of a claim not marked false is marked false, and at least one row checks one|a row whose check of a record claim gives it another mark than its own row carries
+predicate-form|replay|every row that carries a command carries exactly one predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
+install-pinned|replay|every package a recorded command installs or runs names its version and is read from a committed hashed lock, or is a local path built under a build constraint, and so does every build backend, and every environment a row installed into holds only packages its lock holds at their version and packages its pinned clone builds|a recorded command that runs a package with no version
+replay-command|replay|every recorded command runs again, no read inside it failed unless its predicate is an exit status, and its output meets the predicate the row carries|a recorded output changed by one character
+absence-still-empty|replay|every absence search reads its corpus and still finds nothing, and a read that failed before the search is no empty search|an absence search that now finds something
+quotation-marked|replay|every quotation of a project's prose is marked a claim of the project and not of its code|a quotation marked as evidence of the code
+citation-row|replay|every citation of the two records under check has a row with a mark|a verification row deleted
+mas-lab-directory|replay|each of the six named directories of mas-lab has an evidence file at the clone commit|the evidence file of one directory deleted
+mas-lab-question|replay|each of the three questions of mas-lab is answered once, in one evidence file, and the answer names its evidence|an answer with no evidence named
+interview-fixed-row|replay|the four rows the specification fixes for the authors' account are present by identifier|one fixed row deleted
+our-data-input|replay|each test against our own records names one input, on one Input line, and it is the Dispatch key or the commit that input came from|a test whose input is a fixture of the project
+count-reruns|replay|the count of our own failures runs again: coordination/count.py, run through the gate's live read, prints evidence/count.json again, every figure equal but feed.events_read, the rows of the whole feed it read up to the run, which grows with the feed and is no figure of the window|a figure of the window in evidence/count.json changed by one
+count-window|replay|the count of our own failures names its window as two instants, in the window.json the count was run over|the window deleted
+count-class|replay|the count classes are the three the specification names, in count.md and in the count coordination/count.py prints again|a fourth class
+count-denominator|replay|every class of the count carries its denominator, and the count coordination/count.py prints again reads a whole number of records above zero|a class with no denominator
+count-zero-premise|replay|a class of zero over a denominator above zero is stated on the front page as a premise that failed|a class of zero with no failed premise
+page-count|shape|the judgement carries at least three and at most seven candidate pages|an eighth candidate page
+page-parts|shape|every candidate page carries each of its eleven parts on exactly one line, its Cost names engineer-days with a figure the gate reads, and its landing component is Legion, Envoy or Dispatch|a page short of its reversal cost
+page-verdict|shape|every candidate page carries exactly one verdict word of vendor, depend, port and reject|a page with two verdict words
+verdict-commitment|shape|a depend names its upstream owner, a port names the change in our code, a reject names its reason|a reject with no reason
+fixed-page|shape|the three pages the specification fixes exist and each answers by name the design already written for it|a fixed page that answers no named design
+front-page|shape|the front page carries the ranking, the one thing to do first, the paragraph on where the two accounts differ, and what was not read|the paragraph deleted
+question-list|shape|every page's question is one word the gate reads, Q and its number, and is on the question list, and every question is answered by a page or named on the front page|a page whose question is not on the list
+triage-named|shape|every repository the triage dropped is named on the front page with its reason|a dropped repository the front page does not name
+order-of-work|shape|the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file|a question-list commit that is not an ancestor
+citation-our-code|citations|every path the file field of a citation into our own repository names stands at the commit it names, and every part of its symbol is read by its form of the symbol grammar (check.sh's header above resolve_symbol) and holds in its own file, the file the part names or else the file before it, a part in no form of the grammar failing by name; a part written in words that no reading of its form finds, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
+citation-project-code|citations|every citation into one of the projects names, read whole, a repository sources.json pins, by its name or the owner and name of its url, every path its file field names is one the clone holds at the pinned commit, and every part of its symbol is read by its form of the symbol grammar (check.sh's header above resolve_symbol) and holds in its own file, the file the part names or else the file before it, a part in no form of the grammar failing by name; a part written in words that no reading of its form finds, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
+citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
+citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
+citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
+citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate, and no such sentence writes a number as a fraction or with a decimal comma outside a code span|a figure no row its sentence cites prints
+landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, in engineer-days and with a figure the gate reads, in digits or in words, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit, one word of seven to forty hexadecimal digits after its Landed label, and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes, or, for a step merged in another pull request of this tree, the page names that pull request beside its merge commit, fetched from our repository, whose subject ends with that pull request's number and which carries each sentence the step published; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
+landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
+landed-order|landed|when every step of sources.json's landed list is landed, one commit of this pull request carries the subject of each of the two steps, and the commit of the shortfall rows is an ancestor of the commit of the combining rule, or the steps merged in another pull request land in one commit or in commits each an ancestor of the next on main; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
+landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
+landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
+landed-coverage|landed|every non-blank line the merge commit of a step merged in another pull request added to a file its published list names is covered by the sentences the merged-in steps publish there, all but whitespace and a list marker|a line the merge commit added that its step's published list leaves out
+landed-proof-holds|landed|the proof the page of each step merged in another pull request writes holds every sentence the step publishes, backticks taken out|a published sentence the page's proof does not grep for
+published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every path under docs/research/internet-of-cognition/ the judgement names, front page and pages, and each landed step's files carry the sentences the step added at the step's own commit, which the default branch's history holds, or, for a step of this pull request whose commit that history does not hold, at the one commit of its first parents whose subject ends with the pull request's number|a page that names a file of this directory the default branch's commit lacks
+published-delivery|published|the record of the delivery is on the issue: a message to its assignee carrying each item of the ranking in order, the paragraph on where the two accounts differ and each candidate above one engineer-day with its default after its title; a comment of dispatch://INFRA-1098 naming this issue that cites each gap node-model.md records, or, where it records none, R8's sentence in the judgement; and a comment of this issue naming the controller's topic, the time of the publication as a UTC time in RFC 3339 form and the ranking as published|a delivery message without the paragraph on where the two accounts differ
+admitted-form|admitted|every entry of ADMITTED, the forms the evaluator admits, is used by a row of claims.jsonl|-
+admitted-rows|admitted|every line of claims.jsonl is a row the one parse reads, and the classifier refuses no row that carries a command|-
+admitted-header|admitted|the table of admitted forms in the header above run_recorded is the one --admitted measures, line for line|-
+admitted-reserved|admitted|the header's list of reserved names is the reader's, and every name the runner and the shims record with starts with a reserved prefix|-
+self-test-baseline|self-test|the fixture deliverable passes --replay, --shape, --citations, --landed and --published|-
+gate-cases|self-test|every case of check.test.sh, the faults the tester found, passes|-
+admitted-table|self-test|check.sh --admitted passes|-
+coverage-complete|self-test|the coverage report names every assertion family the gate holds|a coverage report that omits one assertion family
+TABLE
+}
+
+# declared_assertions <mode>; the assertions the mode declares, one per line.
+declared_assertions() {
+    assertion_table | awk -F'|' -v mode="$1" '
+        mode == "self-test" { if ($2 == "self-test" || $4 != "-") print $1; next }
+        $2 == mode { print $1 }'
+}
+
+usage() {
+    # The header, down to the first line that is not a comment, then the two tables a
+    # reader needs before a run: what each mode needs, and where every tool cache lives.
+    awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
+    prerequisites_report
+    caches_report
+}
+
+# mode | kind | name | what needs it | what provides it. The one table of what each mode
+# needs before it judges anything: prerequisites reads it before the mode's first live
+# read and first assertion, and --help prints it, so the two cannot drift. --self-test
+# needs its lines and those of the five modes it runs, but the three its fixture's stub
+# stands for (prerequisite_rows, SELF_TEST_STUBBED). The last column is what a reader runs to
+# provide it, and may hold a |. How each kind is checked:
+#   tool       the program is on PATH
+#   variable   the variable is set, one whose name ends _FILE names a readable file, one
+#              whose name ends _MODELS names a readable file, which no line the gate prints
+#              names, since it is an omp models.yml and holds a credential, and one
+#              whose name ends _REPO holds a GitHub repository written <owner>/<name>, a /
+#              between two words of letters, digits, ".", "_" and "-" (REPOSITORY_FORM)
+#   history    the history ref, IOC_HISTORY_REF or else HEAD, names a commit of this
+#              repository
+#   clone      the directory IOC_CLONES names can be made, under which the mode clones each
+#              repository at the commit sources.json pins; a fetch that fails is a live
+#              source that did not answer
+#   pcre       the program, git or grep, reads a Perl-compatible regular expression, which
+#              each search of a token an author wrote is read by (whole_token): git grep -P,
+#              or grep -P, finds a whole token in a line written for it (pcre_refusal), as a
+#              program built without PCRE does not, so such a machine is never read as a
+#              deliverable whose tokens no file holds; a program not on PATH is left to its
+#              tool line
+#   flags      the program, omp, starts a line of its --help with each flag the session of
+#              the row i-skills-run passes, as evidence/accord-skills-run.sh --omp-flags reads
+#              it, which holds the one list of those flags and the one rule a flag is read by;
+#              the script is the one under EVIDENCE, which a fixture's tree holds too, copied
+#              by fixture_build. A program not on PATH is left to its tool line, and a tree
+#              without the script to the row, whose read of it then fails
+REPOSITORY_FORM='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+prerequisite_table() {
+    cat <<'TABLE'
+replay|tool|git|reads our own history, reads the deployment repository, the private repository rows read, with git ls-remote, clones it through the machine's credential helper with env.sh, and runs the recorded git commands|apt-get install git, with a credential helper that answers for https://github.com/<owner>/<name>.git, the repository IOC_DEPLOYMENT_REPO names, as a Legion pod's legion git-credential does
+replay|tool|jq|reads claims.jsonl and runs the recorded jq commands|apt-get install jq
+replay|tool|python3|runs the reader of every recorded command, the recorded python3 commands and coordination/count.py, which takes the count again|apt-get install python3
+replay|tool|curl|reads the GitHub budget and the review corpus env.sh fetches, and runs the recorded reads of the Dispatch API and of GitHub's REST API|apt-get install curl
+replay|tool|uv|builds env.sh's python environments and runs the recorded uv commands|curl -LsSf https://astral.sh/uv/0.13.5/install.sh | sh
+replay|tool|go|runs the two recorded commands that count rows of our own table|curl -fsSL https://go.dev/dl/go1.27.3.linux-amd64.tar.gz | tar -xzC /usr/local, then PATH=/usr/local/go/bin:$PATH
+replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+replay|tool|omp|runs the one headless model session of the row i-skills-run, in a new HOME, capped by the --max-cost its command passes, a flag omp --help prints|the omp coding agent, with its print mode, on PATH
+replay|flags|omp|the session of the row i-skills-run passes --max-cost, --max-time, -p and the other flags evidence/accord-skills-run.sh lists, each a flag only where a line of omp --help starts with it, which that script's --omp-flags reads before any row runs, so an omp that lacks one never fails the row|an omp whose --help prints a line for each of those flags, as omp 18.18.6 does, first on PATH
+replay|tool|tar|unpacks the two ACCORD skills that evidence/accord-skills-run.sh installs into the new HOME of that session|apt-get install tar
+replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
+replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
+replay|variable|IOC_DEPLOYMENT_REPO|the deployment repository, as <owner>/<name>, which this public tree names nowhere: GitHub's REST API reads its own name for it first, which the variable then holds for env.sh and every row, git ls-remote reads it, env.sh clones it under IOC_CLONES/deployment and writes the header file of its token, and the rows that read it name it by this variable|export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from
+replay|variable|IOC_OMP_MODELS|the omp models.yml, which reaches one model, that evidence/accord-skills-run.sh copies into the new HOME of the session of the row i-skills-run; no line this gate prints names its path, since the file holds a credential|export IOC_OMP_MODELS=<the path of an omp models.yml that reaches a model>
+replay|clone|IOC_CLONES|env.sh clones mas-lab, scope, cognition-protocols and the deployment repository under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
+replay|tool|timeout|ends the mode, and each child of it the mode bounds, rows and count.py among them, at its bound, in a process group of its own (the header's "Every child the gate waits on ends")|apt-get install coreutils
+replay|pcre|grep|reads the clone commit each evidence file of mas-lab names as a whole token, with grep -P (whole_token)|GNU grep built with PCRE, as the distribution's grep is: apt-get install grep
+shape|tool|git|reads the history of this pull request|apt-get install git
+shape|tool|jq|reads sources.json|apt-get install jq
+shape|tool|dispatch|reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+shape|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
+shape|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
+citations|tool|git|resolves every citation into a clone or into this repository|apt-get install git
+citations|pcre|git|reads each symbol part a citation names, its local part and each component of its prefix as a whole token, with git grep -P (whole_token, token_held)|a git built with PCRE (USE_LIBPCRE), as the distribution's git is: apt-get install git
+citations|tool|jq|reads claims.jsonl and sources.json|apt-get install jq
+citations|tool|python3|runs citations.py, the one extraction rule|apt-get install python3
+citations|tool|curl|reads each published page's live address|apt-get install curl
+citations|tool|dispatch|resolves each dispatch:// reference and reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+citations|clone|IOC_CLONES|the mode clones each repository a project-code row cites under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
+citations|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
+landed|tool|git|reads the commits of this pull request, fetches the commit of each step merged in another pull request from our repository, and runs the committed proof of each landed step, git show of the files at that commit|apt-get install git
+landed|tool|jq|reads the landed list of sources.json|apt-get install jq
+landed|tool|dispatch|reads the judgement and resolves the dispatch:// records of each step not landed|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+landed|history|IOC_HISTORY_REF|the commits of this pull request, which the default branch holds as one squash|git fetch origin refs/pull/3771/head:refs/remotes/origin/pr-3771, then export IOC_HISTORY_REF=refs/remotes/origin/pr-3771
+landed|tool|timeout|ends the mode, and each child of it the mode bounds, proofs among them, at its bound, in a process group of its own|apt-get install coreutils
+landed|pcre|grep|reads each record the Not landed line of a step names as a whole token, with grep -P (whole_token)|GNU grep built with PCRE, as the distribution's grep is: apt-get install grep
+published|tool|git|fetches the default branch, its history without trees and the commit of each landed step into the run's scratch|apt-get install git
+published|tool|jq|reads sources.json and judges the answers of the Dispatch API|apt-get install jq
+published|tool|curl|reads the Dispatch API|apt-get install curl
+published|tool|dispatch|reads the judgement, whose paths published-tree reads and whose ranking, paragraph and pages published-delivery holds the delivery to|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
+published|variable|DISPATCH_URL|the address of the Dispatch API|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
+published|variable|DISPATCH_TOKEN_FILE|the bearer the reads of the Dispatch API send|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
+published|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
+admitted|tool|python3|runs the classifier over every row|apt-get install python3
+admitted|tool|timeout|ends the mode, and each child of it the mode bounds, at its bound, in a process group of its own|apt-get install coreutils
+self-test|tool|git|builds the fixture deliverable's repository|apt-get install git
+self-test|tool|jq|builds and reads the fixture's sources.json and claims.jsonl|apt-get install jq
+self-test|tool|python3|runs the reader over the fixture's rows|apt-get install python3
+self-test|tool|timeout|ends each run of the gate the self-test and check.test.sh make at its bound, in a process group of its own|apt-get install coreutils
+TABLE
+}
+
+# SELF_TEST_STUBBED; the lines of --replay, as kind:name, that --self-test leaves out. Each
+# fixture run it makes is given the stub omp of tests/omp-stub first on PATH
+# (FIXTURE_OMP_STUB) and the models.yml beside it as IOC_OMP_MODELS (FIXTURE_OMP_MODELS), so
+# the stub stands for both, its --help printing every flag the session passes, and no run of
+# the self-test reads the caller's omp or models file.
+# Without the list, as the tester's note of round 52 found, --self-test ended cannot run,
+# exit 2, on a machine with no omp or no IOC_OMP_MODELS, which none of its runs reads.
+# --replay keeps the three lines, and --self-test keeps tar, which the script unpacks the
+# skills with under the stub too.
+SELF_TEST_STUBBED=" tool:omp flags:omp variable:IOC_OMP_MODELS "
+
+# prerequisite_rows <mode>; the lines of prerequisite_table the mode needs, without the
+# mode, as kind|name|what needs it|what provides it, each kind and name once; for
+# self-test, the lines of the five modes it runs too, but SELF_TEST_STUBBED's, which seen
+# starts with, as lines printed already. cases names what check.test.sh checks before its
+# first case, the lines of --self-test alone, which its fixture builder needs; each run a
+# case makes checks the lines of its own mode.
+prerequisite_rows() {
+    local modes=" $1 " mode kind name why provides seen=" "
+    [ "$1" = self-test ] && modes=" self-test replay shape citations landed published " seen="$SELF_TEST_STUBBED"
+    [ "$1" = cases ] && modes=" self-test "
+    while IFS='|' read -r mode kind name why provides; do
+        case "$modes" in *" $mode "*) ;; *) continue ;; esac
+        case "$seen" in *" $kind:$name "*) continue ;; esac
+        seen="$seen$kind:$name "
+        printf '%s|%s|%s|%s\n' "$kind" "$name" "$why" "$provides"
+    done < <(prerequisite_table)
+}
+
+# prerequisite_missing <kind> <name>; prints what is missing and returns 0 when the
+# prerequisite is missing, and returns 1 when it is there, by the rule of its kind above.
+prerequisite_missing() {
+    local kind="$1" name="$2" value
+    case "$kind" in
+    tool)
+        command -v "$name" >/dev/null 2>&1 && return 1
+        printf 'the tool %s is not on PATH' "$name"
+        ;;
+    variable)
+        value="${!name:-}"
+        if [ -z "$value" ]; then
+            printf 'the variable %s is not set' "$name"
+        elif [[ "$name" == *_FILE ]] && [ ! -r "$value" ]; then
+            printf 'the variable %s names %s, which is no readable file' "$name" "$value"
+        elif [[ "$name" == *_MODELS ]] && { [ ! -f "$value" ] || [ ! -r "$value" ]; }; then
+            printf 'the variable %s names no readable file' "$name"
+        elif [[ "$name" == *_REPO ]] && ! [[ "$value" =~ $REPOSITORY_FORM ]]; then
+            printf "the variable %s holds '%s', which is no GitHub repository written <owner>/<name>" "$name" "$value"
+        else
+            return 1
+        fi
+        ;;
+    history)
+        git -C "$ROOT" rev-parse --verify --quiet "$(history_ref)^{commit}" >/dev/null && return 1
+        printf "the history ref '%s' names no commit of this repository" "$(history_ref)"
+        ;;
+    clone)
+        mkdir -p "$CLONES" 2>/dev/null && return 1
+        printf '%s names %s, which this run cannot make' "$name" "$CLONES"
+        ;;
+    flags)
+        command -v "$name" >/dev/null 2>&1 && [ -r "$EVIDENCE/evidence/accord-skills-run.sh" ] || return 1
+        value="$(sh "$EVIDENCE/evidence/accord-skills-run.sh" --omp-flags 2>&1)" && return 1
+        printf "evidence/accord-skills-run.sh --omp-flags, which reads %s --help for each flag the session of the row i-skills-run passes, printed '%s'" "$name" "${value%%$'\n'*}"
+        ;;
+    pcre)
+        command -v "$name" >/dev/null 2>&1 || return 1
+        value="$(pcre_refusal "$name")" || return 1
+        printf "the tool %s reads no Perl-compatible regular expression, which each search of a token an author wrote reads it by (whole_token): %s" "$name" "$value"
+        ;;
+    *)
+        printf 'prerequisite_table names the kind %s, which no rule here checks' "$kind"
+        ;;
+    esac
+}
+
+# pcre_refusal <git|grep>; asks the program to find a whole token (whole_token) in a line
+# written for it under this run's scratch, by git grep --no-index -P or by grep -P. It
+# returns 1 when the program finds it, and otherwise prints how the program ended, its
+# command, its status and the first line it wrote to stderr, as a git built without PCRE
+# writes "fatal: cannot use Perl-compatible regexes when not compiled with USE_LIBPCRE", and
+# returns 0.
+pcre_refusal() {
+    local probe="$RUN_SCRATCH/pcre-probe" pattern status said how
+    pattern="$(whole_token pcre_probe)"
+    printf 'a pcre_probe line\n' >"$probe"
+    case "$1" in
+    git)
+        how="git grep -P"
+        git -C "$RUN_SCRATCH" grep --no-index -qP -- "$pattern" pcre-probe 2>"$probe.err"
+        ;;
+    *)
+        how="$1 -P"
+        "$1" -qP -- "$pattern" "$probe" 2>"$probe.err"
+        ;;
+    esac
+    status=$?
+    [ "$status" -eq 0 ] && return 1
+    said="$(head -1 "$probe.err" 2>/dev/null)"
+    printf "%s ended exit %s, '%s'" "$how" "$status" "${said:0:200}"
+    return 0
+}
+
+# prerequisites_missing <mode> [<kind>|<name>]; prints each prerequisite of the mode that is
+# missing, each followed by what provides it, and returns 0 when one is missing and 1 when
+# none is; given a kind and a name, as tool|timeout, it reads that line of the mode alone.
+prerequisites_missing() {
+    local kind name _why provides detail missing=""
+    while IFS='|' read -r kind name _why provides; do
+        [ -z "${2:-}" ] || [ "$kind|$name" = "$2" ] || continue
+        detail="$(prerequisite_missing "$kind" "$name")" || continue
+        missing="$missing; $detail; provided by: $provides"
+    done < <(prerequisite_rows "$1")
+    [ -n "$missing" ] || return 1
+    printf '%s' "${missing#; }"
+}
+
+# prerequisites <mode>; the one step that checks what the mode needs, run by run_mode
+# before the mode's first live read and first assertion, and by check.test.sh before its
+# first case. A mode that lacks one cannot run: its last line names each missing
+# prerequisite, each followed by what provides it.
+prerequisites() {
+    local missing
+    missing="$(prerequisites_missing "$1")" || return 0
+    cannot_run prerequisite " --$1: $missing"
+}
+
+# prerequisites_report; prerequisite_table as --help prints it, one block per mode, after
+# the tools every mode needs to make its scratch and write its record (ENDING_TOOLS).
+prerequisites_report() {
+    local mode kind name why provides
+    printf '\nWhat each mode needs (prerequisite_table). A mode checks its own before it reads or\n'
+    printf 'judges anything, and one that is missing ends the mode exit 2, naming it and, last,\n'
+    printf 'what provides it. --self-test needs its own and those of --replay, --shape,\n'
+    printf -- "--citations, --landed and --published, which it runs, but --replay's omp, the\n"
+    printf "flags of its --help and IOC_OMP_MODELS, for which its fixture's stub omp and\n"
+    printf 'models.yml stand. --coverage and --help need nothing.\n'
+    printf '\nevery mode, before anything else (ENDING_TOOLS)\n'
+    printf '  %-9s %-20s %s\n' tool "${ENDING_TOOLS// /, }" "make the run's own scratch and write and read its ending record"
+    printf '  %-9s %-20s provided by: %s\n' '' '' "$ENDING_TOOLS_FROM"
+    for mode in replay shape citations landed published admitted self-test; do
+        printf '\n--%s\n' "$mode"
+        while IFS='|' read -r kind name why provides; do
+            printf '  %-9s %-20s %s\n' "$kind" "$name" "$why"
+            printf '  %-9s %-20s provided by: %s\n' '' '' "$provides"
+        done < <(prerequisite_table | awk -F'|' -v mode="$mode" '$1 == mode { sub(/^[^|]*\|/, ""); print }')
+    done
+}
+
+# caches_report; env.sh's ioc_env_cache_table, the one list of where every tool cache
+# lives, as --help prints it.
+caches_report() {
+    local name dir what
+    printf '\nWhere every tool cache lives (env.sh, ioc_env_cache_table): each variable is\n'
+    printf 'exported for every recorded command, under IOC_CACHE, $TMPDIR/infra3134 by default.\n\n'
+    if ! env_functions; then
+        printf '  env.sh did not load, so the table is not read\n'
+        return 0
+    fi
+    while IFS='|' read -r name dir what; do
+        printf '  %-22s $IOC_CACHE/%-16s %s\n' "$name" "$dir" "$what"
+    done < <(ioc_env_cache_table)
+}
+
+# pass <family> <text>; fail <family> <text>; an assertion's verdict, written for finish and
+# printed. The text can carry what a row ran, the URL it read and what it printed, as a
+# FAIL of replay-command quotes a row's curl of the deployment repository's REST API, so it
+# is printed by deployment_hidden, as every stop of a run is.
+pass() {
+    printf 'PASS %s\n' "$1" >>"$REPORTED"
+    printf 'PASS %s: %s\n' "$1" "$(deployment_hidden "$2")"
+}
+
+fail() {
+    printf 'FAIL %s\n' "$1" >>"$REPORTED"
+    printf 'FAIL %s: %s\n' "$1" "$(deployment_hidden "$2")"
+}
+
+# finish <mode>; the verdict of the mode over the assertions it declares, by the three
+# endings of the header and their precedence. One that reported a FAIL failed; one that
+# reported only PASS passed; one that reported nothing could not run when the mode
+# stopped at cannot_run or evidence_stops, with the kind and the reason it stopped for,
+# and otherwise failed and is named in a FAIL line here. An assertion the mode reported
+# but does not declare fails too. When the run's own scratch takes no write as the mode
+# ends, what each assertion reported there may be lost, so finish reads none of it, and
+# run_ending reads every declared assertion as one that could not run for that. Each
+# verdict is a line of the run's ending record, which run_ending writes, ending the run
+# with its last line and exit 0, 1 or 2. It relies on one verdict per assertion, printed
+# after all of that assertion's parts have run: a PASS printed before a later part would
+# stand however that part ended, so every assertion of more than one part prints its PASS
+# last. It runs in the run's own shell, after the mode's subshell, and its tools run by the
+# functions ending_mode makes: a tool a signal ends while it reads the declared list or a
+# verdict stops the ending (ending_stop), finish reads nothing more, and run_ending writes
+# every assertion it declares as one that could not run for that stop, so a killed grep is
+# never read as no PASS, nor a killed awk as nothing declared. The declared list is read
+# whole or not at all, every stage of its pipeline's status read (pipefail).
+finish() {
+    local family declared kind="" stopped="" verdict
+    ending_mode
+    if ! declared="$(set -o pipefail && declared_assertions "$1")"; then
+        declared=""
+        ending_stopped || ending_stop "the list of the assertions --$1 declares, which declared_assertions reads, could not be read"
+    fi
+    scratch_lost
+    if [ -n "$SCRATCH_LOST" ]; then
+        while IFS= read -r family; do
+            [ -z "$family" ] || ending_add declared "$family"
+        done <<<"$declared"
+        run_ending assertions
+        return
+    fi
+    [ -s "$RUN_SCRATCH/stopped" ] && IFS=$'\t' read -r kind stopped <"$RUN_SCRATCH/stopped"
+    # A stop bound_stop made is printed here and not where it was made, since the subshell
+    # it was made in may write into a substitution or a file.
+    [ ! -e "$RUN_SCRATCH/stopped.unprinted" ] || printf '%s\n' "$stopped"
+    while IFS= read -r family; do
+        [ -n "$family" ] || continue
+        ending_add declared "$family"
+        ending_stopped && continue
+        if grep -qxF "FAIL $family" "$REPORTED"; then
+            verdict=failed
+        elif ending_stopped; then
+            continue
+        elif grep -qxF "PASS $family" "$REPORTED"; then
+            verdict=passed
+        elif ending_stopped; then
+            continue
+        elif [ -n "$stopped" ]; then
+            ending_add unrun "$family" "$kind" "$stopped"
+            continue
+        else
+            printf 'FAIL %s: it reported no verdict, so its code crashed, exited or was skipped before it passed or failed\n' "$family"
+            verdict=failed
+        fi
+        ending_add "$verdict" "$family"
+    done <<<"$declared"
+    if ! ending_stopped; then
+        while IFS= read -r family; do
+            ending_stopped && break
+            [ -n "$family" ] || continue
+            printf 'FAIL %s: --%s reported it, and the assertion table declares no such assertion for --%s\n' "$family" "$1" "$1"
+            ending_add failed "$family"
+        done < <(cut -d' ' -f2 "$REPORTED" | sort -u | grep -vxF -f <(printf '%s\n' "$declared"))
+    fi
+    run_ending assertions
+}
+
+# deployment_hidden <text>; <text> by env.sh's ioc_env_hidden, the one rule by which a line
+# that can carry the deployment repository's name writes the input, $IOC_DEPLOYMENT_REPO,
+# in place of its value and of its address, in whatever case, a line of git's or curl's a
+# stop quotes among them. It loads env.sh's functions when they are not loaded, and prints
+# <text> as it stands where env.sh cannot load. Each stop of a run is written through it,
+# cannot_run, evidence_stops, bound_stop and ending_stop, and so is each PASS and FAIL line
+# (pass, fail), which can quote a row's command, its URL and its output.
+deployment_hidden() {
+    if declare -F ioc_env_hidden >/dev/null || { env_functions && declare -F ioc_env_hidden >/dev/null; }; then
+        ioc_env_hidden "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# cannot_run <kind> <reason>; the third ending, beside every assertion passed (exit 0) and
+# one or more failed (exit 1): the mode could not run, so no assertion it had not yet
+# judged is judged. <kind> is one of the four the header names: prerequisite, gate,
+# environment or source. It prints the reason, records it with its kind for finish, and
+# ends the mode's subshell; run_ending prints no line after it when nothing failed, so it
+# stands last.
+cannot_run() {
+    local line
+    line="$(deployment_hidden "check.sh cannot run${2//[$'\t\n']/ }")"
+    printf '%s\n' "$line"
+    printf '%s\t%s\n' "$1" "$line" >"$RUN_SCRATCH/stopped"
+    exit 2
+}
+
+# evidence_stops <reason>; the end of a mode at evidence it has just failed, by name, where
+# every assertion still to come reads what that evidence feeds: it prints the reason,
+# records it for finish with the kind evidence, so that each assertion not yet judged is
+# one that could not run for it, and ends the mode's subshell. It is called only after a
+# FAIL, so the run ends exit 1 by the precedence of the header, never exit 2.
+evidence_stops() {
+    local line
+    line="$(deployment_hidden "${1//[$'\t\n']/ }")"
+    printf '%s\n' "$line"
+    printf 'evidence\t%s\n' "$line" >"$RUN_SCRATCH/stopped"
+    exit 2
+}
+
+# bounded_run <seconds> <program> [<argument>...]; the one rule every child the gate waits
+# on runs by (the header's "Every child the gate waits on ends"). It runs the program under
+# GNU timeout, which puts it in a process group of its own and sends that group TERM at the
+# bound, lowered to IOC_CHILD_BOUND when that is less, and KILL BOUND_KILL seconds later; it
+# runs it in the background and waits for it, so that an interrupt, a TERM or a HUP this
+# shell gets reaches the group at once (bound_forward), and its input is this shell's own.
+# When the program has ended, whatever is left of its group is killed, so that nothing it
+# started holds a pipe this shell reads to its end. It returns the program's status, sets
+# BOUND_TOOK to the seconds it ran, and sets BOUND_ENDED to what ended it, "signal N
+# (SIGNAME)" for a status of 128 and a signal's number but SIGPIPE's, and but git's 129,
+# which git exits with on a usage error, as `git --no-such-option` does (GIT_USAGE), or
+# "its bound of N s" for timeout's own status, 124, or KILL's, at or past the bound, and to
+# nothing for every other status, which keeps the meaning its caller gives it.
+bounded_run() {
+    local bound="$1" start="$EPOCHSECONDS" status name
+    shift
+    [ -z "$CHILD_BOUND_CAP" ] || [ "$CHILD_BOUND_CAP" -ge "$bound" ] || bound="$CHILD_BOUND_CAP"
+    BOUND_ENDED="" BOUND_TOOK=0
+    "$BOUND_TIMEOUT" --kill-after="$BOUND_KILL" "$bound" "$@" <&0 &
+    BOUND_GROUP=$!
+    trap 'bound_forward INT' INT
+    trap 'bound_forward TERM' TERM
+    trap 'bound_forward HUP' HUP
+    while :; do
+        BOUND_FORWARDED=""
+        { wait "$BOUND_GROUP"; } 2>/dev/null
+        status=$?
+        [ -n "$BOUND_FORWARDED" ] || break
+    done
+    trap - INT TERM HUP
+    kill -KILL -- "-$BOUND_GROUP" 2>/dev/null
+    BOUND_GROUP=""
+    BOUND_TOOK=$((EPOCHSECONDS - start))
+    if { [ "$status" = 124 ] || [ "$status" = 137 ]; } && [ "$BOUND_TOOK" -ge "$bound" ]; then
+        BOUND_ENDED="its bound of $bound s"
+    elif [ "$status" -gt 128 ] && [ "$status" != 141 ] && ! { [ "$status" = "$GIT_USAGE" ] && [ "${1##*/}" = git ]; } &&
+        name="$(kill -l $((status - 128)) 2>/dev/null)"; then
+        BOUND_ENDED="signal $((status - 128)) (SIG$name)"
+    fi
+    return "$status"
+}
+# bound_forward <signal>; passes a signal this shell got while bounded_run waits to the
+# group of the program it waits for, which then ends by it.
+bound_forward() {
+    BOUND_FORWARDED=1
+    [ -z "${BOUND_GROUP:-}" ] || kill -"$1" -- "-$BOUND_GROUP" 2>/dev/null
+}
+
+# bounded <seconds> <what> <program> [<argument>...]; runs the program by bounded_run and
+# returns its status, but ends the mode by bound_stop, naming <what>, when a signal or the
+# bound ended it. Once the mode has stopped, a subshell of it that reaches its next child
+# ends there.
+bounded() {
+    local bound="$1" what="$2" status
+    shift 2
+    [ ! -e "$RUN_SCRATCH/stopped.unprinted" ] || exit 2
+    bounded_run "$bound" "$@"
+    status=$?
+    [ -z "$BOUND_ENDED" ] || bound_stop "$what was ended by $BOUND_ENDED, $BOUND_TOOK s after it started"
+    return "$status"
+}
+
+# bound_program <program> [<argument>...]; a program of BOUND_PROGRAMS a mode runs by name,
+# or one env.sh runs by the path it exports, under BOUND_PROGRAM, named by its words.
+bound_program() {
+    local IFS=' ' words
+    words="${1##*/}${2+ ${*:2}}"
+    bounded "$BOUND_PROGRAM" "the program '${words:0:200}'" "$@"
+}
+
+# bound_tool <tool> [<argument>...]; a local text tool of BOUND_TOOLS a mode, or the
+# ending, runs by name. It runs with no bound and no group of its own, and its status is
+# read where it runs: a signal, a status of 128 and a signal's number but SIGPIPE's, stops
+# the shell's TOOL_STOP, bound_stop in a mode (bound_mode) and ending_stop in the ending
+# (ending_mode), naming the tool with its words and the function that ran it, before what
+# it printed is read; every other status is returned as it stands.
+bound_tool() {
+    local status name words
+    command "$@"
+    status=$?
+    if [ "$status" -gt 128 ] && [ "$status" != 141 ] && name="$(kill -l $((status - 128)) 2>/dev/null)"; then
+        words="$(IFS=' ' && printf '%s' "$*")"
+        "$TOOL_STOP" "the program '${words:0:200}', which ${FUNCNAME[2]:-the mode} ran, was ended by signal $((status - 128)) (SIG$name)"
+    fi
+    return "$status"
+}
+
+# bound_stop <reason>; ends the mode cannot run, of the kind environment, from the mode's
+# own shell or from any subshell of it, a substitution or a stage of a pipeline: it records
+# the reason for finish, which prints it, unless the mode stopped already, and a subshell
+# sends the mode's shell USR1, on which it ends (bound_abandon) as soon as what it waits
+# for has ended.
+bound_stop() {
+    if [ ! -e "$RUN_SCRATCH/stopped.unprinted" ]; then
+        printf 'environment\tcheck.sh cannot run --%s: %s\n' "$MODE" "$(deployment_hidden "${1//[$'\t\n']/ }")" >"$RUN_SCRATCH/stopped"
+        : >"$RUN_SCRATCH/stopped.unprinted"
+    fi
+    [ "$BASHPID" = "${MODE_SHELL:-$BASHPID}" ] || kill -USR1 "$MODE_SHELL" 2>/dev/null
+    exit 2
+}
+# bound_abandon; the mode's shell on USR1: it kills the group of the child it waits for,
+# if any, and ends.
+bound_abandon() {
+    [ -z "${BOUND_GROUP:-}" ] || kill -KILL -- "-$BOUND_GROUP" 2>/dev/null
+    exit 2
+}
+
+# tool_functions; makes each local text tool of BOUND_TOOLS that PATH holds a function of
+# its name, in the shell that calls it, that runs it by bound_tool. A tool PATH does not
+# hold is left as it is, so a tool that is missing is still missing.
+tool_functions() {
+    local program
+    for program in $BOUND_TOOLS; do
+        type -P "$program" >/dev/null 2>&1 || continue
+        eval "$program() { bound_tool $program \"\$@\"; }"
+    done
+}
+
+# bound_mode; readies the mode's own shell for the rule once its prerequisites are read:
+# it is the shell a stop reaches (MODE_SHELL), it reads /dev/null for an input that is a
+# terminal or closed, each program of BOUND_PROGRAMS that PATH holds becomes a function of
+# its name that runs it by bound_program, as env.sh's ioc_env_program does a program it
+# runs by its path, and each tool of BOUND_TOOLS one that runs it by bound_tool, which a
+# signal stops by bound_stop.
+bound_mode() {
+    local program
+    MODE_SHELL="$BASHPID"
+    trap bound_abandon USR1
+    if [ -t 0 ] || ! { : <&0; } 2>/dev/null; then
+        exec </dev/null
+    fi
+    for program in $BOUND_PROGRAMS; do
+        type -P "$program" >/dev/null 2>&1 || continue
+        eval "$program() { bound_program $program \"\$@\"; }"
+    done
+    TOOL_STOP=bound_stop
+    tool_functions
+    ioc_env_program() { bound_program "$@"; }
+}
+
+# ending_mode; readies the shell the ending runs in for the same rule (the header's "Every
+# child the gate waits on ends"): the run's own shell, outside any mode's subshell, where
+# finish, run_ending and run_mode's own reading of a mode past its bound run, and the shell
+# of check.test.sh at its summary. Each tool of BOUND_TOOLS that PATH holds becomes the
+# function bound_mode makes of it, whose status bound_tool reads where it runs, and a
+# signal that ends one stops the ending (ending_stop), since no mode is left there to stop
+# and the ending is what writes the run's record. It readies a shell once.
+ending_mode() {
+    [ "${ENDING_SHELL:-}" != "$BASHPID" ] || return 0
+    ENDING_SHELL="$BASHPID" TOOL_STOP=ending_stop
+    tool_functions
+}
+
+# ending_stop <reason>; the stop of the ending, from its own shell or from any subshell of
+# it, a substitution or a stage of a pipeline: the first stop's line, check.sh cannot run,
+# the run (RUN_WHAT) and <reason>, is held in ENDING_STOP and in $RUN_SCRATCH/ending-stopped,
+# which a subshell's stop reaches its shell by, and a later stop leaves it as it stands. It
+# exits nothing: what read the tool reads its status, the ending reads no more once
+# ending_stopped answers, and run_ending writes the record of the stop.
+ending_stop() {
+    ending_stopped && return 0
+    ENDING_STOP="$(deployment_hidden "check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: ${1//[$'\t\n']/ }")"
+    printf '%s\n' "$ENDING_STOP" >"$RUN_SCRATCH/ending-stopped" 2>/dev/null
+    return 0
+}
+
+# ending_stopped; returns 0, with ENDING_STOP holding the line of the first stop of the
+# ending, when the ending stopped, in this shell or in a subshell of it, and 1 when it did
+# not. It reads by bash alone.
+ending_stopped() {
+    [ -n "$ENDING_STOP" ] || { [ -s "$RUN_SCRATCH/ending-stopped" ] && IFS= read -r ENDING_STOP <"$RUN_SCRATCH/ending-stopped"; }
+    [ -n "$ENDING_STOP" ]
+}
+
+# bound_record <run> <name> <what>; the record of a run of the gate that bounded_run ended
+# by a signal or its bound, written where the run's own goes, as early_end writes one:
+# status 2, its line, and the run declared and unrun, of the kind environment, so its
+# reader reads a run that could not run; the line is the run's text's last too.
+bound_record() {
+    local line="check.sh cannot run $2: $3 was ended by $BOUND_ENDED, $BOUND_TOOK s after it started"
+    printf 'status\t2\nline\t%s\ndeclared\t%s\nunrun\t%s\tenvironment\t%s\n' "$line" "$2" "$2" "$line" >"$1/ending"
+    printf '%s\n' "$line" >>"$1/text"
+}
+
+# run_mode <mode>; runs the mode whole under its bound (mode_bound): this script runs
+# itself again for the mode, with IOC_MODE_INNER set and the record this run writes named,
+# by bounded_run, with no IOC_CHILD_BOUND lowering it, and ends with that run's status; when
+# a signal or the bound ended it, that end is the stop of this run's ending (ending_stop),
+# and run_ending writes the record, every assertion the mode declares unrun, of the kind
+# environment, and prints the line. bounded_run runs the mode under GNU timeout, so the
+# mode's line of prerequisite_table for timeout is read first, and a run without it cannot
+# run, every assertion the mode declares unrun, of the kind prerequisite, its last line the
+# one prerequisites would print. The run it makes runs the mode in a subshell, after the
+# one check of its prerequisites and bound_mode, so that however its code ends the verdict
+# still reads what it reported, then ends the run by finish's verdict: exit 0, 1 or 2.
+run_mode() {
+    local status declared family missing line
+    MODE="$1"
+    if [ -z "$MODE_INNER" ]; then
+        [ ! -t 0 ] || exec </dev/null
+        if missing="$(prerequisites_missing "$1" 'tool|timeout')"; then
+            ending_mode
+            line="check.sh cannot run --$1: $missing"
+            printf '%s\n' "$line"
+            declared="$(set -o pipefail && declared_assertions "$1")" && [ -n "$declared" ] || declared="$RUN_WHAT"
+            while IFS= read -r family; do
+                ending_add declared "$family"
+                ending_add unrun "$family" prerequisite "$line"
+            done <<<"$declared"
+            run_ending assertions
+            return
+        fi
+        CHILD_BOUND_CAP="" IOC_MODE_INNER=1 IOC_ENDING="$ENDING" bounded_run "$(mode_bound "$1")" bash "${BASH_SOURCE[0]}" "--$1"
+        status=$?
+        [ -n "$BOUND_ENDED" ] || return "$status"
+        ending_mode
+        ending_stop "the mode was ended by $BOUND_ENDED, $BOUND_TOOK s after it started"
+        declared="$(set -o pipefail && declared_assertions "$1")" || declared=""
+        while IFS= read -r family; do
+            [ -z "$family" ] || ending_add declared "$family"
+        done <<<"$declared"
+        run_ending assertions
+        return
+    fi
+    (prerequisites "$1" && bound_mode && "mode_${1//-/_}")
+    finish "$1"
+}
+
+# ending_add <field> <name> [<kind> <reason>]; one line of this run's ending record (the
+# header's "The ending record"), gathered in ENDING_LINES, in this shell, until run_ending
+# writes the record whole: declared and a name; passed or failed and a name; or unrun, a
+# name, the kind of its reason and the reason. A tab or a line break inside a field is
+# written as a space, so each line holds its fields alone.
+ending_add() {
+    local field line=""
+    for field in "$@"; do
+        line="$line${line:+$'\t'}${field//[$'\t\n']/ }"
+    done
+    ENDING_LINES="$ENDING_LINES$line"$'\n'
+}
+
+# run_ending <assertions|cases>; the one writer of how a run ended, a mode's or, counting
+# cases, check.test.sh's. From the lines ending_add gathered it derives the exit status by
+# the precedence of the header, 1 when anything failed, else 2 when anything could not
+# run, else 0, and the last line of the three endings: for a mode, the failed assertions
+# named and then each that could not run with the one reason the mode stopped for, or that
+# reason alone, which cannot_run printed when the mode stopped; for check.test.sh, each
+# case that could not run with its own run's reason. When the run's own scratch takes no
+# write as it ends, what the run wrote there may be lost, so every unit it declared could
+# not run, of the kind environment, the run ends exit 2 whatever it judged, and the last
+# line names the scratch. When the ending stopped (ending_stop), a tool of the ending, of
+# finish, of run_mode or of run_ending itself, ended by a signal, nothing it judged is read
+# whole: every unit it declares that had not already stopped, with the kind and the reason
+# its own record holds, could not run, of the kind environment, for that stop, the run
+# itself (RUN_WHAT) when nothing declared was read, and the run ends exit 2 with the stop's
+# line as its last. It writes the record whole, in one write under a temporary name renamed
+# into place, prints the last line, and returns the status; when the write's own tool, mv,
+# is the one a signal ended, it writes the record again as the stop's by printf alone, as
+# early_end writes one, which run_ending <unit> printf asks of it. A record it cannot write
+# ends the run exit 2, whatever it judged, with a last line that names the record and then
+# quotes the line the record would have held. Its tools run by the functions ending_mode
+# makes.
+run_ending() {
+    local unit="$1" direct="${2:-}" lines="$ENDING_LINES" field name kind reason total=0 failed=0 unrun=0 failed_names="" unrun_names="" unrun_cases="" first="" status line lost="" stop="" pending="" units=0 why written
+    ending_mode
+    scratch_lost
+    if [ -n "$SCRATCH_LOST" ]; then
+        lost="check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: its own scratch $RUN_SCRATCH takes no write as it ends: $SCRATCH_LOST, so nothing it judged is read, since what it wrote there may be lost"
+        lines=""
+        while IFS=$'\t' read -r field name kind reason; do
+            [ "$field" = declared ] || continue
+            lines="$lines$field"$'\t'"$name"$'\n'"unrun"$'\t'"$name"$'\t'"environment"$'\t'"$lost"$'\n'
+        done <<<"$ENDING_LINES"
+    elif ending_stopped; then
+        # Each declared unit is followed by at most one line of its own, its verdict, so a
+        # unit whose next line is no unrun of its own could not run for the stop.
+        stop="$ENDING_STOP" lines=""
+        while IFS=$'\t' read -r field name kind reason; do
+            case "$field" in
+            declared)
+                [ -z "$pending" ] || lines="$lines"unrun$'\t'"$pending"$'\t'environment$'\t'"$stop"$'\n'
+                lines="$lines"declared$'\t'"$name"$'\n' pending="$name" units=$((units + 1))
+                ;;
+            unrun)
+                lines="$lines"unrun$'\t'"$name"$'\t'"$kind"$'\t'"$reason"$'\n'
+                [ "$name" != "$pending" ] || pending=""
+                ;;
+            esac
+        done <<<"$ENDING_LINES"
+        [ -z "$pending" ] || lines="$lines"unrun$'\t'"$pending"$'\t'environment$'\t'"$stop"$'\n'
+        [ "$units" -gt 0 ] || lines=declared$'\t'"$RUN_WHAT"$'\n'unrun$'\t'"$RUN_WHAT"$'\t'environment$'\t'"$stop"$'\n'
+    fi
+    while IFS=$'\t' read -r field name kind reason; do
+        case "$field" in
+        passed) total=$((total + 1)) ;;
+        failed)
+            total=$((total + 1)) failed=$((failed + 1))
+            failed_names="$failed_names $name"
+            ;;
+        unrun)
+            total=$((total + 1)) unrun=$((unrun + 1))
+            unrun_names="$unrun_names $name"
+            unrun_cases="$unrun_cases; $name: $reason"
+            [ -n "$first" ] || first="$reason"
+            ;;
+        esac
+    done <<<"$lines"
+    if [ -n "$lost" ]; then
+        status=2
+        line="$lost"
+    elif [ -n "$stop" ]; then
+        status=2
+        line="$stop"
+    elif [ "$failed" -gt 0 ]; then
+        status=1
+        if [ "$unit" = cases ]; then
+            line="$failed of $total cases failed${unrun_cases:+; $unrun could not run: ${unrun_cases#; }}"
+        else
+            line="$failed of $total assertions failed:$failed_names${first:+; $unrun could not run:$unrun_names, since $first}"
+        fi
+    elif [ "$unrun" -gt 0 ]; then
+        status=2
+        if [ "$unit" = cases ]; then
+            line="check.sh cannot run check.test.sh: $unrun of $total cases could not run: ${unrun_cases#; }"
+        else
+            line="$first"
+        fi
+    else
+        status=0
+        line="all $total $unit passed"
+    fi
+    line="${line//[$'\t\n']/ }"
+    if [ -z "$direct" ]; then
+        why="$({ printf 'status\t%s\nline\t%s\n%s' "$status" "$line" "$lines" >"$ENDING.new"; } 2>&1 && mv -f -- "$ENDING.new" "$ENDING" 2>&1)"
+    else
+        why="$({ printf 'status\t%s\nline\t%s\n%s' "$status" "$line" "$lines" >"$ENDING"; } 2>&1)"
+    fi
+    written=$?
+    if [ "$written" != 0 ]; then
+        rm -f -- "$ENDING.new" 2>/dev/null
+        if [ -z "$direct$lost$stop" ] && ending_stopped; then
+            run_ending "$unit" printf
+            return
+        fi
+        printf '%s\n' "check.sh cannot run${RUN_WHAT:+ $RUN_WHAT}: its ending record, $ENDING, cannot be written: ${why##*: }, so no reader reads this run, which ended: $line"
+        return 2
+    fi
+    { [ "$status" = 2 ] && [ "$unit" = assertions ] && [ -z "$lost$stop" ]; } || printf '%s\n' "$line"
+    return "$status"
+}
+
+# ending_read <run>; the one reading of how a run ended, a mode of this gate or
+# check.test.sh, from the record the run wrote, never from its exit status alone or its
+# text. <run> is the directory fixture_run or gate_run made for it. It sets RUN_ENDING to
+# passed, failed or cannot-run by the record's status, 0, 1 or 2; RUN_STATUS and RUN_LINE
+# to that status and the run's last line; RUN_FAILED to the names that failed, one per
+# line; and RUN_UNRUN to one line <name><TAB><kind><TAB><reason> per name that could not
+# run. A run that wrote no record, or that exited with a status its record does not hold,
+# crashed or was killed: it reads as failed, with RUN_CRASH=1, RUN_STATUS the status it
+# exited with and a RUN_LINE that says so and quotes the last line of its text. Two runs
+# with no record are read otherwise, since the place the record goes is this run's own
+# scratch: a run whose directory takes no write, and a run never made because its
+# directory could not be made (<run> empty) while this run's scratch takes no write, each
+# could not run, of the kind environment, naming the directory.
+ending_read() {
+    local run="$1" field a b c exited="" lost
+    RUN_STATUS="" RUN_LINE="" RUN_FAILED="" RUN_UNRUN="" RUN_CRASH=0 RUN_ENDING=failed
+    if [ -z "$run" ] || [ ! -d "$run" ]; then
+        if lost="$(write_probe "$RUN_SCRATCH")"; then
+            RUN_CRASH=1 RUN_STATUS=none
+            RUN_LINE="no run was made: its directory '$run' could not be made, and the scratch of this run takes writes, so its caller named a place it cannot make"
+        else
+            RUN_ENDING=cannot-run RUN_STATUS=2
+            RUN_LINE="check.sh cannot run: no run was made, since its directory could not be made under the scratch of this run, $RUN_SCRATCH, which takes no write: $lost"
+            RUN_UNRUN="run"$'\t'"environment"$'\t'"$RUN_LINE"$'\n'
+        fi
+        return 0
+    fi
+    [ -s "$run/status" ] && read -r exited <"$run/status"
+    if [ -f "$run/ending" ]; then
+        while IFS=$'\t' read -r field a b c; do
+            case "$field" in
+            status) RUN_STATUS="$a" ;;
+            line) RUN_LINE="$a" ;;
+            failed) RUN_FAILED="$RUN_FAILED$a"$'\n' ;;
+            unrun) RUN_UNRUN="$RUN_UNRUN$a"$'\t'"$b"$'\t'"$c"$'\n' ;;
+            esac
+        done <"$run/ending"
+    elif ! lost="$(write_probe "$run")"; then
+        RUN_ENDING=cannot-run RUN_STATUS=2
+        RUN_LINE="check.sh cannot run: the directory of the run, $run, takes no write: $lost, so the run could write no ending record there"
+        RUN_UNRUN="run"$'\t'"environment"$'\t'"$RUN_LINE"$'\n'
+        return 0
+    fi
+    case "$RUN_STATUS" in
+    0) RUN_ENDING=passed ;;
+    1) RUN_ENDING=failed ;;
+    2) RUN_ENDING=cannot-run ;;
+    *) RUN_CRASH=1 ;;
+    esac
+    [ -n "$exited" ] && [ "$exited" != "$RUN_STATUS" ] && RUN_CRASH=1
+    [ "$RUN_CRASH" = 1 ] || return 0
+    if [ -n "$RUN_STATUS" ]; then
+        RUN_LINE="the run exited ${exited:-with no status}, and its ending record holds $RUN_STATUS, so it crashed after it wrote it"
+    else
+        RUN_LINE="the run exited ${exited:-with no status} and wrote no ending record, so it crashed or was killed"
+    fi
+    RUN_LINE="$RUN_LINE; its text ends: $(tail -1 "$run/text" 2>/dev/null | head -c 240)"
+    RUN_ENDING=failed RUN_STATUS="${exited:-none}" RUN_FAILED="" RUN_UNRUN=""
+}
+
+claims_file() { printf '%s/claims.jsonl' "$EVIDENCE"; }
+
+# claims_parsed; the one parse of claims.jsonl the header states, made once per run: it
+# writes CLAIMS_ROWS, each line that is a row, as it stands, and CLAIMS_UNREAD, one line
+# <line number><TAB><why> for each line that is not, a second row of an id among them,
+# which names the line of the first. A claims.jsonl that is not there holds no row. It
+# returns non-zero, and writes neither, when the parse could not run to its end, which
+# leaves every reader with no row.
+CLAIMS_ROWS="$RUN_SCRATCH/claims.rows"
+CLAIMS_UNREAD="$RUN_SCRATCH/claims.unread"
+claims_parsed() {
+    [ -e "$CLAIMS_ROWS" ] && return 0
+    python3 - "$(claims_file)" "$CLAIMS_ROWS.part" "$CLAIMS_UNREAD.part" 2>"$CLAIMS_ROWS.err" <<'PY' || return 1
+import json, re, sys
+
+path, rows_path, unread_path = sys.argv[1:4]
+STRINGS = ("id", "requirement", "source", "kind", "claim", "mark", "note", "output", "command")
+OBJECTS = ("evidence",)
+# The named fields of an evidence object that a reader takes a value from, each held to its
+# type wherever it stands: env.sh reads the sha256 of s-model-checksum and the corpus_floor
+# of tc-corpus-1 (its ioc_env_row_fields).
+TYPED = {
+    "sha256": ("64 lowercase hexadecimal digits",
+               lambda value: isinstance(value, str) and re.fullmatch("[0-9a-f]{64}", value) is not None),
+    "corpus_floor": ("a whole number",
+                     lambda value: isinstance(value, int) and not isinstance(value, bool) and value >= 0),
+}
+
+# The keys of an entry of checks, which names a claim of a record under check this row
+# judges and the mark it gives it; claim-marks-agree reads each entry against that claim's
+# own row. row and mark are in every entry, refines only where the row holds one part.
+CHECK_KEYS = ("row", "mark", "refines")
+
+def kind(value):
+    for name, types in (("a boolean", bool), ("a number", (int, float)), ("a string", str),
+                        ("an array", list), ("an object", dict)):
+        if isinstance(value, types):
+            return name
+    return "null"
+
+def constant(name):
+    raise ValueError("%s is no JSON value" % name)
+
+def checks_why(checks):
+    # None when checks has the shape the header's list of keys gives it, or why it has not.
+    if not isinstance(checks, list) or not checks:
+        return "its checks is %s, and a checks is an array of one or more objects" % (
+            "an empty array" if isinstance(checks, list) else kind(checks))
+    for number, entry in enumerate(checks, 1):
+        if not isinstance(entry, dict):
+            return "entry %d of its checks is %s, and an entry of a checks is an object" % (number, kind(entry))
+        for key in entry:
+            if key not in CHECK_KEYS:
+                return "entry %d of its checks holds the key %s, and an entry of a checks holds row, mark and refines alone" % (
+                    number, json.dumps(key)[:80])
+        for key in CHECK_KEYS:
+            if key in entry and not isinstance(entry[key], str):
+                return "the %s of entry %d of its checks is %s, and the %s of an entry of a checks is a string" % (
+                    key, number, kind(entry[key]), key)
+        for key in ("row", "mark"):
+            if not entry.get(key):
+                return "entry %d of its checks has %s, and an entry of a checks names a row and a mark, each a string that is not empty" % (
+                    number, ("an empty " if key in entry else "no ") + key)
+    return None
+
+def read(text):
+    # The row the line holds and None, or None and why the line holds no row.
+    try:
+        row = json.loads(text, parse_constant=constant)
+    except ValueError as why:
+        return None, "it is no JSON: " + " ".join(str(why).split())[:160]
+    if not isinstance(row, dict):
+        return None, "it holds %s, and a row is one JSON object" % kind(row)
+    if not isinstance(row.get("id"), str) or not row["id"]:
+        return None, "its id is %s, and a row is named by an id that is a string that is not empty" % (
+            "missing" if "id" not in row else "an empty string" if row["id"] == "" else kind(row["id"]))
+    for key in STRINGS:
+        if key in row and not isinstance(row[key], str):
+            return None, "its %s is %s, and a %s is a string" % (key, kind(row[key]), key)
+    for key in OBJECTS:
+        if key in row and not isinstance(row[key], dict):
+            return None, "its %s is %s, and an %s is an object" % (key, kind(row[key]), key)
+    evidence = row.get("evidence", {})
+    for key, (what, holds) in TYPED.items():
+        if key in evidence and not holds(evidence[key]):
+            return None, "its evidence's %s is %s, and an evidence's %s is %s" % (
+                key, json.dumps(evidence[key])[:80], key, what)
+    if "checks" in row:
+        why = checks_why(row["checks"])
+        if why is not None:
+            return None, why
+    return row, None
+
+try:
+    data = open(path, "rb").read()
+except FileNotFoundError:
+    data = b""
+first = {}
+with open(rows_path, "w", encoding="utf-8") as rows, open(unread_path, "w", encoding="utf-8") as unread:
+    for number, raw in enumerate(data.split(b"\n"), 1):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            unread.write("%d\tit is not UTF-8\n" % number)
+            continue
+        if not text.strip():
+            continue
+        row, why = read(text)
+        if row is not None and row["id"] in first:
+            why = "its id %s is the id of line %d too, and an id names one row" % (json.dumps(row["id"]), first[row["id"]])
+        elif row is not None:
+            first[row["id"]] = number
+        if why is None:
+            rows.write(text.strip() + "\n")
+        else:
+            unread.write("%d\t%s\n" % (number, why))
+PY
+    mv "$CLAIMS_UNREAD.part" "$CLAIMS_UNREAD" && mv "$CLAIMS_ROWS.part" "$CLAIMS_ROWS"
+}
+
+# claims_judge <family>; the one parse, run by each mode that reads a row of claims.jsonl
+# before it builds any environment or starts any reader: one FAIL of <family> for each
+# line that is no row, naming the line and why, and one when the parse itself could not
+# run to its end. It returns non-zero when it reported a FAIL.
+claims_judge() {
+    local number why unread=0
+    if ! claims_parsed; then
+        fail "$1" "the parse of claims.jsonl did not run to its end, so no row of it is read: $(tail -1 "$CLAIMS_ROWS.err" | head -c 240)"
+        return 1
+    fi
+    while IFS=$'\t' read -r number why; do
+        unread=1
+        fail "$1" "line $number of claims.jsonl is no row, so nothing of it is read: $why"
+    done <"$CLAIMS_UNREAD"
+    return "$unread"
+}
+
+# Every row of claims.jsonl the one parse read, one per line, as the line stands.
+claims() {
+    claims_parsed || {
+        printf 'check.sh: the parse of claims.jsonl did not run to its end: %s\n' "$(tail -1 "$CLAIMS_ROWS.err")" >&2
+        return 1
+    }
+    cat "$CLAIMS_ROWS"
+}
+
+# env_rows_judge <family>; the rows env.sh reads a value from, by env.sh's own table and
+# reader of them (ioc_env_row_fields, ioc_env_row_field), over the rows the one parse read,
+# which --replay judges before it sources env.sh, once env_functions has loaded env.sh's
+# functions. A row that is not there, or whose evidence names no such field, fails
+# <family>, naming the row and the field, and so does a row whose field is not a whole line
+# of the value of its own one predicate, as s-model-checksum's sha256 is the first line of
+# its equals and tc-corpus-1's corpus_floor is its equals: the pin env.sh holds its input
+# to and the value the row is held to are one fact, written twice. It returns non-zero
+# when it reported a FAIL.
+env_rows_judge() {
+    local id field what value bad=0
+    while IFS='|' read -r id field what; do
+        value="$(IOC_ENV_CLAIMS="$CLAIMS_ROWS" ioc_env_row_field "$id" "$field")"
+        if [ -z "$value" ]; then
+            bad=1
+            fail "$1" "claims.jsonl holds no row $id whose evidence names $field, which env.sh reads as $what"
+        elif ! jq -e --arg id "$id" --arg value "$value" 'select(.id == $id) | .expect | type == "object" and any(to_entries[] | select(.key != "exit") | .value | tostring | split("\n")[]; . == $value)' "$CLAIMS_ROWS" >/dev/null; then
+            bad=1
+            fail "$1" "the row $id names $field $value in its evidence, which env.sh reads as $what, and its predicate holds no line $value, so the pin and the value the row is held to differ: $(jq -c --arg id "$id" 'select(.id == $id) | .expect' "$CLAIMS_ROWS" | head -c 200)"
+        fi
+    done < <(ioc_env_row_fields)
+    return "$bad"
+}
+
+# claim_marks_judge; claim-marks-agree, which --replay judges first, from the rows the one
+# parse read alone, before it reads a source or env.sh builds anything (the header's "The
+# one parse of claims.jsonl"), so two rows that disagree on one claim are reported however
+# the rest of the run goes. A row that judges a claim of a record under check names that
+# claim's row in its checks, with the mark it gives it (the header's list of keys). Each
+# entry fails, naming the row and the row it names, when the row that carries it is itself
+# a citation row of a record under check, which names no other claim; when the row it
+# names is not in the file, or is no citation row of a record under check; when its mark
+# is none of the four r1 fixes; when its refines is no sentence, five words or more ending
+# with a full stop; and when its mark disagrees with the named row's, named once, by the
+# first of three rules it breaks: its mark differs from the named row's and it names no
+# part it holds (refines), the two rows disagreeing on one claim; the named row is
+# verified and it gives a part of that claim another mark, since a part of a claim marked
+# verified is verified too; or its mark is false and the named row's is not, with or
+# without refines, since a claim with a part marked false is false. A file in which no row
+# carries checks compares no pair, and fails too.
+claim_marks_judge() {
+    local verdict message status
+    if ! claims_parsed; then
+        fail claim-marks-agree "the parse of claims.jsonl did not run to its end, so no row is compared with the record claim it checks"
+        return 0
+    fi
+    python3 - "$CLAIMS_ROWS" "$EVIDENCE/sources.json" >"$RUN_SCRATCH/claim-marks" 2>"$RUN_SCRATCH/claim-marks.err" <<'PY'
+import json, re, sys
+
+rows_path, sources_path = sys.argv[1:3]
+# The marks requirement r1 fixes for a claim of a record under check.
+MARKS = ("verified", "false", "unverified", "not-externally-checkable")
+
+def say(verdict, message):
+    print("%s\t%s" % (verdict, re.sub(r"[\t\n]", " ", message)))
+
+try:
+    with open(sources_path, encoding="utf-8") as sources:
+        labels = [record["label"] for record in json.load(sources)["records_under_check"]]
+except (OSError, ValueError, KeyError, TypeError) as why:
+    say("fail", "sources.json names no record under check this run can read, so no row is known as the row of a record claim: "
+        + " ".join(str(why).split())[:160])
+    sys.exit(0)
+
+with open(rows_path, encoding="utf-8") as lines:
+    rows = [json.loads(line) for line in lines if line.strip()]
+by_id = {row["id"]: row for row in rows}
+
+def citation(row_id):
+    # A citation row of a record under check: <label>-<n>, <label> one of sources.json's.
+    return any(re.fullmatch(re.escape(label) + "-[0-9]+", row_id) for label in labels)
+
+def sentence(text):
+    # A sentence by the gate's own reading: five words or more, ending with a full stop.
+    return len(text.split()) >= 5 and text.rstrip().endswith(".")
+
+failed = False
+carrying = entries = 0
+for row in rows:
+    if "checks" not in row:
+        continue
+    carrying += 1
+    me = row["id"]
+    for entry in row["checks"]:
+        entries += 1
+        named, mark, refines = entry["row"], entry["mark"], entry.get("refines")
+        target = by_id.get(named)
+        whys = []
+        if citation(me):
+            whys.append("%s checks %s, and %s is itself the row of a claim of a record under check, which names no other claim"
+                        % (me, named, me))
+        if target is None:
+            whys.append("%s checks %s, and claims.jsonl holds no row %s" % (me, named, named))
+        elif not citation(named):
+            whys.append("%s checks %s, which is no citation row of a record under check, <label>-<n> with <label> one of %s"
+                        % (me, named, ", ".join(labels) or "none"))
+        if mark not in MARKS:
+            whys.append("%s gives %s's claim the mark %s, which is none of the marks r1 fixes: %s" % (me, named, mark, ", ".join(MARKS)))
+        if refines is not None and not sentence(refines):
+            whys.append("%s names the part of %s's claim it holds in a refines that is no sentence, five words or more ending with a full stop: %s"
+                        % (me, named, json.dumps(refines)[:160]))
+        if target is not None and citation(named) and mark in MARKS:
+            theirs = target.get("mark") or "no mark"
+            if refines is None and mark != theirs:
+                whys.append("%s gives %s's claim the mark %s, %s carries %s, and %s names no part it holds, so the two rows disagree on one claim"
+                            % (me, named, mark, named, theirs, me))
+            elif refines is not None and theirs == "verified" and mark != "verified":
+                whys.append("%s gives a part of %s's claim the mark %s, and %s carries verified, so the two rows disagree on one claim: a part of a claim marked verified is verified too"
+                            % (me, named, mark, named))
+            elif mark == "false" and theirs != "false":
+                whys.append("%s gives a part of %s's claim the mark false, and %s carries %s, so the two rows disagree on one claim: a claim with a part marked false is false"
+                            % (me, named, named, theirs))
+        for why in whys:
+            failed = True
+            say("fail", why)
+if carrying == 0:
+    say("fail", "no row of claims.jsonl carries checks, so no row is compared with the record claim it judges")
+elif not failed:
+    say("pass", "each of the %d entries of checks on %d rows names the row of a claim of a record under check and gives it the mark that row carries, or names the part of it the row holds, no part of a claim marked verified is marked otherwise, and no part of a claim not marked false is marked false"
+        % (entries, carrying))
+PY
+    status=$?
+    while IFS=$'\t' read -r verdict message; do
+        if [ "$verdict" = fail ]; then
+            fail claim-marks-agree "$message"
+        elif [ "$verdict" = pass ] && [ "$status" -eq 0 ]; then
+            pass claim-marks-agree "$message"
+        fi
+    done <"$RUN_SCRATCH/claim-marks"
+    [ "$status" -eq 0 ] ||
+        fail claim-marks-agree "the comparison of each row's checks with the row it names stopped before its end: $(tail -1 "$RUN_SCRATCH/claim-marks.err" | head -c 240)"
+}
+
+# live_read <source> <file> <command...>; the one read of a live source the gate makes
+# itself, which every mode makes in its own shell before any assertion over what it reads
+# judges: the judgement and the records under check from Dispatch, a reference Dispatch is
+# asked to resolve, the Dispatch API, the GitHub budget and default branch, GitHub's own name
+# for the deployment repository (deployment_repository_read) and its answer to git ls-remote
+# of that private repository rows read (private_repository_read), a clone's
+# fetch, and the run of coordination/count.py over the feed of the count's window
+# (count_load); a recorded command's own reads are the row's, which source_answer reads
+# (the header's live-read rule). It runs the command, writes what it printed into <file>,
+# and returns 0 when the source answered. It returns 1 when the source answered that it
+# holds no such thing, which is an answer that judges the deliverable: Dispatch's "not
+# found", "No block", "no version N of", "document ... not found", or its refusal to read a
+# reference it does not take ("dispatch read was not called"), each measured against
+# Dispatch on 2026-11-15, each with or without the refusal's code before it ("NOT_FOUND: not
+# found"), which the CLI of the worker image printed from 2026-11-17, and "not found" with a
+# detail after "; ", as "NOT_FOUND: not found; INFRA-1484 holds no ask <id>", which Dispatch
+# printed for an ask, a comment or a message it does not hold on 2026-11-25. A command that
+# failed for the run's own machine and not for the source writes as the first line of its
+# stderr "check.sh stop environment: " and what happened, as count_run does for a count.py the
+# machine ended by a signal: the mode cannot run, of the kind environment, its last line
+# that line's rest, and the source is not named as one that did not answer. Anything else
+# that fails, a Dispatch that is unreachable, a curl or git transport error, a count.py that
+# raised on a read and exited non-zero, is no answer at all: the mode cannot run, of the kind
+# source, and it ends here, naming the source, exit 2, or exit 1 after a FAIL, by the
+# precedence of the header. The command reads /dev/null as its input, so a reader that reads
+# its input, as a dispatch or a git can, never takes the lines a loop around live_read has
+# not reached (case 241).
+LIVE_ANSWER_NO='^(NOT_FOUND: )?(not found(; |$)|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
+LIVE_STOP_ENVIRONMENT='check.sh stop environment: '
+live_read() {
+    local source="$1" file="$2" stop
+    shift 2
+    "$@" >"$file" 2>"$file.err" </dev/null && return 0
+    head -1 "$file" "$file.err" 2>/dev/null | grep -qE "$LIVE_ANSWER_NO" && return 1
+    stop="$(head -1 "$file.err" 2>/dev/null)"
+    [[ "$stop" == "$LIVE_STOP_ENVIRONMENT"* ]] && cannot_run environment " --$MODE: ${stop#"$LIVE_STOP_ENVIRONMENT"}"
+    cannot_run source " --$MODE: $source did not answer: $(cat "$file" "$file.err" 2>/dev/null | head -c 240 | tr '\n' ' ')"
+}
+
+# clone_fetch <repository>; fetches the clone of a repository sources.json pins at its
+# pinned commit, by env.sh's one rule, ioc_env_clone, under the clone root this run
+# reads, through live_read: a fetch that fails is a mode that cannot run. It returns 1
+# for a repository sources.json does not pin, which is an answer about the deliverable.
+# It reads the repository a row names by repo_named, and the clone stands under CLONES by
+# the name repo_named prints.
+clone_fetch() {
+    local name
+    name="$(repo_named "$1")" || return 1
+    env_functions || cannot_run gate " --$MODE: env.sh, which holds the rule a clone is made by, did not load."
+    IOC_ENV_HERE="$EVIDENCE" IOC_CLONES="$CLONES" live_read "GitHub, the fetch of the clone of $name" "$RUN_SCRATCH/clone-$name.log" ioc_env_clone "$name"
+}
+
+# repo_named <repository>; prints the name of the repository of sources.json's list, with
+# its url and its commit, that a row's repository names, read whole: that name itself, as
+# scope, or the owner and the name of the url sources.json pins for it, with or without the
+# host before them, as ioc-project/scope or github.com/ioc-project/scope. Any other word
+# prints nothing and returns 1, so a repository whose owner is mistyped, as
+# ioc-projects/scope, is never read by its last path element alone as the clone of another.
+repo_named() {
+    jq -r --arg r "$1" '.repositories[] | select(.url and .commit) | (.url | sub("^https?://"; "")) as $u | select(.name == $r or $u == $r or ($u | sub("^[^/]*/"; "")) == $r) | .name' "$EVIDENCE/sources.json" 2>/dev/null | grep -m1 .
+}
+
+our_commit() { jq -r '.our_repository.commit' "$EVIDENCE/sources.json"; }
+
+# dispatch_header prints the path of a file holding the Dispatch bearer as one HTTP
+# header, which curl reads with -H @<file>, so the token stands on no command line. The
+# file is written once per run, readable by its owner alone, under this run's scratch,
+# which the EXIT trap removes.
+dispatch_header() {
+    local file="$RUN_SCRATCH/dispatch.header"
+    if [ ! -s "$file" ]; then
+        [ -n "${DISPATCH_TOKEN_FILE:-}" ] && [ -r "$DISPATCH_TOKEN_FILE" ] || return 1
+        (
+            umask 077
+            printf 'Authorization: Bearer %s\n' "$(tr -d '\r\n' <"$DISPATCH_TOKEN_FILE")" >"$file"
+        ) || return 1
+    fi
+    printf '%s' "$file"
+}
+
+# dispatch_get <path>; a read of the Dispatch API, run through live_read by its caller: a
+# pod with no bearer, a transport error and an HTTP error status each fail it.
+dispatch_get() {
+    local path="$1" header
+    header="$(dispatch_header)" || {
+        printf 'no Dispatch bearer: DISPATCH_TOKEN_FILE names no readable file\n' >&2
+        return 1
+    }
+    curl -sS --fail-with-body -H @"$header" "${DISPATCH_URL%/}$path"
+}
+
+# env_functions makes env.sh's functions and lists those of this shell, so that check.sh
+# and env.sh share each rule they both read: the command that reads a Dispatch record
+# (ioc_env_record_command), a clone (ioc_env_clone), git that never prompts (ioc_env_git),
+# the GitHub header files (ioc_env_github_auth), the table of tool caches and its
+# export (ioc_env_cache_table, ioc_env_caches), the variables it sets or clears in every
+# row's environment (IOC_ENV_ENFORCED), the environments and their locks (IOC_ENV_FROZEN,
+# read by ioc_env_frozen_labels and ioc_env_frozen_entry), the stamp of an environment
+# (ioc_env_unstamp), the reader of a lock (ioc_env_lock_py), the check of what an
+# environment holds (ioc_env_frozen), and the values env.sh reads from rows of claims.jsonl
+# and its reader of them (ioc_env_row_fields, ioc_env_row_field). env.sh read this way
+# defines them and prepares nothing.
+env_functions() {
+    declare -F ioc_env_record_command >/dev/null && return 0
+    [ -r "$EVIDENCE/env.sh" ] || return 1
+    local IOC_ENV_FUNCTIONS_ONLY=1
+    # shellcheck source=env.sh
+    . "$EVIDENCE/env.sh"
+}
+
+# judgement_load; reads the judgement once per run, live from Dispatch through
+# live_read, into this run's scratch, so the gate reads what a reader reads now rather
+# than what an earlier run left behind. The self-test's fixture names a file instead, as
+# IOC_JUDGEMENT. A Dispatch that does not answer ends the mode, exit 2, or exit 1 after a
+# FAIL, by the precedence of the header; one that answers it holds no judgement leaves the
+# text empty, and every assertion over it then fails by its committed floor. Each mode that
+# reads the judgement calls this first, in its own shell; judgement_text then prints what it
+# read.
+judgement_load() {
+    local cache="$RUN_SCRATCH/judgement.md"
+    [ -e "$cache" ] && return 0
+    if [ -n "${IOC_JUDGEMENT:-}" ]; then
+        live_read "the judgement file $IOC_JUDGEMENT" "$cache" cat "$IOC_JUDGEMENT"
+        return 0
+    fi
+    env_functions || cannot_run gate " --$MODE: env.sh, which holds the command a Dispatch record is read by, did not load."
+    live_read "Dispatch, the read of dispatch://INFRA-3134/artifact/judgement-md" "$cache" \
+        ioc_env_record_command dispatch://INFRA-3134/artifact/judgement-md || : >"$cache"
+}
+judgement_text() {
+    [ -e "$RUN_SCRATCH/judgement.md" ] || {
+        printf 'check.sh read the judgement before judgement_load\n' >&2
+        return 1
+    }
+    cat "$RUN_SCRATCH/judgement.md"
+}
+
+# record_load <label>; reads one record under check, by its label in sources.json, into
+# this run's scratch, once per run: from the copy sources.json names, which is how the
+# self-test's fixture holds one, or else live from Dispatch through live_read. A Dispatch
+# that answers it holds no such record leaves the text empty, and citation-row then fails
+# by its committed rows. It names the copy of the design as IOC_DESIGN and that of the
+# reconciliation as IOC_COMMENT, which every row that counts or quotes a line of one reads
+# and env.sh then reads no record again, so the rows and citation-row read one copy, read
+# in this run. record_text <label> prints what it read.
+record_load() {
+    local label="$1" ref copy cache="$RUN_SCRATCH/record-$1.md"
+    if [ ! -e "$cache" ]; then
+        ref="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .ref' "$EVIDENCE/sources.json")"
+        copy="$(jq -r --arg l "$label" '.records_under_check[] | select(.label==$l) | .copy // ""' "$EVIDENCE/sources.json")"
+        if [ -n "$copy" ]; then
+            cp "$EVIDENCE/$copy" "$cache"
+        else
+            env_functions || cannot_run gate " --$MODE: env.sh, which holds the command a Dispatch record is read by, did not load."
+            live_read "Dispatch, the read of $ref" "$cache" ioc_env_record_command "$ref" || : >"$cache"
+        fi
+    fi
+    case "$label" in
+    d) export IOC_DESIGN="$cache" ;;
+    r) export IOC_COMMENT="$cache" ;;
+    esac
+}
+record_text() { cat "$RUN_SCRATCH/record-$1.md"; }
+
+# history_ref names the commit whose history --shape and --landed read: IOC_HISTORY_REF
+# when it is set, which a reader sets once the squash merge has left the pull request's
+# own commits off the default branch, and HEAD otherwise.
+history_ref() { printf '%s' "${IOC_HISTORY_REF:-HEAD}"; }
+
+# pr_base prints the base this pull request's own diff is read against: the base branch's
+# commit that the newest forward merge on the pull request's first-parent line brought in,
+# or the commit our code was read at when no merge did. A range from our_commit alone would
+# carry every change the base branch made since, which are no step of this pull request.
+pr_base() {
+    local merge
+    merge="$(git -C "$ROOT" rev-list --first-parent --merges -1 "$(our_commit)..$(history_ref)")"
+    if [ -n "$merge" ]; then
+        git -C "$ROOT" rev-parse "$merge^2"
+    else
+        our_commit
+    fi
+}
+
+# pr_commits prints the commits this pull request added, one per line: those of its history
+# that are neither the commit our code was read at nor reachable from a base commit a
+# forward merge brought in. A forward merge itself is one of them.
+pr_commits() {
+    local merges
+    merges="$(git -C "$ROOT" rev-list --merges "$(our_commit)..$(history_ref)" | sed 's/$/^2/')"
+    # shellcheck disable=SC2086
+    git -C "$ROOT" rev-list "$(history_ref)" --not "$(our_commit)" $merges
+}
+
+# ---------------------------------------------------------------- the predicate
+
+
+# bound <at_most|at_least> <value> <output file>
+#
+# A bound reads the one number the output prints, which is how a score or a count is
+# recorded; a row that counts lines says so in its command, with wc -l. Output that is not
+# exactly one number holds no bound, so a traceback's line count never meets one, and the
+# number read is named in the failure. The two numbers are compared as the decimals they
+# are written as, never as floats, which would round two counts past 2^53 to one.
+bound() {
+    local key="$1" value="$2" out="$3" read_value
+    # Only the space around the number is taken off, so two numbers on two lines stay
+    # two and are no one number.
+    read_value="$(cat "$out")"
+    read_value="${read_value#"${read_value%%[![:space:]]*}"}"
+    read_value="${read_value%"${read_value##*[![:space:]]}"}"
+    if ! [[ "$read_value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        IOC_BOUND_READ="output that is not one number"
+        return 1
+    fi
+    IOC_BOUND_READ="$read_value"
+    python3 -c 'import sys; from decimal import Decimal; a=Decimal(sys.argv[1]); b=Decimal(sys.argv[2]); sys.exit(0 if (a <= b if sys.argv[3]=="at_most" else a >= b) else 1)' "$read_value" "$value" "$key"
+}
+
+# evaluate <expect-json> <output-file>; prints nothing, returns 0 when it holds, by what
+# the header's rule for expect gives each key: the output, and the value of an equals or a
+# contains, are read as text without their trailing newlines, and no value is handed to a
+# tool as a list of patterns. A predicate whose shape predicate_is_a_sentence refuses
+# holds over no output.
+evaluate() {
+    local spec="$1" out="$2" key value text candidate
+    # An exit status beside a predicate over the output: both hold, or the row fails.
+    if [ "$(printf '%s' "$spec" | jq 'type == "object" and has("exit") and length == 2')" = true ]; then
+        evaluate "$(printf '%s' "$spec" | jq -c '{exit}')" "$out" &&
+            evaluate "$(printf '%s' "$spec" | jq -c 'del(.exit)')" "$out"
+        return
+    fi
+    predicate_is_a_sentence "$spec" && return 2
+    key="$(printf '%s' "$spec" | jq -r 'keys[0] // empty')"
+    value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
+    case "$key" in
+    equals) [ "$(cat "$out")" = "$value" ] ;;
+    # The whole value, every line of it, is one substring of the output.
+    contains)
+        text="$(cat "$out")"
+        [[ "$text" == *"$value"* ]]
+        ;;
+    # One extended regular expression, on one line, which some line of the output matches.
+    matches) grep -qE -- "$value" "$out" ;;
+    # A status that was never recorded is no status, and meets no value.
+    exit) [ "$(cat "$out.status" 2>/dev/null)" = "$value" ] ;;
+    at_most | at_least) bound "$key" "$value" "$out" ;;
+    # A set membership: the whole output is one of the candidates, each one line.
+    one_of)
+        text="$(cat "$out")"
+        while IFS= read -r candidate; do
+            [ "$text" = "$candidate" ] && return 0
+        done < <(printf '%s' "$spec" | jq -r '.one_of[]')
+        return 1
+        ;;
+    *) return 2 ;;
+    esac
+}
+
+# A predicate is a bound, a set membership or an exit status. Anything else, and anything
+# whose value reads as a sentence, fails: that is what the Verification document asks for.
+#
+# predicate_is_a_sentence <expect-json>; true when any key of the predicate is none of the
+# seven, or carries a value of another shape than the header's rule for expect gives that
+# key, and IOC_PREDICATE_WHY then says what the row carries, for the FAIL of predicate-form
+# to write after "<id> carries": a key none of the seven is a predicate that is not a bound,
+# a set membership or an exit status, and a key of the seven is that predicate with a value
+# of another shape, named with what its value is, its JSON type where the type differs, as
+# for {"equals": true}, whose value is a JSON boolean and not a string.
+predicate_is_a_sentence() {
+    local spec="$1" key type value lead
+    IOC_PREDICATE_WHY=""
+    while IFS= read -r key; do
+        type="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | type')"
+        # The value as jq prints it raw, with every newline it holds, its last included.
+        value="$(printf '%s' "$spec" | jq -j --arg k "$key" '.[$k] | tostring' && printf .)"
+        value="${value%.}"
+        lead="the predicate $key with a value of another shape than the header's rule for expect gives it"
+        case "$key" in
+        equals)
+            [ "$type" = string ] || IOC_PREDICATE_WHY="its equals is a JSON $type, not a string"
+            ;;
+        contains)
+            if [ "$type" != string ]; then
+                IOC_PREDICATE_WHY="its contains is a JSON $type, not a string"
+            elif [ -z "${value//$'\n'/}" ]; then
+                IOC_PREDICATE_WHY="its contains is empty without its trailing newlines, and an empty value is a substring of any output"
+            fi
+            ;;
+        matches)
+            if [ "$type" != string ]; then
+                IOC_PREDICATE_WHY="its matches is a JSON $type, not a string"
+            elif [ -z "$value" ]; then
+                IOC_PREDICATE_WHY="its matches is empty, and an empty expression matches every line"
+            elif [[ "$value" == *$'\n'* ]]; then
+                IOC_PREDICATE_WHY="its matches holds a newline, and a matches is one regular expression over one line, where grep reads each line of it as an expression of its own"
+            fi
+            ;;
+        one_of)
+            if [ "$type" != array ] || ! printf '%s' "$spec" | jq -e '.one_of | length > 0 and (map(type == "string") | all)' >/dev/null; then
+                IOC_PREDICATE_WHY="its one_of is no list of one or more strings"
+            elif ! printf '%s' "$spec" | jq -e '.one_of | map(length > 0 and (split("\n") | length) == 1) | all' >/dev/null; then
+                IOC_PREDICATE_WHY="its one_of holds a candidate that is empty or holds a newline, and each candidate is one whole line the output can be"
+            fi
+            ;;
+        at_most | at_least)
+            [[ "$value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] || IOC_PREDICATE_WHY="its $key is no one number"
+            ;;
+        exit)
+            [[ "$value" =~ ^[0-9]+$ ]] || IOC_PREDICATE_WHY="its exit is no one whole number"
+            ;;
+        *)
+            lead="a predicate that is not a bound, a set membership or an exit status"
+            IOC_PREDICATE_WHY="its key $key is none of the seven"
+            ;;
+        esac
+        [ -z "$IOC_PREDICATE_WHY" ] || {
+            IOC_PREDICATE_WHY="$lead, since $IOC_PREDICATE_WHY"
+            return 0
+        }
+    done < <(printf '%s' "$spec" | jq -r 'keys[]')
+    return 1
+}
+
+# ---------------------------------------------------------------- --coverage
+
+coverage_report() {
+    printf 'What this gate reads, one line per assertion family.\n\n'
+    printf '%-24s %-10s %s\n' 'family' 'mode' 'what it asserts'
+    assertion_table | while IFS='|' read -r family mode asserts _planted; do
+        printf '%-24s %-10s %s\n' "$family" "--$mode" "$asserts"
+    done
+    printf '\nWhat this gate does not read, and no run of it ever will:\n'
+    cat <<'GAPS'
+- whether the ranking is right. The pages carry a verdict, a cost and a default, and
+  nothing here says the order is the order a reader should act in.
+- whether the reconciliation is fair. It reads that the four fixed rows are present, not
+  that the paragraph on where the two accounts differ is a fair reading of either.
+- whether the reading is deep. It reads that each of the six mas-lab directories has an
+  evidence file and that each of the three questions is answered; a file that answers
+  shallowly passes.
+- whether a cited text supports the claim beside it. It resolves the citation, reads the
+  quoted words and holds each figure of a sentence that cites a row to the output or the
+  command of a row it cites; the judgement of what they support is the reader's. A number
+  written in words is not read, so a measured figure is written in digits, and an
+  estimate carries "by our estimate", which no row is held to print. Nor does
+  citation-figures prove that a figure is the right one: a figure counts as printed when it
+  stands anywhere in a cited row's output or command, whatever it measures there, so a
+  printed number the sentence misnames passes, and so do two figures swapped between their
+  places.
+- whether a candidate that cannot be argued in one page was left off the list, and whether
+  one fact is written once with the other half linking to it. Both are a reviewer's
+  reading, and the plan of this issue names them so that nobody reads this gate as
+  enforcing them.
+- whether an engineer-day estimate is right. It reads the number on the page.
+- whether a pull request that a step not landed names as its record says why. --landed
+  reads that the page names it, and resolves each dispatch:// record in Dispatch; it reads
+  no pull request.
+GAPS
+}
+
+# coverage_missing <script>; each family of the assertion table that the coverage report
+# <script> --coverage prints names on no line, one per line, by the one reading of the
+# report coverage-complete makes: a line that starts with the family and a space.
+# --self-test reads this script's own report by it, and the planted copy's.
+coverage_missing() {
+    local coverage family _mode _asserts _fault
+    coverage="$(bash "$1" --coverage)"
+    while IFS='|' read -r family _mode _asserts _fault; do
+        printf '%s\n' "$coverage" | grep -q "^$family " || printf '%s\n' "$family"
+    done < <(assertion_table)
+}
+
+# ---------------------------------------------------------------- --replay
+
+# env.sh prepares every input a recorded command reads that this tree cannot hold and
+# exports one variable per input. Sourcing it here puts those variables in this shell's
+# environment, so that each recorded command reads them beside IOC_CLONES. The fixture of
+# --self-test builds a deliverable whose rows need none of them and sets IOC_NO_ENV=1; its
+# rows' tools still keep every cache under IOC_CACHE, the fixture's own directory, which
+# no run outside that fixture reads (fixture_run), by env.sh's one table of them, so a row
+# planted there runs as cold as the tree's own.
+prepare_env() {
+    if [ "${IOC_NO_ENV:-0}" = 1 ]; then
+        env_functions || cannot_run gate ": env.sh, which names where every tool cache of a recorded command lives, did not load."
+        ioc_env_caches
+        return 0
+    fi
+    [ -r "$EVIDENCE/env.sh" ] ||
+        cannot_run gate ": $EVIDENCE/env.sh is missing, and every recorded command needs what it prepares."
+    # shellcheck source=env.sh
+    . "$EVIDENCE/env.sh" || cannot_run environment ": env.sh did not prepare what the recorded commands read."
+}
+
+# What the evaluator admits, a closed table. It fails closed: the classifier of reader_py
+# reads each row's command once, and admits it only when every part of it is an entry of
+# the classifier's one table, ADMITTED; any other form is refused by name, and the row fails
+# without being read. Every admission goes through one function, admit, which refuses a
+# form the table does not hold whatever the parser read it as. The programs are entries of
+# it too, one per program name the rows run. The table below is ADMITTED in its own order,
+# each entry with the number of the rows of claims.jsonl with a command that use it.
+# --admitted measures it, and fails when an entry is used by no row, when a row is
+# refused, or when a line here differs from what it measured; --self-test runs it.
+#
+#   form                            rows  what it is
+#   &&                               220  runs the next pipeline when this one exits 0
+#   ||                                 9  runs the next pipeline when this one fails
+#   |                                472  joins the commands of a pipeline
+#   ;                                 73  ends a pipeline
+#   newline                            3  an unquoted newline, ending a pipeline as ; does
+#   >                                  8  writes the output to a file
+#   2>                                23  writes the error output to a file
+#   2>&1                               6  sends the error output where the output goes
+#   {                                 28  opens a group
+#   }                                 28  closes a group
+#   (                                  2  opens a subshell
+#   )                                  2  closes a subshell
+#   for                               21  opens a for loop
+#   in                                21  comes before a for loop's words
+#   do                                21  comes before a for loop's body
+#   done                              21  closes a for loop
+#   simple command                   658  a command word and its arguments
+#   pipeline                         472  two or more commands joined by |
+#   list                             257  two or more pipelines joined by ;, &&, || or newline
+#   group                             28  { list; }, whose status is its last command's
+#   subshell                           2  ( list ), whose status is its last command's
+#   for loop                          21  for NAME in words; do list; done
+#   assignment before a command       30  NAME=value, set in that command's environment
+#   assignment alone                   6  NAME=value with no command word
+#   command substitution in a word    15  $( ) in a word, its code admitted by this table
+#   assigns ACCORD_MODEL_DIR          16  a name the rows assign
+#   assigns GOFLAGS                    1  a name the rows assign
+#   assigns IOC_EXPECT_STATUS         10  the declared status, the last prefix of one command
+#   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
+#   assigns VIRTUAL_ENV                3  a name the rows assign
+#   assigns W                          1  a name the rows assign
+#   assigns c                          7  a name the rows assign
+#   assigns f                          6  a name the rows assign
+#   assigns g                          1  a name the rows assign
+#   assigns m                          1  a name the rows assign
+#   assigns n                          6  a name the rows assign
+#   assigns o                          1  a name the rows assign
+#   assigns p                          5  a name the rows assign
+#   assigns r                          5  a name the rows assign
+#   program awk                       35  wrapped in a function that records its status
+#   program cat                       25  wrapped in a function that records its status
+#   program cd                        76  wrapped in a function that records its status
+#   program cmp                        2  wrapped in a function that records its status
+#   program cp                         1  wrapped in a function that records its status
+#   program curl                      35  wrapped in a function that records its status
+#   program cut                        8  wrapped in a function that records its status
+#   program dispatch                  76  wrapped in a function that records its status
+#   program echo                      31  wrapped in a function that records its status
+#   program git                      378  wrapped in a function that records its status
+#   program go                         2  wrapped in a function that records its status
+#   program grep                     242  wrapped in a function that records its status
+#   program jq                        76  wrapped in a function that records its status
+#   program mkdir                      1  wrapped in a function that records its status
+#   program mktemp                     1  wrapped in a function that records its status
+#   program printf                    15  wrapped in a function that records its status
+#   program python3                   38  wrapped in a function that records its status
+#   program rm                         2  wrapped in a function that records its status
+#   program sed                      309  wrapped in a function that records its status
+#   program sh                         2  wrapped in a function that records its status
+#   program sha256sum                  8  wrapped in a function that records its status
+#   program sort                      33  wrapped in a function that records its status
+#   program stat                       2  wrapped in a function that records its status
+#   program tail                       1  wrapped in a function that records its status
+#   program tr                        11  wrapped in a function that records its status
+#   program uniq                      19  wrapped in a function that records its status
+#   program uv                         8  wrapped in a function that records its status
+#   program wc                        64  wrapped in a function that records its status
+#   program xargs                      5  wrapped in a function that records its status
+#   variable $IOC_PY                  43  a program variable, whose shim records its status
+#   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
+#   variable $IOC_MASLAB_CTL           5  a program variable, whose shim records its status
+#   variable $IOC_MASLAB_WHEEL_CTL     2  a program variable, whose shim records its status
+#   variable $IOC_TC_PY                2  a program variable, whose shim records its status
+#   xargs running a program            5  xargs's status carries the program's
+#   xargs -0                           3  xargs reads its input split at NUL bytes
+#   xargs -n                           3  xargs passes at most N arguments to each run
+#   uv run --no-project                4  uv run reads no project of the working directory
+#   uv run --python                    4  uv run runs the python version named
+#   uv run --with                      4  uv run installs the package named into its environment
+#   uv run python                      4  uv run's python, whose status uv run exits with
+#   sh running a script file           2  the script's status reaches the row as sh's
+#   true                               9  a command whose status is no read
+#   $NAME or ${NAME}                 458  a parameter, its name in braces or not
+#   $?                                27  the status of the last command
+#   $( )                              15  a command substitution
+#   a literal $                        2  a $ that starts no expansion, left as it stands
+#
+# Each program the table names is wrapped in a function of that name that records its
+# status, a builtin among them; a program variable points at a shim that does the same;
+# true's status is no read. A program name the table holds no entry for is refused, a
+# builtin or not. The program xargs runs is one of the table's programs, and the program
+# uv run runs is one of uv run's own entries; each is held with its arguments to every
+# rule a command word and its arguments are held to.
+#
+# The names a row assigns. An assignment, alone or before a command, and a for loop's
+# variable are admitted only to a name the table holds an entry "assigns <name>" for, one
+# per name the rows assign, which --admitted counts like every entry; every other name is
+# refused by name, the shell's own among them, such as PATH, IFS, FUNCNEST, BASH_ENV and
+# LC_ALL, which change how the runner's functions find, call or record a program. No tool
+# cache is on the list, GOMODCACHE and GOCACHE among them: env.sh's ioc_env_cache_table sets
+# each under IOC_CACHE, so a row reads its cache from there and one that assigns it is
+# refused.
+# printf -v, which would assign its target, is refused whole, since no row writes it, so
+# no printf -v target is on the list. IOC_EXPECT_STATUS=<n> is admitted only before one
+# command word and as its last prefix, since bash expands prefixes from left to right and
+# a substitution in a later prefix would run with the status already declared; the
+# declared status covers that one command, and nothing a prefix substitution runs.
+#
+# The names the gate records with, which no row may touch. The list below is the reader's
+# RESERVED, which reader_py builds from PROGRAM_VARIABLES and RUNNER_PREFIXES, the two
+# variables the shims and the runner are written from, and from env.sh's IOC_ENV_ENFORCED,
+# the variables env.sh sets or clears in every row's environment; --admitted holds these
+# lines as it holds the table, and fails a name the runner or a shim records with that no
+# prefix covers. A row is refused by name when it assigns one, alone, before a command, in
+# an argument such as export's, or as a for loop's variable; when it reads one other than
+# IOC_EXPECT_STATUS with $ in an argument, an assignment, a for loop's words or a
+# redirection target, such as >"$__ioc_failed", a program variable as a command word
+# excepted; and when it passes one to printf as an argument of its own. The one other
+# assignment admitted is UV_REQUIRE_HASHES=0 before the one install the header above
+# reader_py states. A word is read without its quotes, so a quoted pattern that holds a
+# reserved name is refused too.
+#
+#   reserved name                         what it is
+#   __ioc*                                a name the runner or a shim records with
+#   __IOC*                                a name the runner or a shim records with
+#   IOC_PY                                a program variable, which points at its shim
+#   IOC_MASLAB_PY                         a program variable, which points at its shim
+#   IOC_MASLAB_CTL                        a program variable, which points at its shim
+#   IOC_MASLAB_WHEEL_CTL                  a program variable, which points at its shim
+#   IOC_TC_PY                             a program variable, which points at its shim
+#   IOC_EXPECT_STATUS                     the declared status, the last prefix of one command
+#   UV_REQUIRE_HASHES                     a variable env.sh sets or clears in every row's environment
+#   UV_BUILD_CONSTRAINT                   a variable env.sh sets or clears in every row's environment
+#   PIP_REQUIRE_HASHES                    a variable env.sh sets or clears in every row's environment
+#   UV_NO_CONFIG                          a variable env.sh sets or clears in every row's environment
+#   PIP_CONFIG_FILE                       a variable env.sh sets or clears in every row's environment
+#   UV_INDEX_URL                          a variable env.sh sets or clears in every row's environment
+#   UV_EXTRA_INDEX_URL                    a variable env.sh sets or clears in every row's environment
+#   UV_INDEX                              a variable env.sh sets or clears in every row's environment
+#   UV_DEFAULT_INDEX                      a variable env.sh sets or clears in every row's environment
+#   UV_FIND_LINKS                         a variable env.sh sets or clears in every row's environment
+#   UV_INDEX_STRATEGY                     a variable env.sh sets or clears in every row's environment
+#   UV_NO_INDEX                           a variable env.sh sets or clears in every row's environment
+#   UV_CONFIG_FILE                        a variable env.sh sets or clears in every row's environment
+#   PIP_INDEX_URL                         a variable env.sh sets or clears in every row's environment
+#   PIP_EXTRA_INDEX_URL                   a variable env.sh sets or clears in every row's environment
+#   PIP_FIND_LINKS                        a variable env.sh sets or clears in every row's environment
+#   PIP_NO_INDEX                          a variable env.sh sets or clears in every row's environment
+#   UV_NO_VERIFY_HASHES                   a variable env.sh sets or clears in every row's environment
+#   MAS_MANIFEST_VALIDATE                 a variable env.sh sets or clears in every row's environment
+#   MAS_MANIFEST_RESOLVE_REFS             a variable env.sh sets or clears in every row's environment
+#   MAS_MANIFEST_STRICT                   a variable env.sh sets or clears in every row's environment
+#   OPENAI_API_KEY                        a variable env.sh sets or clears in every row's environment
+#   MAS_LLM_API_KEY                       a variable env.sh sets or clears in every row's environment
+#
+# What the table is checked against. The classifier is a parser of the forms the rows use,
+# so a spelling it misreads into an admitted entry, one that no row writes, is outside what
+# it is checked against. Such a spelling is a defect only when it can hide a failed read,
+# that is a read whose failure the gate then does not record. A form the rows use in one
+# context that could hide a read in another is what the planted cases of check.test.sh are
+# for.
+#
+# Refused by name, among every other form: a command holding a character bash reads as
+# part of a word where the tokenizer would split, a carriage return, any other control
+# character but tab and newline, DEL, and every space bash does not split at, such as
+# U+00A0; every program name the table holds no entry for, such as unset, export and
+# head; a word in command position that holds a / or is a variable other than the five;
+# the output of a substitution as a command word; command, builtin, exec, eval, source,
+# time, function definitions and the keywords if, while, until, case and select, each
+# named with why; a shell given a string with -c, a shell reading its commands from its
+# input or from a script under /dev/ or /proc/, such as /dev/stdin, a shell given an
+# option, and a shell other than sh; env in any form, a wrapper no row runs, as are
+# timeout, nice, nohup, sudo and stdbuf; xargs with no program, with an option the
+# table holds no entry for, or running a program by a form no command word may take; uv given
+# an option before its subcommand, and uv run with an option or a program the table holds
+# no entry for, or with none; printf -v, which assigns a variable, printf with a format
+# that is not a literal word, holds a $ or a substitution or starts with -, which could
+# expand to -v, and printf given a reserved name as an argument; find, whose -exec would
+# run a program past its function; an input redirection, a here-document, an output
+# redirection other than >, 2> and 2>&1, a background &, process substitution <( ) and
+# >( ), whose code runs beside the row and ends after it is read, a substitution written
+# with backticks, arithmetic (( )), $(( )) and $[ ]; every special parameter but $?
+# written bare, such as $1, $@, $#, $$, $!, $0, $- and $*, and ${?} among them; every
+# other $ form, $' ', $" " and ${ } holding anything but a name among them, such as
+# ${X:-y}; a for loop with no in; an assignment to an array element or by +=; an
+# assignment or a for loop's variable to a name the table holds no entry for;
+# IOC_EXPECT_STATUS written as a statement of its own or before another prefix; and
+# declare, local, typeset and readonly, which a wrapping function would make local to it.
+# A row that needs a new form, program or assigned name adds its entry to ADMITTED and
+# its line to the table above, with a case of check.test.sh, in the same commit.
+#
+# What the evaluator refuses in an admitted row, read after it runs:
+#
+#   - a non-zero status of any program the row runs, wherever it stands, as its function
+#     or its shim records it with its arguments;
+#   - a non-zero status of any stage of the final pipeline, the last included, read from
+#     PIPESTATUS and matched to the command whose status that stage carries (a group or a
+#     loop carries its last command's);
+#   - in both, the one search-miss rule holds: a search, grep, egrep, fgrep, rg, ag or git
+#     grep, that exits exactly 1 found nothing, and one that exits above 1 failed;
+#   - a bound, at_least or at_most, whose output is not exactly one number; a row that
+#     counts lines says so in its command, with wc -l;
+#   - a predicate any key of which is none of the seven or carries a value of another
+#     shape than the header's rule for expect gives that key, a row with two predicates
+#     over its output, and a row with a command and no predicate.
+#
+# A row claims a failure in one way: IOC_EXPECT_STATUS=<n> written before the one command
+# that fails, which exempts that command's status n and nothing else, and an exit status
+# beside the row's one predicate over its output, which the row's final status must meet.
+# A row with an exit status is held to every rule above like any other.
+#
+# What the evaluator cannot see. It reads exit statuses and the output a row prints. A
+# command that exits 0 after failing, or that writes its failure only to a file the row
+# does not read, is outside what it sees; so is true's status anywhere but the final
+# pipeline, an output redirection that fails before ;, && or || and so stops its command
+# before the function runs, what a program does with code it is given, such as awk's
+# system() or a program run with the arguments xargs's input adds, and what a script a
+# row runs does inside it, whose status reaches the row only through that script's own,
+# but for a read of GitHub or Dispatch, which the script records as a row's curl is recorded,
+# as evidence/concord-build-run.sh records its two reads of GitHub (source_answer).
+# A script's path is held to a literal file or one under $IOC_EVID, ending in .sh, and
+# any other path is refused. A row written on purpose to defeat the runner is outside
+# what the gate checks, whatever it uses: one that deletes, overwrites, redirects into or
+# re-points the runner's own files (its record, its shims, its scratch), one that makes
+# an admitted program run a command its own arguments supply and swallow that command's
+# failure, as a git alias written git -c alias.x='!cmd; true' does, or one that builds a
+# printf format by brace or glob expansion so that it expands to -v. The test is whether
+# an author could write the row by accident while writing an ordinary evidence row: if
+# so, its failed read is a defect the gate must catch; if it can only be built to defeat
+# the gate, it is outside what the gate checks, and a person reading every row at review
+# covers it, as for install-pinned.
+
+# The programs a row may name through a variable, each with the program it names. env.sh
+# sets each to one executable; during a run each is pointed at a shim that runs that
+# executable and records its status, as the functions below record a program named by a
+# bare word. This is the one list of them: reader_py writes it into the reader, which
+# builds from it the classifier's entries "variable $<name>" of ADMITTED, install-pinned's
+# resolve(), which holds each word to the rules of the program it names, and the names no
+# row may touch.
+PROGRAM_VARIABLES="IOC_PY:python IOC_MASLAB_PY:python IOC_MASLAB_CTL:mas-ctl IOC_MASLAB_WHEEL_CTL:mas-ctl IOC_TC_PY:python"
+# The prefixes of every name the runner and the shims below record with: __ioc_failed,
+# __ioc_record, __ioc_s, __ioc_said, __ioc_o, __ioc_stages and __IOC_FAILED. reader_py
+# writes them into the reader, which refuses a row that touches a name with one, and
+# --admitted fails a name of the runner that starts with none of them.
+RUNNER_PREFIXES="__ioc __IOC"
+
+program_shims() {
+    # Writes one shim per program variable env.sh set, once per run, and prints the
+    # assignments that point each variable at its shim.
+    local dir="$RUN_SCRATCH/programs" v real
+    mkdir -p "$dir"
+    for v in $PROGRAM_VARIABLES; do
+        v="${v%%:*}"
+        real="${!v:-}"
+        # A shim is written whenever env.sh set the variable, whether or not the program
+        # exists yet, since a row may install it first; a program that is not there when
+        # the shim runs it exits 127, which the shim records like any other failure.
+        [ -n "$real" ] || continue
+        if [ ! -x "$dir/$v" ]; then
+            {
+                printf '#!/usr/bin/env bash\n'
+                printf '%q "$@"\n' "$real"
+                printf '__ioc_s=$?\n'
+                printf 'if [ "$__ioc_s" -ne 0 ] && [ -n "${__IOC_FAILED:-}" ]; then\n'
+                printf '    printf "%%s\\t%%s\\t%%s\\t-\\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%%s " %q "$@" | tr "\\n\\t" "  ")" >>"$__IOC_FAILED"\n' "\$$v"
+                printf 'fi\n'
+                printf 'exit "$__ioc_s"\n'
+            } >"$dir/$v"
+            chmod +x "$dir/$v"
+        fi
+        printf '%s=%q\n' "$v" "$dir/$v"
+    done
+}
+
+run_recorded() {
+    # run_recorded <command> <output-file> <row>; the variables env.sh exported are already
+    # in this shell's environment and reach the command through it. The command runs with
+    # TMPDIR set to <output-file>.tmp, an empty directory of its own beside its output, so
+    # it reads nothing an earlier run or an earlier row left under the caller's TMPDIR, and
+    # with /dev/null as its input, so it reads nothing its caller's input holds and a program
+    # that reads its input, as omp -p does, reads an empty one.
+    #
+    # Every program the command runs records its own status when it fails, as one line of
+    # <output-file>.failed with four fields, separated by tabs: the status, the status the
+    # row declared for it, the program and its arguments, and the line of its own it printed,
+    # each of the second and the fourth - where there is none. Each program the row names in
+    # command position by a bare word is wrapped in a shell function of that name, which runs
+    # the real command and records its status, and each program variable points at a shim
+    # that does the same. A function and a shim see their own status wherever the program
+    # stands: in any stage of a pipeline, in any element of an && or || list, in a group, a
+    # subshell, a loop or a substitution. That is what bash's ERR trap does not do, for a
+    # stage that is not a pipeline's last and for a command before && or ||, and what
+    # PIPESTATUS does not do, since it holds the statuses of one pipeline without its
+    # commands' text. The functions of dispatch and curl alone keep a line their program
+    # printed. The dispatch command prints a refusal on stdout, which every row pipes into
+    # sed, grep or awk, so the row's output holds none of it, and only its first line tells
+    # Dispatch's answer about the record from no answer (source_answer); the function writes
+    # what dispatch prints into a file beside the record and then onto its own stdout, so the
+    # row's pipeline reads every byte it read before, once dispatch has exited. curl prints
+    # the status the source answered in its own line on stderr alone, "curl: (22) The
+    # requested URL returned error: 503", and a row may run several curls, so its function
+    # keeps the first line curl printed on stderr that starts "curl: (", the status of that
+    # read beside its URL (source_answer); it writes what curl prints on stderr into a file
+    # beside the record and then onto its own stderr, once curl has exited.
+    #
+    # The reader names the programs of the command into a file, and its status is read: a
+    # reader that stopped before its end names the command unread, as a refusal does, since no
+    # status of a program it did not name would be recorded. The command runs by the rule of
+    # the header's "Every child the gate waits on ends", under BOUND_ROW, and when a signal or
+    # its bound ended it, or a signal ended a program it ran, as that program's function or
+    # shim recorded it, but at a status the row declared, the mode cannot run, of the kind
+    # environment, naming the row, what ended it and how long the row ran. A program xargs
+    # runs has no function of its own, since xargs runs it, and xargs reports one a signal
+    # ended by its own status 125, so xargs's function recording 125, at a status the row did
+    # not declare, ends the mode the same way, naming the row and saying so; every other
+    # status of xargs, 123 for a program that exited 1 to 125 among them, keeps its meaning.
+    # A script the row runs that records a program of its own a signal ended, in the four
+    # fields above, ends the mode the same way, as evidence/accord-skills-run.sh records, with
+    # omp's own status, the omp a signal ended before the script's bound.
+    # git exits GIT_USAGE, 129, on a usage error, which is no signal: a git's 129 is read as
+    # git's own exit, the row then failing on it as on any other status (failed_read), and
+    # so is the script's own 129 when it reached its exit with a git's 129 last, which
+    # bounded_run, reading bash's status, would read as signal 1.
+    local command="$1" out="$2" row="$3" script name names names_status ended took row_status
+    local failed_status failed_declared failed_command _failed_said signal_name
+    script="$out.sh"
+    : >"$out.failed"
+    : >"$out.unread"
+    printf '%s' "$command" | bounded "$BOUND_PROGRAM" "the install reader's reading of the programs of the row $row" python3 "$READER" names >"$out.names"
+    names_status="${PIPESTATUS[1]}"
+    names=""
+    IFS= read -r -d '' names <"$out.names"
+    printf '%s\n' "$names" | sed -n 's/^UNREAD\t//p' >"$out.unread"
+    [ "$names_status" = 0 ] ||
+        printf 'a command the install reader stopped on, exit %s, before it named its programs\n' "$names_status" >>"$out.unread"
+    {
+        printf '__ioc_failed=%q\n' "$out.failed"
+        printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; printf "%s\t%s\t%s\t%s\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%s " "$@" | tr "\n\t" "  ")" "${__ioc_said:--}" >>"$__ioc_failed"; }'
+        while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            if [ "$name" = dispatch ]; then
+                printf '%s\n' 'dispatch() { local __ioc_o="$__ioc_failed.$BASHPID.dispatch" __ioc_s __ioc_said=""; command dispatch "$@" >"$__ioc_o"; __ioc_s=$?; command cat -- "$__ioc_o"; IFS= read -r __ioc_said <"$__ioc_o"; command rm -f -- "$__ioc_o"; __ioc_said="${__ioc_said//[[:cntrl:]]/ }"; __ioc_said="${__ioc_said:0:240}"; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" dispatch "$@"; return "$__ioc_s"; }'
+                continue
+            fi
+            if [ "$name" = curl ]; then
+                printf '%s\n' 'curl() { local __ioc_o="$__ioc_failed.$BASHPID.curl" __ioc_s __ioc_said=""; command curl "$@" 2>"$__ioc_o"; __ioc_s=$?; command cat -- "$__ioc_o" >&2; while IFS= read -r __ioc_said && [[ "$__ioc_said" != "curl: ("* ]]; do :; done <"$__ioc_o"; [[ "$__ioc_said" == "curl: ("* ]] || __ioc_said=""; command rm -f -- "$__ioc_o"; __ioc_said="${__ioc_said//[[:cntrl:]]/ }"; __ioc_said="${__ioc_said:0:240}"; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" curl "$@"; return "$__ioc_s"; }'
+                continue
+            fi
+            printf '%s() { command %s "$@"; local __ioc_s=$?; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" %s "$@"; return "$__ioc_s"; }\n' "$name" "$name" "$name"
+        done < <(printf '%s\n' "$names" | grep -v '^UNREAD')
+        program_shims
+        printf '%s\n' "$command"
+        # The statuses of the final pipeline's stages, which a stage the functions do not
+        # see, such as a group whose status a builtin set, still reports.
+        printf '%s\n' '__ioc_stages=("${PIPESTATUS[@]}")'
+        printf '%s\n' 'printf "%s\n" "${__ioc_stages[*]}" >&9'
+        printf '%s\n' 'exit "${__ioc_stages[${#__ioc_stages[@]}-1]}"'
+    } >"$script"
+    printf '%s' "$command" >"$out.command"
+    rm -rf "$out.tmp" && mkdir -p "$out.tmp"
+    (
+        cd "$ROOT" || exit 1
+        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" TMPDIR="$out.tmp" bounded_run "$BOUND_ROW" bash "$script" 9>"$out.pipe" </dev/null
+        status=$?
+        printf '%s|%s\n' "$BOUND_TOOK" "$BOUND_ENDED" >"$out.ended"
+        exit "$status"
+    ) >"$out" 2>&1
+    row_status=$?
+    printf '%s' "$row_status" >"$out.status"
+    ended="" took=""
+    IFS='|' read -r took ended 2>/dev/null <"$out.ended"
+    # The script writes its stages just before it exits with the last one's status, so a
+    # script that wrote them reached its own exit, and its GIT_USAGE beside a git of the row
+    # that recorded GIT_USAGE is that git's exit, and no signal ended bash.
+    if [ "$row_status" = "$GIT_USAGE" ] && [ -s "$out.pipe" ] &&
+        grep -q -- "^$GIT_USAGE"$'\t[^\t]*\t'"git " "$out.failed"; then
+        ended=""
+    fi
+    [ -z "$ended" ] || bound_stop "the recorded command of the row $row was ended by $ended, $took s after it started"
+    while IFS=$'\t' read -r failed_status failed_declared failed_command _failed_said; do
+        declared_status_holds "$failed_status" "$failed_declared" && continue
+        [ "$failed_status" = 125 ] && [ "${failed_command%% *}" = xargs ] &&
+            bound_stop "the program '${failed_command% }' the row $row ran exited 125, which xargs exits with when a program it ran was ended by a signal, and the row ran $took s"
+        [ "$failed_status" -gt 128 ] 2>/dev/null && [ "$failed_status" != 141 ] || continue
+        [ "$failed_status" = "$GIT_USAGE" ] && [ "${failed_command%% *}" = git ] && continue
+        signal_name="$(kill -l $((failed_status - 128)) 2>/dev/null)" || continue
+        bound_stop "the program '${failed_command% }' the row $row ran was ended by signal $((failed_status - 128)) (SIG$signal_name), and the row ran $took s"
+    done <"$out.failed"
+}
+
+# search_missed <command text> <status>; true when the command is a search that read its
+# corpus and found nothing: its first word is grep, egrep, fgrep, rg or ag, or it is git
+# with grep as its subcommand, and it exited exactly 1. A search that exits above 1 could
+# not read what it searches, as a git grep over a missing clone exits 128, and any other
+# command that failed is a failed read. This is the one rule every path below reads.
+search_missed() {
+    local status="$2" words i=0
+    [ "$status" = 1 ] || return 1
+    read -r -a words <<<"$1"
+    # An assignment written before the command sets its environment and is no command.
+    while [ "$i" -lt "${#words[@]}" ] && [[ "${words[$i]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+        i=$((i + 1))
+    done
+    case "${words[$i]:-}" in
+    grep | egrep | fgrep | rg | ag) return 0 ;;
+    git)
+        # git's own options stand before its subcommand; -C and -c take a value.
+        i=$((i + 1))
+        while [ "$i" -lt "${#words[@]}" ]; do
+            case "${words[$i]}" in
+            -C | -c | --git-dir | --work-tree | --namespace) i=$((i + 2)) ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+            esac
+        done
+        [ "${words[$i]:-}" = grep ]
+        ;;
+    *) return 1 ;;
+    esac
+}
+
+declared_status_holds() {
+    # declared_status_holds <status> <declared status>; true when the row declared, by
+    # IOC_EXPECT_STATUS=<n> written before the one command, exactly the status it exited
+    # with; - stands for no declared status, since a record's fields are tab-separated and
+    # an empty one would collapse. This is the one place that exemption is read.
+    [ -n "$2" ] && [ "$2" != - ] && [ "$1" = "$2" ]
+}
+
+# failed_read <output-file>; true when a program of the row's run recorded a status that
+# is no search that missed, which is a read that failed wherever it stood in the row, and
+# the one search-miss rule is applied to each program's own status. It names that program,
+# its arguments and its status in IOC_FAILED_READ.
+failed_read() {
+    local out="$1" failed_status failed_declared failed_command _failed_said
+    IOC_FAILED_READ=""
+    if [ -s "$out.failed" ]; then
+        while IFS=$'\t' read -r failed_status failed_declared failed_command _failed_said; do
+            declared_status_holds "$failed_status" "$failed_declared" && continue
+            search_missed "$failed_command" "$failed_status" && continue
+            IOC_FAILED_READ="'$failed_command' exited $failed_status"
+            return 0
+        done <"$out.failed"
+    fi
+    # Every stage of the final pipeline, the last one included, by its own status and the
+    # command whose status it carries, as the classifier splits it: that reads a condition
+    # or a group whose status a builtin set, which no function records.
+    local stages i texts=() declared
+    [ -s "$out.pipe" ] || return 1
+    read -r -a stages <"$out.pipe" || return 1
+    mapfile -t texts < <(python3 "$READER" stages <"$out.command")
+    if [ "${texts[0]:-}" = UNSPLIT ] || [ "${#texts[@]}" -ne "${#stages[@]}" ]; then
+        IOC_FAILED_READ="the final pipeline of the row, whose ${#stages[@]} stages the classifier does not split into as many"
+        for ((i = 0; i < ${#stages[@]}; i++)); do [ "${stages[$i]}" = 0 ] || return 0; done
+        return 1
+    fi
+    for ((i = 0; i < ${#stages[@]}; i++)); do
+        [ "${stages[$i]}" = 0 ] && continue
+        declared=""
+        # The first declaration of the stage's text is its only one: the text is the one
+        # simple command whose status the stage carries (final_stage), and the classifier
+        # refuses that command before the row runs when it declares IOC_EXPECT_STATUS twice,
+        # as a prefix before another ("IOC_EXPECT_STATUS before another prefix") or as an
+        # argument ("an argument that assigns IOC_EXPECT_STATUS"), so no second one stands
+        # here unread.
+        [[ "${texts[$i]}" =~ (^|\ )IOC_EXPECT_STATUS=([0-9]+)(\ |$) ]] && declared="${BASH_REMATCH[2]}"
+        declared_status_holds "${stages[$i]}" "$declared" && continue
+        search_missed "${texts[$i]}" "${stages[$i]}" && continue
+        IOC_FAILED_READ="the stage '${texts[$i]}' of the final pipeline exited ${stages[$i]}"
+        return 0
+    done
+    return 1
+}
+
+# github_budget
+#
+# A --replay makes GITHUB_CORPUS_REQUESTS + GITHUB_ROW_REQUESTS requests to GitHub's REST
+# API, counted below: env.sh's read of the review corpus and the rows' own curls. A read
+# with no token is held to sixty an hour for one address, fewer than the corpus alone
+# takes, and a run without the budget for them would see env.sh refuse the corpus at
+# GitHub's refusal, or the rows fail for a reason that is not this deliverable's: the gate
+# would read GitHub's refusal as a claim that no longer holds. So the budget is read after
+# github_headers has written the header files and before env.sh builds anything, with curl
+# sending the file of cybermonklabs/legion, IOC_GITHUB_AUTH_LEGION, which env.sh's read of
+# the corpus and every row's curl but the reads of the deployment repository's pull requests
+# send. The budget read is the token's when git credential fill gave one, and this
+# address's unauthenticated one when it gave none and the file is empty, which GitHub
+# answers with a limit of 60. A run with fewer requests left than the mode makes stops
+# here, cannot run, of the kind source, naming which budget it is, how many of how many
+# are left, how many the mode makes and the moment the budget resets, rather than printing
+# failures nobody should act on. The count is a cold IOC_CACHE's, whatever the cache
+# already holds, so a run with no token always stops here. An answer that holds no budget
+# is left to the reads themselves, which name what GitHub answered them.
+#
+# The counts, at this tree's head: env.sh's read of the review corpus, a hundred reviews
+# to a page for each pull request of evidence/concord-prs.txt, printed "env.sh read the
+# review corpus: 5160 review bodies of 200 pull requests in 207 requests"; and the rows
+# whose commands curl api.github.com make nine, two by n-arms-precedent and one each by
+# d-4636-files, d-4636-merged, n-3176-pr, tc-review-docs-only, tc-review-both-run,
+# tc-input-1 and tc-input-2, and evidence/concord-build-run.sh, which tc-rng-2 runs, makes
+# two more. A row or a script that comes to read that API, or a corpus that takes another
+# page, changes them. One request more is the gate's own and is not in the total: its read
+# of GitHub's own name for the deployment repository (deployment_repository_read), made
+# with that repository's header file before the budget is read, so the budget GitHub
+# answers here already holds it, and the total is the requests still to come.
+GITHUB_CORPUS_REQUESTS=207
+GITHUB_ROW_REQUESTS=11
+github_budget() {
+    local answer remaining limit reset budget requests=$((GITHUB_CORPUS_REQUESTS + GITHUB_ROW_REQUESTS))
+    # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
+    [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
+    live_read "GitHub, the read of its rate limit" "$RUN_SCRATCH/rate-limit.json" curl -sS -H @"$IOC_GITHUB_AUTH_LEGION" https://api.github.com/rate_limit
+    answer="$(cat "$RUN_SCRATCH/rate-limit.json")"
+    remaining="$(printf '%s' "$answer" | jq -r '.resources.core.remaining // empty' 2>/dev/null)"
+    limit="$(printf '%s' "$answer" | jq -r '.resources.core.limit // empty' 2>/dev/null)"
+    reset="$(printf '%s' "$answer" | jq -r '.resources.core.reset // empty' 2>/dev/null)"
+    [ -n "$remaining" ] || return 0
+    [ "$remaining" -lt "$requests" ] || return 0
+    if [ "$limit" = 60 ]; then
+        budget="this address's unauthenticated GitHub budget, the one a read with no token draws on,"
+    else
+        budget="the GitHub budget of the token git credential fill gave for cybermonklabs/legion"
+    fi
+    cannot_run source " --replay now: $budget has $remaining of its $limit requests left, and this mode makes $requests: $GITHUB_CORPUS_REQUESTS to read env.sh's review corpus and $GITHUB_ROW_REQUESTS for the rows. The budget resets at $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")."
+}
+
+# deployment_repository_read
+#
+# IOC_DEPLOYMENT_REPO is an input a reader writes, and GitHub reads an owner and a name
+# without case, so a value written with capitals passes the prerequisite step, git ls-remote
+# and env.sh's clone, and the rows that compare it with what GitHub and the repository write,
+# as d-87's and n-collector-keep-keys's sed of the operator's prefix, n-spend-call-cost's,
+# n-arms-precedent's jq == against GitHub's full_name and n-3176-pr's grep -F, then fail on
+# evidence that holds, and print what their sed no longer hides. So the input is read once,
+# where it enters: after github_headers has written the header files and before the budget,
+# env.sh or any row, the gate reads GitHub's own full_name for it, with the deployment
+# repository's header file, through live_read, and exports IOC_DEPLOYMENT_REPO as that name
+# for env.sh and every row, writing the header files again for it when it differs. A read
+# that gets no answer, or any answer but the repository's or a 404, ends the mode cannot
+# run, of the kind source, as the gate's other reads do; a 404, a repository GitHub does not
+# hold or one the token the machine's git credential helper gives cannot read, ends it
+# cannot run, of the kind prerequisite, naming the input. The value is printed nowhere: the
+# address stands in curl's config on its input, never on its command line, and no line
+# names the value, only the variable.
+deployment_repository_read() {
+    local file="$RUN_SCRATCH/deployment-repository" name=""
+    # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
+    [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
+    live_read "GitHub, the read of the repository IOC_DEPLOYMENT_REPO names," "$file" deployment_repository_answer ||
+        cannot_run prerequisite " --replay: GitHub answered 404 to the read of the repository the variable IOC_DEPLOYMENT_REPO names, so it holds no such repository, or the token this machine's git credential helper gives for it cannot read it; provided by: export IOC_DEPLOYMENT_REPO=<owner>/<name>, the repository the deployment applies from"
+    [ -s "$file" ] && IFS= read -r name <"$file"
+    [[ "$name" =~ $REPOSITORY_FORM ]] ||
+        cannot_run source " --replay: GitHub's answer to the read of the repository IOC_DEPLOYMENT_REPO names holds no full_name written <owner>/<name>"
+    [ "$name" = "$IOC_DEPLOYMENT_REPO" ] && return 0
+    export IOC_DEPLOYMENT_REPO="$name"
+    github_headers
+}
+
+# deployment_repository_answer; GitHub's answer to the read of the repository
+# IOC_DEPLOYMENT_REPO names, for live_read: its full_name, one line, and status 0; "not
+# found" and status 1 for a 404, which live_read reads as the source's answer that it holds
+# no such thing; and curl's own status otherwise, with curl's line on stderr. The address is
+# handed to curl as its config on its input, so it stands on no command line a stop names,
+# and GitHub's answer is read where it arrives: only the full_name reaches a file, the one
+# live_read writes under the run's scratch.
+deployment_repository_answer() {
+    local answer status
+    answer="$(printf 'url = "https://api.github.com/repos/%s"\n' "$IOC_DEPLOYMENT_REPO" |
+        curl -sS --fail-with-body -H @"$IOC_GITHUB_AUTH_PRIVATE" -w '\n%{http_code}' --config -)"
+    status=$?
+    if [ "$status" = 22 ] && [ "${answer##*$'\n'}" = 404 ]; then
+        printf 'not found\n'
+        return 1
+    fi
+    [ "$status" = 0 ] || return "$status"
+    printf '%s\n' "${answer%$'\n'*}" | jq -r '.full_name // empty'
+}
+
+# private_repository_read
+#
+# Rows of claims.jsonl read the deployment repository, a private repository that
+# IOC_DEPLOYMENT_REPO names as <owner>/<name>, since this public tree names it nowhere: most
+# with git, from the clone env.sh fetches under IOC_CLONES/deployment through the machine's
+# git credential helper, and a few its pull requests through the REST API, with the token
+# the same helper gives. A reader whose git cannot read that repository would see env.sh
+# refuse its clone, or each such row's read fail, a FAIL of replay-command that is no
+# verdict on the deliverable. So the repository is read, by the name GitHub gives it
+# (deployment_repository_read), with git ls-remote through live_read, before the budget and
+# before env.sh builds anything, and a run whose git cannot read it stops here, naming the
+# input, IOC_DEPLOYMENT_REPO, never its value, and the rows that read it, each row whose
+# command reads the clone or the repository's REST API, taken from claims.jsonl and not from
+# a list kept here, rather than printing a failure nobody should act on; a line of git's it
+# quotes names the input too, by cannot_run (deployment_hidden).
+private_repository_read() {
+    local name="$IOC_DEPLOYMENT_REPO" file="$RUN_SCRATCH/private-repository" rows what
+    rows="$(claims 2>/dev/null | jq -r 'select((.command // "") | test("IOC_CLONES/deployment|repos/\\$IOC_DEPLOYMENT_REPO/")) | .id' 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
+    what="GitHub's answer to git ls-remote of the deployment repository IOC_DEPLOYMENT_REPO names, which the rows ${rows:-of claims.jsonl} read,"
+    # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
+    [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
+    env_functions || cannot_run gate " --replay: env.sh, which holds the git that never prompts, did not load."
+    live_read "$what" "$file" ioc_env_git ls-remote "https://github.com/$name.git" HEAD
+    grep -qE '^[0-9a-f]{40}'$'\t''HEAD$' "$file" && return 0
+    cannot_run source " --replay: $what printed '$(head -c 160 "$file" | tr '\n' ' ')' where it names the repository's head, so git cannot read it"
+}
+
+# GITHUB_HEADER_AGE; the age in seconds at which --replay writes the GitHub header files
+# again, checked before every row it runs (github_headers_fresh). A Legion pod's git
+# credential fill gives a GitHub App installation token, which lives one hour, and a replay
+# from a clean clone runs longer than that (3723 s at 882b668c, where the five rows that
+# sent the file written at the start each failed with curl's exit 22 after the hour), so a
+# file written once sends a dead token by the run's end. The pod's helper answers from a
+# bundle its daemon refreshes in place, so a file written again carries a live token. Ten
+# minutes keeps each file well inside its token's hour, at two calls of git credential fill
+# a time. IOC_GITHUB_HEADER_AGE, one of FIXTURE_INPUTS, is check.test.sh's case 118's alone,
+# which sets 0 so that every row meets files written again; a value that is no whole number,
+# or is longer than GITHUB_HEADER_AGE, is read as GITHUB_HEADER_AGE. GITHUB_HEADERS_WRITTEN
+# is 1 once github_headers has written the files in this run.
+GITHUB_HEADER_AGE=600
+GITHUB_HEADERS_WRITTEN=0
+
+# github_headers; the GitHub header files (the header's "The GitHub tokens stand on no
+# command line"): env.sh's ioc_env_github_auth writes one per repository of its
+# ioc_env_github_table, each with umask 077, into github-headers.new under this run's
+# scratch, and each is renamed over $RUN_SCRATCH/<variable>.header, which the variable then
+# names. A rename replaces a file whole, so a reader meets the old file or the new one and
+# never one half written, and each variable names one path through the run. The EXIT trap
+# removes the scratch however the run ends. env.sh's read of the review corpus, the read of
+# GitHub's budget and every recorded curl of GitHub's REST API send the files. --replay
+# calls it before it sources env.sh, and github_headers_fresh calls it again while the rows
+# run. A file that cannot be written or renamed is the run's own scratch failing, of the
+# kind environment.
+github_headers() {
+    local new="$RUN_SCRATCH/github-headers.new" name _repo
+    env_functions || cannot_run gate " --replay: env.sh, which holds how a GitHub header file is written, did not load."
+    { mkdir -p -m 700 -- "$new" && IOC_ENV_SCRATCH="$new" ioc_env_github_auth; } 2>"$RUN_SCRATCH/github-headers.err" ||
+        cannot_run environment " --replay: $(head -c 240 "$RUN_SCRATCH/github-headers.err" | tr '\n' ' ')"
+    while IFS='|' read -r name _repo; do
+        mv -f -- "$new/$name.header" "$RUN_SCRATCH/$name.header" 2>"$RUN_SCRATCH/github-headers.err" ||
+            cannot_run environment " --replay: the header file $RUN_SCRATCH/$name.header could not be renamed into place: $(head -c 240 "$RUN_SCRATCH/github-headers.err" | tr '\n' ' ')"
+        export "$name=$RUN_SCRATCH/$name.header"
+    done < <(ioc_env_github_table)
+    GITHUB_HEADERS_WRITTEN=1
+}
+
+# github_headers_fresh; before each row --replay runs, writes the GitHub header files again
+# by github_headers when one of them is GITHUB_HEADER_AGE seconds old or older by its
+# modification time, or has none to read, and does nothing in a run that wrote none. Every
+# row is checked, whatever its command, since a row reads a file through a script it runs as
+# well as on its own command line, as tc-rng-2 does through evidence/concord-build-run.sh,
+# and the check is a stat of each file.
+github_headers_fresh() {
+    [ "$GITHUB_HEADERS_WRITTEN" = 1 ] || return 0
+    local bound="${IOC_GITHUB_HEADER_AGE:-$GITHUB_HEADER_AGE}" now name _repo written stale=0
+    [[ "$bound" =~ ^[0-9]+$ ]] && [ "$bound" -le "$GITHUB_HEADER_AGE" ] || bound="$GITHUB_HEADER_AGE"
+    now="$(date +%s)"
+    while IFS='|' read -r name _repo; do
+        written="$(stat -c %Y -- "$RUN_SCRATCH/$name.header" 2>/dev/null)" && [ $((now - written)) -lt "$bound" ] || stale=1
+    done < <(ioc_env_github_table)
+    [ "$stale" = 0 ] || github_headers
+}
+
+# source_answer <id> <output-file>; reads the first failed read of a live source, GitHub,
+# Dispatch or the model gateway, that the row's record holds with a status the row did not
+# declare, and says whether the source's answer judges the row (the header's live-read rule).
+# Only an answer about the record judges it. A read that got no answer, a server error (5xx),
+# a rate limit, and an answer about the reader's credential, a 401 or a 403 that names
+# authentication, a permission or a token rather than a rate limit, judge nothing of the
+# deliverable: an expired token is the reader's, never a wrong deliverable. IOC_SOURCE_STOP
+# then holds the reason the mode cannot run, naming the row, the source, the read and the
+# line that shows it, as "GitHub refused the credential of tc-input-1's read of its REST API,
+# so the row's failure is no verdict on the deliverable: ... GitHub answered 401: Bad
+# credentials". Any other answer judges the row, and IOC_SOURCE_ANSWER names it for the row's
+# FAIL line. Both are empty when no read of a source failed, or when one failed and printed
+# nothing this rule reads. A source's reads are four, each found by its record
+# (run_recorded), and a python3's is read only where the record holds no curl, dispatch or
+# omp command of a source, whose own line names the read the python3 was handed:
+#
+#   - A curl of https://api.github.com/ or of DISPATCH_URL, by the URL its record holds.
+#     Each such curl of a row runs with --fail-with-body, which exits 22 when the source
+#     answered with an HTTP error, so any other exit, such as a transport error (6, 7, 28,
+#     35, 52 or 56), is a read that got no answer, whatever comes after. A status the source
+#     answered is the one the row got: curl's own line, "curl: (22) The requested URL
+#     returned error: 503", which curl's function keeps in the record beside the URL. A curl
+#     inside a script a row runs leaves the same line, written by the script itself, as
+#     evidence/concord-build-run.sh writes it for its two reads of GitHub, so that read is
+#     the row's too, and its line stands in the record before the script's own. The row's
+#     curl hands the body to the row's pipeline, so the gate makes one read of its own of
+#     that URL with the header file the curl sent (-H @<file>), for the source's message,
+#     and for the status where the record holds none: there a read again that gets no HTTP
+#     status, curl's -w '%{http_code}' printing 000 or nothing, is no answer either, and the
+#     line names curl's exit and the first line it printed on stderr. A status is named with
+#     the body's message, GitHub's message or the code and the error of Dispatch's error
+#     JSON, as "GitHub answered 401: Bad credentials" or "Dispatch answered 404 NOT_FOUND:
+#     not found", and the read again's beside it when that read got another. A 5xx is a
+#     server error, whatever the read again gets. A 429, and a 403 whose read again is
+#     answered 429, or by GitHub with a 4xx whose message names a rate limit or a secondary
+#     rate limit or whose x-ratelimit-remaining header is 0, is a rate limit, named with the
+#     limit GitHub's headers give. A 401, Dispatch's 403, which it answers a request whose
+#     credential lacks a scope or a project, GitHub's 403 whose message matches
+#     GITHUB_CREDENTIAL, as "Resource not accessible by integration", and a 403 the row got
+#     whose read again is answered below 400 are the reader's credential; a 403 the row got
+#     whose read again gets no status is no answer. Any other status is an answer.
+#   - A dispatch command, by the first line it printed, which its function keeps in the
+#     record, since the row's pipeline reads what it prints. DISPATCH_UNANSWERED holds the
+#     lines of no answer: "Dispatch at <url> is unreachable: ...", which the CLI of the
+#     worker image prints when it reaches no server, "HTTP_5NN: ...", which it prints for a
+#     5xx whose body is no error JSON of Dispatch's, and each code Dispatch's API at
+#     9542c6fb writes beside a 5xx status. DISPATCH_CREDENTIAL holds "HTTP_401: ...",
+#     "HTTP_403: ..." and each code it writes beside a 401, and beside a 403 for the
+#     request's credential, its scope or its project; DISPATCH_RATE_LIMITED holds "HTTP_429:
+#     ..." and the code it writes beside a 429 for a credential. The CLI prints a refusal's
+#     code and no status, so a code is read by these tables. Any other line, such as
+#     "NOT_FOUND: not found", is Dispatch's answer about the record.
+#   - A python3 of a row whose command reads DISPATCH_URL, by the last line of the row's
+#     output that names urllib's error, the line a traceback ends with: a URLError is no
+#     answer, and an HTTPError's "HTTP Error <status>: <message>" is read as the status of a
+#     curl of Dispatch is.
+#   - An omp session of a script a row runs, whose model gateway gave no answer, by the line
+#     the script writes into the record, as evidence/accord-skills-run.sh writes it when its
+#     session ended with no answer: the status 3, no declared status, omp with the arguments
+#     of its session, and "result: model not reached (<cause>)". The cause is one of HTTP
+#     429, HTTP 5xx, credential refused and no answer, and never omp's own message, which can
+#     name the gateway's address. HTTP 429 is a rate limit, credential refused is the
+#     reader's credential, HTTP 5xx is a server error, and no answer is no answer; each ends
+#     the mode cannot run, of the kind source, naming the row and the model gateway. A
+#     session omp ended before the answer that ends it is no answer too: "no answer, omp
+#     ended at the script's 1500 s bound after K answers", timeout's 124 or, once the bound
+#     has passed, its KILL's 137, "no answer, omp ended its session at --max-time after K
+#     answers" or "no answer, omp ended with status N (<stopReason>) after K answers"; one
+#     any other signal ended, whatever K is, the script records with omp's own status above
+#     128, which run_recorded reads as that signal before this function is reached. Any
+#     other line of the script's, as its exit 1 for a protocol that did not lock, which it
+#     prints only for a session that ended on an answer of the model's own or at omp's
+#     --max-cost, is the deliverable's, and a row that declares that status reads the answer
+#     in its output.
+#
+# The read again is one request, made only on a failure, and its body, its headers and
+# curl's stderr go into the run's scratch. Nothing of it is printed but the status, the
+# message's first line, the rate limit's own headers and, when no status came, curl's own
+# error line, so no token is, and a header file stands in a failure line by its path at
+# most, in IOC_FAILED_READ.
+DISPATCH_UNANSWERED='^(Dispatch at .* is unreachable: |HTTP_5[0-9][0-9]: |(AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE|AGENT_SECRETS_UNAVAILABLE|ASK_STATE_INVALID|BROKER_UNAVAILABLE|DATABASE_UNAVAILABLE|ENVOY_REFILLING|ENVOY_UNAVAILABLE|ENVOY_UNSUBSCRIBE_FAILED|FILE_MISSING|FILE_STORE_UNAVAILABLE|GITHUB_APP_UNCONFIGURED|GITHUB_UNREADABLE|IDENTITY_ERROR|INTERNAL|OIDC_ISSUER_UNAVAILABLE|SHUTTING_DOWN|SIGNIN_UNAVAILABLE|SLOW_WRITE_CUT_OFF|STREAM_UNAVAILABLE|TEST_HOOK_FAILED|TEST_HOOK_TIMEOUT|TEST_HOOK_UNAVAILABLE): )'
+DISPATCH_CREDENTIAL='^(HTTP_40[13]: |(UNAUTHORIZED|NO_IDENTITY|TOKEN_REVOKED|OIDC_TOKEN_INVALID|BROKER_TOKEN_NOT_ACTIVE|BROKER_TOKEN_KEY_MISMATCH|BROKER_TOKEN_PROOF_INVALID|BROKER_TOKEN_NOT_A_SESSION|OAUTH_SCOPE_REQUIRED|PROJECT_SCOPE|PROJECT_SCOPE_DEPLOYMENT|SESSION_SCOPE|SIGN_IN_REQUIRED|ACTOR_SESSION_MISMATCH): )'
+DISPATCH_RATE_LIMITED='^(HTTP_429: |BROKER_TOKEN_RATE_LIMITED: )'
+GITHUB_CREDENTIAL='authenticat|authoriz|credential|permission|not accessible|token|saml|sso|rights'
+source_answer() {
+    local id="$1" out="$2" failed_status failed_declared failed_command failed_said words word python_status=""
+    local source="" via="" what="" url="" header="" said="" kind="" detail="" answer="" code="" reread got message="" error_code=""
+    local row_code="" decide again="" how limits="" remaining="" limit="" reset="" resource=""
+    local body="$RUN_SCRATCH/source-answer.body" dump="$RUN_SCRATCH/source-answer.headers"
+    local header_sent='(^| )-H @([^ ]+)' http_error='^urllib\.error\.HTTPError: HTTP Error ([0-9]{3}): ?(.*)$'
+    local curl_error='^curl: \(22\) The requested URL returned error: ([0-9]{3})'
+    IOC_SOURCE_ANSWER="" IOC_SOURCE_STOP=""
+    [ -s "$out.failed" ] || return 0
+    while IFS=$'\t' read -r failed_status failed_declared failed_command failed_said; do
+        declared_status_holds "$failed_status" "$failed_declared" && continue
+        case "$failed_command" in
+        "curl "*)
+            read -r -a words <<<"$failed_command"
+            for word in "${words[@]}"; do
+                if [[ "$word" == https://api.github.com/* ]]; then
+                    source=GitHub via=curl what="its REST API" url="$word"
+                    break
+                elif [ -n "${DISPATCH_URL:-}" ] && [[ "$word" == "${DISPATCH_URL%/}/"* ]]; then
+                    source=Dispatch via=curl what="its API" url="$word"
+                    break
+                fi
+            done
+            [ -z "$source" ] || [ "$failed_said" = - ] || said="$failed_said"
+            ;;
+        "dispatch "*)
+            source=Dispatch via=dispatch what="its API through the dispatch command"
+            [ "$failed_said" = - ] || said="$failed_said"
+            ;;
+        "omp "*)
+            source="the model gateway" via=omp what="its model through omp"
+            [ "$failed_said" = - ] || said="$failed_said"
+            ;;
+        "python3 "*)
+            # Read only when no curl, dispatch or omp command of a source stands in the
+            # record, whichever of the three wrote its line first.
+            [ -n "$python_status" ] || ! grep -qF DISPATCH_URL "$out.command" 2>/dev/null || python_status="$failed_status"
+            ;;
+        esac
+        [ -n "$source" ] && break
+    done <"$out.failed"
+    if [ -z "$source" ] && [ -n "$python_status" ]; then
+        source=Dispatch via=python what="its API through python3" failed_status="$python_status"
+    fi
+    case "$via" in
+    curl)
+        [[ "$failed_command" =~ $header_sent ]] && header="${BASH_REMATCH[2]}"
+        [[ "$said" =~ $curl_error ]] && row_code="${BASH_REMATCH[1]}"
+        rm -f -- "$body" "$dump"
+        code="$(curl -sS -o "$body" -D "$dump" -w '%{http_code}' ${header:+-H "@$header"} "$url" 2>"$body.err")"
+        reread=$?
+        if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
+            got="got $code"
+            if [ "$source" = GitHub ]; then
+                message="$(jq -r 'if type == "object" and (.message | type) == "string" then .message | split("\n")[0] | .[0:240] else empty end' "$body" 2>/dev/null)"
+            else
+                error_code="$(jq -r 'if type == "object" and (.code | type) == "string" then .code | .[0:80] else empty end' "$body" 2>/dev/null)"
+                message="$(jq -r 'if type == "object" and (.error | type) == "string" then .error | split("\n")[0] | .[0:240] else empty end' "$body" 2>/dev/null)"
+            fi
+            answer="$source answered $code${error_code:+ $error_code}${message:+: $message}"
+            IFS='|' read -r remaining limit reset resource < <(awk -F ': *' '{ sub(/\r$/, "") } { v[tolower($1)] = $2 }
+                END { printf "%s|%s|%s|%s\n", v["x-ratelimit-remaining"], v["x-ratelimit-limit"], v["x-ratelimit-reset"], v["x-ratelimit-resource"] }' "$dump" 2>/dev/null)
+            [ -z "$limit" ] ||
+                limits="; its ${resource:+$resource }rate limit has ${remaining:-none} of its $limit requests left${reset:+ until $(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")}"
+        else
+            code="" got="exited $reread with no HTTP status: $(head -1 "$body.err" | head -c 160)"
+        fi
+        # The status the row got decides, and the gate's read again only where the row's record
+        # holds none; a read again that got another status stands beside the row's.
+        decide="${row_code:-$code}" how="and when the gate read it again"
+        if [ -n "$row_code" ]; then
+            how="since"
+            if [ "$row_code" != "$code" ]; then
+                again=", and the gate's read of it again $got"
+                [ -z "$code" ] || again=", and when the gate read it again $answer"
+                answer="$source answered $row_code"
+            fi
+        fi
+        case "$decide" in
+        5??) kind=server ;;
+        401) kind=credential ;;
+        429) kind=rate ;;
+        403)
+            if [ "$code" = 429 ] || { [ "$source" = GitHub ] && [[ "$code" == 4?? ]] && { [[ "${message,,}" == *"rate limit"* ]] || [ "$remaining" = 0 ]; }; }; then
+                kind=rate
+            elif [ "$source" = Dispatch ] || [[ "${message,,}" =~ $GITHUB_CREDENTIAL ]] || { [ -n "$row_code" ] && [[ "$code" == [1-3]?? ]]; }; then
+                kind=credential
+            elif [ -z "$code" ]; then
+                kind=unanswered
+            fi
+            ;;
+        "") kind=unanswered ;;
+        esac
+        # The row's curl runs with --fail-with-body, which exits 22 when the source answered
+        # with an HTTP error, so any other status is a read of the row's that got no HTTP
+        # answer, and what the gate's read got after it judges nothing the row read.
+        if [ "$failed_status" != 22 ]; then
+            kind=unanswered
+            detail="the row's curl of $url exited $failed_status with no HTTP answer, and the gate's read of it again $got"
+        else
+            case "$kind" in
+            unanswered)
+                [ -n "$again" ] || again=", and the gate's read of it again $got"
+                detail="the row's curl of $url exited 22${row_code:+, since $answer}$again"
+                ;;
+            server) detail="the row's curl of $url exited 22, $how $answer, a server error$again" ;;
+            credential) detail="the row's curl of $url exited 22, $how $answer$again" ;;
+            rate) detail="$answer$limits$again" ;;
+            "") answer="$answer$again" ;;
+            esac
+        fi
+        ;;
+    dispatch)
+        if [[ "$said" =~ $DISPATCH_RATE_LIMITED ]]; then
+            kind=rate
+        elif [[ "$said" =~ $DISPATCH_CREDENTIAL ]]; then
+            kind=credential
+        elif [[ "$said" =~ $DISPATCH_UNANSWERED ]]; then
+            kind=unanswered
+        fi
+        answer="${said:+the dispatch command printed '$said'}"
+        detail="'${failed_command% }' exited $failed_status and printed '$said'"
+        ;;
+    omp)
+        # The script wrote the cause of the gateway's silence in its line, one of four words.
+        case "$said" in
+        *"HTTP 429"*) kind=rate ;;
+        *"credential refused"*) kind=credential ;;
+        *"HTTP 5xx"*) kind=server ;;
+        *) kind=unanswered ;;
+        esac
+        answer="${said:+the script printed '$said'}"
+        detail="'${failed_command% }' exited $failed_status and printed '$said'"
+        ;;
+    python)
+        # urllib wraps a failure to connect in URLError, but a read that times out or is cut off
+        # after the connection raises the socket's or http.client's own exception, unwrapped:
+        # each of those is no answer too.
+        said="$(grep -E '^(urllib\.error\.(URLError|HTTPError)|TimeoutError|socket\.timeout|Connection(Reset|Refused|Aborted)Error|BrokenPipeError|http\.client\.(RemoteDisconnected|IncompleteRead))(: |$)' "$out" | tail -1 | tr -d '\r' | head -c 240)"
+        if [ -n "$said" ] && [[ "$said" != urllib.error.HTTPError:* ]]; then
+            kind=unanswered
+        elif [[ "$said" =~ $http_error ]]; then
+            code="${BASH_REMATCH[1]}" message="${BASH_REMATCH[2]}"
+            answer="Dispatch answered $code${message:+: $message}"
+            case "$code" in
+            5??) kind=server ;;
+            401 | 403) kind=credential ;;
+            429) kind=rate ;;
+            esac
+        fi
+        detail="its python3 exited $failed_status, and the last urllib or transport error of its output is '$said'"
+        ;;
+    *) return 0 ;;
+    esac
+    case "$kind" in
+    "")
+        IOC_SOURCE_ANSWER="$answer"
+        return 0
+        ;;
+    rate) IOC_SOURCE_STOP="$source's rate limit refused $id's read of $what" ;;
+    credential) IOC_SOURCE_STOP="$source refused the credential of $id's read of $what" ;;
+    *) IOC_SOURCE_STOP="$source gave no answer that judges $id's read of $what" ;;
+    esac
+    IOC_SOURCE_STOP="$IOC_SOURCE_STOP, so the row's failure is no verdict on the deliverable: $detail"
+}
+
+# unpinned_installs; prints one line per package a recorded command installs or runs with
+# no version, and per form this reader cannot read, as <id><TAB><what it runs>, over every
+# row of claims.jsonl. It fails closed: what it does not recognise is refused and named,
+# never passed.
+#
+# The rule. A package is pinned when it names a full release, nothing less:
+#   - for Python (uvx, uv tool run, uv tool install, uv run --with, pipx run, pip install,
+#     uv pip install), the name, then == and dotted digits only, such as pyshacl==0.40.2;
+#   - for npm (bunx, npx, npm exec), the name, then @ and a full major.minor.patch, such
+#     as tsx@4.1.0;
+#   - for Go (go run, go install), the module, then @v and a full major.minor.patch, or a
+#     Go pseudo-version, or a commit hash.
+# A wildcard, a partial version, a tag such as latest or next, a comparison (>=, ~=, ^, ~)
+# or any other spelling is no version. A local path and a variable of this deliverable
+# that names one (IOC_...) are pinned. An option of a runner the reader does not know, a
+# package written as any other variable, and a command it cannot open are refused.
+#
+# Three guarantees hold the lock: uv's, this reader's, and the check of what each
+# environment holds after it is built and after every row that installs into it. uv's:
+# env.sh exports UV_REQUIRE_HASHES=1, UV_BUILD_CONSTRAINT (the hashed
+# evidence/build-constraints.txt) and PIP_REQUIRE_HASHES=1 into every row's environment.
+# It sets uv's and pip's other settings there too, whatever the caller's shell held:
+# UV_NO_CONFIG=1 and PIP_CONFIG_FILE=/dev/null, so neither reads a configuration file, and
+# it unsets every variable that would point either at another source of packages, change
+# which index a package is taken from, keep it from its index, name a configuration file or
+# keep uv from checking a hash. It unsets as well the five optional inputs of mas-lab's
+# programs that no row sets, MAS_MANIFEST_VALIDATE, MAS_MANIFEST_RESOLVE_REFS,
+# MAS_MANIFEST_STRICT, OPENAI_API_KEY and MAS_LLM_API_KEY (IOC_ENV_ENFORCED in env.sh lists
+# all twenty-three). The reader reserves each of those names, so no row assigns, unsets or
+# re-points one. Measured with uv 0.13.5 and the three hash variables set, once with a
+# package no lock hashes (requests==2.32.3, or setuptools as a build backend) and once with
+# a local build under an unhashed -b:
+#
+#   spelling                   package no lock hashes       build under an unhashed -b
+#   uv pip install -c/-r/-e/-b refused: "all requirements  refused: "all requirements
+#                              must have a hash"            must have a hash" (the local
+#                                                           source itself has none)
+#   uv pip sync                refused: the same            refused: the same
+#   uv build                   refused: "no trusted hash    refused: "No solution found
+#                              was provided for setuptools" when resolving: hatchling"
+#   uv run --with              installed, no refusal        built, no refusal; uv run reads
+#                                                           no UV_BUILD_CONSTRAINT at all
+#   uv tool run --from         installed, no refusal        built, no refusal
+#   uvx                        installed, no refusal        built, no refusal
+#   pip install                refused: "Hashes are         refused: "Can't verify hashes
+#                              required in --require-hashes for these file:// requirements"
+#                              mode"
+#
+# uvx and uv tool run check no hash a -c file carries either (a wrong hash for owlrl in
+# -c passed), and uv run --with of a wheel checks no hash: the wheel has none to check.
+# Under UV_REQUIRE_HASHES=1 uv refuses every local source path, since a directory has no
+# hash, so one install is written with the visible prefix UV_REQUIRE_HASHES=0, and the
+# classifier admits it there alone: before a uv pip install whose every package is a local
+# source path, into an environment of env.sh's IOC_ENV_FROZEN named with --python or
+# VIRTUAL_ENV, that names that environment's own lock as a constraint (-c, --constraint
+# or --constraints) and no other constraint or requirements file (-r, --requirement or
+# --requirements, refused whatever it names), names "$IOC_EVID/build-constraints.txt" as
+# every build constraint (-b, --build-constraint or --build-constraints), each spelling
+# read with its value beside it or after =, and passes --require-build-hashes. Under the
+# prefix uv checks the hash of every package its -c lists and of every build dependency
+# -b lists, and --require-build-hashes makes it refuse a build dependency -b does not list
+# (measured: a setuptools-backend package fetched setuptools unhashed without it, and was
+# refused with it; uv 0.13.5 calls the option experimental and prints a warning, which no
+# row's predicate reads). A package it fetches that the environment's lock does not list
+# installs unchecked, and the third guarantee refuses it; a package the lock lists was
+# checked against the lock's hash, because the constraint is that lock. Each condition
+# broken is refused by name.
+#
+# The reader's guarantee, which holds for every spelling uv does not enforce and stands
+# behind uv for the rest. Each package a command names from an index is looked up in the
+# hashed locks the command names, $IOC_EVID/<file> as a constraint or requirements file in
+# every spelling above for pip install and uv pip install, with -c or --constraints for
+# uvx and uv tool, and evidence/ioc-venv.lock for
+# uv run, which takes no lock: a package no named lock holds at that exact version is
+# refused by name, whatever other file the command names, and an install that names no
+# lock is refused as "an install that reads no lock", as is a requirements file that is no
+# hashed lock and a uv pip sync of one. pipx run, npx, bunx and npm exec take no lock, so a
+# package they would resolve from an index is refused; go run and go install are left to
+# go, which checks each module against go.sum or the checksum database. The locks are
+# evidence/ioc-venv.lock, all 53 packages of IOC_VENV, evidence/tm-constraints.txt, the 24
+# third-party packages of the mas-lab environments, and evidence/build-constraints.txt,
+# each resolved at 2026-11-12T07:55:56Z, the instant sources.json records, from PyPI and,
+# for torch alone, the PyTorch CPU index, and each read by env.sh's ioc_env_lock_py, the
+# one reader of a lock.
+#
+# The third guarantee checks the result rather than the command. After every row, the
+# gate runs env.sh's ioc_env_frozen on each environment of IOC_ENV_FROZEN the install
+# reader finds the row installing into (by --python, -p, a VIRTUAL_ENV prefix or the pip
+# it runs), and on each whose site-packages changed while the row ran, which finds an
+# install inside a script the row runs. It lists every package installed there and fails
+# install-pinned, naming the row, the environment, the package, its version and the lock,
+# for a package from an index that the environment's own lock does not hold at that
+# version, a package from a path or a URL that its pinned clone does not declare at that
+# version, in a pyproject.toml at the pinned commit, or that was not installed from
+# inside the clone, and a dist-info it cannot read; a check that ends without a verdict
+# fails install-pinned too. env.sh runs the same check after it builds each environment.
+#
+# What the third guarantee can prove. uv 0.13.5 records, for a package from an index,
+# METADATA (its name and version), RECORD (the sha256 of each file it installed),
+# INSTALLER, REQUESTED and WHEEL, and for one from a path, direct_url.json, uv_build.json
+# and uv_cache.json besides (measured in the environments env.sh builds). Nothing records
+# the hash or the index of the archive a package came from. So the check proves a
+# package's name, its version and whether it came from an index or from a path inside
+# the clone, and nothing of its bytes: a package fetched unhashed at the version the lock
+# holds passes it. The bytes are held by uv's hash check when it installs: every install
+# but the exemption runs under UV_REQUIRE_HASHES=1, and the exemption's -c is the
+# environment's own lock, so a package the check passes was checked against that lock's
+# hash, and one the lock does not hold is refused.
+#
+# The environments made for one run are out of the third guarantee's reach: uv run --with,
+# uv tool run --from and --with, uvx, pipx run, npx, bunx and npm exec. For them the
+# reader's rule above stands alone, and it passes only a set of packages wholly in a lock,
+# or a wheel: uvx and uv tool run a package the lock their -c names holds, whose
+# dependencies -c holds to the lock's versions (though neither checks their hashes),
+# and uv run, which takes no -c, a package ioc-venv.lock holds that requires no other
+# package by the lock's "# via" lines; a package that requires others is refused.
+#
+# A build backend is an install. A local path that is no wheel is built, and its build
+# backend and that backend's dependencies are fetched like any package: every local
+# package of this replay declares build-system requires = ["hatchling"] with no version.
+# So a pip install, a uv pip install (-e and --editable in every spelling) and a uv build
+# of a local source path name -b "$IOC_EVID/build-constraints.txt", the seven packages of
+# hatchling's build environment each at ==version and hashed, and any other -b is refused;
+# uv run, uv tool run, uvx and pipx run check no hash of a build, so a local source path
+# under any of them is refused. A wheel, a path ending in .whl or a variable env.sh sets to
+# one (WHEEL_VARIABLES, IOC_CONCORD_WHEEL), builds nothing and passes. An option under
+# which uv would check no hash (--no-require-hashes, --no-verify-hashes, --no-build-
+# isolation) is refused by name.
+#
+# Every word in command position is read, and one this reader cannot resolve fails the
+# row and is named. Command position is the first word of a command after its assignments
+# and its keywords, the command a wrapper runs (env, nohup, nice, timeout, command, exec,
+# sudo, stdbuf, time and xargs) and the command find runs after -exec. A command handed to
+# a shell as a string (sh, bash, zsh, dash or ksh with -c, and eval) and the code of every
+# substitution are read with this same reader, and the output of a substitution is no
+# command word it can resolve. A command word is a literal, or one of a closed list of
+# five variables, each of which env.sh sets to one program: $IOC_PY, $IOC_MASLAB_PY and
+# $IOC_TC_PY, which resolve to python, and $IOC_MASLAB_CTL and $IOC_MASLAB_WHEEL_CTL,
+# which resolve to mas-ctl; a variable with a path after it is no command word. A
+# resolved word is held to every rule a literal is, so python code given
+# to $IOC_PY -c that starts a process is refused as python -c is. Any other variable, a
+# word built of several, and a command this reader cannot split are refused.
+#
+# A runner is known by the program a word names, not by how the word is spelled: the
+# resolved word, its last path element, with a version after the name taken off, so
+# /usr/bin/pip, pip3.12 and python3.12 -m pip are each pip and
+# held to the rule for pip, and every runner above is matched that one way.
+#
+# What this reader cannot see. It compares text, and it guards against an install someone
+# forgets to pin, not against one written to slip past it. A program that installs
+# packages under a name no rule here names (a renamed copy of a runner, a wrapper script
+# of the row's own, a script a row runs, or a binary that installs as a side effect) is
+# outside what a reader of command text can see, and no further rule of this kind closes
+# that. The third guarantee covers such an install into one of env.sh's environments,
+# since it reads what the environment holds whatever wrote it; one into any other place
+# is covered by a person reading every row at review, and by env.sh, which pins the
+# interpreters and environments the rows run.
+#
+# reader_py prints the reader of command text, one Python program that holds two readers
+# of command position over one tokenizer. The install reader (commands, command_words,
+# KEYWORDS, CONTROL and WRAPPERS) finds every runner, inside forms the evaluator refuses
+# too; the classifier (Parser, classify_word and check_simple) admits a command only
+# through ADMITTED. The rules both read are each written once and read by both:
+# XARGS_OPTIONS and xargs_program for xargs's options, UV_RUN_OPTIONS and uv_run_program
+# for uv run's, shell_string for a shell given -c, variable_name for a variable command
+# word, ASSIGNMENT for an assignment, and tokenize, which refuses a character bash does
+# not read as it would, by foreign_character. Its last argument selects what it prints:
+# "installs" reads the rows of claims.jsonl on stdin, as the gate's one parse read them
+# (claims), and prints each refusal as <id><TAB><what it runs>; "environments" reads those
+# rows and prints <id><TAB><label> for each environment of env.sh's IOC_ENV_FROZEN a row's
+# command installs into; "names" reads one command on stdin and prints each program name
+# the classifier admits in command position, one per line, or one UNREAD line naming the
+# refusal; "stages" reads one command and prints the command of each stage of its final
+# pipeline; "admitted" reads the rows and prints each refused row, each entry of ADMITTED
+# with the number of rows that use it and each reserved name, which --admitted reads;
+# "load" reads nothing, so the gate can start the reader before it reads a row
+# (reader_load). The reader's first lines are PROGRAM_VARIABLES and RUNNER_PREFIXES,
+# written from the two variables above program_shims, then env.sh's ENFORCED and
+# ENVIRONMENTS, and env.sh's reader of a lock.
+reader_py() {
+    local v label
+    # env.sh's IOC_ENV_ENFORCED, the variables it sets or clears in every row's environment,
+    # which the reader reserves; its IOC_ENV_FROZEN, the environments a row may install into,
+    # which the gate checks after the row; and ioc_env_lock_py, the one reader of a hashed
+    # lock.
+    # env.sh read for its functions defines them and prepares nothing.
+    env_functions || return 1
+    printf 'PROGRAM_VARIABLES = {'
+    for v in $PROGRAM_VARIABLES; do
+        printf '"%s": "%s", ' "${v%%:*}" "${v#*:}"
+    done
+    printf '}\nRUNNER_PREFIXES = ('
+    for v in $RUNNER_PREFIXES; do
+        printf '"%s", ' "$v"
+    done
+    printf ')\nENFORCED = ('
+    for v in $IOC_ENV_ENFORCED; do
+        printf '"%s", ' "$v"
+    done
+    printf ')\nENVIRONMENTS = {'
+    for label in $(ioc_env_frozen_labels); do
+        ioc_env_frozen_entry "$label"
+        printf '"%s": ("%s", "%s"), ' "$label" "$IOC_ENV_ENTRY_WRITTEN" "$IOC_ENV_ENTRY_LOCK"
+    done
+    printf '}\nLOCKS_DIR = %s\n' "$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$EVIDENCE/evidence")"
+    ioc_env_lock_py
+    cat <<'PYREADER'
+import json, os, re, shlex, sys
+
+PY_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?==[0-9]+(\.[0-9]+)*$")
+NPM_PIN = re.compile(r"^(@[A-Za-z0-9._-]+/)?[A-Za-z0-9][A-Za-z0-9._-]*@[0-9]+\.[0-9]+\.[0-9]+$")
+GO_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~/-]*@(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]*[0-9]{14}-[0-9a-f]{12})?|[0-9a-f]{7,40})$")
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+PROCESS = re.compile(r"subprocess|os\.system|os\.popen|os\.exec|os\.spawn|pty\.spawn")
+
+def local(arg):
+    return arg.startswith((".", "/", "~")) or re.match(r"\$\{?IOC_[A-Z_]+\}?(/|$)", arg) is not None
+
+# The variables env.sh sets to a wheel it built under evidence/build-constraints.txt, each
+# one file whose name ends in .whl, which env.sh's header names.
+WHEEL_VARIABLES = ("IOC_CONCORD_WHEEL",)
+
+def wheel(arg):
+    # True for a local path that is a built wheel, which is installed with no build: a
+    # file named *.whl, or a variable WHEEL_VARIABLES holds.
+    m = re.fullmatch(r"\$(?:\{([A-Z_]+)\}|([A-Z_]+))", arg)
+    return arg.endswith(".whl") or (m is not None and (m.group(1) or m.group(2)) in WHEEL_VARIABLES)
+
+# An install that resolves a package from an index reads a committed lock: a file under
+# evidence/, named on the command as $IOC_EVID/<file>, every requirement of which carries
+# a hash, read from LOCKS_DIR, this tree's evidence/, by read_lock, env.sh's one reader of
+# a lock. Every package the command names is looked up in the locks it names, at that
+# exact version; naming a lock exempts nothing it does not hold.
+NO_LOCK = " (an install that reads no lock: name a hashed lock under $IOC_EVID)"
+NOT_HELD = " (a package no lock the command names holds at that version)"
+LOCKS = {}
+
+def lock_read(path):
+    # read_lock's reading of a hashed lock named as $IOC_EVID/<file>, or None for any
+    # other path, a file that is missing and a file one of whose requirements carries no
+    # hash.
+    m = re.fullmatch(r"\$\{?IOC_EVID\}?/([A-Za-z0-9_][A-Za-z0-9._-]*)", path or "")
+    if m is None:
+        return None
+    if m.group(1) not in LOCKS:
+        LOCKS[m.group(1)] = read_lock(os.path.join(LOCKS_DIR, m.group(1)))
+    return LOCKS[m.group(1)]
+
+def lock_packages(path):
+    # {normalized name: version} of a hashed lock named as $IOC_EVID/<file>, or None.
+    found = lock_read(path)
+    return None if found is None else found[0]
+
+def hashed_lock(path):
+    return lock_packages(path) is not None
+
+def requires(package, path):
+    # True when package, name==version, requires any other package, by the "# via" lines
+    # of the hashed lock named path, and when that lock carries no such line, since then
+    # what it requires cannot be read.
+    found = lock_read(path)
+    if found is None or found[1] is None:
+        return True
+    name = normalized(package.split("==", 1)[0].split("[", 1)[0])
+    return any(name in by for by in found[1].values())
+
+# The environment an install writes into, which the gate checks after the row: one of
+# ENVIRONMENTS, env.sh's IOC_ENV_FROZEN, named as the rows name it, by its directory
+# ($IOC_TC_WORK/venv) or by the python or pip under it ($IOC_TC_WORK/venv/bin/python). A
+# uv pip install or sync names it with --python or -p, or with a VIRTUAL_ENV prefix; pip
+# installs into the environment of the pip it runs, a path ending in /bin/pip or a python
+# given -m pip. One that writes outside an environment (--system, --target, --prefix,
+# --user, --root) or names none of them installs where the gate checks nothing.
+OUTSIDE = {"--system", "--target", "-t", "--prefix", "--user", "--root"}
+TARGETS = set()  # the environments read_command found an install into, for "environments"
+
+def environment_of(written):
+    if not written:
+        return None
+    path = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"$\1", written)
+    base = re.sub(r"/bin/(python|pip)[0-9.]*$", "", path)
+    for label, (directory, _) in ENVIRONMENTS.items():
+        if base == directory:
+            return label
+    return None
+
+def install_environment(w, i):
+    # The label of the environment the pip, uv pip install or uv pip sync at w[i] (the
+    # word pip) installs into, or None.
+    rest, written, j = w[i + 2:], None, 0
+    while j < len(rest):
+        key, value = rest[j].split("=", 1)[0], option_value(rest[j])
+        if key in OUTSIDE:
+            return None
+        if key in ("--python", "-p"):
+            written = value if value is not None else (rest[j + 1] if j + 1 < len(rest) else "")
+        j += 1
+    if i > 0 and resolve(w[i - 1]) == "uv":
+        for word in w[:i - 1]:
+            if word.startswith("VIRTUAL_ENV=") and written is None:
+                written = word.split("=", 1)[1]
+    elif "/" in w[i]:
+        written = w[i]
+    elif i > 1 and w[i - 1] == "-m":
+        written = w[i - 2]
+    return environment_of(written)
+
+def held(package, locks):
+    # True when package, name==version, is held at that version by one of locks.
+    m = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^]]*\])?==(.+)", package)
+    return m is not None and any(lock.get(normalized(m.group(1))) == m.group(2) for lock in locks)
+
+# A build backend is an install: every local source is built under the hashed
+# evidence/build-constraints.txt itself, named with -b, and no other -b is a build lock.
+BAD_BUILD = " (a build constraint that is not the hashed $IOC_EVID/build-constraints.txt)"
+NO_BUILD = " (a local source path built with no build constraint; pass -b $IOC_EVID/build-constraints.txt)"
+
+def build_lock(value):
+    return re.fullmatch(r"\$\{?IOC_EVID\}?/build-constraints\.txt", value or "") is not None and hashed_lock(value)
+
+def read_build(label, sources, builds):
+    # The one build rule: each -b is the hashed build lock, and a command that builds a
+    # local source names it.
+    problems = [label + " -b " + b + BAD_BUILD for b in builds if not build_lock(b)]
+    if sources and not any(build_lock(b) for b in builds):
+        problems.append(label + " " + sources[0] + NO_BUILD)
+    return problems
+
+# The options under which uv or pip would check no hash, or build outside its isolated,
+# constrained environment; a row passes none of them.
+UNENFORCED = {"--no-require-hashes", "--no-verify-hashes", "--no-build-isolation", "--no-build-isolation-package"}
+CONSTRAINT_KEYS = ("-c", "--constraint", "--constraints")
+REQUIREMENT_KEYS = ("-r", "--requirement", "--requirements")
+BUILD_KEYS = ("-b", "--build-constraint", "--build-constraints")
+PIP_VALUE = {*CONSTRAINT_KEYS, *REQUIREMENT_KEYS, *BUILD_KEYS,
+             "--python", "-p", "--target", "--prefix", "--index-url", "--extra-index-url", "-e", "--editable"}
+
+def pip_words(rest):
+    # The words of a pip install, uv pip install or uv pip sync after its subcommand:
+    # (packages, locks, unlocked requirements files, -b values, options uv would enforce
+    # nothing under). -e and --editable take a path in every spelling: -e PATH, -ePATH,
+    # --editable PATH and --editable=PATH.
+    packages, locks, unlocked, builds, flags, j = [], [], [], [], [], 0
+    while j < len(rest):
+        a = rest[j]
+        if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
+            break
+        key, value = a.split("=", 1)[0], option_value(a)
+        if a.startswith("-e") and not a.startswith("--") and a != "-e":
+            key, value = "-e", a[2:]
+        if value is None and key in PIP_VALUE:
+            value = rest[j + 1] if j + 1 < len(rest) else ""
+            j += 1
+        if key in BUILD_KEYS:
+            builds.append(value)
+        elif key in CONSTRAINT_KEYS + REQUIREMENT_KEYS:
+            pins = lock_packages(value)
+            if pins is not None:
+                locks.append(pins)
+            elif key in REQUIREMENT_KEYS:
+                unlocked.append(value)
+        elif key in ("-e", "--editable"):
+            packages.append(value)
+        elif key in UNENFORCED:
+            flags.append(key)
+        elif not a.startswith("-"):
+            packages.append(a)
+        j += 1
+    return packages, locks, unlocked, builds, flags
+
+def named_files(rest):
+    # Each (option, file) of a constraint, a requirements file or a build constraint, in
+    # every spelling of CONSTRAINT_KEYS, REQUIREMENT_KEYS and BUILD_KEYS, among the words
+    # of a pip install, uv pip install or uv pip sync after its subcommand.
+    named, j = [], 0
+    while j < len(rest):
+        key, value = rest[j].split("=", 1)[0], option_value(rest[j])
+        if key in CONSTRAINT_KEYS + REQUIREMENT_KEYS + BUILD_KEYS:
+            if value is None:
+                value = rest[j + 1] if j + 1 < len(rest) else ""
+                j += 1
+            named.append((key, re.sub(r"\$\{IOC_EVID\}", "$IOC_EVID", value)))
+        elif value is None and key in PIP_VALUE:
+            j += 1
+        j += 1
+    return named
+
+def hash_exemption(words, prefixes):
+    # None when words, the command after a prefix UV_REQUIRE_HASHES=0 and the other
+    # prefixes, is the one form the header above reader_py states the prefix is admitted
+    # before, or the condition of that form it breaks.
+    if words[:3] != ["uv", "pip", "install"]:
+        return "it prefixes no uv pip install"
+    rest = words[3:]
+    packages, _, _, _, flags = pip_words(rest)
+    if not packages or any(not local(p) for p in packages):
+        return "a package it installs is no local source path"
+    named = named_files(rest)
+    builds = [(key, value) for key, value in named if key in BUILD_KEYS]
+    if not builds:
+        return "it names no -b $IOC_EVID/build-constraints.txt"
+    for key, value in builds:
+        if not build_lock(value):
+            return "it names " + key + " " + value + ", which is not the hashed build lock $IOC_EVID/build-constraints.txt"
+    label = install_environment(prefixes + words, len(prefixes) + 1)
+    if label is None:
+        return "it installs into no environment env.sh builds, named with --python or VIRTUAL_ENV, which the gate checks after the row"
+    own = "$IOC_EVID/" + ENVIRONMENTS[label][1]
+    locks = [(key, value) for key, value in named if key not in BUILD_KEYS]
+    for key, value in locks:
+        if key in REQUIREMENT_KEYS:
+            return "it names " + key + " " + value + ", and the lock of " + label + " is read with -c alone"
+        if value != own:
+            return "it names " + key + " " + value + ", which is not " + own + ", the lock of " + label
+    if not locks:
+        return "it names no -c " + own + ", the lock of " + label
+    if not hashed_lock(own):
+        return own + ", the lock of " + label + ", is no committed hashed lock"
+    if flags:
+        return "it names " + flags[0] + ", an option under which uv checks no hash"
+    if "--require-build-hashes" not in rest:
+        return "it does not pass --require-build-hashes, so uv would check the hash of no build dependency -b leaves out"
+    return None
+
+def py_ok(arg):
+    return local(arg) or PY_PIN.match(arg) is not None
+
+def npm_ok(arg):
+    return local(arg) or NPM_PIN.match(arg) is not None
+
+def go_ok(arg):
+    return local(arg) or GO_PIN.match(arg) is not None
+
+OPS = ["&&", "||", ">>", ">&", "&>", "<<<", "<<", ";;", "|&", ";", "&", "|", "(", ")", "<", ">", "\n"]
+
+class Refused(Exception):
+    pass
+
+# The programs the rows run by a bare word. Each is an entry "program <name>" of ADMITTED,
+# and the runner wraps each in a function of its name that records its status; a program
+# name with no entry is refused by name, whatever the shell would run. gh is not one: the
+# gate reads GitHub through git and the REST API and never through gh (the header).
+PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", "git",
+            "go", "grep", "jq", "mkdir", "mktemp", "printf", "python3", "rm", "sed", "sh",
+            "sha256sum", "sort", "stat", "tail", "tr", "uniq", "uv", "wc", "xargs")
+
+# The names the rows assign, alone, before a command or as a for loop's variable. Each is
+# an entry "assigns <name>" of ADMITTED, and an assignment or a loop to any other name is
+# refused by name, the shell's own names among them. IOC_EXPECT_STATUS is admitted as the
+# last prefix of one command word alone, and UV_REQUIRE_HASHES as the prefix 0 of the one
+# install hash_exemption reads. No tool cache is here: env.sh's ioc_env_cache_table sets
+# each, so a row that assigns one is refused.
+ASSIGNED_NAMES = ("ACCORD_MODEL_DIR", "GOFLAGS", "IOC_EXPECT_STATUS",
+                  "UV_REQUIRE_HASHES", "VIRTUAL_ENV", "W", "c", "f", "g", "m", "n", "o", "p", "r")
+HASH_EXEMPT = "UV_REQUIRE_HASHES"
+
+# uv run runs the program its arguments name, as xargs does, and exits with its status.
+# The programs the rows run with it are each an entry "uv run <program>" of ADMITTED; any
+# other program is refused by name, and the program is held with its arguments to every
+# rule check_program holds a command word to. Its programs are not PROGRAMS: uv run finds
+# python itself, and the runner wraps none of them. Its options are UV_RUN_OPTIONS below.
+UV_RUN_PROGRAMS = {
+    "python": "uv run's python, whose status uv run exits with",
+}
+
+# The rules the install reader and the classifier both read, each written once.
+#
+# xargs's options the rows use, each to whether it takes a value and what it is. Each is
+# an entry "xargs <option>" of ADMITTED. Both readers step over these to reach the program
+# xargs runs, and both refuse any other option by name, since neither knows whether it
+# takes a value and so which word is the program.
+XARGS_OPTIONS = {
+    "-0": (False, "xargs reads its input split at NUL bytes"),
+    "-n": (True, "xargs passes at most N arguments to each run"),
+}
+
+def xargs_program(args):
+    # (options, j) for the arguments of xargs: the options before its program, and the
+    # index in args of the program, len(args) when it names none.
+    options, j = [], 0
+    while j < len(args) and args[j].startswith("-"):
+        if args[j] not in XARGS_OPTIONS:
+            raise Refused("xargs " + args[j] + ", an option of xargs the evaluator does not admit")
+        options.append(args[j])
+        j += 2 if XARGS_OPTIONS[args[j]][0] else 1
+    return options, min(j, len(args))
+
+# uv run's options the rows use, each to whether it takes a value and what it is, read
+# the same way: each is an entry "uv run <option>" of ADMITTED, the install reader reads
+# the value of each --with, and both readers refuse any other option by name.
+UV_RUN_OPTIONS = {
+    "--no-project": (False, "uv run reads no project of the working directory"),
+    "--python": (True, "uv run runs the python version named"),
+    "--with": (True, "uv run installs the package named into its environment"),
+}
+
+def uv_run_program(args):
+    # (options, j) for the arguments of uv run, the words after run: each option before
+    # its program with its value, None for an option that takes none, and the index in
+    # args of the program, len(args) when it names none.
+    options, j = [], 0
+    while j < len(args) and args[j].startswith("-"):
+        if args[j] not in UV_RUN_OPTIONS:
+            raise Refused("uv run " + args[j] + ", an option of uv run the evaluator does not admit")
+        takes = UV_RUN_OPTIONS[args[j]][0]
+        options.append((args[j], (args[j + 1] if j + 1 < len(args) else "") if takes else None))
+        j += 2 if takes else 1
+    return options, min(j, len(args))
+
+def shell_string(args):
+    # The index in a shell's arguments of the option that hands it its commands as a
+    # string, -c alone or among other letters as in -ec, when it stands among the options
+    # before the script; None when there is none.
+    for j, arg in enumerate(args):
+        if not arg.startswith("-"):
+            return None
+        if "c" in arg.lstrip("-"):
+            return j
+    return None
+
+VARIABLE_WORD = re.compile(r"^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$")
+
+def variable_name(word):
+    # The name of a word that is one variable, $NAME or ${NAME}, and nothing beside it;
+    # None for any other word.
+    m = VARIABLE_WORD.match(word)
+    return (m.group(1) or m.group(2)) if m else None
+
+# An assignment: a name, then a subscript or none, then = or +=. The classifier admits only
+# a plain one, a name and =; a subscript or += is a form of its own.
+ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\[[^]]*\])?(\+?)=")
+
+def foreign_character(text):
+    # The first character of text that bash does not read as the tokenizer below reads
+    # it, as U+XXXX, or None. bash splits words at space, tab and newline alone, so a
+    # carriage return, any other control character and DEL, and every character Python
+    # counts as a space that bash does not (U+000B, U+000C, U+001C to U+001F, U+0085,
+    # U+00A0, U+2028 and the rest) stand inside a word, where the tokenizer would split.
+    for ch in text:
+        if ch in "\t\n":
+            continue
+        if ord(ch) < 32 or ord(ch) == 127 or (ch.isspace() and ch != " "):
+            return "U+%04X" % ord(ch)
+    return None
+
+# The names the gate records with, which no row may touch: every name of the runner, which
+# starts with one of RUNNER_PREFIXES, the program variables, the declared status, and the
+# variables env.sh sets or clears in every row's environment, ENFORCED, env.sh's
+# IOC_ENV_ENFORCED. A row may write the declared status only as the last prefix of one
+# command, UV_REQUIRE_HASHES only as the prefix 0 of the install hash_exemption reads, and a
+# program variable only as a command word.
+EXPECT_STATUS = "IOC_EXPECT_STATUS"
+RESERVED = {
+    **{prefix + "*": "a name the runner or a shim records with" for prefix in RUNNER_PREFIXES},
+    **{name: "a program variable, which points at its shim" for name in PROGRAM_VARIABLES},
+    EXPECT_STATUS: "the declared status, the last prefix of one command",
+    **{name: "a variable env.sh sets or clears in every row's environment" for name in ENFORCED},
+}
+
+def reserved(name):
+    return (name.startswith(RUNNER_PREFIXES) or name in PROGRAM_VARIABLES or name == EXPECT_STATUS
+            or name in ENFORCED)
+
+READS = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+SETS = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?\+?=")
+
+def refuse_touch(word, where, sets=True):
+    # Refuses a word that reads a reserved name with $ or, when sets is true, holds an
+    # assignment to one, NAME= anywhere in it; where says where the word stands. A word is
+    # read without its quotes, so a reserved name a quoted pattern holds is refused too.
+    for name in READS.findall(word):
+        if reserved(name) and name != EXPECT_STATUS:
+            raise Refused(word + ", " + where + " that reads " + name + ", a name the gate records with")
+    for name in (SETS.findall(word) if sets else ()):
+        if reserved(name):
+            raise Refused(word + ", " + where + " that assigns " + name + ", a name the gate records with")
+
+# ADMITTED is every form the classifier admits, one entry each, from the form's key to what
+# it is, and nothing else admits a form: every admission goes through admit below, which
+# refuses a key ADMITTED does not hold, whatever the parser read. --admitted reads this same
+# table, counts the rows of claims.jsonl that use each entry, and fails an entry no row
+# uses, so the table is exactly the forms the rows use. check.sh's header above
+# run_recorded holds the table with those counts. One entry holds two spellings: a
+# parameter, written $NAME or ${NAME}, which the shell expands alike. The entries of the
+# assigned names, the programs, the program variables, xargs's options and uv run's
+# options and programs are built from ASSIGNED_NAMES, PROGRAMS, PROGRAM_VARIABLES,
+# XARGS_OPTIONS, UV_RUN_OPTIONS and UV_RUN_PROGRAMS, one each.
+ADMITTED = {
+    # Operators and separators.
+    "&&": "runs the next pipeline when this one exits 0",
+    "||": "runs the next pipeline when this one fails",
+    "|": "joins the commands of a pipeline",
+    ";": "ends a pipeline",
+    "newline": "an unquoted newline, ending a pipeline as ; does",
+    ">": "writes the output to a file",
+    "2>": "writes the error output to a file",
+    "2>&1": "sends the error output where the output goes",
+    # Keywords and control words.
+    "{": "opens a group",
+    "}": "closes a group",
+    "(": "opens a subshell",
+    ")": "closes a subshell",
+    "for": "opens a for loop",
+    "in": "comes before a for loop's words",
+    "do": "comes before a for loop's body",
+    "done": "closes a for loop",
+    # Shapes.
+    "simple command": "a command word and its arguments",
+    "pipeline": "two or more commands joined by |",
+    "list": "two or more pipelines joined by ;, &&, || or newline",
+    "group": "{ list; }, whose status is its last command's",
+    "subshell": "( list ), whose status is its last command's",
+    "for loop": "for NAME in words; do list; done",
+    "assignment before a command": "NAME=value, set in that command's environment",
+    "assignment alone": "NAME=value with no command word",
+    "command substitution in a word": "$( ) in a word, its code admitted by this table",
+    # Assigned names.
+    **{"assigns " + name: {EXPECT_STATUS: "the declared status, the last prefix of one command",
+                           HASH_EXEMPT: "0, before a uv pip install of local sources alone"}.get(name, "a name the rows assign")
+       for name in ASSIGNED_NAMES},
+    # Command words.
+    **{"program " + name: "wrapped in a function that records its status" for name in PROGRAMS},
+    **{"variable $" + name: "a program variable, whose shim records its status" for name in PROGRAM_VARIABLES},
+    "xargs running a program": "xargs's status carries the program's",
+    **{"xargs " + option: what for option, (_, what) in XARGS_OPTIONS.items()},
+    **{"uv run " + option: what for option, (_, what) in UV_RUN_OPTIONS.items()},
+    **{"uv run " + name: what for name, what in UV_RUN_PROGRAMS.items()},
+    "sh running a script file": "the script's status reaches the row as sh's",
+    "true": "a command whose status is no read",
+    # $ forms.
+    "$NAME or ${NAME}": "a parameter, its name in braces or not",
+    "$?": "the status of the last command",
+    "$( )": "a command substitution",
+    "a literal $": "a $ that starts no expansion, left as it stands",
+}
+
+# The entries of ADMITTED the command being classified used, which admit records.
+USED = set()
+
+def admit(key, refusal=None):
+    # The one way the classifier admits a form. A key ADMITTED does not hold, None
+    # included, is refused, naming the form; any other is recorded as used.
+    if key not in ADMITTED:
+        raise Refused(refusal or str(key) + ", a form the evaluator does not admit")
+    USED.add(key)
+
+class ForeignCharacter(Refused):
+    # The refusal of a command holding a character foreign_character names, which carries
+    # that character as U+XXXX for each reader to name.
+    def __init__(self, char):
+        super().__init__("the character " + char + ", which bash reads as part of a word where the evaluator would split it")
+        self.char = char
+
+def tokenize(text):
+    # Words and operators, quotes respected; an unquoted newline is an operator of its own,
+    # which the parser reads as a separator like ;. Words are split at space and tab, as
+    # bash splits them; a command holding a character foreign_character names is refused
+    # here, before it is split, so no reader splits it.
+    char = foreign_character(text)
+    if char:
+        raise ForeignCharacter(char)
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>\n")
+    lexer.whitespace = " \t"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        raw = list(lexer)
+    except ValueError:
+        return None
+    out = []
+    for token in raw:
+        if token and set(token) <= set(";&|()<>\n"):
+            i = 0
+            while i < len(token):
+                for op in OPS:
+                    if token.startswith(op, i):
+                        out.append(("op", op))
+                        i += len(op)
+                        break
+        else:
+            out.append(("word", token))
+    return out
+
+def commands(text):
+    # The words of each command of text, split at every operator of the one tokenizer;
+    # None when the text does not split. The install reader reads its runners from these.
+    tokens = tokenize(text)
+    if tokens is None:
+        return None
+    out, current, target = [], [], False
+    for kind, value in tokens:
+        if target:
+            target = False
+            if kind == "word":
+                continue
+        if kind == "op" and value in (">", ">>", "<", ">&", "&>", "<<", "<<<"):
+            if current and current[-1].isdigit():
+                current.pop()
+            target = True
+            continue
+        if kind == "op":
+            if current:
+                out.append(current)
+            current = []
+        else:
+            current.append(value)
+    if current:
+        out.append(current)
+    return out
+
+# A command substitution, $(...) or a pair of backticks, that no backslash escapes; an
+# escaped backtick is a literal one, as a quoted document holds.
+SUBSTITUTION = re.compile(r"(?<!\\)[$<>]\(((?:[^()]|\([^()]*\))*)\)|(?<!\\)`((?:[^`\\]|\\.)*)`")
+# Each substitution, once its code is read, stands in the line as this marker, inside the
+# word it was written in, so an assignment from one stays an assignment and a
+# command word that is the output of a substitution is refused as unresolved.
+SUBST_WORD = "IOCSUBSTITUTION"
+
+def substitutions(text):
+    # Each command substitution the shell runs in text, as (start, end, code): $(...) and a
+    # pair of backticks outside single quotes, inside double quotes too, and <(...) and
+    # >(...) outside any quotes. Text inside single quotes is literal, so a backtick in a
+    # quoted grep pattern is no substitution. A backslash escapes the next character
+    # outside single quotes.
+    out, i, single, double = [], 0, False, False
+    while i < len(text):
+        c = text[i]
+        if single:
+            if c == "\x27":
+                single = False
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == "\x27" and not double:
+            single = True
+            i += 1
+            continue
+        if c == "\x22":
+            double = not double
+            i += 1
+            continue
+        if (c == "$" or (c in "<>" and not double)) and text[i + 1:i + 2] == "(":
+            depth, j = 1, i + 2
+            while j < len(text) and depth:
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                j += 1
+            out.append((i, j, text[i + 2:j - 1]))
+            i = j
+            continue
+        if c == "`":
+            j = i + 1
+            while j < len(text) and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            out.append((i, j + 1, text[i + 1:j]))
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# The characters bash reads after a $ as a one-character special parameter. dollar_forms
+# reads them to name each one; which of them is admitted is ADMITTED's to say, and it holds
+# $? alone.
+SPECIAL = "?$!#@*-0123456789"
+
+def dollar_forms(text):
+    # Each $ the shell expands in text, outside single quotes, as (key, spelling), the key
+    # being the form's entry in ADMITTED: "$NAME or ${NAME}" for a parameter, "$" and its
+    # character for a one-character special parameter, $? or $1 alike, "${" and that
+    # character and "}" for the same in braces, "$( )" for a command substitution and
+    # "a literal $" for a $ that starts no expansion, which the shell leaves as it is.
+    # Every other form has the key None, which no entry is: $(( )), $[ ], $' ', $" " and
+    # ${ } with anything inside but a name or one special character, ${NAME:-x}, ${#NAME}
+    # and ${!NAME} among them. classify admits each key through admit, so a special
+    # parameter ADMITTED does not list is refused like every form without an entry.
+    out, i, single, double = [], 0, False, False
+    while i < len(text):
+        c = text[i]
+        if single:
+            if c == "\x27":
+                single = False
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == "\x27" and not double:
+            single = True
+            i += 1
+            continue
+        if c == "\x22":
+            double = not double
+            i += 1
+            continue
+        if c != "$":
+            i += 1
+            continue
+        nxt = text[i + 1:i + 2]
+        if text.startswith("$((", i):
+            out.append((None, "$(( ))"))
+            i += 3
+        elif nxt == "(":
+            out.append(("$( )", "$( )"))
+            i += 2
+        elif nxt == "{":
+            j = text.find("}", i)
+            if j < 0:
+                out.append((None, text[i:]))
+                break
+            body = text[i + 2:j]
+            if NAME_RE.fullmatch(body) and body != "_":
+                out.append(("$NAME or ${NAME}", "${" + body + "}"))
+            elif body == "_":
+                # ${_} is bash's special parameter, the last argument of the last command.
+                out.append(("${_}", "${_}"))
+            elif len(body) == 1 and body in SPECIAL:
+                out.append(("${" + body + "}", "${" + body + "}"))
+            else:
+                out.append((None, "${" + body + "}"))
+            i = j + 1
+        elif nxt and NAME_RE.match(nxt):
+            end = NAME_RE.match(text, i + 1).end()
+            # $_ alone is bash's special parameter, the last argument of the last command,
+            # and no name: its key is its own, so no entry admits it.
+            key = "$_" if text[i + 1:end] == "_" else "$NAME or ${NAME}"
+            out.append((key, text[i:end]))
+            i = end
+        elif nxt and nxt in SPECIAL:
+            out.append(("$" + nxt, "$" + nxt))
+            i += 2
+        elif nxt in ("[", "\x27", "\x22") and not (double and nxt == "\x22"):
+            # $[ ] is arithmetic, and $' ' and $" " are quoting forms; none is admitted.
+            out.append((None, "$" + nxt))
+            i += 2
+        else:
+            # A $ before any other character starts no expansion, and the shell leaves it
+            # as it stands, as in a sed pattern's "$/".
+            out.append(("a literal $", "$"))
+            i += 1
+    return out
+
+
+def without_substitutions(text):
+    # The text with each substitution replaced by the marker, inside the word it stands in.
+    pieces, last = [], 0
+    for start, end, _ in substitutions(text):
+        pieces.append(text[last:start])
+        pieces.append(SUBST_WORD)
+        last = end
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+# The words the install-pinned reader steps over to reach a command word, and the wrappers
+# whose command it reads. They admit nothing: they let that reader find runners inside
+# forms the evaluator refuses, and the evaluator's admissions are ADMITTED's alone.
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time", "done", "fi", "esac"}
+CONTROL = {"for", "case", "select", "function", "in"}
+WRAPPERS = {"env", "nohup", "nice", "timeout", "command", "exec", "sudo", "stdbuf", "xargs", "time"}
+# The options of each wrapper but xargs that take a value; xargs's are XARGS_OPTIONS.
+WRAPPER_VALUE = {"nice": {"-n"}, "timeout": {"-s", "-k", "--signal", "--kill-after"},
+                 "sudo": {"-u", "-g", "-C"}, "stdbuf": {"-i", "-o", "-e"}, "env": {"-u", "-C", "-S"}}
+
+# The install-pinned reader resolves a command word written as a variable through
+# PROGRAM_VARIABLES alone, the programs env.sh builds and pins, each naming one
+# executable: each resolves to the program PROGRAM_VARIABLES names for it, and the word
+# is then held to every rule a literal word is held to. A variable with a path after it,
+# and any other variable, may not stand in command position.
+def resolve(word):
+    # The program a command word names, or None when this reader cannot resolve it.
+    if SUBST_WORD in word or "`" in word:
+        return None
+    if "$" not in word:
+        return word.rsplit("/", 1)[-1]
+    return PROGRAM_VARIABLES.get(variable_name(word))
+
+def runner_name(word):
+    # The program a word names, as every runner rule below matches it: the resolved
+    # word, its last path element, with a version written after the name taken off, so
+    # /usr/bin/pip, pip3 and pip3.12 are all pip. A word
+    # this reader cannot resolve names no runner, and is refused in command position.
+    base = resolve(word)
+    if base is None:
+        return ""
+    return re.sub(r"[0-9][0-9.]*$", "", base)
+
+def command_words(w):
+    # The indexes of the words of w that stand in command position: the first word of the
+    # command after its assignments and keywords, and the command each wrapper runs. An
+    # option of xargs that XARGS_OPTIONS does not hold is refused, naming it.
+    i, out = 0, []
+    while i < len(w):
+        word = w[i]
+        if ASSIGNMENT.match(word) or word in KEYWORDS:
+            i += 1
+            continue
+        if word in CONTROL:
+            return out
+        break
+    while i < len(w):
+        out.append(i)
+        base = resolve(w[i])
+        if base not in WRAPPERS:
+            # find runs the command after -exec or -execdir as well.
+            if base == "find":
+                for j in range(i + 1, len(w) - 1):
+                    if w[j] in ("-exec", "-execdir", "-ok", "-okdir"):
+                        out.append(j + 1)
+            return out
+        values = WRAPPER_VALUE.get(base, set())
+        i += 1
+        if base == "xargs":
+            i += xargs_program(w[i:])[1]
+            continue
+        if base == "timeout" and i < len(w) and not w[i].startswith("-"):
+            i += 1
+        while i < len(w) and (w[i].startswith("-") or (base == "env" and ASSIGNMENT.match(w[i]))):
+            if w[i].split("=", 1)[0] in values and "=" not in w[i]:
+                i += 1
+            i += 1
+            if base == "timeout" and i < len(w) and not w[i].startswith("-") and re.match(r"^[0-9.]+[smhd]?$", w[i]):
+                i += 1
+    return out
+
+# The options of each runner that take a value, and those that take none; any other
+# option before the package is a form this reader does not know.
+UV_TOOL_VALUE = {"--python", "-p", "--from", "--with", "--with-editable", "--with-requirements",
+                 "--index", "--index-url", "--extra-index-url", "--default-index", "--cache-dir",
+                 "--python-preference", "--constraints", "-c", "--overrides"}
+UV_TOOL_FLAG = {"--isolated", "--offline", "--no-cache", "-q", "--quiet", "-v", "--verbose",
+                "--refresh", "--no-project", "--no-config", "-n"}
+PIPX_VALUE = {"--python", "--spec", "--index-url", "--pip-args"}
+PIPX_FLAG = {"--no-cache", "-q", "--quiet", "-v", "--verbose"}
+NODE_VALUE = {"--package", "-p", "--registry", "--cache"}
+NODE_FLAG = {"-y", "--yes", "--no", "-q", "--quiet", "--silent", "--bun"}
+GO_VALUE = {"-C", "-o", "-tags", "-ldflags", "-gcflags", "-mod", "-overlay", "-modfile", "-exec"}
+GO_FLAG = {"-v", "-x", "-race", "-a", "-n", "-trimpath", "-buildvcs=false"}
+
+def option_value(word):
+    return word.split("=", 1)[1] if "=" in word else None
+
+def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=(), lock_by=()):
+    # lock_by names the options whose value may be a hashed lock: each package this runner
+    # resolves from an index is held at its exact version by a lock the command names, or
+    # it is refused; None exempts a runner, go alone, whose modules go itself checks
+    # against go.sum or the checksum database. uv tool run, uvx and pipx check no hash of
+    # what they install or build (measured, see the header), so a local source path under
+    # a Python runner, which it would build, is refused, and a wheel, which builds
+    # nothing, passes.
+    problems, pins, i = [], {}, 0
+    while i < len(rest):
+        word = rest[i]
+        if not word.startswith("-"):
+            break
+        key = word.split("=", 1)[0]
+        if key in value_opts:
+            value = option_value(word)
+            if value is None:
+                value = rest[i + 1] if i + 1 < len(rest) else ""
+                i += 1
+            pins.setdefault(key, []).append(value)
+        elif word not in flag_opts and key not in flag_opts:
+            return [name + " " + word + " (an option this reader does not know)"]
+        i += 1
+    python = ok is py_ok
+    locks = [] if lock_by is None else [p for k in lock_by for v in pins.get(k, []) for p in [lock_packages(v)] if p is not None]
+
+    def read(label, value):
+        if not ok(value):
+            problems.append(label + " " + value)
+        elif local(value):
+            if python and not wheel(value):
+                problems.append(label + " " + value + " (a local source path " + name + " would build, checking no hash of its build environment)")
+        elif lock_by is not None and not locks:
+            problems.append(label + " " + value + NO_LOCK)
+        elif lock_by is not None and not held(value, locks):
+            problems.append(label + " " + value + NOT_HELD)
+
+    for key in ("--with", "--with-editable"):
+        for value in pins.get(key, []):
+            read(name + " " + key, value)
+    for value in pins.get("--with-requirements", []):
+        if not hashed_lock(value):
+            problems.append(name + " --with-requirements " + value + NO_LOCK)
+    package = rest[i] if i < len(rest) else ""
+    source = None
+    for key in pinned_by:
+        if pins.get(key):
+            source = pins[key][-1]
+    target = source if source is not None else package
+    if not target:
+        problems.append(name + " (no package this reader can find)")
+    elif target.startswith("$") and not local(target):
+        problems.append(name + " " + target + " (a package this reader cannot read)")
+    else:
+        read(name, target)
+    return problems
+
+def read_command(command, depth=0):
+    found = []
+    if depth > 4:
+        return ["a command nested too deep for this reader to open"]
+    # No recorded command holds a heredoc, and its body is text this reader does not
+    # split into commands, so a heredoc is refused rather than read as words.
+    if re.search(r"<<-?\s*[\x27\x22]?[A-Za-z_]", command):
+        return ["a heredoc, whose body this reader does not read"]
+    # A command substitution runs whether or not it stands inside double quotes, and a
+    # backtick pair may span two words, so it is read in the text before the split.
+    for _, _, code in substitutions(command):
+        found += read_command(code, depth + 1)
+    command = without_substitutions(command)
+    try:
+        parts = commands(command)
+    except ForeignCharacter as why:
+        # A character bash keeps inside a word, where the tokenizer would split, makes the
+        # words this reader reads differ from those bash runs, so the command is refused.
+        return ["a command holding the character " + why.char + ", which bash reads as part of a word"]
+    if parts is None:
+        return found + ["a command this reader cannot split into words"]
+    for w in parts:
+        part = " ".join(w)
+        try:
+            positions = command_words(w)
+        except Refused as why:
+            found.append(str(why))
+            positions = []
+        for i in positions:
+            if resolve(w[i]) is None:
+                what = "the output of a substitution" if SUBST_WORD in w[i] else w[i]
+                found.append(what + " (a command word this reader cannot resolve)")
+        for i, word in enumerate(w):
+            nxt = w[i + 1] if i + 1 < len(w) else ""
+            after = w[i + 1:]
+            base = resolve(word) or word.rsplit("/", 1)[-1]
+            name = runner_name(word)
+            if name in SHELLS:
+                k = shell_string(after)
+                if k is not None:
+                    if i + k + 2 < len(w):
+                        found += read_command(w[i + k + 2], depth + 1)
+                    else:
+                        found.append(base + " -c (no command this reader can find)")
+            elif word == "eval":
+                found += read_command(" ".join(after), depth + 1)
+            elif name == "python" and nxt == "-c" and i + 2 < len(w):
+                if PROCESS.search(w[i + 2]):
+                    found.append(base + " -c (python code that starts a process, which this reader cannot open)")
+            elif name == "uvx":
+                found += read_runner("uvx", after, UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",), ("-c", "--constraints"))
+            elif name == "uv" and nxt == "tool" and i + 2 < len(w) and w[i + 2] in ("run", "install"):
+                found += read_runner("uv tool " + w[i + 2], w[i + 3:], UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",), ("-c", "--constraints"))
+            elif name == "uv" and nxt == "tool":
+                found.append("uv tool " + (w[i + 2] if i + 2 < len(w) else "") + " (a uv tool form this reader does not read)")
+            elif name == "uv" and nxt == "run":
+                # uv run fetches each --with, which every one of them must pin. Its options
+                # are read from UV_RUN_OPTIONS, the classifier's own table, so --python's
+                # value is no program, and an option the table does not hold is refused.
+                # uv run reads neither UV_REQUIRE_HASHES nor UV_BUILD_CONSTRAINT (measured,
+                # see the header), and takes no -c, so a --with that is a local source path,
+                # which it would build with whatever build backend is newest, is refused, a
+                # built wheel passes, and a package from an index passes only when
+                # evidence/ioc-venv.lock holds it at that version and it requires no other
+                # package, which uv run would resolve to the newest release: the set it
+                # installs is then the package alone, held by the lock.
+                try:
+                    options, _ = uv_run_program(w[i + 2:])
+                except Refused as why:
+                    found.append(str(why))
+                    options = []
+                lock = [p for p in [lock_packages("$IOC_EVID/ioc-venv.lock")] if p is not None]
+                for key, value in options:
+                    if key != "--with":
+                        continue
+                    if not py_ok(value):
+                        found.append("uv run " + key + " " + value)
+                    elif local(value) and not wheel(value):
+                        found.append("uv run " + key + " " + value + " (a local source path uv run builds with no build constraint; run a wheel built under one)")
+                    elif not local(value) and not held(value, lock):
+                        found.append("uv run " + key + " " + value + " (a package evidence/ioc-venv.lock does not hold at that version)")
+                    elif not local(value) and requires(value, "$IOC_EVID/ioc-venv.lock"):
+                        found.append("uv run " + key + " " + value + " (a package that requires others, which uv run, reading no lock, resolves to the newest release; run it with uv tool run -c of the lock)")
+            elif name == "uv" and nxt == "build":
+                # uv build checks every hash of its build environment under UV_REQUIRE_HASHES
+                # and UV_BUILD_CONSTRAINT (measured); the reader holds its -b to the hashed
+                # build lock, which it must name, and refuses an option uv would check no
+                # hash under.
+                rest, j, sources, builds = w[i + 2:], 0, [], []
+                while j < len(rest):
+                    a = rest[j]
+                    key, value = a.split("=", 1)[0], option_value(a)
+                    if value is None and key in (*BUILD_KEYS, *CONSTRAINT_KEYS, "-o", "--out-dir", "--python", "-p", "--package"):
+                        value = rest[j + 1] if j + 1 < len(rest) else ""
+                        j += 1
+                    if key in BUILD_KEYS:
+                        builds.append(value)
+                    elif key in UNENFORCED:
+                        found.append("uv build " + key + " (an option under which uv checks no hash)")
+                    elif not a.startswith("-"):
+                        sources.append(a)
+                    j += 1
+                found += read_build("uv build", sources or ["."], builds)
+            elif name == "uv" and nxt == "add":
+                found.append("uv add (a form that installs and that this reader does not read)")
+            elif name == "pipx" and nxt == "run":
+                found += read_runner("pipx run", w[i + 2:], PIPX_VALUE, PIPX_FLAG, py_ok, ("--spec",))
+            elif name == "pipx":
+                found.append("pipx " + nxt + " (a pipx form this reader does not read)")
+            elif name in ("bunx", "npx") or (name == "npm" and nxt == "exec"):
+                label, rest = (name, after) if name != "npm" else ("npm exec", w[i + 2:])
+                found += read_runner(label, rest, NODE_VALUE, NODE_FLAG, npm_ok, ("--package", "-p"))
+            elif name in ("npm", "bun", "yarn", "pnpm") and nxt in ("install", "i", "add", "dlx", "x"):
+                found.append(name + " " + nxt + " (a form that installs and that this reader does not read)")
+            elif name == "go" and nxt in ("run", "install"):
+                found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, GO_FLAG, go_ok, (), None)
+            elif name == "pip" and nxt in ("install", "sync"):
+                # Every argument is read, in every spelling of -e and --editable, by
+                # pip_words. A sync installs exactly the files it names, so each must be a
+                # hashed lock. Every package an install names from an index is held at its
+                # exact version by a hashed lock the command names, with -c or -r, or it
+                # is refused by name, whatever other file the command names; a
+                # requirements file that is no hashed lock is refused. A local path that is
+                # no wheel is built, and its build backend is fetched like any package, so
+                # the command names the hashed build lock with -b, and any other -b is
+                # refused. An option under which uv would check no hash is refused.
+                label = "pip " + nxt
+                packages, locks, unlocked, builds, flags = pip_words(w[i + 2:])
+                sources = []
+                for a in flags:
+                    found.append(label + " " + a + " (an option under which uv checks no hash)")
+                for a in unlocked:
+                    found.append(label + " -r " + a + NO_LOCK)
+                for a in packages:
+                    if nxt == "sync":
+                        if not hashed_lock(a):
+                            found.append(label + " " + a + NO_LOCK)
+                    elif not py_ok(a):
+                        found.append(label + " " + a)
+                    elif local(a):
+                        if not wheel(a):
+                            sources.append(a)
+                    elif not locks:
+                        found.append(label + " " + a + NO_LOCK)
+                    elif not held(a, locks):
+                        found.append(label + " " + a + NOT_HELD)
+                found += read_build(label, sources, builds)
+                environment = install_environment(w, i)
+                if environment is not None:
+                    TARGETS.add(environment)
+    return found
+
+
+# The redirection operators of the tokenizer. Each output redirection is admitted by its
+# spelling, its file descriptor and, for >&, the descriptor it copies; an input redirection
+# and a here-document are refused by name.
+REDIRECTS = (">", ">>", "<", ">&", "&>", "<<", "<<<")
+
+class Parser:
+    # A recursive descent over the shapes ADMITTED names: a list of pipelines joined by ;,
+    # &&, || and newlines; a pipeline of elements joined by |; an element is a simple
+    # command, a group { list; }, a subshell ( list ) or a for loop. Every operator,
+    # keyword and shape it reads is admitted through admit, so a form ADMITTED does not
+    # hold is refused by name whatever this parser reads it as.
+    def __init__(self, tokens):
+        self.t, self.i = tokens, 0
+        self.commands = []  # every simple command: ("simple", words)
+
+    def peek(self):
+        return self.t[self.i] if self.i < len(self.t) else ("end", "")
+
+    def take(self):
+        tok = self.peek()
+        self.i += 1
+        return tok
+
+    def at_word(self, *words):
+        kind, value = self.peek()
+        return kind == "word" and value in words
+
+    def at_end(self, closers):
+        kind, value = self.peek()
+        return kind == "end" or (kind in ("word", "op") and value in closers)
+
+    def separator(self):
+        # Takes one ; or unquoted newline, admitting it, and says whether it took one.
+        kind, value = self.peek()
+        if kind == "op" and value in (";", "\n"):
+            self.take()
+            admit("newline" if value == "\n" else ";",
+                  ("an unquoted newline" if value == "\n" else "the separator ;") + ", a form the evaluator does not admit")
+            return True
+        return False
+
+    def parse_list(self, closers=()):
+        pipelines = []
+        while True:
+            while self.separator():
+                pass
+            if self.at_end(closers):
+                break
+            pipelines.append(self.parse_pipeline(closers))
+            kind, value = self.peek()
+            if kind == "op" and value in ("&&", "||"):
+                self.take()
+                admit(value, "the operator " + value + ", a form the evaluator does not admit")
+                continue
+            if self.separator():
+                continue
+            if kind == "op" and value in ("&", ";;", "|&"):
+                raise Refused("the operator " + value)
+            if self.at_end(closers):
+                break
+            raise Refused("the word " + value + " after a command")
+        if len(pipelines) > 1:
+            admit("list")
+        return pipelines
+
+    def parse_pipeline(self, closers):
+        elements = [self.parse_element(closers)]
+        while self.peek() == ("op", "|"):
+            self.take()
+            admit("|", "the operator |, a form the evaluator does not admit")
+            elements.append(self.parse_element(closers))
+        if len(elements) > 1:
+            admit("pipeline")
+        return elements
+
+    def parse_element(self, closers):
+        kind, value = self.peek()
+        if kind == "word" and value == "{":
+            self.take()
+            admit("{")
+            body = self.parse_list(closers=("}",))
+            if not self.at_word("}"):
+                raise Refused("a group with no closing brace")
+            self.take()
+            admit("}")
+            admit("group")
+            self.trailing_redirections()
+            return ("group", body)
+        if kind == "op" and value == "(":
+            self.take()
+            if self.peek() == ("op", "("):
+                raise Refused("an arithmetic command (( )), a form the evaluator does not admit")
+            admit("(")
+            body = self.parse_list(closers=(")",))
+            if self.peek() != ("op", ")"):
+                raise Refused("a subshell with no closing parenthesis")
+            self.take()
+            admit(")")
+            admit("subshell")
+            self.trailing_redirections()
+            return ("group", body)
+        if kind == "word" and value == "for":
+            self.take()
+            admit("for")
+            kind, var = self.take()
+            if kind != "word" or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", var):
+                raise Refused("a for loop with no variable")
+            if reserved(var):
+                raise Refused("for " + var + ", a loop that assigns " + var + ", a name the gate records with")
+            admit("assigns " + var, "for " + var + ", a loop that assigns " + var + ", a name the evaluator does not admit")
+            if self.at_word("in"):
+                self.take()
+                admit("in")
+                while self.peek()[0] == "word":
+                    refuse_touch(self.take()[1], "a word of a for loop")
+            else:
+                # With no in, the loop runs over the positional parameters, as $@ does.
+                admit(None, "a for loop with no in, which loops over the positional parameters")
+            while self.separator():
+                pass
+            if not self.at_word("do"):
+                raise Refused("a for loop with no do")
+            self.take()
+            admit("do")
+            body = self.parse_list(closers=("done",))
+            if not self.at_word("done"):
+                raise Refused("a for loop with no done")
+            self.take()
+            admit("done")
+            admit("for loop")
+            self.trailing_redirections()
+            return ("group", body)
+        return self.parse_simple()
+
+    def redirection(self, fd):
+        # One redirection, its operator next, written after the file descriptor fd, or
+        # after none when fd is "".
+        _, op = self.take()
+        if op in ("<<", "<<<"):
+            raise Refused("a here-document or here-string")
+        if op == "<":
+            raise Refused("an input redirection, which fails before the program it feeds runs")
+        kind, target = self.peek()
+        if kind != "word":
+            raise Refused("a redirection with no target")
+        self.take()
+        if op == ">&":
+            # >& copies a descriptor, or with a file name after it writes both outputs.
+            spelling = fd + op + (target if re.fullmatch(r"[0-9]+|-", target) else " a file")
+        else:
+            spelling = fd + op
+        admit(spelling, "the redirection " + spelling + ", a form the evaluator does not admit")
+        refuse_touch(target, "a redirection target", sets=False)
+
+    def trailing_redirections(self):
+        # The redirections after a group, a subshell or a loop, written with no descriptor.
+        while self.peek()[0] == "op" and self.peek()[1] in REDIRECTS:
+            self.redirection("")
+
+    def parse_simple(self):
+        words = []
+        while True:
+            kind, value = self.peek()
+            if kind == "word":
+                self.take()
+                nxt = self.peek()
+                if nxt[0] == "op" and nxt[1] in (">", ">>", "<", ">&") and value.isdigit():
+                    self.redirection(value)  # a file descriptor before a redirection
+                    continue
+                words.append(value)
+                continue
+            if kind == "op" and value in REDIRECTS:
+                self.redirection("")
+                continue
+            break
+        if not words:
+            raise Refused("an empty command")
+        admit("simple command")
+        command = ("simple", words)
+        self.commands.append(command)
+        return command
+
+# Why a command word ADMITTED holds no entry for is refused, for the words where the reason
+# helps a reader. These only word the refusal: the rule is ADMITTED, which refuses every
+# program name it holds no entry for, each one below and every name no row runs alike.
+REFUSAL_REASONS = {
+    **dict.fromkeys(("eval", "source", "."), "which runs code the evaluator does not read"),
+    **dict.fromkeys(("exec", "command", "builtin"), "which runs a program past the function that records it"),
+    **dict.fromkeys(("env", "timeout", "nice", "nohup", "sudo", "stdbuf"), "a wrapper, which runs a program past the function that records it"),
+    **dict.fromkeys(("bash", "zsh", "dash", "ksh"), "a shell other than sh, a program the evaluator does not admit"),
+    "find": "whose -exec runs a program past the function that records it",
+    "gh": "which the gate never reads GitHub with: a repository's files are read with git, and its REST API with curl",
+    **dict.fromkeys(("declare", "local", "typeset", "readonly"), "which a wrapping function would make local to it"),
+    **dict.fromkeys(("export", "unset", "alias", "trap", "set", "enable"), "which changes the shell the runner records in"),
+    **dict.fromkeys(("exit", "return"), "which ends the shell before its row is read"),
+    **dict.fromkeys(("if", "then", "elif", "else", "fi", "while", "until", "case", "esac", "select", "!", "[[",
+                     "do", "done", "in", "time", "function", "coproc"), "a keyword the evaluator does not admit"),
+}
+
+def classify_word(words):
+    # The class of a simple command's command word: ("program", name), ("variable",
+    # name), ("condition", word), or ("none",) for a command of assignments alone, each
+    # admitted through admit, with the index of the command word. Every other word is
+    # refused. An assignment is admitted only to a name ASSIGNED_NAMES holds. An assignment
+    # to a name the gate records with is refused, with two exceptions: the declared status
+    # written as the last prefix of a command word, and UV_REQUIRE_HASHES=0 written before
+    # the one install hash_exemption reads.
+    i = 0
+    while i < len(words) and ASSIGNMENT.match(words[i]):
+        i += 1
+    for k, word in enumerate(words[:i]):
+        m = ASSIGNMENT.match(word)
+        if m.group(2) or m.group(3):
+            admit(None, word + ", an assignment to an array element or by +=, a form the evaluator does not admit")
+        name = m.group(1)
+        if name == EXPECT_STATUS and i == len(words):
+            raise Refused(EXPECT_STATUS + " written as a statement of its own, which would exempt every later program")
+        if name == EXPECT_STATUS and k < i - 1:
+            # bash expands prefixes from left to right, so a substitution in a later one
+            # would run with the status already declared.
+            raise Refused(word + ", " + EXPECT_STATUS + " before another prefix, whose substitution would run with the status declared")
+        if name == HASH_EXEMPT:
+            why = "it is no prefix" if i == len(words) else (
+                "its value is not 0" if word != HASH_EXEMPT + "=0" else hash_exemption(words[i:], words[:i]))
+            if why:
+                raise Refused(word + ", which clears uv's hash check, admitted only before the one install the header above reader_py states: " + why)
+        elif reserved(name) and name != EXPECT_STATUS:
+            raise Refused(word + ", an assignment to " + name + ", a name the gate records with")
+        admit("assigns " + name, word + ", an assignment to " + name + ", a name the evaluator does not admit")
+        refuse_touch(word, "an assignment", sets=False)
+    if i == len(words):
+        admit("assignment alone")
+        return ("none",), i
+    if i:
+        admit("assignment before a command")
+    word = words[i]
+    if SUBST_WORD in word or "`" in word:
+        raise Refused("the output of a substitution as a command word")
+    if word.startswith("$"):
+        name = variable_name(word)
+        # The key carries the prefix "variable ", which no other kind of key starts with,
+        # so no variable's name can spell another entry of ADMITTED.
+        admit("variable $" + name if name else None, word + ", a variable that names no program the evaluator records")
+        return ("variable", name), i
+    if "/" in word:
+        raise Refused(word + ", a program named by a path, which no function can be named for")
+    if word == "true":
+        # A condition, whose status is a test's answer rather than a read.
+        admit("true")
+        return ("condition", word), i
+    # The key carries the prefix "program ", as a variable's carries "variable ".
+    admit("program " + word, word + ", " + REFUSAL_REASONS.get(word, "a program the evaluator does not admit"))
+    return ("program", word), i
+
+
+SCRIPT_PATH = re.compile(r"(\$IOC_EVID/|\./)?[A-Za-z0-9_][A-Za-z0-9_./-]*\.sh")
+
+def check_program(name, args):
+    # Refuses the forms of a program and its arguments whose program the evaluator would
+    # not see, by the same rules whether the program is a command word, the program xargs
+    # runs or the program uv run runs.
+    if name in SHELLS:
+        if shell_string(args) is not None:
+            raise Refused(name + " -c, a command given to a shell as a string")
+        # A shell with no script file reads its commands from its input, which no function
+        # records, as -c does, and so does one whose script is a stream under /dev/ or
+        # /proc/, such as /dev/stdin; one given an option is a form of its own.
+        if not args:
+            admit(None, name + " reading its commands from its input, which no function records")
+        elif args[0].startswith("-"):
+            admit(None, name + " " + args[0] + ", a shell given an option, a form the evaluator does not admit")
+        elif re.search(r"(^|/)(dev|proc)(/|$)", args[0]):
+            raise Refused(name + " " + args[0] + ", a script under /dev/ or /proc/, which reads its commands from a stream no function records")
+        elif not SCRIPT_PATH.fullmatch(args[0]) or ".." in args[0].split("/"):
+            # A script path is a file of this tree: a literal path, or one under $IOC_EVID,
+            # the committed evidence directory, ending in .sh. Any other variable could
+            # name a stream, so a path it builds is refused rather than read as written.
+            raise Refused(name + " " + args[0] + ", a script path that is no literal file and not under $IOC_EVID")
+        else:
+            admit(name + " running a script file")
+    elif name == "printf":
+        # printf -v assigns a variable, and a format that is not a literal word can expand
+        # to -v, so the format is a literal word, read as written, that starts with no -.
+        if args and args[0].startswith("-v"):
+            raise Refused("printf " + args[0] + ", which assigns a variable rather than printing")
+        if not args:
+            raise Refused("printf with no format, a form the evaluator does not admit")
+        if args[0].startswith("-") or "$" in args[0] or SUBST_WORD in args[0] or "`" in args[0]:
+            shown = "the output of a substitution" if SUBST_WORD in args[0] else args[0]
+            raise Refused("printf " + shown + ", a format that is no literal word or starts with -, which could make printf assign a variable")
+        for a in args:
+            if NAME_RE.fullmatch(a) and reserved(a):
+                raise Refused("printf " + a + ", an argument that is " + a + ", a name the gate records with")
+    elif name == "xargs":
+        # xargs exits non-zero when the program it runs does, so its own record reads the
+        # program. That program and its arguments are held to every rule a command word
+        # and its arguments are, and the program is named by a bare word ADMITTED holds.
+        options, j = xargs_program(args)
+        for option in options:
+            admit("xargs " + option)
+        if j == len(args):
+            admit(None, "xargs with no program, which runs echo, a form the evaluator does not admit")
+        if ASSIGNMENT.match(args[j]):
+            raise Refused("xargs " + args[j] + ", an assignment xargs would run as a program's name")
+        inner, _ = classify_word(args[j:])
+        if inner[0] != "program":
+            raise Refused("xargs " + args[j] + ", a program xargs runs that is no plain program")
+        check_program(inner[1], args[j + 1:])
+        admit("xargs running a program")
+    elif name == "uv" and args and args[0].startswith("-"):
+        # An option before the subcommand could stand before run, which runs a program.
+        raise Refused("uv " + args[0] + ", an option of uv before its subcommand the evaluator does not admit")
+    elif name == "uv" and args and args[0] == "run":
+        # uv run exits with the status of the program it runs. Its options are read by
+        # uv_run_program from UV_RUN_OPTIONS and any other is refused by name, since which
+        # word is the program rests on them; the program is held with its arguments to
+        # every rule above, and is one UV_RUN_PROGRAMS holds.
+        rest = args[1:]
+        options, j = uv_run_program(rest)
+        for option, _ in options:
+            admit("uv run " + option)
+        if j >= len(rest):
+            raise Refused("uv run with no program, a form the evaluator does not admit")
+        program = rest[j]
+        check_program(program, rest[j + 1:])
+        admit("uv run " + program if program in UV_RUN_PROGRAMS else None,
+              "uv run " + program + ", a program uv run runs that the evaluator does not admit")
+
+
+def check_simple(words):
+    # The programs a simple command runs, each by its class; refuses the forms whose
+    # program the evaluator would not see, and an argument that touches a name the gate
+    # records with.
+    cls, i = classify_word(words)
+    for word in words[i + 1:]:
+        refuse_touch(word, "an argument")
+    if cls[0] == "program":
+        check_program(cls[1], words[i + 1:])
+    return [cls]
+
+
+def final_stage(element):
+    # The simple command whose status an element exits with.
+    if element[0] == "simple":
+        return element
+    body = element[1]
+    if not body:
+        return ("simple", ["true"])
+    return final_stage(body[-1][-1])
+
+
+def classify(command, depth=0):
+    # ("admitted", programs, stages) or ("refused", reason) for one command. Each form it
+    # admits is admitted through admit, which records it in USED.
+    if depth > 3:
+        return ("refused", "a command nested too deep")
+    try:
+        # Every $ form of the command is read first, quotes respected, and admitted only
+        # when ADMITTED holds its key.
+        for key, spelling in dollar_forms(command):
+            admit(key, "the expansion " + spelling + ", a $ form the evaluator does not admit")
+        inner_programs = []
+        for start, _, code in substitutions(command):
+            # Process substitution runs its code beside the row, so a failure in it lands
+            # after the row is read; an arithmetic expansion is no command. No row uses either.
+            if command[start] in "<>":
+                raise Refused("a process substitution " + command[start] + "( ), whose code runs beside the row and ends after it is read")
+            if command.startswith("$((", start):
+                raise Refused("an arithmetic expansion $(( )), a form the evaluator does not admit")
+            if command[start] == "$":
+                admit("command substitution in a word")
+            else:
+                admit(None, "a substitution written with backticks, a form the evaluator does not admit")
+            inner = classify(code, depth + 1)
+            if inner[0] == "refused":
+                return inner
+            # A substitution's programs run like any other, so each is wrapped and recorded.
+            inner_programs += inner[1]
+        tokens = tokenize(without_substitutions(command))
+        if tokens is None:
+            return ("refused", "a command the evaluator cannot split into words")
+        parser = Parser(tokens)
+        pipelines = parser.parse_list()
+        if parser.peek()[0] != "end":
+            raise Refused("the word " + parser.peek()[1] + " the evaluator does not admit there")
+        programs = list(inner_programs)
+        for _, words in parser.commands:
+            programs += check_simple(words)
+    except Refused as why:
+        return ("refused", str(why))
+    stages = []
+    if pipelines:
+        for element in pipelines[-1]:
+            _, words = final_stage(element)
+            stages.append(" ".join(words))
+    return ("admitted", programs, stages)
+
+
+# Each mode that reads rows reads the rows the gate's one parse of claims.jsonl read, one
+# JSON object per line, each id a string and each command a string, so no line here is one
+# it cannot read.
+if sys.argv[-1] == "load":
+    # Reads nothing: the gate starts the reader once this way before it reads any row, so
+    # that a reader that cannot load is told from one that stopped on a row.
+    pass
+elif sys.argv[-1] == "environments":
+    # Reads the rows of claims.jsonl on stdin and prints <id><TAB><label> for each
+    # environment of ENVIRONMENTS a row's command installs into, which the gate checks
+    # after the row.
+    for line in sys.stdin:
+        row = json.loads(line)
+        TARGETS.clear()
+        read_command(row.get("command") or "")
+        for label in sorted(TARGETS):
+            print(row.get("id", "?") + "\t" + label)
+elif sys.argv[-1] == "stages":
+    result = classify(sys.stdin.read())
+    if result[0] == "refused":
+        print("UNSPLIT")
+    else:
+        for stage in result[2]:
+            print(stage)
+elif sys.argv[-1] == "names":
+    result = classify(sys.stdin.read())
+    if result[0] == "refused":
+        print("UNREAD\t" + result[1])
+    else:
+        for kind in sorted({k for k in result[1] if k[0] == "program"}):
+            print(kind[1])
+elif sys.argv[-1] == "admitted":
+    # Reads the rows of claims.jsonl on stdin and classifies the command of each row that
+    # carries one. Prints REFUSED<TAB><id><TAB><why> for each row it refuses, then one line
+    # per entry of ADMITTED, in its order, FORM<TAB><key><TAB><rows that use it><TAB><what
+    # it is>, then one line per name no row may touch, RESERVED<TAB><name><TAB><what it is>.
+    counts = {key: 0 for key in ADMITTED}
+    for line in sys.stdin:
+        row = json.loads(line)
+        if not row.get("command"):
+            continue
+        USED.clear()
+        result = classify(row["command"])
+        if result[0] == "refused":
+            print("REFUSED\t" + row.get("id", "?") + "\t" + result[1])
+            continue
+        for key in USED:
+            counts[key] += 1
+    for key, what in ADMITTED.items():
+        print("FORM\t%s\t%d\t%s" % (key, counts[key], what))
+    for name, what in RESERVED.items():
+        print("RESERVED\t%s\t%s" % (name, what))
+else:
+    for line in sys.stdin:
+        row = json.loads(line)
+        for what in read_command(row.get("command") or ""):
+            print(row.get("id", "?") + "\t" + what)
+PYREADER
+}
+
+unpinned_installs() {
+    # The install reader reader_load loaded, which reads each lock a command names from this
+    # tree's evidence/, LOCKS_DIR, which reader_py writes into it, over the rows of the one
+    # parse.
+    claims | python3 "$READER" installs
+}
+
+# reader_load; builds the reader of command text from env.sh once per run, into READER
+# under this run's scratch, and starts it once with nothing to read. A reader that cannot
+# load, because env.sh did not load or python3 cannot start it, is a mode that cannot run.
+# Every reader of a command runs this one file once it has loaded: the classifier of
+# --admitted, the environments and the installs of --replay (unpinned_installs), and the
+# names and the stages each row is run and read by (run_recorded, failed_read). It reads
+# only rows the one parse read, so a reader that then stops on one is a failure of the
+# gate, which its caller fails by name.
+READER="$RUN_SCRATCH/reader.py"
+reader_load() {
+    [ -s "$READER" ] && return 0
+    env_functions || cannot_run gate " --$MODE: env.sh, which holds the variables and the lock reader the install reader is built from, did not load."
+    reader_py >"$READER.part" || cannot_run gate " --$MODE: the install reader could not be built from env.sh."
+    python3 "$READER.part" load </dev/null >/dev/null 2>"$READER.err" ||
+        cannot_run gate " --$MODE: the install reader cannot load: $(tail -1 "$READER.err" | head -c 240)"
+    mv "$READER.part" "$READER"
+}
+
+# environment_stamps; one line per environment of env.sh's IOC_ENV_FROZEN that exists, its
+# label and the time its site-packages last changed, which an install changes. Read before
+# and after each row, it finds an install the reader cannot see, such as one inside a
+# script the row runs.
+environment_stamps() {
+    local label
+    for label in $(ioc_env_frozen_labels); do
+        ioc_env_frozen_entry "$label" && [ -n "$IOC_ENV_ENTRY_DIR" ] || continue
+        set -- "$IOC_ENV_ENTRY_DIR"/lib/python*/site-packages
+        [ -d "$1" ] && printf '%s %s\n' "$label" "$(stat -c %y "$1")"
+    done
+}
+
+# check_environments <id> <label>...; checks what each environment holds after the row
+# <id> installed into it, by env.sh's ioc_env_frozen, and fails install-pinned for each
+# refusal it prints, naming the row, the environment, the package, its version and the
+# lock. ioc_env_frozen prints a refusal whenever it ends non-zero. It returns non-zero
+# when one fails.
+check_environments() {
+    local id="$1" label out kind text status=0
+    shift
+    for label in "$@"; do
+        out="$(ioc_env_frozen "$label" "$EVIDENCE/evidence")" && continue
+        status=1
+        while IFS=$'\t' read -r kind text; do
+            [ "$kind" = REFUSED ] || continue
+            fail install-pinned "$id installed into $label, and what $label holds after it is refused: $text"
+        done <<<"$out"
+    done
+    return "$status"
+}
+
+# ---------------------------------------------------------------- --admitted
+
+# admitted_line <form> <rows> <what it is>; one line of the table of admitted forms, as the
+# header above run_recorded holds it after its "#   ".
+admitted_line() { printf '%-31s %4s  %s' "$1" "$2" "$3"; }
+# reserved_line <name> <what it is>; one line of the header's list of reserved names.
+reserved_line() { printf '%-37s %s' "$1" "$2"; }
+
+# mode_admitted; the audit of ADMITTED. It runs the classifier over the command of every
+# row of claims.jsonl, through the one table the classifier admits by, and prints one line
+# per entry with the number of rows that use it. It fails an entry no row uses, a row the
+# classifier refuses, and a line of the header's table that differs from the one measured.
+# It fails as well a header list of reserved names that differs from the reader's, which
+# the reader builds from PROGRAM_VARIABLES, RUNNER_PREFIXES and env.sh's IOC_ENV_ENFORCED,
+# and a name the runner or the shims record with that starts with none of RUNNER_PREFIXES,
+# which no row would be kept from touching. The one parse comes first, and a line it reads
+# no row of fails admitted-rows; a reader that cannot load is a mode that cannot run, and
+# one that loaded and then stopped fails admitted-rows by name (the header).
+mode_admitted() {
+    local kind a b c line measured=() header=() reserved=() refused=0 differ=0 unused=0
+    local table="$RUN_SCRATCH/admitted"
+    claims_judge admitted-rows || refused=1
+    reader_load
+    claims | python3 "$READER" admitted >"$table" 2>"$table.err" || {
+        refused=$((refused + 1))
+        fail admitted-rows "the classifier stopped before its end, so what it printed is no reading of the rows: $(tail -1 "$table.err" | head -c 240)"
+    }
+    while IFS=$'\t' read -r kind a b c; do
+        case "$kind" in
+        REFUSED)
+            refused=$((refused + 1))
+            fail admitted-rows "the row $a is refused: $b"
+            ;;
+        FORM)
+            line="$(admitted_line "$a" "$b" "$c")"
+            measured+=("$line")
+            if [ "$b" -eq 0 ]; then
+                unused=$((unused + 1))
+                fail admitted-form "$a is used by no row of claims.jsonl, so the classifier admits a form nothing checks it against: $line"
+            else
+                printf '  %s\n' "$line"
+            fi
+            ;;
+        RESERVED)
+            reserved+=("$(reserved_line "$a" "$b")")
+            ;;
+        esac
+    done <"$table"
+    [ "${#measured[@]}" -gt 0 ] && [ "$unused" -eq 0 ] &&
+        pass admitted-form "every one of the ${#measured[@]} entries of ADMITTED, listed above with the rows that use each, is used by a row"
+    if [ "${#measured[@]}" -eq 0 ]; then
+        fail admitted-rows "the classifier printed no table, so no row was read"
+    elif [ "$refused" -eq 0 ]; then
+        pass admitted-rows "every line of claims.jsonl is a row the one parse reads, and the classifier refuses no row that carries a command"
+    fi
+
+    # The header's table: the lines after its column names, down to the first comment line
+    # that is no line of it.
+    mapfile -t header < <(awk '/^#   form +rows  what it is$/ { on = 1; next } on && !/^#   / { exit } on { sub(/^#   /, ""); print }' "${BASH_SOURCE[0]}")
+    for line in "${measured[@]}"; do
+        printf '%s\n' "${header[@]}" | grep -qxF -- "$line" && continue
+        differ=1
+        fail admitted-header "the header's table above run_recorded lacks the measured line: $line"
+    done
+    for line in "${header[@]}"; do
+        printf '%s\n' "${measured[@]}" | grep -qxF -- "$line" && continue
+        differ=1
+        fail admitted-header "the header's table above run_recorded holds a line --admitted does not measure: $line"
+    done
+    if [ "$differ" -eq 0 ] && [ "$(printf '%s\n' "${header[@]}")" != "$(printf '%s\n' "${measured[@]}")" ]; then
+        differ=1
+        fail admitted-header "the header's table above run_recorded holds the measured lines in another order or number than ADMITTED"
+    fi
+    [ "$differ" -eq 0 ] && pass admitted-header "the header's table above run_recorded is the table --admitted measures, line for line"
+
+    # admitted-reserved has two parts, and its one verdict follows both: the header's list
+    # of reserved names, read as its table is, and the names the runner and the shims
+    # record with.
+    local reserved_ok=1
+    mapfile -t header < <(awk '/^#   reserved name +what it is$/ { on = 1; next } on && !/^#   / { exit } on { sub(/^#   /, ""); print }' "${BASH_SOURCE[0]}")
+    if [ "${#reserved[@]}" -eq 0 ] || [ "$(printf '%s\n' "${header[@]}")" != "$(printf '%s\n' "${reserved[@]}")" ]; then
+        reserved_ok=0
+        fail admitted-reserved "the header's list of reserved names above run_recorded is not the reader's, which reads: $(printf '%s; ' "${reserved[@]}")"
+    fi
+    local name prefix stray=""
+    while IFS= read -r name; do
+        for prefix in $RUNNER_PREFIXES; do
+            [[ "$name" == "$prefix"* ]] && continue 2
+        done
+        stray="$stray $name"
+    done < <(declare -f run_recorded program_shims | grep -oE '\b__[A-Za-z][A-Za-z0-9_]*' | sort -u)
+    if [ -n "$stray" ]; then
+        reserved_ok=0
+        fail admitted-reserved "the runner or the shims record with a name no prefix of RUNNER_PREFIXES reserves:$stray"
+    fi
+    [ "$reserved_ok" -eq 1 ] &&
+        pass admitted-reserved "the header's list of reserved names above run_recorded is the one the reader reserves ($(printf '%s\n' "${reserved[@]}" | awk '{ printf "%s%s", sep, $1; sep = ", " }')), and every name the runner and the shims record with starts with one of RUNNER_PREFIXES ($RUNNER_PREFIXES)"
+    return 0
+}
+
+mode_replay() {
+    local work="$RUN_SCRATCH/replay" unread_rows=0
+    mkdir -p "$work"
+    # The one parse of claims.jsonl comes first, before any environment is built or any
+    # reader starts: a line that is no row fails claim-form, and every read below reads
+    # only the rows it read, env.sh's reads of claims.jsonl among them (IOC_ENV_CLAIMS).
+    claims_judge claim-form || unread_rows=1
+    local IOC_ENV_CLAIMS="$CLAIMS_ROWS"
+    # Two rows that judge one claim of a record under check are compared from those rows
+    # alone, before anything below can stop the mode, so a disagreement is reported
+    # however the rest of the run goes.
+    claim_marks_judge
+    # The rows env.sh reads a value from are judged here too, before env.sh builds anything
+    # (the header's "The one parse of claims.jsonl"): a row env.sh would read wrong, or
+    # whose pin is not the value its predicate records, fails claim-form by name, and the
+    # mode stops there (evidence_stops), so no assertion after it is judged against an
+    # environment built from evidence that is wrong, and none is put down to the
+    # environment. The run then ends exit 1 by that FAIL.
+    if [ "${IOC_NO_ENV:-0}" != 1 ]; then
+        env_functions || cannot_run gate " --replay: env.sh, which names the values it reads from claims.jsonl, did not load."
+        env_rows_judge claim-form ||
+            evidence_stops "the evidence stops --replay at claim-form: env.sh builds what the recorded commands read from the rows it reads a value from, and claim-form failed on one of them, so env.sh builds nothing and no recorded command runs"
+    fi
+    # The scratch of the rows, each row's output and its own empty TMPDIR, is under the
+    # run's scratch, which the EXIT trap removes however the run ends, and this function
+    # removes it at its end too. env.sh clones the three repositories and the deployment
+    # repository at the commits sources.json pins, so nothing clones them here.
+    # The GitHub header files are written first, then the deployment repository is read by
+    # the name GitHub gives it, which IOC_DEPLOYMENT_REPO then holds for env.sh and every row
+    # (deployment_repository_read), then the private repository a row reads is read with git
+    # (private_repository_read), and then the budget is read, all before the live inputs
+    # below and before the environment is prepared, so a run that cannot carry GitHub's
+    # reads refuses at once rather than after count.py's read of the feed or an install, and
+    # a refused repository is named whatever the budget. The header files are the ones
+    # env.sh's read of the review corpus and the recorded curls of GitHub's REST API send,
+    # written under this run's scratch before env.sh is sourced and again before a row when
+    # they are old (github_headers_fresh), and the budget is read with the one of
+    # cybermonklabs/legion, so it is the token's budget when there is a token
+    # (github_budget). The self-test's fixture builds nothing with env.sh, so it writes them
+    # only when one of its rows sends one, as check.test.sh's cases 117 to 119 plant, and
+    # reads no budget.
+    if [ "${IOC_NO_ENV:-0}" != 1 ] || claims | grep -qF 'IOC_GITHUB_AUTH_'; then
+        github_headers
+    fi
+    deployment_repository_read
+    private_repository_read
+    github_budget
+    # The live inputs of the assertions below, read before any of them judges and before
+    # env.sh prepares anything: the two records under check, whose copies every row that
+    # reads a record reads too, so env.sh reads neither again (record_load), the
+    # judgement, which count-zero-premise reads, and the count of our own failures, taken
+    # again by coordination/count.py over the feed of its window, which count-reruns,
+    # count-class and count-denominator read (count_load).
+    local label IOC_ENV_RECORDS_READ=1
+    for label in $(jq -r '.records_under_check[].label' "$EVIDENCE/sources.json"); do
+        record_load "$label"
+    done
+    judgement_load
+    count_load
+    prepare_env
+    # The header file every recorded curl of the Dispatch API reads. The prerequisites read
+    # that DISPATCH_TOKEN_FILE names a readable file; a header that still cannot be written
+    # leaves it unset, and those rows then fail on the read they could not make.
+    IOC_DISPATCH_HEADER="$(dispatch_header)" && export IOC_DISPATCH_HEADER
+
+    local kinds='project-code our-code behaviour published absence quotation'
+    local marks='verified false unverified not-externally-checkable supported unsupported unreleased'
+    local bad_form="$unread_rows" bad_mark=0 bad_predicate=0 ran=0 command_failures="" absence_failures="" bad_quotation=0
+    local row id kind mark command expect environments installs stamps changed frozen_failures=""
+    # The environments each row installs into, as the install reader reads its command;
+    # each is checked after the row, beside any whose site-packages changed while it ran.
+    # A reader that cannot load cannot run the mode; one that loaded and then stopped
+    # fails install-pinned, since which environment a row installs into is then unread.
+    reader_load
+    environments="$(claims | python3 "$READER" environments 2>"$work/environments.err")" || {
+        frozen_failures="$frozen_failures reader"
+        fail install-pinned "the install reader stopped before its end, so which environment each row installs into is unread: $(tail -1 "$work/environments.err" | head -c 240)"
+    }
+    # The loop reads the rows from a file, since a program that fed it through a pipe would
+    # wait on the loop's reading as long as every row runs, past its own bound (the header's
+    # "Every child the gate waits on ends"), and on descriptor 3, which each row's command
+    # runs with closed, so that nothing the loop runs can read the rows it has not reached yet
+    # from its input.
+    claims >"$work/rows"
+    while IFS= read -r -u 3 row; do
+        id="$(printf '%s' "$row" | jq -r '.id')"
+        kind="$(printf '%s' "$row" | jq -r '.kind // ""')"
+        mark="$(printf '%s' "$row" | jq -r '.mark // ""')"
+        case " $kinds " in *" $kind "*) ;; *)
+            bad_form=$((bad_form + 1))
+            fail claim-form "$id carries the kind '$kind', which is none of the five forms"
+            ;;
+        esac
+        case " $marks " in *" $mark "*) ;; *)
+            bad_mark=$((bad_mark + 1))
+            fail claim-mark "$id carries the mark '$mark', which its requirement does not fix"
+            ;;
+        esac
+        expect="$(printf '%s' "$row" | jq -c '.expect // empty')"
+        if [ -n "$expect" ] && [ "$(printf '%s' "$expect" | jq 'if type == "object" then ([keys[] | select(. != "exit")] | length) + (if has("exit") and length == 1 then 1 else 0 end) else 0 end')" != 1 ]; then
+            bad_predicate=$((bad_predicate + 1))
+            fail predicate-form "$id carries $(printf '%s' "$expect" | jq -r 'if type == "object" then (keys | join(" and ")) else "no key" end') in one expect, and a row is held to exactly one predicate over its output, which an exit status may stand beside: $expect"
+        elif [ -n "$expect" ] && predicate_is_a_sentence "$expect"; then
+            bad_predicate=$((bad_predicate + 1))
+            fail predicate-form "$id carries $IOC_PREDICATE_WHY: $expect"
+        fi
+        if [ "$kind" = quotation ]; then
+            printf '%s' "$row" | jq -e '.evidence.marked // empty' >/dev/null ||
+                {
+                    bad_quotation=$((bad_quotation + 1))
+                    fail quotation-marked "$id quotes a project's prose and is not marked a claim of the project"
+                }
+        fi
+        command="$(printf '%s' "$row" | jq -r '.command // ""')"
+        [ -n "$command" ] || continue
+        if [ -z "$expect" ]; then
+            # A command with nothing to meet is a command nobody reads: the gate would run
+            # it and compare nothing, so a recorded output the command no longer prints
+            # would pass.
+            bad_predicate=$((bad_predicate + 1))
+            fail predicate-form "$id carries a command and no predicate, so nothing of its output is read"
+            continue
+        fi
+        ran=$((ran + 1))
+        # A row's install is no build of env.sh's: env.sh's stamp of each environment the
+        # row installs into goes before the row runs, and that of each whose site-packages
+        # changed while it ran goes after, so the next run builds each again rather than
+        # reuse what a killed install left (the header's "Nothing a killed run leaves is
+        # trusted").
+        installs="$(printf '%s\n' "$environments" | awk -F '\t' -v id="$id" '$1 == id { print $2 }')"
+        for label in $installs; do
+            ioc_env_unstamp "$label"
+        done
+        stamps="$(environment_stamps)"
+        # The GitHub header files are written again when they are old, before the row and
+        # never inside its command (the header's "The GitHub tokens stand on no command line").
+        github_headers_fresh
+        run_recorded "$command" "$work/$id.out" "$id" 3<&-
+        changed="$({
+            printf '%s\n' "$installs"
+            diff <(printf '%s\n' "$stamps") <(environment_stamps) | awk '$1 == ">" { print $2 }'
+        } | sort -u)"
+        for label in $changed; do
+            ioc_env_unstamp "$label"
+        done
+        # shellcheck disable=SC2086
+        [ -z "$changed" ] || check_environments "$id" $changed || frozen_failures="$frozen_failures $id"
+        # A program the evaluator cannot record fails the row whatever its kind and its
+        # predicate, since no status of it would be read.
+        if [ -s "$work/$id.out.unread" ]; then
+            if [ "$kind" = absence ]; then
+                absence_failures="$absence_failures $id"
+                fail absence-still-empty "$id runs $(head -1 "$work/$id.out.unread"), so its search is no reading the evaluator can make"
+            else
+                command_failures="$command_failures $id"
+                fail replay-command "$id runs $(head -1 "$work/$id.out.unread"), so its status is no reading the evaluator can make"
+            fi
+            continue
+        fi
+        # A row's failed read of a live source, GitHub or Dispatch, is read by source_answer
+        # before it judges the row, an absence search's as every other: a read that got no
+        # answer, a server error, a rate limit or an answer about the reader's credential is
+        # no verdict on the deliverable, and the mode cannot run, of the kind source, since
+        # only the source's answer about the record judges the row.
+        if [ "$kind" = absence ]; then
+            if failed_read "$work/$id.out"; then
+                source_answer "$id" "$work/$id.out"
+                [ -z "$IOC_SOURCE_STOP" ] || cannot_run source " --replay now: $IOC_SOURCE_STOP"
+                absence_failures="$absence_failures $id"
+                fail absence-still-empty "$id searched a corpus this run never read: $IOC_FAILED_READ${IOC_SOURCE_ANSWER:+, and $IOC_SOURCE_ANSWER}, so the search found nothing because nothing was read"
+                continue
+            fi
+            if grep -q '[^[:space:]]' "$work/$id.out"; then
+                if [ -n "$expect" ] && evaluate "$expect" "$work/$id.out"; then
+                    :
+                else
+                    absence_failures="$absence_failures $id"
+                    fail absence-still-empty "$id searched again and found something: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
+                fi
+            fi
+            continue
+        fi
+        # A read that failed anywhere in the row leaves its output no reading of what the
+        # row claims, whatever that output still meets: a traceback has enough lines for a
+        # bound. A row whose predicate is an exit status claims the failure itself. A failed
+        # read of a live source is read by source_answer, as above, and the row's line names
+        # what the source answered.
+        if failed_read "$work/$id.out"; then
+            source_answer "$id" "$work/$id.out"
+            [ -z "$IOC_SOURCE_STOP" ] || cannot_run source " --replay now: $IOC_SOURCE_STOP"
+            command_failures="$command_failures $id"
+            fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ${IOC_SOURCE_ANSWER:+, and $IOC_SOURCE_ANSWER}, so its output is no reading of what the row claims"
+            continue
+        fi
+        IOC_BOUND_READ=""
+        if ! evaluate "$expect" "$work/$id.out"; then
+            command_failures="$command_failures $id"
+            fail replay-command "$id ran '$command' and its output does not meet $expect${IOC_BOUND_READ:+ (the bound read $IOC_BOUND_READ)}: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
+        fi
+    done 3<"$work/rows"
+
+    # unpinned_installs runs the reader reader_load loaded above, so one that stops here
+    # stopped on a row the one parse read, a failure of the gate and no mode that cannot run.
+    local unpinned unpinned_id unpinned_what
+    unpinned="$(unpinned_installs 2>"$work/installs.err")" || {
+        frozen_failures="$frozen_failures reader"
+        fail install-pinned "the install reader stopped before its end, so what a row installs is unread: $(tail -1 "$work/installs.err" | head -c 240)"
+    }
+    while IFS=$'\t' read -r unpinned_id unpinned_what; do
+        [ -n "$unpinned_id" ] || continue
+        fail install-pinned "$unpinned_id runs '$unpinned_what': a package with no version, or read from no hashed lock, installs whatever release or file the index holds now, and a form this reader cannot read is refused rather than passed"
+    done <<<"$unpinned"
+    [ -z "$unpinned" ] && [ -z "$frozen_failures" ] && pass install-pinned "every package a recorded command installs or runs names its version and is read from a committed hashed lock, or is a local path built under a build constraint, and so does every build backend, and every environment a row installed into holds only packages its lock holds at their version and packages its pinned clone builds"
+
+    # None of these passes on no input: a claims.jsonl with no row, no command, no
+    # quotation or no absence search to read fails the assertion over it by name.
+    local rows quotations absences
+    rows="$(claims | wc -l)"
+    quotations="$(claims | jq -c 'select(.kind=="quotation")' | wc -l)"
+    absences="$(claims | jq -c 'select(.kind=="absence" and (.command // "") != "")' | wc -l)"
+    [ "$rows" -gt 0 ] || { bad_form=$((bad_form + 1)) && fail claim-form "claims.jsonl holds no row, so no claim is judged"; }
+    [ "$rows" -gt 0 ] || { bad_mark=$((bad_mark + 1)) && fail claim-mark "claims.jsonl holds no row, so no mark is judged"; }
+    [ "$ran" -gt 0 ] || { bad_predicate=$((bad_predicate + 1)) && fail predicate-form "no row of claims.jsonl carries a command and a predicate, so no predicate is judged"; }
+    [ "$quotations" -gt 0 ] || { bad_quotation=$((bad_quotation + 1)) && fail quotation-marked "claims.jsonl holds no quotation, though the authors' account is quoted, so no mark of one is judged"; }
+    [ "$ran" -gt 0 ] || { command_failures="$command_failures none" && fail replay-command "no recorded command ran, so nothing was replayed"; }
+    [ "$absences" -gt 0 ] || { absence_failures="$absence_failures none" && fail absence-still-empty "claims.jsonl holds no absence search, so none is read again"; }
+    [ "$bad_form" -eq 0 ] && pass claim-form "every claim of $rows carries one of the five forms"
+    [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim of $rows carries a mark its requirement fixes"
+    [ "$bad_predicate" -eq 0 ] && pass predicate-form "every one of the $ran rows with a command carries exactly one predicate, and each is a bound, a set membership or an exit status"
+    [ "$bad_quotation" -eq 0 ] && pass quotation-marked "every one of the $quotations quotations is marked a claim of the project and not of its code"
+    [ -z "$command_failures" ] && pass replay-command "$ran recorded commands ran again, no read inside one failed, and each met the predicate its row carries"
+    [ -z "$absence_failures" ] && pass absence-still-empty "every one of the $absences absence searches still finds nothing"
+
+    # The id list is read by three of the assertions below and built once here.
+    claims | jq -r '.id' | sort -u >"$work/ids"
+    replay_citation_rows "$work/ids"
+    replay_mas_lab "$work/ids"
+    replay_interview "$work/ids"
+    replay_our_data
+    replay_count
+    rm -rf "$work"
+}
+
+replay_citation_rows() {
+    # replay_citation_rows <id file>; the ids of claims.jsonl, one per line. The expected
+    # set is committed: the rows of claims.jsonl whose id is a citation of a record under
+    # check, <label>-<number>. Each citation the record carries has such a row, each such
+    # row is a citation the record carries, and a label with no such row is a failure, so
+    # a record read as nothing, or a set of rows taken out, is no pass.
+    local ids="$1" work="$RUN_SCRATCH/citation-rows" label missing=0 total=0 cid
+    mkdir -p "$work"
+    if [ "$(jq '.records_under_check | length' "$EVIDENCE/sources.json")" -eq 0 ]; then
+        missing=$((missing + 1))
+        fail citation-row "sources.json names no record under check, so no citation is checked"
+    fi
+    for label in $(jq -r '.records_under_check[].label' "$EVIDENCE/sources.json"); do
+        record_text "$label" >"$work/record-$label.md"
+        python3 "$EVIDENCE/citations.py" extract --input "$work/record-$label.md" --label "$label" >"$work/cit-$label.jsonl" || {
+            missing=$((missing + 1))
+            fail citation-row "citations.py could not read the record labelled $label"
+            continue
+        }
+        jq -r '.cid' "$work/cit-$label.jsonl" | sort -u >"$work/cids-$label"
+        grep -E "^$label-[0-9]+\$" "$ids" | sort -u >"$work/rows-$label" || true
+        if [ ! -s "$work/rows-$label" ]; then
+            missing=$((missing + 1))
+            fail citation-row "claims.jsonl carries no row of a citation of the record labelled $label, so nothing of it is checked"
+            continue
+        fi
+        while IFS= read -r cid; do
+            missing=$((missing + 1))
+            fail citation-row "the citation $cid of the record labelled $label has no row with a mark"
+        done < <(comm -23 "$work/cids-$label" "$work/rows-$label")
+        while IFS= read -r cid; do
+            missing=$((missing + 1))
+            fail citation-row "the row $cid is no citation the record labelled $label carries as it was read now"
+        done < <(comm -13 "$work/cids-$label" "$work/rows-$label")
+        total=$((total + $(wc -l <"$work/rows-$label")))
+    done
+    [ "$missing" -eq 0 ] && pass citation-row "each of the $total rows of claims.jsonl that cite a record under check is a citation the record carries, and each citation it carries has its row"
+    rm -rf "$work"
+}
+
+replay_mas_lab() {
+    # replay_mas_lab <id file>; the ids of claims.jsonl, one per line.
+    local ids="$1" commit missing=0 directory
+    commit="$(jq -r '.repositories[] | select(.name=="mas-lab") | .commit' "$EVIDENCE/sources.json")"
+    for directory in library-standard ctl runtime library-eval library-telemetry library-kg; do
+        if [ ! -s "$EVIDENCE/mas-lab/$directory.md" ]; then
+            missing=$((missing + 1))
+            fail mas-lab-directory "the directory $directory of mas-lab has no evidence file"
+            continue
+        fi
+        # The commit is read as a whole token (whole_token), never inside a longer run of
+        # hexadecimal digits.
+        grep -qP -- "$(whole_token "$commit")" "$EVIDENCE/mas-lab/$directory.md" || {
+            missing=$((missing + 1))
+            fail mas-lab-directory "the evidence file of $directory does not name the clone commit $commit"
+        }
+    done
+    [ "$missing" -eq 0 ] && pass mas-lab-directory "each of the six named directories of mas-lab has an evidence file at the clone commit"
+
+    # A question is answered once, in one evidence file: the evidence's shape allows one
+    # answer to each, so a second line holding the question, in another file or in the same
+    # one, is a defect of the evidence, and fails, naming each file that holds it and how
+    # many times. A reader of the first file grep -rl lists (head -1) left a second answer
+    # unread, and which file it read was the file system's order. The one answer runs from
+    # the line that holds the question to the next line starting "## ", and names its
+    # evidence when it cites at least one claim id of a row of claims.jsonl.
+    local unanswered=0 question holders count file
+    for question in \
+        "Question 1: can its specification format express Legion's phase workflow?" \
+        "Question 2: could its experiment harness measure whether a change to a role's prompt or skill made Legion better?" \
+        "Question 3: what its boundary enforcement does that our refusals do not"; do
+        holders="$(grep -rcF -- "$question" "$EVIDENCE/mas-lab/" 2>/dev/null | grep -v ':0$' | sort)"
+        count="$(printf '%s\n' "$holders" | awk -F: 'NF { n += $NF } END { print n + 0 }')"
+        if [ "$count" -eq 0 ]; then
+            unanswered=$((unanswered + 1))
+            fail mas-lab-question "no evidence file answers: $question"
+            continue
+        elif [ "$count" -gt 1 ]; then
+            unanswered=$((unanswered + 1))
+            fail mas-lab-question "'$question' stands on $count lines of the evidence files of mas-lab, $(printf '%s\n' "$holders" | sed 's#^.*/##; s/:\([0-9]*\)$/ (\1)/' | paste -sd, - | sed 's/,/, /g'), and a question is answered once, in one file"
+            continue
+        fi
+        file="${holders%:*}"
+        local named=0 cid
+        for cid in $(sed -n "/$(printf '%s' "$question" | sed 's/[][\.*^$\/]/\\&/g')/,/^## /p" "$file" | grep -o '\[[a-z0-9-]*\]' | tr -d '[]' | sort -u); do
+            grep -qx "$cid" "$ids" && named=1
+        done
+        [ "$named" -eq 1 ] || {
+            unanswered=$((unanswered + 1))
+            fail mas-lab-question "the answer to '$question' in ${file##*/} names no row of claims.jsonl"
+        }
+    done
+    [ "$unanswered" -eq 0 ] && pass mas-lab-question "each of the three questions is answered once, in one evidence file, and the answer names its evidence"
+}
+
+replay_interview() {
+    # replay_interview <id file>; the ids of claims.jsonl, one per line.
+    local ids="$1" missing=0 id
+    for id in i-scope-triggers i-three-tiers i-skills-drop-in; do
+        grep -qx "$id" "$ids" || {
+            missing=$((missing + 1))
+            fail interview-fixed-row "the row $id, which the specification fixes, is missing"
+        }
+    done
+    local measurements
+    measurements="$(grep -c '^i-measure-' "$ids" || true)"
+    [ "${measurements:-0}" -ge 1 ] || {
+        missing=$((missing + 1))
+        fail interview-fixed-row "no row records a measurement the interview states"
+    }
+    [ "$missing" -eq 0 ] && pass interview-fixed-row "the four rows the specification fixes are present, with $measurements measurement rows"
+}
+
+replay_our_data() {
+    # The three tests against our own records the specification names, each a file of
+    # tests/; a test whose file is missing fails, so an empty directory is no pass. R7 gives
+    # each candidate one test against our own records, and a test names its input, so a
+    # file's input is read from every line that carries the Input label, never from the
+    # first alone (grep -m1), which passed a second Input line naming a fixture of the
+    # project. A file with no Input line names no input, and a file with more than one
+    # names more inputs than its one test has: it fails, naming the file and the count, and
+    # none of its lines is taken for the input, rather than each line being held to the
+    # rule below, which would pass a test naming two records of ours as its input. The one
+    # Input line is held to a record of ours: a Dispatch key or a commit, and no fixture.
+    local bad=0 file name input count
+    for name in concord scope mas-lab; do
+        file="$EVIDENCE/tests/$name.md"
+        [ -s "$file" ] || {
+            bad=$((bad + 1))
+            fail our-data-input "the test $name against our own records has no file tests/$name.md"
+            continue
+        }
+        count="$(grep -c '^Input:' "$file" || true)"
+        if [ "${count:-0}" -eq 0 ]; then
+            bad=$((bad + 1))
+            fail our-data-input "${file##*/} names no input"
+            continue
+        elif [ "$count" -gt 1 ]; then
+            bad=$((bad + 1))
+            fail our-data-input "${file##*/} carries $count Input lines, and a test against our own records names one input, so none of them is read as its input: $(grep '^Input:' "$file" | paste -sd' ' - | head -c 240)"
+            continue
+        fi
+        input="$(grep '^Input:' "$file")"
+        if ! printf '%s' "$input" | grep -qE 'dispatch://[A-Z]+-[0-9]+|[0-9a-f]{40}'; then
+            bad=$((bad + 1))
+            fail our-data-input "${file##*/} names an input that is neither a Dispatch key nor a commit of ours: $input"
+        fi
+        if printf '%s' "$input" | grep -qE 'tests/fixtures|/fixtures/|golden'; then
+            bad=$((bad + 1))
+            fail our-data-input "${file##*/} drives a fixture of the project rather than a record of ours: $input"
+        fi
+    done
+    [ "$bad" -eq 0 ] && pass our-data-input "each test against our own records names one input, on one Input line, and it is the Dispatch key or the commit that input came from"
+}
+
+# The count of our own failures, taken again. coordination/count.py is the walker that
+# took the count and printed evidence/count.json, the count this tree commits: it reads
+# window.json beside it and the feed of that window from Dispatch, at DISPATCH_URL with
+# the bearer DISPATCH_TOKEN_FILE names, and it reads every row, the issue tree and the
+# cited authors as they stood at the window's end (the header's pinned-read rule), so a
+# later run prints the count again, and --replay holds it to that.
+#
+# count_load; runs count.py once per run, before any assertion judges, through live_read,
+# into this run's scratch. count.py raises on a read that fails, an HTTP error status or
+# an address that does not answer, past the two retries it gives a document version, and
+# prints its count only after its last read, so such a read leaves a non-zero status and
+# nothing on stdout, which is the feed not answering: the mode cannot run, exit 2, or
+# exit 1 after a FAIL, by the precedence of the header, and no assertion over the count
+# is judged. Its reason is the last line of count.py's traceback, the error it raised,
+# which count_run hands live_read in place of the frames above it. count.py runs by the
+# rule of the header's "Every child the gate waits on ends", under BOUND_COUNT. A count.py
+# the machine ended by a signal, as the pod's memory guard ends one with SIGKILL, or that
+# its bound ended, made no read that failed: count_run writes "check.sh stop environment:
+# coordination/count.py was ended by signal N (SIGNAME), so the count was not taken again,
+# and no read of Dispatch failed", or "... was ended by its bound of N s, M s after it
+# started, so ...", as the first line of its stderr, and live_read ends the mode cannot
+# run, of the kind environment, with that line, never as Dispatch not answering. A
+# document version the deployment no longer holds is no failed read: count.py counts it as
+# unreadable, and the count it prints then differs. A count.py that is not there is not
+# run, and count-reruns fails naming it. The run took 721 s against Dispatch on 2026-11-18
+# and 904 s on 2026-11-21 (BOUND_COUNT).
+count_load() {
+    [ -f "$EVIDENCE/coordination/count.py" ] || return 0
+    live_read "Dispatch, the feed of the count's window" "$RUN_SCRATCH/count-rerun.json" count_run || :
+}
+# count_run; runs count.py by bounded_run, its stderr into the trace, so the first line of
+# count_run's stderr is the line it writes.
+count_run() {
+    bounded_run "$BOUND_COUNT" python3 "$EVIDENCE/coordination/count.py" 2>"$RUN_SCRATCH/count-rerun.trace" && return 0
+    case "$BOUND_ENDED" in
+    signal*)
+        printf 'check.sh stop environment: coordination/count.py was ended by %s, so the count was not taken again, and no read of Dispatch failed\n' "$BOUND_ENDED" >&2
+        ;;
+    ?*)
+        printf 'check.sh stop environment: coordination/count.py was ended by %s, %s s after it started, so the count was not taken again, and no read of Dispatch failed\n' "$BOUND_ENDED" "$BOUND_TOOK" >&2
+        ;;
+    *) tail -1 "$RUN_SCRATCH/count-rerun.trace" >&2 ;;
+    esac
+    return 1
+}
+
+# replay_count; the assertions over the count, count-reruns first. What count.py printed
+# again is one JSON object, and each of its figures equals evidence/count.json's, key for
+# key, but one: feed.events_read is the number of rows of the whole feed count.py read,
+# from the first row to the newest at its run, since it walks the feed to its end to find
+# the window's rows, so it grows with the feed and is no figure of the window. It is not
+# compared, and the PASS line prints both of its values, so a reader sees it move; every
+# other figure of feed, the first and the last event of the window, is compared. A key
+# that differs is named, and for classes, denominator_records_read and instances so are
+# its two values. count-class and count-denominator read the same object beside
+# count.md; a count.py that is not there, or one that printed no JSON object, fails them
+# too, since their part over the count taken again then reads nothing.
+replay_count() {
+    local window="$EVIDENCE/coordination/window.json" count="$EVIDENCE/coordination/count.md"
+    local committed="$EVIDENCE/evidence/count.json" rerun="$RUN_SCRATCH/count-rerun.json"
+    local reran="" differed=0 over differs key now then
+    if [ ! -f "$EVIDENCE/coordination/count.py" ]; then
+        differed=$((differed + 1))
+        fail count-reruns "coordination/count.py, the walker that took the count, is missing, so the count is not taken again"
+    elif jq -se 'length == 1 and (.[0] | type) == "object"' "$rerun" >/dev/null 2>&1; then
+        reran="$rerun"
+    else
+        differed=$((differed + 1))
+        fail count-reruns "coordination/count.py ran again and printed no one JSON object: $(head -c 160 "$rerun" 2>/dev/null | tr '\n' ' ')"
+    fi
+    if [ ! -f "$committed" ]; then
+        differed=$((differed + 1))
+        fail count-reruns "evidence/count.json, the count this tree commits, is missing, so nothing holds what coordination/count.py prints"
+    elif ! jq -se 'length == 1 and (.[0] | type) == "object"' "$committed" >/dev/null 2>&1; then
+        differed=$((differed + 1))
+        fail count-reruns "evidence/count.json, the count this tree commits, is not one JSON object"
+    elif [ -n "$reran" ]; then
+        over="$(jq -r 'if (.window.from | type) == "string" and (.window.to | type) == "string" then "the window \(.window.from) to \(.window.to)" else empty end' "$reran" 2>/dev/null)"
+        [ -n "$over" ] || over="a window it does not name"
+        differs="$(jq -rn --slurpfile now "$reran" --slurpfile then "$committed" '
+            def figures: if (.feed | type) == "object" then .feed |= del(.events_read) else . end;
+            ($now[0] | figures) as $a | ($then[0] | figures) as $b
+            | (($b | keys_unsorted) + (($a | keys_unsorted) - ($b | keys_unsorted)))[] as $k
+            | select(($a | has($k)) != ($b | has($k)) or $a[$k] != $b[$k])
+            | "\($k)\t\(if $a | has($k) then $a[$k] | tojson else "nothing" end)\t\(if $b | has($k) then $b[$k] | tojson else "nothing" end)"' 2>&1)" || {
+            differed=$((differed + 1))
+            fail count-reruns "the comparison of what coordination/count.py printed with evidence/count.json stopped before its end: $(printf '%s' "$differs" | tail -1 | head -c 240)"
+            differs=""
+        }
+        while IFS=$'\t' read -r key now then; do
+            [ -n "$key" ] || continue
+            differed=$((differed + 1))
+            case "$key" in
+            classes | denominator_records_read | instances)
+                fail count-reruns "coordination/count.py ran again over $over and printed $key $now, and evidence/count.json holds $key $then"
+                ;;
+            *)
+                fail count-reruns "coordination/count.py ran again over $over and printed a count that differs from evidence/count.json at $key"
+                ;;
+            esac
+        done <<<"$differs"
+        [ "$differed" -eq 0 ] && pass count-reruns "coordination/count.py ran again over $over and printed evidence/count.json again, every figure equal but feed.events_read, the rows of the whole feed it read up to the run, which is no figure of the window: $(jq -r '.feed.events_read // "none"' "$reran" 2>/dev/null) now, $(jq -r '.feed.events_read // "none"' "$committed" 2>/dev/null) in evidence/count.json"
+    fi
+
+    if [ ! -s "$window" ]; then
+        fail count-window "the count names no window"
+        return
+    fi
+    local from to
+    from="$(jq -r '.from // ""' "$window")"
+    to="$(jq -r '.to // ""' "$window")"
+    if printf '%s%s' "$from" "$to" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.*[0-9]{4}-[0-9]{2}-[0-9]{2}T'; then
+        pass count-window "the window is two instants, $from to $to"
+    else
+        fail count-window "the window is not two instants: from='$from' to='$to'"
+    fi
+
+    local classes='across sessions|between an agent and a person|inside one tree'
+    local missing=0 class
+    IFS='|' read -ra names <<<"$classes"
+    for class in "${names[@]}"; do
+        grep -qF "$class" "$count" || {
+            missing=$((missing + 1))
+            fail count-class "the count does not carry the class '$class'"
+        }
+    done
+    # The classes of the count taken again are the three keys count.py writes for them.
+    if [ -z "$reran" ]; then
+        missing=$((missing + 1))
+        fail count-class "the count was not taken again into one JSON object, so the classes coordination/count.py prints are unread"
+    elif ! jq -e '(.classes | type) == "object" and (.classes | keys) == ["across_sessions", "between_an_agent_and_a_person", "inside_one_tree"]' "$reran" >/dev/null 2>&1; then
+        missing=$((missing + 1))
+        fail count-class "the count coordination/count.py printed again carries the classes $(jq -c '.classes | if type == "object" then keys else . end' "$reran" 2>/dev/null), not exactly between_an_agent_and_a_person, inside_one_tree and across_sessions"
+    fi
+    [ "$missing" -eq 0 ] && pass count-class "the classes are the three the specification names, in count.md and in the count coordination/count.py printed again"
+
+    # Each class is a row of the table: the class, what it counted, and the denominator,
+    # which is the records read in the window.
+    local without=0 zero_classes="" class_row instances denominator
+    # Every row of the table is read, not only the three classes: a sample counted beside
+    # them carries a denominator of its own and may read zero over it.
+    for class in "${names[@]}"; do
+        grep -qE "^\| *$class *\| *[0-9]+ *\| *[0-9]+ *\|" "$count" || {
+            without=$((without + 1))
+            fail count-denominator "the class '$class' carries no row of the table with a count and a denominator"
+        }
+    done
+    while IFS= read -r class_row; do
+        class="$(printf '%s' "$class_row" | awk -F'|' '{gsub(/^ +| +$/,"",$2); print $2}')"
+        instances="$(printf '%s' "$class_row" | awk -F'|' '{gsub(/[^0-9]/,"",$3); print $3}')"
+        denominator="$(printf '%s' "$class_row" | awk -F'|' '{gsub(/[^0-9]/,"",$4); print $4}')"
+        if [ "$instances" -eq 0 ] && [ "$denominator" -gt 0 ]; then
+            zero_classes="$zero_classes '$class'"
+        fi
+    done < <(grep -E "^\|[^|]+\| *[0-9]+ *\| *[0-9]+ *\|" "$count")
+    # The count taken again carries its denominator, the comments and messages it read in
+    # the window, a whole number above zero.
+    if [ -z "$reran" ]; then
+        without=$((without + 1))
+        fail count-denominator "the count was not taken again into one JSON object, so the denominator coordination/count.py prints is unread"
+    elif ! jq -e '.denominator_records_read | type == "number" and . > 0 and . == floor' "$reran" >/dev/null 2>&1; then
+        without=$((without + 1))
+        fail count-denominator "the count coordination/count.py printed again reads $(jq -c '.denominator_records_read' "$reran" 2>/dev/null) records, which is no whole number above zero"
+    fi
+    [ "$without" -eq 0 ] && pass count-denominator "every class carries its denominator, the records read in the window, and the count coordination/count.py printed again read $(jq -r '.denominator_records_read' "$reran") records"
+
+    local judgement
+    judgement="$(judgement_text)"
+    if [ -z "$zero_classes" ]; then
+        pass count-zero-premise "no class reads zero over a denominator above zero"
+    elif printf '%s' "$judgement" | grep -qF 'premise that failed'; then
+        pass count-zero-premise "the class$zero_classes reads zero and the front page states that premise as failed"
+    else
+        fail count-zero-premise "the class$zero_classes reads zero over a denominator above zero and the front page states no failed premise"
+    fi
+}
+
+# ---------------------------------------------------------------- --shape
+
+# The floor and the cap of candidate pages the specification fixes. Every assertion over
+# the pages is held to the floor, so a judgement with fewer pages, or none, is no pass of
+# them.
+PAGE_FLOOR=3
+PAGE_CAP=7
+
+page_blocks() {
+    # Prints each candidate page's heading and its body, separated by a form feed, from
+    # the judgement judgement_load read.
+    judgement_text | awk '/^### /{if(n)printf "\f"; n=1} n{print} END{if(n)printf "\f"}'
+}
+
+# cost_read; reads one candidate page on stdin and prints the cost of its first step from
+# its Cost line, the one reader --shape and --landed both read a Cost by, as one line:
+#   low<TAB><figure>     one engineer-day or less, as "1 engineer-day" or "half an engineer-day"
+#   high<TAB><figure>    more than one engineer-day
+#   unread<TAB><line>    the line names engineer-days with a figure this reader cannot read
+#   none<TAB><line>      the line names no engineer-days, as "about half a day" or "4 hours"
+# and nothing for a page with no Cost line. A caller holds the page to one Cost line first,
+# and this reads the first. R9 gives a page "the cost in engineer-days", so the unit is
+# "engineer-day" or "engineer-days", its two words joined by a hyphen, an en dash, an em
+# dash or spaces, in any case, and the cost is the figure before its first occurrence on
+# the line, the whole word that stands just before it, a word being what spaces and tabs
+# bound, read after the line's en and em dashes are read as hyphens: in digits, a whole
+# number or one with a decimal point, as "1 engineer-day", "about 1 engineer-day, by our
+# estimate", "0.5 engineer-days" or "about 2 engineer-days", or in words, one engineer-day
+# or less as "one", "a" or "an", or "half a" and "half an", and above one as "two" to
+# "ten". Unlike citation-figures, which reads no number word because a row prints digits
+# and a word names no spelling to look for in its output, this reader reads them: the Cost
+# line is the page's own estimate, which no row prints, and R12's test of one engineer-day
+# reads it, so a figure written in words is the same cost and a reader of digits alone
+# would pass "about one engineer-day" as no cost. Any other word before the unit, as in "a
+# few engineer-days", "eleven engineer-days" or "the engineer-days a converter took", is a
+# figure this reader cannot read, and so is a word of digits with anything else in it: "1/2
+# engineer-day" is not read as its last digits, 2, nor "0,5 engineer-days" as 5. --shape
+# and --landed fail such a figure, naming the page and the line and the forms COST_FIGURES
+# says, rather than count it as no cost or as the digits it holds.
+cost_read() {
+    awk '
+        /\*\*Cost:\*\*/ {
+            said = $0
+            sub(/^.*\*\*Cost:\*\*[ \t]*/, "", said)
+            line = said
+            gsub("\342\200\223|\342\200\224", "-", line)
+            line = tolower(line)
+            if (!match(line, /engineer(-|[ \t]+)days?/)) { print "none\t" substr(said, 1, 240); exit }
+            unit = substr(line, RSTART, RLENGTH)
+            figure = substr(line, 1, RSTART - 1)
+            n = split(figure, word, " ")
+            last = (n > 0) ? word[n] : ""
+            before = (n > 1) ? word[n - 1] : ""
+            if (last ~ /^[0-9]+(\.[0-9]+)?$/) value = last + 0
+            else if ((last == "a" || last == "an") && before == "half") { value = 0.5; last = "half " last }
+            else if (last == "one" || last == "a" || last == "an") value = 1
+            else if (last != "" && index(" two three four five six seven eight nine ten ", " " last " ")) value = 2
+            else { print "unread\t" substr(said, 1, 240); exit }
+            print ((value <= 1) ? "low" : "high") "\t" last " " unit
+            exit
+        }'
+}
+
+# The forms of a figure cost_read reads, which --shape and --landed name when they fail one
+# it cannot read.
+COST_FIGURES="a cost is the one word just before engineer-day, written in digits, a whole number or one with a decimal point, as 2 or 0.5, or as one, a, an, half a, half an, or two to ten"
+
+mode_shape() {
+    local text
+    judgement_load
+    text="$(judgement_text)"
+    local pages
+    pages="$(printf '%s\n' "$text" | grep -c '^### ' || true)"
+    if [ "${pages:-0}" -ge "$PAGE_FLOOR" ] && [ "${pages:-0}" -le "$PAGE_CAP" ]; then
+        pass page-count "the judgement carries $pages candidate pages, between the floor of $PAGE_FLOOR and the cap of $PAGE_CAP"
+    else
+        fail page-count "the judgement carries ${pages:-0} candidate pages, and the floor is $PAGE_FLOOR and the cap is $PAGE_CAP"
+    fi
+
+    local front
+    front="$(printf '%s\n' "$text" | sed -n '1,/^### /p')"
+    local missing=0 part
+    for part in "## The ranking" "## The one thing to do first" "## Where the authors' account and the checked reading differ" "## What was deliberately not read"; do
+        printf '%s\n' "$front" | grep -qF "$part" || {
+            missing=$((missing + 1))
+            fail front-page "the front page has no section '$part'"
+        }
+    done
+    [ "$missing" -eq 0 ] && pass front-page "the front page carries the ranking, the one thing to do first, the paragraph on where the two accounts differ, and what was not read"
+
+    local parts=("**Question:**" "**Proposal:**" "**Verdict:**" "**Landing component:**" "**Cost:**" "**Deletes or replaces:**" "**Cost of reversing it:**" "**Default if nobody answers:**" "**Owner:**" "**Node model:**" "**Test:**")
+    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict verdicts landing count cost read_pages=0
+    while IFS= read -r -d $'\f' page; do
+        read_pages=$((read_pages + 1))
+        title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
+        # R9 gives a page each of its eleven fields once, so each field is read whole, from
+        # every line of the page that carries its label: a page short of one fails, and so
+        # does a page that carries one on more than one line, since a reader of its first
+        # line alone (grep -m1) passes a second line that names another value.
+        for part in "${parts[@]}"; do
+            count="$(printf '%s\n' "$page" | grep -cF -- "$part" || true)"
+            if [ "${count:-0}" -eq 0 ]; then
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' is short of $part"
+            elif [ "$count" -gt 1 ]; then
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' carries $part on $count lines, and R9 gives a page each of its fields once"
+            fi
+        done
+        # R9 gives a page "the cost in engineer-days", so a page's one Cost line names
+        # engineer-days with a figure cost_read reads; a Cost line that names none, as "about
+        # half a day" or "about 4 hours", fails, naming the page and the line, since its cost
+        # is no cost R12's test of one engineer-day can read, and so does one whose figure
+        # cost_read cannot read, as "1/2 engineer-day" or "0,5 engineer-days", rather than
+        # pass to --landed as no cost or as the digits it holds. A page with no Cost line, or
+        # two, fails above.
+        if [ "$(printf '%s\n' "$page" | grep -cF -- '**Cost:**')" -eq 1 ]; then
+            cost="$(printf '%s\n' "$page" | cost_read)"
+            case "${cost%%$'\t'*}" in
+            none)
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' gives its cost in no engineer-days, '${cost#*$'\t'}' on its Cost line, and R9 gives a page its cost in engineer-days"
+                ;;
+            unread)
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' gives its first step a cost whose figure this gate cannot read, '${cost#*$'\t'}' on its Cost line: $COST_FIGURES"
+                ;;
+            esac
+        fi
+        # R9 names the landing component as Legion, Envoy or Dispatch, so the value of every
+        # line that carries the field, after its label and with the whitespace around it and
+        # a trailing full stop trimmed, is exactly one of the three; a page with no such line
+        # is short of it above, and a page with two carries it twice.
+        while IFS= read -r landing; do
+            landing="$(printf '%s\n' "$landing" | sed 's/.*\*\*Landing component:\*\*//; s/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//')"
+            case "$landing" in
+            Legion | Envoy | Dispatch) ;;
+            *)
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' names the landing component '$landing', which is none of Legion, Envoy and Dispatch"
+                ;;
+            esac
+        done < <(printf '%s\n' "$page" | grep -F '**Landing component:**')
+        # The verdict field is read whole as well, every line that carries its label: the
+        # verdict is the first word after the label on its first line, and a verdict word
+        # anywhere else in the field, on that line or on another, is a second verdict.
+        verdicts="$(printf '%s\n' "$page" | grep -F '**Verdict:**' | sed 's/.*\*\*Verdict:\*\*[[:space:]]*//' | tr -d '`')"
+        verdict="$(printf '%s\n' "$verdicts" | awk '{print $1; exit}')"
+        case "$verdict" in
+        vendor | depend | port | reject) ;;
+        *)
+            bad_verdict=$((bad_verdict + 1))
+            fail page-verdict "the page '$title' carries the verdict word '$verdict', which is none of vendor, depend, port and reject"
+            ;;
+        esac
+        local others=0 word
+        for word in vendor depend port reject; do
+            [ "$word" = "$verdict" ] && continue
+            printf '%s\n' "$verdicts" | grep -qw "$word" && others=$((others + 1))
+        done
+        [ "$others" -eq 0 ] || {
+            bad_verdict=$((bad_verdict + 1))
+            fail page-verdict "the page '$title' carries more than one verdict word in its Verdict field"
+        }
+        case "$verdict" in
+        depend)
+            printf '%s\n' "$page" | grep -qiE 'upstream (owner|stops)' || {
+                bad_commitment=$((bad_commitment + 1))
+                fail verdict-commitment "the depend page '$title' names no upstream owner and what we do when upstream stops"
+            }
+            ;;
+        port)
+            printf '%s\n' "$page" | grep -qiE 'the change in our code' || {
+                bad_commitment=$((bad_commitment + 1))
+                fail verdict-commitment "the port page '$title' names no change in our code"
+            }
+            ;;
+        reject)
+            printf '%s\n' "$page" | grep -qiE 'rejected because|the reason it is rejected' || {
+                bad_commitment=$((bad_commitment + 1))
+                fail verdict-commitment "the reject page '$title' names no reason"
+            }
+            ;;
+        esac
+        printf '%s\n' "$page" | grep -qE 'INFRA-1098/spec v[0-9]+' && printf '%s\n' "$page" | grep -qE 'INFRA-1253/spec v[0-9]+' || {
+            bad_parts=$((bad_parts + 1))
+            fail page-parts "the page '$title' does not name the versions of the two node-model specifications it was read against"
+        }
+    done < <(page_blocks)
+    if [ "$read_pages" -lt "$PAGE_FLOOR" ]; then
+        bad_parts=$((bad_parts + 1)) bad_verdict=$((bad_verdict + 1)) bad_commitment=$((bad_commitment + 1))
+        fail page-parts "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so its pages' parts are not judged"
+        fail page-verdict "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so its verdicts are not judged"
+        fail verdict-commitment "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so what its verdicts commit us to is not judged"
+    fi
+    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries each of its eleven parts on exactly one line, its cost in engineer-days with a figure the gate reads, and its landing component is Legion, Envoy or Dispatch"
+    [ "$bad_verdict" -eq 0 ] && pass page-verdict "each of the $read_pages candidate pages carries exactly one verdict word"
+    [ "$bad_commitment" -eq 0 ] && pass verdict-commitment "the verdict of each of the $read_pages candidate pages names what it commits us to"
+
+    shape_fixed_pages "$text"
+    shape_questions "$text"
+    shape_triage "$text"
+    shape_order
+}
+
+shape_fixed_pages() {
+    local text="$1" bad=0
+    # Each fixed page is found by the words its design is written in, and it answers that
+    # design by name.
+    local envoy definitions execution
+    envoy="$(printf '%s\n' "$text" | awk '/^### /{p=0} /^### .*[Ee]nvoy/{p=1} p')"
+    definitions="$(printf '%s\n' "$text" | awk '/^### /{p=0} /^### .*[Dd]efinitions/{p=1} p')"
+    execution="$(printf '%s\n' "$text" | awk '/^### /{p=0} /^### .*[Ee]xecution record/{p=1} p')"
+    if [ -z "$envoy" ] || ! printf '%s' "$envoy" | grep -qF 'quotes'; then
+        bad=$((bad + 1))
+        fail fixed-page "the page on structured metadata on an Envoy message does not answer the quotes field by name"
+    fi
+    if [ -z "$definitions" ] || ! printf '%s' "$definitions" | grep -qiE 'unit and its scale as values|unit and scale as values'; then
+        bad=$((bad + 1))
+        fail fixed-page "the page on one definitions record does not answer the typed definition carrying its unit and its scale as values"
+    fi
+    if [ -z "$execution" ] || ! printf '%s' "$execution" | grep -qF 'gen_ai.'; then
+        bad=$((bad + 1))
+        fail fixed-page "the page on an execution record does not answer the OpenTelemetry gen_ai names"
+    fi
+    [ "$bad" -eq 0 ] && pass fixed-page "the three pages the specification fixes exist and each answers by name the design already written for it"
+}
+
+shape_questions() {
+    local text="$1" bad=0 number numbered line word
+    local listed
+    listed="$(grep -c '^## [0-9]*\.' "$EVIDENCE/questions.md" || true)"
+    [ "${listed:-0}" -gt 0 ] || {
+        bad=$((bad + 1))
+        fail question-list "the question list carries no question, so no page is held to one"
+    }
+    # A page's question is the whole word after the label on its Question line, a word being
+    # what spaces and tabs bound: Q and its number, as Q2, with at most one full stop, comma,
+    # colon or semicolon after it. A word with anything else in it, as Q1/Q3 or Q1.5, names
+    # no question this gate reads, and fails, naming the line and the word, rather than being
+    # read as the number it starts with.
+    local question_word='^Q([0-9]+)[.,:;]?$'
+    while IFS= read -r numbered; do
+        line="${numbered#*:}"
+        word="${line#*\*\*Question:\*\*}"
+        word="${word#"${word%%[![:space:]]*}"}"
+        word="${word%%[[:space:]]*}"
+        if ! [[ "$word" =~ $question_word ]]; then
+            bad=$((bad + 1))
+            fail question-list "line ${numbered%%:*} of the judgement names its question as '$word', which is no question this gate reads: a question is Q and its number, one word of its own after the label, as Q2, and the line reads '${line:0:240}'"
+            continue
+        fi
+        number="${BASH_REMATCH[1]}"
+        grep -qE "^## $number\." "$EVIDENCE/questions.md" || {
+            bad=$((bad + 1))
+            fail question-list "a page answers question $number, which the question list does not carry"
+        }
+    done < <(printf '%s\n' "$text" | grep -nF -- '**Question:**')
+    for number in $(seq 1 "${listed:-0}"); do
+        printf '%s\n' "$text" | grep -qE "\*\*Question:\*\*[[:space:]]*Q$number\b" && continue
+        printf '%s\n' "$text" | grep -qE "[Qq]uestion $number( |,|\.|:)" || {
+            bad=$((bad + 1))
+            fail question-list "question $number is answered by no page and named on no front page"
+        }
+    done
+    [ "$bad" -eq 0 ] && pass question-list "every page's question is on the list of $listed, and every question is answered by a page or named on the front page"
+}
+
+shape_triage() {
+    local text="$1" bad=0 name
+    for name in mas-lab scope cognition-protocols ioc-project.github.io dot-github; do
+        [ -s "$EVIDENCE/triage/$name.md" ] || {
+            bad=$((bad + 1))
+            fail triage-named "the triage of $name is missing"
+            continue
+        }
+    done
+    # Every repository the triage dropped is named on the front page with its reason.
+    local front
+    front="$(printf '%s\n' "$text" | sed -n '1,/^### /p')"
+    for name in mas-lab scope cognition-protocols ioc-project.github.io dot-github; do
+        printf '%s' "$front" | grep -qF "$name" || {
+            bad=$((bad + 1))
+            fail triage-named "the front page does not name the repository $name"
+        }
+    done
+    [ "$bad" -eq 0 ] && pass triage-named "every repository of the organisation is triaged and named on the front page"
+}
+
+shape_order() {
+    local questions_commit history
+    history="$(history_ref)"
+    questions_commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' "$history" -- docs/research/internet-of-cognition/questions.md | tail -1)"
+    if [ -z "$questions_commit" ]; then
+        fail order-of-work "no commit of this history adds the question list"
+        return
+    fi
+    local bad=0 commit path
+    # The question list lands in a commit of its own: the commit that adds it adds no
+    # other file of this directory. A tree that added the evidence beside it would pass
+    # the ancestry rule and break the order the specification fixes.
+    local beside
+    beside="$(git -C "$ROOT" show --name-only --format= "$questions_commit" | grep '^docs/research/internet-of-cognition/' | grep -v 'questions.md$' || true)"
+    if [ -n "$beside" ]; then
+        bad=$((bad + 1))
+        fail order-of-work "the commit that adds the question list adds $(printf '%s' "$beside" | tr '\n' ' ') beside it"
+    fi
+    # Each of the five deep-read directories is held to this order, and each holds at
+    # least one file in this history: a directory with none is no pass of the order.
+    local directory
+    for directory in mas-lab triage tests coordination similarity; do
+        [ -n "$(git -C "$ROOT" ls-tree -r --name-only "$history" -- "docs/research/internet-of-cognition/$directory" | head -1)" ] || {
+            bad=$((bad + 1))
+            fail order-of-work "this history holds no file of the deep-read directory $directory"
+        }
+    done
+    while IFS= read -r path; do
+        commit="$(git -C "$ROOT" log --diff-filter=A --format='%H' "$history" -- "$path" | tail -1)"
+        [ -n "$commit" ] || continue
+        [ "$commit" = "$questions_commit" ] && continue
+        git -C "$ROOT" merge-base --is-ancestor "$questions_commit" "$commit" || {
+            bad=$((bad + 1))
+            fail order-of-work "the commit that adds $path does not descend from the commit that adds the question list"
+        }
+    done < <(git -C "$ROOT" ls-tree -r --name-only "$history" -- docs/research/internet-of-cognition/mas-lab docs/research/internet-of-cognition/triage docs/research/internet-of-cognition/tests docs/research/internet-of-cognition/coordination docs/research/internet-of-cognition/similarity)
+    [ "$bad" -eq 0 ] && pass order-of-work "the commit that adds the question list is an ancestor of every commit that adds a file of the five deep-read directories"
+}
+
+# ---------------------------------------------------------------- --citations
+
+# What a cited path names, by one rule that paths_at, paths_below and every search of a
+# cited file's text (here_grep) read: a path stands for itself, every character of it as it
+# is written, and names that path and every path below it where it is a directory; a glob, a
+# path holding `*`, names each path whose elements match it, each `*`, or run of `*`, any run
+# of characters within one path element and every other character itself, and every path
+# below a directory it names, from the root where it holds a `/` and at any depth where it
+# holds none, as `*.py` names every Python file of the tree. A path below a cited path, as
+# form 7 of the symbol grammar reads a part below each directory or glob the citation names,
+# is read where that cited path is read, so below a glob holding no `/`, at any depth. So
+# `notes/a[bc].md` names that file and never notes/ab.md (case 218), `notes/*` names
+# notes/deep/x.md and `notes/**/x.md` names notes/a/x.md and never notes/a/b/x.md (case 219),
+# `*.cfg` names notes/deep/x.cfg (case 220), and `sub/tools` below `pkg*` names
+# a/pkg1/sub/tools/run.sh (case 221). The paths the commit tracks are read as git ls-tree -z
+# lists them, each ending with a NUL and none quoted, since without -z git quotes a path
+# holding a byte above 127, a `\` or a `"`, and core.quotePath=false leaves the last two
+# quoted: so docs/café.md and docs/a\b.md are read as they are written (case 223).
+
+# cited_regex <path> [<below>]; prints the extended regular expression of the paths a cited
+# path names, by the rule above, which a path the commit tracks matches whole; given <below>,
+# a path written below the cited path, of the paths <below> names under it, <below> read as
+# the cited path's own characters are and the cited path alone deciding where they are read
+# from.
+cited_regex() {
+    if [[ "$1" == *'*'* && "$1" != */* ]]; then printf '(^|/)'; else printf '^'; fi
+    printf '%s\n' "$1${2+/$2}" | sed 's/[^a-zA-Z0-9_/*-]/\\&/g; s/[*]/[^\/]*/g; s/$/(\/|$)/'
+}
+
+# here_grep <root> <commit> <-P or -E> <pattern> <path>...; returns 0 when a line of the paths
+# at the commit matches <pattern>, read by git grep with that option, and 1 when none does.
+# Each path is handed to git as a pathspec that names what the rule above names: a path by
+# git's literal magic, :(literal)<path>, so its `?`, `[` and `\` are themselves, and a glob,
+# written :(glob)<glob> as resolve_symbol holds one, by git's glob magic, its `?`, `[` and `\`
+# quoted by a `\` and each run of `*` one `*`, which git reads within one path element, once
+# as it stands and once with `/**` after it, the paths below a directory it names, each after
+# `**/` where the glob holds no `/`, at any depth.
+here_grep() {
+    local root="$1" commit="$2" how="$3" pattern="$4" path glob specs=()
+    shift 4
+    for path in "$@"; do
+        case "$path" in
+        ':(glob)'*)
+            glob="${path#':(glob)'}"
+            glob="${glob//'\'/'\\'}" glob="${glob//'['/'\['}" glob="${glob//'?'/'\?'}"
+            while [[ "$glob" == *'**'* ]]; do glob="${glob//'**'/'*'}"; done
+            case "$glob" in
+            */*) specs+=(":(glob)$glob" ":(glob)$glob/**") ;;
+            *) specs+=(":(glob)**/$glob" ":(glob)**/$glob/**") ;;
+            esac
+            ;;
+        *) specs+=(":(literal)$path") ;;
+        esac
+    done
+    git -C "$root" grep -q "$how" -- "$pattern" "$commit" -- "${specs[@]}" 2>/dev/null
+}
+
+# tree_listing <repo root> <commit>; prints the file that holds the paths the commit tracks,
+# each ending with a NUL, as git ls-tree -r -z lists them (the rule above), which paths_at,
+# paths_below and form 7 of the symbol grammar match a cited path against with grep -z. Each
+# listing is written once per run, into this run's scratch, under the sha256 of the root and
+# the commit together, since a commit one clone holds can be missing from another. git writes
+# it to <file>.part, which is renamed into place only when git exits 0, so a listing that
+# failed or was ended part way is never read, and the next reader lists the commit again. It
+# prints nothing and returns 1 when git cannot list the commit in that root. grep reads the
+# listing and the shell never does: bash reads a list split at NUL bytes from a pipe one byte
+# at a time, which took 4 s a call over a tree of 13,500 paths.
+tree_listing() {
+    local file
+    file="$(printf '%s\0%s' "$1" "$2" | sha256sum)"
+    file="$RUN_SCRATCH/tree-${file%% *}"
+    if [ ! -e "$file" ]; then
+        git -C "$1" ls-tree -r -z --name-only "$2" >"$file.part" 2>/dev/null &&
+            mv -f -- "$file.part" "$file" || return 1
+    fi
+    printf '%s' "$file"
+}
+
+# paths_at <repo root> <commit> <pathspec>
+#
+# The paths a citation names, at one commit. A citation writes a path, a directory, a
+# glob such as `*.py`, or several of those separated by a comma or by the word "and".
+# Each is read here, so a citation of a set of files resolves when the commit holds at
+# least one path of every part it names, each read by the rule above (cited_regex): so
+# `src/c++/*` names src/c++/x.h and never src/cc/x.h (case 216). Every part is matched
+# against the run's one listing of the commit (tree_listing), so the rows of a run list
+# each commit once, and a commit git cannot list, or one that tracks no path, resolves no
+# citation.
+paths_at() {
+    local root="$1" commit="$2" spec="$3" part listing
+    listing="$(tree_listing "$root" "$commit")" && [ -s "$listing" ] || return 1
+    while IFS= read -r part; do
+        part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -n "$part" ] || continue
+        part="${part%%:*}"
+        part="${part%/}"
+        # A part written in words rather than as a path names a set a reader reads, so
+        # the gate passes over it and holds the citation to the parts that are paths.
+        case "$part" in
+        *' '*) continue ;;
+        esac
+        grep -zqE "$(cited_regex "$part")" "$listing" || return 1
+    done < <(printf '%s\n' "$spec" | sed 's/ and /\n/g; s/,/\n/g')
+    # A citation whose every part is written in words, such as "20 pyproject.toml files
+    # under backend/", names a set a reader reads rather than a path, and the gate holds
+    # it to no path: every part that is a path has already been read above.
+    return 0
+}
+
+# flatten_text reads standard input and prints it with every run of space taken out,
+# including the spaces a page writes as a no-break space. Both sides of a quotation are
+# read this way, because taking the tags out of a page moves where its spaces fall.
+flatten_text() {
+    python3 -c 'import re,sys; sys.stdout.write(re.sub(r"\s+", "", sys.stdin.read()))'
+}
+
+# copy_text <path>
+#
+# The readable text of a committed copy. A page fetched from a content system is HTML, so
+# its sentences are read with the tags taken out and the runs of space collapsed; any
+# other copy is read as it stands.
+copy_text() {
+    case "$1" in
+    *.html | *.htm)
+        python3 - "$1" <<'PYTHON'
+import html, re, sys
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+# A script element is kept: a page rendered by a client framework carries its own
+# sentences inside one, and that is where a quotation of such a page is found. The
+# JSON escapes of that script are read first, so the tags written inside it as
+# \\u003cstrong\\u003e are tags here too and come out with the rest.
+raw = re.sub(r"\\+u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), raw)
+text = html.unescape(re.sub(r"(?s)<[^>]+>", " ", raw))
+print(re.sub(r"\s+", " ", text))
+PYTHON
+        ;;
+    *) cat "$1" ;;
+    esac
+}
+
+# symbol_file <repo root> <commit> <name> <path>...; prints the file a part of a symbol
+# names, read against the paths the citation names: a path among them that is the name or
+# ends with it after a slash, then the name beside one of them, in its directory or in a
+# directory it is, then, for a name that holds a `/`, a full path, the name as a path from
+# the root of the tree; a bare name is never looked for anywhere else in the tree. It prints
+# nothing and returns 1 when none of those is a file at the commit.
+symbol_file() {
+    local root="$1" commit="$2" name="$3" path dir
+    shift 3
+    for path in "$@"; do
+        case "$path" in ':(glob)'*) continue ;; esac
+        { [ "$path" = "$name" ] || [[ "$path" == */"$name" ]]; } &&
+            [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = blob ] && {
+            printf '%s' "$path"
+            return 0
+        }
+    done
+    for path in "$@"; do
+        case "$path" in ':(glob)'*) continue ;; esac
+        if [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ]; then
+            dir="$path/"
+        else
+            dir="${path%/*}/"
+            [ "$dir" = "$path/" ] && dir=""
+        fi
+        [ "$(git -C "$root" cat-file -t "$commit:$dir$name" 2>/dev/null)" = blob ] && {
+            printf '%s' "$dir$name"
+            return 0
+        }
+    done
+    [[ "$name" == */* ]] && [ "$(git -C "$root" cat-file -t "$commit:$name" 2>/dev/null)" = blob ] || return 1
+    printf '%s' "$name"
+}
+
+# paths_below <repo root> <commit> <path>...; prints each path the commit tracks that one of
+# the paths a citation names, as resolve_symbol holds them, a glob written :(glob)<glob>,
+# names by the rule above paths_at (cited_regex), the path itself or one below it, each
+# ending with a NUL, as the run's one listing of the commit (tree_listing) holds it, so that a
+# file's name is looked for where the citation points and nowhere else in the tree. It prints
+# nothing and returns 1 when no path does.
+paths_below() {
+    local root="$1" commit="$2" path regex="" listing
+    shift 2
+    for path in "$@"; do
+        regex="$regex${regex:+|}($(cited_regex "${path#':(glob)'}"))"
+    done
+    [ -n "$regex" ] || return 1
+    listing="$(tree_listing "$root" "$commit")" || return 1
+    grep -zE "$regex" "$listing"
+}
+
+# module_file <repo root> <commit> <prefix> <path>...; reads a symbol part's prefix as a
+# reference into a Python module, a file the citation names or one below a directory it
+# names, and prints <run><TAB><file>: the longest leading run of the prefix's dotted
+# components that names such a file as a module, by module_names for a path the citation
+# names that is a file and by module_below for one that is a directory. So `engine.Engine`
+# prints engine and packages/daemon/internal/api/engine.py, the components after the run
+# being names that file holds (module_held). A module is a Python file, a .py file or a .pyi
+# stub, and among the files the citation names a .py comes before a .pyi, as Python's import
+# takes the .py. Only a file at the commit counts. It prints nothing and returns 1 when no
+# run names a file, a glob naming none, or when the prefix holds an empty component or a /.
+module_file() {
+    local root="$1" commit="$2" prefix="$3" path run found files=() stubs=() dirs=() form='^[^./]+(\.[^./]+)*$'
+    shift 3
+    [[ "$prefix" =~ $form ]] || return 1
+    for path in "$@"; do
+        case "$path" in ':(glob)'*) continue ;; esac
+        case "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" in
+        blob)
+            case "$path" in
+            *.pyi) stubs+=("$path") ;;
+            *) files+=("$path") ;;
+            esac
+            ;;
+        tree) dirs+=("$path") ;;
+        esac
+    done
+    run="$prefix"
+    while :; do
+        for path in "${files[@]}" "${stubs[@]}"; do
+            module_names "$run" "$path" && printf '%s\t%s' "$run" "$path" && return 0
+        done
+        for path in "${dirs[@]}"; do
+            found="$(module_below "$root" "$commit" "$run" "$path")" && printf '%s\t%s' "$run" "$found" && return 0
+        done
+        [[ "$run" == *.* ]] || return 1
+        run="${run%.*}"
+    done
+}
+
+# module_names <run> <file>; returns 0 when the run of dotted components names the file as a
+# module, as Python names one, and 1 when it does not, by bash alone: the file is a module
+# only when its name ends with .py or .pyi, and the run ends with the file's stem, its name
+# without that extension, or, for a package's __init__.py or its __init__.pyi stub, with the
+# name of the directory it stands in, and each dotted component before that is the next
+# directory up the file's path, matched whole, from the file upward. So `engine` and
+# `api.engine` name packages/daemon/internal/api/engine.py, `pkg.mod` names pkg/mod.py while
+# `other.mod` does not, `pkg` and `a.pkg` name a/pkg/__init__.py and a/pkg/__init__.pyi, and
+# `schema` names no module of pkg/schema.json, which is no Python file.
+module_names() {
+    local run="$1" path="$2" name stem dir head
+    name="${path##*/}"
+    if [[ "$path" == */* ]]; then dir="${path%/*}"; else dir=""; fi
+    case "$name" in
+    __init__.py | __init__.pyi)
+        [ -n "$dir" ] || return 1
+        stem="${dir##*/}"
+        if [[ "$dir" == */* ]]; then dir="${dir%/*}"; else dir=""; fi
+        ;;
+    ?*.py) stem="${name%.py}" ;;
+    ?*.pyi) stem="${name%.pyi}" ;;
+    *) return 1 ;;
+    esac
+    if [ "$run" = "$stem" ]; then
+        head=""
+    elif [[ "$run" == ?*".$stem" ]]; then
+        head="${run%".$stem"}"
+    else
+        return 1
+    fi
+    while [ -n "$head" ]; do
+        [ -n "$dir" ] && [ "${head##*.}" = "${dir##*/}" ] || return 1
+        if [[ "$head" == *.* ]]; then head="${head%.*}"; else head=""; fi
+        if [[ "$dir" == */* ]]; then dir="${dir%/*}"; else dir=""; fi
+    done
+    return 0
+}
+
+# package_init <repo root> <commit> <directory>; prints the file that makes the directory a
+# package, its __init__.py, or its __init__.pyi stub where no __init__.py stands, as Python's
+# import takes the .py, and returns 1 when the commit holds neither as a file.
+package_init() {
+    local name
+    for name in __init__.py __init__.pyi; do
+        [ "$(git -C "$1" cat-file -t "$2:$3/$name" 2>/dev/null)" = blob ] || continue
+        printf '%s' "$3/$name"
+        return 0
+    done
+    return 1
+}
+
+# module_below <repo root> <commit> <run> <directory>; prints the file below a directory the
+# citation names that the run of dotted components names as a module, and returns 1 when it
+# names none. The run names every directory between that directory and the file: its
+# components are the directory's own last directories, none or more, matched whole and in
+# order, as module_names matches them, then a path below it, each component a directory,
+# ending in a module, a file named by the last component and .py or .pyi, as `core.verifier`
+# and `lib.core.verifier` name lib/core/verifier.py below lib, or in a package, a directory
+# holding __init__.py or __init__.pyi (package_init), as `core` names lib/core/__init__.py;
+# the directory's own last directories alone name its own package, as `lib` names
+# lib/__init__.py. A .py comes before a .pyi of its name, as Python's import takes the .py.
+# A file of any other extension is no module, so `core.schema` names lib/core/schema.py and
+# never lib/core/schema.json beside it, and no file where schema.json stands alone. A package
+# comes before a module of its name, as Python imports it. Only a file at the commit counts,
+# read by git ls-tree -z, whose names git does not quote, and git cat-file of
+# <commit>:<path>, which take no pathspec.
+module_below() {
+    local root="$1" commit="$2" run="$3" top="$4" comps=() up=() j i m k base last meta entry package module
+    IFS=. read -r -a comps <<<"$run"
+    IFS=/ read -r -a up <<<"$top"
+    m="${#comps[@]}" k="${#up[@]}"
+    for ((j = 0; j <= m && j <= k; j++)); do
+        for ((i = 0; i < j; i++)); do
+            [ "${comps[i]}" = "${up[k - j + i]}" ] || continue 2
+        done
+        if [ "$j" = "$m" ]; then
+            package_init "$root" "$commit" "$top" && return 0
+            continue
+        fi
+        base="$top"
+        for ((i = j; i < m - 1; i++)); do base="$base/${comps[i]}"; done
+        last="${comps[m - 1]}" package="" module=""
+        while IFS=$'\t' read -r -d '' meta entry; do
+            case "$meta" in
+            *' tree '*)
+                [ "$entry" = "$last" ] && package="$(package_init "$root" "$commit" "$base/$entry")"
+                ;;
+            *' blob '*)
+                case "$entry" in
+                "$last.py") module="$base/$entry" ;;
+                "$last.pyi") [ -n "$module" ] || module="$base/$entry" ;;
+                esac
+                ;;
+            esac
+        done < <(git -C "$root" ls-tree -z "$commit:$base" 2>/dev/null)
+        [ -n "$package$module" ] || continue
+        printf '%s' "${package:-$module}"
+        return 0
+    done
+    return 1
+}
+
+# dotted_names_held <file> <names> <root> <commit>; returns 0 when the file holds each name of
+# <names>, its dotted components in turn, as a whole token (token_held), and otherwise prints
+# the first it does not hold, an empty name among them, and returns 1.
+dotted_names_held() {
+    local path="$1" rest="$2" root="$3" commit="$4" name
+    while :; do
+        name="${rest%%.*}"
+        if [ -z "$name" ] || ! token_held "$root" "$commit" "$name" "$path"; then
+            printf '%s' "$name"
+            return 1
+        fi
+        [[ "$rest" == *.* ]] || return 0
+        rest="${rest#*.}"
+    done
+}
+
+# module_held <family> <id> <part> <run> <file> <names> <root> <commit>; holds to the file a
+# part's prefix names as the module <run> (module_file) each name after the run, <names>, its
+# dotted components in turn, the prefix's components after the run and then the local part,
+# as `Engine` and `match` after `engine` in `engine.Engine.match`: each stands in the file as
+# a whole token (dotted_names_held). It returns 0 when each does; else it fails <family>,
+# naming the row, the part, the file, the module and the first name the file does not hold,
+# an empty name among them, and returns 1.
+module_held() {
+    local family="$1" id="$2" part="$3" run="$4" path="$5" rest="$6" root="$7" commit="$8" name
+    name="$(dotted_names_held "$path" "$rest" "$root" "$commit")" && return 0
+    fail "$family" "$id cites the symbol $part, whose prefix names the file $path as the module $run, and $path does not hold the name '$name' after it as a word at $commit"
+    return 1
+}
+
+# whole_token <token>; prints the Perl-compatible regular expression that finds <token> as a
+# whole token, the one rule by which a search of a token an author wrote, a symbol, a name or
+# a word, reads it: the token's text as it stands, quoted (\Q...\E, a \E inside it written
+# \E\\E\Q), whose first character, where it is a word character, a letter, a digit or `_`
+# ([A-Za-z0-9_]), follows no word character, and whose last, where it is one, is followed by
+# none. So `matc` does not stand in `def match`, nor `TesterVerdictRequire` in
+# `TesterVerdictRequired`, while `match(` stands in `match(self)`: an end that is no word
+# character bounds the token itself.
+whole_token() {
+    local token="$1" pattern
+    pattern="\\Q${token//'\E'/'\E\\E\Q'}\\E"
+    [[ "$token" == [A-Za-z0-9_]* ]] && pattern="(?<![A-Za-z0-9_])$pattern"
+    [[ "$token" == *[A-Za-z0-9_] ]] && pattern="$pattern(?![A-Za-z0-9_])"
+    printf '%s' "$pattern"
+}
+
+# token_held <root> <commit> <token> <path>...; returns 0 when the paths at the commit hold
+# <token> as a whole token (whole_token), read by git grep -P over the paths as here_grep
+# hands them to git, and 1 when they do not.
+token_held() {
+    local root="$1" commit="$2" token="$3"
+    shift 3
+    here_grep "$root" "$commit" -P "$(whole_token "$token")" "$@"
+}
+
+# GLOB_CHAR is what a `?` of a glob of names stands for (glob_text), and a `*` any run of it,
+# the empty run among them: one letter, digit, `_`, `.` or `-`, the characters the names the
+# live rows' globs cover are written in, as GEN_AI_REQUEST_MODEL and gen_ai.usage.input_tokens
+# are.
+GLOB_CHAR='[A-Za-z0-9_.-]'
+
+# glob_text <glob>; prints the Perl-compatible regular expression that reads a glob of names
+# as the symbol grammar's form 8 does: each `*` any run of GLOB_CHAR, each `?` one GLOB_CHAR,
+# and every other character itself, quoted as whole_token quotes a token. glob_token and
+# head_line bound it.
+glob_text() {
+    local rest="$1" piece pattern=""
+    while :; do
+        piece="${rest%%[*?]*}"
+        [ -z "$piece" ] || pattern="$pattern\\Q${piece//'\E'/'\E\\E\Q'}\\E"
+        rest="${rest#"$piece"}"
+        case "$rest" in
+        '') break ;;
+        '*'*) pattern="$pattern$GLOB_CHAR*" ;;
+        *) pattern="$pattern$GLOB_CHAR" ;;
+        esac
+        rest="${rest#?}"
+    done
+    printf '%s' "$pattern"
+}
+
+# glob_token <glob>; prints the Perl-compatible regular expression that finds a name a glob of
+# names covers as a whole token, by which form 8 of the symbol grammar reads a pattern holding
+# `*` or `?` and none of `|`, `(`, `[` and `\`: the glob's text (glob_text), bounded by
+# whole_token's rule: its first character, where the glob starts with a word character, a `*`
+# or a `?`, follows no word character, and its last, where the glob ends with one, is
+# followed by none. So `GEN_AI_*` finds GEN_AI_MODEL and not GEN_AIRPORT, `gen_ai.*` finds
+# gen_ai.request.model and not gen_aix_total, `a*_total` finds a_requests_total and neither
+# ba_requests_total nor a_requests_totals, and `v?_total` finds v1_total and neither
+# v10_total nor xv1_total.
+glob_token() {
+    local glob="$1" pattern
+    pattern="$(glob_text "$glob")"
+    [[ "$glob" == [A-Za-z0-9_*?]* ]] && pattern="(?<![A-Za-z0-9_])$pattern"
+    [[ "$glob" == *[A-Za-z0-9_*?] ]] && pattern="$pattern(?![A-Za-z0-9_])"
+    printf '%s' "$pattern"
+}
+
+# head_line <head>; prints the Perl-compatible regular expression that finds a line that is a
+# table head, a part that begins with `[` and ends with `]`, by which form 8 of the symbol
+# grammar reads it: the line starts with spaces or tabs, none or more, then the head, its
+# brackets themselves and its inside read as a glob (glob_text), then spaces or tabs, none or
+# more, and nothing after them but, to the line's end, a comment that begins with `#` or `;`.
+# So `[tool.*]` finds `[tool.ruff]` and `  [tool.ruff]  # lint`, and neither `tool.x` nor
+# `[project]`; `[project]` finds `[project]`, and neither `[projects]` nor `# the [project]
+# table`.
+head_line() {
+    local inside="${1#\[}"
+    inside="${inside%\]}"
+    printf '%s' "^[ \\t]*\\[$(glob_text "$inside")\\][ \\t]*(?:[#;].*)?\\r?\$"
+}
+
+# prefix_components_held <prefix> <root> <commit> <path>...; splits a qualified name's prefix
+# into its components, each a word of letters, digits, `_` and `-`, so that `.`, `[]`, `:`,
+# `;`, a space, a quote or a bracket parts two of them, and returns 0 when each stands in the
+# paths at the commit as a whole token (token_held), a prefix of no component among them:
+# `Engine` stands in `class Engine`, and `Engin` does not. Otherwise it prints the first
+# component the paths do not hold and returns 1.
+prefix_components_held() {
+    local rest="$1" root="$2" commit="$3" component word='[A-Za-z0-9_-]+'
+    shift 3
+    while [[ "$rest" =~ $word ]]; do
+        component="${BASH_REMATCH[0]}"
+        rest="${rest#*"$component"}"
+        token_held "$root" "$commit" "$component" "$@" && continue
+        printf '%s' "$component"
+        return 1
+    done
+    return 0
+}
+
+# prefix_held <family> <id> <part> <separator> <here name> <root> <commit> <path>...; holds
+# to the paths a part that resolved only by its local part, the text after its last
+# <separator>, a colon or a dot, as `Engine.match` resolves on `match`: each component of the
+# part's prefix, the text before that separator, stands in them (prefix_components_held). It
+# returns 0 when each does; else it fails <family>, naming the row, the part and the first
+# component the paths do not hold, and returns 1.
+prefix_held() {
+    local family="$1" id="$2" part="$3" separator="$4" here_name="$5" root="$6" commit="$7" prefix component
+    shift 7
+    prefix="${part%"$separator"*}"
+    component="$(prefix_components_held "$prefix" "$root" "$commit" "$@")" && return 0
+    fail "$family" "$id cites the symbol $part, which $here_name holds only by its local part '${part##*"$separator"}', and the component '$component' of its prefix '$prefix' does not stand in it as a word at $commit: each component of the prefix of a qualified name stands in its file"
+    return 1
+}
+
+# SYMBOL_LINE_FORM is form 1 of the symbol grammar (below), a line or a line range alone,
+# after a colon or after a name and a colon: the name, the line and the range's end are its
+# second, third and fifth groups.
+SYMBOL_LINE_FORM='^(([^:[:space:]]*):)?([0-9]+)(-([0-9]+))?[]).,;:]*$'
+
+# symbol_form <part>; prints the form of the symbol grammar (below) a symbol part is written
+# in, decided by its text alone, in the grammar's order but for a table head: line, words,
+# head (a table head, which form 8 reads, decided before the forms after 2), quoted, name,
+# key, prefixed, path or pattern. It prints nothing and returns 1 for a part in none of them,
+# which resolve_symbol refuses by name (symbol_refused).
+symbol_form() {
+    local part="$1" name='[A-Za-z0-9_][A-Za-z0-9_-]*' path='[A-Za-z0-9_.@+~*/-]*/[A-Za-z0-9_.@+~*/-]*' key keys
+    key="($name(\\[[0-9]*\\])?|\"[^\"]*\")"
+    keys="$key(\\.$key)*"
+    local name_form="^$name\$" key_form="^$keys\$" prefixed_form="^($path|$keys|\\[$keys\\]):$keys\$"
+    local path_form="^$path\$" quoted_form="^(\"[^\"]*\"|'[^']*'|\`[^\`]*\`)\$"
+    if [[ "$part" =~ $SYMBOL_LINE_FORM ]]; then
+        printf line
+    elif [[ "$part" == *[[:space:]]* ]]; then
+        printf words
+    elif [[ "$part" == '['*']' ]]; then
+        printf head
+    elif [[ "$part" =~ $quoted_form ]]; then
+        printf quoted
+    elif [[ "$part" =~ $name_form ]]; then
+        printf name
+    elif [[ "$part" =~ $key_form ]]; then
+        printf key
+    elif [[ "$part" =~ $prefixed_form ]]; then
+        printf prefixed
+    elif [[ "$part" =~ $path_form ]]; then
+        printf path
+    elif [[ "$part" == *['|*?\']* ]]; then
+        printf pattern
+    else
+        return 1
+    fi
+}
+
+# symbol_refused <family> <id> <part>; fails <family> for a symbol part in no form of the
+# symbol grammar (symbol_form), naming the row and the part: one that starts with a digit as
+# no line or line range this gate reads, so it is never read as the line its first digits
+# name, and any other as no symbol form the gate reads.
+symbol_refused() {
+    case "$3" in
+    [0-9]*) fail "$1" "$2 cites $3, which starts with a digit and is no line or line range this gate reads, nor a symbol form it reads (check.sh's header, the symbol grammar): a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3" ;;
+    *) fail "$1" "$2 cites the symbol part '$3', which is not a symbol form the gate reads (check.sh's header, the symbol grammar)" ;;
+    esac
+}
+
+# The symbol grammar: every form of a symbol part --citations reads, and what each holds. This
+# is the one place this script states it; README.md, "How a cited symbol is read", lists the
+# same forms for a reader. symbol_form decides a part's form by its text alone, and
+# resolve_symbol reads the part by that form's rule alone.
+#
+# A symbol is a list of parts, split at each comma and at each "and" between spaces, each part
+# read with the space around it taken off, and an empty part skipped. Each part is read
+# against here: the paths the citation's file field names, until a part names a file, which
+# is here for that part and every part after it, as citations.py continues a bare line range
+# from the nearest file before it. A path of the file field names what the rule above
+# paths_at says it names, its characters themselves and a glob's `*` within one path element,
+# and every reading of a path, here_grep's search of the text among them, reads that same set
+# (cases 216, 218, 219, 220, 223). Text here holds is text a file of here holds as a whole
+# token (whole_token, token_held): its first character, where it is a letter, a digit or `_`,
+# follows none of those, and its last, where it is one, is followed by none, so
+# `TesterVerdictRequire` does not stand in `TesterVerdictRequired`. A file beside the paths
+# is one symbol_file finds: a path among them that is the name or ends with it after a slash,
+# then the name in the directory of one of them or in one of them that is a directory, then,
+# for a name holding `/`, a full path, the name as a path from the root of the tree; a bare
+# name is never looked for elsewhere in the tree (case 203). Below, a name is letters,
+# digits, `_` and `-`, its first character no `-`; a key is a name, a name followed by `[]`
+# or by digits in brackets, or a string in double quotes; and a key path is keys joined by
+# dots. symbol_form tries the forms in the order of their numbers, but for a table head,
+# which 8 reads: a part in neither 1 nor 2 that begins with `[` and ends with `]` is a table
+# head, whatever later form its text would also fit, so `[project.optional-dependencies]`,
+# a key path in square brackets, is a table head and no key path.
+#
+#  1. A line or a line range: digits, or two runs of digits joined by `-`, written alone,
+#     after a colon, or after a name and a colon, with any of `)`, `]`, `.`, `,`, `;` and `:`
+#     after it: `88`, `88-97`, `:188-196`, `397-404)` (cases 167, 177); `file:line` and
+#     `file:line-line`, `pr-body.md:33-34`, whose name is a file beside the paths, which
+#     becomes here (cases 139, 171); and `Symbol:line`, `askOnMessage:306`, whose name is no
+#     such file and is text here holds, or the part fails (case 192). It holds when a file of
+#     here holds that line, or the range's last line. A file's lines are numbered from 1, so
+#     a line is 1 or more and so is each end of a range: `0` and `0-3` name no line and fail,
+#     and so does a range whose end stands before its start, and one that runs past its
+#     file's end, naming the file's length. A line read against a glob or a directory names
+#     no line of a file and is a figure of the prose: it is not read.
+#  2. A part in words, any part holding a space: `the title line`,
+#     `kind: Deployment|StatefulSet|Job` (case 193). It holds as text here holds; else,
+#     holding a colon, by the readings of a prefixed name (6), which can hold it and never
+#     fail it: where the reading of 6 that applies does not hold it, the part is read on, here
+#     as it was, as when none applies, so `deploy: the replica count`, cited in a directory
+#     that holds deploy.py, is read on and not checked, as it is where no deploy.py stands
+#     (case 217); else, holding `|`, `*`, `?` or `\`, as a pattern by the rules of 8, which its
+#     text decides: a table head where it begins with `[` and ends with `]`, else an extended
+#     regular expression or a glob; else it names a part of the file a reader judges, and it
+#     is not checked, as is `[project] dependencies = []`, which holds none of those four. A
+#     path inside it, as in `skills/x/SKILL.md lines 22-23`, is not read as a path.
+#  3. A quoted string, in double quotes, single quotes or backquotes, holding no space:
+#     `'strict'` (case 194). It holds as text here holds, its quotes among it, or the part
+#     fails.
+#  4. A name, `Symbol` (cases 4, 175): text here holds, or the part fails.
+#  5. A key path that is no name, a file's name among them: `Envelope.Validate`,
+#     `engine.match`, `SKILL.md`, `scenarios[].overlays`,
+#     `project.entry-points."mas.runtime.manifest_libraries"` (case 200); a key path in
+#     square brackets is a table head (8). It is read in turn:
+#     a. holding a dot before a letter, as a file's name: a file beside the paths, which
+#        becomes here (case 195);
+#     b. as text here holds;
+#     c. holding a dot before a letter, as a file's name: a path at or below the paths the
+#        citation names, at the commit, that is the name or ends with it after a slash, and
+#        no path elsewhere in the tree (cases 196, 201);
+#     d. holding a dot, as a qualified name, by its prefix, the text before its last dot, and
+#        its local part, the text after it:
+#        - `file.ext.Symbol`, `a.go.Alpha`: a prefix that is a file beside the paths is that
+#          file, which becomes here, and the part holds when it holds the local part, or
+#          fails naming the file (cases 183, 197);
+#        - `module.symbol` and `pkg.module.symbol`, a reference into a Python module: the
+#          longest leading run of the prefix's dotted components that names a file at the
+#          commit as a module (module_file) is that file, which becomes here, and the part
+#          holds when each name after the run stands in it, the class or attribute
+#          `engine.Engine.match` writes and then the local part, or fails naming the first it
+#          does not hold (module_held). A module is a Python file alone: a .py file, a .pyi
+#          stub, a .py coming before a .pyi of its name among the files the citation names,
+#          as Python's import takes the .py, or a package's __init__.py, or its __init__.pyi
+#          stub where no __init__.py stands among the files the citation names. A file
+#          of any other extension is never read as a module, and a part whose run names only
+#          such a file is read as the next reading gives it (cases 210, 211). A run names a
+#          file the citation names when it ends with the file's stem, its name without .py or
+#          .pyi, each component before that being the next directory up, matched whole
+#          (module_names): `engine.match` and `api.engine.match` read
+#          packages/daemon/internal/api/engine.py, `other.mod.func` names no module of
+#          pkg/mod.py (cases 187, 188, 189), and `schema.load` names no module of
+#          pkg/schema.json, so it is read as a namespace and its prefix schema must stand in
+#          that file (case 211); or when it ends with the name of the directory a package's
+#          __init__.py or __init__.pyi stands in, as `pkg.func` and `a.pkg.func` read
+#          a/pkg/__init__.py (case 190) and `pkg.func` reads pkg/__init__.pyi (case 222). A
+#          run names a file below a directory the citation names when its components are that
+#          directory's own last directories, none or more, then the path below it to a module
+#          or to a package, a package before a module of its name (module_below): cited in
+#          lib, `core.verifier.verify` and `lib.core.verifier.verify` read
+#          lib/core/verifier.py, `core.setup` lib/core/__init__.py and `lib.hook`
+#          lib/__init__.py (case 191), or lib/core/__init__.pyi and lib/__init__.pyi where no
+#          __init__.py stands (case 222), and `core.schema.load` reads lib/core/schema.py and
+#          never lib/core/schema.json beside it (case 210);
+#        - `Namespace.Symbol`, any other prefix: the part holds when here holds the local part
+#          and each component of the prefix too, each a word of letters, digits, `_` and `-`
+#          (prefix_held), so `Engin.match` fails where `class Engine` and `def match` stand,
+#          naming Engin, and so does `Engine.matc` (cases 172, 174); a part that starts with a
+#          digit is never read so (below, case 215);
+#     else the part fails.
+#  6. A prefixed name, `prefix:local`, its prefix a name, a key path, a key path in square
+#     brackets or a path and its local part keys joined by dots, one or more, as
+#     `[tool.ruff]:line-length`. It holds as text here holds; else
+#     - `file:Symbol`, `spendattrs.go:SpendRoleAttribute`: a prefix that is a file beside the
+#       paths is that file, which becomes here, and the part holds when it holds the local
+#       part, or fails naming the file (case 183);
+#     - `module:attr`, the object reference `pkg.mod:func` of Python's entry points: a prefix
+#       whose run names a module, as in 5d, is that file, which becomes here, and the part
+#       holds when each name after the run, and then each of the attribute path after the
+#       colon, stands in it (cases 188, 197);
+#     - `Namespace:Symbol`, as the Turtle term `mas:sessionId`: any other prefix holds as in
+#       5d (case 197);
+#     else the part fails. Each failure here is a prefixed name's; a part in words that 6
+#     reads is read on (2).
+#  7. A path, holding `/`, of letters, digits, `_`, `.`, `-`, `@`, `+`, `~` and `*`:
+#     `protocols/accord`, `skills/`, `src/mas/library/*` (cases 198, 202). It is read in turn
+#     as a file beside the paths, which becomes here; as text here holds; as a file's name, as
+#     in 5c; and as a path, a directory or a glob the commit holds (paths_at), from the root or
+#     below a directory or a glob the citation names, by the rule above paths_at (cases 216,
+#     221); and never as a pattern over text; else the part fails.
+#  8. A pattern: a table head, a part in neither 1 nor 2 that begins with `[` and ends with
+#     `]`, and any other part holding `|`, `*`, `?` or `\`. Its text alone decides how it is
+#     read, by three rules:
+#     - a table head, as TOML and INI write one, holds only where a line of here is that head:
+#       spaces or tabs, none or more, then the head, then spaces or tabs, none or more, and
+#       nothing after them but, to the line's end, a comment that begins with `#` or `;`
+#       (head_line). Its brackets stand for themselves and are never a bracket expression,
+#       and its inside is read by the glob rule below, each `*` any run of name characters,
+#       each `?` one, and every other character itself; it is never read as text here
+#       holds. So `[tool.*]` holds where a line is `[tool.ruff]`, and neither in a file with
+#       no head under tool nor in one whose only such text is tool.x (case 208); `[project]`
+#       holds where a line is `[project]` or `  [project]  # metadata`, and neither where
+#       the only head is `[projects]` nor where `[project]` stands inside a line, as in
+#       `# the [project] table` (case 209); and `[project.optional-dependencies]` holds
+#       where a line is that head (case 200);
+#     - any other holding `|`, `(`, `[` or `\` is an extended regular expression; it holds as
+#       text here holds, or where a line of here matches it, read as its author wrote it, as
+#       grep -E reads it: `consensus|majority|quorum` (case 199); `v(1)?_total` and
+#       `v[0-9]?_total` hold in v1_total and not in vx_total, and `\bv1_total\b` holds in
+#       v1_total and not in xv1_total (case 207). One that begins with a bracket expression
+#       writes something before it or after it, as `^[a-z]*_total` or `[a-z]*_total$`, since
+#       a part that begins with `[` and ends with `]` is a table head;
+#     - any other, holding `*` or `?`, is a glob of names; it holds as text here holds, or
+#       where here holds, as a whole token, a name the glob covers (glob_token): each `*`
+#       stands for any run, the empty run among them, of letters, digits, `_`, `.` and `-`,
+#       each `?` for exactly one of them, and every other character, `.` and `_` among them,
+#       for itself; the name's first character, where the glob starts with a word character,
+#       a `*` or a `?`, follows no word character, and its last, where the glob ends with
+#       one, is followed by none, by whole_token's rule. So `GEN_AI_*` holds in GEN_AI_MODEL
+#       and not in GEN_AIRPORT, and `gen_ai.*` in gen_ai.request.model and not in
+#       gen_aix_total (case 204); `a*_total` holds in a_requests_total, and neither in
+#       ba_requests_total nor in a_requests_totals (case 205); `v?_total` holds in v1_total,
+#       and neither in v10_total nor in xv1_total (case 206);
+#     else the part fails. Any other `(` or `[` makes no part a pattern: `match(row)`,
+#     holding none of `|`, `*`, `?` and `\`, is in no form (case 200).
+#
+# A part in none of these forms, as `match(row)`, `$row` or `Engine::match`, fails by name,
+# "<id> cites the symbol part '<part>', which is not a symbol form the gate reads", and is
+# never read as text or as a form it might have meant (case 200). A part that starts with a
+# digit and is no line, as `3–9` written with a dash or `12a`, is never read as the line its
+# first digits name. In no form, it fails by name as no line or line range this gate reads
+# (case 167). In 3 to 8, every reading of its form that reads it as a file or as text here
+# holds reads it: 5a, 5b and 5c; `file:Symbol` and `module:attr` in 6; the readings of 7; the
+# three rules of 8; and `file.ext.Symbol` and `module.symbol` in 5d. So, cited in notes,
+# `2024-report.md` holds where notes/deep/r/2024-report.md stands, and `2024/` where
+# notes/2024/ does (case 212); `2024-report.md:Title`, `2024-report.md.Title`,
+# `2024_report:main` and `2024_report.main` hold where notes/2024-report.md holds Title and
+# notes/2024_report.py declares main (case 213); and `2024-*` holds where a file holds
+# 2024-11-23, and `2023|2024` where a line of it matches (case 214). A namespace reading,
+# `Namespace:Symbol` in 6 and `Namespace.Symbol` in 5d, reads the part neither as a file nor
+# as text, only each component of its prefix as a word, so it never holds such a part. Where
+# no reading of its form applies to it, the part fails by name as no line or line range this
+# gate reads: `3.14` fails so in a file that holds 3 and 14 as words and not 3.14, and holds
+# in one that holds 3.14 (case 215); a file or module reading that applies and does not hold
+# it fails naming that file, as for any part. A citation whose file field names no path, each
+# part of it written in words, as "15 pyproject.toml files under backend/", holds its symbol
+# to no file: each part in a form is not checked. A part not checked, there or in 2, is
+# written to $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with
+# its row, so that a part nothing read is never counted as checked.
+
+# resolve_symbol <id> <repo root> <commit> <pathspec> <symbol> [<family>]; reads each part of
+# a citation's symbol by the symbol grammar above and fails <family>, citation-our-code unless
+# it is given, naming the row and the part, at the first part that does not hold. It returns
+# 0 when every part holds or is not checked, and 1 after that failure.
+resolve_symbol() {
+    local id="$1" root="$2" commit="$3" file="$4" symbol="$5" family="${6:-citation-our-code}" part form
+    # The paths the citation names, each part of its file field.
+    local pathspec=()
+    local fpart
+    while IFS= read -r fpart; do
+        fpart="$(printf '%s' "$fpart" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        fpart="${fpart%%:*}"
+        fpart="${fpart%/}"
+        case "$fpart" in '' | *' '*) continue ;; esac
+        # A glob is held as :(glob)<glob>, so that a reading of a file beside the paths passes
+        # over it and here_grep and paths_below read it as the glob it is (cited_regex).
+        case "$fpart" in *'*'*) fpart=":(glob)$fpart" ;; esac
+        pathspec+=("$fpart")
+    done < <(printf '%s\n' "$file" | sed 's/ and /\n/g; s/,/\n/g')
+    # A citation whose file is written in words, such as "15 pyproject.toml files", names a
+    # set a reader reads rather than a path, and the gate holds its symbol to no file: the
+    # paths it does name were already read by paths_at. Each part in a form of the grammar is
+    # reported as not checked, and a part in none fails by name.
+    if [ "${#pathspec[@]}" -eq 0 ]; then
+        while IFS= read -r part; do
+            part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+            [ -z "$part" ] && continue
+            if ! symbol_form "$part" >/dev/null; then
+                symbol_refused "$family" "$id" "$part"
+                return 1
+            fi
+            printf '%s\t%s\n' "$id" "$part" >>"$RUN_SCRATCH/unchecked-parts"
+        done < <(printf '%s\n' "$symbol" | sed 's/ and /\n/g; s/,/\n/g')
+        return 0
+    fi
+    # here: the file each part is read against, the paths the citation names until a part
+    # names a file of its own; here_name: how a failure names it.
+    local here=("${pathspec[@]}") here_name="$file" named path lines most most_path held part_line part_end reference run rest digit listing
+    while IFS= read -r part; do
+        part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+        [ -n "$part" ] || continue
+        # A part in no form of the grammar is refused by name and read no further.
+        if ! form="$(symbol_form "$part")"; then
+            symbol_refused "$family" "$id" "$part"
+            return 1
+        fi
+        # 1. A line or a line range, alone or after a name and a colon.
+        if [ "$form" = line ]; then
+            [[ "$part" =~ $SYMBOL_LINE_FORM ]]
+            named="${BASH_REMATCH[2]}" part_line="${BASH_REMATCH[3]}" part_end="${BASH_REMATCH[5]:-${BASH_REMATCH[3]}}"
+            if [ "$part_line" -lt 1 ] || [ "$part_end" -lt 1 ]; then
+                fail "$family" "$id cites $part, which names line 0: a file's lines are numbered from 1, so a line is 1 or more and so is each end of a line range, as 1 or 1-3"
+                return 1
+            fi
+            if [ "$part_end" -lt "$part_line" ]; then
+                fail "$family" "$id cites $part, a line range that ends before it starts"
+                return 1
+            fi
+            if [ -n "$named" ]; then
+                if path="$(symbol_file "$root" "$commit" "$named" "${pathspec[@]}")"; then
+                    here=("$path") here_name="$path"
+                elif ! token_held "$root" "$commit" "$named" "${here[@]}"; then
+                    fail "$family" "$id cites $part, and $named is neither a file beside the paths the citation names nor text the file before it, $here_name, holds at $commit"
+                    return 1
+                fi
+            fi
+            held=1 most=-1 most_path=""
+            for path in "${here[@]}"; do
+                case "$path" in ':(glob)'*) held=0 && break ;; esac
+                [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ] && held=0 && break
+                lines="$(git -C "$root" show "$commit:$path" 2>/dev/null | wc -l)"
+                [ "$lines" -gt "$most" ] && most="$lines" most_path="$path"
+                [ "$lines" -ge "$part_end" ] && held=0 && break
+            done
+            [ "$held" -eq 0 ] && continue
+            if [ "$part_end" = "$part_line" ]; then
+                fail "$family" "$id cites $part, and $most_path holds no such line at $commit, $most lines"
+            else
+                fail "$family" "$id cites $part, and $most_path holds $most lines at $commit, so the range $part_line-$part_end runs past its end"
+            fi
+            return 1
+        fi
+        # 8, a table head: a line of here that is that head (head_line), and no other reading.
+        if [ "$form" = head ]; then
+            here_grep "$root" "$commit" -P "$(head_line "$part")" "${here[@]}" && continue
+            fail "$family" "$id cites the symbol $part, which $here_name does not hold as a table head, a line that is that head, at $commit"
+            return 1
+        fi
+        # digit: a part of 3 to 8 that starts with a digit, as "12a" or "2024-report.md". Each
+        # reading of its form below that reads it as a file or as text here holds reads it; a
+        # namespace reading (prefix_held) reads neither, so it never holds such a part. Where
+        # no reading of its form applies to it, it fails, naming the row and the part, as no
+        # line this gate reads, rather than being read as the line its first digits name; a
+        # file or module reading that applies and does not hold it fails naming that file, as
+        # for any part.
+        digit=""
+        case "$part" in [0-9]*) [ "$form" = words ] || digit=1 ;; esac
+        # 5a, 7: a file's name or a path that is a file beside the paths the citation names
+        # is that file, which becomes here for this part and the parts after it.
+        case "$form" in
+        key | path)
+            case "$part" in
+            */* | *.[A-Za-z]*)
+                path="$(symbol_file "$root" "$commit" "$part" "${pathspec[@]}")" && here=("$path") here_name="$path" && continue
+                ;;
+            esac
+            ;;
+        esac
+        # Every form but a line: text here holds as a whole token.
+        if token_held "$root" "$commit" "$part" "${here[@]}"; then
+            continue
+        fi
+        # 5c, 7: a file's name that a path at or below the paths the citation names ends with
+        # after a slash, and no path elsewhere in the tree.
+        case "$form" in
+        key | path)
+            case "$part" in
+            *.[A-Za-z]*)
+                paths_below "$root" "$commit" "${pathspec[@]}" |
+                    grep -zqE "(^|/)$(printf '%s' "$part" | sed 's/[^a-zA-Z0-9_/-]/\\&/g')$" && continue
+                ;;
+            esac
+            ;;
+        esac
+        # 6, and 2 where it holds a colon: a prefixed name, read as `file:Symbol`, as
+        # `module:attr` and as `Namespace:Symbol`, in that order, the last never for a part
+        # that starts with a digit (digit). The first that applies decides: it holds the part,
+        # or it fails a prefixed name. A part in words it does not hold goes on to 8, here as it
+        # was, as when none applies, since 6's readings can hold such a part and never fail it.
+        case "$form" in
+        prefixed | words)
+            case "$part" in
+            *:*)
+                if path="$(symbol_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
+                    if token_held "$root" "$commit" "${part##*:}" "$path"; then
+                        here=("$path") here_name="$path"
+                        continue
+                    fi
+                    if [ "$form" = prefixed ]; then
+                        fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*:}' as a word at $commit"
+                        return 1
+                    fi
+                elif reference="$(module_file "$root" "$commit" "${part%:*}" "${pathspec[@]}")"; then
+                    run="${reference%%$'\t'*}" path="${reference#*$'\t'}"
+                    rest="${part%:*}" rest="${rest#"$run"}" rest="${rest#.}"
+                    if [ "$form" = prefixed ]; then
+                        here=("$path") here_name="$path"
+                        module_held "$family" "$id" "$part" "$run" "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" || return 1
+                        continue
+                    fi
+                    if dotted_names_held "$path" "${rest:+$rest.}${part##*:}" "$root" "$commit" >/dev/null; then
+                        here=("$path") here_name="$path"
+                        continue
+                    fi
+                elif [ -z "$digit" ] && token_held "$root" "$commit" "${part##*:}" "${here[@]}"; then
+                    if [ "$form" = prefixed ]; then
+                        prefix_held "$family" "$id" "$part" : "$here_name" "$root" "$commit" "${here[@]}" || return 1
+                        continue
+                    fi
+                    prefix_components_held "${part%:*}" "$root" "$commit" "${here[@]}" >/dev/null && continue
+                fi
+                ;;
+            esac
+            ;;
+        esac
+        # 7: a path, a directory or a glob the commit holds, read from the root or below a
+        # directory or a glob the citation names, where that directory or glob is read (the
+        # rule above paths_at), against the run's one listing of the commit (tree_listing),
+        # and never as text.
+        case "$form" in
+        path)
+            paths_at "$root" "$commit" "$part" && continue
+            held=1
+            if listing="$(tree_listing "$root" "$commit")"; then
+                for path in "${pathspec[@]}"; do
+                    case "$path" in
+                    ':(glob)'*) path="${path#':(glob)'}" ;;
+                    *) [ "$(git -C "$root" cat-file -t "$commit:$path" 2>/dev/null)" = tree ] || continue ;;
+                    esac
+                    grep -zqE "$(cited_regex "$path" "${part%/}")" "$listing" && held=0 && break
+                done
+            fi
+            [ "$held" -eq 0 ] && continue
+            ;;
+        esac
+        # 8, and 2 where it holds `|`, `*`, `?` or `\`: a part in words that begins with `[`
+        # and ends with `]` is a table head (head_line); any other holding `|`, `(`, `[` or
+        # `\` is an extended regular expression a line of here matches; and any other is a
+        # glob of names, which holds where here holds a name it covers as a whole token
+        # (glob_token).
+        case "$form" in
+        pattern | words)
+            if [[ "$part" == *['|*?\']* ]]; then
+                case "$part" in
+                '['*']')
+                    here_grep "$root" "$commit" -P "$(head_line "$part")" "${here[@]}" && continue
+                    ;;
+                *['|([\']*)
+                    here_grep "$root" "$commit" -E "$part" "${here[@]}" && continue
+                    ;;
+                *)
+                    here_grep "$root" "$commit" -P "$(glob_token "$part")" "${here[@]}" && continue
+                    ;;
+                esac
+            fi
+            ;;
+        esac
+        # 2: a part in words no reading found names a part of the file a reader judges, and
+        # is reported as not checked.
+        if [ "$form" = words ]; then
+            printf '%s\t%s\n' "$id" "$part" >>"$RUN_SCRATCH/unchecked-parts"
+            continue
+        fi
+        # 5d: a key path holding a dot, a qualified name, read as `file.ext.Symbol`, as
+        # `module.symbol` and as `Namespace.Symbol`, in that order, the last never for a part
+        # that starts with a digit (digit).
+        case "$form" in
+        key)
+            case "$part" in
+            *.*)
+                if path="$(symbol_file "$root" "$commit" "${part%.*}" "${pathspec[@]}")"; then
+                    here=("$path") here_name="$path"
+                    token_held "$root" "$commit" "${part##*.}" "$path" && continue
+                    fail "$family" "$id cites the symbol $part, whose prefix names the file $path, and $path does not hold its local part '${part##*.}' as a word at $commit"
+                    return 1
+                fi
+                if reference="$(module_file "$root" "$commit" "${part%.*}" "${pathspec[@]}")"; then
+                    run="${reference%%$'\t'*}" path="${reference#*$'\t'}"
+                    here=("$path") here_name="$path"
+                    module_held "$family" "$id" "$part" "$run" "$path" "${part#"$run".}" "$root" "$commit" || return 1
+                    continue
+                fi
+                if [ -z "$digit" ] && token_held "$root" "$commit" "${part##*.}" "${here[@]}"; then
+                    prefix_held "$family" "$id" "$part" . "$here_name" "$root" "$commit" "${here[@]}" || return 1
+                    continue
+                fi
+                ;;
+            esac
+            ;;
+        esac
+        # No reading of the part's form holds it: a part that starts with a digit fails as no
+        # line this gate reads (digit), and any other as a part here does not hold.
+        if [ -n "$digit" ]; then
+            fail "$family" "$id cites $part, which starts with a digit and is no line or line range this gate reads, nor text $here_name holds at $commit: a line is digits and a line range two lines joined by a hyphen, as 1 or 1-3"
+        else
+            fail "$family" "$id cites the symbol $part, which $here_name does not hold at $commit"
+        fi
+        return 1
+    done < <(printf '%s\n' "$symbol" | sed 's/ and /\n/g; s/,/\n/g')
+    return 0
+}
+
+
+# Every dispatch:// reference is read by citations.py refs, the one definition of a
+# reference and of the punctuation after one that is no part of it: its document, its
+# block anchor after `#` and its version after `@`, so a bogus anchor or version is read
+# as part of the reference rather than cut off.
+
+# directory_references; every dispatch:// reference of this directory's pages and rows,
+# once each. It fails when citations.py could not read them.
+directory_references() {
+    local files=() list="$RUN_SCRATCH/directory-references"
+    mapfile -d '' -t files < <(find "$EVIDENCE" -type f \( -name '*.md' -o -name '*.jsonl' \) -print0)
+    [ "${#files[@]}" -gt 0 ] || return 0
+    python3 "$EVIDENCE/citations.py" refs --input "${files[@]}" >"$list" || return 1
+    sort -u "$list"
+}
+
+# false_references
+#
+# A reference a row of claims.jsonl records as false is a reference the record under check
+# wrote and Dispatch does not hold. It is that row's evidence rather than a citation of
+# this directory, so --citations reads it there and not here. It fails when citations.py
+# could not read them.
+false_references() {
+    local list="$RUN_SCRATCH/false-references"
+    claims | jq -r 'select(.mark=="false") | [.claim, (.evidence|tostring), (.note // "")] | join(" ")' |
+        python3 "$EVIDENCE/citations.py" refs --input - >"$list" || return 1
+    sort -u "$list"
+}
+
+# dispatch_ref_read <ref>; asks Dispatch for the whole reference, its block anchor and its
+# version included, and prints what dispatch prints. dispatch read --ref reads a block and
+# refuses a block it does not hold. It refuses a version of a whole document, which
+# dispatch doc-read reads instead, and the shorthand KEY/spec@vN these pages write is the
+# version N of the issue's primary document. mode_citations runs it through live_read, so
+# a reference Dispatch answers it does not hold fails citation-dispatch, and a Dispatch
+# that does not answer ends the mode, exit 2, or exit 1 after a FAIL, by the precedence of
+# the header.
+dispatch_ref_read() {
+    local ref="$1" rest
+    case "$ref" in
+    *'#'*) dispatch read --ref "$ref" ;;
+    dispatch://*/spec@v*)
+        rest="${ref#dispatch://}"
+        dispatch doc-read --issue "${rest%%/*}" --version "${ref##*@v}"
+        ;;
+    *@v*) dispatch doc-read --ref "$ref" ;;
+    *) dispatch read --ref "$ref" ;;
+    esac
+}
+
+
+# report_live_pages
+#
+# What the Verification document asks of this mode beside the assertions: "where the live
+# address answers, reports whether the live page still carries that sentence; a live page
+# whose bytes have changed is reported as changed rather than failed, because a page
+# served from a content system changes its bytes between any two fetches."
+#
+# So this is a report and no assertion: one line per published copy, naming its address
+# and one of three readings. An address that does not answer is reported too, so the mode
+# runs with no network, and a changed page fails nothing.
+report_live_pages() {
+    local address copy sentence live flat
+    printf 'The live address of each published copy, read now. This is a report and no assertion: a page served from a content system changes its bytes between any two fetches.\n'
+    while IFS=$'\t' read -r address copy; do
+        [ -n "$address" ] && [ -n "$copy" ] || continue
+        case "$copy" in */) continue ;; esac
+        live="$RUN_SCRATCH/live-$(printf '%s' "$copy" | tr '/' '_')"
+        if ! curl -sS -L --max-time 30 --max-filesize 20000000 -o "$live" "$address" 2>/dev/null || [ ! -s "$live" ]; then
+            printf '  %s: unreachable, the address did not answer; the committed copy %s is what this reading rests on.\n' "$address" "$copy"
+            continue
+        fi
+        if cmp -s "$live" "$EVIDENCE/$copy"; then
+            printf '  %s: answered, and its bytes are the committed copy %s byte for byte.\n' "$address" "$copy"
+            continue
+        fi
+        # The sentences this directory quotes from that copy, which is what a reader of a
+        # changed page wants to know about.
+        local missing=0 held=0
+        while IFS= read -r sentence; do
+            [ -n "$sentence" ] || continue
+            flat="$(printf '%s' "$sentence" | flatten_text)"
+            if copy_text "$live" | flatten_text | grep -qF -- "$flat"; then
+                held=$((held + 1))
+            else
+                missing=$((missing + 1))
+            fi
+        done < <(claims | jq -r --arg c "$copy" 'select(.kind=="published") | select((.evidence.copy // "")==$c) | .evidence.quote // empty')
+        if [ "$missing" -eq 0 ] && [ "$held" -eq 0 ]; then
+            printf '  %s: answered and changed since it was fetched, and this reading quotes no sentence of it; the committed copy %s is what it rests on.\n' "$address" "$copy"
+        elif [ "$missing" -eq 0 ]; then
+            printf '  %s: answered and changed since it was fetched, and it still carries each of the %s sentences this reading quotes from %s.\n' "$address" "$held" "$copy"
+        else
+            printf '  %s: answered and changed since it was fetched, and it no longer carries %s of the %s sentences this reading quotes from %s, which the committed copy holds.\n' "$address" "$missing" "$((held + missing))" "$copy"
+        fi
+    done < <(jq -r '.published[] | select(.copy) | [.address, .copy] | @tsv' "$EVIDENCE/sources.json")
+}
+
+# report_unchecked_parts
+#
+# The symbol parts resolve_symbol did not read: a part written in words, as the name of a
+# part of a file, that no reading of its form found (the symbol grammar, form 2), and every
+# part of a symbol whose citation writes its file in words. This is a report and no
+# assertion, one line per part with the row that cites it, and a count, so that a reader
+# sees how much of the symbol column the citation assertions leave to them.
+report_unchecked_parts() {
+    local list="$RUN_SCRATCH/unchecked-parts" id part
+    if [ ! -s "$list" ]; then
+        printf 'No symbol part was left unchecked: every part was read by its form of the symbol grammar.\n'
+        return
+    fi
+    printf 'The symbol parts no search of the cited files read: a part written in words that no search found, or a part of a citation whose file is written in words. These are not checked: each names a part of a file, or of a set of files, a reader judges.\n'
+    while IFS=$'\t' read -r id part; do
+        printf '  not checked: %s cites the part "%s"\n' "$id" "$part"
+    done <"$list"
+    printf '%d symbol parts were not checked.\n' "$(wc -l <"$list" | tr -d ' ')"
+}
+
+# citation_figures; citation-figures, the assertion that a figure the judgement states
+# beside a citation is one the cited rows print. A sentence of the judgement cites rows of
+# claims.jsonl by id in brackets, [c-acts-all-1] or [r-21, sc-genai-outside-registry], and
+# every figure of a sentence that cites at least one row appears in the recorded output or
+# the command of a row that sentence cites. The judgement is read line by line, as
+# citations.py reads a record, and through citations.py's own patterns, so a reference, an
+# address, a code span, a date, a commit hash, a heading and a bare line range are read by
+# one rule here and there. A sentence ends at a full stop, a question mark or an exclamation
+# mark, with any closing mark after it, before a space, outside a code span, a reference and
+# an address; a sentence that holds only citations, as the [r-a] of "... 6484 acts. [r-a]",
+# is read as part of the sentence before it, whose figures it cites; a sentence's citations
+# are its brackets whose ids name rows the one parse read. A figure is a run of digits with
+# its decimal point, its thousands separators and its per-cent sign where it has them, as
+# 12,617, 0.944, 66% and 19.6, inside a code span or outside one, since a quoted command or
+# answer states figures too; a range, 470-612 or 3–5, is two figures; and a date,
+# 2026-11-12, is one, the date of an instant 2026-11-16T13:00:00Z among them. It is printed
+# when it stands in the row's text as a number of its own, neither inside a longer number
+# nor glued to a letter, with its thousands separators there or not and its per-cent sign
+# there or not, and a date also when an instant's time follows it. What is not a figure,
+# and why:
+#   the digits of a row id, as in [c-terms-3]: the bracket is the citation, which names a
+#     row, and its digits measure nothing;
+#   a commit hash, a run of seven to forty hexadecimal digits, as citations.py reads one:
+#     it names a commit, which citation-our-code and citation-project-code resolve, so a
+#     figure of seven digits or more is held to its rows only when written with its
+#     thousands separators;
+#   a dispatch:// reference and a web address: each names a source, which
+#     citation-dispatch and citation-published resolve;
+#   a file path, a path:line citation and a bare line range continuing one, as `:188-196`,
+#     and any token holding a slash, as cybermonklabs/legion#4283: each names a place
+#     in a tree, which citation-our-code and citation-project-code resolve;
+#   a token glued to a letter or an underscore, as R12, Q1, v14, gen_ai, INFRA-3134,
+#     8a4092b0 or check.sh:4761: it is a name, of a requirement, a question, a version, a
+#     field, an issue, a commit or a file, and not a measure;
+#   the number of an ordered list's item, which is markup;
+#   a question's number after the word Question, as Question 12: it is Q12 written out, the
+#     entry of questions.md that question-list holds the judgement to, and the front page
+#     must write it in digits for a question no page answers;
+#   a number written in words, as two pull requests or about four engineer-days: it is not
+#     read, since a row prints digits and a word names no spelling to look for in its
+#     output, so a measured figure is written in digits, and an estimate carries "by our
+#     estimate".
+# A number written in a form this reader does not read is no figure either, and a sentence
+# that cites a row and writes one outside a code span fails, naming the line and the form:
+# a fraction, a token that is a number, a slash and a number, each digits with an optional
+# decimal point and per-cent sign, as 1/2 or 0.72/0.55, which the rule above
+# would read as a place and so as no figure, and a decimal comma, a token of digits whose
+# comma is not followed by exactly three digits, as 0,5, which it would read as 0 and 5.
+# The reader reads a figure as digits with an optional decimal point, or as a number
+# grouped by thousands, as 12,617, so the row such a sentence cites would be held to
+# another figure or to none; the form fails whether or not its clause is marked by our
+# estimate.
+# A figure marked as an estimate is exempt by name: an estimate is not a measurement, and
+# the judgement marks each one with the words "by our estimate", so no row is held to
+# print it. The words mark their clause, the stretch of their sentence between the commas
+# and semicolons around them, each a comma or a semicolon before a space outside a code
+# span and a citation, so a thousands separator cuts no clause; they mark the whole
+# sentence when they open it, after any list marker and field label, as in "- **Cost:** by
+# our estimate, about 7 engineer-days ... against about 2", since there they qualify all
+# that follows; and where they stand alone in their clause, as in "about 4 engineer-days,
+# by our estimate, for ..." or "about 4 engineer-days, by our estimate.", they mark the
+# clause before them too, which is the one they qualify. A figure outside a marked clause
+# is held to the cited rows as any other.
+# Each figure no cited row prints fails, naming the line of the judgement, the figure and
+# the rows its sentence cites; by the expected-set rule a judgement that states no figure in
+# a sentence that cites a row, but estimates, fails too, since then nothing is checked.
+citation_figures() {
+    local found="$RUN_SCRATCH/citation-figures" kind number figure rows sentence form judged=0 checked=0 estimates=0 bad=0
+    claims_parsed || {
+        fail citation-figures "the parse of claims.jsonl did not run to its end, so no row a sentence of the judgement cites is read"
+        return
+    }
+    if ! python3 -B - "$EVIDENCE" "$RUN_SCRATCH/judgement.md" "$CLAIMS_ROWS" >"$found" 2>"$found.err" <<'PY'; then
+import json, re, sys
+
+evidence, judgement_path, rows_path = sys.argv[1:4]
+sys.path.insert(0, evidence)
+import citations
+
+# What a figure is looked for in: each row's recorded output and its command, by its id.
+printed = {}
+with open(rows_path, encoding="utf-8") as handle:
+    for text in handle:
+        row = json.loads(text)
+        printed[row["id"]] = "%s\n%s" % (row.get("output") or "", row.get("command") or "")
+
+BRACKET = re.compile(r"\[([^\[\]]+)\]")
+SENTENCE_END = re.compile(r"[.!?][\"'\u201d\u2019)\]*_]*(?=\s)")
+LIST_NUMBER = re.compile(r"^\s*(\d+)\.\s")
+QUESTION = re.compile(r"\bQuestions?\s+(\d+)\b", re.IGNORECASE)
+TOKEN = re.compile(r"[^\s()\[\]{}\"'`=|<>;\u201c\u201d\u2018\u2019]+")
+PIECES = re.compile(r"[-:\u2013\u2014]|,(?!\d{3}(?!\d))")
+FIGURE = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)*%?")
+FRACTION = re.compile(r"\d+(?:\.\d+)?%?/\d+(?:\.\d+)?%?")
+COMMA_NUMBER = re.compile(r"\d+(?:,\d+)+%?")
+ESTIMATE = re.compile(r"\bby our estimate\b", re.IGNORECASE)
+CLAUSE_END = re.compile(r"[,;](?=\s)")
+# What may stand before the words for them to open their sentence: a list marker and a
+# field label, as "- **Cost:** ".
+OPENING = re.compile(r"\s*(?:[-*+]|\d*\.)?\s*(?:\*\*[^*]+:\*\*\s*)?")
+
+
+def blank(text, start, end, fill=" "):
+    return text[:start] + fill * (end - start) + text[end:]
+
+
+def figures(text):
+    # Each figure of text, with where it stands in text, in order.
+    found = []
+    for date in citations.DATE.finditer(text):
+        if not re.match(r"[\w-]", text[date.start() - 1:date.start()] or " "):
+            found.append((date.start(), date.group(0)))
+        text = blank(text, date.start(), date.end())
+    for token in TOKEN.finditer(text):
+        raw = token.group(0)
+        if citations.BARE_LINES.fullmatch(raw.rstrip(".,;:!?*")):
+            continue
+        word = re.sub(r"[^\w%]+$", "", re.sub(r"^[^\w]+", "", raw))
+        if "/" in word or re.search(r"[^\W\d]", word) or not re.search(r"\d", word):
+            continue
+        for piece in PIECES.split(word):
+            if FIGURE.fullmatch(piece) and not citations.HEX_SHORT.fullmatch(piece):
+                found.append((token.start(), piece))
+    return sorted(found)
+
+
+def unread(marks, start, end):
+    # Each number of the sentence marks[start:end] written as a fraction or with a decimal
+    # comma, as (from, to, the form): the whole token as figures reads one, the marks
+    # before and after its word taken off.
+    found = []
+    for token in TOKEN.finditer(marks, start, end):
+        raw = token.group(0)
+        lead = len(re.match(r"[^\w]*", raw).group(0))
+        word = re.sub(r"[^\w%]+$", "", raw[lead:])
+        if FRACTION.fullmatch(word) or (
+            COMMA_NUMBER.fullmatch(word) and any(len(part) != 3 for part in word.rstrip("%").split(",")[1:])
+        ):
+            found.append((token.start() + lead, token.start() + lead + len(word), word))
+    return found
+
+
+def estimated(marks, start, end):
+    # The stretches of the sentence marks[start:end] that "by our estimate" marks, each as
+    # (from, to), by the clause rule above.
+    cuts = [start] + [m.end() for m in CLAUSE_END.finditer(marks, start, end)] + [end]
+    spans = []
+    for words in ESTIMATE.finditer(marks, start, end):
+        if OPENING.fullmatch(marks[start:words.start()]):
+            spans.append((start, end))
+            continue
+        clause = max(k for k in range(len(cuts) - 1) if cuts[k] <= words.start())
+        spans.append((cuts[clause], cuts[clause + 1]))
+        alone = re.sub(r"[\W_]+", "", marks[cuts[clause]:cuts[clause + 1]]).lower() == "byourestimate"
+        if alone and clause > 0:
+            spans.append((cuts[clause - 1], cuts[clause]))
+    return spans
+
+
+def prints(figure, text):
+    if citations.DATE.fullmatch(figure):
+        return re.search(r"(?<![\w-])" + figure + r"(?![\d-])", text) is not None
+    bare = figure.rstrip("%")
+    plain = bare.replace(",", "")
+    whole, dot, fraction = plain.partition(".")
+    for form in {bare, plain, "{:,}".format(int(whole)) + dot + fraction}:
+        pattern = r"(?<!\w)(?<!\d\.)" + re.escape(form) + r"(?!\w)(?!\.\d)(?!,\d{3}(?!\d))"
+        if len(form) == 3:
+            pattern = r"(?<!\d,)" + pattern
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+judged = checked = estimates = 0
+with open(judgement_path, encoding="utf-8") as handle:
+    lines = handle.read().splitlines()
+for number, line in enumerate(lines, 1):
+    if citations.HEADING.match(line):
+        continue
+    # Three copies of the line, each its length, so one offset reads all three: bounds,
+    # where a sentence may end, with each reference, address and code span covered; quiet,
+    # where a figure may stand, with each reference, address, citation, list number and
+    # question number covered; and marks, where a clause may end and "by our estimate"
+    # stand, which is quiet with each code span covered too.
+    quiet = line
+    for ref in citations.DISPATCH_REF.finditer(line):
+        quiet = blank(quiet, ref.start(), ref.start() + len(ref.group(0).rstrip(citations.TRAILING)))
+    for url in citations.WEB_URL.finditer(line):
+        quiet = blank(quiet, url.start(), url.start() + len(url.group(0).rstrip(".,;:)")))
+    bounds = citations.CODE_SPAN.sub(lambda m: "x" * len(m.group(0)), quiet)
+    # The line with each citation covered, where a sentence that holds only citations
+    # holds no word.
+    alone = line
+    cites = []
+    for bracket in BRACKET.finditer(bounds):
+        ids = [part.strip() for part in bracket.group(1).split(",")]
+        if any(i in printed for i in ids):
+            cites.append((bracket.start(), [i for i in ids if i in printed]))
+            quiet = blank(quiet, bracket.start(), bracket.end())
+            alone = blank(alone, bracket.start(), bracket.end())
+    if not cites:
+        continue
+    for covered in [LIST_NUMBER.match(quiet)] + list(QUESTION.finditer(quiet)):
+        if covered:
+            quiet = blank(quiet, covered.start(1), covered.end(1))
+    marks = citations.CODE_SPAN.sub(lambda m: "x" * len(m.group(0)), quiet)
+    # Each sentence as (start, end); one that holds only citations, as the [r-a] of "...
+    # 6484 acts. [r-a]", is joined to the sentence before it.
+    sentences = []
+    start = 0
+    for end in [m.end() for m in SENTENCE_END.finditer(bounds)] + [len(line)]:
+        if sentences and not re.search(r"\w", alone[start:end]):
+            sentences[-1] = (sentences[-1][0], end)
+        else:
+            sentences.append((start, end))
+        start = end
+    for start, end in sentences:
+        rows = []
+        for at, ids in cites:
+            if start <= at < end:
+                rows.extend(i for i in ids if i not in rows)
+        if rows:
+            judged += 1
+            text = "\n".join(printed[i] for i in rows)
+            spans = estimated(marks, start, end)
+            # A form the reader does not read fails, and its digits are read as no figure.
+            read = quiet
+            for begin, finish, form in unread(marks, start, end):
+                print("U\t%d\t%s\t%s\t%s" % (number, form, ", ".join(rows), " ".join(line[start:end].split())[:80]))
+                read = blank(read, begin, finish)
+            for at, figure in figures(read[start:end]):
+                if any(begin <= start + at < finish for begin, finish in spans):
+                    estimates += 1
+                    continue
+                checked += 1
+                if not prints(figure, text):
+                    print("F\t%d\t%s\t%s\t%s" % (number, figure, ", ".join(rows), " ".join(line[start:end].split())[:80]))
+print("N\t%d\t%d\t%d" % (judged, checked, estimates))
+PY
+        fail citation-figures "the reader of the figures of the judgement did not run to its end: $(tail -1 "$found.err" | head -c 240)"
+        return
+    fi
+    while IFS=$'\t' read -r kind number figure rows sentence; do
+        case "$kind" in
+        N) judged="$number" checked="$figure" estimates="$rows" ;;
+        F)
+            bad=$((bad + 1))
+            fail citation-figures "line $number of the judgement states $figure in a sentence that cites $rows, and none of them prints it in its output or its command: '$sentence'"
+            ;;
+        U)
+            bad=$((bad + 1))
+            case "$figure" in */*) form="a fraction" ;; *) form="a decimal comma" ;; esac
+            fail citation-figures "line $number of the judgement writes $figure, $form, in a sentence that cites $rows, and the gate reads a figure as digits with an optional decimal point, or as a thousands-grouped number, so no row it cites is held to the number it writes: '$sentence'"
+            ;;
+        esac
+    done <"$found"
+    if [ "$checked" -eq 0 ]; then
+        fail citation-figures "the judgement states no figure in a sentence that cites a row of claims.jsonl, in $judged such sentences, but $estimates marked by our estimate, so no figure is checked"
+    elif [ "$bad" -eq 0 ]; then
+        pass citation-figures "each of the $checked figures the judgement states in its $judged sentences that cite a row of claims.jsonl is printed by the output or the command of a row its sentence cites, and $estimates more are marked by our estimate, which no row is held to print"
+    fi
+}
+
+mode_citations() {
+    local commit bad_ours=0 bad_theirs=0 bad_published=0 bad_dispatch=0 bad_kinds=0 row id file symbol repo rcommit
+    # The one parse of claims.jsonl comes first: a line that is no row fails citation-kinds,
+    # and every read below reads only the rows it read.
+    claims_judge citation-kinds || bad_kinds=1
+    # The flattened text of each committed copy, read once: eight rows cite one page of
+    # 400 KB, and reading it per row is the cost of the mode.
+    local flat_dir="$RUN_SCRATCH/citations"
+    mkdir -p "$flat_dir"
+    commit="$(our_commit)"
+    # The live inputs, read through live_read before any assertion over a citation judges:
+    # the clone of each repository a project-code row cites, Dispatch's answer to each
+    # dispatch:// reference of this directory, and the judgement, whose figures
+    # citation-figures holds to the rows each sentence cites. A source that does not answer
+    # ends the mode, exit 2, or exit 1 after a FAIL, by the precedence of the header, as
+    # after the one parse's FAIL of citation-kinds above; a reference Dispatch answers it
+    # does not hold is kept for citation-dispatch to fail.
+    while IFS= read -r repo; do
+        [ -n "$repo" ] && { clone_fetch "$repo" || true; }
+    done < <(claims | jq -r 'select(.kind=="project-code") | .evidence.repo // empty' | sort -u)
+    local ref refs="$RUN_SCRATCH/references" falses="$RUN_SCRATCH/false-reference-list"
+    local unresolved="$RUN_SCRATCH/unresolved-references" refs_read=1 asked=0
+    : >"$unresolved"
+    if directory_references >"$refs" && false_references >"$falses"; then
+        while IFS= read -r ref; do
+            asked=$((asked + 1))
+            live_read "Dispatch, the read of $ref" "$RUN_SCRATCH/reference.out" dispatch_ref_read "$ref" ||
+                printf '%s\t%s\n' "$ref" "$(cat "$RUN_SCRATCH/reference.out" "$RUN_SCRATCH/reference.out.err" | head -1 | head -c 160)" >>"$unresolved"
+        done < <(grep -vxF -f "$falses" "$refs")
+    else
+        refs_read=0
+    fi
+    judgement_load
+    claims >"$RUN_SCRATCH/citation-rows"
+    while IFS= read -r row; do
+        id="$(printf '%s' "$row" | jq -r '.id')"
+        case "$(printf '%s' "$row" | jq -r '.kind')" in
+        our-code)
+            file="$(printf '%s' "$row" | jq -r '.evidence.file // ""')"
+            symbol="$(printf '%s' "$row" | jq -r '.evidence.symbol // ""')"
+            # A path, a directory or a glob: git reads all three as a pathspec, and the
+            # citation resolves when the commit holds at least one path it names. A file
+            # this pull request adds is read at the head instead, since the base has none.
+            # The field is read whole, every path it names, each with the line after its
+            # colon taken off by paths_at, and never cut at its first colon, which read
+            # "a.md:45 and b.md:50" as a.md alone and left b.md unread.
+            if [ -z "$file" ] || ! paths_at "$ROOT" "$commit" "$file"; then
+                if [ -n "$file" ] && paths_at "$ROOT" HEAD "$file"; then
+                    :
+                else
+                    bad_ours=$((bad_ours + 1))
+                    fail citation-our-code "$id cites $file, which this repository does not hold at $commit"
+                    continue
+                fi
+            fi
+            if [ -n "$symbol" ] && [ "$symbol" != "null" ]; then
+                resolve_symbol "$id" "$ROOT" "$commit" "$file" "$symbol" || bad_ours=$((bad_ours + 1))
+            fi
+            ;;
+        project-code)
+            repo="$(printf '%s' "$row" | jq -r '.evidence.repo // ""')"
+            rcommit="$(printf '%s' "$row" | jq -r '.evidence.commit // ""')"
+            file="$(printf '%s' "$row" | jq -r '.evidence.file // ""')"
+            # The field is read whole, every path it names, as for our-code above, and so is
+            # the repository, by repo_named: one it does not read, as a repository whose
+            # owner is mistyped, fails by name and is never read by its last path element.
+            local root name
+            if ! name="$(repo_named "$repo")"; then
+                bad_theirs=$((bad_theirs + 1))
+                fail citation-project-code "$id cites the repository '$repo', which names no repository sources.json pins a clone of: a repository is written whole, as its name, as scope, or as the owner and the name of the url sources.json pins, as ioc-project/scope"
+                continue
+            fi
+            root="$CLONES/$name"
+            if ! paths_at "$root" "$rcommit" "$file"; then
+                bad_theirs=$((bad_theirs + 1))
+                fail citation-project-code "$id cites $repo $file at $rcommit, which the clone does not hold"
+            else
+                symbol="$(printf '%s' "$row" | jq -r '.evidence.symbol // ""')"
+                if [ -n "$symbol" ] && [ "$symbol" != "null" ]; then
+                    resolve_symbol "$id" "$root" "$rcommit" "$file" "$symbol" citation-project-code ||
+                        bad_theirs=$((bad_theirs + 1))
+                fi
+            fi
+            ;;
+        published)
+            local copy address sentence
+            copy="$(printf '%s' "$row" | jq -r '.evidence.copy // ""')"
+            address="$(printf '%s' "$row" | jq -r '.evidence.address // ""')"
+            sentence="$(printf '%s' "$row" | jq -r '.evidence.quote // ""')"
+            [ -n "$copy" ] || copy="$(jq -r --arg a "$address" '.published[] | select(.address==$a) | .copy' "$EVIDENCE/sources.json")"
+            if [ -z "$copy" ] || [ ! -s "$EVIDENCE/$copy" ]; then
+                bad_published=$((bad_published + 1))
+                fail citation-published "$id cites $address and names no committed copy this directory holds"
+                continue
+            fi
+            # The checksum sources.json recorded of that copy, against the copy as it
+            # stands: a page is evidence of what it said when it was fetched, so a copy
+            # whose bytes moved since is no longer the page the claim was read at.
+            local recorded_sum read_sum
+            recorded_sum="$(jq -r --arg c "$copy" '.published[] | select(.copy==$c) | .sha256 // empty' "$EVIDENCE/sources.json")"
+            if [ -z "$recorded_sum" ]; then
+                bad_published=$((bad_published + 1))
+                fail citation-published "$id cites the copy $copy, and sources.json records no checksum of it"
+                continue
+            fi
+            read_sum="$(sha256sum "$EVIDENCE/$copy" | cut -d' ' -f1)"
+            if [ "$read_sum" != "$recorded_sum" ]; then
+                bad_published=$((bad_published + 1))
+                fail citation-published "the copy $copy hashes $read_sum, and sources.json records $recorded_sum"
+                continue
+            fi
+            # The sentence is looked for with the spaces taken out of both sides, because
+            # taking the tags out of a page moves where its spaces fall.
+            if [ -n "$sentence" ]; then
+                local flat="$flat_dir/$(printf '%s' "$copy" | tr '/' '_')"
+                [ -s "$flat" ] || copy_text "$EVIDENCE/$copy" | flatten_text >"$flat"
+                if ! grep -qF -- "$(printf '%s' "$sentence" | flatten_text)" "$flat"; then
+                    bad_published=$((bad_published + 1))
+                    fail citation-published "$id quotes a sentence the committed copy $copy does not hold"
+                fi
+            fi
+            ;;
+        esac
+    done <"$RUN_SCRATCH/citation-rows"
+    # None of these passes on no input: a kind of citation claims.jsonl holds no row of,
+    # and a directory that names no dispatch:// reference, fail by name.
+    local kind count
+    for kind in our-code project-code published; do
+        count="$(claims | jq -c --arg k "$kind" 'select(.kind==$k)' | wc -l)"
+        [ "$count" -gt 0 ] && continue
+        case "$kind" in
+        our-code) bad_ours=$((bad_ours + 1)) ;;
+        project-code) bad_theirs=$((bad_theirs + 1)) ;;
+        published) bad_published=$((bad_published + 1)) ;;
+        esac
+        fail "citation-$kind" "claims.jsonl holds no $kind row, so no such citation is checked"
+    done
+    [ "$bad_ours" -eq 0 ] && pass citation-our-code "every citation into our own repository names a path that stands at $commit, and every symbol part, read by its form of the symbol grammar, stands in it or is reported as not checked"
+    [ "$bad_theirs" -eq 0 ] && pass citation-project-code "every citation into one of the projects names a path the clone holds at its pinned commit, and every symbol part, read by its form of the symbol grammar, stands in it or is reported as not checked"
+    [ "$bad_published" -eq 0 ] && pass citation-published "every citation of a published document names a committed copy that holds the sentence quoted"
+
+    report_unchecked_parts
+    report_live_pages
+
+    if [ "$refs_read" -eq 0 ]; then
+        bad_dispatch=$((bad_dispatch + 1))
+        fail citation-dispatch "citations.py could not read the dispatch:// references of this directory"
+    elif [ "$asked" -eq 0 ]; then
+        bad_dispatch=$((bad_dispatch + 1))
+        fail citation-dispatch "this directory names no dispatch:// reference, so none is resolved"
+    fi
+    local answer
+    while IFS=$'\t' read -r ref answer; do
+        bad_dispatch=$((bad_dispatch + 1))
+        fail citation-dispatch "the reference $ref resolves to no node Dispatch holds: Dispatch answered '$answer'"
+    done <"$unresolved"
+    [ "$bad_dispatch" -eq 0 ] && pass citation-dispatch "each of the $asked dispatch:// references of this directory resolves to a node Dispatch holds"
+
+    if ! python3 "$EVIDENCE/citations.py" --self-test >/dev/null 2>&1; then
+        fail citation-kinds "citations.py --self-test does not pass, so the extraction rule reads less than it names"
+    elif [ "$bad_kinds" -eq 0 ]; then
+        pass citation-kinds "every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them"
+    fi
+
+    citation_figures
+}
+
+# ---------------------------------------------------------------- --landed
+
+# R12_CONDITIONS: the four conditions of R12 of the specification under which a candidate's
+# first step is not landed in this pull request, one per line, each the opposite of one R12
+# asks of a step it lands: at most one engineer-day, needs no decision of the owner's,
+# refuses or blocks no other tree's merge path, and needs no record that does not exist yet.
+# A step sources.json's landed list commits as not_landed names one of them word for word.
+R12_CONDITIONS="is more than one engineer-day
+needs a decision of the owner's
+refuses or blocks another tree's merge path
+needs a record that does not exist yet"
+
+# landed_state_words <state>; the words a FAIL of landed-proof says a page carries, for the
+# state mode_landed read on it.
+landed_state_words() {
+    case "$1" in
+    landed) printf 'its page carries a Landed line with a commit' ;;
+    refuted) printf 'its page says Landed: not made' ;;
+    not_landed) printf 'its page carries a Not landed line' ;;
+    two) printf 'its page carries two states, or a line of one twice' ;;
+    esac
+}
+
+# landed_merged_commits; the commits of the landed steps another pull request of this tree
+# made and main merged, the entries of sources.json's landed list that carry merged_in, one
+# whole commit id per line, each once. An entry whose commit is no whole commit id is not
+# printed, and mode_landed fails it by name.
+landed_merged_commits() {
+    jq -r '.landed // [] | .[] | select(.state == "landed" and (.merged_in // "") != "") | .commit // ""' "$EVIDENCE/sources.json" 2>/dev/null |
+        grep -xE '[0-9a-f]{40}' | sort -u
+}
+
+# merged_diff <git diff arguments>; the diff of each commit landed_merged_commits prints
+# against its first parent, read in IOC_MERGED_REPO, the scratch repository mode_landed
+# fetched them into, so landed-no-refusal and landed-third-change read the steps another
+# pull request made as they read this pull request's own. It returns 1, printing nothing,
+# when a commit's parent is not there to diff against.
+merged_diff() {
+    local merged
+    for merged in $(landed_merged_commits); do
+        git -C "$IOC_MERGED_REPO" rev-parse --verify --quiet "$merged^{commit}" >/dev/null 2>&1 &&
+            git -C "$IOC_MERGED_REPO" rev-parse --verify --quiet "$merged^^{commit}" >/dev/null 2>&1 || return 1
+    done
+    for merged in $(landed_merged_commits); do
+        git -C "$IOC_MERGED_REPO" diff "$merged^" "$merged" "$@"
+    done
+}
+
+mode_landed() {
+    local bad_proof=0 bad_refutation=0 refuted=0 page title commit command history entry want_commit want_command named merged_in
+    local read_pages=0 found="$RUN_SCRATCH/landed-titles" steps="$RUN_SCRATCH/landed-steps"
+    local unresolved="$RUN_SCRATCH/landed-unresolved" record resolved=0 state carried
+    local n_landed n_proven n_refuted n_not n_cost line said condition cost cost_low=0 cost_high=0
+    history="$(history_ref)"
+    judgement_load
+    : >"$found"
+    : >"$unresolved"
+    # The committed list, one step per line, and the live inputs it names: each dispatch://
+    # record of a step not landed, resolved through live_read before any assertion judges.
+    # --citations resolves the dispatch:// references of this directory's files and not
+    # those of the judgement, which Dispatch holds, so no other mode resolves these.
+    jq -c '.landed // [] | .[]' "$EVIDENCE/sources.json" >"$steps" 2>/dev/null || : >"$steps"
+    while IFS= read -r record; do
+        [ -n "$record" ] || continue
+        resolved=$((resolved + 1))
+        live_read "Dispatch, the read of $record" "$RUN_SCRATCH/landed-record.out" dispatch_ref_read "$record" ||
+            printf '%s\t%s\n' "$record" "$(cat "$RUN_SCRATCH/landed-record.out" "$RUN_SCRATCH/landed-record.out.err" | head -1 | head -c 160)" >>"$unresolved"
+    done < <(jq -r 'select(.state == "not_landed") | .record // [] | if type == "array" then .[] else empty end | strings | select(startswith("dispatch://"))' "$steps" | sort -u)
+    # A landed step another pull request of this tree made and main merged names that merge
+    # commit (merged_in), which this pull request's history does not hold, as the
+    # architect's reading of c-landed-steps records
+    # (dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760). Each such commit
+    # is fetched from our_repository.url of sources.json, as --published fetches the default
+    # branch, into a git directory of this run's scratch and never into this repository's
+    # own object store, through live_read, so a fetch that gets no answer is a mode that
+    # cannot run. One commit is fetched with its parent, for its own diff; two or more are
+    # fetched whole, so the order between them is read by ancestry. IOC_MERGED_REPO names the
+    # directory for the committed proof, which reads the commit there.
+    local merged_commits merged_remote merged_depth=(--depth 2)
+    export IOC_MERGED_REPO="$RUN_SCRATCH/merged-repo"
+    merged_commits="$(landed_merged_commits)"
+    if [ -n "$merged_commits" ]; then
+        merged_remote="$(jq -r '.our_repository.url // ""' "$EVIDENCE/sources.json")"
+        [ "$(printf '%s\n' "$merged_commits" | wc -l)" -gt 1 ] && merged_depth=()
+        git init --quiet "$IOC_MERGED_REPO" 2>/dev/null || cannot_run environment " --landed: git init of the scratch repository of the merged-in steps failed."
+        # shellcheck disable=SC2086
+        live_read "$merged_remote, the fetch of $(printf '%s\n' "$merged_commits" | paste -sd' ' -), the commit of a step merged in another pull request" \
+            "$RUN_SCRATCH/merged-fetch.log" git -C "$IOC_MERGED_REPO" fetch --quiet "${merged_depth[@]}" --no-tags "$merged_remote" $merged_commits || :
+    fi
+    # The list names each step once: a page is held to the entry of its title, so a title the
+    # list named twice would hold the page to the first entry jq finds and leave the other's
+    # commit and proof unread.
+    local named_twice named_times
+    while IFS=$'\t' read -r named_times named_twice; do
+        bad_proof=$((bad_proof + 1))
+        fail landed-proof "sources.json's landed list names the step '$named_twice' $named_times times, and the list names each step once, so which entry its page is held to would be a guess"
+    done < <(jq -r '.title // ""' "$steps" | sort | uniq -cd | sed 's/^ *\([0-9]*\) /\1\t/')
+    while IFS= read -r -d $'\f' page; do
+        read_pages=$((read_pages + 1))
+        title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
+        # A page carries one state, each of its lines once: Landed with Proven by, Landed:
+        # not made with Refuted by, or Not landed. Every reader below takes a page's first
+        # line of a kind, so a second line of a kind, or a line of a second state, would
+        # stand unread beside the one it reads.
+        n_landed="$(printf '%s\n' "$page" | grep -cE '\*\*Landed:\*\*')"
+        n_proven="$(printf '%s\n' "$page" | grep -cE '\*\*Proven by:\*\*')"
+        n_refuted="$(printf '%s\n' "$page" | grep -cE '\*\*Refuted by:\*\*')"
+        n_not="$(printf '%s\n' "$page" | grep -cE '\*\*Not landed:\*\*')"
+        # R12, read as the architect's reading beside the specification records it
+        # (dispatch://INFRA-3134/comment/de485c44-6b40-4018-8ac5-9cde3e5cdd65), holds every
+        # page whose first step is one engineer-day or less to a state: landed, with its
+        # commit and its proof, or not landed, with the condition of R12 that stops it and its
+        # record; not made, with its refutation, refutes the step and states it too. The cost
+        # is the one cost_read reads from the page's one Cost line, in digits or in words. A
+        # Cost line that names engineer-days with a figure cost_read cannot read fails, naming
+        # the page and the line, rather than counting as no cost. Every page gives its first
+        # step one cost in engineer-days, as R9 does and page-parts of --shape holds, so a page
+        # that reaches --landed has one, and no page is counted as one with no cost: a page
+        # with no Cost line, with the label on more than one line, or with a Cost line that
+        # names no engineer-days fails here too, naming it, and none of its lines is read as
+        # its cost.
+        n_cost="$(printf '%s\n' "$page" | grep -cF '**Cost:**')"
+        if [ "$n_cost" -gt 1 ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries its Cost on $n_cost lines, and a page gives its first step one cost, so none of them is read as its cost"
+            cost=failed
+        elif [ "$n_cost" -eq 0 ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries no Cost line, and R9 gives a page the cost of its first step in engineer-days"
+            cost=failed
+        else
+            cost="$(printf '%s\n' "$page" | cost_read)"
+        fi
+        case "${cost%%$'\t'*}" in
+        low) cost_low=$((cost_low + 1)) ;;
+        high) cost_high=$((cost_high + 1)) ;;
+        unread)
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' gives its first step a cost whose figure this gate cannot read, '${cost#*$'\t'}' on its Cost line: $COST_FIGURES"
+            ;;
+        none)
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' gives its first step its cost in no engineer-days, '${cost#*$'\t'}' on its Cost line, and R9 gives a page its cost in engineer-days, which R12's test of one engineer-day reads"
+            ;;
+        esac
+        if [ $((n_landed + n_proven + n_refuted + n_not)) -eq 0 ]; then
+            if [ "${cost%%$'\t'*}" = low ]; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' gives its first step a cost of ${cost#*$'\t'}, one engineer-day or less, and carries no state: R12 holds such a page landed, with its commit and its proof, or not landed, with the condition that stops it and its record, or not made, with its refutation"
+            fi
+            continue
+        fi
+        carried="$n_landed Landed, $n_proven Proven by, $n_refuted Refuted by and $n_not Not landed"
+        if [ "$n_landed" -gt 1 ] || [ "$n_proven" -gt 1 ] || [ "$n_refuted" -gt 1 ] || [ "$n_not" -gt 1 ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries a line of its state more than once ($carried lines), and a page carries each line of its one state once"
+            printf 'two\t%s\n' "$title" >>"$found"
+            continue
+        fi
+        if [ "$n_landed" -eq 1 ] && printf '%s\n' "$page" | grep -qE '\*\*Landed:\*\*[[:space:]]*not made'; then
+            state=refuted
+            [ "$n_proven" -eq 0 ] && [ "$n_not" -eq 0 ]
+        elif [ "$n_landed" -eq 1 ]; then
+            state=landed
+            [ "$n_refuted" -eq 0 ] && [ "$n_not" -eq 0 ]
+        else
+            state=not_landed
+            [ "$n_not" -eq 1 ] && [ "$n_proven" -eq 0 ] && [ "$n_refuted" -eq 0 ]
+        fi || {
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries two states ($carried lines): a page is landed with its proof, not made with its refutation, or not landed with its reason, and never two"
+            printf 'two\t%s\n' "$title" >>"$found"
+            continue
+        }
+        printf '%s\t%s\n' "$state" "$title" >>"$found"
+        if [ "$state" = refuted ]; then
+            refuted=$((refuted + 1))
+            # A step that is not made carries evidence in one of the five forms: a command
+            # with its output, never a search that found nothing.
+            printf '%s\n' "$page" | grep -qE '\*\*Refuted by:\*\*.*`.*`' || {
+                bad_refutation=$((bad_refutation + 1))
+                fail landed-refutation "the page '$title' says its step is not made and carries no command with output"
+            }
+        fi
+        # The proof, or the reason, is the one this tree commits for the page's title, never
+        # the text of the live page, which no reviewer of this pull request reads. A page that
+        # carries any of the three states is a step of the list, which stays the committed
+        # expected set of the pages that carry one. A page whose state is not the one the list
+        # commits for its title is failed once, by the list's step below.
+        entry="$(jq -c --arg t "$title" 'select(.title == $t)' "$steps" | head -1)"
+        if [ -z "$entry" ]; then
+            bad_proof=$((bad_proof + 1))
+            case "$state" in
+            landed) fail landed-proof "the page '$title' carries a Landed line, and the landed list of sources.json commits no proof for that title" ;;
+            refuted) fail landed-proof "the page '$title' says its step is not made, and the landed list of sources.json commits no step of that title" ;;
+            *) fail landed-proof "the page '$title' says its step is not landed, and the landed list of sources.json commits no step of that title" ;;
+            esac
+            continue
+        fi
+        [ "$(printf '%s' "$entry" | jq -r '.state // ""')" = "$state" ] || continue
+        [ "$state" != refuted ] || continue
+        if [ "$state" = not_landed ]; then
+            # The page says the condition sources.json commits, word for word, before the
+            # records in brackets, and names each record the list commits for the step.
+            condition="$(printf '%s' "$entry" | jq -r '.condition // ""')"
+            line="$(printf '%s\n' "$page" | grep -m1 -E '\*\*Not landed:\*\*')"
+            said="${line#*\*\*Not landed:\*\*}"
+            said="$(printf '%s' "${said%% (*}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/\.$//')"
+            if [ "$said" != "$condition" ]; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' says its step is not landed because it '$said', and sources.json commits the condition '$condition' for that step, word for word"
+            fi
+            while IFS= read -r record; do
+                [ -n "$record" ] || continue
+                # The record is read as a whole token (whole_token), and no `/` or `-` follows
+                # it either, so a reference is never read inside a longer one.
+                printf '%s\n' "$line" | grep -qP -- "$(whole_token "$record")(?![A-Za-z0-9_/-])" || {
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the page '$title' says its step is not landed, and its Not landed line does not name the record $record, which sources.json commits for that step"
+                }
+            done < <(printf '%s' "$entry" | jq -r '.record // [] | if type == "array" then .[] else empty end | strings')
+            continue
+        fi
+        want_commit="$(printf '%s' "$entry" | jq -r '.commit // ""')"
+        want_command="$(printf '%s' "$entry" | jq -r '.command // ""')"
+        merged_in="$(printf '%s' "$entry" | jq -r '.merged_in // ""')"
+        # The commit is the whole word after the label on the page's one Landed line, a word
+        # being what spaces and tabs bound, and it is read only when it is seven to forty
+        # lowercase hexadecimal digits: a word with anything else in it, as a commit with a
+        # mistyped character or a forty-first digit glued to it, is no commit this gate reads,
+        # and fails, naming the page and the line, rather than being read as the digits it
+        # starts with, which git may resolve to the committed commit.
+        line="$(printf '%s\n' "$page" | grep -m1 -F -- '**Landed:**')"
+        commit="${line#*\*\*Landed:\*\*}"
+        commit="${commit#"${commit%%[![:space:]]*}"}"
+        commit="${commit%%[[:space:]]*}"
+        if ! [[ "$commit" =~ ^[0-9a-f]{7,40}$ ]]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' names its commit as '$commit' on its Landed line, which is no commit this gate reads: a commit is seven to forty lowercase hexadecimal digits, one word of its own after the label, and the line reads '${line:0:240}'"
+            continue
+        fi
+        # The page may write the commit abbreviated; it names the committed one when git
+        # reads the two as the same commit: in this repository for a commit of this pull
+        # request, and in IOC_MERGED_REPO for one another pull request merged.
+        if [ -n "$merged_in" ]; then
+            named="$([ -n "$commit" ] && git -C "$IOC_MERGED_REPO" rev-parse --verify --quiet "$commit^{commit}" 2>/dev/null)"
+            if [ -z "$named" ] || [ "$named" != "$want_commit" ]; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' names the commit '$commit', and sources.json commits '$want_commit', which $merged_in merged, as the commit of that step"
+                continue
+            fi
+            # The page says which pull request made the step, beside its commit.
+            if ! printf '%s\n' "$page" | grep -m1 -E '\*\*Landed:\*\*' | grep -qF -- "($merged_in)"; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' names the commit '$commit' and not '($merged_in)', the pull request sources.json says merged it, on its Landed line"
+                continue
+            fi
+        else
+            named="$([ -n "$commit" ] && git -C "$ROOT" rev-parse --verify --quiet "$commit^{commit}" 2>/dev/null)"
+            if [ -z "$named" ] || [ "$named" != "$(git -C "$ROOT" rev-parse --verify --quiet "$want_commit^{commit}" 2>/dev/null)" ]; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' names the commit '$commit', and sources.json commits '$want_commit' as the commit of that step"
+                continue
+            fi
+            # A commit of this pull request is one this branch added (pr_commits): a commit
+            # of the base branch, whether before the fork or brought in by a forward merge, is
+            # on main and lands nothing here, so naming one is no proof of a step.
+            if ! pr_commits | grep -qx "$named"; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' names the commit '$commit', which this pull request did not add: it is not on the pull request's own line of $history, past $(our_commit) and the base commits its forward merges brought in"
+                continue
+            fi
+        fi
+        command="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Proven by:\*\*[[:space:]]*`[^`]+`' | sed 's/.*`\(.*\)`/\1/')"
+        if [ -z "$want_command" ] || [ "$command" != "$want_command" ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' names the proof command '$command', and sources.json commits '$want_command' as the proof of that step"
+            continue
+        fi
+        # The proof runs as a row's command does, under BOUND_ROW (the header's "Every child
+        # the gate waits on ends"): a signal or the bound ends the mode cannot run. It reads
+        # /dev/null as its input, so a proof that reads its input never takes the pages the
+        # loop has not reached (case 242).
+        if ! (cd "$ROOT" && bounded "$BOUND_ROW" "the committed proof of the page '$title'" bash -c "$want_command" </dev/null >/dev/null 2>&1); then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the committed proof of the page '$title', '$want_command', exits non-zero"
+        fi
+    done < <(page_blocks)
+    # The expected set is committed: each step sources.json's landed list names is held to
+    # a page of the judgement that carries the state the list commits for it, landed,
+    # not_landed or refuted, the last a page that says Landed: not made with its Refuted by
+    # line, so a judgement that lost a Landed or Not landed line, or a page, or every page,
+    # is no pass, and neither is a page that says Landed for a step the list says is not. A
+    # list with no step is no pass either. A landed step stands where it was made: each
+    # sentence a step of this pull request published is in its file in the checkout, ROOT,
+    # so a change the tree no longer carries is no landed step, whatever its commit and its
+    # proof say; and a step another pull request of this tree made (merged_in) stands in its
+    # file at the merge commit sources.json commits, read in IOC_MERGED_REPO, whose subject
+    # ends "(#<n>)" with the number merged_in names, a fixed fact of that commit.
+    local steps_read=0 steps_landed=0 steps_merged=0 steps_not=0 steps_refuted=0 not_landed="" page_state path sentence published subject merged_prs=""
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        steps_read=$((steps_read + 1))
+        title="$(printf '%s' "$entry" | jq -r '.title // ""')"
+        state="$(printf '%s' "$entry" | jq -r '.state // ""')"
+        merged_in="$(printf '%s' "$entry" | jq -r '.merged_in // ""')"
+        want_commit="$(printf '%s' "$entry" | jq -r '.commit // ""')"
+        page_state=""
+        while IFS=$'\t' read -r carried line; do
+            [ "$line" = "$title" ] && page_state="$carried" && break
+        done <"$found"
+        case "$state" in
+        landed)
+            steps_landed=$((steps_landed + 1))
+            [ "$page_state" = landed ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title', which sources.json's landed list commits, has no page of the judgement that carries its Landed line${page_state:+: $(landed_state_words "$page_state")}"
+            }
+            if [ -n "$merged_in" ]; then
+                steps_merged=$((steps_merged + 1))
+                case " $merged_prs " in *" $merged_in "*) ;; *) merged_prs="${merged_prs:+$merged_prs }$merged_in" ;; esac
+                if ! [[ "$merged_in" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' is merged in '$merged_in' in sources.json, which names no pull request as <owner>/<repository>#<number>"
+                elif ! [[ "$want_commit" =~ ^[0-9a-f]{40}$ ]]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title', merged in $merged_in, commits '$want_commit' in sources.json, which is no whole commit id"
+                elif ! subject="$(git -C "$IOC_MERGED_REPO" log -1 --format=%s "$want_commit" 2>/dev/null)" || [ -z "$subject" ]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' commits $want_commit, merged in $merged_in, and the fetch of $(jq -r '.our_repository.url // ""' "$EVIDENCE/sources.json") did not bring that commit"
+                elif [[ "$subject" != *"(#${merged_in##*#})" ]]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' commits $want_commit, whose subject '$subject' does not end '(#${merged_in##*#})', and sources.json says $merged_in merged it"
+                fi
+            fi
+            published=0
+            while IFS=$'\x1f' read -r path sentence; do
+                published=$((published + 1))
+                if [ -z "$path" ] || [ -z "$sentence" ]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' lists a published entry with no path or no sentence in sources.json"
+                elif [ -n "$merged_in" ]; then
+                    git -C "$IOC_MERGED_REPO" show "$want_commit:$path" 2>/dev/null | grep -qF -- "$sentence" || {
+                        bad_proof=$((bad_proof + 1))
+                        fail landed-proof "the landed step '$title' published '$sentence' in $path, and $path at $want_commit, which $merged_in merged, does not carry it, so the step is not in that commit"
+                    }
+                elif ! grep -qF -- "$sentence" "$ROOT/$path" 2>/dev/null; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' published '$sentence' in $path, and this tree's $path does not carry it, so the step is not in the tree"
+                fi
+            done < <(printf '%s' "$entry" | jq -r '.published // [] | if type == "array" then .[] else empty end | [(.path // ""), (.sentence // "")] | join("\u001f")')
+            [ "$published" -gt 0 ] || {
+                bad_proof=$((bad_proof + 1))
+                if [ -n "$merged_in" ]; then
+                    fail landed-proof "the landed step '$title' lists no sentence it published in sources.json, so nothing of it is read at its commit"
+                else
+                    fail landed-proof "the landed step '$title' lists no sentence it published in sources.json, so nothing of it is read in this tree"
+                fi
+            }
+            ;;
+        not_landed)
+            steps_not=$((steps_not + 1))
+            [ "$page_state" = not_landed ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title', which sources.json's landed list commits, has no page of the judgement that carries its Not landed line${page_state:+: $(landed_state_words "$page_state")}"
+            }
+            condition="$(printf '%s' "$entry" | jq -r '.condition // ""')"
+            printf '%s\n' "$R12_CONDITIONS" | grep -qxF -- "$condition" || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title' is not landed for the condition '$condition' in sources.json, which is none of R12's four: $(printf '%s' "$R12_CONDITIONS" | sed "s/.*/'&'/" | paste -sd, - | sed 's/,/, /g')"
+            }
+            [ "$(printf '%s' "$entry" | jq '.record // [] | if type == "array" then map(strings | select(length > 0)) | length else 0 end')" -gt 0 ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title' is not landed, and sources.json commits no record of why"
+            }
+            while IFS=$'\t' read -r record line; do
+                printf '%s' "$entry" | jq -e --arg r "$record" '(.record // []) | if type == "array" then any(.[]; . == $r) else false end' >/dev/null || continue
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the record $record of the step '$title', which is not landed, resolves to no node Dispatch holds: Dispatch answered '$line'"
+            done <"$unresolved"
+            not_landed="${not_landed:+$not_landed; }'$title', not landed because it $condition"
+            ;;
+        refuted)
+            steps_refuted=$((steps_refuted + 1))
+            [ "$page_state" = refuted ] || {
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the step '$title', which sources.json's landed list commits as not made, has no page of the judgement that says Landed: not made${page_state:+: $(landed_state_words "$page_state")}"
+            }
+            ;;
+        *)
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed, not_landed or refuted"
+            ;;
+        esac
+    done <"$steps"
+    if [ "$steps_read" -eq 0 ]; then
+        bad_proof=$((bad_proof + 1))
+        fail landed-proof "sources.json's landed list names no step, so no step is held to a page"
+    fi
+    if [ "$read_pages" -lt "$PAGE_FLOOR" ]; then
+        bad_refutation=$((bad_refutation + 1))
+        fail landed-refutation "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so no page's refutation is judged"
+    fi
+    if [ "$bad_proof" -eq 0 ]; then
+        local verdict="the steps of sources.json's landed list, $steps_read in all, are $steps_landed landed and $steps_not not landed"
+        [ "$steps_refuted" -gt 0 ] && verdict="$verdict, and $steps_refuted more not made"
+        verdict="$verdict, each with a page that carries the state the list commits for it, and no page carries two states or a line of one twice; of the $read_pages candidate pages, $cost_low give their first step a cost of one engineer-day or less and each of them carries a state, and $cost_high a cost above one engineer-day"
+        [ "$((steps_landed - steps_merged))" -gt 0 ] && verdict="$verdict; each of the $((steps_landed - steps_merged)) pages landed in this pull request names the commit and the command sources.json commits for it, the commit is one this pull request added, each sentence its step published stands in its file in this tree, and the committed command passes"
+        [ "$steps_merged" -gt 0 ] && verdict="$verdict; each of the $steps_merged pages landed in another pull request of this tree, $merged_prs, names the commit and the pull request sources.json commits for it, the commit's subject ends with that pull request's number, each sentence its step published stands in its file at that commit, fetched from $(jq -r '.our_repository.url // ""' "$EVIDENCE/sources.json"), and the committed command passes with IOC_MERGED_REPO naming the fetched repository"
+        [ "$steps_not" -gt 0 ] && verdict="$verdict; each of the $steps_not pages not landed names the condition and every record sources.json commits for it, and Dispatch resolves every dispatch:// record among them, $resolved distinct: $not_landed"
+        pass landed-proof "$verdict"
+    fi
+    [ "$bad_refutation" -eq 0 ] && pass landed-refutation "of the $read_pages candidate pages, $refuted say their step is not made, and each of them carries a command with output"
+
+    landed_order
+    landed_no_refusal
+    landed_third_change
+    landed_coverage
+    landed_proof_holds
+}
+
+# landed_commit_of <phrase>; every commit of this pull request whose subject carries
+# <phrase>, one hash per line, newest first. It prints each of them and never the newest
+# alone, since a second commit of one subject leaves which of them is the step a guess.
+landed_commit_of() {
+    # shellcheck disable=SC2046
+    git -C "$ROOT" log --no-walk --format='%H %s' $(pr_commits) | grep -F "$1" | cut -d' ' -f1
+}
+
+# landed_order; the order R12 names, the shortfall rows before the rule that combines the
+# reviewer's two graders, is between the steps of sources.json's landed list, and is judged
+# only when every one of them is landed: a step not landed has no commit in this tree to be
+# ordered, and the line that passes says which steps are not and that the order is not
+# judged for that reason. A list with no step holds no order and fails. A step of this pull
+# request is one commit of it, found by its subject: when more than one commit carries the
+# subject of a step, the order is not judged on one of them, and the assertion fails,
+# naming them. Steps another pull request of this tree made (merged_in) are read by the
+# commits sources.json commits, in the list's order, which is R12's, the shortfall rows
+# first: steps that name one commit hold their order, since a commit is its own ancestor
+# (dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760), and different
+# commits are held to ancestry on main as fetched into IOC_MERGED_REPO, each an ancestor of
+# the next. A list that lands some steps here and some merged in fails, since no ancestry
+# is read between a commit of this pull request, which main does not hold, and one on main.
+landed_order() {
+    local rows rule not_landed which phrase commits many=0 all merged chain=() i
+    if [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json" 2>/dev/null || printf 0)" -eq 0 ]; then
+        fail landed-order "sources.json's landed list names no step, so no step of the order is held to a commit"
+        return
+    fi
+    not_landed="$(jq -r --arg q "'" '[.landed[] | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
+    if [ -n "$not_landed" ]; then
+        pass landed-order "the order of the shortfall rows' commit and the combining rule's is not judged, because it is judged only when every step of sources.json's landed list is landed, and these are not: $not_landed"
+        return
+    fi
+    all="$(jq '.landed | length' "$EVIDENCE/sources.json")"
+    merged="$(jq '[.landed[] | select((.merged_in // "") != "")] | length' "$EVIDENCE/sources.json")"
+    if [ "$merged" -gt 0 ]; then
+        if [ "$merged" -ne "$all" ]; then
+            fail landed-order "of the $all landed steps of sources.json's landed list, $merged are merged in another pull request and $((all - merged)) landed in this one, and no ancestry is read between a commit of this pull request, which main does not hold, and one on main"
+            return
+        fi
+        mapfile -t chain < <(jq -r '.landed[] | .commit // ""' "$EVIDENCE/sources.json")
+        if [ "$(printf '%s\n' "${chain[@]}" | sort -u | wc -l)" -eq 1 ]; then
+            pass landed-order "the $all steps of sources.json's landed list land in one commit, ${chain[0]}, merged in $(jq -r '[.landed[].merged_in] | unique | join(", ")' "$EVIDENCE/sources.json"), and a commit is its own ancestor, so their order holds"
+            return
+        fi
+        for ((i = 0; i + 1 < ${#chain[@]}; i++)); do
+            git -C "$IOC_MERGED_REPO" merge-base --is-ancestor "${chain[$i]}" "${chain[$((i + 1))]}" 2>/dev/null || {
+                fail landed-order "the commit ${chain[$i]} of step $((i + 1)) of sources.json's landed list is not an ancestor of ${chain[$((i + 1))]}, the commit of step $((i + 2)), on main as fetched, and the list names the steps in R12's order"
+                return
+            }
+        done
+        pass landed-order "the commits of the $all steps of sources.json's landed list, each merged in another pull request, stand on main as fetched each an ancestor of the next, in the list's order, the shortfall rows first"
+        return
+    fi
+    rows="$(landed_commit_of 'two graders are recorded as two rows')"
+    rule="$(landed_commit_of 'combines the reviewer')"
+    if [ -z "$rows" ] || [ -z "$rule" ]; then
+        fail landed-order "the two changes this issue commits to are not both in this pull request (rows='$(printf '%s' "$rows" | paste -sd' ' -)' rule='$(printf '%s' "$rule" | paste -sd' ' -)')"
+        return
+    fi
+    for which in rows rule; do
+        commits="${!which}"
+        [ "$(printf '%s\n' "$commits" | wc -l)" -gt 1 ] || continue
+        many=$((many + 1))
+        case "$which" in
+        rows) phrase="the shortfall rows ('two graders are recorded as two rows')" ;;
+        *) phrase="the combining rule ('combines the reviewer')" ;;
+        esac
+        fail landed-order "$(printf '%s\n' "$commits" | wc -l) commits of this pull request carry the subject of $phrase: $(printf '%s\n' "$commits" | paste -sd' ' -), so the order is not judged on one of them"
+    done
+    [ "$many" -eq 0 ] || return
+    if git -C "$ROOT" merge-base --is-ancestor "$rows" "$rule"; then
+        pass landed-order "the commit of the shortfall rows is an ancestor of the commit of the combining rule"
+    else
+        fail landed-order "the commit of the shortfall rows is not an ancestor of the commit of the combining rule"
+    fi
+}
+
+# landed_no_refusal and landed_third_change read this pull request's own diff, against the
+# base its last forward merge brought in, and the diff of each commit another pull request
+# of this tree merged, against its parent (merged_diff), so a step made there is read as one
+# made here.
+landed_no_refusal() {
+    local touched merged
+    merged="$(merged_diff --name-only -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)" || {
+        fail landed-no-refusal "the diff of a merged-in step's commit against its parent is not there to read in $IOC_MERGED_REPO, so what it touches is not read"
+        return
+    }
+    touched="$(git -C "$ROOT" diff --name-only "$(pr_base)" "$(history_ref)" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)${merged:+$'\n'$merged}"
+    if [ -n "$touched" ]; then
+        fail landed-no-refusal "a landed step touches a refusal path: $(printf '%s' "$touched" | tr '\n' ' ')"
+        return
+    fi
+    local added
+    merged="$(merged_diff -- '*.go' '*.ts' '*.sql')" || {
+        fail landed-no-refusal "the diff of a merged-in step's commit against its parent is not there to read in $IOC_MERGED_REPO, so what it adds is not read"
+        return
+    }
+    added="$({ git -C "$ROOT" diff "$(pr_base)" "$(history_ref)" -- '*.go' '*.ts' '*.sql'; printf '%s\n' "$merged"; } | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
+    if [ "${added:-0}" -eq 0 ]; then
+        pass landed-no-refusal "no landed step touches a refusal path of the daemon or of Dispatch, and none adds a refusal constant"
+    else
+        fail landed-no-refusal "a landed step adds what reads as a refusal constant ($added lines)"
+    fi
+}
+
+landed_third_change() {
+    # The third change the earlier reading proposed is a page with a cost and a default,
+    # and the gate reads it by name rather than by the diff rule, because it could be
+    # landed as prose in a skill and the diff rule alone would pass it.
+    local hits merged
+    merged="$(merged_diff -- skills packages/daemon/internal/prompts)" || {
+        fail landed-third-change "the diff of a merged-in step's commit against its parent is not there to read in $IOC_MERGED_REPO, so whether it lands the third change is not read"
+        return
+    }
+    hits="$({ git -C "$ROOT" diff "$(pr_base)" "$(history_ref)" -- skills packages/daemon/internal/prompts; printf '%s\n' "$merged"; } |
+        grep -E '^\+' | grep -ciE 'refus(e|ed|es|al).{0,80}(reviewer|review) completion|completion .{0,40}no pair result|REVIEWER_PAIR_REQUIRED' || true)"
+    if [ "${hits:-0}" -eq 0 ]; then
+        pass landed-third-change "the third change, a refusal of a reviewer completion with no pair result, is landed in no form, in this pull request or in a commit another pull request of this tree merged"
+    else
+        fail landed-third-change "the third change is landed in this tree or in a merged-in step's commit in $hits place(s), and it is a page with a cost and a default"
+    fi
+}
+
+# landed_coverage; a step another pull request of this tree made is held to the whole of
+# what its merge commit added to the files it publishes in, and not only to the sentences
+# its published list names, so a sentence the commit added that the list leaves out is no
+# sentence nothing reads. For each merge commit and each path the published list of a
+# merged-in step of that commit names, every non-blank line the commit added to the path
+# (git diff <commit>^ <commit> -- <path>, its + lines, read in IOC_MERGED_REPO) is covered:
+# with its backticks taken out, and each sentence any merged-in step of that commit
+# publishes on that path taken out of it, its backticks taken out too, what is left is
+# whitespace and at most one list marker, -, * or <n>., and nothing else; a bold label,
+# as **Thermo:**, is no list marker. A line with anything else left fails, naming the steps,
+# the file and the line, and so does a path the commit added no line to, since then the
+# commit did not make the sentences listed there.
+landed_coverage() {
+    local commit path titles line left sentence added in_hunk found bad=0 lines=0 paths=0
+    local -a sentences
+    while IFS=$'\t' read -r commit path; do
+        paths=$((paths + 1))
+        titles="$(jq -r --arg c "$commit" --arg p "$path" --arg q "'" '[.landed[] | select(.state == "landed" and (.merged_in // "") != "" and .commit == $c and any(.published[]?; .path == $p)) | $q + .title + $q] | join(", ")' "$EVIDENCE/sources.json")"
+        mapfile -t sentences < <(jq -r --arg c "$commit" --arg p "$path" '.landed[] | select(.state == "landed" and (.merged_in // "") != "" and .commit == $c) | .published[]? | select(.path == $p) | .sentence // "" | gsub("`"; "")' "$EVIDENCE/sources.json")
+        if ! added="$(git -C "$IOC_MERGED_REPO" diff --no-color --no-ext-diff -U0 "$commit^" "$commit" -- "$path" 2>/dev/null)"; then
+            bad=$((bad + 1))
+            fail landed-coverage "the diff of $commit against its parent is not there to read in $IOC_MERGED_REPO, so what it added to $path, where the merged-in steps $titles publish, is not read"
+            continue
+        fi
+        in_hunk=0 found=0
+        while IFS= read -r line; do
+            case "$line" in @@*) in_hunk=1 && continue ;; esac
+            [ "$in_hunk" = 1 ] && [ "${line:0:1}" = + ] || continue
+            line="${line:1}"
+            [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+            found=$((found + 1)) lines=$((lines + 1))
+            left="${line//\`/}"
+            for sentence in "${sentences[@]}"; do
+                [ -n "$sentence" ] && left="${left//"$sentence"/}"
+            done
+            [[ "$left" =~ ^[[:space:]]*([-*]|[0-9]+\.)?[[:space:]]*$ ]] && continue
+            bad=$((bad + 1))
+            fail landed-coverage "the line '$line', which $commit added to $path, is not covered by the sentences the merged-in steps $titles publish there: '$(printf '%s' "$left" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | head -c 240)' is left of it, and a merged-in step's published list holds every line its merge commit added to the files it names"
+        done <<<"$added"
+        if [ "$found" -eq 0 ]; then
+            bad=$((bad + 1))
+            fail landed-coverage "$commit added no line to $path, where the merged-in steps $titles publish, so the commit did not make the sentences listed there"
+        fi
+    done < <(jq -r '.landed // [] | .[] | select(.state == "landed" and (.merged_in // "") != "" and ((.commit // "") | test("^[0-9a-f]{40}$"))) | .commit as $c | (.published // [] | if type == "array" then .[] else empty end) | select((.path // "") != "") | [$c, .path] | @tsv' "$EVIDENCE/sources.json" | sort -u)
+    if [ "$paths" -eq 0 ]; then
+        pass landed-coverage "no step of sources.json's landed list is merged in another pull request, so no merge commit's added lines are read"
+    elif [ "$bad" -eq 0 ]; then
+        pass landed-coverage "each of the $lines non-blank lines the merge commits of the merged-in steps added to the $paths files their published lists name is covered by the sentences those steps publish there, all but whitespace and a list marker"
+    fi
+}
+
+# landed_proof_holds; the proof the page of a merged-in step writes holds every sentence the
+# step publishes: each published sentence, its backticks taken out, stands in the page's
+# Proven by command, read from its code span, which holds no backtick, with each '\'' read
+# as the ' it writes inside the command's single quotes. A proof that greps for less than
+# its step publishes still passes with a sentence gone from the commit, so a sentence the
+# proof does not hold fails, naming the step, the file and the sentence.
+landed_proof_holds() {
+    local page title command entry path sentence quote="'\\''" bad=0 steps=0 held=0
+    local -A proven=()
+    while IFS= read -r -d $'\f' page; do
+        title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
+        proven["$title"]="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Proven by:\*\*[[:space:]]*`[^`]+`' | sed 's/.*`\(.*\)`/\1/')"
+    done < <(page_blocks)
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        steps=$((steps + 1))
+        title="$(printf '%s' "$entry" | jq -r '.title // ""')"
+        command="${proven[$title]-}"
+        command="${command//"$quote"/"'"}"
+        if [ -z "$command" ]; then
+            bad=$((bad + 1))
+            fail landed-proof-holds "the page of the merged-in step '$title' writes no Proven by command, so its proof holds none of the sentences the step publishes"
+            continue
+        fi
+        while IFS= read -r path && IFS= read -r sentence; do
+            [ -n "$sentence" ] || continue
+            if [[ "$command" == *"${sentence//\`/}"* ]]; then
+                held=$((held + 1))
+            else
+                bad=$((bad + 1))
+                fail landed-proof-holds "the proof the page of the merged-in step '$title' writes does not hold the sentence '$sentence' the step publishes in $path, its backticks taken out, so a commit without it still passes the proof"
+            fi
+        done < <(printf '%s' "$entry" | jq -r '.published // [] | if type == "array" then .[] else empty end | (.path // ""), (.sentence // "")')
+    done < <(jq -c '.landed // [] | .[] | select(.state == "landed" and (.merged_in // "") != "")' "$EVIDENCE/sources.json")
+    if [ "$steps" -eq 0 ]; then
+        pass landed-proof-holds "no step of sources.json's landed list is merged in another pull request, so no proof is held to the sentences of a merge commit"
+    elif [ "$bad" -eq 0 ]; then
+        pass landed-proof-holds "the proof each of the $steps pages of a merged-in step writes holds each of the $held sentences its step publishes, backticks taken out"
+    fi
+}
+
+# ---------------------------------------------------------------- --published
+
+# R8's sentence where no gap is found, which published-delivery reads in the judgement when
+# node-model.md's section of the gaps cites none, and the topic of the project's controller,
+# the role that gives work to trees, to which R13 has the ranked list published.
+R8_NO_GAP='The node model holds a finding with its evidence and its verdict, and no gap was found.'
+CONTROLLER_TOPIC='notifications.role.legion-infra-controller'
+
+# delivery_parts; prints, as one JSON object, what published-delivery holds the message to,
+# read from the judgement judgement_load read: ranking, the items of the list under "## The
+# ranking", in order, each item's lines joined and its number taken off; differ, the text
+# under "## Where the authors' account and the checked reading differ", every paragraph of
+# it; and candidates, each candidate page whose Cost cost_read reads as above one
+# engineer-day, by its title and the text of its "Default if nobody answers" line. An item
+# runs from its number to the next item, heading or blank line, and on past a blank line
+# only by an indented line; the first other line after a blank line ends the list.
+delivery_parts() {
+    local page cost
+    {
+        judgement_text | awk -v differ="## Where the authors' account and the checked reading differ" '
+            function flush() { if (item != "") print "item\t" item; item = "" }
+            /^#+ / { flush(); ranking = ($0 == "## The ranking"); seen = 0; listed = 0; blank = 0; in_differ = ($0 == differ); next }
+            ranking && !listed {
+                if (match($0, /^[0-9]+[.)][ \t]+/)) { flush(); item = substr($0, RLENGTH + 1); seen = 1; blank = 0; next }
+                if ($0 ~ /^[ \t]*$/) { blank = 1; next }
+                if (!seen) next
+                if (!blank || $0 ~ /^(  |\t)/) { item = item " " $0; blank = 0; next }
+                flush(); listed = 1; next
+            }
+            in_differ { print "differ\t" $0 }
+            END { flush() }'
+        while IFS= read -r -d $'\f' page; do
+            cost="$(printf '%s\n' "$page" | cost_read)"
+            [ "${cost%%$'\t'*}" = high ] || continue
+            printf 'candidate\t%s\t%s\n' "$(printf '%s\n' "$page" | head -1 | sed 's/^### //')" \
+                "$(printf '%s\n' "$page" | grep -m1 -F -- '**Default if nobody answers:**' | sed 's/^.*\*\*Default if nobody answers:\*\*[[:space:]]*//')"
+        done < <(page_blocks)
+    } | jq -Rn '[inputs | split("\t")] | {
+        ranking: [.[] | select(.[0] == "item") | .[1:] | join("\t")],
+        differ: ([.[] | select(.[0] == "differ") | .[1:] | join("\t")] | join("\n")),
+        candidates: [.[] | select(.[0] == "candidate") | {title: .[1], default: (.[2:] | join("\t"))}]}'
+}
+
+# delivery_judge <directory>; judges the record of the delivery from the four reads of
+# Dispatch mode_published wrote into <directory> and the judgement, by the rule of the
+# header's "--published reads", and prints one line per verdict: fail or pass, a tab, and
+# the line published-delivery prints. The gaps are the rows node-model.md's section "## 3.
+# The gaps" cites on the bold line of each gap. It returns non-zero when what it reads
+# could not be read, as an answer of Dispatch that is no JSON.
+delivery_judge() {
+    local work="$1" parts gaps='[]' program
+    parts="$(delivery_parts)" || return 1
+    if [ -r "$EVIDENCE/node-model.md" ]; then
+        gaps="$(awk '/^##? / { on = ($0 ~ /^## ([0-9]+\. )?The gaps$/); next } on && /^\*\*/' "$EVIDENCE/node-model.md" |
+            grep -oE '\[[a-z0-9][a-z0-9-]*(, *[a-z0-9][a-z0-9-]*)*\]' | sed 's/[][ ]//g' | tr ',' '\n' | jq -Rn '[inputs | select(length > 0)] | unique')" || return 1
+    fi
+    program="$(
+        cat <<'JQ'
+def norm: gsub("[ \t\r\n]*\\[[a-z0-9][a-z0-9-]*(, *[a-z0-9][a-z0-9-]*)*\\]"; "")
+    | gsub("[`*]"; "")
+    | gsub("(?<a>^|[^A-Za-z0-9])_+"; "\(.a // "")")
+    | gsub("_+(?<a>[^A-Za-z0-9]|$)"; "\(.a // "")")
+    | gsub("\\s+"; " ") | ltrimstr(" ") | rtrimstr(" ");
+def after($s): split($s) as $p | if ($p | length) > 1 then $p[1:] | join($s) else null end;
+def lacking($items): reduce range(0; $items | length) as $i ({rest: ., lacks: []};
+    (.rest | after($items[$i])) as $r | if $r == null then .lacks += [$i + 1] else .rest = $r end) | .lacks;
+def items: (if length > 1 then "items " else "item " end) + (map(tostring) | join(", "))
+    + " of the list under '## The ranking' " + (if length > 1 then "are" else "is" end);
+def not_in_order($label): if length > 0 then "\($label): \(items) not in it, one after another in the list's order" else empty end;
+# under($c; $p): where the default of the candidate $c stands: the text after the last place its title stands, since the ranking names it first, up to the first title of another candidate; null where the title is not in the text.
+def under($c; $p): split($c.title) as $s | if ($s | length) > 1 then reduce ($p.candidates[] | select(.title != $c.title) | .title) as $t ($s[-1]; split($t)[0]) else null end;
+def when: (.created_at // "") | rtrimstr("Z") | split(".") | [.[0], ((.[1] // "") + "000000000")[0:9]];
+def list: if type == "array" then .[] | select(type == "object") else empty end;
+def cites($id): (.body // "") | test("(^|[^a-z0-9-])" + $id + "($|[^a-z0-9-])");
+def lacks($p): ((.body // "") | norm) as $b
+    | [($b | lacking($p.ranking) | not_in_order("the ranking")),
+       (if ($b | contains($p.differ)) then empty else "the paragraph on where the two accounts differ, the text under '## Where the authors' account and the checked reading differ'" end),
+       ($p.candidates[] as $c | ($b | under($c; $p)) as $r
+         | if $r == null then "the candidate '\($c.name)', above one engineer-day, with its default: its title is not in it"
+           elif ($r | contains($c.default)) then empty
+           else "the candidate '\($c.name)', above one engineer-day, with its default: its default does not follow its title" end)];
+# stamp: a UTC time in RFC 3339 form, as 2026-11-25T02:09:09Z, standing after no digit.
+def stamp: "(^|[^0-9])(?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z)";
+# recorded_lacks($p): what a record of the publication lacks of the ranking as published and
+# the time of the publication, one sentence each.
+def recorded_lacks($p):
+    [((.body // "") | norm | lacking($p.ranking) | not_in_order("the ranked list as published")),
+       (if ((.body // "") | test(stamp)) then empty else "the time of the publication, a UTC time in RFC 3339 form, as 2026-11-25T02:09:09Z" end)];
+($parts | {ranking: [.ranking[] | norm | select(length > 0)], differ: (.differ | norm),
+    candidates: [.candidates[] | {name: .title, title: (.title | norm), default: (.default | norm)}]}) as $p
+| ((($issue[0] // {}).assignee // "") | ascii_downcase) as $assignee
+| [$messages[0] | list | (.message, (.replies | list)) | select(type == "object")
+    | select(.target == null and ((.author.kind // "") != "user" or ((.author.id // "") | ascii_downcase) != $assignee))] as $sent
+| [$sent[] | select(lacks($p) | length == 0)] as $holding
+| ($sent | sort_by(when) | last) as $newest
+| [$upstream[0] | list | select((.body // "") | contains("INFRA-3134"))] as $named
+| (if ($gaps | length) > 0 then
+     ([$named[] | select(. as $c | all($gaps[]; . as $g | $c | cites($g)))] | first) as $gapped
+     | if $gapped != null then {pass: "the comment dispatch://INFRA-1098/comment/\($gapped.id) names this issue and cites each of the \($gaps | length) gaps node-model.md records"}
+       elif ($named | length) == 0 then {fails: ["no comment of dispatch://INFRA-1098 names INFRA-3134, so none records the gaps node-model.md's section of the gaps lists, the rows \($gaps | join(", "))"]}
+       else ($named | sort_by(when) | last) as $c
+         | {fails: ["no comment of dispatch://INFRA-1098 that names INFRA-3134 cites each gap node-model.md's section of the gaps lists: the newest, dispatch://INFRA-1098/comment/\($c.id), does not cite \([$gaps[] | . as $g | select($c | cites($g) | not)] | join(", "))"]}
+       end
+   elif ($judgement | norm | contains($nogap | norm)) then {pass: "node-model.md's section of the gaps cites no gap, and the judgement says so in R8's words"}
+   else {fails: ["node-model.md's section of the gaps cites no gap's row, and the judgement does not say '\($nogap)', the sentence R8 asks for where no gap is found"]} end) as $d
+| [$comments[0] | list | select((.body // "") | norm | contains($topic))] as $recorded
+| ([$recorded[] | select(recorded_lacks($p) | length == 0)] | first) as $published
+| (if ($recorded | length) == 0 then {fails: ["no comment of this issue records the publication of the ranked list to the project's controller: none names the topic \($topic)"]}
+   elif $published == null then ($recorded | sort_by(when) | last) as $c
+     | {fails: [($c | recorded_lacks($p))[] | "the comment dispatch://INFRA-3134/comment/\($c.id), the newest of this issue that names the topic \($topic), does not carry \(.)"]}
+   else {pass: "the comment dispatch://INFRA-3134/comment/\($published.id) records the publication of the ranked list to \($topic) at \($published.body | capture(stamp).t), its \($p.ranking | length) items in order"} end) as $e
+| [(if ($p.ranking | length) == 0 then "the judgement's list under '## The ranking' holds no item, so neither the message nor the publication is held to the ranking" else empty end),
+   (if $p.differ == "" then "the judgement carries no text under '## Where the authors' account and the checked reading differ', so no message is held to the paragraph on where the two accounts differ" else empty end),
+   ($p.candidates[] | select(.default == "") | "the candidate page '\(.name)', above one engineer-day, carries no text on its Default if nobody answers line, so no message is held to its default"),
+   (if $assignee == "" then "this issue names no assignee, so no message on it reaches one"
+    elif ($holding | length) > 0 then empty
+    elif $newest == null then "no message on this issue reaches its assignee: none is one the assignee did not write and that is addressed to no session or role"
+    else ($newest | lacks($p))[] as $part | "the newest message on this issue to its assignee, dispatch://INFRA-3134/message/\($newest.id) of \($newest.created_at // "no time"), does not carry \($part)" end),
+   ($d, $e | (.fails // [])[])] as $fails
+| if ($fails | length) > 0 then $fails[] | "fail\t" + .
+  else "pass\tthe record of the delivery is on the issue: the message dispatch://INFRA-3134/message/\($holding[0].id) carries the \($p.ranking | length) items of the ranking in order, the paragraph on where the two accounts differ and the \($p.candidates | length) candidates above one engineer-day, each with its default; \($d.pass); and \($e.pass)" end
+JQ
+    )"
+    jq -rn --slurpfile issue "$work/issue" --slurpfile messages "$work/messages" --slurpfile comments "$work/comments" \
+        --slurpfile upstream "$work/upstream" --rawfile judgement "$RUN_SCRATCH/judgement.md" --argjson parts "$parts" \
+        --argjson gaps "$gaps" --arg nogap "$R8_NO_GAP" --arg topic "$CONTROLLER_TOPIC" "$program"
+}
+
+mode_published() {
+    local remote head work="$RUN_SCRATCH/published-mode"
+    remote="$(jq -r '.our_repository.url' "$EVIDENCE/sources.json")"
+    mkdir -p "$work"
+    # The live inputs, read through live_read before any assertion judges: the four
+    # Dispatch reads the delivery is judged by, the comments and the messages of this issue,
+    # the comments of INFRA-1098 and the issue itself, which names its assignee; the
+    # judgement, whose paths published-tree reads and whose ranking, paragraph and pages
+    # published-delivery holds the delivery to; then the default branch from GitHub,
+    # fetched into a clone of this run's scratch and never into this repository's own
+    # object store, and, when a step of sources.json's landed list is landed, the branch's
+    # history, its commits without their trees, and the commit each landed step is read at:
+    # its own, where that history holds it, or, for a step of this pull request, the squash
+    # that carries the pull request. A source that does not answer ends the mode, exit 2.
+    live_read "Dispatch, the read of the comments of INFRA-3134" "$work/comments" dispatch_get '/api/v1/issues/INFRA-3134/comments?limit=200'
+    live_read "Dispatch, the read of the messages of INFRA-3134" "$work/messages" dispatch_get '/api/v1/issues/INFRA-3134/messages?limit=200'
+    live_read "Dispatch, the read of the comments of INFRA-1098" "$work/upstream" dispatch_get '/api/v1/issues/INFRA-1098/comments?limit=200'
+    live_read "Dispatch, the read of INFRA-3134" "$work/issue" dispatch_get '/api/v1/issues/INFRA-3134'
+    judgement_load
+    head="${IOC_PUBLISHED_COMMIT:-}"
+    if [ -z "$head" ]; then
+        live_read "GitHub, the read of the default branch of $remote" "$work/ls-remote" git ls-remote "$remote" refs/heads/main
+        head="$(cut -f1 "$work/ls-remote")"
+    fi
+    local clone="$work/clone" history_repo="$work/history" missing=0 path landed_steps=0 not_landed="" named=0
+    local title sentence state index kind commit at said pr squash="" squashes="" squashed=0 read_at_squash=""
+    local -A step_at=()
+    # The landed steps, one line each: the step's index in the list; merged for a step
+    # another pull request merged (merged_in), ours for a step of this pull request; its
+    # commit; its title. The fields are joined by the unit separator, which is no
+    # whitespace to read, so an empty commit or title stays empty and shifts no field after
+    # it, as a tab would, since read merges runs of a whitespace separator.
+    local landed_rows='.landed // [] | to_entries[] | select(.value.state == "landed") | [(.key | tostring), (if (.value.merged_in // "") != "" then "merged" else "ours" end), (.value.commit // ""), (.value.title // "")] | join("\u001f")'
+    if [ -n "$head" ]; then
+        git init --quiet "$clone" 2>/dev/null || cannot_run environment " --published: git init of the scratch clone failed."
+        live_read "GitHub, the fetch of $head from $remote" "$work/fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$head"
+        # The clone holds the one commit it fetched at depth 1, so ancestry needs the
+        # branch's history: its commits, without their trees, are fetched once, only when a
+        # step is landed, into a repository of their own under this run's scratch, and
+        # listed once. The list is read, never git merge-base: the history is a partial
+        # clone, and merge-base fetches a commit it does not hold from the remote before it
+        # answers, as it did for a commit of this pull request in 3 s against GitHub on
+        # 2026-11-25. Each landed step is then given the commit it is read at, in step_at:
+        # its own commit, where the list names it whole; for a step of this pull request
+        # whose commit the list does not name, since main holds only the pull request's
+        # squash, the one commit of the branch's first parents whose subject ends "(#<n>)",
+        # <n> being our_repository.pull_request of sources.json, read from the same history,
+        # which needs no tree; else a word saying why there is none: unheld for a merged-in
+        # step, no-pull-request where that field is no positive whole number, and
+        # squashes=<count> where not one commit's subject ends so. Each commit a step is
+        # read at is fetched into the clone, unless the clone holds it already, as it holds
+        # the branch's commit and a commit an earlier step names, so the assertions below
+        # read no live source.
+        landed_steps="$(jq '[.landed[]? | select(.state == "landed")] | length' "$EVIDENCE/sources.json")"
+        if [ "$landed_steps" -gt 0 ]; then
+            git init --quiet "$history_repo" 2>/dev/null || cannot_run environment " --published: git init of the scratch repository of the default branch's history failed."
+            live_read "GitHub, the fetch of the history of $head from $remote" "$work/history.log" git -C "$history_repo" fetch --quiet --filter=tree:0 --no-tags "$remote" "$head"
+            git -C "$history_repo" rev-list "$head" >"$work/history.list" 2>/dev/null ||
+                cannot_run environment " --published: git rev-list of the fetched history of $head failed."
+            pr="$(jq -r '.our_repository.pull_request | if type == "number" and . > 0 and . == floor then tostring else "" end' "$EVIDENCE/sources.json")"
+            while IFS=$'\x1f' read -r index kind commit title; do
+                at="$commit"
+                if ! grep -qxF -- "$commit" "$work/history.list"; then
+                    if [ "$kind" = merged ]; then
+                        at=unheld
+                    elif [ -z "$pr" ]; then
+                        at=no-pull-request
+                    else
+                        if [ -z "$squashes" ]; then
+                            git -C "$history_repo" log --first-parent --format='%H %s' "$head" >"$work/first-parents" 2>/dev/null ||
+                                cannot_run environment " --published: git log of the first parents of $head failed."
+                            squash="$(grep -E "^[0-9a-f]{40} .*\\(#$pr\\)\$" "$work/first-parents" | cut -d' ' -f1)"
+                            squashes="$(printf '%s' "$squash" | grep -c '^')"
+                        fi
+                        at="$squash"
+                        [ "$squashes" -eq 1 ] || at="squashes=$squashes"
+                    fi
+                fi
+                step_at[$index]="$at"
+                case "$at" in
+                unheld | no-pull-request | squashes=*) continue ;;
+                esac
+                git -C "$clone" cat-file -e "$at^{commit}" 2>/dev/null ||
+                    live_read "GitHub, the fetch of $at, the commit the landed step '$title' is read at, from $remote" "$work/step-fetch.log" git -C "$clone" fetch --quiet --depth 1 --no-tags "$remote" "$at"
+            done < <(jq -r "$landed_rows" "$EVIDENCE/sources.json")
+        fi
+    fi
+    if [ -z "$head" ]; then
+        missing=$((missing + 1))
+        fail published-tree "GitHub answered that $remote has no default branch main, so nothing of this directory is published"
+    else
+        for path in questions.md check.sh citations.py sources.json claims.jsonl README.md interview/transcript.md; do
+            git -C "$clone" cat-file -e "$head:docs/research/internet-of-cognition/$path" 2>/dev/null || {
+                missing=$((missing + 1))
+                fail published-tree "the default branch at $head does not carry docs/research/internet-of-cognition/$path"
+            }
+        done
+        # Every path under this directory the judgement names, read over the whole document,
+        # front page and pages, stands at the commit: each run of the directory's name and the
+        # path characters after it, its trailing dots and slashes taken off, since a sentence
+        # ends a path with them and no path of the directory does. A judgement that names
+        # none is no pass, by the expected-set rule; a path of another repository is not read.
+        while IFS= read -r path; do
+            named=$((named + 1))
+            git -C "$clone" cat-file -e "$head:$path" 2>/dev/null || {
+                missing=$((missing + 1))
+                fail published-tree "the judgement names $path, and the default branch at $head does not carry it"
+            }
+        done < <(judgement_text | grep -oE 'docs/research/internet-of-cognition(/[A-Za-z0-9._+-]+)*' | sed 's#[./]*$##' | sort -u)
+        [ "$named" -gt 0 ] || {
+            missing=$((missing + 1))
+            fail published-tree "the judgement names no path under docs/research/internet-of-cognition/, so no file of this directory a page links to is read"
+        }
+        # The files each landed step changed are read at the step's own commit, by the
+        # sentences its own step added and not by a word the file carried before, and that
+        # commit is held to the default branch's history at the commit read above. The
+        # architect's reading of c-published
+        # (dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6) makes the
+        # step's commit, which main merged, this check's subject: main's tip may hold other
+        # words on the step's files, since later work of other trees changes them, and that
+        # work is not read. Its reading A2 reads the two kinds of landed step apart: a step
+        # another pull request merged (merged_in) at its own commit, which main's history
+        # must hold; a step of this pull request at its own commit where main's history
+        # holds it, as the fixture's does, and otherwise at the squash that carries this
+        # pull request, since main holds no commit of the pull request's own history. Each
+        # entry of sources.json's landed list whose state is landed lists its sentences as
+        # its `published` pairs, so a change to a rule edits that one list; a step not
+        # landed, or not made (refuted), changed no file and is not read, and the line that
+        # passes names it. A list with no step is no pass.
+        [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json")" -gt 0 ] || {
+            missing=$((missing + 1))
+            fail published-tree "sources.json's landed list names no step, so no landed step is read at its commit"
+        }
+        while IFS=$'\x1f' read -r title state; do
+            missing=$((missing + 1))
+            fail published-tree "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed, not_landed or refuted"
+        done < <(jq -r '.landed[]? | select(.state != "landed" and .state != "not_landed" and .state != "refuted") | [(.title // ""), (.state // "")] | join("\u001f")' "$EVIDENCE/sources.json")
+        while IFS= read -r title; do
+            missing=$((missing + 1))
+            fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read at its commit"
+        done < <(jq -r '.landed[]? | select(.state == "landed") | select((.published // []) | length == 0) | .title' "$EVIDENCE/sources.json")
+        # Each landed step is read at the commit step_at gives it above. A merged-in step
+        # whose commit the history does not hold fails, naming the step, its commit and the
+        # branch's commit, and its sentences are not read: a commit main never merged is no
+        # published step, whatever it carries. A step of this pull request with no squash to
+        # read fails the same way, naming why: no pull request number, or how many commits
+        # end their subject with it. Each pair of a step that has a commit is read in the
+        # file as that commit, fetched into the clone above, holds it.
+        while IFS=$'\x1f' read -r index kind commit title; do
+            at="${step_at[$index]}" said="commits $commit"
+            case "$at" in
+            unheld)
+                missing=$((missing + 1))
+                fail published-tree "the landed step '$title' commits $commit, and the default branch's history at $head does not hold that commit, so its sentences are not read"
+                continue
+                ;;
+            no-pull-request)
+                missing=$((missing + 1))
+                fail published-tree "the landed step '$title' of this pull request commits $commit, which the default branch's history at $head does not hold, and our_repository.pull_request of sources.json is no positive whole number, so the squash of this pull request is not found and the step's sentences are not read"
+                continue
+                ;;
+            squashes=*)
+                missing=$((missing + 1))
+                fail published-tree "the landed step '$title' of this pull request commits $commit, which the default branch's history at $head does not hold, and ${at#squashes=} commits of that history's first parents end their subject '(#$pr)', where one is the squash of this pull request, so the step's sentences are not read"
+                continue
+                ;;
+            "$commit") ;;
+            *)
+                squashed=$((squashed + 1))
+                said="of this pull request commits $commit, which the default branch's history at $head does not hold, and is read at $at, the one commit of that history's first parents whose subject ends '(#$pr)'"
+                ;;
+            esac
+            while IFS=$'\x1f' read -r path sentence; do
+                git -C "$clone" show "$at:$path" >"$work/published" 2>/dev/null || {
+                    missing=$((missing + 1))
+                    fail published-tree "the landed step '$title' $said, and that commit does not carry $path"
+                    continue
+                }
+                grep -qF -- "$sentence" "$work/published" || {
+                    missing=$((missing + 1))
+                    fail published-tree "the landed step '$title' $said, and $path at that commit does not carry its sentence '$sentence'"
+                }
+            done < <(jq -r --argjson i "$index" '.landed[$i].published[]? | [(.path // ""), (.sentence // "")] | join("\u001f")' "$EVIDENCE/sources.json")
+        done < <(jq -r "$landed_rows" "$EVIDENCE/sources.json")
+        [ "$squashed" -eq 0 ] || read_at_squash=", or, for the $squashed of this pull request whose own commit that history does not hold, at $squash, the one commit of its first parents whose subject ends '(#$pr)'"
+        not_landed="$(jq -r --arg q "'" '[.landed[]? | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
+        [ -z "$not_landed" ] || not_landed="; the steps sources.json's landed list commits as not landed or not made changed no file and are not read there: $not_landed"
+    fi
+    [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and every path of this directory the judgement names, $named of them, and the files each of the $landed_steps landed steps changed hold its sentences at the step's own commit, which the branch's history holds$read_at_squash$not_landed"
+
+    # The record of the delivery, held to the judgement by delivery_judge, one line per
+    # verdict.
+    local verdicts verdict line
+    if verdicts="$(delivery_judge "$work" 2>"$work/delivery.err")"; then
+        while IFS=$'\t' read -r verdict line; do
+            case "$verdict" in
+            fail) fail published-delivery "$line" ;;
+            pass) pass published-delivery "$line" ;;
+            esac
+        done <<<"$verdicts"
+    else
+        fail published-delivery "the answers of Dispatch to the reads above, with the judgement, could not be read: $(head -c 240 "$work/delivery.err" | tr '\n' ' ')"
+    fi
+    printf 'This mode reads the record of the publication to the controller, the comment of this issue that names its topic and carries the ranked list as published, and not the publication itself: an Envoy publication leaves no record a program can read.\n'
+}
+
+# ---------------------------------------------------------------- --self-test
+
+# The self-test builds one small deliverable of its own under its run's scratch, proves the
+# gate passes over it, then plants, one at a time, a bad case of every kind the gate reads
+# and proves the gate fails and names the family. The planted list and the assertion table
+# are one list: the table's fourth column is the fault, and a family whose fault is
+# unplanted fails here. Each run of the gate over the fixture runs in the environment the
+# header's "The fixture of --self-test" states.
+
+fixture_build() {
+    local dir="$1"
+    local evidence="$dir/repo/docs/research/internet-of-cognition"
+    mkdir -p "$evidence"/{mas-lab,triage,interview,tests,coordination,similarity,published,evidence}
+    mkdir -p "$dir/repo/skills/legion-worker/references"
+    mkdir -p "$dir/repo/packages/daemon/internal/api"
+    cp "$EVIDENCE/citations.py" "$evidence/citations.py"
+    cp "$EVIDENCE/check.sh" "$evidence/check.sh"
+    # env.sh, whose functions the fixture's modes read: --citations clones a repository by
+    # its rule, and --replay exports the fixture's tool caches by its table (prepare_env).
+    cp "$EVIDENCE/env.sh" "$evidence/env.sh"
+    # The hashed locks, which a planted install may read, ioc-venv.in, which is none, and the
+    # script of the row i-skills-run, whose --omp-flags --replay's prerequisites run over the
+    # fixture too (prerequisite_table's line flags|omp), on the stub omp a fixture's run is
+    # given.
+    cp "$EVIDENCE/evidence/ioc-venv.lock" "$EVIDENCE/evidence/ioc-venv.in" "$EVIDENCE/evidence/tm-constraints.txt" \
+        "$EVIDENCE/evidence/build-constraints.txt" "$EVIDENCE/evidence/accord-skills-run.sh" "$evidence/evidence/"
+
+    cat >"$dir/repo/packages/daemon/internal/api/handoff.go" <<'GO'
+package api
+
+const TesterVerdictRequired = "TESTER_VERDICT_REQUIRED"
+GO
+    cat >"$dir/repo/skills/legion-worker/references/pr-body.md" <<'MD'
+**Thermo:** the pair at the reviewed head, one row per half:
+- `thermonuclear-deep-review`: <verdict>; <n> findings standing.
+- `thermonuclear-code-quality`: <verdict>; <n> findings standing.
+MD
+    cat >"$dir/repo/skills/legion-worker/references/merge-gate.md" <<'MD'
+The two halves of the pair decide one review between them: a `CHANGES` from either
+`thermonuclear-deep-review` or `thermonuclear-code-quality` is a `REQUEST_CHANGES`.
+MD
+
+    cat >"$evidence/questions.md" <<'MD'
+# The questions this reading answers
+
+## 1. When a role writes a fact it read somewhere else, what carries the way back?
+
+Raised by `packages/daemon/internal/api/handoff.go`.
+
+## 2. What decides the round when the two graders disagree?
+
+Raised by the merge gate.
+
+## 3. A question no page answers.
+
+Raised by nothing in particular.
+MD
+
+    local directory
+    for directory in library-standard ctl runtime library-eval library-telemetry library-kg; do
+        printf '# %s at COMMIT\n\nWhat it is [f-project-1].\n' "$directory" >"$evidence/mas-lab/$directory.md"
+    done
+    cat >>"$evidence/mas-lab/ctl.md" <<'MD'
+
+## Question 1: can its specification format express Legion's phase workflow?
+
+No, and the evidence is [f-project-1].
+MD
+    cat >>"$evidence/mas-lab/library-eval.md" <<'MD'
+
+## Question 2: could its experiment harness measure whether a change to a role's prompt or skill made Legion better?
+
+Not as it stands [f-project-1].
+MD
+    cat >>"$evidence/mas-lab/runtime.md" <<'MD'
+
+## Question 3: what its boundary enforcement does that our refusals do not
+
+It changes a call rather than refusing it [f-project-1].
+MD
+    for name in mas-lab scope cognition-protocols ioc-project.github.io dot-github; do
+        printf '# %s\n\nTriaged [f-project-1].\n' "$name" >"$evidence/triage/$name.md"
+    done
+    printf '# The transcript\n\nHe said the third protocol is not released.\n' >"$evidence/interview/transcript.md"
+    printf '# The rows\n\nThe three tiers [i-three-tiers].\n' >"$evidence/interview/claims.md"
+    printf 'Input: dispatch://INFRA-3134\n\nIt ran [f-behaviour-1].\n' >"$evidence/tests/concord.md"
+    printf 'Input: 9542c6fbbecd184ccee73523ab3defa39d6cf23a\n\nIt ran [f-behaviour-1].\n' >"$evidence/tests/scope.md"
+    printf 'Input: dispatch://INFRA-3134\n\nIt ran [f-behaviour-1].\n' >"$evidence/tests/mas-lab.md"
+    printf '{"from":"2026-10-29T00:00:00Z","to":"2026-11-12T00:00:00Z","project":"INFRA"}\n' >"$evidence/coordination/window.json"
+    cat >"$evidence/coordination/count.md" <<'MD'
+# The count
+
+| class | instances | denominator |
+| --- | --- | --- |
+| across sessions | 10 | 100 |
+| between an agent and a person | 5 | 100 |
+| inside one tree | 20 | 100 |
+
+Each class carries its denominator, the records read in the window.
+MD
+    # The fixture's walker of the count, which --replay runs again through live_read
+    # (count-reruns): it prints one fixed JSON object, the count of count.md above, and
+    # reads nothing, neither the network nor window.json, so no planted fault but its own
+    # moves what it prints. evidence/count.json is what it prints, written as the
+    # committed count is, by running it.
+    cat >"$evidence/coordination/count.py" <<'PY'
+import json
+
+print(json.dumps({
+    "window": {"from": "2026-10-29T00:00:00Z", "to": "2026-11-12T00:00:00Z", "project": "INFRA"},
+    "feed": {"events_read": 1000, "first_event_id_in_window": 101, "last_event_id_in_window": 900},
+    "denominator_records_read": 100,
+    "instances": 40,
+    "classes": {"between_an_agent_and_a_person": 5, "inside_one_tree": 20, "across_sessions": 10},
+    "unclassed": {"no_cited_record": 5, "cited_record_not_held": 0, "cited_author_unknown": 0, "other": 0},
+}, indent=1))
+PY
+    python3 "$evidence/coordination/count.py" >"$evidence/evidence/count.json"
+    printf '# The table\n\nNine pairs [f-behaviour-1].\n' >"$evidence/similarity/table.md"
+    printf 'the quoted sentence of a published page\n' >"$evidence/published/page.txt"
+    printf '# The fixture\n' >"$evidence/README.md"
+    # The node model read back, whose section of the gaps --published holds the comment on
+    # INFRA-1098 to: two gaps, each by the row its bold line cites.
+    cat >"$evidence/node-model.md" <<'MD'
+# The node model, read back
+
+## 3. The gaps
+
+**A finding is not a node** [n-gap-finding].
+Evidence: no block type of the fixture names one.
+
+**Evidence has one shape, the record of a command** [n-gap-evidence-kind].
+Evidence: a result carries what a command printed.
+MD
+    mkdir -p "$evidence/records"
+    cat >"$evidence/records/under-check.md" <<'MD'
+# The fixture record under check
+
+It claims something about `packages/daemon/internal/api/handoff.go`, and it reports
+thirteen normative invariants.
+MD
+
+    cat >"$evidence/claims.jsonl" <<'JSONL'
+{"id":"f-project-1","requirement":"r3","source":"mas-lab","kind":"project-code","claim":"The runtime declares a boundary gate.","mark":"verified","evidence":{"repo":"mas-lab","commit":"COMMIT","file":"README.md","symbol":"README"},"note":"read again"}
+{"id":"f-our-1","requirement":"r1","source":"this tree's measurement","kind":"our-code","claim":"The completion refusal names a tester verdict.","mark":"verified","evidence":{"file":"packages/daemon/internal/api/handoff.go","symbol":"TesterVerdictRequired","commit":"OURS"},"note":"read again","checks":[{"row":"u-1","mark":"verified"}]}
+{"id":"f-behaviour-1","requirement":"r7","source":"this tree's measurement","kind":"behaviour","claim":"The script prints its own name.","mark":"verified","evidence":{"surface":"cli"},"command":"printf 'ran once\\n'","expect":{"contains":"ran once"},"output":"ran once","note":"ran again"}
+{"id":"f-absence-1","requirement":"r5","source":"this tree's measurement","kind":"absence","claim":"Nothing names a pair refusal.","mark":"verified","evidence":{"scope":"the fixture tree"},"command":"grep -r 'REVIEWER_PAIR_REQUIRED' skills || true","expect":{"at_most":"0"},"output":"","note":"searched again"}
+{"id":"f-quotation-1","requirement":"r2","source":"the interview","kind":"quotation","claim":"The authors say the third protocol is not released.","mark":"unreleased","evidence":{"source":"the interview","quote":"the third protocol is not released","marked":"a claim of the project, not of its code"},"note":"their words"}
+{"id":"f-published-1","requirement":"r2","source":"a published page","kind":"published","claim":"The page carries the sentence.","mark":"supported","evidence":{"address":"https://example.org/page","fetched":"2026-11-12","section":"body","quote":"the quoted sentence of a published page","copy":"published/page.txt"},"note":"read in the committed copy"}
+{"id":"i-three-tiers","requirement":"r2","source":"the interview","kind":"quotation","claim":"The three tiers exist and the third is unreleased.","mark":"unreleased","evidence":{"source":"the interview","quote":"the third protocol is not released","marked":"a claim of the project, not of its code"},"note":"their words"}
+{"id":"i-scope-triggers","requirement":"r2","source":"the interview","kind":"absence","claim":"Nothing triggers the protocols.","mark":"unsupported","evidence":{"scope":"the fixture tree"},"command":"grep -r 'trigger-accord' skills || true","expect":{"at_most":"0"},"output":"","note":"searched again"}
+{"id":"i-skills-drop-in","requirement":"r2","source":"the interview","kind":"project-code","claim":"The protocols ship as skills.","mark":"supported","evidence":{"repo":"mas-lab","commit":"COMMIT","file":"README.md","symbol":"README"},"note":"read again"}
+{"id":"i-measure-one","requirement":"r2","source":"the interview","kind":"quotation","claim":"One misalignment took accuracy from 99% to 98%.","mark":"not-externally-checkable","evidence":{"source":"the interview","quote":"the third protocol is not released","marked":"a claim of the project, not of its code"},"note":"no published document of theirs repeats it"}
+{"id":"u-1","requirement":"r1","source":"the fixture record","kind":"our-code","claim":"The record cites the completion refusal file.","mark":"verified","evidence":{"file":"packages/daemon/internal/api/handoff.go","symbol":"TesterVerdictRequired","commit":"OURS"},"note":"read again at the commit"}
+{"id":"u-2","requirement":"r1","source":"the fixture record","kind":"project-code","claim":"The record counts thirteen normative invariants.","mark":"verified","evidence":{"repo":"mas-lab","commit":"COMMIT","file":"README.md","symbol":"README"},"note":"counted again"}
+{"id":"f-figure-1","requirement":"r7","source":"this tree's measurement","kind":"behaviour","claim":"The fixture's count prints 12617 rows.","mark":"verified","evidence":{"surface":"cli"},"command":"printf '12617 rows\\n'","expect":{"contains":"12617 rows"},"output":"12617 rows","note":"ran again"}
+JSONL
+
+    cat >"$evidence/sources.json" <<JSON
+{
+  "clone_root_env": "IOC_CLONES",
+  "repositories": [
+    {"name": "mas-lab", "url": "https://github.com/ioc-project/mas-lab", "commit": "COMMIT"}
+  ],
+  "our_repository": {"name": "legion", "url": "$dir/repo", "commit": "OURS", "pull_request": 1},
+  "records_under_check": [
+    {"ref": "the fixture record", "label": "u", "copy": "records/under-check.md"}
+  ],
+  "published": [
+    {"id": "page", "address": "https://example.org/page", "fetched": "2026-11-12", "copy": "published/page.txt", "sha256": "PAGE_SHA"}
+  ],
+  "landed": [
+    {"title": "An execution record under the gen_ai. names", "state": "landed", "commit": "LANDED_ROWS", "command": "true", "published": [{"path": "skills/legion-worker/references/pr-body.md", "sentence": "one row per half"}]}
+  ]
+}
+JSON
+
+    cat >"$dir/judgement.md" <<'MD'
+# The fixture judgement
+
+## The ranking
+
+1. Structured metadata on an Envoy message — port — 2 engineer-days.
+2. One definitions record — reject — 4 engineer-days.
+
+## The one thing to do first
+
+The Envoy field, beside the gaps `docs/research/internet-of-cognition/node-model.md` records.
+
+## Where the authors' account and the checked reading differ
+
+The account describes the problem and the reading describes the artifacts.
+
+The fixture's count reads 12,617 rows [f-figure-1].
+
+## What was deliberately not read
+
+- mas-lab: read in part.
+- scope: read in part.
+- cognition-protocols: read in part.
+- ioc-project.github.io: the documentation site, read only where a claim cites a page.
+- dot-github: the organisation profile page, which holds no code.
+- Question 3 is answered by no page: it is named here, and nothing of theirs answers it.
+
+## Candidate pages
+
+### Structured metadata on an Envoy message
+
+- **Question:** Q1 When a role writes a fact it read somewhere else, what carries the way back?
+- **Proposal:** One optional field, `quotes: [{ref, token}]`.
+- **Verdict:** port
+- **Landing component:** Envoy
+- **Cost:** 2 engineer-days
+- **Deletes or replaces:** nothing.
+- **Cost of reversing it:** one commit.
+- **Default if nobody answers:** the envelope keeps no field of the record a fact came from.
+- **Owner:** the Envoy tree.
+- **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
+- **Test:** `printf 'ran once\n'` → ran once.
+- This is the change in our code it becomes.
+
+### One definitions record
+
+- **Question:** Q2 What decides the round when the two graders disagree?
+- **Proposal:** A typed definition carrying its unit and its scale as values.
+- **Verdict:** reject
+- **Landing component:** Dispatch
+- **Cost:** 4 engineer-days
+- **Deletes or replaces:** nothing.
+- **Cost of reversing it:** one commit.
+- **Default if nobody answers:** terms stay prose in each issue.
+- **Owner:** the Dispatch tree.
+- **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
+- **Test:** `printf 'ran once\n'` → ran once.
+- It is rejected because the measurement under it failed.
+
+### An execution record under the gen_ai. names
+
+- **Question:** Q1 When a role writes a fact it read somewhere else, what carries the way back?
+- **Proposal:** Spans under the OpenTelemetry `gen_ai.` names.
+- **Verdict:** port
+- **Landing component:** Legion
+- **Cost:** 6 engineer-days
+- **Deletes or replaces:** nothing.
+- **Cost of reversing it:** one commit.
+- **Default if nobody answers:** a run's cost is read from the spend store alone.
+- **Owner:** the daemon tree.
+- **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
+- **Test:** `printf 'ran once\n'` → ran once.
+- This is the change in our code it becomes.
+- **Landed:** LANDED_ROWS
+- **Proven by:** `true`
+MD
+
+    (
+        cd "$dir/repo" || exit 1
+        git init --quiet -b main .
+        git config user.email fixture@example.org
+        git config user.name fixture
+        git add packages skills
+        git commit --quiet -m "the base"
+        printf '%s' "$(git rev-parse HEAD)" >"$dir/base"
+        git add docs/research/internet-of-cognition/questions.md
+        git commit --quiet -m "docs(research): the question list"
+        git add docs
+        git commit --quiet -m "docs(research): the evidence"
+        git commit --quiet --allow-empty -m "feat(skills): each review round's two graders are recorded as two rows, not one verdict"
+        printf '%s' "$(git rev-parse HEAD)" >"$dir/rows"
+        git commit --quiet --allow-empty -m "feat(skills): the rule that combines the reviewer's two graders is written where the reviewer reads it"
+    )
+    local base rows mas_commit
+    base="$(cat "$dir/base")"
+    rows="$(cat "$dir/rows")"
+    mas_commit="$(jq -r '.repositories[] | select(.name=="mas-lab") | .commit' "$EVIDENCE/sources.json")"
+    sed -i "s/OURS/$base/g; s/COMMIT/$mas_commit/g" "$evidence/sources.json" "$evidence/claims.jsonl" "$evidence"/mas-lab/*.md
+    sed -i "s/PAGE_SHA/$(sha256sum "$evidence/published/page.txt" | cut -d' ' -f1)/; s/LANDED_ROWS/$rows/" "$evidence/sources.json"
+    # The commits above were made before those two names were resolved, so one more
+    # commit leaves the fixture's working copy clean and a planted fault may check out.
+    (cd "$dir/repo" && git add -A && git commit --quiet -m "docs(research): the pinned commits")
+    sed -i "s/LANDED_ROWS/$rows/" "$dir/judgement.md"
+
+    # The fixture's own Dispatch, which --published reads (fixture_published): one file per
+    # read the mode makes, this issue, which names its assignee, its messages and its
+    # comments, which fixture_delivery writes, and the comments of INFRA-1098, one naming this
+    # issue and citing each gap of node-model.md; the token the reads send; and a stub curl,
+    # dispatch/bin/curl, which prints the file of each of those addresses at
+    # FIXTURE_DISPATCH_URL and answers no other, reading the files beside itself, so a copy of
+    # the fixture reads its own.
+    mkdir -p "$dir/dispatch/bin"
+    printf 'fixture-token\n' >"$dir/dispatch/token"
+    printf '{"key": "INFRA-3134", "assignee": "assignee@example.org"}\n' >"$dir/dispatch/issue.json"
+    jq -n --arg body 'dispatch://INFRA-3134 read the node model back and found two gaps, each recorded with its evidence in docs/research/internet-of-cognition/node-model.md.
+
+1. A finding is not a node [n-gap-finding].
+2. Evidence has one shape, the record of a command [n-gap-evidence-kind].' \
+        '[{id: "f1f1f1f1-0000-4000-8000-000000000003", issue_key: "INFRA-1098", author: {kind: "session", id: "fixture-session"}, created_at: "2026-11-25T09:00:00Z", body: $body}]' >"$dir/dispatch/upstream.json"
+    fixture_delivery "$dir"
+    cat >"$dir/dispatch/bin/curl" <<STUB
+#!/bin/sh
+here="\${0%/bin/curl}"
+for url; do :; done
+case "\$url" in
+'$FIXTURE_DISPATCH_URL/api/v1/issues/INFRA-3134') exec cat "\$here/issue.json" ;;
+'$FIXTURE_DISPATCH_URL/api/v1/issues/INFRA-3134/messages?limit=200') exec cat "\$here/messages.json" ;;
+'$FIXTURE_DISPATCH_URL/api/v1/issues/INFRA-3134/comments?limit=200') exec cat "\$here/comments.json" ;;
+'$FIXTURE_DISPATCH_URL/api/v1/issues/INFRA-1098/comments?limit=200') exec cat "\$here/upstream.json" ;;
+esac
+printf 'curl: (7) the fixture Dispatch answers no %s\n' "\$url" >&2
+exit 7
+STUB
+    chmod +x "$dir/dispatch/bin/curl"
+}
+
+# fixture_copy <from> <to>; <to> as a copy of the fixture <from> that a plant breaks: its
+# repository, its Dispatch, its judgement and the files its plants read, as --self-test and
+# check.test.sh each copy it.
+fixture_copy() {
+    mkdir -p "$2"
+    cp -r "$1/repo" "$2/repo"
+    cp -r "$1/dispatch" "$2/dispatch"
+    cp "$1/judgement.md" "$1/base" "$1/rows" "$2/"
+}
+
+fixture_run() {
+    # fixture_run <dir> <mode>; runs the gate over the fixture <dir> once, prints the
+    # directory it made for that run under <dir>, and ends with the run's status. The
+    # directory holds the gate's own output (text), its ending record (ending, the file
+    # IOC_ENDING names for this run alone) and the status it exited with (status), and a case
+    # of check.test.sh and --self-test read the run by ending_read. The fixture's own rows
+    # read its own repository alone, so it needs nothing env.sh prepares and skips it. It
+    # runs in an environment of its own, as the header's "The fixture of --self-test" states:
+    # FIXTURE_CARRIED and FIXTURE_INPUTS, each where it is set, the fixture's own tree,
+    # judgement and head, FIXTURE_DEPLOYMENT_REPO as IOC_DEPLOYMENT_REPO and
+    # FIXTURE_OMP_MODELS as IOC_OMP_MODELS, each unless it is empty, FIXTURE_OMP_STUB first
+    # on PATH unless it is empty, the run's own record, and an IOC_CACHE of its own unless a
+    # case names one; no other variable of the caller's. The run is a child the caller waits
+    # on, under BOUND_RUN (the header's "Every child the gate waits on ends"): one that a
+    # signal or its bound ended holds the record bound_record writes for it.
+    local dir="$1" mode="$2" name carried=() run status
+    for name in $FIXTURE_CARRIED $FIXTURE_INPUTS; do
+        [ -n "${!name+set}" ] && carried+=("$name=${!name}")
+    done
+    [ -z "$FIXTURE_DEPLOYMENT_REPO" ] || carried+=("IOC_DEPLOYMENT_REPO=$FIXTURE_DEPLOYMENT_REPO")
+    [ -z "$FIXTURE_OMP_MODELS" ] || carried+=("IOC_OMP_MODELS=$FIXTURE_OMP_MODELS")
+    [ -z "$FIXTURE_OMP_STUB" ] || carried+=("PATH=$FIXTURE_OMP_STUB:$PATH")
+    run="$(mktemp -d "$dir/run.XXXXXX")" || return 1
+    bounded_run "$BOUND_RUN" env -i "${carried[@]}" \
+        IOC_ROOT="$dir/repo" \
+        IOC_EVIDENCE="$dir/repo/docs/research/internet-of-cognition" \
+        IOC_JUDGEMENT="$dir/judgement.md" \
+        IOC_NO_ENV=1 \
+        IOC_PUBLISHED_COMMIT="$(git -C "$dir/repo" rev-parse HEAD 2>/dev/null)" \
+        IOC_CACHE="${IOC_CACHE:-$dir/cache}" \
+        IOC_ENDING="$run/ending" \
+        bash "$dir/repo/docs/research/internet-of-cognition/check.sh" "$mode" >"$run/text" 2>&1
+    status=$?
+    if [ -n "$BOUND_ENDED" ]; then
+        bound_record "$run" "$mode" "the run of check.sh $mode over the fixture $dir"
+        status=2
+    fi
+    printf '%s\n' "$status" >"$run/status"
+    printf '%s\n' "$run"
+    return "$status"
+}
+
+# The fixture's own Dispatch, which --published reads over the fixture: FIXTURE_DISPATCH_URL
+# is its address, which no server holds, and the stub curl fixture_build writes beside the
+# fixture's answers, dispatch/bin/curl, answers it.
+FIXTURE_DISPATCH_URL=http://dispatch.fixture.invalid
+
+# fixture_published <dir>; fixture_run <dir> --published over the fixture's own Dispatch:
+# its stub curl first on PATH, DISPATCH_URL its address and DISPATCH_TOKEN_FILE its token, so
+# the run reads the fixture's delivery and never the caller's Dispatch.
+fixture_published() {
+    PATH="$1/dispatch/bin:$PATH" DISPATCH_URL="$FIXTURE_DISPATCH_URL" DISPATCH_TOKEN_FILE="$1/dispatch/token" fixture_run "$1" --published
+}
+
+# fixture_mode <dir> <mode>; the run of the mode over the fixture <dir> that --self-test
+# makes: --published by fixture_published, and every other mode by fixture_run.
+fixture_mode() {
+    if [ "$2" = published ]; then
+        fixture_published "$1"
+    else
+        fixture_run "$1" "--$2"
+    fi
+}
+
+# fixture_delivery <dir> [<part>]; writes the fixture's delivery into its Dispatch: the
+# message to its assignee, dispatch/messages.json, carrying the two items of the fixture's
+# ranking in order, the paragraph on where the two accounts differ and each of the three
+# candidates above one engineer-day with its default, and the comment that records the
+# publication of the ranked list to the controller, dispatch/comments.json, naming its topic,
+# the time of the publication and the ranking. Given <part>, it writes them with that part
+# missing: ranking, the message holds the first item alone; order, the two items in the other
+# order; differ, a sentence in place of the paragraph; default, the candidate 'One
+# definitions record' with another default after its title; publication, the comment holds
+# the first item alone; time, the comment gives its time in words and no UTC time. It returns
+# non-zero when either file could not be written.
+fixture_delivery() {
+    local dir="$1" part="${2:-}" first second ranking differ defaults published at
+    first='1. Structured metadata on an Envoy message — port — 2 engineer-days.'
+    second='2. One definitions record — reject — 4 engineer-days.'
+    case "$part" in
+    ranking) ranking="$first" ;;
+    order) ranking="$second"$'\n'"$first" ;;
+    *) ranking="$first"$'\n'"$second" ;;
+    esac
+    differ="The account describes the problem and the reading describes the artifacts.
+
+The fixture's count reads 12,617 rows [f-figure-1]."
+    [ "$part" != differ ] || differ='The two accounts differ, and the judgement says where.'
+    defaults="- **Structured metadata on an Envoy message:** the envelope keeps no field of the record a fact came from.
+- **One definitions record:** terms stay prose in each issue.
+- **An execution record under the gen_ai. names:** a run's cost is read from the spend store alone."
+    [ "$part" != default ] || defaults="${defaults/ terms stay prose in each issue./ it waits for an owner.}"
+    published="$first"$'\n'"$second" at=' at 2026-11-25T10:05:00Z'
+    [ "$part" != publication ] || published="$first"
+    [ "$part" != time ] || at=' this morning'
+    jq -n --arg body "The reading of this issue is done, and this is what it gives us.
+
+## The ranking
+
+$ranking
+
+## Where the authors' account and the checked reading differ
+
+$differ
+
+## The candidates above one engineer-day, each with its default
+
+$defaults" '[{message: {id: "f1f1f1f1-0000-4000-8000-000000000001", issue_key: "INFRA-3134", author: {kind: "session", id: "fixture-session"}, target: null, created_at: "2026-11-25T10:00:00.5Z", body: $body}, replies: []}]' \
+        >"$dir/dispatch/messages.json" &&
+        jq -n --arg body "The ranked list is published to \`$CONTROLLER_TOPIC\`$at, as:
+
+$published" '[{id: "f1f1f1f1-0000-4000-8000-000000000002", issue_key: "INFRA-3134", author: {kind: "session", id: "fixture-session"}, created_at: "2026-11-25T10:05:00Z", body: $body}]' \
+            >"$dir/dispatch/comments.json"
+}
+
+# gate_run <script> [<mode>]; runs a copy of the gate, or check.test.sh, once, with the
+# caller's environment and not over a fixture, prints the directory it made for that run
+# under this run's scratch, which holds what fixture_run's does, and ends with the run's
+# status. --self-test runs check.test.sh and --admitted by it, and check.test.sh each run
+# of a copy. The run is a child the caller waits on, under BOUND_CASES for a run of
+# check.test.sh or of --self-test, which runs it, and BOUND_RUN for any other (the header's
+# "Every child the gate waits on ends"): one that a signal or its bound ended holds the
+# record bound_record writes for it.
+gate_run() {
+    local run status bound="$BOUND_RUN"
+    case "${1##*/} ${2:-}" in
+    "check.test.sh " | *" --self-test") bound="$BOUND_CASES" ;;
+    esac
+    mkdir -p "$RUN_SCRATCH/runs" && run="$(mktemp -d "$RUN_SCRATCH/runs/run.XXXXXX")" || return 1
+    IOC_ENDING="$run/ending" bounded_run "$bound" bash "$1" ${2:+"$2"} >"$run/text" 2>&1
+    status=$?
+    if [ -n "$BOUND_ENDED" ]; then
+        bound_record "$run" "${2:-${1##*/}}" "the run of ${1##*/}${2:+ $2}"
+        status=2
+    fi
+    printf '%s\n' "$status" >"$run/status"
+    printf '%s\n' "$run"
+    return "$status"
+}
+
+# The fixture's plant of R12's two steps as cybermonklabs/legion#4636 made them and main
+# merged them, as fcc746a3, which --self-test's plants of landed-coverage and
+# landed-proof-holds and the cases of check.test.sh on a merged-in step read.
+#
+# fixture_merged_lines <pr-body|rule>; the lines fcc746a3 added to pr-body.md, and the one
+# it added to merge-gate.md, word for word.
+fixture_merged_lines() {
+    case "$1" in
+    pr-body)
+        cat <<'MD'
+**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:
+- `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand
+- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand
+Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them.
+- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them.
+MD
+        ;;
+    rule)
+        cat <<'MD'
+4. A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand. Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head).
+MD
+        ;;
+    esac
+}
+
+# fixture_merged_steps; the two steps fcc746a3 made, as a JSON list of each one's page and
+# the sentences it publishes, sources.json's lists for them: the shortfall rows' on the
+# fixture's page 'An execution record under the gen_ai. names', and the combining rule's on
+# its page 'One definitions record'.
+fixture_merged_steps() {
+    cat <<'JSON'
+[
+  {"title": "An execution record under the gen_ai. names", "published": [
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "**Thermo:** `simplify-settled-diff` once at <head-sha>, a docs-only PR included: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>, one row per half:"},
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "- `thermonuclear-deep-review`: <APPROVE | CHANGES>, <n> findings stand"},
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "- `thermonuclear-code-quality`: <APPROVE | CHANGES>, <n> findings stand"},
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "- The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code; the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them."}]},
+  {"title": "One definitions record", "published": [
+    {"path": "skills/legion-worker/references/merge-gate.md", "sentence": "A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand."},
+    {"path": "skills/legion-worker/references/merge-gate.md", "sentence": "Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code (the whole change, or the difference from the last reviewed commit to the head)."},
+    {"path": "skills/legion-worker/references/pr-body.md", "sentence": "Where the diff the round reads touches no runtime code, each row reads `not run (<the whole change | <last-reviewed-sha>..<sha>> touches no runtime code)`, and the two rows of the last round the pair ran in stay beside them."}]}
+]
+JSON
+}
+
+# fixture_merged <dir> <subject>; makes the fixture's landed list the two steps of
+# fixture_merged_steps, each landed and merged in cybermonklabs/legion#4636: one commit of
+# the fixture's own repository, on the branch merged-main beside the fixture's own line and
+# never on it, made from the fixture's base with the subject <subject>, which writes
+# pr-body.md as the lines fcc746a3 added to it and adds to merge-gate.md the line fcc746a3
+# added there; sources.json's our_repository.url names the fixture's own repository, so
+# --landed fetches the commit from it. Each page's Landed line names the commit and
+# (cybermonklabs/legion#4636), and each step's proof is the one fixture_merged_prove writes,
+# which holds every sentence the step publishes. It prints the commit, and returns non-zero
+# when any of it could not be planted.
+fixture_merged() {
+    local dir="$1" repo="$1/repo" sources="$1/repo/docs/research/internet-of-cognition/sources.json" base pr_body rule tree merged
+    base="$(cat "$dir/base")"
+    pr_body="$(fixture_merged_lines pr-body | git -C "$repo" hash-object -w --stdin)" &&
+        rule="$({ git -C "$repo" show "$base:skills/legion-worker/references/merge-gate.md" && fixture_merged_lines rule; } | git -C "$repo" hash-object -w --stdin)" &&
+        GIT_INDEX_FILE="$dir/merged.index" git -C "$repo" read-tree "$base" &&
+        GIT_INDEX_FILE="$dir/merged.index" git -C "$repo" update-index --add \
+            --cacheinfo "100644,$pr_body,skills/legion-worker/references/pr-body.md" \
+            --cacheinfo "100644,$rule,skills/legion-worker/references/merge-gate.md" &&
+        tree="$(GIT_INDEX_FILE="$dir/merged.index" git -C "$repo" write-tree)" &&
+        merged="$(git -C "$repo" commit-tree "$tree" -p "$base" -m "$2")" &&
+        git -C "$repo" update-ref refs/heads/merged-main "$merged" && rm -f "$dir/merged.index" || return 1
+    jq --arg url "$repo" --arg c "$merged" --argjson steps "$(fixture_merged_steps)" \
+        '.our_repository.url = $url | .landed = [$steps[] | {title, state: "landed", merged_in: "cybermonklabs/legion#4636", commit: $c, command: "", published, record: ["dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760"]}]' \
+        "$sources" >"$dir/sources.json" && mv "$dir/sources.json" "$sources" || return 1
+    LANDED="- **Landed:** $merged (cybermonklabs/legion#4636)" awk '
+        /^### / { title = substr($0, 5) }
+        title == "An execution record under the gen_ai. names" && /^- \*\*Landed:\*\* / { print ENVIRON["LANDED"]; next }
+        { print }
+        title == "One definitions record" && $0 == "- It is rejected because the measurement under it failed." { print ENVIRON["LANDED"]; print "- **Proven by:** `true`" }' \
+        "$dir/judgement.md" >"$dir/judgement.new" && mv "$dir/judgement.new" "$dir/judgement.md" || return 1
+    fixture_merged_prove "$dir" "An execution record under the gen_ai. names" &&
+        fixture_merged_prove "$dir" "One definitions record" &&
+        [ "$(grep -cxF -- "- **Landed:** $merged (cybermonklabs/legion#4636)" "$dir/judgement.md")" = 2 ] &&
+        ! git -C "$repo" merge-base --is-ancestor "$merged" HEAD || return 1
+    printf '%s' "$merged"
+}
+
+# fixture_merged_prove <dir> <title> [<sentence>]; writes the proof of the step <title> of
+# the fixture's landed list, as sources.json's command and as its page's Proven by line:
+# one grep of the step's file at its commit, read in IOC_MERGED_REPO with its backticks
+# taken out, for each sentence the step publishes but <sentence>, each written with its
+# backticks taken out and each ' as '\''. It returns non-zero when the proof could not be
+# written in both places.
+fixture_merged_prove() {
+    local dir="$1" sources="$1/repo/docs/research/internet-of-cognition/sources.json" proof program
+    program="$(
+        cat <<'JQ'
+.landed[] | select(.title == $t) | .commit as $c
+| [.published[] | select(.sentence != $out)
+   | "git -C \"$IOC_MERGED_REPO\" show \($c):\(.path) | tr -d '\\140' | grep -qF -e '"
+     + (.sentence | gsub("`"; "") | gsub("'"; "'\\''")) + "'"]
+| join(" && ")
+JQ
+    )"
+    proof="$(jq -r --arg t "$2" --arg out "${3:-}" "$program" "$sources")" && [ -n "$proof" ] &&
+        jq --arg t "$2" --arg p "$proof" '(.landed[] | select(.title == $t) | .command) = $p' "$sources" >"$dir/sources.json" &&
+        mv "$dir/sources.json" "$sources" || return 1
+    TITLE="$2" PROVEN="- **Proven by:** \`$proof\`" awk '
+        /^### / { title = substr($0, 5) }
+        title == ENVIRON["TITLE"] && /^- \*\*Proven by:\*\* / { print ENVIRON["PROVEN"]; next }
+        { print }' "$dir/judgement.md" >"$dir/judgement.new" && mv "$dir/judgement.new" "$dir/judgement.md" &&
+        grep -qxF -- "- **Proven by:** \`$proof\`" "$dir/judgement.md"
+}
+
+fixture_plant() {
+    # fixture_plant <dir> <family>; breaks the copy and returns 0, or 1 when the family
+    # has no planted fault.
+    local dir="$1" family="$2"
+    local evidence="$dir/repo/docs/research/internet-of-cognition"
+    case "$family" in
+    claim-form) sed -i 's/"kind":"project-code"/"kind":"a reading"/' "$evidence/claims.jsonl" ;;
+    claim-mark) sed -i 's/"mark":"verified"/"mark":""/' "$evidence/claims.jsonl" ;;
+    claim-marks-agree) sed -i 's/"checks":\[{"row":"u-1","mark":"verified"}\]/"checks":[{"row":"u-1","mark":"false"}]/' "$evidence/claims.jsonl" ;;
+    predicate-form) sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains_a_sentence":"the output says it ran"}/' "$evidence/claims.jsonl" ;;
+    install-pinned) sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uvx pyshacl --version; printf 'ran once/" "$evidence/claims.jsonl" ;;
+    replay-command) sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains":"ran twice"}/' "$evidence/claims.jsonl" ;;
+    absence-still-empty) sed -i "s#grep -r 'REVIEWER_PAIR_REQUIRED' skills || true#grep -r 'thermonuclear' skills || true#" "$evidence/claims.jsonl" ;;
+    quotation-marked) sed -i 's/"marked":"a claim of the project, not of its code"/"marked_as":"evidence of the code"/' "$evidence/claims.jsonl" ;;
+    citation-row) sed -i '/"id":"u-1"/d' "$evidence/claims.jsonl" ;;
+    mas-lab-directory) rm -f "$evidence/mas-lab/library-kg.md" ;;
+    mas-lab-question) sed -i 's/\[f-project-1\]//' "$evidence/mas-lab/ctl.md" ;;
+    interview-fixed-row) sed -i '/"id":"i-three-tiers"/d' "$evidence/claims.jsonl" ;;
+    our-data-input) sed -i 's#^Input: dispatch://INFRA-3134#Input: tests/fixtures/golden-transcript.json#' "$evidence/tests/concord.md" ;;
+    count-reruns) sed -i 's/"instances": 40,/"instances": 41,/' "$evidence/evidence/count.json" ;;
+    count-window) rm -f "$evidence/coordination/window.json" ;;
+    count-class) sed -i 's/| inside one tree |/| inside one pod |/' "$evidence/coordination/count.md" ;;
+    count-denominator) sed -i 's/| across sessions | 10 | 100 |/| across sessions | 10 |/' "$evidence/coordination/count.md" ;;
+    count-zero-premise) sed -i 's/| inside one tree | 20 | 100 |/| inside one tree | 0 | 100 |/' "$evidence/coordination/count.md" ;;
+    page-count) cat >>"$dir/judgement.md" <<'MD'
+
+### An eighth candidate page
+
+- **Question:** Q1 When a role writes a fact it read somewhere else, what carries the way back?
+- **Proposal:** One more.
+- **Verdict:** reject
+- **Landing component:** Legion
+- **Cost:** 1 engineer-day
+- **Deletes or replaces:** nothing.
+- **Cost of reversing it:** one commit.
+- **Default if nobody answers:** nothing changes.
+- **Owner:** nobody.
+- **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
+- **Test:** `printf 'ran once\n'` → ran once.
+- It is rejected because nothing asks for it.
+
+### A ninth candidate page
+
+- **Question:** Q1 When a role writes a fact it read somewhere else, what carries the way back?
+- **Proposal:** One more again.
+- **Verdict:** reject
+- **Landing component:** Legion
+- **Cost:** 1 engineer-day
+- **Deletes or replaces:** nothing.
+- **Cost of reversing it:** one commit.
+- **Default if nobody answers:** nothing changes.
+- **Owner:** nobody.
+- **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
+- **Test:** `printf 'ran once\n'` → ran once.
+- It is rejected because nothing asks for it.
+
+### A tenth candidate page
+
+- **Question:** Q1 When a role writes a fact it read somewhere else, what carries the way back?
+- **Proposal:** One more and again.
+- **Verdict:** reject
+- **Landing component:** Legion
+- **Cost:** 1 engineer-day
+- **Deletes or replaces:** nothing.
+- **Cost of reversing it:** one commit.
+- **Default if nobody answers:** nothing changes.
+- **Owner:** nobody.
+- **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
+- **Test:** `printf 'ran once\n'` → ran once.
+- It is rejected because nothing asks for it.
+
+### An eleventh candidate page
+
+- **Question:** Q1 When a role writes a fact it read somewhere else, what carries the way back?
+- **Proposal:** One more and again and again.
+- **Verdict:** reject
+- **Landing component:** Legion
+- **Cost:** 1 engineer-day
+- **Deletes or replaces:** nothing.
+- **Cost of reversing it:** one commit.
+- **Default if nobody answers:** nothing changes.
+- **Owner:** nobody.
+- **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
+- **Test:** `printf 'ran once\n'` → ran once.
+- It is rejected because nothing asks for it.
+
+### A twelfth candidate page
+
+- **Question:** Q1 When a role writes a fact it read somewhere else, what carries the way back?
+- **Proposal:** The last one.
+- **Verdict:** reject
+- **Landing component:** Legion
+- **Cost:** 1 engineer-day
+- **Deletes or replaces:** nothing.
+- **Cost of reversing it:** one commit.
+- **Default if nobody answers:** nothing changes.
+- **Owner:** nobody.
+- **Node model:** it survives, read against dispatch://INFRA-1098/spec v97 and dispatch://INFRA-1253/spec v17.
+- **Test:** `printf 'ran once\n'` → ran once.
+- It is rejected because nothing asks for it.
+MD
+        ;;
+    page-parts) sed -i '0,/- \*\*Cost of reversing it:\*\* one commit./{/- \*\*Cost of reversing it:\*\* one commit./d}' "$dir/judgement.md" ;;
+    page-verdict) sed -i '0,/- \*\*Verdict:\*\* port/{s/- \*\*Verdict:\*\* port/- **Verdict:** port and reject/}' "$dir/judgement.md" ;;
+    verdict-commitment) sed -i 's/- It is rejected because the measurement under it failed./- It is not for us./' "$dir/judgement.md" ;;
+    fixed-page) sed -i 's/- \*\*Proposal:\*\* One optional field, `quotes: \[{ref, token}\]`./- **Proposal:** Something on the message./' "$dir/judgement.md" ;;
+    front-page) sed -i "/^## Where the authors' account and the checked reading differ$/d" "$dir/judgement.md" ;;
+    question-list) sed -i '0,/\*\*Question:\*\* Q1/{s/\*\*Question:\*\* Q1/**Question:** Q9/}' "$dir/judgement.md" ;;
+    triage-named) sed -i '/^- dot-github: /d' "$dir/judgement.md" ;;
+    order-of-work)
+        (
+            cd "$dir/repo" || exit 1
+            # The branch is moved without a checkout, so the planted tree keeps every
+            # file and only its history changes: one commit adds the question list and
+            # the evidence together.
+            git branch -f replanted "$(cat "$dir/base")"
+            git symbolic-ref HEAD refs/heads/replanted
+            git reset --quiet
+            git add -A
+            git commit --quiet -m "docs(research): the evidence and the question list in one commit, out of order"
+        )
+        ;;
+    citation-our-code) sed -i 's/"symbol":"TesterVerdictRequired"/"symbol":"NameNoFileHolds"/' "$evidence/claims.jsonl" ;;
+    citation-project-code) sed -i 's#"file":"README.md","symbol":"README"#"file":"README.md","symbol":"NoTextThatFileHolds"#' "$evidence/claims.jsonl" ;;
+    citation-published) printf 'a byte the fetched page did not carry\n' >>"$evidence/published/page.txt" ;;
+    citation-dispatch) printf '\nSee dispatch://INFRA-99999999/artifact/no-such-document.\n' >>"$evidence/tests/concord.md" ;;
+    citation-kinds) sed -i 's/^    if first in TENS:/    if False:/; s/^    if first in WORD_NUMBERS:/    if False:/' "$evidence/citations.py" ;;
+    citation-figures) sed -i 's/reads 12,617 rows \[f-figure-1\]/reads 12,618 rows [f-figure-1]/' "$dir/judgement.md" ;;
+    landed-proof) sed -i 's/- \*\*Proven by:\*\* `true`/- **Proven by:** `false`/' "$dir/judgement.md" ;;
+    landed-refutation)
+        # The page of one definitions record, which carries no state, says its step is not
+        # made, and its refutation has no command behind it.
+        sed -i 's/^- It is rejected because the measurement under it failed\.$/&\n- **Landed:** not made\n- **Refuted by:** a reading of the page with no command behind it./' "$dir/judgement.md"
+        ;;
+    landed-order)
+        (
+            cd "$dir/repo" || exit 1
+            # The two steps' commits written again in the other order, one commit of each
+            # subject, the combining rule's first and the shortfall rows' after it, so the
+            # rows' commit is no ancestor of the rule's; landed_order fails two commits of
+            # one subject on its own, so a plant that added commits would prove no order.
+            # The landed step names the rows' commit, so its new hash is written wherever
+            # the fixture names it, and the plant changes nothing else.
+            local rows rule head rows_again
+            rows="$(cat "$dir/rows")"
+            rule="$(git log --format=%H -1 --grep='combines the reviewer')"
+            head="$(git rev-parse HEAD)"
+            git checkout --quiet --detach "$rows^" &&
+                git cherry-pick --allow-empty "$rule" "$rows" "$head" >/dev/null || exit 1
+            rows_again="$(git rev-parse HEAD~1)"
+            sed -i "s/$rows/$rows_again/g" docs/research/internet-of-cognition/sources.json "$dir/judgement.md"
+            printf '%s' "$rows_again" >"$dir/rows"
+            git add -A && git commit --quiet -m "docs(research): the landed step's commit, written in the other order" &&
+                git branch -f main HEAD && git checkout --quiet main
+        ) || return 1
+        ;;
+    landed-no-refusal)
+        mkdir -p "$dir/repo/packages/daemon/internal/workflow"
+        printf 'package workflow\n\nconst ReviewerPairRequired = "REVIEWER_PAIR_REQUIRED"\n' >"$dir/repo/packages/daemon/internal/workflow/review.go"
+        (
+            cd "$dir/repo" || exit 1
+            git add packages
+            git commit --quiet -m "a landed step that reaches a refusal path"
+        )
+        ;;
+    landed-third-change)
+        printf '\nA reviewer completion with no pair result recorded at the head is refused.\n' >>"$dir/repo/skills/legion-worker/references/merge-gate.md"
+        (
+            cd "$dir/repo" || exit 1
+            git add skills
+            git commit --quiet -m "the third change, landed as prose in a skill"
+        )
+        ;;
+    landed-coverage)
+        # The two merged-in steps of fcc746a3, the shortfall rows' published list leaving out
+        # the last line the commit added to pr-body.md, and its proof with it, so the list
+        # and the proof agree and only the line nothing publishes is left.
+        fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)" >/dev/null &&
+            jq '(.landed[] | select(.title == "An execution record under the gen_ai. names") | .published) |= .[:-1]' "$evidence/sources.json" >"$dir/sources.json" &&
+            mv "$dir/sources.json" "$evidence/sources.json" &&
+            fixture_merged_prove "$dir" "An execution record under the gen_ai. names" || return 1
+        ;;
+    landed-proof-holds)
+        # The two merged-in steps of fcc746a3, the shortfall rows' proof leaving out the grep
+        # of the first sentence its step publishes, which the list still carries.
+        fixture_merged "$dir" "docs(skills): the reviewer pair is two rows (#4636)" >/dev/null &&
+            fixture_merged_prove "$dir" "An execution record under the gen_ai. names" "$(fixture_merged_steps | jq -r '.[0].published[0].sentence')" || return 1
+        ;;
+    published-tree)
+        # A page that names a file of this directory the fixture's head does not carry.
+        printf '%s\n' '- The count is kept in `docs/research/internet-of-cognition/coordination/no-such-count.md`.' >>"$dir/judgement.md"
+        ;;
+    published-delivery) fixture_delivery "$dir" differ || return 1 ;;
+    coverage-complete)
+        # The planted copy of this script, whose coverage report leaves out the line of the
+        # family published-delivery.
+        sed -i '/"--\$mode" "\$asserts"$/s/printf/[ "$family" = published-delivery ] || printf/' "$evidence/check.sh"
+        ;;
+    *) return 1 ;;
+    esac
+    return 0
+}
+
+# self_test_ran <family> <the run> <its directory>; reads how a run the self-test made
+# ended, by ending_read, which leaves RUN_* set for its caller. One that could not run
+# judged nothing, so the self-test stops there, at <family>, naming the run and, last, the
+# run's own last line, with the kind of that run's reason; finish then ends the self-test
+# by the precedence of the header. Such a run is never read as an assertion that failed,
+# and a run that crashed, one that wrote no record among them, is read as the failure it
+# is by its caller.
+self_test_ran() {
+    ending_read "$3"
+    [ "$RUN_ENDING" = cannot-run ] || return 0
+    cannot_run "$(printf '%s' "$RUN_UNRUN" | head -1 | cut -f2)" " --self-test: $2 could not run, so the self-test stops at $1: $RUN_LINE"
+}
+
+mode_self_test() {
+    local work="$RUN_SCRATCH/self-test" baseline
+    mkdir -p "$work"
+    fixture_build "$work/base"
+    local mode modes="replay shape citations landed published"
+    local broken=0
+    for mode in $modes; do
+        baseline="$(fixture_mode "$work/base" "$mode")"
+        self_test_ran self-test-baseline "--$mode over the fixture deliverable" "$baseline"
+        if [ "$RUN_ENDING" != passed ]; then
+            broken=$((broken + 1))
+            fail "self-test-baseline" "the fixture deliverable does not pass --$mode, exit $RUN_STATUS: $(grep '^FAIL' "$baseline/text" | head -3 | tr '\n' ' ')$RUN_LINE"
+        fi
+    done
+    [ "$broken" -eq 0 ] || return 0
+    pass "self-test-baseline" "the fixture deliverable passes --$(printf '%s' "$modes" | sed 's/ /, --/g')"
+
+    local family planted coverage_planted="" coverage_fault=""
+    while IFS='|' read -r family mode asserts fault; do
+        [ "$fault" = "-" ] && continue
+        planted="$work/$family"
+        rm -rf "$planted"
+        fixture_copy "$work/base" "$planted"
+        if ! fixture_plant "$planted" "$family"; then
+            fail "$family" "the self-test plants no fault of this kind, so nothing proves the gate reads it"
+            continue
+        fi
+        # coverage-complete is a row of --self-test itself, and the run that judges it over
+        # the fixture would be the self-test again: its plant is kept for the end of this
+        # function, where coverage_missing, the one reader coverage-complete reads this
+        # script's own report by, reads the planted copy of this script and then this tree's
+        # own, so that the assertion prints its PASS after both parts have run (finish).
+        if [ "$family" = coverage-complete ]; then
+            coverage_planted="$planted" coverage_fault="$fault"
+            continue
+        fi
+        local out
+        out="$(fixture_mode "$planted" "$mode")"
+        self_test_ran "$family" "--$mode over the fixture with the planted fault of $family" "$out"
+        if printf '%s' "$RUN_FAILED" | grep -qxF "$family"; then
+            pass "$family" "the gate fails the planted fault and names it: $fault"
+        else
+            fail "$family" "the gate passed the planted fault ($fault)"
+        fi
+        rm -rf "$planted"
+    done < <(assertion_table)
+
+    # The faults the tester of this issue found the gate passing are cases of their own,
+    # in check.test.sh beside this script, because each of them is a second fault of a
+    # family this table already plants once. The self-test runs them here, so one run
+    # proves both lists.
+    if [ -r "$EVIDENCE/check.test.sh" ]; then
+        local cases
+        cases="$(gate_run "$EVIDENCE/check.test.sh")"
+        self_test_ran gate-cases "check.test.sh" "$cases"
+        if [ "$RUN_ENDING" = passed ]; then
+            pass gate-cases "check.test.sh: $RUN_LINE"
+        else
+            fail gate-cases "check.test.sh does not pass, exit $RUN_STATUS: $(grep '^FAIL' "$cases/text" | head -3 | tr '\n' ' ')$RUN_LINE"
+        fi
+    else
+        fail gate-cases "check.test.sh is missing, so the faults the tester found are proved by nothing"
+    fi
+
+    # The classifier admits exactly the forms the rows use, through its one table, and the
+    # header's table is the one --admitted measures.
+    local admitted
+    admitted="$(gate_run "$EVIDENCE/check.sh" --admitted)"
+    self_test_ran admitted-table "check.sh --admitted" "$admitted"
+    if [ "$RUN_ENDING" = passed ]; then
+        pass admitted-table "check.sh --admitted: every entry of ADMITTED is used by a row, no row is refused, and the header's table is the one measured"
+    else
+        fail admitted-table "check.sh --admitted does not pass, exit $RUN_STATUS: $(grep '^FAIL' "$admitted/text" | head -3 | tr '\n' ' ')$RUN_LINE"
+    fi
+
+    # --coverage names every family the gate holds, so a mode nothing runs is still read:
+    # this tree's own report, and the planted copy's, which has to leave a family out. Both
+    # are read before coverage-complete prints a PASS, since a PASS printed before the later
+    # part would stand however that part ended.
+    local unnamed caught=""
+    unnamed="$(coverage_missing "$EVIDENCE/check.sh")"
+    while IFS= read -r family; do
+        [ -n "$family" ] && fail coverage-complete "the coverage report does not name the family $family"
+    done <<<"$unnamed"
+    if [ -n "$coverage_planted" ]; then
+        if [ -n "$(coverage_missing "$coverage_planted/repo/docs/research/internet-of-cognition/check.sh")" ]; then
+            caught=1
+        else
+            fail coverage-complete "the gate passed the planted fault ($coverage_fault)"
+        fi
+    fi
+    [ -z "$caught" ] || pass coverage-complete "the gate fails the planted fault and names it: $coverage_fault"
+    [ -n "$unnamed" ] || pass coverage-complete "the coverage report names every assertion family the gate holds"
+    rm -rf "$work"
+}
+
+main() {
+    local mode="${1:---help}"
+    case "$mode" in
+    --help | -h) usage ;;
+    --coverage) coverage_report ;;
+    --replay) run_mode replay ;;
+    --shape) run_mode shape ;;
+    --citations) run_mode citations ;;
+    --landed) run_mode landed ;;
+    --published) run_mode published ;;
+    --admitted) run_mode admitted ;;
+    --self-test) run_mode self-test ;;
+    *)
+        usage
+        early_end gate "it has no mode $mode; its modes are the ones the header above names"
+        ;;
+    esac
+}
+
+# Sourced, as check.test.sh sources it for the fixture builder and runner, the script
+# defines its functions and runs no mode.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi

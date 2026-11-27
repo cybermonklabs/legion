@@ -30,10 +30,13 @@ interface CommentFixture {
   readonly created_at: string;
   readonly body: string;
   readonly quote?: string;
+  /** Set on a comment its author deleted, which Dispatch serves with an empty body. */
+  readonly deleted_at?: string;
 }
 
-/** Three issues, one of them closed, and seven comments: two by sessions, one by a person at
- * exactly --until, and four by people inside the window, one of them on the closed issue. */
+/** Three issues, one of them closed, and eight comments: two by sessions, one by a person at
+ * exactly --until, four by people inside the window, one of them on the closed issue, and one by
+ * a person inside the window that its author deleted. */
 const COMMENTS: Record<string, CommentFixture[]> = {
   "ACME-1": [
     {
@@ -67,6 +70,13 @@ const COMMENTS: Record<string, CommentFixture[]> = {
       author: person("bob@example.com"),
       created_at: "2026-10-18T12:00:00Z",
       body: "You asked this already.",
+    },
+    {
+      id: "c8",
+      author: person("bob@example.com"),
+      created_at: "2026-10-21T08:00:00Z",
+      body: "",
+      deleted_at: "2026-10-21T09:00:00Z",
     },
   ],
 };
@@ -149,6 +159,9 @@ function world(model: (comment: string, attempt: number) => Response = answerWit
                   orphaned: false,
                 },
           created_at: comment.created_at,
+          ...(comment.deleted_at === undefined
+            ? {}
+            : { deleted_at: comment.deleted_at, deleted_by: comment.author }),
         }))
       );
     }
@@ -210,6 +223,7 @@ const EXPECTED_SYSTEM_BLOCKS = [
 
 const EXPECTED_SUMMARY = [
   "comments: 4",
+  "deleted comments left out: 1 (Dispatch serves a deleted comment with no body, so there is nothing of it to label)",
   "first created_at: 2026-10-16T00:00:00Z",
   "last created_at: 2026-10-22T23:59:59.999999Z",
   "writing complaints (about_doc_writing yes): 2 of 4 (50.0%)",
@@ -341,6 +355,31 @@ test("it labels the people's comments in the window, and only those, and prints 
   expect(Object.keys(c4.yes)).toEqual(QUESTIONS.map(({ key }) => key));
 
   expect(run.stdout.join("\n")).toBe(EXPECTED_SUMMARY.join("\n"));
+});
+
+// Dispatch serves a comment its author deleted with an empty body. Labelled, it would count as a
+// person's comment that raised none of the eleven complaints, so it is left out of what the judge
+// reads, and stdout says how many were left out and why.
+test("a deleted comment reaches no model call and no row, and stdout counts it as left out", async () => {
+  const out = path.join(dir("deleted"), "labels");
+  const { fetch, sent } = world();
+  const run = io(fetch);
+  expect(
+    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
+  ).toBe(0);
+  const states = sent
+    .filter(({ url }) => url.host !== "dispatch.test")
+    .map(({ init }) => JSON.parse(String(init.body)).messages[0].content as string);
+  expect(states).toHaveLength(4);
+  expect(states.some((state) => state.includes("<comment></comment>"))).toBe(false);
+  const ids = readFileSync(path.join(out, "labels.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line).comment_id);
+  expect(ids).not.toContain("c8");
+  expect(run.stdout).toContain(
+    "deleted comments left out: 1 (Dispatch serves a deleted comment with no body, so there is nothing of it to label)"
+  );
 });
 
 test("the gateway route posts to <gateway>/v1/messages with the key the key command prints", async () => {

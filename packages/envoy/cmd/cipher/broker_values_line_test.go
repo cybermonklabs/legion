@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -72,11 +73,47 @@ func forgedBroker(t *testing.T, bodies map[string]any) *httptest.Server {
 	return srv
 }
 
+// reachedAs is srv's address with its host spelled host, a name this test resolves itself: for
+// the rest of t, each request this process sends to host and srv's port through
+// http.DefaultTransport, which the CLI's broker client sends through (newClient leaves its
+// Transport unset), dials srv's own listener and takes no proxy. Every other request goes on as
+// it would. So no machine decides whether a request to that name reaches srv. A name the machine
+// resolves would not do: Go does not match localhost. to the usual /etc/hosts entry, which
+// spells localhost with no dot, so that spelling goes to the machine's DNS, which answers it, or
+// not, as that machine is set up.
+func reachedAs(t *testing.T, srv *httptest.Server, host string) string {
+	t.Helper()
+	at, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := net.JoinHostPort(host, at.Port())
+	direct := &http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if address != named {
+				return nil, fmt.Errorf("this test resolves %s alone, not %s", named, address)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+		},
+	}
+	t.Cleanup(direct.CloseIdleConnections)
+	base := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != named {
+			return base.RoundTrip(r)
+		}
+		return direct.RoundTrip(r)
+	})
+	t.Cleanup(func() { http.DefaultTransport = base })
+	return at.Scheme + "://" + named
+}
+
 // TestTheRequestFormsPrintTheBrokersValuesOnOneLine: request, status, self and the exec form print
 // a request's id and state, its grant id, who decided it, the broker's sentence about it and the
 // approver it waits on, a session's enrollment, kind and operator and its grants' ids, Go-quoted
 // where the broker's answer holds a control character.
 func TestTheRequestFormsPrintTheBrokersValuesOnOneLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.forgedBroker, t.Setenv at broker_values_line_test.go:69); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	t.Run("request, pending", func(t *testing.T) {
 		forgedBroker(t, map[string]any{"POST /v1/requests": map[string]any{
 			"request_id": forged, "state": "pending", "approver": forged, "approve_url": "https://broker.example/approve/r-1", "detail": forged,
@@ -164,6 +201,7 @@ func TestTheRequestFormsPrintTheBrokersValuesOnOneLine(t *testing.T) {
 // broker's value as it came where it holds no control character, and Go-quoted where it holds
 // one, a tab among them, which would split the cell.
 func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
+	t.Parallel()
 	slot := forged
 	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 	plain := OperatorGrant{GrantID: "grant-1", Granted: "approved", Names: []string{"A", "B"},
@@ -201,6 +239,7 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 // value, each prints as cipheraddr.WordsNotPrinted. Control: beside a clean address the same
 // values print, so the check sees them.
 func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at broker_values_line_test.go:245); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	planted := "hunter2pw-" + "brokervalue-" + "51c7"
 	credentialed := func(t *testing.T, srv *httptest.Server) {
 		t.Setenv("AGENT_SECRETS_URL", strings.Replace(srv.URL, "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
@@ -264,6 +303,7 @@ func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
 // broker made, prints as it came where it holds no control character and Go-quoted where it holds
 // one. TestRegisterPrintsTheBrokersEnrollmentOnOneLine does the same for register.
 func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at broker_values_line_test.go:309); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	t.Run("enroll", func(t *testing.T) {
 		sock, _ := fakeHelperByOp(t, map[string]helper.Response{"enroll-session-key": {OK: true, EnrollmentID: forged}})
 		t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
@@ -336,12 +376,14 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 }
 
 // TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress: beside an AGENT_SECRETS_URL
-// that Clean refuses and that carries no credential - a host name with a trailing dot - the exec
-// form that stops while its request waits still prints the request's id where it is a UUID, the
-// shape of every id the broker makes, and the command that reads it again, which runs when pasted.
-// An id of another shape, 32 hex digits among them, is not printed, and the hint says so in place
-// of a command that would not run.
+// that Clean refuses and that carries no credential - a host name with a trailing dot, which the
+// test resolves to its forged broker itself (reachedAs) - the exec form that stops while its
+// request waits still prints the request's id where it is a UUID, the shape of every id the
+// broker makes, and the command that reads it again, which runs when pasted. An id of another
+// shape, 32 hex digits among them, is not printed, and the hint says so in place of a command
+// that would not run.
 func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at broker_values_line_test.go:408); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it replaces a value of the whole process (main.reachedAs, http.DefaultTransport set at broker_values_line_test.go:101); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	const shaped = "0f3b6c2e-5a1d-4e7f-9b80-2c4d6e8f0a1b"
 	const hex32 = "0123456789abcdef0123456789abcdef"
 	planted := "hunter2pw-" + "execid-" + "4c2d"
@@ -359,7 +401,7 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			srv := forgedBroker(t, map[string]any{"POST /v1/requests": map[string]any{"request_id": row.id, "state": "pending"}})
-			unclean := strings.Replace(srv.URL, "127.0.0.1", "localhost.", 1)
+			unclean := reachedAs(t, srv, "broker.example.")
 			if cipheraddr.New(unclean).Clean() {
 				t.Fatalf("%s is clean; the test needs an address Clean refuses", unclean)
 			}
@@ -389,6 +431,7 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 // with an underscore, where the tables print a grant's id by the same rule as self; beside those
 // two, a UUID the address's path holds prints as Words in both tables.
 func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at broker_values_line_test.go:515); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	uuidPassword := "3f1c9a2b" + "-7d4e-4a6b-9c21-" + "0e8f5d7a6b42"
 	hexPassword := "9b2e41c0" + "7d5f8a3e6b10" + "29c4d7e0f5a8"
 	dashed := func(pw string) string {

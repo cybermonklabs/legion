@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -90,6 +91,19 @@ func (r *checkStatesRig) newSettler(t *testing.T, caller string) *checkStatesSet
 		t.Fatalf("reserve a lease connection for %s: %v", caller, err)
 	}
 	return &checkStatesSettler{server: r.served, leases: leases, exclusive: duty.Exclusive, schedule: checkStatesTestSchedule}
+}
+
+// oneRound is settler with a schedule of one round, sharing its lease reservation; a test runs it
+// where settler itself runs nothing. A test that holds a settle and asserts what its round decided,
+// or left undecided, settles with it, so the assertion reads the round the test held. A round that
+// leaves a read unfinished keeps its marks due minGap on, from the start of its own transaction,
+// and a settle runs another round while a mark is due: on a loaded machine the round's end can
+// come later than that, and the next round reads GitHub again, deciding what the assertion means
+// to find undecided, or starting a read the test holds and never releases.
+func oneRound(settler *checkStatesSettler) *checkStatesSettler {
+	held := *settler
+	held.schedule.rounds = 1
+	return &held
 }
 
 // fileIssue files one more issue of project ACME, with no Verification document, and answers it.
@@ -332,7 +346,7 @@ func publishedRow(t *testing.T, database *store.Store, issue, repo, head, check 
 func computedSubject(t *testing.T, rig *checkStatesRig, check, head string) model.PassStandsSubject {
 	t.Helper()
 	ctx := store.WithTransactionTracking(t.Context())
-	heads, err := rig.served.deps.Attributor.HeadsAttributedTo(ctx, rig.database.Pool, rig.issue)
+	heads, err := rig.served.deps.Attributor.HeadsAttributedTo(ctx, rig.database.Pool, rig.issue, delivery.HeadAnswers{})
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", rig.issue, err)
 	}

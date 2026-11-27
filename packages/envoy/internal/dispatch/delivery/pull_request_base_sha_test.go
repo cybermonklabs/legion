@@ -52,7 +52,7 @@ func TestEachWriterStoresTheBaseRevisionGitHubSent(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
 	envelope := func(baseSHA, updatedAt string) {
 		t.Helper()
 		payload := map[string]string{

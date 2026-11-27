@@ -11,14 +11,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 )
 
-// TestAnInformationalAnswerCarriesNoAirlockHeader: the bound host's service answers an allowed
-// results write with a 103 that carries the proxy's own two headers (Airlock-Forwarded: false,
-// Airlock-Code: GRANT_NOT_LIVE), then a final 407 with them again. The 103 reaches the command with
-// neither header, and the final answer with Airlock-Forwarded: true and no Airlock-Code, so a
+// TestAnInformationalAnswerCarriesNoProxyHeader: the bound host's service answers an allowed
+// minted grant's write with a 103 that carries the proxy's own two headers (Cipher-Proxy-Forwarded: false,
+// Cipher-Proxy-Code: GRANT_NOT_LIVE), then a final 407 with them again. The 103 reaches the command with
+// neither header, and the final answer with Cipher-Proxy-Forwarded: true and no Cipher-Proxy-Code, so a
 // service cannot pass for the proxy in any answer (statusWriter, ModifyResponse); the call's line
 // names the final status, 407, not the 103. Control: the 103 itself reaches the command, so the
 // check reads an informational answer that arrived.
-func TestAnInformationalAnswerCarriesNoAirlockHeader(t *testing.T) {
+func TestAnInformationalAnswerCarriesNoProxyHeader(t *testing.T) {
 	r, _ := newDPoPRig(t)
 	r.answerWith(func(w http.ResponseWriter, _ *http.Request, _ proxyrulestest.Request) bool {
 		w.Header().Set(forwardedHeader, "false")
@@ -42,12 +42,12 @@ func TestAnInformationalAnswerCarriesNoAirlockHeader(t *testing.T) {
 		early = append(early, informational{code: code, forwarded: header.Values(forwardedHeader), code2: header.Values(codeHeader), link: header.Get("Link")})
 		return nil
 	}}
-	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(t.Context(), trace), http.MethodPost, "https://"+boundHost+resultsPath, strings.NewReader(`{"verdict":"pass"}`))
+	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(t.Context(), trace), http.MethodPost, "https://"+boundHost+mintedPath, strings.NewReader(`{"verdict":"pass"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "DPoP "+resultsPlaceholder)
-	answer, err := r.client(resultsPlaceholder).Do(request)
+	request.Header.Set("Authorization", "DPoP "+mintedPlaceholder)
+	answer, err := r.client(mintedPlaceholder).Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,10 +56,10 @@ func TestAnInformationalAnswerCarriesNoAirlockHeader(t *testing.T) {
 		t.Fatalf("[%s] the command saw the informational answers %+v; want the service's one 103 with its Link header", r.protocol, early)
 	}
 	if len(early[0].forwarded) != 0 || len(early[0].code2) != 0 {
-		t.Errorf("[%s] the service's 103 reached the command with Airlock-Forwarded %q and Airlock-Code %q; want neither", r.protocol, early[0].forwarded, early[0].code2)
+		t.Errorf("[%s] the service's 103 reached the command with Cipher-Proxy-Forwarded %q and Cipher-Proxy-Code %q; want neither", r.protocol, early[0].forwarded, early[0].code2)
 	}
 	if answer.StatusCode != http.StatusProxyAuthRequired || answer.Header.Get(forwardedHeader) != "true" || answer.Header.Get(codeHeader) != "" {
-		t.Errorf("[%s] the final answer is %d with Airlock-Forwarded %q and Airlock-Code %q; want the service's 407, true and none", r.protocol, answer.StatusCode, answer.Header.Get(forwardedHeader), answer.Header.Get(codeHeader))
+		t.Errorf("[%s] the final answer is %d with Cipher-Proxy-Forwarded %q and Cipher-Proxy-Code %q; want the service's 407, true and none", r.protocol, answer.StatusCode, answer.Header.Get(forwardedHeader), answer.Header.Get(codeHeader))
 	}
 	// The call's line is written once the answer is carried, which can be after the command has
 	// its head: read it once it is there (callsAtLeast), as every row that reads a call line does.

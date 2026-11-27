@@ -34,6 +34,7 @@ const (
 // it only where the call itself took as long as the difference, nine seconds for a bound of a
 // second and ten for GitHub's twenty seconds, and a bound with no deadline never does.
 func TestCIReadBoundHasDeadline(t *testing.T) {
+	t.Parallel()
 	before := time.Now()
 	bound, cancel := ciReadBound(context.Background())
 	after := time.Now()
@@ -180,6 +181,8 @@ func ciEachHeadWants(t *testing.T, what string, subjects map[string]ciEachHeadSu
 // run at each open head, each in its own pull request's repository, and a read whose bound ends
 // before it does makes that head alone not known.
 func TestACheckCIProvesDerivesAResultAtEachOpenHead(t *testing.T) {
+	// Not parallel: it swaps the package's ciReadBound (holdCIReadBounds) and githubapp.RequestTimeout,
+	// which every test of the process reads.
 	github := newCIEachHeadGitHub()
 	handler, database, _ := resultsGitHubServed(t, map[string]bool{"acme/widgets": true, "acme/infra": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, github.serve)

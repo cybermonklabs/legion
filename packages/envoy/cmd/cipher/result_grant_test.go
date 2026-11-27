@@ -75,9 +75,9 @@ func placeholderGrant(t *testing.T, hosts ...string) map[string]any {
 		t.Fatal(err)
 	}
 	return map[string]any{
-		"access_token": resultPlaceholder, "issued_token_type": oauthwire.TokenTypeAirlockPlaceholder, "token_type": "N_A", "expires_in": 900,
+		"access_token": resultPlaceholder, "issued_token_type": oauthwire.TokenTypeProxyPlaceholder, "token_type": "N_A", "expires_in": 900,
 		oauthwire.ExtraGrantID: resultGrantID,
-		oauthwire.ExtraAirlock: oauthwire.AirlockRelease{
+		oauthwire.ExtraProxy: oauthwire.AirlockRelease{
 			ProxyURL: "http://127.0.0.1:13381", CACertificate: string(authority.CertificatePEM()), ProxyPassword: resultPlaceholder,
 			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {Value: resultPlaceholder, Slots: map[string]string{"value": resultPlaceholder}, Hosts: hosts}},
 		},
@@ -85,11 +85,13 @@ func placeholderGrant(t *testing.T, hosts ...string) map[string]any {
 }
 
 // runnerTokenEndpoint is the stand-in for the runner's OIDC token endpoint, which answers the
-// bearer it gave the job with a run token.
+// bearer it gave the job with a run token. The scheme is read in any letter case, as HTTP reads
+// it: GitHub's own example spells it `bearer`, as the client sends it.
 func runnerTokenEndpoint(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+runnerRequestToken {
+		scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || token != runnerRequestToken {
 			http.Error(w, "no bearer", http.StatusUnauthorized)
 			return
 		}
@@ -109,7 +111,7 @@ func runResultGrant(t *testing.T, broker *resultBroker, extra ...string) (string
 		"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir(),
 		"AGENT_SECRETS_URL=" + broker.URL, "AGENT_SECRETS_MACHINE_IDENTITY=github-actions",
 		"AGENT_SECRETS_MACHINE_AUDIENCE=example-broker", "ACTIONS_ID_TOKEN_REQUEST_URL=" + runner.URL,
-		cipherclient.ActionsTokenVar + "=" + runnerRequestToken, "DISPATCH_URL=https://" + resultHost,
+		cipherclient.ActionsIDTokenRequestTokenVar + "=" + runnerRequestToken, "DISPATCH_URL=https://" + resultHost,
 	}, extra...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
@@ -151,7 +153,7 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 	broker.mu.Lock()
 	forms, proofs := broker.forms, broker.proofs
 	broker.mu.Unlock()
-	if len(forms) != 1 || forms[0].Get("requested_token_type") != oauthwire.TokenTypeAirlockPlaceholder ||
+	if len(forms) != 1 || forms[0].Get("requested_token_type") != oauthwire.TokenTypeProxyPlaceholder ||
 		forms[0].Get("subject_token") != "the-runs-oidc-token" || forms[0].Get("subject_token_type") != oauthwire.SubjectTokenTypeGitHub {
 		t.Fatalf("the broker's token endpoint got %v; want one trade of the run's token for the placeholder type", forms)
 	}

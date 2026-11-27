@@ -233,7 +233,10 @@ func TestAFailedReadWaitsItsBackoffOnceEveryFormerHeadIsRead(t *testing.T) {
 
 	entered := rig.github.listings.blockReadsOf(t, visited...)
 	bounds := holdCIReadBounds(t)
-	settler := rig.newSettler(t, "check states backoff")
+	// Each settle below is one round (oneRound), the turn the test held: a round leaves the heads
+	// it did not start due a minimum gap on, and a second round in the same settle would start them
+	// under a bound no expire of this test ends.
+	settler := oneRound(rig.newSettler(t, "check states backoff"))
 	exec := func(statement string) {
 		if _, err := rig.database.Pool.Exec(context.Background(), statement, rig.issue); err != nil {
 			t.Fatalf("%s: %v", statement, err)

@@ -10,7 +10,7 @@ import (
 )
 
 // A phase-finished notice the release before this one published named the tester's verdict under
-// the key verdict, which record.Notice no longer has. Migration 20261121074614_phase_verdict_gone
+// the key verdict, which record.Notice no longer has. Migration 20261126110301_phase_verdict_gone
 // strips the key from every notice still queued, but a listener reports a failed forward with the
 // payload as it went out, so a notice published before the upgrade and reported failed after it
 // carries the key. The daemon queues that notice again without it, as the migration leaves a

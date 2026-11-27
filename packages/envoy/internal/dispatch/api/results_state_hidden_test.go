@@ -87,6 +87,7 @@ func hiddenStateWithout(answer map[string]any) map[string]any {
 // lacked them. With the file, the answer equals that answer less each check's pass_stands and ci
 // and each result's currency; with the file removed, the whole answer is back.
 func TestTheHiddenStateAnswerIsTheAnswerLessTheComputedState(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	hide := filepath.Join(t.TempDir(), "hidden")
 	rig.served.deps.HideStateFile = hide

@@ -1,0 +1,11 @@
+--- a/packages/envoy/internal/dispatch/api/server.go
++++ b/packages/envoy/internal/dispatch/api/server.go
+@@ -1731,7 +1731,7 @@
+ 			writeError(w, codeResultsOnlyToken, http.StatusForbidden, resultsOnlyRefusal)
+ 			return
+ 		}
+-		if !approveListed && approveOnlyRequest(r) {
++		if false { // approve-check's control build: the approve-only refusal is removed
+ 			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal)
+ 			return
+ 		}

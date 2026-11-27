@@ -133,6 +133,7 @@ func eachHeadSame(got, want []string) bool {
 // pass of k1 at H1 makes H1 yes, and H2, which holds no result, no for no_result. The tester's
 // fail at H2 then makes H2 no for its fail, and H1 stays yes.
 func TestEachOpenHeadHoldsTheStateOfItsOwnResults(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
@@ -155,6 +156,7 @@ func TestEachOpenHeadHoldsTheStateOfItsOwnResults(t *testing.T) {
 // requests at one head share it, a pull request that moves to a new head takes that head's state,
 // and the old commit keeps its own, which a read at that commit still gives.
 func TestTheStateAtAHeadComesOnlyFromItsCommit(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
@@ -199,6 +201,7 @@ func TestTheStateAtAHeadComesOnlyFromItsCommit(t *testing.T) {
 // own, so a fault in one case reads as that case's failure, and the passes at the open heads are
 // read with no pass at the merged head beside them.
 func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
+	t.Parallel()
 	open := []string{eachHeadH1, eachHeadH2, eachHeadH3}
 	newRig := func(t *testing.T) *ciJobRig {
 		t.Helper()
@@ -259,6 +262,7 @@ func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 // answers yes with no role, since no role passed at each head. The tester's pass at H1 too makes
 // the check's answer name the tester, and H1's results then hold both passes.
 func TestTheRolesOfAHeadAreThePassesAtThatHead(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
 	writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)

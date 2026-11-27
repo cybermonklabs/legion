@@ -31,7 +31,7 @@ var (
 	other        = placeholder.Prefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 	digitsFirst  = placeholder.Prefix + "0123AbCd4567EfGh89IjKlMnOpQrStUv"
 	digitsInside = placeholder.Prefix + "AbCd0123EfGh4567IjKl89MnOpQrStUv"
-	resultHeld   = placeholder.ResultPrefix + "RrEeSsUuLlTtGgRrAaNnTt0123456789"
+	mintedHeld   = placeholder.MintedPrefix("approve") + "RrEeSsUuLlTtGgRrAaNnTt0123456789"
 	realValue    = strings.Join([]string{"sk", "live", "REAL", "VALUE", "7f3c9a1e5b2d"}, "-")
 	at           = time.Date(2026, 11, 18, 21, 0, 0, 0, time.UTC)
 )
@@ -239,11 +239,12 @@ func tokensOf(line string) ([]span, error) {
 // what comes before it; and a line that held none is written as it came. Each string that held one
 // is a string, after the same separator, that holds no prefix and holds Mark where a placeholder
 // was; with each Mark taken out it is a subsequence of the string that came in, shorter by at most
-// a result grant's prefix and placeholder.Length characters for each Mark; no run of the minted alphabet
-// the string wrote right after a prefix (tailsAfterPrefix) is written more often than the string
-// wrote it with no prefix before it; and no Mark is followed by any run of a placeholder's
-// characters (tailRune) but one the string itself wrote past a placeholder's
-// placeholder.Length or after a Mark of its own (leftPastPlaceholders). So a caller's text
+// the longest opening a minted kind's prefix gives and placeholder.Length characters for each
+// Mark; no run of the minted alphabet the string wrote right after a prefix (tailsAfterPrefix) is
+// written more often than the string wrote it with no prefix before it; and no Mark is followed
+// by any run of a placeholder's characters (tailRune) but one the string itself wrote past a
+// placeholder's placeholder.Length or after a Mark of its own (leftPastPlaceholders). So a
+// caller's text
 // changes no token but its own, the mask takes out no more than the placeholders, and no
 // placeholder's characters are left in clear. It reads no pattern of the mask's. It answers how
 // many strings the mask wrote again, or why the masked line breaks the claim.
@@ -276,9 +277,9 @@ func maskedAsClaimed(plain, masked string) (int, error) {
 		if !isSubsequence(rest, before[i].text) {
 			return 0, fmt.Errorf("the masked string %q, with each %s taken out, is no subsequence of %q: the mask wrote text the string did not hold", after[i].text, Mark, before[i].text)
 		}
-		most := marks * (utf8.RuneCountInString(placeholder.ResultPrefix) + placeholder.Length)
+		most := marks * (utf8.RuneCountInString(placeholder.Prefix) + placeholder.MaxMintedWord + 1 + placeholder.Length)
 		if removed := utf8.RuneCountInString(before[i].text) - utf8.RuneCountInString(rest); removed > most {
-			return 0, fmt.Errorf("the mask took %d characters out of %q for %d marks; want at most %d, a result grant's prefix and %d characters for each: %q", removed, before[i].text, marks, most, placeholder.Length, after[i].text)
+			return 0, fmt.Errorf("the mask took %d characters out of %q for %d marks; want at most %d, the longest minted opening and %d characters for each: %q", removed, before[i].text, marks, most, placeholder.Length, after[i].text)
 		}
 		for tail, afterPrefix := range tailsAfterPrefix(before[i].text) {
 			if written, own := countOverlapping(after[i].text, tail), countOverlapping(before[i].text, tail)-afterPrefix; written > own {
@@ -537,11 +538,12 @@ func TestTheMaskMasksEachPlaceholderOfARun(t *testing.T) {
 		// A placeholder's characters are digits as well as letters, from the first on or further in.
 		{"a placeholder whose characters start with digits", "from " + digitsFirst + " on", "from " + Mark + " on"},
 		{"a placeholder whose characters hold digits further in", "from " + digitsInside + " on", "from " + Mark + " on"},
-		// A CI run's result grant opens with the prefix and "result-", whose hyphen no minted
-		// character is: its 32 characters are masked with it, in any case.
-		{"a result grant's placeholder", "from " + resultHeld + " on", "from " + Mark + " on"},
-		{"a result grant's placeholder in upper case", "from " + strings.ToUpper(resultHeld) + " on", "from " + Mark + " on"},
-		{"a result grant's placeholder beside a release's", resultHeld + held, Mark + Mark},
+		// A minted grant's placeholder opens with the prefix, its kind's word and a hyphen, which
+		// no minted character is: its 32 characters are masked with it, in any case.
+		{"a minted grant's placeholder", "from " + mintedHeld + " on", "from " + Mark + " on"},
+		{"a minted grant's placeholder in upper case", "from " + strings.ToUpper(mintedHeld) + " on", "from " + Mark + " on"},
+		{"a minted grant's placeholder beside a release's", mintedHeld + held, Mark + Mark},
+		{"a minted grant's placeholder of another kind's word", "from " + placeholder.MintedPrefix("result") + "RrEeSsUuLlTtGgRrAaNnTt0123456789 on", "from " + Mark + " on"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			plain, masked := brokerLines(t, nil, "a line", "v", c.text)

@@ -35,9 +35,10 @@ import (
 )
 
 // The one grant of this file: a Google login whose access token the proxy holds and whose
-// placeholder the command holds, bound to Secret Manager's host.
+// placeholder the command holds, served behind a kind of its own bound to Secret Manager's host.
 const (
 	gcpAirlockHost        = "secretmanager.googleapis.com"
+	gcpAirlockKind        = "google"
 	gcpAirlockName        = "GCLOUD_TEST"
 	gcpAirlockGrantID     = "grant-gcloud-test"
 	gcpAirlockToken       = "the-real-access-token-of-the-grant"
@@ -75,6 +76,17 @@ func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string,
 	return "", fmt.Errorf("this grant has no Azure exchange")
 }
 
+// AirlockRules is the airlock's rules for the one grant: a kind on Secret Manager's host whose
+// credential travels in the default Authorization header on every method and path, and the
+// grant's one name bound to it as a Google login's token, which the broker mints and the proxy
+// swaps in, with no allow of a profile's own.
+func (gcpAirlockGrant) AirlockRules() proxyrules.Rules {
+	return proxyrules.Rules{
+		Kinds: []proxyrules.Kind{{Name: gcpAirlockKind, Hosts: []string{gcpAirlockHost}, Ways: []string{proxyrules.WayMint}}},
+		Names: []proxyrules.Binding{{Name: gcpAirlockName, Kind: gcpAirlockKind, Way: proxyrules.WayMint}},
+	}
+}
+
 // TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC: `agent-secrets secret list`,
 // built from this package and run as its own process, with the grant's placeholder in
 // CLOUDSDK_AUTH_ACCESS_TOKEN and HTTPS_PROXY naming the proxy with that placeholder as its
@@ -85,6 +97,7 @@ func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string,
 // before the proxy carried HTTP/2. The process is the command's own so the SDK's proxy and root
 // certificate caches, each read once per process, read this row's environment.
 func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (proxy.New, (*Server).serveBound, (*Server).valuesFor, (*Machine).AirlockValues, (*Machine).channelLimit, (*Machine).channelsOf, (*Client).Access, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (proxy.New, (*Server).serveBound, (*Server).valuesFor, (*Machine).AirlockValues, (*Machine).channelLimit, (*Machine).channelsOf, (*Client).Access, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
 
 	// Secret Manager: the fake, behind TLS with a certificate for its real name.
@@ -126,13 +139,12 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, err := proxy.NewAuthority(certFile, keyFile)
+	ca, err := proxy.NewAuthority(certFile, keyFile, proxy.AuthorityOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	proxy := proxy.New(proxy.Options{
 		CA: ca, Grants: gcpAirlockGrant{},
-		Rules: proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: gcpAirlockName, Hosts: []string{gcpAirlockHost}}}},
 		Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
 			if host != gcpAirlockHost {
 				return nil, fmt.Errorf("this test resolves %s alone, and the command asked for %s", gcpAirlockHost, host)
@@ -161,7 +173,7 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	proxyURL := (&url.URL{Scheme: "http", Host: proxyListener.Addr().String(), User: url.UserPassword("agent-secrets", gcpAirlockPlaceholder)}).String()
 
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), untilGiveUp(t))
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "secret", "list")
 	command.Env = append(os.Environ(),

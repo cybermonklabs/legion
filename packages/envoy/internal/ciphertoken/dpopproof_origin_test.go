@@ -89,8 +89,8 @@ func TestAProofForDispatchsOriginIsAcceptedWhereverTheRequestArrives(t *testing.
 			write.RemoteAddr = callerAddress
 			caller, err := rig.verifier.Verify(t.Context(), write)
 			if row.want == nil {
-				if err != nil || !caller.ResultsOnly {
-					t.Fatalf("Verify = %+v, %v; want the run's results-only caller", caller, err)
+				if err != nil || !caller.ResultsOnly || caller.Session != resultsSession {
+					t.Fatalf("Verify = %+v, %v; want the run's results-only caller of the token's session", caller, err)
 				}
 				return
 			}

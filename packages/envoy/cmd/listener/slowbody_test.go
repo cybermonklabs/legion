@@ -27,10 +27,13 @@ type slowBodyPublisher struct {
 	published []contracts.Envelope
 }
 
-func (p *slowBodyPublisher) PublishWithin(_ context.Context, e contracts.Envelope) error {
+func (p *slowBodyPublisher) PublishEachWithin(_ context.Context, e contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.published = append(p.published, e)
+	if published != nil {
+		published(e.Topic, false, false)
+	}
 	return nil
 }
 
@@ -101,6 +104,7 @@ func serveSlowly(t *testing.T, path string, handler http.Handler, headers map[st
 // A GitHub delivery whose body takes longer than the server's 10 s to arrive is read whole and
 // published, not cut off with no answer.
 func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}
@@ -109,7 +113,7 @@ func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *tes
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	pub := &slowBodyPublisher{}
-	status := serveSlowly(t, "/webhook/github", webhook.GitHubHandler(secret, "@legion", "", pub, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)), map[string]string{
+	status := serveSlowly(t, "/webhook/github", webhook.GitHubHandler(secret, "@legion", "", "", pub, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)), map[string]string{
 		"X-GitHub-Delivery":   "delivery-slow-body",
 		"X-GitHub-Event":      "push",
 		"X-Hub-Signature-256": "sha256=" + hex.EncodeToString(mac.Sum(nil)),
@@ -131,14 +135,14 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(logged)
 	t.Cleanup(func() { log.SetOutput(previous) })
-	addr := serveWebhook(t, "/webhook/github", webhook.GitHubHandler("s", "@legion", "", &slowBodyPublisher{}, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)))
+	addr := serveWebhook(t, "/webhook/github", webhook.GitHubHandler("s", "@legion", "", "", &slowBodyPublisher{}, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _ = io.WriteString(conn, "POST /webhook/github HTTP/1.1\r\nHost: listener\r\nX-GitHub-Delivery: delivery-cut\r\nX-GitHub-Event: push\r\nContent-Length: 1000\r\n\r\n"+strings.Repeat("x", 300))
 	conn.Close() // the sender goes away with 700 bytes still owed
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !strings.Contains(logged.String(), "github body read failed") && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}

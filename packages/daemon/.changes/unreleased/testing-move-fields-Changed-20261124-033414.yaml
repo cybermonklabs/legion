@@ -5,7 +5,7 @@ body: |-
   `waiting`, the checks a wait waits for; and `failing`, each check that does not pass at a move
   back, with its `check`, `state` and `reason`. No other notice carries them. The move writes the
   reason, the implementer's task and these fields from one value. The way back of migration
-  `20261121074614_phase_verdict_gone` deletes the four keys from each queued notice, since the
+  `20261126110301_phase_verdict_gone` deletes the four keys from each queued notice, since the
   release before decodes a notice strictly. No test reads the words of a daemon text an agent
   reads: the tests of the testing move read these fields, the moves and the starts. The
   comparisons of the move's reason and of the implementer's and the reviewer's task, the words of
