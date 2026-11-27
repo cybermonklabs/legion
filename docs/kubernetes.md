@@ -8760,7 +8760,7 @@ The daemon applies each report once, under the event id `memory-guard-kill:<guar
 It credits the kill to the claim and the pod that the connection authenticated as, and never to anything the report says.
 For a claim that is not the project's controller, the workflow tells nobody and writes a line in the daemon's log.
 For the controller's claim it writes one controller notice of kind `memory-guard-kill` for each kill, under the project key as a `tick` is (`controllerMemoryGuardKill`, `packages/daemon/internal/workflow/engine.go`).
-The outbox publishes the notice to `notifications.legion.<project>.controller` as `memory-guard-kill on <PROJECT>`.
+The outbox publishes the notice to the controller's role topic, `notifications.role.legion-<project>-controller`, as `memory-guard-kill on <PROJECT>`, once the registered controller session holds that role live, as it publishes every controller notice.
 Each kill is a notice of its own, also while the notice of an earlier kill is still unsent.
 The notice names the process as the lines do, by its executable's base name or its `comm`, with its pid, its size, the pod's reading and the limit in binary units, and it prints no argument:
 
@@ -11259,7 +11259,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The daemon sends no clean stop of the Envoy session of a claim that records a name it does not hold, when the boot suspends it or its process dies, since the listener's registration under that session id can be the live process of the claim that holds the name.
 
 - A boot suspension that fails for a reason other than the claim's state, such as a stop the runtime refuses, is logged at Error (`… failed; it is left as it is …`) naming the claim, and the boot goes on, so the steps below can run.
-  The claim is then contained: its hold refuses every relaunch, resume and new enrollment of it; the enrollment its process holds is revoked once the broker confirms the revocation, the claim keeping it recorded and asking again at each observation until then, and, where the broker refuses the revocation for good, recorded no longer and logged at Error while the process renews it until it stops; and the daemon publishes nothing to its Envoy role or, for the daemon's own controller, the controller topic, and sends that process no task and no compaction; the next boot asks again.
+  The claim is then contained: its hold refuses every relaunch, resume and new enrollment of it; the enrollment its process holds is revoked once the broker confirms the revocation, the claim keeping it recorded and asking again at each observation until then, and, where the broker refuses the revocation for good, recorded no longer and logged at Error while the process renews it until it stops; and the daemon publishes nothing to its Envoy role, the controller's role among them for the daemon's own controller, and sends that process no task and no compaction; the next boot asks again.
   A stop the runtime refused leaves the process running; a write the store refused after the stop leaves it stopped, with the claim not yet recorded suspended.
   The daemon withholds its messages from a claim's role whatever the claim's state, a retired or failed claim included, since its unheld session may still be a live process the daemon no longer manages; that stays so until the Envoy listener withholds the role itself, which it does not yet do.
   A process that runs on does so under the session until it is stopped, and the listener still gives it the role its session claimed: the daemon could free the role, but the process claims a free role again at its next heartbeat, so a message another session sends to that role reaches the session's subscriber until the session ends.
@@ -12205,7 +12205,7 @@ remove it before enabling issue pods ([Upgrading a deployment with running trees
 Nobody types into the pod.
 A person reaches the controller through Dispatch (a message to its session on the Agents page, a reply to its ask, a mention) or Envoy, and reads its session with `kubectl -n <namespace> logs legion-<project>-controller -c controller` (its launcher's log, which carries the shim's and Oh My Pi's) or its session in the session database, where every session is a row rather than a file on any volume.
 A Send from the Agents page is answered in the conversation that page shows.
-Wakes reach it as they reach the operator's controller: it subscribes to `notifications.legion.<project>.controller` once it holds the role.
+Wakes reach it as they reach the operator's controller: the daemon publishes each to the controller's role topic, `notifications.role.legion-<project>-controller`, once the controller's registered session holds that role live, and holds it until then.
 
 **Switching back.**
 To hand the controller back to a person, set `controller: operator` (or drop the key), drop `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account`, which the daemon refuses at boot unless `controller: daemon`, and restart the daemon.

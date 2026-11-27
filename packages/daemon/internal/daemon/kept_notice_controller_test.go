@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -17,7 +16,8 @@ import (
 // nobody told: where the owning architect will not hold its role again (its claim failed, as the
 // root of a production issue's round did on a provider's 429), the notice goes to the project's controller
 // instead, once, however often its row runs, and the controller's row publishes it on the
-// controller topic with the notice's own words. The same holds where the notice's row runs after
+// controller's role topic, once the registered controller session holds that role live, with the
+// notice's own words. The same holds where the notice's row runs after
 // the architect stopped with its tree, which lingers now (stoppedWithTree, the Legion reviewer's
 // point 3 on R6's review fixes): a row that waited on its backoff while the tree finished ends
 // there before any publish, and its notice goes to the controller as well. Control: an architect
@@ -42,7 +42,9 @@ func TestAKeptPodsNoticeGoesToTheControllerWhenNoArchitectWillHearIt(t *testing.
 			noticeTree(t, pool, records, tc.lingers)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaim(t, sup, "LEGION-1", tc.state)
+			registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")
 			publisher := &holderPublisher{}
+			publisher.holds(legionController, "ses_controller")
 			if tc.absent {
 				publisher.setAbsent(architectTopic(t, "LEGION-1"))
 			}
@@ -77,7 +79,7 @@ func TestAKeptPodsNoticeGoesToTheControllerWhenNoArchitectWillHearIt(t *testing.
 					continue
 				}
 				switch published.topic {
-				case notify.ControllerTopic("legion"):
+				case controllerRoleTopic:
 					toController++
 				case architectTopic(t, "LEGION-1"):
 					toArchitect++
