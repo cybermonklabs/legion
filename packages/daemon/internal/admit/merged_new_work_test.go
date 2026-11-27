@@ -958,9 +958,12 @@ func TestARootContinuationKeepsMemberWorkAndArchitectTask(t *testing.T) {
 	if row.Entry != 2 || row.EntryTask == "" {
 		t.Fatalf("the architect's row after the request = %+v, want its entry 2 kept", row)
 	}
+	// The promotion resumes the standing run: an architect start that carries a task carries the
+	// pending task of entry 2 itself, which the admission pass sends again, and never another.
 	for _, start := range startsOf(t, pool, mnwRoot) {
-		if start.role == claim.RoleArchitect && start.task != "" {
-			t.Fatalf("an architect start carries a task after the request, want none: it would supersede the pending task")
+		if start.role == claim.RoleArchitect && start.task != "" && start.task != row.EntryTask {
+			t.Fatalf("an architect start carries %q after the request, want none but entry 2's own %q: it would supersede the pending task",
+				start.task, row.EntryTask)
 		}
 	}
 	applyFact(t, pool, admission, "mnw-gate-request", intake.GateRequestFound{Issue: mnwRoot, Generation: root.TreeRun(), ArtifactID: "spec-" + mnwRoot,
@@ -997,8 +1000,10 @@ func TestStrandedMergedChildrenUseTheContinuation(t *testing.T) {
 	entered := func(t *testing.T, pool *pgxpool.Pool) {
 		t.Helper()
 		mnwStarted(t, pool, mnwChild, 2, mnwRoot, new(mnwRoot), record.RequesterPerson)
-		if told := mnwCount(t, pool, mnwChild, "notice", "child-status"); told != 0 {
-			t.Fatalf("child-status notices of %s = %d, want none: it took no re-entry", mnwChild, told)
+		// One child-status stands: the start of the change's first phase (workflow.ChildStartedNotice),
+		// which every child that takes a slot is told with. A re-entry adds its own beside it.
+		if told := mnwCount(t, pool, mnwChild, "notice", "child-status"); told != 1 {
+			t.Fatalf("child-status notices of %s = %d, want one, the start of its change's first phase: a re-entry adds another", mnwChild, told)
 		}
 	}
 	t.Run("the child's todo, then the root's", func(t *testing.T) {
