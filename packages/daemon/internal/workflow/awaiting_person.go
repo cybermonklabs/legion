@@ -17,8 +17,12 @@ import (
 // returns why it may not, or "" when it may.
 // Its hand-over label gone, or its leaving the workflow, ends that, and so does a Dispatch claim
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
-// session and a session that claims within the tree are legitimate holders. The daemon's own
-// session is the session of project, the daemon's own Dispatch project (dispatch.DaemonSession).
+// session and a session of its tree are legitimate holders. The daemon's own session is the
+// session of project, the daemon's own Dispatch project (dispatch.DaemonSession). A session of its
+// tree is one a claim of the tree names now or one it left behind (record.Store.SessionOfTree),
+// the read the claim release executor judges a holder by: the daemon queued a left session's claim
+// release when it left the session, so the root keeps its row until that release takes the claim,
+// rather than being removed for a claim of its own tree's.
 // The claim is the one the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim).
 // ReconcileAwaiting keeps a root it answers no for at admitted, where it holds its slot unless it
 // waits on another issue (blockers.waitsOf), and admission removes an awaiting root, and skips an
@@ -42,8 +46,8 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, project str
 		return "", nil
 	}
 	if kind == "session" {
-		ownsTree, err := store.SessionClaimsTree(ctx, tx, issue.Tree, id)
-		if err != nil || ownsTree {
+		ofTree, err := store.SessionOfTree(ctx, tx, issue.Tree, id)
+		if err != nil || ofTree != record.TreeSessionNone {
 			return "", err
 		}
 	}

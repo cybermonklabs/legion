@@ -1425,14 +1425,6 @@ func (s *Postgres) ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree,
 	return issue, true, nil
 }
 
-func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error) {
-	var claims bool
-	if err := tx.QueryRow(ctx, "select exists (select 1 from claims where session = $1 and session <> '')", session).Scan(&claims); err != nil {
-		return false, fmt.Errorf("read the claims of session %s: %w", session, err)
-	}
-	return claims, nil
-}
-
 // SessionOfTree reads both halves in one statement. The current half is SessionClaimsTree's read,
 // the tree's claims by claims_tree. The left half joins the tree's claims to their holds of the
 // name, each under the claim's own project, so it needs no project argument. Neither half may scan
