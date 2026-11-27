@@ -2325,6 +2325,47 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_EMBEDDER_OFF": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_CREATE_STAGED": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CREATE_STAGED": "1"}); !boot.CreateStaged {
+				t.Error("DISPATCH_TEST_CREATE_STAGED=1: CreateStaged false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CREATE_STAGED": "true"}); boot.CreateStaged {
+				t.Error("DISPATCH_TEST_CREATE_STAGED=true: CreateStaged true, want only 1 to set it")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.CreateStaged {
+				t.Error("unset: CreateStaged true")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_CREATE_STAGED")
+			// Its reader: a process started with it takes a plan that puts parent, which its
+			// manifest stages for the next version, into a document that holds none. The same
+			// process started without it refuses that plan. A subprocess runs the shipped manifest
+			// alone, so this case writes the element that manifest stages now, and moves to the next
+			// staged element at each version that makes parent creatable; pmdoc's
+			// TestATestProcessCreatesAStagedElementOnlyWhenTold holds the hook on a made-up element.
+			t.Run("process", func(t *testing.T) {
+				plan, err := json.Marshal(map[string]string{
+					"name":    "plan.md",
+					"content": ":::plan_task{#default}\nShip it.\n:::\n\n:::plan_task{#t1 parent=\"dispatch://ACME-1/artifact/plan-md#b-default\"}\nWrite it.\n:::\n",
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, run := range []struct {
+					env    map[string]string
+					status int
+				}{
+					{env: nil, status: http.StatusBadRequest},
+					{env: map[string]string{"DISPATCH_TEST_CREATE_STAGED": "1"}, status: http.StatusCreated},
+				} {
+					database := storetest.Open(t)
+					process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{Env: run.env})
+					process.waitHealthy(t)
+					process.createProject(t, "ACME", "Acme")
+					key, _ := process.createIssueIn(t, "ACME", "A plan under its task", "Ship it.")
+					process.call(t, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", string(plan), run.status)
+				}
+			})
+		},
 	}
 	for _, row := range settings {
 		test, ok := cases[row.Name]
