@@ -72,6 +72,11 @@
 # package, which it needs to show a run. A planted failure that a failed control prints so says it
 # was planted.
 #
+# A run of the counter's own prints, through go-test.sh, gotestsum's test log of its tests on
+# stdout beside the counter's own lines. Of a run's stdout, a control shows the counter's lines
+# alone; a control whose run plants a failure, a panic or an unfinished test gives the test log to
+# judge as what its planted tests printed, so only a failed control prints it.
+#
 # It prints a PASS: or FAIL: line per property and then `database-skips.test.sh: passed` or
 # `database-skips.test.sh: failed (<n> of <m>)`, and exits 0 or 1.
 #
@@ -148,8 +153,18 @@ count() {
 }
 out() { cat "$WORK/$1.out"; }
 code() { cat "$WORK/$1.exit"; }
-# seen NAME: the run's exit status and what it printed, on one line.
-seen() { printf 'exit %s, printed %s' "$(code "$1")" "$(tr '\n' '|' <"$WORK/$1.out")"; }
+# COUNTER_LINE: a line the counter itself prints on stdout: `SKIP <package> <test>`,
+# `database_skips=` or `go_test_exit=`. In a run of its own, go-test.sh prints there too: its own
+# lines and gotestsum's test log of the run's tests as they ran, each test's `=== RUN` and
+# `--- PASS`, `--- FAIL` or `--- SKIP` line, a panic, go test's FAIL line.
+COUNTER_LINE='^(SKIP |database_skips=|go_test_exit=)'
+# seen NAME: the run's exit status and the counter's own lines it printed, on one line, which is
+# what a control shows when it passes, so it holds none of the test log.
+seen() { printf 'exit %s, printed %s' "$(code "$1")" "$(awk -v line="$COUNTER_LINE" '$0 ~ line' "$WORK/$1.out" | tr '\n' '|')"; }
+# testlog NAME: every other line the run printed, on one line: judge's fourth argument for a
+# control whose run plants a failure, a panic or an unfinished test, so only a failed control
+# prints it.
+testlog() { awk -v line="$COUNTER_LINE" '$0 !~ line' "$WORK/$1.out" | tr '\n' '|'; }
 # said NAME TEXT: whether the run's stderr holds TEXT.
 said() { grep -qF -- "$2" "$WORK/$1.err"; }
 
@@ -349,7 +364,8 @@ count timeout env GOFLAGS="-overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER
 judge "$([ "$(code timeout)" = 1 ] && grep -qE '^go_test_exit=[1-9]' "$WORK/timeout.out" &&
   said timeout 'panic: test timed out after 1s' && said timeout "UNFINISHED $MODULE/internal/cipher/api TestPlantedWait" &&
   echo 0 || echo 1)" \
-  "control 4: --timeout 1s ends the binary of a package whose test runs three seconds, fails the counter and prints the timeout's panic though a passed test's line came last" "$(seen timeout)"
+  "control 4: --timeout 1s ends the binary of a package whose test runs three seconds, fails the counter and prints the timeout's panic though a passed test's line came last" "$(seen timeout)" \
+  "$(testlog timeout)"
 count no-timeout env GOFLAGS="-overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" ./internal/cipher/api/
 judge "$([ "$(code no-timeout)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/no-timeout.out" &&
   grep -qxF 'go_test_exit=0' "$WORK/no-timeout.out" && echo 0 || echo 1)" \
@@ -425,7 +441,8 @@ count table-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $table_run" bash 
 judge "$([ "$(code table-fail)" = 1 ] && grep -qxF 'database_skips=0' "$WORK/table-fail.out" &&
   grep -qE '^go_test_exit=[1-9]' "$WORK/table-fail.out" && said table-fail "FAIL $fold TestPlantedFail" &&
   said table-fail 'planted failure' && echo 0 || echo 1)" \
-  "control 6: a failure planted in a package of the run outside the table fails the counter, which prints it" "$(seen table-fail)"
+  "control 6: a failure planted in a package of the run outside the table fails the counter, which prints it" "$(seen table-fail)" \
+  "$(testlog table-fail)"
 # A leg that holds no package of the table counts nothing: it says so, rather than read as a
 # count of zero, and go test's result alone decides.
 count table-none env GOFLAGS="-overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
@@ -439,7 +456,8 @@ count table-none-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $table_run" 
 judge "$([ "$(code table-none-fail)" = 1 ] && grep -qxF 'database_skips=NONE' "$WORK/table-none-fail.out" &&
   grep -qE '^go_test_exit=[1-9]' "$WORK/table-none-fail.out" && said table-none-fail "FAIL $fold TestPlantedFail" &&
   echo 0 || echo 1)" \
-  "control 6: a run with no package of the table still fails on a failed test, which it prints" "$(seen table-none-fail)"
+  "control 6: a run with no package of the table still fails on a failed test, which it prints" "$(seen table-none-fail)" \
+  "$(testlog table-none-fail)"
 count table-report bash "$COUNTER" --report "$WORK/quiet.json" --count-table "${QUIET[@]}"
 judge "$([ "$(code table-report)" = 1 ] && said table-report 'refused beside it' && echo 0 || echo 1)" \
   "control 6: --count-table is refused beside --report" "$(seen table-report)"

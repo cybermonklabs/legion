@@ -240,8 +240,10 @@ check "hands gotestsum the -exec flag with its value as one word" \
 check "gotestsum's summary has no === Errors section" "$(is "$(contains "$out" '^=== Errors')" false)"
 check "and no checkfinalizers line" "$(is "$(contains "$out" 'checkfinalizers:')" false)"
 check "ran the test that fails once twice" "$(is "$(attempts exec once)" 2)"
+# gotestsum exits 3 where it aborts the rerun (its main.go exits 3 on any error but go test's own
+# exit status), and go-test.sh passes that on, so this step fails as the aborted cases above do.
 run_case exec-whole merge_group env GODEBUG=checkfinalizers=1 "$go_test" go test -count=1 ./once/
-check "the same run with GODEBUG on the go command fails its step" "$(is "$status" 1)"
+check "the same run with GODEBUG on the go command fails its step" "$([ "$status" -ne 0 ] && echo true || echo false)"
 check "gotestsum's summary shows an === Errors section" "$(contains "$out" '^=== Errors')"
 check "the section holds the go tool's own checkfinalizers lines" \
   "$(contains "${out#*=== Errors}" '^checkfinalizers: queue: ')"
