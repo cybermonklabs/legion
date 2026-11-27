@@ -2119,6 +2119,48 @@ per leg. The three output paths are exported here rather than in an `env:` block
 the reason the shard job's head gives.
 The step's body, those exports included, is .github/scripts/dispatch-browser-merge-reports.sh.
 
+The step hands `merge-reports` a merge configuration whose one setting is testDir, the merge
+job's own packages/dispatch/e2e; the script writes it into $RUNNER_TEMP and its head says why
+that directory and why not the suite's own e2e/playwright.config.ts. A blob report records the
+test directory its leg ran from and holds its paths relative to it, and with no configuration
+Playwright 1.64.1 refuses blobs of two test directories. The pull-request lane's `real` leg
+checks out in the CI container, under /__w/<repo>/<repo>, and `stub` on the bare runner, under
+/home/runner/work/<repo>/<repo>, so run 45913634925's merge job failed on that refusal with
+both legs green. Given a configuration, `merge-reports` skips the check and resolves every leg's
+paths against its testDir: Playwright 1.64.1's merge takes the configuration's rootDir, which is
+its testDir, as the one root of every blob. packages/dispatch/e2e/__tests__/merge-reports.test.ts
+records two legs under the two roots and runs the script over them.
+
+What that leaves as it was, read from Playwright's source at 1.64.1 and from the readers:
+
+- The rows. The merge selects and drops none, each blob's rows stay under their own project,
+  and the JSON report writes each spec's `file` relative to testDir, as each leg wrote it. So
+  the readers that name a row by its project, file, line and title read the rows a merge of one
+  root gave: reading two's flaky rows (.github/scripts/dispatch-browser-reading-flake-rate.sh),
+  reading four's classes, read from the project name
+  (.github/scripts/dispatch-browser-reading-row-durations.sh),
+  `packages/dispatch/e2e/tools/check-slow-rows.ts#reportRows` and
+  `packages/dispatch/e2e/tools/shard-weights.ts#rowTimes`. Reading one and the verdict step read
+  the stats alone.
+- Attachments and traces. A blob names each one `resources/<sha1>.<ext>`, which the merge
+  extracts into the blob directory and resolves there, never against testDir; the HTML report
+  copies each into its `data/`, and the JSON report names each under
+  $RUNNER_TEMP/selected-blobs/blob-report/resources/.
+- Which leg ran a row. The merged report never said; reading three reads it from each leg's own
+  blob, and the HTML report's list of machines comes from each blob's own configuration.
+
+What moves: the JSON report's `config.rootDir` and each project's `testDir` and `outputDir` name
+the merge job's checkout rather than a leg's, and `config.configFile` names the written
+configuration, where a merge with no configuration left it out. No reader reads any of them. The
+full and references lanes, whose legs all run in the container and so share one root, merge as
+before but for those values. The HTML report's code snippets, which the merge reads from each
+step's file as resolved against testDir, now find those files; a container path such as
+/__w/<repo>/<repo> does not exist on the bare runner the merge job runs on.
+
+Reading three's per-leg merge (.github/scripts/dispatch-browser-reading-leg-exits.sh) takes no
+configuration and is left so: it merges one leg's blob at a time, whose paths share one test
+directory, and it reads `stats.unexpected` alone.
+
 ## Why each reading goes to the step summary and to the log
 
 Reading one. Each reading is written to the step summary, for a person, and printed as a
