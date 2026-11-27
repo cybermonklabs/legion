@@ -26,7 +26,7 @@
 // LEGION_TEST_PG_DSN, which it starts none of.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
-// other whole-daemon proofs boot it (startDaemonWithin, through conflictLive's bootLogged), so the
+// other whole-daemon proofs boot it (startDaemonLogging, through conflictLive's bootLogged), so the
 // proof exercises the real configuration, the real store and its migrations, the real HTTP API,
 // the real claim supervision and its worker stream, the real openWorkflow, the real JetStream
 // consumers, the real merge-state reads and the real outbox lanes — the lane that runs the second

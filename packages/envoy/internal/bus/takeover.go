@@ -1,6 +1,7 @@
 // The takeover lane: where the listener records that a session took a role from a different
 // session, so that the role messages the previous holder did not read are copied to the role's
-// kept lane for whoever holds the role next (cmd/listener/role_takeover.go).
+// kept lane for whoever holds the role next, and that a claim named the session it replaces, so
+// that session's unread messages go to the claimant as well (cmd/listener/role_takeover.go).
 //
 // The lane is the listener's own, as the session resume lane is (session_resume.go): the stream
 // carries its prefix (listenerOwnStreamLanes, streamCarriedSubjects) where no consumer filter takes
@@ -39,11 +40,96 @@ func TakeoverSubject(role, previous, attempt string) string {
 	return TakeoverSubjectPrefix + role + "." + previous + "." + attempt
 }
 
+// handoverAttemptPrefix begins the attempt token of a handover record's subject
+// (HandoverSubject), which names the successor after it. No attempt id the claim route draws for
+// a try (id.New, hex digits) begins with it.
+const handoverAttemptPrefix = "handover-"
+
+// HandoverSubject is the subject of the handover record of a claim of role that landed for
+// successor and named previous as the session it replaces (the claim route's
+// previous_session_id): TakeoverSubject with an attempt that names successor. Every claim of role
+// by successor naming previous has this one subject, so the claim route writes one such record
+// however often successor claims the role again, and its passes go on from where the last one
+// stopped. previous and successor are session ids a session consumer can be named for
+// (SessionConsumerName), so neither holds a dot, and the subject names all three of role,
+// previous and successor (handoverOf).
+//
+// The body is a TakeoverRecord whose role and previous session are written empty (takeoverBody)
+// and read back from the subject (TakeoverRecords). A listener from before handover records
+// leaves out a record that names no role or no previous session, as one no pass can act on, so it
+// never runs a handover record's passes as a takeover record's: such a pass would copy the role's
+// own messages alone and move the record past every direct message it did not copy.
+func HandoverSubject(role, previous, successor string) string {
+	return TakeoverSubject(role, previous, handoverAttemptPrefix+successor)
+}
+
+// TakeoverSuccessor is the session the record on subject hands its previous session's messages
+// to, and whether subject is a handover record's (HandoverSubject); a takeover record of a claim
+// that named no session it replaces names none.
+func TakeoverSuccessor(subject string) (string, bool) {
+	_, _, successor, ok := handoverOf(subject)
+	return successor, ok
+}
+
+// handoverOf is the role, the previous session and the successor a handover record's subject names
+// (HandoverSubject), and whether subject is one: the successor after handoverAttemptPrefix in its
+// last token, the previous session the token before it, and the role every token between the
+// lane's prefix and those two, one token or two (<project>.<role>).
+func handoverOf(subject string) (role, previous, successor string, ok bool) {
+	rest, found := strings.CutPrefix(subject, TakeoverSubjectPrefix)
+	last := strings.LastIndexByte(rest, '.')
+	if !found || last < 0 {
+		return "", "", "", false
+	}
+	successor, named := strings.CutPrefix(rest[last+1:], handoverAttemptPrefix)
+	rest = rest[:last]
+	before := strings.LastIndexByte(rest, '.')
+	if !named || successor == "" || before <= 0 || before == len(rest)-1 {
+		return "", "", "", false
+	}
+	return rest[:before], rest[before+1:], successor, true
+}
+
+// HandoverSuccessors is every session a handover record the stream holds names as the successor of
+// previous (HandoverSubject), sorted and each once: the sessions that replaced previous, which its
+// unread messages are copied to. It reads subjects alone and no record's body, in one STREAM.INFO
+// for each form a role takes in a record's subject - one token, and two (<project>.<role>) - with
+// previous in the place before the record's last token as its filter, and keeps each subject
+// handoverOf reads as a handover record whose previous session is previous: a takeover record of
+// a claim that named no session it replaces names no successor. A finished record still names its
+// successor for as long as the stream keeps it, since the copies it made stay on the successor's
+// subject. A previous no session consumer can be named for (SessionConsumerName) has no record,
+// and answers none, as does a previous that no record names. Its errors are the stream's own,
+// named with the lane and previous.
+func (c *Client) HandoverSuccessors(ctx context.Context, previous string) ([]string, error) {
+	if _, ok := SessionConsumerName(previous); !ok {
+		return nil, nil
+	}
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return nil, err
+	}
+	var successors []string
+	for _, filter := range []string{TakeoverSubjectPrefix + "*." + previous + ".*", TakeoverSubjectPrefix + "*.*." + previous + ".*"} {
+		info, err := c.JS().StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: filter}, nats.Context(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("bus: read %s's handover records of %s: %w", Stream, previous, err)
+		}
+		for subject, held := range info.State.Subjects {
+			if _, named, successor, ok := handoverOf(subject); ok && held > 0 && named == previous {
+				successors = append(successors, successor)
+			}
+		}
+	}
+	slices.Sort(successors)
+	return slices.Compact(successors), nil
+}
+
 // TakeoverRecord is the body of one takeover record (TakeoverSubject): what a pass of the
 // listener's copy needs to go on from where the last one stopped. A writer writes every field at
 // once, since a reader takes the whole body as one answer.
 type TakeoverRecord struct {
-	// Role is the role that was taken, and Previous the session it was taken from.
+	// Role is the role that was taken, and Previous the session it was taken from. A handover
+	// record's stored body holds both empty, its subject naming them (HandoverSubject).
 	Role     string `json:"role"`
 	Previous string `json:"previous"`
 	// ClaimedAt is when the claim route wrote the record, before its claim write, in milliseconds
@@ -89,18 +175,49 @@ var ErrTakeoverRecordMoved = errors.New("bus: the takeover record was written by
 // finishedTakeovers).
 var ErrTakeoverRecordFinished = errors.New("bus: the takeover record is finished")
 
+// takeoverBody is record as the stream stores it on subject. A handover record's body names no
+// role and no previous session: its subject names both (HandoverSubject), and a listener from
+// before handover records leaves such a body out.
+func takeoverBody(subject string, record TakeoverRecord) ([]byte, error) {
+	if _, _, _, handover := handoverOf(subject); handover {
+		record.Role, record.Previous = "", ""
+	}
+	return json.Marshal(record)
+}
+
 // WriteTakeoverRecord publishes record on subject, a takeover record's own subject
 // (TakeoverSubject), with no precondition: the claim route's write under a fresh attempt id,
 // which no other writer has. It takes none because a resend after a send nothing answered
 // (ErrUnacknowledged) would meet the first send's own copy and be refused, and the claim route
 // would answer a claim whose record stored as one whose record did not.
 func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record TakeoverRecord) error {
-	data, err := json.Marshal(record)
+	data, err := takeoverBody(subject, record)
 	if err != nil {
 		return err
 	}
 	if _, err := c.publishStoredRaw(ctx, subject, data, nil); err != nil {
 		return fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
+	}
+	return nil
+}
+
+// WriteHandoverRecord publishes record on subject, a handover record's subject (HandoverSubject),
+// while the subject holds nothing, and answers nil when it holds a record already: an earlier
+// claim's, whose passes go on from where they stopped, or this write's own first send, which a
+// resend after a send nothing answered (ErrUnacknowledged) meets. Either way the subject holds the
+// handover record, which is all its writer asks, and no write lands over a record, a finished one
+// included (TakeoverRecords' rule of finishedTakeovers). Its stored body names no role and no
+// previous session (takeoverBody).
+func (c *Client) WriteHandoverRecord(ctx context.Context, subject string, record TakeoverRecord) error {
+	data, err := takeoverBody(subject, record)
+	if err != nil {
+		return err
+	}
+	if _, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(0)); err != nil {
+		if IsCASConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("bus: write the handover record %s: %w", subject, err)
 	}
 	return nil
 }
@@ -124,7 +241,7 @@ func (c *Client) WriteTakeoverRecordAt(ctx context.Context, stored StoredTakeove
 	if stored.Record.Finished {
 		return 0, fmt.Errorf("%w: %s", ErrTakeoverRecordFinished, stored.Subject)
 	}
-	data, err := json.Marshal(record)
+	data, err := takeoverBody(stored.Subject, record)
 	if err != nil {
 		return 0, err
 	}
@@ -190,7 +307,11 @@ func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTake
 			return nil, fmt.Errorf("bus: read the takeover record %s: %w", subject, err)
 		}
 		var record TakeoverRecord
-		if err := json.Unmarshal(stored.Data, &record); err != nil || record.Role == "" || record.Previous == "" {
+		err = json.Unmarshal(stored.Data, &record)
+		if role, previous, _, handover := handoverOf(subject); handover {
+			record.Role, record.Previous = role, previous
+		}
+		if err != nil || record.Role == "" || record.Previous == "" {
 			continue
 		}
 		read := StoredTakeoverRecord{Subject: subject, Sequence: stored.Sequence, Record: record, Written: stored.Time}

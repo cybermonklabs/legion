@@ -1,7 +1,7 @@
 // Command requestseed puts pending secret requests on a running broker for Dispatch's browser
 // suite (packages/dispatch/e2e/broker-approval.e2e.ts), as pods would: a service logs in with
 // its ServiceAccount token, enrolls pods that prove their accounts with projected tokens, and each
-// pod asks for a human-tier secret, through ciphertest.Pods, the client cmd/cipherd's tests drive
+// pod asks for a human-tier secret, through podclient.Pods, the client cmd/cipherd's tests drive
 // the binary with. The tokens come from the dev issuer's POST /_dev/mint (cmd/dev-oidc-issuer), the
 // issuer that broker trusts. It lives under internal/ so no release builds or ships it.
 //
@@ -30,7 +30,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 )
 
 // The accounts and audience the browser suite's broker is configured with
@@ -89,13 +89,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "requestseed ask: want --issuer, --secret and a --count of at least 1")
 			return exitUsageError
 		}
-		pods := ciphertest.Pods{T: t, Base: *broker, Token: devIssuerTokens(t, *issuer)}
+		pods := podclient.Pods{T: t, Base: *broker, Token: devIssuerTokens(t, *issuer)}
 		return t.print(stdout, ask(t, pods, *stateFile, *secret, *count))
 	case "state":
-		pods := ciphertest.Pods{T: t, Base: *broker}
+		pods := podclient.Pods{T: t, Base: *broker}
 		return t.print(stdout, states(t, pods, t.read(*stateFile)))
 	case "withdraw":
-		pods := ciphertest.Pods{T: t, Base: *broker}
+		pods := podclient.Pods{T: t, Base: *broker}
 		withdraw(t, pods, t.read(*stateFile))
 		return 0
 	}
@@ -112,7 +112,7 @@ type seededRequest struct {
 
 // ask logs the service in, enrolls count pods, has each ask for secret, writes them to stateFile,
 // and answers each pending request with its record and page.
-func ask(t *command, pods ciphertest.Pods, stateFile, secret string, count int) any {
+func ask(t *command, pods podclient.Pods, stateFile, secret string, count int) any {
 	launcher := pods.LogIn(launcherService, launcherAccount)
 	var file seeded
 	var requests []seededRequest
@@ -147,7 +147,7 @@ type requestState struct {
 }
 
 // states reads each seeded pod's request as that pod.
-func states(t *command, pods ciphertest.Pods, file seeded) any {
+func states(t *command, pods podclient.Pods, file seeded) any {
 	var answer []requestState
 	for _, s := range file.Pods {
 		reply := pods.State(t.pod(s), s.RequestID)
@@ -157,7 +157,7 @@ func states(t *command, pods ciphertest.Pods, file seeded) any {
 }
 
 // withdraw cancels each seeded request that is still pending, as the pod that made it.
-func withdraw(t *command, pods ciphertest.Pods, file seeded) {
+func withdraw(t *command, pods podclient.Pods, file seeded) {
 	for _, s := range file.Pods {
 		p := t.pod(s)
 		if pods.State(p, s.RequestID).State == "pending" {
@@ -194,7 +194,7 @@ func devIssuerTokens(t *command, issuer string) func(account, podUID string) str
 	}
 }
 
-// command is ciphertest.TB for this command rather than a test: a log line goes to stderr, and a
+// command is podclient.TB for this command rather than a test: a log line goes to stderr, and a
 // failure ends the process, 1, as it ends a test.
 type command struct {
 	stderr io.Writer
@@ -228,12 +228,12 @@ func (c *command) read(stateFile string) seeded {
 }
 
 // pod is the seeded pod s, its key decoded.
-func (c *command) pod(s seededPod) ciphertest.Pod {
+func (c *command) pod(s seededPod) podclient.Pod {
 	key, err := x509.ParseECPrivateKey(s.Key)
 	if err != nil {
 		c.Fatalf("decode %s's key: %v", s.RuntimeID, err)
 	}
-	return ciphertest.Pod{RuntimeID: s.RuntimeID, Key: key, EnrollmentID: s.EnrollmentID}
+	return podclient.Pod{RuntimeID: s.RuntimeID, Key: key, EnrollmentID: s.EnrollmentID}
 }
 
 // print writes answer to stdout as JSON.

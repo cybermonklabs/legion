@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-// Writes <content dir>/dispatch/reference/api.md from Dispatch's route table
-// (packages/envoy/internal/dispatch/api/routes_table.go), read through `envoy-dispatch routes`,
-// which prints the body GET /api/v1 serves without a database or a listener. Contract:
-// scripts/generate.ts; lib/reference.ts runs the binary.
+// Writes <content dir>/dispatch/reference/api.md from Dispatch's route declarations, one file a
+// route in packages/envoy/internal/dispatch/api (route_<path>+<method>.go), read through
+// `envoy-dispatch routes`, which prints the body GET /api/v1 serves without a database or a
+// listener. Contract: scripts/generate.ts; lib/reference.ts runs the binary.
 import type { DispatchScope } from "../../../packages/contracts/src/dispatch-api-core.ts";
 import { inline, writePage } from "./lib/markdown.ts";
 import { readTable } from "./lib/reference.ts";
@@ -117,6 +117,7 @@ writePage({
   title: "HTTP API",
   description:
     "Every route Dispatch serves under /api/v1: method, path, who may call it, the OAuth scopes it needs, and what it does.",
-  sources: ["packages/envoy/internal/dispatch/api/routes_table.go"],
+  // The route files, one a route: the directory, since no one file holds the table any more.
+  sources: ["packages/envoy/internal/dispatch/api"],
   body: () => render(readRoutes()),
 });
