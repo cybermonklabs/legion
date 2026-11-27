@@ -10865,7 +10865,7 @@ Such a write writes nothing, and the token gets the answer of a target that does
 Dispatch still refuses such a token a write to a target that resolves to no project or to nothing (`packages/envoy/internal/dispatch/api/project_scope.go`, `packages/envoy/cmd/dispatch/README.md`).
 A `person` token's list of projects limits no Dispatch write at this release, and neither do the private projects of a job's `public` token.
 Dispatch refuses every write of a token that names a service and no person `403 SIGN_IN_REQUIRED`, unless its project scope is `named` or `public`: a job's token writes under its session, for its service and under no person, and a machine's `person` token, which no person signed in for, writes nothing.
-It serves a read-only token, one that holds `read`, on the reads of its read class (`readClasses` in `packages/envoy/internal/dispatch/api/read_classes.go`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
+It serves a read-only token, one that holds `read`, on the reads of its read class (each route's `Read`, in its file under `packages/envoy/internal/dispatch/api`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`, since it serves no read at a past time yet.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
