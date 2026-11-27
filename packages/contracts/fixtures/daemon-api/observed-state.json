@@ -122,7 +122,7 @@
         }
       }
     },
-    "admission_cap": 6,
+    "admission_cap": 8,
     "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
@@ -255,7 +255,7 @@
     ]
   },
   "admission": {
-    "cap": 6,
+    "cap": 8,
     "p0Holders": 1,
     "p0Bound": {
       "bound": 3,
@@ -276,7 +276,9 @@
       "LEGION-212",
       "LEGION-218",
       "LEGION-219",
-      "LEGION-220"
+      "LEGION-220",
+      "LEGION-240",
+      "LEGION-241"
     ],
     "waiting": [
       "LEGION-212",
@@ -291,7 +293,9 @@
       "LEGION-215",
       "LEGION-216",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-240",
+      "LEGION-241"
     ],
     "blocked": [
       {
@@ -495,6 +499,29 @@
         "implementer": {
           "claim": {
             "state": "working"
+          }
+        }
+      }
+    },
+    "LEGION-240": {
+      "key": "LEGION-240",
+      "phase": "step",
+      "tree": "LEGION-240",
+      "slot": {
+        "index": 6
+      }
+    },
+    "LEGION-241": {
+      "key": "LEGION-241",
+      "phase": "held",
+      "tree": "LEGION-241",
+      "slot": {
+        "index": 7
+      },
+      "workers": {
+        "checker": {
+          "claim": {
+            "state": "failed"
           }
         }
       }
