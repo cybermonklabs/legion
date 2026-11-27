@@ -54,8 +54,7 @@ func readEventLogBehindHorizon(t *testing.T, handler http.Handler, database *sto
 // The event log is every event whatever owns it: a project's own event, an issue's and a project
 // document's all appear, in id order, each exactly as its owner's event list serves it.
 func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "CORE", "Logged issue", "A spec")
 	if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -113,8 +112,7 @@ func TestEventLogPagesEveryEventAcrossOwnersInIDOrder(t *testing.T) {
 // Paging by the last id read with a small limit yields the same events as one page: no gap and
 // no repeat, ending on a short page.
 func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "CORE", "Paged issue", "A spec")
 	for index := range 3 {

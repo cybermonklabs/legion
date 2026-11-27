@@ -198,8 +198,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 // With no event written, the sweep makes no statement at all - no pass on a timer, no lease
 // attempt - over a window fifteen times its gap between passes, though a suggestion is pending.
 func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	sweep := startIdleSweep(t, "OIDLE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
@@ -218,8 +217,7 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 // whose safe horizon has passed that event: the sweep reads the log only up to it, so the wait is
 // the horizon's.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
@@ -250,8 +248,7 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // statement, so their order and the gaps between them stay as they were, and wakes the sweep as a
 // commit does: both writes are now well past their settle, and the next pass judges them together.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	const settle = pastTheRun
 	sweep := startIdleSweep(t, "OTOGETHER", settle)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)

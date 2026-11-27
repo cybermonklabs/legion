@@ -460,8 +460,7 @@ func TestATitlelessEventOfARoleSessionGivesItsIssuePhaseWork(t *testing.T) {
 // failed would cancel the feed and try again, and while it failed no Delivery view of any
 // deployment, with a Legion setting or without one, would hear an event.
 func TestAFailedLegionReadLeavesTheDeliveryFeedRunning(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedLegionProjects(t, rig.handler, "INFRA")
 	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")

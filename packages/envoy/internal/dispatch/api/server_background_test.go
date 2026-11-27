@@ -66,8 +66,7 @@ func TestTheBackgroundWaitHoldsForAnOpenLiveSocket(t *testing.T) {
 // returns once that subscription leaves: the relay's generation stops with its last subscriber,
 // so nothing of it is left for the lifetime to end.
 func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
 	if err != nil {

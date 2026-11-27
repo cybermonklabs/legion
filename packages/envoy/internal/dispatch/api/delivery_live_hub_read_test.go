@@ -91,8 +91,7 @@ func (r *hubRig) recomputesSince(mark int) int {
 // mark is for something committed before the reads that follow, so the one recompute's delta holds
 // both merges and no second recompute follows.
 func TestAMarkMadeBeforeAReadTakesItsPositionIsThatReadsToAnswer(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	holds := []struct {
 		name  string
 		match func(deliveryHubNote) bool
@@ -148,8 +147,7 @@ func TestAMarkMadeBeforeAReadTakesItsPositionIsThatReadsToAnswer(t *testing.T) {
 // merges a pull request there, past the read's position: the read never saw it, so the view is
 // marked again and a second recompute sends it.
 func TestAChangeAfterAReadsPositionRecomputesTheViewAgain(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	var pause *notePause
 	rig := newHubRig(t, func(hub *deliveryHub) { pause = pauseNotes(hub) })
 	seedHubSettings(t, rig.database)
@@ -193,8 +191,7 @@ func TestAChangeAfterAReadsPositionRecomputesTheViewAgain(t *testing.T) {
 // nothing; the reset's own mark, which the read cannot take over since its position may name the
 // old log, recomputes the view again and sends the merge.
 func TestAChangeLogResetDuringAReadKeepsTheViewDirty(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	var pause *notePause
 	rig := newHubRig(t, func(hub *deliveryHub) { pause = pauseNotes(hub) })
 	seedHubSettings(t, rig.database)
@@ -243,8 +240,7 @@ func TestAChangeLogResetDuringAReadKeepsTheViewDirty(t *testing.T) {
 // names it under its old title, so the recompute marks the view again and the next one sends the
 // new title.
 func TestAnIssueTitleChangeDuringTheReadThatFirstNamesItRecomputesAgain(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	var pause *notePause
 	rig := newHubRig(t, func(hub *deliveryHub) { pause = pauseNotes(hub) })
 	seedHubSettings(t, rig.database)
@@ -282,8 +278,7 @@ func TestAnIssueTitleChangeDuringTheReadThatFirstNamesItRecomputesAgain(t *testi
 // the read is held. The read shows the session by its id, so the recompute marks the view again
 // and the next one sends the title.
 func TestASessionTitleChangeDuringTheReadThatFirstNamesItRecomputesAgain(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	var pause *notePause
 	rig := newHubRig(t, func(hub *deliveryHub) { pause = pauseNotes(hub) })
 	seedHubSettings(t, rig.database)

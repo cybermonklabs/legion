@@ -191,8 +191,7 @@ func spannedServer(t *testing.T, handler http.Handler) (*httptest.Server, *serve
 // they no longer resolve, read off the lookups themselves (heartbeatLookups). The heartbeat is
 // lookupHeartbeat, so the socket lasts until the session ends.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	m := startStallMeter(t)
 	database := storetest.Open(t)
 	broker := events.NewBroker()

@@ -52,8 +52,7 @@ func hubSessionTitles(t *testing.T, body json.RawMessage) map[string]string {
 // session that never stamped a title is held by its bare id throughout, which is the limit chosen
 // for INFRA-1368: nothing backfills a name for it.
 func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	var pause *notePause
 	rig := newHubRig(t, func(hub *deliveryHub) { pause = pauseNotes(hub) })
 	seedHubSettings(t, rig.database)

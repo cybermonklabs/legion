@@ -1285,8 +1285,7 @@ func graphEdges(t *testing.T, handler http.Handler, query url.Values) model.Grap
 // the message.created write. Read from the message, the same edge points out at the ask. Filters
 // narrow it and malformed input is 400.
 func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -1558,8 +1557,7 @@ func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, r
 // proven so far would answer nothing here, the first after boot, and each later read would stop
 // at the previous read's observation, however old. awaitSinceRead settles which answer is final.
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -1589,8 +1587,7 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 // Once a commits it answers both. Each edit indexes its comment's body as a comment write does
 // (planFoundReferences and the replacement it plans, then refs.Stamp with the edit's event).
 func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	broker := deps.Events
 	createReferenceAPIProject(t, handler, "CORE")

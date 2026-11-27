@@ -221,8 +221,7 @@ func createPlainIssue(t *testing.T, handler http.Handler, project string) string
 }
 
 func TestTheEventFeedReplaysThenStreamsACommittedEvent(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
 
@@ -254,8 +253,7 @@ func TestTheEventFeedReplaysThenStreamsACommittedEvent(t *testing.T) {
 
 // A person's socket and a bearer's are both served the feed.
 func TestTheEventFeedServesAPersonAndABearer(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	person := rig.dial(t, asUser("alice"))
@@ -275,8 +273,7 @@ func TestTheEventFeedServesAPersonAndABearer(t *testing.T) {
 // subscription with no resume (nothing replayed) and a since above the head (an id of a log since
 // replaced) say it is not.
 func TestTheEventFeedSaysWhenItsReplayCoversTheGap(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	createInteractionIssue(t, rig.handler, "TEST", "Replayed", "A spec")
 	head := eventHead(t, rig.database)
@@ -303,8 +300,7 @@ func TestTheEventFeedSaysWhenItsReplayCoversTheGap(t *testing.T) {
 // A resume exactly maxLiveReplay events behind is replayed every one of them, in order, says so
 // with replay_complete (its page then owes no refresh), and goes on to the live events, each once.
 func TestTheEventFeedReplaysAResumeAtTheBoundInFullThenStreamsLive(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
 	since := eventHead(t, rig.database)
@@ -335,8 +331,7 @@ func TestTheEventFeedReplaysAResumeAtTheBoundInFullThenStreamsLive(t *testing.T)
 // which is the page's cue to refresh what it shows, and the subscription stays open for the live
 // events.
 func TestTheEventFeedSendsNoReplayPastItsBounds(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	for name, backlog := range map[string]struct{ count, pad int }{
 		"past the event bound": {count: maxLiveReplay + 1},
 		"past the byte bound":  {count: maxLiveReplay, pad: maxLiveReplayBytes / maxLiveReplay},
@@ -369,8 +364,7 @@ func TestTheEventFeedSendsNoReplayPastItsBounds(t *testing.T) {
 // catch-up and the live feed hand over at the relay's published cursor, which is read only up to
 // the horizon (events.Horizon), and that stays below a while A is open.
 func TestTheEventFeedResumeCursorOrdersConcurrentEventCommits(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, rig.handler, "OTHER", "Other issue", "A spec")
@@ -406,8 +400,7 @@ func TestTheEventFeedResumeCursorOrdersConcurrentEventCommits(t *testing.T) {
 // relay publishes into a subscription only ids above published, in strictly increasing order: no
 // event above since can arrive later below it.
 func TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	// Long enough that the second subscription below opens between a commit and the read that
 	// commit's notification wakes, so the relay really is behind that subscription's since.
@@ -439,8 +432,7 @@ func TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince(t *testing.T) {
 // this subscription: invisible to the catch-up (id <= since) and to a relay subscription made only
 // afterwards.
 func TestTheEventFeedColdStartSendsNoBacklogAndDeliversTheNextCommit(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	backlog := eventHead(t, rig.database)
@@ -464,8 +456,7 @@ func TestTheEventFeedColdStartSendsNoBacklogAndDeliversTheNextCommit(t *testing.
 // holding no cursor adopts it and resumes from it without a gap, since every event above it is the
 // subscription's to send. The commit right after it reaches the subscription.
 func TestAColdSubscriptionStartsAtTheRelaysPublishedCursor(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	// An issue with no spec, whose document settles nothing, so nothing commits but the test's own
 	// writes and the relay's cursor stands where the subscription was handed it.
@@ -494,8 +485,7 @@ func TestAColdSubscriptionStartsAtTheRelaysPublishedCursor(t *testing.T) {
 // since, which would drop every event of the log as it now stands; and it is served what commits
 // next.
 func TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
 	client := rig.dial(t, withBearer("agent-token"))
@@ -525,8 +515,7 @@ func TestASinceAboveTheHeadStartsAtTheRelaysPublishedCursor(t *testing.T) {
 // clamped to the head it resolved; an unclamped since drops it, and the only frame this page then
 // ever sees is a heartbeat.
 func TestTheEventFeedResumesAfterTheEventLogIsResetBeneathTheReader(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	renameIssue(t, rig.handler, issue.Key, "Renamed before the reset")
@@ -617,8 +606,7 @@ func (stream *gatedStream) feedNext(t *testing.T, database *store.Store, what st
 // on live on the subscription it made instead. The subscription here waits for room as a socket's
 // does while its page reads nothing, so it drains nothing of what the relay publishes into it.
 func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -671,8 +659,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 // events in silence, and the page's resubscribe from the last id it applied is served what
 // commits next.
 func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -786,8 +773,7 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 // frame, which is after it subscribed to the relay and read the head and before its catch-up, so
 // the commit lands exactly in that window.
 func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -831,8 +817,7 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 // An unsubscribe or a replacement stops the subscription while its socket stays open: its
 // goroutine returns and leaves the relay, and nothing more of it reaches the page.
 func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	relay := rig.served.eventRelay
@@ -854,8 +839,7 @@ func TestAStoppedEventsSubscriptionLeavesTheRelayWhileItsSocketStaysOpen(t *test
 // An events view names its kind and nothing else, and its resume a decimal event id; anything else
 // is refused and starts nothing.
 func TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
 	preset, query, at, session := 7, "repo=acme/widgets", "2026-10-14T09:00:00Z", "6f1c5b1e-8a3c-4b7e-9a51-0d2f3c4b5a69"
@@ -890,8 +874,7 @@ func TestAnEventsViewNamesOnlyItsKindAndItsSinceIsAnEventID(t *testing.T) {
 // thousands of events: the page reopens its socket and resubscribes from the last id it applied, and
 // is sent what committed since.
 func TestTheDisconnectHookSendsTheEventFeedThroughItsResume(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{testHooks: true}, nil)
 	issue := createPlainIssue(t, rig.handler, "TEST")
 

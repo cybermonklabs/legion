@@ -718,8 +718,7 @@ func TestAPinnedAskPartShowsTheRevisionItNames(t *testing.T) {
 // and no older one; an unstamped row is invisible to every such read. awaitSinceRead settles
 // which answer of the read after the answer is final.
 func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
-	// Not parallel: it waits through horizontest, whose Listen sets slog's default logger
-	// (docs/testing.md, "A test in internal/dispatch/api runs beside the others").
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
