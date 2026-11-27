@@ -1358,12 +1358,16 @@ test("register_gate refuses a basis while the root's document holds an open deci
 // until the saved version itself records each ask block — own ask or copy — settled, with the
 // answer the server holds: who answered and when. A person may change an answer while the ask
 // stays answered, and settlement then writes a version with the new time, so a version that
-// records the earlier one waits too, whether the live text serves `asks` or, from a Dispatch of
-// the release before, writes them on the block's opening line.
+// records the earlier one waits too. Each case holds for a first answer and a changed one, on a
+// Dispatch of this release, whose live text serves `asks`, and on one of the release before, which
+// serves none and writes each answer on the block's opening lines. For a copy, the answer the
+// server holds is its source ask's: the live text's `asks` give it on a Dispatch of this release,
+// and on one of the release before, which writes it onto the copy's lines only at the copy's own
+// settlement, the source ask's own route does.
 test("register_gate on a basis waits for the saved version to record an answered ask or copy settled", async () => {
   const runWith = async (block: DecisionBlock) => {
     const { calls, daemon } = recordingDaemon({});
-    const { dispatch } = treeDispatch(block);
+    const { dispatch, paths } = treeDispatch(block);
     const result = await gateTool(daemon, dispatch).execute(
       "",
       basisCall,
@@ -1374,6 +1378,7 @@ test("register_gate on a basis waits for the saved version to record an answered
     const [first] = result.content;
     return {
       calls,
+      paths,
       isError: result.isError === true,
       text: first?.type === "text" ? first.text : "",
     };
@@ -1399,6 +1404,21 @@ test("register_gate on a basis waits for the saved version to record an answered
   };
   const copyOpener = (recorded = "") =>
     `:::ask{#b-1 urgency="med" multiple="false"${recorded} copied_from="${copySource.copied_from}" copied_from_document="${copySource.copied_from_document}"}`;
+  // The copy's source ask as a Dispatch of the release before serves it
+  // (`GET /api/v1/asks/{id}`) once the source holds the answer given at `at`.
+  const sourceAnswered = (at: string) => ({
+    "/api/v1/asks/ask-source": {
+      ask: {
+        id: "ask-source",
+        kind: "question",
+        block_id: "b-src",
+        block_artifact: { id: ANCESTOR_SPEC },
+        state: "answered",
+        question: OPEN_QUESTION,
+        answer: { user: answer.user, at, selected: [], text: null },
+      },
+    },
+  });
 
   // Control: an unanswered own ask is refused before calling the daemon.
   const unansweredOwn = await runWith({
@@ -1445,6 +1465,57 @@ test("register_gate on a basis waits for the saved version to record an answered
   expect(settledOwn.isError).toBe(false);
   expect(registrations(settledOwn.calls)).toHaveLength(1);
 
+  // So it does once the saved version records the changed answer the ask holds.
+  const changedSettledOwn = await runWith({
+    asks: [ownAsk("answered", changed)],
+    versionOpener: ownOpener(answerAt(changed.at)),
+    liveAsks: [answeredLive(changed.at)],
+  });
+  expect(changedSettledOwn.isError).toBe(false);
+  expect(registrations(changedSettledOwn.calls)).toHaveLength(1);
+
+  // A Dispatch of the release before serves no `asks` and writes an own ask's answer onto the
+  // block's live opening line at once, and into a version at settlement; its asks list holds the
+  // answer as this release's does. A saved version that still records the block open is refused,
+  // naming the wait.
+  const unsettledOwnBefore = await runWith({
+    asks: [ownAsk("answered", answer)],
+    versionOpener: ownOpener(' state="open"'),
+    liveOpener: ownOpener(recordedAnswer),
+  });
+  expect(unsettledOwnBefore.isError).toBe(true);
+  expect(unsettledOwnBefore.calls).toEqual([]);
+  expect(unsettledOwnBefore.text).toContain("(block b-1, ask ask-b-1), answered but still open");
+  expect(unsettledOwnBefore.text).toContain("wait for that version");
+
+  // So is one there that records the earlier answer while the ask holds the changed one.
+  const changedOwnBefore = await runWith({
+    asks: [ownAsk("answered", changed)],
+    versionOpener: ownOpener(recordedAnswer),
+    liveOpener: ownOpener(answerAt(changed.at)),
+  });
+  expect(changedOwnBefore.isError).toBe(true);
+  expect(changedOwnBefore.calls).toEqual([]);
+  expect(changedOwnBefore.text).toContain("(block b-1, ask ask-b-1), answered but still open");
+  expect(changedOwnBefore.text).toContain("wait for that version");
+
+  // Once the saved version there records the answer the ask holds, the first or the changed one,
+  // registration proceeds.
+  const settledOwnBefore = await runWith({
+    asks: [ownAsk("answered", answer)],
+    versionOpener: ownOpener(recordedAnswer),
+    liveOpener: ownOpener(recordedAnswer),
+  });
+  expect(settledOwnBefore.isError).toBe(false);
+  expect(registrations(settledOwnBefore.calls)).toHaveLength(1);
+  const changedSettledOwnBefore = await runWith({
+    asks: [ownAsk("answered", changed)],
+    versionOpener: ownOpener(answerAt(changed.at)),
+    liveOpener: ownOpener(answerAt(changed.at)),
+  });
+  expect(changedSettledOwnBefore.isError).toBe(false);
+  expect(registrations(changedSettledOwnBefore.calls)).toHaveLength(1);
+
   // Control: an open copy is refused with its source's ask.
   const openCopy = await runWith({
     asks: [],
@@ -1481,20 +1552,6 @@ test("register_gate on a basis waits for the saved version to record an answered
   expect(changedCopy.text).toContain("answered but still open in version 4");
   expect(changedCopy.text).toContain("wait for that version");
 
-  // The same from a Dispatch of the release before, whose live text sends no `asks` and writes
-  // the source's newer answer on the copy's opening line: the call is refused too, before the
-  // daemon is asked anything.
-  const changedCopyBefore = await runWith({
-    asks: [],
-    versionOpener: copyOpener(recordedAnswer),
-    liveOpener: copyOpener(answerAt(changed.at)),
-  });
-  expect(changedCopyBefore.isError).toBe(true);
-  expect(changedCopyBefore.calls).toEqual([]);
-  expect(changedCopyBefore.text).toContain("a copy of ask dispatch://LEGION-100/ask/ask-source");
-  expect(changedCopyBefore.text).toContain("answered but still open in version 4");
-  expect(changedCopyBefore.text).toContain("wait for that version");
-
   // A resolved copy whose saved version holds no state is told what a resolved own ask is told.
   const resolvedCopy = await runWith({
     asks: [],
@@ -1517,15 +1574,47 @@ test("register_gate on a basis waits for the saved version to record an answered
   expect(settledCopy.isError).toBe(false);
   expect(registrations(settledCopy.calls)).toHaveLength(1);
 
-  // So it does from a Dispatch of the release before once the saved version records the answer
-  // the copy's live opening line holds.
+  // So it does once the saved version records the changed answer its source holds, and a Dispatch
+  // of this release is never asked for the source ask itself: the live text's `asks` give it.
+  const changedSettledCopy = await runWith({
+    asks: [],
+    versionOpener: copyOpener(answerAt(changed.at)),
+    liveAsks: [{ ...answeredLive(changed.at), ...copySource }],
+  });
+  expect(changedSettledCopy.isError).toBe(false);
+  expect(registrations(changedSettledCopy.calls)).toHaveLength(1);
+  expect(changedSettledCopy.paths).not.toContain("/api/v1/asks/ask-source");
+
+  // A Dispatch of the release before serves no `asks`. Its source ask's route answers the
+  // source's first answer while the copy's lines, live and in the saved version, still record the
+  // copy open: the copy is judged by the source ask, and the call is refused, naming the wait. The
+  // next test holds the same for a changed answer.
+  const unsettledCopyBefore = await runWith({
+    asks: [],
+    versionOpener: copyOpener(' state="open"'),
+    liveOpener: copyOpener(' state="open"'),
+    routes: sourceAnswered(answer.at),
+  });
+  expect(unsettledCopyBefore.isError).toBe(true);
+  expect(unsettledCopyBefore.calls).toEqual([]);
+  expect(unsettledCopyBefore.text).toContain(
+    "a copy of ask dispatch://LEGION-100/ask/ask-source on LEGION-100 spec, answered but still open in version 4"
+  );
+  expect(unsettledCopyBefore.text).toContain("wait for that version");
+
+  // Once the copy's settlement has written the source's answer into the saved version, the call
+  // registers, and the source ask was read once.
   const settledCopyBefore = await runWith({
     asks: [],
     versionOpener: copyOpener(recordedAnswer),
     liveOpener: copyOpener(recordedAnswer),
+    routes: sourceAnswered(answer.at),
   });
   expect(settledCopyBefore.isError).toBe(false);
   expect(registrations(settledCopyBefore.calls)).toHaveLength(1);
+  expect(settledCopyBefore.paths.filter((path) => path === "/api/v1/asks/ask-source")).toHaveLength(
+    1
+  );
 });
 
 // A Dispatch of the release before writes a changed answer at once onto the source ask and onto the
