@@ -179,20 +179,19 @@ type Tokens interface {
 	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: readPermissions,
 	// which is contents, metadata, pull requests, issues, Actions, checks, commit statuses and
-	// attestations, each at read. Two callers ask for it and no role's bundle does: a
-	// controller, which works no repository and holds one for every owner its App is installed
-	// on (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the
-	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
-	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
-	// directories hold that owner's own lease at the role's permissions instead (Token,
-	// GitHubCredential). An App on token_command gets what its command's release of
-	// the read profile holds instead, which the deployment's profiles file decides and the
-	// broker cuts to what the installation holds; the read profile docs/deployment.md gives names
-	// readPermissions. With a key of its own the mint asks for what the installation is granted
-	// of readPermissions and leaves the rest out (exchangeGranted), so an installation whose
-	// account has not granted the App issues, Actions, checks, commit statuses or attestations
-	// gets a token without the ones it is not granted rather than nothing. An owner with no name
-	// is refused before anything is minted, as Token's is.
+	// attestations, each at read. Two callers ask for it and no role's bundle does: a controller,
+	// which works no repository and holds one for every owner its App is installed on
+	// (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the implement
+	// App for the issue's own owner, which every issue pod's workspace-init and every repository
+	// cache clone with (implementTokens, internal/daemon). A workflow role's directories hold that
+	// owner's own lease at the role's permissions instead (Token, GitHubCredential). An App on
+	// token_command gets what its command's release of the read profile holds instead, which the
+	// deployment's profiles file decides and the broker cuts to what the installation holds; the
+	// read profile docs/deployment.md gives names readPermissions. With a key of its own the mint
+	// asks for what the installation is granted of readPermissions and leaves the rest out
+	// (exchangeGranted), so an installation whose account has not granted the App issues, Actions,
+	// checks, commit statuses or attestations gets a token without the ones it is not granted rather
+	// than nothing. An owner with no name is refused before anything is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
 }
 
