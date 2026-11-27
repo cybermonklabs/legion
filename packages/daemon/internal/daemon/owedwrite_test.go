@@ -140,6 +140,10 @@ func (s *switchStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds
 	return s.now().ReleaseHolds(ctx, c, holds)
 }
 
+func (s *switchStore) ReadClaim(ctx context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	return s.now().ReadClaim(ctx, token)
+}
+
 // detachedWrites is the real store as the rig hands it out: every call Machine.write bounds runs
 // with the claim-write deadline off it. The bound a row names is the bound of a store that
 // withholds its answer, and a healthy write to a real database is not that store. One value

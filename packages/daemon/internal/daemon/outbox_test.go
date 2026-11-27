@@ -3030,6 +3030,21 @@ func (s *outboxClaimStore) PutClaimStep(_ context.Context, token claim.Token, st
 	return true, nil
 }
 
+// ReadClaim is the row and its delivery, as the store's own read answers them, and false for a
+// token no row holds.
+func (s *outboxClaimStore) ReadClaim(_ context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, known := s.claims[token]
+	if !known {
+		return supervise.Claim{}, false, nil
+	}
+	if d, ok := s.deliveries[token]; ok {
+		c.Pending = &d
+	}
+	return c, true, nil
+}
+
 func newOutboxSupervisor(t *testing.T, project, stateDir string) (*supervisor, *fake.Runtime) {
 	t.Helper()
 	rt := fake.NewRuntime()

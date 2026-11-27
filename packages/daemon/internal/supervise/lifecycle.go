@@ -52,7 +52,12 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 		return err
 	}
 	c := m.stored()
-	bound, err := m.deps.Store.AdmitClaim(ctx, c)
+	// A refusal this decision met stands for the admission too, which reaches no store (D2 of
+	// dispatch://INFRA-4099's plan).
+	bound, err := Claim{}, m.refused()
+	if err == nil {
+		bound, err = m.deps.Store.AdmitClaim(ctx, c)
+	}
 	switch {
 	case errors.Is(err, treelifecycle.ErrCleanupReserved), errors.Is(err, treelifecycle.ErrLifecycleAbsent),
 		errors.Is(err, treelifecycle.ErrLifecycleClosed):

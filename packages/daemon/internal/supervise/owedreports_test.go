@@ -226,11 +226,13 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 	})
 
 	// The other drop, and with the generation one the only drop there is: a repair whose own
-	// write the server judged. Such a refusal is one R2 never repeats, so no write of this
-	// claim is coming to put the row where the owed reports say it is, and a report of a state
-	// the store never took would tell the daemon more than the store can say. The reports go
-	// with the mark, and the line the drop writes is all that is left of them (R6), which is
-	// why this row reads it whole rather than counting it.
+	// write the server judged (c-repair-refused of dispatch://INFRA-4099's plan). Such a refusal
+	// is one R2 never repeats: the decision ends there, making no other claim write, and the
+	// machine is built again over the row the store holds, so no write of this claim is coming to
+	// put the row where the owed reports say it is, and a report of a state the store never took
+	// would tell the daemon more than the store can say. The reports go with the mark, and the
+	// line the drop writes is all that is left of them (R6), which is why this row reads it whole
+	// rather than counting it.
 	t.Run("a repair whose own write the server judged drops the reports it held", func(t *testing.T) {
 		h, counted := newCountedHarness(t)
 		reports := watchReports(h)
@@ -267,13 +269,16 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		attempted := counted.mark()
 
 		// A task queued while the agent is in its turn: the repair runs at the head of that
-		// decision and is refused there, while the decision's own write is of the delivery, a
-		// table the refusal is not on.
-		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+		// decision and is refused there, and the decision ends with it.
+		if err := h.handle(RequestDeliver{Claim: testToken, Task: "the task"}); !errors.Is(err, refusal) {
+			t.Fatalf("the deliver whose repair the server refused returned %v, want the refusal", err)
+		}
 
 		if h.m.owedWrite != nil {
 			t.Fatal("the repair the server refused kept the mark; that write would be made again at every decision for the life of the daemon")
 		}
+		// Memory is the row the store holds, which the owed turn starts never reached.
+		h.wantState(StateReady)
 		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady}) {
 			t.Fatalf("the daemon was told %v, want the ready alone: the owed working names a state the store never took", seen)
 		}
@@ -305,24 +310,27 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 			t.Fatalf("the line reads droppedReports %v (present %v), want 2: the reports the dropped write held", got, ok)
 		}
 
-		// The decision went on to its own row rather than being dropped behind the refusal.
-		if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim", "PutDelivery"}) {
-			t.Fatalf("the decision asked for %v, want the refused repair and then the task's own delivery write", asked)
+		// The decision made no other claim write after the refusal (R2): the task's own
+		// delivery write is not made, and the deliver's asker asks again.
+		if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim"}) {
+			t.Fatalf("the decision asked for %v, want the refused repair alone", asked)
 		}
-		if p := h.claim().Pending; p == nil || p.Task != "the task" {
-			t.Fatalf("pending = %+v, want the task the deliver carried: the event was applied, not dropped", p)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending = %+v, want none: the decision ended at the refused repair", p)
 		}
 
-		// Nor does a later write make them true. The store takes claim writes again, the turn
-		// ends, that write lands, and the daemon is told nothing of what the drop took.
+		// Nor does a later write make them true. The store takes claim writes again, the task is
+		// delivered again, a turn starts on it and its write lands, and the daemon is told of that
+		// turn's working alone, not of the two the drop took.
 		h.store.fail("PutClaim", nil)
-		h.mustQuiet(StreamTurnEnd{Claim: testToken})
-		h.wantState(StateIdle)
-		if stored := h.store.load(testToken); stored.State != StateIdle {
-			t.Fatalf("the turn's end stored %s, want idle: this row needs a later write that lands", stored.State)
+		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+		h.must(StreamTurnStart{Claim: testToken})
+		h.wantState(StateWorking)
+		if stored := h.store.load(testToken); stored.State != StateWorking {
+			t.Fatalf("the turn's start stored %s, want working: this row needs a later write that lands", stored.State)
 		}
-		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady}) {
-			t.Fatalf("the daemon was told %v after a write that landed; the dropped reports are gone for good", seen)
+		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateWorking}) {
+			t.Fatalf("the daemon was told %v after a write that landed, want the ready and this turn's working: the dropped reports are gone for good", seen)
 		}
 	})
 

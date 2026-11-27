@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -16,8 +18,9 @@ import (
 )
 
 // releaseRefusingStore refuses, once for each of its claims, the write that releases that claim's
-// uncertain launch (the claim written queued), as a store that fails at the boot's release and
-// answers the sweep that retries it.
+// uncertain launch (the claim written queued), as a store whose server refuses the row at the
+// boot's release (a CHECK it breaks, which the rule refuses: supervise.SortClaimWriteFailure) and
+// takes it at the sweep that retries it.
 type releaseRefusingStore struct {
 	*outboxClaimStore
 	mu     sync.Mutex
@@ -30,7 +33,8 @@ func (s *releaseRefusingStore) PutClaim(ctx context.Context, c supervise.Claim) 
 	delete(s.refuse, c.Token)
 	s.mu.Unlock()
 	if refuse {
-		return errors.New("the store did not answer")
+		return &pgconn.PgError{Code: "23514", Message: `new row for relation "claims" violates check constraint "claims_state_check"`,
+			Severity: "ERROR", ConstraintName: "claims_state_check"}
 	}
 	return s.outboxClaimStore.PutClaim(ctx, c)
 }
@@ -76,6 +80,18 @@ func newBootRigEdited(t *testing.T, n int, store supervise.Store, edit func([]su
 		edit(r.claims)
 	}
 	r.claims = append(r.claims, restored...)
+	// The store holds each claim and its delivery as the boot reads them back, so a machine that
+	// reads its row again after a refused write (supervise's settleRefusal) finds the task it holds.
+	for _, c := range r.claims {
+		if err := store.PutClaim(context.Background(), supervise.StoredClaim(c)); err != nil {
+			t.Fatal(err)
+		}
+		if c.Pending != nil {
+			if err := store.PutDelivery(context.Background(), c.Token, *c.Pending); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	r.sup = newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 	r.sup.deps = supervise.Deps{
 		Runtime: r.rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),

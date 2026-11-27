@@ -138,7 +138,8 @@ func (m *Machine) oweWrite(method string, err error) {
 // dropped. A failure the rule owes marks the claim write owed (oweWrite), so the write itself is
 // not lost with the event: memory keeps its state, and the claim's next decision makes the write
 // (repair). A failure the rule refuses marks nothing: it is logged and told where the rule reads
-// it, and the same write would be refused again. A nil err is no failure, and is returned nil.
+// it, the same write would be refused again, and the decision ends by building the machine again
+// over the claim's row (settleRefusal). A nil err is no failure, and is returned nil.
 //
 // It is the rule's form for a write whose failure leaves memory ahead of the row and nothing else
 // to say so: persist, persistStop, a confirmation (confirmCarrying) and a provider error's note
@@ -185,13 +186,24 @@ func (m *Machine) sortWriteFailure(method string, err error) WriteFailure {
 	return kind
 }
 
-// refusedWrite logs a claim write the rule refused under refusedWriteLine, at Error, and tells the
-// daemon once through Deps.ClaimWriteRefused (D10 of dispatch://INFRA-4099's plan). The claim is
-// memory's as it stands at the refusal, which is the claim the store refused; stored is the state
-// the row last held (Machine.rowState). more is what the caller adds to the line: what a refused
-// repair dropped with its mark (repair).
+// refusedWrite logs a claim write the rule refused under refusedWriteLine, at Error, tells the
+// daemon once through Deps.ClaimWriteRefused (D10 of dispatch://INFRA-4099's plan), and records the
+// refusal on the machine (Machine.refusal): no other claim write of the decision reaches the store,
+// and the decision ends by building the machine again over the claim's row (settleRefusal, D2).
+// The claim is memory's as it stands at the refusal, which is the claim the store refused; stored
+// is the state the row last held (Machine.rowState). more is what the caller adds to the line: what
+// a refused repair dropped with its mark (repair).
+//
+// A refusal already recorded is the answer every later claim write of the decision gives
+// (Machine.write), so it is the same refusal sorted again by the caller of that write, and is
+// neither logged nor told a second time.
 func (m *Machine) refusedWrite(method string, err error, more ...any) {
+	if m.refusal != nil {
+		return
+	}
 	sqlstate, constraint := refusalOf(err)
+	m.refusal = &claimRefusal{store: method, err: err, sqlstate: sqlstate, constraint: constraint,
+		state: m.claim.State, generation: m.claim.Generation}
 	attrs := append([]any{"store", method, "stored", m.rowState, "refused", m.claim.State,
 		"generation", m.claim.Generation, "sqlstate", sqlstate, "constraint", constraint, "error", err}, more...)
 	m.log.Error(refusedWriteLine, attrs...)

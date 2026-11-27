@@ -617,6 +617,19 @@ func (s *memStore) load(token claim.Token) Claim {
 	return c
 }
 
+// ReadClaim is the store's read of one claim (Store.ReadClaim): the row and its delivery, as load
+// reads them, false for a token no row holds, and the error a test injected (fail("ReadClaim")).
+func (s *memStore) ReadClaim(_ context.Context, token claim.Token) (Claim, bool, error) {
+	s.mu.Lock()
+	err := s.failures["ReadClaim"]
+	_, held := s.claims[token]
+	s.mu.Unlock()
+	if err != nil || !held {
+		return Claim{}, false, err
+	}
+	return s.load(token), true, nil
+}
+
 func (s *memStore) delivery(token claim.Token) (Delivery, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -305,16 +305,17 @@ func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
 		m.owedWrite.stops = oweStop(m.owedWrite.stops, stop)
 		return m.persist(ctx)
 	}
-	// Published before the write, so View shows the stopped claim while the stop's transaction
-	// runs. The pending delivery goes on the claim the stop writes, in the one transaction, where
-	// putClaim would carry it (carriesPending), and the obligation ends only once that write lands.
-	m.publish()
+	// The pending delivery goes on the claim the stop writes, in the one transaction, where putClaim
+	// would carry it (carriesPending), and the obligation ends only once that write lands. The
+	// stopped claim is published once the stop's transaction has answered (publishAnswered).
 	c, carried := m.stored(), m.carriesPending()
 	if carried {
 		pending := *m.claim.Pending
 		c.Pending = &pending
 	}
-	err := m.claimWriteFailed("PauseStopped", m.putStop(ctx, c, stop))
+	written := m.putStop(ctx, c, stop)
+	m.publishAnswered(written)
+	err := m.claimWriteFailed("PauseStopped", written)
 	if err == nil && carried {
 		m.wroteCarried()
 	}

@@ -897,6 +897,26 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 	return c, true, nil
 }
 
+// ReadClaim is the claim of token with its pending delivery, read as Claims reads each claim at a
+// daemon start (claimSelect, scanClaim), and false with no error where no row holds token: the
+// read a machine makes after a claim write the store refused, to build itself again over the row
+// the store holds (supervise.Store.ReadClaim).
+func (s *Store) ReadClaim(ctx context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	var c supervise.Claim
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		c, err = scanClaim(tx.QueryRow(ctx, claimSelect+" where c.token = $1", string(token)))
+		return err
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return supervise.Claim{}, false, nil
+	}
+	if err != nil {
+		return supervise.Claim{}, false, fmt.Errorf("read claim %s: %w", token, err)
+	}
+	return c, true, nil
+}
+
 // PutDelivery writes the claim's pending delivery, replacing the one it had: a claim has at most
 // one. A token no claim carries is refused. It is one transaction, because the write carries what
 // the task names of the decisions a person made while nobody in its root's tree could hear them:

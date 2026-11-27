@@ -176,6 +176,14 @@ func (s *memoryClaims) ClaimByBootTokenHash(_ context.Context, hash []byte) (sup
 	return supervise.Claim{}, false, nil
 }
 
+// ReadClaim is the row of token, as the store's own read answers it; these rows keep no delivery.
+func (s *memoryClaims) ReadClaim(_ context.Context, token legionclaim.Token) (supervise.Claim, bool, error) {
+	s.rowsMu.Lock()
+	defer s.rowsMu.Unlock()
+	row, known := s.rows[token]
+	return row, known, nil
+}
+
 // The tree barrier is the store's, held to its own tests: here every tree is open at epoch 1, and
 // a close's cleanup releases the tree through the runtime at once. No tree is ever created here
 // (treelifecycle.Lifecycle.Created), so the open runs its created for none of them: this fake

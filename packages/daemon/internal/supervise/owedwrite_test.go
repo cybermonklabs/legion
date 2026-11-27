@@ -233,27 +233,28 @@ func serverError(code, message string) func(*testing.T) error {
 	}
 }
 
-// The rule for a claim write the store refused is put to the error identities a daemon of this
-// cluster meets, each injected on the claim-only write of a turn start — the decision the
-// measured incident lost, and one that leaves its state standing in memory whether or not the
-// row takes it.
+// The rule for a claim write the store did not take is put to the error identities a daemon of
+// this cluster meets, each injected on the claim-only write of a turn start — the decision the
+// measured incident lost, and one that leaves its state standing in memory whether or not the row
+// takes it (c-rule-sorts of dispatch://INFRA-4099's plan).
 //
-// All but one leave the write owed, and the claim's next decision makes it: the row catches up
-// with what memory has held all along. The last is the server reading the statement and deciding
-// against it, which it would decide the same way again, so nothing is owed and nothing is written
-// again — the write is attempted once and that is the end of it.
+// The owed ones leave the write owed, and the claim's next decision makes it: the row catches up
+// with what memory has held all along. The refused ones are the server, or the store in Go,
+// reading the row and deciding against it, which it would decide the same way again: the write is
+// attempted once, memory is built again over the row the store holds, which reads ready, nothing
+// is owed, and nothing is written again.
 //
 // What the owed ones share is not a type: one is a pgx type, one is the standard library's, two
 // are a server's answer about a connection it refused, carried inside a pgx type, and the rest
 // are a server's answer on a live connection. It is that the row memory holds is not what failed,
 // which is the one question SortClaimWriteFailure asks.
 //
-// The two connections the server itself refused are the rows this change's order is for, and
-// they are built from a listener that speaks the startup message rather than written out, since
-// what they hold is the shape pgx wraps such an answer in. The rotated password is the one that
-// decides the order: its class is the server judging something, and a rule that read the
-// SQLSTATE before the wrapper would drop the write of a claim fact only memory holds for a
-// statement no server ever read.
+// The two connections the server itself refused are the rows the rule's order is for, and they
+// are built from a listener that speaks the startup message rather than written out, since what
+// they hold is the shape pgx wraps such an answer in. The rotated password is the one that decides
+// the order: its class is the server judging something, and a rule that read the SQLSTATE before
+// the wrapper would drop the write of a claim fact only memory holds for a statement no server
+// ever read.
 func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -292,7 +293,7 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 			owed: true,
 		},
 		{
-			// The write this change's own deadline cut short (Timeouts.ClaimWrite): the wait for
+			// The write the claim-write deadline cut short (Timeouts.ClaimWrite): the wait for
 			// an answer ended before any answer came, and the statement may or may not have been
 			// applied, which is the same unknown as a connection that died under it.
 			name: "a write the deadline cut short",
@@ -308,10 +309,10 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 		},
 		{
 			// Class 40, transaction rollback: the server rolled its own transaction back over a
-			// deadlock it broke, so the statement was abandoned rather than judged, and the
+			// serialization failure, so the statement was abandoned rather than judged, and the
 			// same write made again can be taken.
 			name: "a transaction the server rolled back",
-			err:  serverError("40P01", "deadlock detected"),
+			err:  serverError("40001", "could not serialize access due to concurrent update"),
 			owed: true,
 		},
 		{
@@ -344,6 +345,15 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 			owed: true,
 		},
 		{
+			// A server a failover left read-only, or a replica the pool reached: it refuses every
+			// write until a writable primary answers again, whatever the row holds.
+			name: "a server that takes no write",
+			err: func(*testing.T) error {
+				return &pgconn.PgError{Code: "25006", Message: "cannot execute UPDATE in a read-only transaction", Severity: "ERROR"}
+			},
+			owed: true,
+		},
+		{
 			// A column the claims table has not got: a daemon deployed ahead of its migration.
 			// The server reads the statement and refuses it, but what it refuses is the schema
 			// the binary runs ahead of, not the row memory holds, and the same write is taken
@@ -356,13 +366,42 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 			owed: true,
 		},
 		{
-			// A statement the server read and refused: a unique violation is a decision about
-			// this very statement, and making the write again buys the same refusal.
-			name: "a statement the server refused",
+			// A table the schema has not got yet, for the same reason as the column above.
+			name: "a table the server has not got yet",
 			err: func(*testing.T) error {
-				return &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint", Severity: "ERROR"}
+				return &pgconn.PgError{Code: "42P01", Message: `relation "claims" does not exist`, Severity: "ERROR"}
 			},
-			owed: false,
+			owed: true,
+		},
+		{
+			// A unique index another row holds: a decision about this very statement, and
+			// making the write again buys the same refusal.
+			name: "a unique index another row holds",
+			err: func(*testing.T) error {
+				return &pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint", Severity: "ERROR",
+					ConstraintName: "claims_boot_token_hash_key"}
+			},
+		},
+		{
+			// A CHECK the row breaks.
+			name: "a check the row breaks",
+			err:  func(*testing.T) error { return checkRefusal() },
+		},
+		{
+			// A foreign key the row names and no row holds.
+			name: "a foreign key no row holds",
+			err: func(*testing.T) error {
+				return &pgconn.PgError{Code: "23503", Message: `insert or update on table "claims" violates foreign key constraint`,
+					Severity: "ERROR", ConstraintName: "claims_tree_fkey"}
+			},
+		},
+		{
+			// The store's own refusal in Go, before any statement: it carries no SQLSTATE, and
+			// its type is what the rule reads.
+			name: "a row the store refused itself",
+			err: func(*testing.T) error {
+				return &RowRefusedError{Rule: RuleBigintFit, Err: errors.New("generation 18446744073709551615 fits no bigint column")}
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -379,9 +418,14 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 			if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim"}) {
 				t.Fatalf("the failed decision asked for %v, want the one claim write", asked)
 			}
-			h.wantState(StateWorking)
 			if owed := h.m.owedWrite != nil; owed != tc.owed {
 				t.Fatalf("the write is owed = %v, want %v", owed, tc.owed)
+			}
+			if tc.owed {
+				h.wantState(StateWorking)
+			} else {
+				// The machine is built again over the row, which the refused write left ready.
+				h.wantState(stored.State)
 			}
 
 			// The store takes writes again, and the claim decides once more.
@@ -392,11 +436,12 @@ func TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout(t *testing.T) {
 			asked := counted.writes()[attempted:]
 			if !tc.owed {
 				if len(asked) != 0 {
-					t.Fatalf("a write the server refused was asked for again as %v; nothing is owed for it", asked)
+					t.Fatalf("a write the store refused was asked for again as %v; nothing is owed for it", asked)
 				}
 				if now := h.store.load(testToken); now.State != stored.State {
 					t.Fatalf("the stored claim reads %s, want %s: a refused write is not made again", now.State, stored.State)
 				}
+				h.wantState(stored.State)
 				return
 			}
 			if !slices.Equal(asked, []string{"PutClaim"}) {

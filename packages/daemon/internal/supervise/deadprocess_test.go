@@ -390,7 +390,9 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 // the read, turns on the rule (D8 of dispatch://INFRA-4099's plan): a take-back the rule refuses
 // puts it back (Claim.LastDeathCause), and one whose write the rule owes keeps it, a true account
 // of the death, and owes the claim write that records it. That next request, with the store
-// answering again, lands the suspension, records the read's cause and sends the stop once. The
+// answering again — and, after a refusal, which builds the machine again over its row as a daemon
+// start builds it, once the process is read again — lands the suspension, records the read's cause
+// and sends the stop once. The
 // claim died once and was relaunched before all this, a minute before the read, so the death it
 // holds carries a cause of its own and a time off the clock: an undo that zeroed the time, or
 // stamped the clock, fails. The negative controls are the stop sent before the write, which leaves
@@ -460,6 +462,15 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 			}
 
 			h.store.fail("PutDelivery", nil)
+			if !tc.owed {
+				// The refusal built the machine again over its row, as a daemon start builds it, so
+				// what the read found of the process is gone with the rest of memory (D3 of
+				// dispatch://INFRA-4099's plan): the process is read again, as after a restart.
+				h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+				if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
+					t.Fatalf("the read of the rebuilt claim's process answered %q, want %q", got, ProcessGone)
+				}
+			}
 			if err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
 				By: SuspendedByOperator, NeverHold: true}); err != nil {
 				t.Fatalf("the suspension asked again once the store answers returned %v, want it landed", err)

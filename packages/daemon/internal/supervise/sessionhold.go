@@ -304,10 +304,13 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	}
 	// The exception to write's retry (Machine.write): made once under its bound, since a second try
 	// after a cut whose first try freed the names would free none and answer an empty Freed as a
-	// success, losing the names the first try freed.
-	releasing, cancel := m.bounded(ctx)
-	released.Freed, err = m.deps.Store.ReleaseHolds(releasing, c, free)
-	cancel()
+	// success, losing the names the first try freed. A refusal this section met stands for it
+	// too, and the release reaches no store (D2 of dispatch://INFRA-4099's plan).
+	if err = m.refused(); err == nil {
+		releasing, cancel := m.bounded(ctx)
+		released.Freed, err = m.deps.Store.ReleaseHolds(releasing, c, free)
+		cancel()
+	}
 	// The names leave the cache whatever the write answered (the doc above).
 	for _, h := range free {
 		delete(m.heldNames, h)

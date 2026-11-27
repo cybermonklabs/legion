@@ -328,16 +328,16 @@ func intColumnWrites(ctx context.Context, token claim.Token) map[string]intColum
 		}
 	}
 	return map[string]intColumnWrite{
-		"claims.launch_failures":     claimWrite(func(c *supervise.Claim, v int) { c.Budgets.LaunchFailures = v }),
-		"claims.deaths":              claimWrite(func(c *supervise.Claim, v int) { c.Budgets.Deaths = v }),
-		"claims.prompt_failures":     claimWrite(func(c *supervise.Claim, v int) { c.Budgets.PromptFailures = v }),
-		"claims.prompt_retires":      claimWrite(func(c *supervise.Claim, v int) { c.Budgets.PromptRetires = v }),
-		"claims.uncertain_streak":    claimWrite(func(c *supervise.Claim, v int) { c.UncertainStreak = v }),
-		"claims.plugin_contract":     claimWrite(func(c *supervise.Claim, v int) { c.PluginContract = v }),
-		"claims.plugin_relaunch_for": claimWrite(func(c *supervise.Claim, v int) { c.PluginRelaunchFor = v }),
-		"claims.provider_error_run":  claimWrite(func(c *supervise.Claim, v int) { c.ProviderErrorRun = v }),
-		"claims.serving_check_look":  claimWrite(func(c *supervise.Claim, v int) { c.ServingCheckLook.Look = v }),
-		"pending_task_deliveries.check_look": deliveryWrite(func(d *supervise.Delivery, v int) { d.CheckLook.Look = v }),
+		"claims.launch_failures":                claimWrite(func(c *supervise.Claim, v int) { c.Budgets.LaunchFailures = v }),
+		"claims.deaths":                         claimWrite(func(c *supervise.Claim, v int) { c.Budgets.Deaths = v }),
+		"claims.prompt_failures":                claimWrite(func(c *supervise.Claim, v int) { c.Budgets.PromptFailures = v }),
+		"claims.prompt_retires":                 claimWrite(func(c *supervise.Claim, v int) { c.Budgets.PromptRetires = v }),
+		"claims.uncertain_streak":               claimWrite(func(c *supervise.Claim, v int) { c.UncertainStreak = v }),
+		"claims.plugin_contract":                claimWrite(func(c *supervise.Claim, v int) { c.PluginContract = v }),
+		"claims.plugin_relaunch_for":            claimWrite(func(c *supervise.Claim, v int) { c.PluginRelaunchFor = v }),
+		"claims.provider_error_run":             claimWrite(func(c *supervise.Claim, v int) { c.ProviderErrorRun = v }),
+		"claims.serving_check_look":             claimWrite(func(c *supervise.Claim, v int) { c.ServingCheckLook.Look = v }),
+		"pending_task_deliveries.check_look":    deliveryWrite(func(d *supervise.Delivery, v int) { d.CheckLook.Look = v }),
 		"pending_task_deliveries.send_failures": deliveryWrite(func(d *supervise.Delivery, v int) { d.SendFailures = v }),
 		"pending_task_deliveries.provider_error_retries": deliveryWrite(func(d *supervise.Delivery, v int) {
 			d.ProviderErrorRetries = v
