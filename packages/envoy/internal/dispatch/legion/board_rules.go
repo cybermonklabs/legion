@@ -11,9 +11,8 @@ package legion
 
 import "fmt"
 
-// The board's columns. Queue holds no phase: the board fills it from the daemon's waiting line and
-// its blocker links, or by phase where no read has recorded an admission block (Columns says
-// which issues); Design the `admitted` issues on a card that Queue does not hold — the slot
+// The board's columns. Queue holds no phase: the board route fills it (legionBoardCompute);
+// Design the `admitted` issues on a card that Queue does not hold — the slot
 // holders, and the ones no card stands above, which are on no other issue's count (the board
 // route's legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`; Waiting
 // on children the parents in `awaiting_children`, whether or not the daemon's blocked list names
@@ -43,11 +42,8 @@ type Column struct {
 
 // Columns is every column of the board with the phases each holds. The order is the board's
 // left-to-right order; the metrics read each column's phases alone (partsOf in legion/metrics).
-// Queue holds no phase of its own. The board puts there the daemon's waiting line, in its own
-// order, then the issues a blocker link holds but for a parent in `awaiting_children`, which
-// stays in its own column; where no read has recorded an admission block, it puts there instead
-// each `admitted` issue that holds no slot and has no card above it in its tree, in Dispatch's
-// rank order (the board route's legionBoardCompute). An issue the queue does not hold, in a phase
+// Queue holds no phase of its own: the board route fills it (legionBoardCompute). An issue the
+// queue does not hold, in a phase
 // no column holds (`done`, and any phase a later daemon adds), is on no card: the board shows the
 // work in flight, and a phase Dispatch has never heard of is not something it can place. Which
 // phases share a column is the board's own choice, made here: `retro` has a column of its own, as

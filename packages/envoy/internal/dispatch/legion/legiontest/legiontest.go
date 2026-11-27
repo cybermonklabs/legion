@@ -151,7 +151,7 @@ type Fixture struct {
 	// Keys is every issue of the history, in the order Write wrote them, tree by tree: each
 	// tree's root, then its five children, then, under Spec.Filings, the three issues Filings
 	// writes for that tree (its implementer's, its reviewer's and the controller's). Those three
-	// are numbered after every tree's issues, so under Filings the keys are not in number order.
+	// are numbered after every tree's issues, so under Filings the keys need not be in number order.
 	Keys []string
 	// Roots is each tree's root, in the same order.
 	Roots []string
@@ -313,7 +313,9 @@ type phaseMark struct {
 }
 
 // tree writes one root and its five children: one Legion tree from the architect's first comment
-// to the merger's close, with every phase the daemon reports recorded somewhere in it.
+// to the merger's close, with every phase the daemon reports recorded somewhere in it. Under
+// Spec.Filings it also writes the three issues its sessions file, numbered after every tree's
+// issues, two of them with no parent and in no tree.
 //
 // The five children are the five shapes a reader of the facts must handle. The first is
 // implemented, tested and sent back once, so its facts hold two review rounds. The second is

@@ -36,9 +36,9 @@ type breakdownPart struct {
 	phases []string
 }
 
-// breakdownParts are the parts in the order a page draws them, each with the phases whose hours
-// it holds: the board's columns in the board's order (legion.Columns), each column that holds a
-// phase with the phases the board places in it (partsOf). So retro is a part of its own and
+// breakdownParts are the parts an issue's hours are shared out over, each with the phases whose
+// hours it holds, read off legion.Columns (partsOf): each column that holds a phase, with the
+// phases the board places in it. So retro is a part of its own and
 // merging holds merging and awaiting merge alone (dispatch://INFRA-1077's b74df7a79b), as the
 // board's table has them: an issue's retro hours are under `retro` and on no merger figure, as
 // retro is on the implementer's bar of metric 2.
