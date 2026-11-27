@@ -20,6 +20,7 @@ import {
   causedByReader,
   focusedOutOfSight,
   holdHandOff,
+  landNearest,
   pressIsArmedOwn,
   repeatTookFocusFrom,
   useFocusPlace,
@@ -1666,4 +1667,111 @@ test("an input method's Enter at keyCode 229 arms a component's hand-off at its 
     }
   });
   expect(armed).toEqual({ "a plain Enter": true, "an input method's Enter": false });
+});
+
+/** Where a list's box stands down the window, in px, as the project List draws one: it clips what
+ *  overflows it, and its sticky head, 40 px tall, stays at its top. */
+const LIST_BOX = { bottom: 500, headBottom: 140, top: 100 } as const;
+
+/** Where a landing below a list's sticky head (`landNearest`) leaves a checkbox laid out 13 px
+ *  tall at `top` px down the window, in a list's box (`LIST_BOX`) whose own scroll padding is
+ *  `padding`, set as its inline style. happy-dom lays nothing out and scrolls nothing, so the
+ *  box's own scroll moves the checkbox by hand. Answers how far the checkbox then stands below the
+ *  box's top and above its bottom, and every scroll asked of the box and of the window, once the
+ *  landing has looked again after its commit (`land`). */
+async function landedInBox(
+  top: number,
+  padding: Readonly<Record<string, string>>
+): Promise<{ above: number; below: number; box: unknown[]; window: unknown[] }> {
+  const box = document.createElement("div");
+  // happy-dom does not expand the `overflow` shorthand, so the case sets the two values the
+  // browser computes for the List's `overflow-auto`.
+  box.style.overflowX = "auto";
+  box.style.overflowY = "auto";
+  for (const [property, value] of Object.entries(padding)) box.style.setProperty(property, value);
+  box.getBoundingClientRect = () =>
+    new DOMRect(0, LIST_BOX.top, 400, LIST_BOX.bottom - LIST_BOX.top);
+  const head = document.createElement("div");
+  head.getBoundingClientRect = () =>
+    new DOMRect(0, LIST_BOX.top, 400, LIST_BOX.headBottom - LIST_BOX.top);
+  const mark = document.createElement("input");
+  mark.type = "checkbox";
+  mark.setAttribute("aria-label", "Select CORE-7");
+  let markTop = top;
+  mark.getBoundingClientRect = () => new DOMRect(10, markTop, 13, 13);
+  box.append(head, mark);
+  document.body.append(box);
+  const boxScroll = spyOn(box, "scrollBy").mockImplementation((by?: ScrollToOptions | number) => {
+    if (typeof by === "object") markTop -= by.top ?? 0;
+  });
+  const windowScroll = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    expect(landNearest(mark, head)).toBe(true);
+    // The landing looks again in a microtask, once the commit it landed in is done (`land`).
+    await Promise.resolve();
+    const landed = mark.getBoundingClientRect();
+    return {
+      above: LIST_BOX.bottom - landed.bottom,
+      below: landed.top - LIST_BOX.top,
+      box: [...boxScroll.mock.calls],
+      window: [...windowScroll.mock.calls],
+    };
+  } finally {
+    windowScroll.mockRestore();
+    boxScroll.mockRestore();
+    box.remove();
+  }
+}
+
+// A landing that scrolls a list's box brings its checkbox below the larger of the sticky head's
+// bottom and the box's own `scroll-padding-top`, where the browser's own focus scroll in that box
+// brings it too. The project List's box keeps 64 px at its top (`DataTable`), under a head about
+// 50 px tall, and in WebKit a landing flush under the head let the engine scroll the box again by
+// itself. A checkbox under the 40 px head lands 64 px below the box's top, not 40, by the least
+// scroll that brings it there, and the window does not scroll.
+test("a landing that scrolls a box brings its control below the box's own scroll-padding-top, not only below the sticky head", async () => {
+  expect(await landedInBox(120, { "scroll-padding-top": "64px" })).toEqual({
+    above: 323,
+    below: 64,
+    box: [[{ top: -44 }]],
+    window: [],
+  });
+});
+
+// The box's bottom follows the same rule: a checkbox the box's bottom edge cuts lands 64 px above
+// it where the box keeps a `scroll-padding-bottom` of 64 px, given as a length or as a percentage
+// of the box's scrollport, 16% of its 400 px.
+test("a landing that scrolls a box brings its control above the box's own scroll-padding-bottom, as a length or a percentage", async () => {
+  const landed: Record<string, object> = {};
+  for (const padding of ["64px", "16%"]) {
+    landed[padding] = await landedInBox(495, { "scroll-padding-bottom": padding });
+  }
+  const atPadding = { above: 64, below: 323, box: [[{ top: 72 }]], window: [] };
+  expect(landed).toEqual({ "16%": atPadding, "64px": atPadding });
+});
+
+// A box that keeps no scroll padding lands its checkbox as before: flush below the sticky head
+// from above, and flush on the box's bottom edge from below, by the least scroll.
+test("a landing in a box with no scroll padding brings its control flush below the sticky head or on the box's bottom edge", async () => {
+  expect({
+    "from above": await landedInBox(120, {}),
+    "from below": await landedInBox(495, {}),
+  }).toEqual({
+    "from above": { above: 347, below: 40, box: [[{ top: -20 }]], window: [] },
+    "from below": { above: 0, below: 387, box: [[{ top: 8 }]], window: [] },
+  });
+});
+
+// The padding says only where a scroll brings a control, not what is in sight: a checkbox that
+// already stands whole in sight inside the padded strip at the box's top, between the head's
+// bottom and the padding's edge, or inside the one at its bottom, is not moved.
+test("a landing on a control already whole in sight inside a box's scroll padding scrolls nothing", async () => {
+  const padded = { "scroll-padding-bottom": "64px", "scroll-padding-top": "64px" };
+  expect({
+    "in the bottom strip": await landedInBox(450, padded),
+    "in the top strip": await landedInBox(150, padded),
+  }).toEqual({
+    "in the bottom strip": { above: 37, below: 350, box: [], window: [] },
+    "in the top strip": { above: 337, below: 50, box: [], window: [] },
+  });
 });

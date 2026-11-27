@@ -1420,8 +1420,10 @@ test("a live update that takes away, above the row in hand, a row an earlier act
 // the checkbox. Clear selection empties the selection, and the bar goes while it holds the focus.
 // The issue marked last is still listed, so its checkbox takes the focus (`useLastMarkedPlace`)
 // with no scroll of the engine's own. The engine does not see the head, so its own scroll to the
-// nearest edge would move nothing. The table's box scrolls up by the least distance, the 60 px,
-// and the checkbox stands whole below the head.
+// nearest edge would move nothing. The table's box scrolls up by the least distance that brings
+// the checkbox below both the head and the box's own 64 px `scroll-padding-top` (`DataTable`), as
+// the browser's own focus scroll in that box would: 64 px, and the checkbox stands whole, 4 px
+// below the head.
 test("Clear selection hands the focus to the checkbox of the issue marked last under the List's sticky head, and the table's box scrolls it out from under the head by the least distance", async () => {
   const user = userEvent.setup();
   // Drawn in the shell's main content, as the app draws it: Clear selection is a press of the
@@ -1471,9 +1473,10 @@ test("Clear selection hands the focus to the checkbox of the issue marked last u
   await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
   await waitFor(() => expect(mark).toHaveFocus());
   expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
-  expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -60 }]]);
-  // The rows moved down 60 px, and the head stayed: the checkbox's top meets the head's bottom.
-  expect(mark.getBoundingClientRect().top).toBe(cell.getBoundingClientRect().bottom);
+  expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -64 }]]);
+  // The rows moved down 64 px, and the head stayed: the checkbox's top meets the edge of the box's
+  // own scroll padding, 64 px below the box's top and 4 px below the head's bottom.
+  expect(mark.getBoundingClientRect().top).toBe(box.getBoundingClientRect().top + 64);
   expect(moves.scrolled).toEqual([]);
 });
 
@@ -1736,15 +1739,17 @@ test("when the List's landing scrolls its box off its end, the kept foot room is
   unmountFloat();
   expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
   expect(main.style.paddingBottom).toBe("80px");
-  // Clear selection: the landing scrolls the box 150 px off its end, the early foot pass releases
-  // main's 80 px room, and the second fitHeight sets the box to 580 px in the landing's own task.
+  // Clear selection: the landing scrolls the box 174 px off its end, which brings CORE-2 below the
+  // box's own 64 px `scroll-padding-top` (`DataTable`), 364, and not only below the head's bottom,
+  // 340. The early foot pass releases main's 80 px room, and the second fitHeight sets the box to
+  // 580 px in the landing's own task.
   act(() => within(bar).getByRole("button", { name: "Clear selection" }).focus());
   await user.keyboard("{Enter}");
   await waitFor(() => expect(focusedName()).toBe("Select CORE-2"));
   expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
   expect(main.style.paddingBottom).toBe("");
   expect(boxPx()).toBe(580);
-  expect(liveMark().getBoundingClientRect().top).toBe(340);
+  expect(liveMark().getBoundingClientRect().top).toBe(364);
   // A resize measure after the landing agrees with that height.
   act(() => window.dispatchEvent(new Event("resize")));
   expect(boxPx()).toBe(580);
