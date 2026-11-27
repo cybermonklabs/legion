@@ -4,7 +4,7 @@ body: |-
   `BROKER_K8S_OIDC_ISSUER` takes comma-separated `<name>=<issuer URL>` entries, one for each
   cluster, or one bare issuer URL as before, and the broker checks each token against the issuer
   its `iss` claim names. The audience list of `BROKER_K8S_OIDC_AUDIENCE` serves every named
-  issuer: a token of any listed audience is taken from any issuer the setting names.
+  issuer: a token of any listed audience is taken from any issuer `BROKER_K8S_OIDC_ISSUER` names.
   The broker refuses to start on a malformed entry, two entries of one name or of one URL, a bare
   URL beside named entries, and an entry whose URL holds a user name or a password, an `@` after
   its host, or a query or a fragment, naming the setting and the entry by its place in the list

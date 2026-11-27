@@ -1871,15 +1871,15 @@ type verifiers struct {
 // production, reads Google's key set.
 //
 // The clusters' issuers (BROKER_K8S_OIDC_ISSUER, for every audience BROKER_K8S_OIDC_AUDIENCE
-// lists, one list that serves each issuer it names) are one verifier, an oidc.IssuerSet, for both
-// a pod's enrollment token and a service's login token, which are the clusters' projected tokens
-// of those audiences. It tries each issuer once, all at the same time (loggedIssuers.boot), and
-// logs one line for each, naming it and whether it was read; then it reads, in the background
-// until ctx ends, each one it could not (loggedIssuers.run). It logs one more line for such an
-// issuer when it can be read, written once by whichever comes first, that read or a token of the
-// issuer that verifies. None of them refuses the boot: until an issuer is read, its tokens are
-// answered 503, and so is a token whose key the broker cannot read, which loggedIssuers logs once
-// for each issuer that goes unread, not once for each token.
+// lists, one list that serves every issuer BROKER_K8S_OIDC_ISSUER names) are one verifier, an
+// oidc.IssuerSet, for both a pod's enrollment token and a service's login token, which are the
+// clusters' projected tokens of those audiences. It tries each issuer once, all at the same time
+// (loggedIssuers.boot), and logs one line for each, naming it and whether it was read; then it
+// reads, in the background until ctx ends, each one it could not (loggedIssuers.run). It logs one
+// more line for such an issuer when it can be read, written once by whichever comes first, that
+// read or a token of the issuer that verifies. None of them refuses the boot: until an issuer is
+// read, its tokens are answered 503, and so is a token whose key the broker cannot read, which
+// loggedIssuers logs once for each issuer that goes unread, not once for each token.
 //
 // The exchange's cluster issuers (BROKER_EXCHANGE_K8S_ISSUER) are issuers of that same set, and
 // the exchange reads each one's keys through it (IssuerSet.Key), with the same background read,

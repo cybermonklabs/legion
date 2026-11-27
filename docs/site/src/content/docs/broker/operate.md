@@ -418,24 +418,23 @@ enrols the one pod whose token made it: any other pod UID is refused `403 POD_SE
 A pod enrolling itself states no session name either, `403 POD_SELF_ENROLL_NO_SESSION`: the pods
 of one account enrol under one principal, so a name such a pod picked would be a sibling pod's,
 and the enrolment would take that sibling's grants. `agent-secrets enroll --pod` sends none.
-The broker verifies the token as it verifies a pod's, against the issuer of
-`BROKER_K8S_OIDC_ISSUER` that the token names and an audience `BROKER_K8S_OIDC_AUDIENCE` lists,
-so the setting needs both, and refuses a
-token that lives longer than an hour from its issue (`exp` minus `iat`, beside a minute of skew) as
-`TOKEN_TOO_LONG_LIVED`: give the daemon's projected token an `expirationSeconds` of at most 3600,
-and `kubectl create token` a `--duration` of at most `1h`. Each account holds one launcher
-credential: every login moves it to the login's key and to the token's expiry, at most an hour
-away. A running daemon proves the same key at each login, so nothing about it changes but its
+The broker verifies the token as it verifies a pod's, against the issuer of `BROKER_K8S_OIDC_ISSUER`
+that the token names and an audience `BROKER_K8S_OIDC_AUDIENCE` lists, so the setting needs both,
+and refuses a token that lives longer than an hour from its issue (`exp` minus `iat`, beside a
+minute of skew) as `TOKEN_TOO_LONG_LIVED`: give the daemon's projected token an `expirationSeconds`
+of at most 3600, and `kubectl create token` a `--duration` of at most `1h`. Each account holds one
+launcher credential: every login moves it to the login's key and to the token's expiry, at most an
+hour away. A running daemon proves the same key at each login, so nothing about it changes but its
 expiry; a restart's login brings a new key, so the daemon's earlier key stops working at once and
 the pods it enrolled before the restart stay its own. A device-code login that names a service is
-refused `SERVICE_LOGS_IN_WITH_TOKEN`. Dispatch's machine-login page lists a daemon's token login
-for everyone signed in, naming its account and no approver, and anyone may revoke it, which ends
-every pod it enrolled at once; the daemon then logs in again with its token under a new credential,
-which enrolls the pods it launches next, while a pod already running stays without secrets until it
-is replaced. To stop a daemon logging in, remove its entry and redeploy the broker: its credential
+refused `SERVICE_LOGS_IN_WITH_TOKEN`. Dispatch's machine-login page lists a daemon's token login for
+everyone signed in, naming its account and no approver, and anyone may revoke it, which ends every
+pod it enrolled at once; the daemon then logs in again with its token under a new credential, which
+enrolls the pods it launches next, while a pod already running stays without secrets until it is
+replaced. To stop a daemon logging in, remove its entry and redeploy the broker: its credential
 stops authenticating at its next call, and its next login is refused. A credential also stops
-authenticating once the account's entry no longer names the issuer whose token made it, since
-the credential records that issuer.
+authenticating once the account's entry no longer names the issuer whose token made it, since the
+credential records that issuer.
 
 An account on that list that `BROKER_POD_OPERATORS` does not map (below) may also call
 `POST /v1/oauth/exchange/pod-sessions`, the route that registers which pod may write under which
@@ -1688,10 +1687,9 @@ The move takes four steps:
 ## Moving callers to another pod-token audience
 
 `BROKER_K8S_OIDC_AUDIENCE` takes one or more audiences, separated by white space (spaces, tabs or
-line feeds), for example `example-pod-new example-pod-old`. The audiences are taken from each
-issuer `BROKER_K8S_OIDC_ISSUER` names: one list serves every issuer, so a token of any listed
-audience is taken from any of them, on each route below from the issuers that route's entry
-takes. A value of one audience is read as before.
+line feeds), for example `example-pod-new example-pod-old`. A token of any listed audience may come
+from any issuer `BROKER_K8S_OIDC_ISSUER` names: one list serves every issuer. Each route below
+takes it from the issuers that route's entry takes. A value of one audience is read as before.
 
 The broker takes a token of any listed audience, each where it took a token of the one audience
 before:

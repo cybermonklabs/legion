@@ -162,21 +162,22 @@ type KeySource interface {
 // both from one *Keys makes one discovery read at boot, keeps one set in
 // memory, and bounds the reads a token naming an unpublished key id prompts at
 // one per MinRefresh while reads succeed, and one per FailureSpacing while they
-// fail, across both of them. A LazyVerifier builds its verifier with it too, over
-// the Keys its read of the discovery document makes (NewKeys), and answers
-// LazyVerifier.Key from those keys. Over an IssuerSet's issuer, it verifies that
-// issuer's tokens for an audience other than the set's, reading the issuer's
-// discovery document and key set only as the set reads them, as the broker's
-// NATS auth service does.
+// fail, across both of them. A LazyVerifier builds its verifier as it does
+// (newWithKeys), over the Keys its read of the discovery document makes
+// (NewKeys), and answers LazyVerifier.Key from those keys. Over an IssuerSet's
+// issuer, it verifies that issuer's tokens for an audience other than the
+// set's, reading the issuer's discovery document and key set only as the set
+// reads them, as the broker's NATS auth service does.
 func NewWithKeys(issuer, audience string, keys KeySource) *Verifier {
 	return newWithKeys(issuer, []string{audience}, keys)
 }
 
-// NewWithKeysFor is NewWithKeys for tokens issuer issued to any of audiences, all checked against
-// the one keys. The caller passes one or more audiences and none of them twice; config.Load holds
-// that for the broker's BROKER_K8S_OIDC_AUDIENCE. An empty list is refused with an error here,
-// where the verifier is built, since a verifier of no audience could take no token. The verifier
-// keeps no reference to audiences.
+// errNoAudience refuses an IssuerSet of no audience (NewIssuerSetFor).
+var errNoAudience = errors.New("oidc: a verifier needs one or more audiences")
+
+// newWithKeys is the verifier NewWithKeys returns and a LazyVerifier builds (newLazyVerifier), of
+// audiences, which holds one or more: one go-oidc verifier of each audience, in the order listed,
+// all on keys.
 //
 // A token is judged by the listed audience it carries, so a token fails for the reason it fails
 // at a verifier of that audience alone: Verify checks it with the go-oidc verifier of the first
@@ -185,19 +186,6 @@ func NewWithKeys(issuer, audience string, keys KeySource) *Verifier {
 // an audience the list does not hold is ErrAudience, expired or not, as at a verifier of one
 // audience. Each token gets one signature check. An aud written into a forged token gains
 // nothing, because the verifier chosen checks aud again on the payload the signature covers.
-func NewWithKeysFor(issuer string, audiences []string, keys KeySource) (*Verifier, error) {
-	if len(audiences) == 0 {
-		return nil, errNoAudience
-	}
-	return newWithKeys(issuer, audiences, keys), nil
-}
-
-// errNoAudience refuses a verifier, or an IssuerSet, of no audience (NewWithKeysFor,
-// NewIssuerSetFor).
-var errNoAudience = errors.New("oidc: a verifier needs one or more audiences")
-
-// newWithKeys is the verifier NewWithKeys and NewWithKeysFor return, of audiences, which holds one
-// or more: one go-oidc verifier of each audience, in the order listed, all on keys.
 func newWithKeys(issuer string, audiences []string, keys KeySource) *Verifier {
 	set := keySet{keys: keys}
 	// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the verifier a discovered
@@ -250,7 +238,7 @@ func UnverifiedIssuer(raw string) (string, error) {
 }
 
 // Verify checks raw against the issuer's published keys, a listed audience
-// (NewWithKeysFor), and the token's expiry. Every error wraps exactly one of
+// (newWithKeys), and the token's expiry. Every error wraps exactly one of
 // ErrMalformed, ErrIssuer, ErrAudience, ErrExpired, ErrCancelled,
 // ErrIssuerUnavailable, and ErrSignature.
 func (v *Verifier) Verify(ctx context.Context, raw string) (Claims, error) {

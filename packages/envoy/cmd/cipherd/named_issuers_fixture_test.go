@@ -77,12 +77,7 @@ func clusterToken(t *testing.T, cluster *oidctest.Issuer, key *oidctest.Key, acc
 // clusterTokenFor is clusterToken for audience in place of enrolmentAudience.
 func clusterTokenFor(t *testing.T, cluster *oidctest.Issuer, key *oidctest.Key, account, podUID, audience string) string {
 	t.Helper()
-	claims := cluster.Claims(account, audience)
-	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
-	if podUID != "" {
-		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
-	}
-	return cluster.Mint(t, key, claims)
+	return audienceToken(t, cluster, key, account, audience, podUID, false)
 }
 
 // namedClient drives one running broker as the clusters' daemons, pods and listed callers do.

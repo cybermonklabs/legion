@@ -65,8 +65,9 @@ func NewIssuerSet(issuers []NamedIssuer, audience string, failureSpacing time.Du
 // NewIssuerSetFor is NewIssuerSet for tokens each of issuers issues to any of audiences, one list
 // that serves every issuer of the set: a token of any listed audience is taken from any issuer,
 // and each token is judged by the listed audience it carries, as a Verifier of that list judges
-// it (NewWithKeysFor). The caller passes one or more audiences and none of them twice; an empty
-// list is refused here, as NewWithKeysFor refuses it. The set keeps no reference to audiences.
+// it (newWithKeys). The caller passes one or more audiences and none of them twice; an empty list
+// is refused here, where the set is built, since a set of no audience could take no token. The
+// set keeps no reference to audiences.
 func NewIssuerSetFor(issuers []NamedIssuer, audiences []string, failureSpacing time.Duration) (*IssuerSet, error) {
 	if len(audiences) == 0 {
 		return nil, errNoAudience

@@ -905,12 +905,12 @@ type Config struct {
 	// BROKER_K8S_OIDC_ISSUER names may carry for the broker to take it, one or more, separated by
 	// white space (spaces, tabs or line feeds), such as agent-secrets, or example-pod-new
 	// example-pod-old, one list that serves every issuer BROKER_K8S_OIDC_ISSUER names. A token of
-	// any listed audience, from any of those issuers, is taken, each as a token of the one
-	// audience was before: for a pod's enrolment and its renewals, for
-	// a service's token login of BROKER_SERVICE_LOGINS and the registration and release routes
-	// (POST /v1/oauth/exchange/pod-sessions and its /release) the service calls with its token,
-	// for a caller of BROKER_API_ACCOUNTS, for an edge listener's GET /v1/project-repositories,
-	// and as the pod token a registration carries, each from the issuers the path's entry takes.
+	// any listed audience, from any of those issuers, is taken, each as a token of the one audience
+	// was before: for a pod's enrolment and its renewals, for a service's token login of
+	// BROKER_SERVICE_LOGINS and the registration and release routes (POST
+	// /v1/oauth/exchange/pod-sessions and its /release) the service calls with its token, for a
+	// caller of BROKER_API_ACCOUNTS, for an edge listener's GET /v1/project-repositories, and as
+	// the pod token a registration carries, each from the issuers that route's entry takes.
 	// The token exchange (BROKER_EXCHANGE_K8S_AUDIENCE), the NATS auth service and the NATS
 	// writer hold (BROKER_NATS_K8S_AUDIENCE) take none of them. A token is checked against the
 	// issuer it names and the listed audience it carries, so an expired token of a listed
