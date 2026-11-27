@@ -18,7 +18,7 @@ func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
 	t.Setenv("NATS_NKEY_SEED", paneSeed)
 	t.Setenv("NATS_DAEMON_NKEY_SEED", daemonSeed)
 	git := filepath.Join(t.TempDir(), "git")
-	if err := os.WriteFile(git, []byte("#!/bin/sh\nenv\n"), 0o755); err != nil {
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nsleep 11\nenv\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	result, err := NewRunner(10*time.Second, map[string]string{"git": git}).Run(context.Background(), Command{Argv: []string{"git", "status"}, Dir: t.TempDir(), Timeout: 10 * time.Second})
