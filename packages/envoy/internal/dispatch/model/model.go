@@ -23,9 +23,15 @@ import (
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
-	// ScopeP0 is the right to make an issue's own priority 0 (P0): a write that names a priority
-	// of 0 on an issue whose own priority is not 0 needs it. A person's own sign-in holds it; a
-	// personal token holds it only where its maker gave it.
+	// ScopeP0 is the right to make work P0. A write that names a priority of 0 on an issue whose
+	// own priority is not 0 needs it. A move under another parent, and a clear of an issue's own
+	// priority, need it where they make the issue, or an issue under it that takes its priority
+	// from it, go to P0 by the priority it takes from an issue above it (api's
+	// refuseResolvedP0WithoutScope). A new issue with no priority of its own under a parent that
+	// reads P0 needs it too, unless the writer's session is that parent's architect (api's
+	// refuseNewChildP0WithoutScope). A move that sets no parent needs none, since a detach makes
+	// no issue P0. A person's own sign-in holds it. A personal token holds it only where its maker
+	// gave it.
 	ScopeP0 = "p0"
 )
 
@@ -2624,9 +2630,9 @@ type AskAnsweredEventPayload struct {
 //
 // issue.created, issue.updated and issue.closed also say what the write changed, read in its own
 // transaction: Changed names each field whose value the write moved (title, status, closed_at
-// for a close or a reopen, rank, priority, assignee, parent, labels, route, repo, components,
-// blocked_by, external_links; for issue.created every field the new issue holds a value in),
-// Ancestors the issue's parent chain,
+// for a close or a reopen, rank, priority, resolved_priority, priority_from, assignee, parent,
+// labels, route, repo, components, blocked_by, external_links; for issue.created every field the
+// new issue holds a value in), Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
 // assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
 // or a reopen every login with a Replies row on one of the issue's open asks, read by the
@@ -2634,6 +2640,12 @@ type AskAnsweredEventPayload struct {
 // (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
+//
+// An issue.updated whose Changed names only resolved_priority, priority_from or both is the quiet
+// event of J3 (dispatch://INFRA-5793): a write of an issue's own priority or of its parent that
+// moves what the issue passes down appends one on each issue under it that takes its priority
+// from it (api's queueInheritedPriorityEvents). events.Quiet answers true for it, and no other
+// issue.updated names only those two fields.
 //
 // Forced is on an `issue.created` alone, and only when the create went in with `force` and the
 // near-copy refusal would have stopped it: Past names the issues that refusal named, and is the

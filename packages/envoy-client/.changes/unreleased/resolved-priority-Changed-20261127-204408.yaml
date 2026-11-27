@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  `dispatch read` prints the priority an issue works at: `Priority: P2` for its own, and
+  `Priority: P0 (from ACME-1)` where the issue has none of its own and takes it from ACME-1, the
+  nearest issue above it that has one. The rows of `dispatch issues`, `dispatch open-asks` and
+  `dispatch inbox` print it in the same words, Dispatch matches `dispatch issues --priority`
+  against it, and `dispatch issues --json` carries `resolved_priority` and `priority_from`. From a
+  Dispatch that sends no `resolved_priority`, each line prints the issue's own priority, as
+  before. The help of `dispatch issue-update` (its `--parent` and `--clear-priority`) and of
+  `dispatch issue` says when a move, a clear or a new child of a P0 issue needs the `p0` scope. A
+  refusal of one prints `OAUTH_SCOPE_REQUIRED` and `p0` and exits 1.
+time: 2026-11-27T20:44:08Z
+custom:
+    Issue: resolved-priority

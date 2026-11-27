@@ -3,8 +3,10 @@
 // priority of 0 on a new issue, or on an issue whose own priority is another or none, from any
 // other credential is refused 403 OAUTH_SCOPE_REQUIRED with the challenge naming p0, before every
 // refusal that reads the issue, and the write writes nothing of its request. A write that keeps P0,
-// lowers it, clears it or sets 1 to 3 needs no scope. The issue's own priority decides, never the
-// one it inherits.
+// lowers it or sets 1 to 3 needs no scope. For a priority of 0 the issue's own priority decides,
+// never the one it inherits. A clear, a move and a new issue with no priority can make work P0 by
+// the priority it takes from an issue above it, and then need p0 too: J2 of dispatch://INFRA-5793,
+// which issue_resolved_priority_test.go holds.
 //
 // The tests send their writes from the credentials of one inventory (p0Inventory): those of
 // newLegionStatusRigOn with R26's setting off, and three personal tokens. They need
