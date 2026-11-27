@@ -148,9 +148,10 @@ test("the track's eight steps stand in R3's order, under the page's words for th
   expect([
     PHASE_WORDS.awaiting_person,
     PHASE_WORDS.integrating,
+    PHASE_WORDS.verifying,
     PHASE_WORDS.held,
     PHASE_WORDS.another,
-  ]).toEqual(["Waiting on a person", "Integrating", "Held", "In another phase"]);
+  ]).toEqual(["Waiting on a person", "Integrating", "Verifying", "Held", "In another phase"]);
 });
 
 test("no Legion state read yet is no issue Legion runs, and draws no track", () => {

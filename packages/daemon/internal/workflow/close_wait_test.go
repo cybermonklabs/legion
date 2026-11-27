@@ -144,6 +144,23 @@ func (r *waitRig) stored(key string) record.StoredWait {
 	return stored
 }
 
+// withdrew writes withdrawn into key's stored wait, as a withdrawal applied before this moment
+// left it (defectWithdrawal, waitNamesDefects): a withdrawal the row that writes close-wait.md has
+// not rendered yet.
+func (r *waitRig) withdrew(key string, withdrawn record.WaitWithdrawal) {
+	r.t.Helper()
+	issue := r.issue(key)
+	stored, err := storedWaitOf(issue)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn)
+	if err := putStoredWait(&issue, stored); err != nil {
+		r.t.Fatal(err)
+	}
+	seedRecord(r.t, r.pool, func(tx pgx.Tx) error { return record.NewStore().PutIssue(r.t.Context(), tx, issue) })
+}
+
 // stands fails the test unless key stands at want with the record's status status.
 func (r *waitRig) stands(key string, want phase.Phase, status string) {
 	r.t.Helper()
@@ -403,6 +420,53 @@ func TestAMergeWithNothingToWaitForClosesAtTheRead(t *testing.T) {
 	rig.stands(waitRoot, phase.Verifying, "testing")
 	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
 	closedOnChecks(t, rig, waitRoot)
+}
+
+// A withdrawal is said once in close-wait.md, in the first version written after it, whatever
+// writes the stored wait before that version is uploaded (D8). The write that would lose it is the
+// entry into verifying: the architect withdraws a defect in merging, which stores the withdrawal
+// and queues nothing because a row already waits, the pull request merges before that row runs,
+// and the entry builds the wait afresh (waitOf). The entry keeps it, so the one version the row
+// writes names the withdrawn defect and its reason, and so does a lingering tree's merge, which
+// writes the wait on a path of its own (closeMerged).
+func TestAWithdrawalMadeBeforeAMergeIsSaidInTheVersionAfterIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		linger  bool
+		merging func(rig *waitRig)
+	}{
+		{name: "a merge in merging", merging: func(rig *waitRig) { rig.seedRoot(phase.Merging, "retro") }},
+		{name: "a lingering tree's merge", linger: true, merging: func(rig *waitRig) { rig.seedRoot(phase.Merging, "retro") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newWaitRig(t, "")
+			tc.merging(rig)
+			if tc.linger {
+				until := rig.now.Add(time.Hour)
+				issue := rig.issue(waitRoot)
+				issue.LingerUntil = &until
+				seedRecord(t, rig.pool, func(tx pgx.Tx) error { return record.NewStore().PutIssue(t.Context(), tx, issue) })
+			}
+			withdrawn := record.WaitWithdrawal{ID: 7, Text: "the retry never stops", Reason: "the retro fixed it", At: rig.now}
+			rig.withdrew(waitRoot, withdrawn)
+			rig.mergeRoot()
+
+			stored := rig.stored(waitRoot)
+			if len(stored.Withdrawn) != 1 || stored.Withdrawn[0].ID != withdrawn.ID || stored.Withdrawn[0].Reason != withdrawn.Reason {
+				t.Fatalf("the stored wait's withdrawals after the merge = %+v, want defect %d with its reason: no version has said it yet",
+					stored.Withdrawn, withdrawn.ID)
+			}
+			document, err := record.CloseWaitDocument(rig.issue(waitRoot))
+			if err != nil {
+				t.Fatalf("render close-wait.md: %v", err)
+			}
+			if !strings.Contains(document, withdrawn.Reason) || !strings.Contains(document, withdrawn.Text) {
+				t.Fatalf("close-wait.md = %q, want it to name the withdrawn defect %d and its reason", document, withdrawn.ID)
+			}
+		})
+	}
 }
 
 // A merge in merging with an issue beneath it in the workflow enters verifying: the issue beneath

@@ -55,11 +55,21 @@ type DefectWithdrawResponse struct {
 // defectHeadForm is the form of a head report_defect takes: a full commit id, 40 lowercase hex.
 var defectHeadForm = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// defectCheckForm is the form of the check a report names: a block id of a Verification document,
-// the letters, digits, `_` and `-` Dispatch spells a block id with (its text.IsBlockIDByte), at
-// most as long as the longest block id a plan's reason quotes (plan.MostQuotedBytes). close-wait.md
-// writes it inline, so nothing else of the call reaches the document's lines by it.
-var defectCheckForm = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+// defectCheckInvalid answers why check can be no block id of a Verification document, or "" where
+// it can be one. A check is a typed block's id, which Dispatch holds to its bytes and to holding
+// no control character and to nothing else (dispatchbody.MaxBlockIDBytes, BlockIDHoldsControl), so
+// `q:1`, `décision` and `a b` are each an id a role may name. close-wait.md writes it in a code
+// span whose fence is longer than any run of backticks in it, so no id reaches the document's own
+// markup.
+func defectCheckInvalid(check string) string {
+	switch {
+	case len(check) > dispatchbody.MaxBlockIDBytes:
+		return fmt.Sprintf("check is %d bytes and a block id holds at most %d", len(check), dispatchbody.MaxBlockIDBytes)
+	case dispatchbody.BlockIDHoldsControl(check):
+		return "check holds a control character, which no block id of a Dispatch document holds"
+	}
+	return ""
+}
 
 // reportDefect is report_defect: a role reports a defect of its issue's change once the task's
 // last step passed, which the workflow records and moves no phase for (workflow's defectReport).
@@ -99,9 +109,9 @@ func (s *server) reportDefect(w http.ResponseWriter, r *http.Request) {
 			"head is required: the 40 lowercase hex of the pull request's head where you saw the defect; nothing was recorded")
 		return
 	}
-	if req.Check != "" && !defectCheckForm.MatchString(req.Check) {
-		s.writeFailure(w, r, http.StatusBadRequest, "DEFECT_CHECK_INVALID",
-			"check is the block id of the issue's check the defect is about: letters, digits, `_` and `-`, at most 128 of them; nothing was recorded")
+	if why := defectCheckInvalid(req.Check); why != "" {
+		s.writeFailure(w, r, http.StatusBadRequest, "DEFECT_CHECK_INVALID", fmt.Sprintf(
+			"%s: name the block id of the issue's check the defect is about, as its Verification document spells it; nothing was recorded", why))
 		return
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)

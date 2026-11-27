@@ -256,7 +256,7 @@ test("report_defect does not close the phase", async () => {
       },
       branchHead: noBranchHead,
     }
-    await expect(legionTool.answerLegionTool(runtime, DEFECT_REPORT, hook)).resolves.toEqual(
+    await expect(answerLegionTool(runtime, DEFECT_REPORT, hook)).resolves.toEqual(
       DEFECT_RECORDED,
     )
   }

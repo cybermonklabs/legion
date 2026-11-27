@@ -146,9 +146,15 @@ func putStoredWait(issue *record.Issue, stored record.StoredWait) error {
 // An item that stood in old in the same state keeps its since. Every other item stands from now.
 // Entered is old's: only an entry into verifying sets it (enterVerifying, endChange). Ended and
 // Closed are set by the change's end and the close alone, so each is said in one version.
+//
+// Withdrawn is old's, whole: a withdrawal stays in the wait until a version of close-wait.md
+// holding it is uploaded, which is what says it once (daemon's closeWaitPublish clears exactly
+// what its version showed). Every writer of the wait goes through this, the entry into verifying
+// and a lingering tree's merge among them, so a withdrawal made before a merge reaches the first
+// version written after it. A caller with one to add appends it to this.
 func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWait, now time.Time) record.StoredWait {
 	wait := view.wait
-	stored := record.StoredWait{Entered: old.Entered}
+	stored := record.StoredWait{Entered: old.Entered, Withdrawn: slices.Clone(old.Withdrawn)}
 	blocks := map[string]dispatch.CheckBlock{}
 	if view.answer != nil {
 		for _, block := range view.answer.Results.Checks {
@@ -598,9 +604,10 @@ func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 
 // judgeCloseNoting is judgeClose for an event that close-wait.md names once, in a version it
 // writes: withdrawn, the defects a withdrawal ended (defectWithdrawal), which the stored wait it
-// writes holds as its Withdrawn beside every withdrawal the wait already held (heldWithdrawals).
-// The wait keeps a withdrawal until a version of the document holding it is uploaded, whatever
-// writes the wait first; the row that uploads it takes it out (daemon's closeWaitPublish).
+// writes holds as its Withdrawn beside every withdrawal the wait already held (waitOf carries
+// those). The wait keeps a withdrawal until a version of the document holding it is uploaded,
+// whatever writes the wait first; the row that uploads it takes it out (daemon's
+// closeWaitPublish).
 func (e *Engine) judgeCloseNoting(ctx context.Context, tx pgx.Tx, issue record.Issue, withdrawn []record.WaitWithdrawal) error {
 	if issue.Phase != phase.Verifying {
 		return nil
@@ -625,7 +632,7 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Withdrawn = heldWithdrawals(old, withdrawn)
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn...)
 	if err := e.tellAtOnce(ctx, tx, issue, old, stored, view.wait); err != nil {
 		return err
 	}
@@ -756,7 +763,7 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	stored := e.waitOf(issue, view, old, now)
-	stored.Withdrawn = heldWithdrawals(old, withdrawn)
+	stored.Withdrawn = append(stored.Withdrawn, withdrawn...)
 	stored.Closed = &now
 	if err := putStoredWait(&issue, stored); err != nil {
 		return err
@@ -786,17 +793,6 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	return e.leave(ctx, tx, issue, "done")
-}
-
-// heldWithdrawals is what a stored wait written over old holds of withdrawals: each one old holds,
-// which no uploaded version of close-wait.md has said yet, then withdrawn, the ones the write
-// adds. waitOf builds every other item of the wait afresh, so this is what keeps a withdrawal from
-// being replaced before the row that writes close-wait.md renders it.
-func heldWithdrawals(old record.StoredWait, withdrawn []record.WaitWithdrawal) []record.WaitWithdrawal {
-	if len(old.Withdrawn) == 0 && len(withdrawn) == 0 {
-		return nil
-	}
-	return append(slices.Clone(old.Withdrawn), withdrawn...)
 }
 
 // closeLingeringMember writes the close of issue, a member of a lingering tree, on row, the table's
