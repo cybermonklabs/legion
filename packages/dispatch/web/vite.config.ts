@@ -122,6 +122,9 @@ export default defineConfig({
       "@legion/contracts/dispatch-tools": fileURLToPath(
         new URL("../../contracts/src/dispatch-tools.ts", import.meta.url)
       ),
+      "@legion/contracts/http-status": fileURLToPath(
+        new URL("../../contracts/src/http-status.ts", import.meta.url)
+      ),
       "@legion/contracts": fileURLToPath(new URL("../../contracts/src/index.ts", import.meta.url)),
       "@legion/proof-editor/document-json": fileURLToPath(
         new URL("../../proof-editor/src/document-json.ts", import.meta.url)

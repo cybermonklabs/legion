@@ -262,7 +262,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// and the list are carried as the broker answered them, the scope as its base word
 		// (ciphertoken.Caller.ProjectScope), which is what writeNeedsASignedInPerson reads of a
 		// caller naming a service and no person: a job's token and an account entry's token naming
-		// no person write, and a machine's nobody signed in on does not.
+		// no person write, and a machine's nobody signed in on does not. The principal is the one the
+		// listener records a registration on this token as, which a successor's reply is held to.
 		Credential: &model.Credential{
 			Scopes:       scopes,
 			Session:      caller.Session,
@@ -271,6 +272,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 			Cut:          caller.Cut,
 			ProjectScope: caller.ProjectScope,
 			Projects:     caller.Projects,
+			Principal:    caller.Principal(),
 		},
 		Proven: true,
 	}

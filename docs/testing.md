@@ -764,6 +764,11 @@ redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `Te
 `storetest.DefaultParallel` says why it is 4. Each test has a database of its own
 (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
 
+`internal/dispatch/refs` follows the same rule and runs 4 at once through the same
+`storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar
+re-index's xid window (`Measure` needs the process to itself), the statement timings, and three
+resolver tests that replace the default logger.
+
 A test stays serial when it, or a helper it calls, changes something the whole test process
 shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
 through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
