@@ -464,6 +464,30 @@ type legionBoardPopulation struct {
 	// ranked is the project's issue keys in Dispatch's rank order, read in that order, which is
 	// the order sortByRank puts any set of this project's keys in.
 	ranked []string
+	// times is how long each part of the read took (legionBoardReadTimes), which the live hub's
+	// recompute line reports and the GET route reads nothing of.
+	times legionBoardReadTimes
+}
+
+// legionBoardReadTimes is how long each part of one board's read took (readLegionBoard), which
+// the live hub's recompute line reports beside its read stage (deliveryRecomputeTimes), so a run
+// whose reads slowed says which part the time went to:
+//
+//   - cards, the reads of the project's Legion setting, the daemon's newest read and observations,
+//     the project's issues and the phase work the tree walk climbs onto, and the placing of the
+//     cards and their trees from them: the board's reads before the stored facts;
+//   - facts, legionfacts.Read's statements and the scan of their rows, less its close of the rows;
+//   - grow, that close, each row grown to the read's clock (legionfacts.Row.At);
+//   - cursor, the read of the facts consumer's cursor age, which runs beside the others from the
+//     daemon's newest read on;
+//   - wait, the time every acquire of the shared pool that ended while those reads ran took in all
+//     (pgxpool's AcquireDuration): each read's connections, the board's and any other caller's
+//     in that span, so it bounds the board's own wait for its connections from above, and it lies
+//     inside the other parts' times rather than beside them.
+//
+// A part the read did not reach is 0.
+type legionBoardReadTimes struct {
+	cards, facts, grow, cursor, wait time.Duration
 }
 
 // legionBoardDaemonRead is the newest legion_reads row: when the read was made, whether it
@@ -505,12 +529,14 @@ type legionBoardIssue struct {
 // an open issue still running at now, the moment the body is answered as of (legionBoardCompute).
 func (s *server) readLegionBoard(ctx context.Context, project string, now time.Time) (*legionBoardPopulation, error) {
 	pool := s.deps.Store.Pool
+	started := time.Now()
 	if _, err := legion.GetSettings(ctx, pool, project); err != nil {
 		return nil, err
 	}
 	population := &legionBoardPopulation{
 		project: project, issues: map[string]*legionBoardIssue{}, parents: map[string]string{},
 	}
+	setting := time.Since(started)
 	// The daemon's read with its legion_current in one snapshot (readSampled: the header, the
 	// cards and the issues the daemon reports), the project's issues, the phase work the tree walk
 	// climbs onto and the stored facts are one chain: the walk climbs the issues the daemon
@@ -521,9 +547,12 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 	// population's independent reads do (delivery.go). The snapshot's transaction is the chain's
 	// own, and it commits before the chain reads anything else; the facts read at the chain's end
 	// opens a read-only transaction of its own (legionfacts.Read), once every earlier read of the
-	// chain has let its connection go.
+	// chain has let its connection go. Each times its own parts (legionBoardReadTimes), into
+	// fields of its own.
+	acquired := pool.Stat().AcquireDuration()
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
+			placing := time.Now()
 			if err := population.readSampled(ctx, pool); err != nil {
 				return err
 			}
@@ -535,11 +564,16 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 			}
 			population.cards = population.placeCards()
 			keys, roots := population.shown()
-			population.facts, err = legionfacts.Read(ctx, pool, project, keys, roots, now)
+			population.times.cards = setting + time.Since(placing)
+			reading := time.Now()
+			population.facts, population.times.grow, err = legionfacts.Read(ctx, pool, project, keys, roots, now)
+			population.times.facts = time.Since(reading) - population.times.grow
 			return err
 		},
 		func(ctx context.Context) error {
+			reading := time.Now()
 			age, held, err := legionfacts.CursorAge(ctx, pool, now)
+			population.times.cursor = time.Since(reading)
 			if err != nil || !held {
 				return err
 			}
@@ -550,6 +584,7 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 	); err != nil {
 		return nil, err
 	}
+	population.times.wait = pool.Stat().AcquireDuration() - acquired
 	return population, nil
 }
 

@@ -716,9 +716,11 @@ func judgeFactsChanges(r *report, changes []factsChange, frames []frame) float64
 
 // recomputeLine matches the live hub's line for one recompute of a legion view up to its
 // elapsed_ms, which is all the drive reads of it. The line goes on, after its counts, with the
-// time of each stage of the recompute (read_ms, compute_ms, encode_ms, revision_ms and diff_ms,
-// the hub's finishRecompute), which a run's server log keeps for whoever asks where a slow
-// recompute's time went; the drive judges the whole recompute and leaves them.
+// time of each stage of the recompute (read_ms, compute_ms, encode_ms, revision_ms and diff_ms),
+// the parts of its read (read_cards_ms, read_facts_ms, read_grow_ms, read_cursor_ms, read_wait_ms
+// and read_other_ms) and what marked the view (marks), the hub's finishRecompute, which a run's
+// server log keeps for whoever asks where a slow recompute's time went and what woke it; the
+// drive judges the whole recompute and leaves them.
 var recomputeLine = regexp.MustCompile(`dispatch: delivery live recompute view=legion cause=(\S+) elapsed_ms=(\d+)`)
 
 // readRecomputes reads the legion view's recompute lines the server logged between from and to,

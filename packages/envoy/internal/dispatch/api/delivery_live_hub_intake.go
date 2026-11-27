@@ -141,7 +141,7 @@ func (h *deliveryHub) applyFeed(g *hubGeneration, taken hubEventFeed) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	g.p0 = taken.p0
-	h.dirtyAllLocked(g, now)
+	h.dirtyAllLocked(g, now, deliveryMarkFeed)
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "events seeded", eventID: taken.feed.head})
 }
@@ -209,7 +209,7 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 			defer h.mu.Unlock()
 			g.change = head
 			g.epoch++
-			h.dirtyAllLocked(g, now)
+			h.dirtyAllLocked(g, now, deliveryMarkCursorLost)
 			return nil
 		}
 		changes, err := delivery.ChangesSince(ctx, pool, cursor.Seq, deliveryLivePage)
@@ -283,7 +283,7 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 		_, p0 := g.p0[issueKey]
 		h.dirtyIssueLocked(g, issueKey, p0, now)
 	case "architecture.synced":
-		h.dirtyAllLocked(g, now)
+		h.dirtyAllLocked(g, now, deliveryMarkEvent)
 	}
 	if event.Actor.Kind == "session" && event.Actor.ID != "" {
 		origin := event.Actor.Origin
@@ -297,7 +297,7 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 		title := origin.SessionTitle
 		for _, view := range g.views {
 			if view.showsSessionRetitled(event.Actor.ID, title) {
-				h.markDirtyLocked(g, view, now, deliveryCauseChange)
+				h.markDirtyLocked(g, view, now, deliveryMarkEvent)
 			}
 			if view.reading {
 				if view.heardSessions == nil {
@@ -312,7 +312,7 @@ func (h *deliveryHub) applyEventLocked(g *hubGeneration, event model.Event, now 
 func (h *deliveryHub) dirtyIssueLocked(g *hubGeneration, key string, p0 bool, now time.Time) {
 	for _, view := range g.views {
 		if view.showsIssue(key, p0) {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkEvent)
 		}
 		if view.reading {
 			if view.heardIssues == nil {
@@ -329,13 +329,13 @@ func (h *deliveryHub) dirtyIssueLocked(g *hubGeneration, key string, p0 bool, no
 func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, now time.Time) {
 	for key, p0 := range view.heardIssues {
 		if view.showsIssue(key, p0) {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkEvent)
 			break
 		}
 	}
 	for session, title := range view.heardSessions {
 		if view.showsSessionRetitled(session, title) {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkEvent)
 			break
 		}
 	}
@@ -358,9 +358,9 @@ func (view *deliveryView) showsSessionRetitled(session, title string) bool {
 	return ok && shown != title
 }
 
-func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time) {
+func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time, mark string) {
 	for _, view := range g.views {
-		h.markDirtyLocked(g, view, now, deliveryCauseChange)
+		h.markDirtyLocked(g, view, now, mark)
 	}
 }
 
@@ -371,15 +371,21 @@ func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Cha
 	for _, change := range changes {
 		for _, view := range g.views {
 			if change.Seq > max(view.seq, view.readingSeq) && view.touchedBy(change, now) {
-				h.markDirtyLocked(g, view, now, deliveryCauseChange)
+				h.markDirtyLocked(g, view, now, change.Kind)
 			}
 		}
 	}
 }
 
-// markDirtyLocked marks view for a recompute and wakes g's worker. A subscribe's mark waits for no
-// quiet.
-func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now time.Time, cause string) {
+// markDirtyLocked marks view for a recompute and wakes g's worker, counting the mark by what made
+// it (countMark): a subscribe (deliveryCauseSubscribe), whose mark waits for no quiet and is the
+// recompute's cause, or a change of any kind (a delivery change's kind or a deliveryMark), whose
+// cause is deliveryCauseChange.
+func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now time.Time, mark string) {
+	cause := deliveryCauseChange
+	if mark == deliveryCauseSubscribe {
+		cause = deliveryCauseSubscribe
+	}
 	if !view.dirty {
 		view.dirty, view.firstDirty, view.cause = true, now, cause
 	}
@@ -387,7 +393,17 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 	if cause == deliveryCauseSubscribe {
 		view.immediate, view.cause = true, cause
 	}
+	view.countMark(mark)
 	signal(g.wakeWork)
+}
+
+// countMark counts one mark of the view by what made it, for the recompute whose read takes the
+// view's marks over (deliveryHub.read).
+func (view *deliveryView) countMark(mark string) {
+	if view.marks == nil {
+		view.marks = map[string]int{}
+	}
+	view.marks[mark]++
 }
 
 // touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's

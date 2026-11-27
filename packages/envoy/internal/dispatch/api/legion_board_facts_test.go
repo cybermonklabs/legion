@@ -97,7 +97,7 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	board := legionBoardOf(t, handler, fixture.Project)
 	// The rows of the issues the board carries as the board's read closed them, at the moment its
 	// body is computed as of: the one computation the read makes (legionfacts.Row.At).
-	stored, err := legionfacts.Read(t.Context(), database.Pool, fixture.Project, slices.Collect(maps.Keys(board.Issues)), nil, board.ComputedAt)
+	stored, _, err := legionfacts.Read(t.Context(), database.Pool, fixture.Project, slices.Collect(maps.Keys(board.Issues)), nil, board.ComputedAt)
 	if err != nil {
 		t.Fatalf("read the facts back: %v", err)
 	}

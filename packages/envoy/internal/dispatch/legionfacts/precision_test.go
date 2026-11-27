@@ -40,7 +40,7 @@ func TestAStoredRowGrownToAMomentIsTheComputationAtThatMomentToATenThousandthOfA
 	largest, largestAt := 0.0, ""
 	for _, later := range []time.Duration{time.Minute, 90 * time.Minute, 30 * time.Hour} {
 		moment := run.now.Add(later)
-		rows, err := Read(t.Context(), pool, project, nil, nil, moment)
+		rows, _, err := Read(t.Context(), pool, project, nil, nil, moment)
 		if err != nil {
 			t.Fatalf("read the stored rows at %s: %v", moment, err)
 		}

@@ -381,7 +381,7 @@ func TestTheBoardsReadLeavesTheColumnsItDoesNotReadAtZero(t *testing.T) {
 	}
 
 	readAt := asOf.Add(2 * time.Hour)
-	board, err := Read(t.Context(), seeded.database.Pool, project, []string{issue}, nil, readAt)
+	board, _, err := Read(t.Context(), seeded.database.Pool, project, []string{issue}, nil, readAt)
 	if err != nil {
 		t.Fatalf("read the facts as the board does: %v", err)
 	}
@@ -436,7 +436,8 @@ func readStored(ctx context.Context, pool *store.Pool, project string, at time.T
 	if err != nil {
 		return nil, err
 	}
-	return Read(ctx, pool, project, keys, nil, at)
+	rows, _, err := Read(ctx, pool, project, keys, nil, at)
+	return rows, err
 }
 
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times

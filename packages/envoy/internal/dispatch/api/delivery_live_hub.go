@@ -309,6 +309,9 @@ type deliveryView struct {
 	notBefore             time.Time
 	cause                 string
 	computing             bool
+	// marks counts every mark of the view since a recompute's read last took them over, by what
+	// made it (countMark), for that recompute's line to name (finishRecompute); nil while none.
+	marks map[string]int
 	// reading is set once recompute's read holds its change position and takes the view's marks
 	// over, and until it installs that read's answer. heardIssues and heardSessions record what
 	// the events applied meanwhile acted on (applyEventLocked): each issue with whether it was a
@@ -422,6 +425,23 @@ const (
 	deliveryCauseExpiry    = "expiry"
 )
 
+// What marked a view, as a recompute's line counts it (deliveryView.marks), beside a subscribe
+// (deliveryCauseSubscribe) and a delivery change, which counts by its own kind (delivery.Change's
+// Kind, issue_facts among them): an event the relay delivered (applyEventLocked, and the events a
+// read heard, recheckHeardLocked); a read of a project's Legion daemon or a write of its setting
+// (dirtyLegionProject); a write of an issue's run (dirtyLegionIssue); a connection of the
+// listener (dirtyLegionViews); the event feed taken (applyFeed); a lost change cursor
+// (catchUpChanges); and the retry of a read that failed (recompute).
+const (
+	deliveryMarkEvent       = "event"
+	deliveryMarkLegionState = "legion_state"
+	deliveryMarkLegionRun   = "legion_run"
+	deliveryMarkConnected   = "connected"
+	deliveryMarkFeed        = "feed"
+	deliveryMarkCursorLost  = "cursor_lost"
+	deliveryMarkRetry       = "retry"
+)
+
 // deliveryLivePresets are the preset windows a page offers, in days.
 var deliveryLivePresets = []int{7, 14, 28, 84}
 
@@ -531,7 +551,7 @@ func (h *deliveryHub) dirtyLegionProject(g *hubGeneration, project string) {
 	defer h.mu.Unlock()
 	for _, view := range g.views {
 		if view.spec.classes().reads == viewReadsLegion && view.spec.project == project {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkLegionState)
 		}
 	}
 }
@@ -545,7 +565,7 @@ func (h *deliveryHub) dirtyLegionIssue(g *hubGeneration, issue string) {
 	defer h.mu.Unlock()
 	for _, view := range g.views {
 		if view.spec.issue != "" && view.spec.issue == issue {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkLegionRun)
 		}
 	}
 }
@@ -565,7 +585,7 @@ func (h *deliveryHub) dirtyLegionViews(g *hubGeneration) {
 	defer h.mu.Unlock()
 	for _, view := range g.views {
 		if view.spec.classes().reads == viewReadsLegion {
-			h.markDirtyLocked(g, view, now, deliveryCauseChange)
+			h.markDirtyLocked(g, view, now, deliveryMarkConnected)
 		}
 	}
 }

@@ -493,8 +493,10 @@ func storedMap[V any](values map[string]V) map[string]V {
 // It is the board's read of the facts: rows, and no computation but the close of each open part
 // at the read's own clock, and of each row the columns the board shows (boardColumns), every other
 // field of the Row it answers left at its zero value (narrow). A reader of a window's closed
-// issues reads every column of their rows instead (ReadClosedIn).
-func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []string, at time.Time) (map[string]Row, error) {
+// issues reads every column of their rows instead (ReadClosedIn). The duration is how long that
+// close of the rows took, after the statements and the scan of their rows, which the live hub's
+// recompute line reports apart from them (the board's read_grow_ms).
+func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []string, at time.Time) (map[string]Row, time.Duration, error) {
 	// A nil list goes to Postgres as null, which `= any` answers null for, and `not (null)` would
 	// leave out every closed row of a card; an empty array answers false.
 	if keys == nil {
@@ -508,13 +510,14 @@ func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []s
 		read, err = readRows(ctx, tx, project, false, shownWhere, project, keys, roots)
 		return err
 	}); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	closing := time.Now()
 	rows := make(map[string]Row, len(read))
 	for _, row := range read {
 		rows[row.Issue] = row.At(at).narrow()
 	}
-	return rows, nil
+	return rows, time.Since(closing), nil
 }
 
 // readByIndex runs read in a read-only transaction of its own on pool whose first statement turns

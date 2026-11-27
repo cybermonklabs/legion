@@ -207,7 +207,7 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 		want[fmt.Sprintf("FC-%d", n)], open[fmt.Sprintf("FC-%d", n)] = true, true
 	}
 	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	rows, err := Read(ctx, pool, "FC", keys, roots, at)
+	rows, _, err := Read(ctx, pool, "FC", keys, roots, at)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 		t.Errorf("Read answered %d rows, want the %d of the keys, the trees and the open rows; it answered %v and missed %v",
 			len(got), len(wanted), absent(got, want), absent(wanted, rows))
 	}
-	bare, err := Read(ctx, pool, "FC", nil, nil, at)
+	bare, _, err := Read(ctx, pool, "FC", nil, nil, at)
 	if err != nil {
 		t.Fatalf("Read with no card: %v", err)
 	}
