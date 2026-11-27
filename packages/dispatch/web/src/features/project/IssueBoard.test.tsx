@@ -11,7 +11,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
@@ -1832,6 +1832,248 @@ for (const reader of [
     }
   });
 }
+
+/** What holds the focus, as a string a failed assertion prints whole: the page's body, else the
+ *  name of what holds it, with the Board column it stands in. */
+function boardFocus(): string {
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLElement) || focused === document.body) return "the body";
+  const column = focused.closest<HTMLElement>("[data-board-column]")?.dataset.boardColumn;
+  const name = focused.getAttribute("aria-label") ?? focused.textContent?.trim() ?? focused.tagName;
+  return column === undefined ? name : `${name} in ${column}`;
+}
+
+/** Makes the test's document drop the focus from a control taken out of the page as Chromium and
+ *  WebKit do, with a `blur` and a `focusout` on it as it goes. happy-dom, as Firefox does, sends
+ *  neither. Answers what gives happy-dom its own removal back. */
+function blurOnRemoval(): () => void {
+  const remove = Node.prototype.removeChild;
+  const removal = spyOn(Node.prototype, "removeChild").mockImplementation(function <T extends Node>(
+    this: Node,
+    child: T
+  ): T {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && child.contains(focused)) focused.blur();
+    return remove.call(this, child) as T;
+  });
+  return () => removal.mockRestore();
+}
+
+/** A key pressed with Meta as macOS sends one, ⌘C say: Meta's keydown and the key's, on `target`,
+ *  and no keyup, which Chromium and WebKit do not send for a key released while Meta is held. */
+function metaKeyDown(target: Element, key: string, code: string): void {
+  act(() => {
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, code: "MetaLeft", key: "Meta", metaKey: true })
+    );
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code, key, metaKey: true }));
+  });
+}
+
+/** A pointer press on `target` as an engine sends one a hand holds for 100 ms: its `pointerdown`
+ *  and the focus it moves, onto `focus`, or off what holds it onto the body where `focus` is null;
+ *  then its `pointerup` and its `click`, or its `pointercancel` and no click. */
+async function pressFor100ms(
+  target: Element,
+  focus: HTMLElement | null,
+  end: "pointercancel" | "pointerup"
+): Promise<void> {
+  act(() => {
+    target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    const focused = document.activeElement;
+    if (focus !== null) focus.focus();
+    else if (focused instanceof HTMLElement) focused.blur();
+  });
+  await act(() => Bun.sleep(100));
+  act(() => {
+    target.dispatchEvent(new PointerEvent(end, { bubbles: true }));
+    if (end === "pointerup" && target instanceof HTMLElement) target.click();
+  });
+}
+
+/** A keyboard move the rule's dry run checks first, as the reader's act is handed it while that
+ *  dry run is out. */
+interface CheckedMove {
+  /** CORE-1's card, which the move takes from Todo to In progress. */
+  readonly pressed: HTMLElement;
+  /** What the case puts back as it ends, beside the move's own. */
+  readonly restores: (() => void)[];
+  readonly user: UserEvent;
+}
+
+/** What the reader does while a checked move's dry run is out. */
+type BoardReader = (move: CheckedMove) => Promise<void>;
+
+/** A control of the page outside the board, as the shell's own are: drawn beside the board for a
+ *  case, taken away as the case ends. Answers it and what takes it out of the page. */
+function outsideTheBoard(move: CheckedMove): { button: HTMLElement; unmount: () => void } {
+  const { unmount } = render(<button type="button">Outside the board</button>);
+  move.restores.push(unmount);
+  return { button: screen.getByRole("button", { name: "Outside the board" }), unmount };
+}
+
+// The Board draws no selection bar, so the bar's hand-off has no case here: its keyboard move has
+// a hand-off of its own, and two of its rules are of the bar's kind. The body counts as the place
+// the press left only where the press's own card went away, and a focus the reader put elsewhere
+// is theirs (`focusAfterMove`). Each is read here for each kind of act a reader makes while a
+// checked keyboard move's dry run is out, each sent as an engine sends it.
+describe("the Board's hand-off after a checked keyboard move, for each kind of the reader's act", () => {
+  /** Shift+L on CORE-1 of `parentIssues`, whose open child sends the move to the rule's dry run
+   *  first, held while the reader does `reader`. The dry run then answers, which places the card:
+   *  the board draws it in In progress and takes its node in Todo away. Answers where the focus
+   *  rests a frame and two tasks after that draw (`boardFocus`). */
+  async function afterCheckedMove(reader: BoardReader): Promise<string> {
+    const user = userEvent.setup();
+    const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+    const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+    const patchIssue = patchInFlight();
+    const { cleanup } = renderBoard({}, undefined, parentIssues);
+    const restores: (() => void)[] = [];
+    try {
+      const board = await screen.findByRole("region", { name: "Project board" });
+      const pressed = within(board).getByRole("article", { name: "CORE-1 Parent" });
+      act(() => pressed.focus());
+      await user.keyboard("{Shift>}L{/Shift}");
+      await waitFor(() => expect(statusChanges).toHaveBeenCalledTimes(1));
+      await reader({ pressed, restores, user });
+      await act(async () => {
+        dryRun.resolve(fixtureAnswer("dry-run"));
+        await settle();
+      });
+      const inProgress = within(board).getByRole("region", { name: "In progress" });
+      await waitFor(() =>
+        expect(within(inProgress).getByRole("article", { name: "CORE-1 Parent" })).toBeDefined()
+      );
+      expect(pressed).not.toBeInTheDocument();
+      await afterFrameAndTasks();
+      return boardFocus();
+    } finally {
+      for (const restore of restores.reverse()) restore();
+      cleanup();
+      patchIssue.mockRestore();
+      statusChanges.mockRestore();
+    }
+  }
+
+  // The board's draw of the card in its new column takes the card's node away, and the focus on
+  // it, or on the card's own link a Tab put it on, drops onto the body: that body is the place the
+  // press left, so the focus follows the card. So it does whatever the reader did meanwhile that
+  // left the focus in the card - a key, a key pressed with Meta, a wheel, a window blur - and
+  // whether the engine sends a focusout as the node goes or not.
+  const followed: readonly (readonly [string, BoardReader])[] = [
+    [
+      "a Tab onto the card's own link, a key with its own keyup",
+      async ({ pressed, user }) => {
+        await user.keyboard("{Tab}");
+        expect(pressed.contains(document.activeElement)).toBe(true);
+      },
+    ],
+    [
+      "⌘C on the card, whose keyup never comes",
+      async ({ pressed }) => metaKeyDown(pressed, "c", "KeyC"),
+    ],
+    [
+      "a wheel over the card",
+      async ({ pressed }) => {
+        act(() => {
+          pressed.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        });
+      },
+    ],
+    [
+      "a window blur",
+      async () => {
+        act(() => {
+          window.dispatchEvent(new Event("blur"));
+        });
+      },
+    ],
+    [
+      "nothing, and the engine's focusout as the card's node goes (Chromium, WebKit)",
+      async ({ restores }) => {
+        restores.push(blurOnRemoval());
+      },
+    ],
+    ["nothing, and no focusout as the card's node goes (Firefox)", async () => undefined],
+  ];
+  for (const [what, reader] of followed) {
+    test(`the body the card's own going leaves counts as the place the press left, so the focus follows the card (the reader: ${what})`, async () => {
+      expect(await afterCheckedMove(reader)).toBe("CORE-1 Parent in in_progress");
+    });
+  }
+
+  // A press of the reader's on a blank spot moves the focus off the card onto the body while the
+  // card is still drawn: that body is theirs, not the place the press left, so the focus stays
+  // there once the card is placed, whether the press ends in its click or the engine cancels it.
+  const blank: readonly (readonly [string, BoardReader])[] = [
+    [
+      "a press on a blank spot held 100 ms, then its click",
+      () => pressFor100ms(document.body, null, "pointerup"),
+    ],
+    [
+      "a press on a blank spot the engine cancels",
+      () => pressFor100ms(document.body, null, "pointercancel"),
+    ],
+  ];
+  for (const [what, reader] of blank) {
+    test(`a body the reader's own press left while the card was still drawn is not the place the press left, so the focus stays there (the reader: ${what})`, async () => {
+      expect(await afterCheckedMove(reader)).toBe("the body");
+    });
+  }
+
+  // A focus the reader put elsewhere while the dry run is out is theirs: on the next card, on a
+  // control outside the board, or on the body where that control has since gone, whether the
+  // engine sends a focusout as it goes or not. The move takes no focus to the card it places.
+  const elsewhere: readonly (readonly [string, BoardReader, string])[] = [
+    [
+      "j to the next card, a key with its own keyup",
+      async ({ user }) => {
+        await user.keyboard("j");
+      },
+      "CORE-2 Bravo in todo",
+    ],
+    [
+      "a press held 100 ms on a control outside the board, then its click",
+      async (move) => {
+        const { button } = outsideTheBoard(move);
+        await pressFor100ms(button, button, "pointerup");
+      },
+      "Outside the board",
+    ],
+    [
+      "a press on a control outside the board that the engine cancels",
+      async (move) => {
+        const { button } = outsideTheBoard(move);
+        await pressFor100ms(button, button, "pointercancel");
+      },
+      "Outside the board",
+    ],
+    [
+      "a click on a control outside the board, which then leaves the page with the engine's focusout (Chromium, WebKit)",
+      async (move) => {
+        const { button, unmount } = outsideTheBoard(move);
+        await move.user.click(button);
+        move.restores.push(blurOnRemoval());
+        unmount();
+      },
+      "the body",
+    ],
+    [
+      "a click on a control outside the board, which then leaves the page with no focusout (Firefox)",
+      async (move) => {
+        const { button, unmount } = outsideTheBoard(move);
+        await move.user.click(button);
+        unmount();
+      },
+      "the body",
+    ],
+  ];
+  for (const [what, reader, kept] of elsewhere) {
+    test(`a focus the reader put elsewhere while the dry run is out is theirs, and the placed card takes none of it (the reader: ${what})`, async () => {
+      expect(await afterCheckedMove(reader)).toBe(kept);
+    });
+  }
+});
 
 // The rule's question takes the focus as it opens and gives it back as it closes
 // (`useDialog`). A keyboard move whose card a choice of the question places takes the focus to

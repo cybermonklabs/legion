@@ -8,7 +8,7 @@ import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { FootFloat } from "../../__tests__/foot-float";
 import { afterFrameAndTasks } from "../../__tests__/frames";
-import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
+import { drawOver, type FocusMove, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { optionNames, pick, pickNamed } from "../../__tests__/list-picks";
 import { endWindowScroll, installResizeObserver } from "../../__tests__/scroll-box";
 import { answerIssuePatches, answerRoute } from "../../__tests__/send-answers";
@@ -4032,6 +4032,644 @@ for (const [how, untick] of [
     expect(focusedName()).toBe(`Select ${next}`);
   });
 }
+
+/** Makes the test's document drop the focus from a control taken out of the page as Chromium and
+ *  WebKit do, with a `blur` and a `focusout` on it as it goes. happy-dom, as Firefox does, sends
+ *  neither. Answers what gives happy-dom its own removal back. */
+function blurOnRemoval(): () => void {
+  const remove = Node.prototype.removeChild;
+  const removal = spyOn(Node.prototype, "removeChild").mockImplementation(function <T extends Node>(
+    this: Node,
+    child: T
+  ): T {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && child.contains(focused)) focused.blur();
+    return remove.call(this, child) as T;
+  });
+  return () => removal.mockRestore();
+}
+
+/** A key pressed with Meta as macOS sends one, ⌘C say: Meta's keydown and the key's, on `target`,
+ *  and no keyup, which Chromium and WebKit do not send for a key released while Meta is held. */
+function metaKeyDown(target: Element, key: string, code: string): void {
+  act(() => {
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, code: "MetaLeft", key: "Meta", metaKey: true })
+    );
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code, key, metaKey: true }));
+  });
+}
+
+/** A pointer press on `target` as an engine sends one a hand holds for 100 ms: its `pointerdown`
+ *  and the focus it moves, onto `focus`, or off what holds it onto the body where `focus` is null;
+ *  then its `pointerup` and its `click`, or its `pointercancel` and no click. */
+async function pressFor100ms(
+  target: Element,
+  focus: HTMLElement | null,
+  end: "pointercancel" | "pointerup"
+): Promise<void> {
+  act(() => {
+    target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    const focused = document.activeElement;
+    if (focus !== null) focus.focus();
+    else if (focused instanceof HTMLElement) focused.blur();
+  });
+  await act(() => Bun.sleep(100));
+  act(() => {
+    target.dispatchEvent(new PointerEvent(end, { bubbles: true }));
+    if (end === "pointerup" && target instanceof HTMLElement) target.click();
+  });
+}
+
+/** Resolves after a task, once a `setTimeout(…, 0)` queued before it has run. */
+function afterTask(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  return promise;
+}
+
+/** The checkbox of the List's row `key`. */
+function listMark(key: string): HTMLElement {
+  return screen.getByRole("checkbox", { name: `Select ${key}` });
+}
+
+/** The key of the List's row that holds the focus, else null. */
+function focusedRow(): string | null {
+  return (
+    document.activeElement?.closest("[data-issue-row]")?.getAttribute("data-issue-row") ?? null
+  );
+}
+
+/** The List with Take out of epic's writes held over two marked rows (`holdTakeOut`). */
+interface HeldTakeOut {
+  /** The row above the two marked, which the action keeps. */
+  readonly before: string;
+  /** The upper of the two marked rows, marked last. */
+  readonly last: string;
+  /** Lets every held write through, and waits until the list read after them has taken the two
+   *  rows out of the view, where the List's filter takes them out of it. A second call lets
+   *  nothing more through. */
+  readonly letGo: () => Promise<void>;
+  /** Every focus the page asks for and every element it scrolls into view, from before the
+   *  press (`watchMoves`). */
+  readonly moves: { readonly focused: readonly FocusMove[]; readonly scrolled: readonly Element[] };
+  /** The row after the two, which stands at their place once they have gone. */
+  readonly next: string;
+  /** The lower of the two marked rows. */
+  readonly other: string;
+}
+
+/** The List under its Epic filter, deep in the epic's twenty issues, laid out 100 px a row with
+ *  the tenth at the window's top, as a reader deep in it sees it; two adjacent rows marked, the
+ *  lower first, and the bar's Take out of epic pressed with Enter, each of its writes held until
+ *  `letGo`. The List names the two rows leaving from that press, and the bar stays up over them
+ *  while the writes are out. With `filtered` false the List shows every issue, so the rows the
+ *  action takes out of the epic stay listed; with `queued` every issue is in Legion's queue, so
+ *  each row draws a Start next of its own, which the action holds while it runs. */
+async function holdTakeOut(
+  user: UserEvent,
+  { filtered = true, queued = false }: { filtered?: boolean; queued?: boolean } = {}
+): Promise<HeldTakeOut> {
+  const rows = [
+    issue("CORE-1", { labels: ["epic"], title: "Table epic" }),
+    ...Array.from({ length: 20 }, (_, index) =>
+      issue(`CORE-${index + 2}`, { labels: queued ? ["legion"] : [], parent: "CORE-1" })
+    ),
+  ];
+  // Each write, by its issue, held until `letGo`: then the listing holds that issue out of the
+  // epic, and the write answers.
+  const held = new Map<string, () => void>();
+  const send = spyOn(api, "send").mockImplementation((request) => {
+    const key = request.path.split("/").at(-1) ?? "";
+    const answer = Promise.withResolvers<Issue>();
+    held.set(key, () => {
+      rows.splice(
+        rows.findIndex((row) => row.key === key),
+        1,
+        issue(key)
+      );
+      answer.resolve(savedIssue(key));
+    });
+    return answer.promise as never;
+  });
+  restores.push(() => send.mockRestore());
+  table(rows, filtered ? `?f.epic=${encodeURIComponent("CORE-1 · Table epic")}` : "", {
+    inMain: true,
+  });
+  await screen.findByRole("checkbox", { name: "Select CORE-21" });
+  const order = drawnRows().map((row) => row.getAttribute("data-issue-row") ?? "");
+  const [before = "", last = "", other = "", next = ""] = order.slice(10, 14);
+  expect([before, last, other, next].includes("CORE-1")).toBe(false);
+  restores.push(layRowsOut("[data-issue-row]", 9));
+  const moves = watchMoves();
+  restores.push(moves.restore);
+  await user.click(listMark(other));
+  await user.click(listMark(last));
+  act(() =>
+    within(screen.getByRole("toolbar", { name: "Selected issues" }))
+      .getByRole("button", { name: "Take out of epic" })
+      .focus()
+  );
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect([...held.keys()].sort()).toEqual([last, other].sort()));
+  const letGo = async () => {
+    const answers = [...held.values()];
+    held.clear();
+    await act(async () => {
+      for (const answer of answers) answer();
+    });
+    if (filtered) {
+      await waitFor(() =>
+        expect(screen.queryByRole("checkbox", { name: `Select ${last}` })).toBeNull()
+      );
+    }
+  };
+  return { before, last, letGo, moves, next, other };
+}
+
+/** `holdTakeOut`, and both marks then unticked by a click that leaves the focus where it was, on
+ *  the bar's Take out of epic, as WebKit's does: the bar goes with the focus, and its hand-off
+ *  parks the focus on the checkbox of the row marked last, which the action is taking away, and
+ *  owes its landing until the two rows have gone. */
+async function owedTakeOut(user: UserEvent, filtered = true): Promise<HeldTakeOut> {
+  const held = await holdTakeOut(user, { filtered });
+  for (const key of [held.other, held.last]) {
+    const mark = listMark(key);
+    act(() => {
+      mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      mark.click();
+    });
+  }
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await waitFor(() => expect(focusedName()).toBe(`Select ${held.last}`));
+  return held;
+}
+
+/** What the reader does over the List while its writes are held. */
+type ListReader = (user: UserEvent, held: HeldTakeOut) => Promise<void>;
+
+// The selection bar's hand-off over the project List, one rule at a time, each act of the reader's
+// sent as an engine sends it (`useLastMarkedPlace`'s doc states each rule). Take out of epic under
+// the Epic filter takes the marked rows out of the view once its writes and the read after them
+// land, and its writes are held here, so the rows stay listed and named leaving for as long as a
+// case needs. The two rows marked are the upper, marked last, and the lower, and the row after
+// them is the one at their place once they have gone.
+describe("the selection bar's hand-off over the List, by each rule and each kind of the reader's act", () => {
+  // Owed, parked: the bar goes while the press's rows are still listed, so no place is the place
+  // yet. The focus its going dropped onto the body is parked on the checkbox of the row marked
+  // last, which the reader can see, with no scroll, and nothing else is focused until the rows go.
+  test("Owed: the bar gone while its rows are listed parks the focus on the checkbox of the row marked last, with no scroll", async () => {
+    const user = userEvent.setup();
+    const held = await owedTakeOut(user);
+    const parkedOn = held.moves.focused.at(-1);
+    expect(
+      parkedOn &&
+        `${parkedOn.target.getAttribute("aria-label")} ${JSON.stringify(parkedOn.options)}`
+    ).toBe(`Select ${held.last} {"preventScroll":true}`);
+    const from = held.moves.focused.length;
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe(`Select ${held.last}`);
+    expect(held.moves.focused.length).toBe(from);
+    expect(held.moves.scrolled.map((element) => element.tagName)).toEqual([]);
+  });
+
+  // Landed: once the press's rows have gone and the foot's pass has run, the landing is made
+  // once, on the checkbox of the row now at the place of the row marked last, with no scroll.
+  test("Landed: once the two rows have gone, the focus lands once on the checkbox of the row now at their place, with no scroll", async () => {
+    const user = userEvent.setup();
+    const held = await owedTakeOut(user);
+    const from = held.moves.focused.length;
+    await held.letGo();
+    await waitFor(() => expect(focusedName()).toBe(`Select ${held.next}`));
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe(`Select ${held.next}`);
+    expect(
+      held.moves.focused
+        .slice(from)
+        .map((move) => `${move.target.getAttribute("aria-label")} ${JSON.stringify(move.options)}`)
+    ).toEqual([`Select ${held.next} {"preventScroll":true}`]);
+    expect(held.moves.scrolled.map((element) => element.tagName)).toEqual([]);
+    expect(tableBox()?.scrollTop).toBe(0);
+  });
+
+  // Handed on: a move of the page's own, made after the landing was owed, to a control that
+  // stays, ends the landing unmade: the focus stays where the page put it once the rows go.
+  test("Handed on: the page's own move of the focus to a row that stays, while the landing is owed, ends it unmade", async () => {
+    const user = userEvent.setup();
+    const held = await owedTakeOut(user);
+    act(() => listMark(held.before).focus());
+    await held.letGo();
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe(`Select ${held.before}`);
+  });
+
+  // The act's end stands: with no Epic filter the rows the action takes out of the epic stay
+  // listed. The reader's wheel over the parked checkbox is read while its row is named leaving,
+  // so the landing is owed again with that row; once no row is named leaving that row is still
+  // listed with the focus in it, so it did not go: nothing lands, and nothing is focused again.
+  test("the act's end stands: a wheel over the parked checkbox of a row the action then keeps listed lands nothing once no row is named leaving", async () => {
+    const user = userEvent.setup();
+    const held = await owedTakeOut(user, false);
+    act(() => {
+      listMark(held.last).dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    });
+    await act(afterTask);
+    const from = held.moves.focused.length;
+    await held.letGo();
+    // The action is over once it lets its controls go, after the read that draws its change.
+    await waitFor(() => expect(listMark(held.last).closest("tr")?.dataset.moved).toBe("true"));
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe(`Select ${held.last}`);
+    expect(held.moves.focused.slice(from).map((move) => move.target.tagName)).toEqual([]);
+  });
+
+  // A dialog the bar opened: the bar's Move to epic asks its question in a dialog, outside the
+  // bar, and the press that confirms it - Enter on its confirm here, a key with its own keyup -
+  // counts as a press in the bar, so the bar's going once the action's read settles is the
+  // reader's doing, and its hand-off lands at the place of the row marked last. Its Cancel and
+  // Escape count for nothing (`in the bar's Move to epic question leaves the focus on the bar's
+  // Move`, above).
+  test("a dialog the bar opened: Enter on the Move to epic question's confirm counts as a press in the bar, and the focus lands on the row now at the marked rows' place", async () => {
+    const user = userEvent.setup();
+    const { asked, issues, last, listing, marked, next, sent } = await askedToMoveIntoWork(user);
+    const reread = Promise.withResolvers<IssueSummary[]>();
+    const reads = listing.mock.calls.length;
+    listing.mockImplementation(() => reread.promise);
+    act(() => within(asked).getByRole("button", { name: "Move into work too" }).focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(sent.filter(([kind]) => kind === "PATCH")).toHaveLength(2));
+    await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+    await act(async () =>
+      reread.resolve(issues.filter(({ key }) => key !== marked && key !== last))
+    );
+    await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+    await waitFor(() => expect(focusedName()).toBe(`Select ${next}`));
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe(`Select ${next}`);
+  });
+
+  // The landing keeps the box's own scroll padding: the List's box keeps 64 px at its top
+  // (`DataTable`), under its 60 px sticky head. The row now at the marked rows' place has its
+  // checkbox from 50 to 64 px down the box, partly under the head, so the landing scrolls it by
+  // the least distance that brings it below the larger of the head's bottom and that padding: 14
+  // px, to 64, not 10, to the head's bottom.
+  test("the landing keeps the box's own scroll padding: the checkbox now at the marked rows' place, partly under the sticky head, is scrolled to the box's 64 px padding by the least distance", async () => {
+    const user = userEvent.setup();
+    const held = await holdTakeOut(user);
+    // Both marks unticked by clicks that leave the focus on the checkbox of the row marked last.
+    await user.click(listMark(held.other));
+    await user.click(listMark(held.last));
+    await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+    const box = tableBox();
+    if (box === null) throw new Error("The List drew no scroll box");
+    const cell = listMark("every row on this page").closest("th");
+    if (cell === null) throw new Error("The List drew no header cell for its Select column");
+    const landing = listMark(held.next);
+    let markTop = 50;
+    // Each of the three is drawn in a box of its own, given on the element itself: the rows'
+    // boxes are a spy on every element's (`layRowsOut`), and a spy on one element's method that
+    // spy already stands in for would change it for every element.
+    const drawn: readonly (readonly [Element, () => DOMRect])[] = [
+      [box, () => new DOMRect(0, 0, 1000, 600)],
+      // The head's cells stick to the box's top, the Select column's first, 60 px tall.
+      [cell, () => new DOMRect(0, 0, 44, 60)],
+      [landing, () => new DOMRect(12, markTop, 14, 14)],
+    ];
+    for (const [element, rect] of drawn) {
+      Object.defineProperty(element, "getBoundingClientRect", { configurable: true, value: rect });
+      restores.push(() => Reflect.deleteProperty(element, "getBoundingClientRect"));
+    }
+    // The box clips what overflows it, as its `overflow-auto` makes it do in a browser.
+    box.style.overflowX = "auto";
+    box.style.overflowY = "auto";
+    const scrolled = spyOn(box, "scrollBy").mockImplementation((by?: ScrollToOptions | number) => {
+      if (typeof by === "object") markTop -= by.top ?? 0;
+    });
+    restores.push(() => scrolled.mockRestore());
+    await held.letGo();
+    await waitFor(() => expect(landing).toHaveFocus());
+    expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -14 }]]);
+    expect(landing.getBoundingClientRect().top).toBe(64);
+  });
+
+  // A press on a control the bar's running action holds in a marked row counts as the bar's:
+  // Take out of epic's writes hold every row's Start next, and a click on a marked row's one, as
+  // WebKit's puts the focus on the row around it, takes nothing but the hold. The bar's press
+  // stays the cause, and once the writes land and the bar goes with the two rows, the focus lands
+  // at their place.
+  test("a press on a marked row's Start next, which Take out of epic holds, counts as the bar's: the focus lands at the marked rows' place once they go", async () => {
+    const user = userEvent.setup();
+    const held = await holdTakeOut(user, { queued: true });
+    const row = listMark(held.last).closest<HTMLElement>("tr");
+    if (row === null) throw new Error(`${held.last} stands in no row`);
+    const startNext = within(row).getByRole("button", { name: "Start next" });
+    expect(startNext.getAttribute("aria-disabled")).toBe("true");
+    await pressFor100ms(startNext, row, "pointerup");
+    await held.letGo();
+    await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+    await waitFor(() => expect(focusedName()).toBe(`Select ${held.next}`));
+  });
+
+  // Cancelled: the reader's own act ends what is owed, and is read once the page has answered it.
+  // Where it leaves the focus in a row named leaving - the parked checkbox, or the other marked
+  // row a key moved it to - or on the body because the control it was on went with its row, the
+  // landing stays owed, and is made on the row at the marked rows' place once they have gone.
+  const stillOwed: readonly (readonly [string, ListReader])[] = [
+    [
+      "j from the parked checkbox into the other leaving row, a key with its own keyup",
+      async (user, held) => {
+        await user.keyboard("j");
+        await act(afterTask);
+        expect(focusedRow()).toBe(held.other);
+      },
+    ],
+    [
+      "⌘C on the parked checkbox, whose keyup never comes",
+      async (_user, held) => {
+        metaKeyDown(listMark(held.last), "c", "KeyC");
+        await act(afterTask);
+      },
+    ],
+    [
+      "a press on the parked checkbox that the engine cancels",
+      async (_user, held) => {
+        const mark = listMark(held.last);
+        await pressFor100ms(mark, mark, "pointercancel");
+        await act(afterTask);
+      },
+    ],
+    [
+      "a wheel over the parked checkbox",
+      async (_user, held) => {
+        act(() => {
+          listMark(held.last).dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        });
+        await act(afterTask);
+      },
+    ],
+    [
+      "j into the other leaving row, whose rows then go with the engine's focusout before the key's keyup (Chromium, WebKit)",
+      async (user, held) => {
+        await user.keyboard("{j>}");
+        restores.push(blurOnRemoval());
+        await held.letGo();
+        expect(document.activeElement).toBe(document.body);
+        await user.keyboard("{/j}");
+      },
+    ],
+    [
+      "j into the other leaving row, whose rows then go with no focusout before the key's keyup (Firefox)",
+      async (user, held) => {
+        await user.keyboard("{j>}");
+        await held.letGo();
+        expect(document.activeElement).toBe(document.body);
+        await user.keyboard("{/j}");
+      },
+    ],
+  ];
+  for (const [what, reader] of stillOwed) {
+    test(`Cancelled: ${what} leaves the focus in a leaving row, or on the body its control left, so the landing stays owed and is made at the marked rows' place`, async () => {
+      const user = userEvent.setup();
+      const held = await owedTakeOut(user);
+      await reader(user, held);
+      await held.letGo();
+      await waitFor(() => expect(focusedName()).toBe(`Select ${held.next}`));
+      await afterFrameAndTasks();
+      expect(focusedName()).toBe(`Select ${held.next}`);
+    });
+  }
+
+  // The same rule's other side: an act that leaves the focus on the body by the reader's own doing
+  // - a press on a blank part of the page - ends what is owed, and so does an act whose wait a
+  // window blur ended unread: nothing lands once the rows go, and the focus is on the body.
+  const ended: readonly (readonly [string, ListReader])[] = [
+    [
+      "a press held 100 ms on a blank part of the page, then its click",
+      () => pressFor100ms(document.body, null, "pointerup"),
+    ],
+    [
+      "j into the other leaving row with a window blur before its keyup",
+      async (user) => {
+        await user.keyboard("{j>}");
+        act(() => {
+          window.dispatchEvent(new Event("blur"));
+        });
+        await user.keyboard("{/j}");
+        await act(afterTask);
+      },
+    ],
+  ];
+  for (const [what, reader] of ended) {
+    test(`Cancelled: ${what} ends what is owed, and nothing lands once the rows go`, async () => {
+      const user = userEvent.setup();
+      const held = await owedTakeOut(user);
+      await reader(user, held);
+      await held.letGo();
+      await afterFrameAndTasks();
+      await afterFrameAndTasks();
+      expect(focusedName()).toBe("the body");
+    });
+  }
+
+  // When the act is read: each act is read once the page has answered it, and nothing lands
+  // between the act and that read. Here the press's rows go before the read is due, which drops
+  // the focus onto the body from the control the act left it on: nothing lands until the read,
+  // and the read, finding that control gone with its row, makes the landing.
+  const readLate: readonly (readonly [string, ListReader, ListReader])[] = [
+    [
+      "j is read a task after its own keyup",
+      (user) => user.keyboard("{j>}"),
+      (user) => user.keyboard("{/j}"),
+    ],
+    [
+      "a press held 100 ms is read a task after its pointerup, and its click",
+      async (_user, held) => {
+        act(() => {
+          listMark(held.last).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        });
+        await act(() => Bun.sleep(100));
+      },
+      async () => {
+        act(() => {
+          document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+          document.body.click();
+        });
+      },
+    ],
+    [
+      "a press the engine cancels is read a task after its pointercancel",
+      async (_user, held) => {
+        act(() => {
+          listMark(held.last).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        });
+      },
+      async () => {
+        act(() => {
+          document.body.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true }));
+        });
+      },
+    ],
+    [
+      "a press whose checkbox leaves the page with the engine's focusout is heard at its pointerup on the document (Chromium, WebKit)",
+      async (_user, held) => {
+        act(() => {
+          listMark(held.last).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        });
+        restores.push(blurOnRemoval());
+      },
+      async (_user, held) => {
+        act(() => {
+          listMark(held.next).dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        });
+      },
+    ],
+    [
+      "a press whose checkbox leaves the page with no focusout is heard at its pointerup on the document (Firefox)",
+      async (_user, held) => {
+        act(() => {
+          listMark(held.last).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        });
+      },
+      async (_user, held) => {
+        act(() => {
+          listMark(held.next).dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        });
+      },
+    ],
+  ];
+  for (const [what, first, answer] of readLate) {
+    test(`When the act is read: ${what}, and the rows that go before then land nothing until it`, async () => {
+      const user = userEvent.setup();
+      const held = await owedTakeOut(user);
+      await first(user, held);
+      await held.letGo();
+      await afterFrameAndTasks();
+      expect(focusedName()).toBe("the body");
+      await answer(user, held);
+      await waitFor(() => expect(focusedName()).toBe(`Select ${held.next}`));
+      await afterFrameAndTasks();
+      expect(focusedName()).toBe(`Select ${held.next}`);
+    });
+  }
+
+  // A key pressed with Meta is read a task after its keydown, since macOS sends no keyup for a
+  // key released while Meta is held: ⌘C on the parked checkbox, its keyup never coming, leaves
+  // the focus in the leaving row, so the landing is owed again and made once the rows go.
+  test("When the act is read: ⌘C, whose keyup never comes, is read a task after its keydown, and the landing is made once the rows go", async () => {
+    const user = userEvent.setup();
+    const held = await owedTakeOut(user);
+    metaKeyDown(listMark(held.last), "c", "KeyC");
+    await act(afterTask);
+    await held.letGo();
+    await waitFor(() => expect(focusedName()).toBe(`Select ${held.next}`));
+  });
+
+  // A modifier pressed alone is no act: Shift held on the parked checkbox ends nothing, so the
+  // rows that go while it is held are landed at once, before its keyup.
+  test("When the act is read: Shift held alone is no act, and the rows that go while it is held are landed at once", async () => {
+    const user = userEvent.setup();
+    const held = await owedTakeOut(user);
+    await user.keyboard("{Shift>}");
+    await held.letGo();
+    await waitFor(() => expect(focusedName()).toBe(`Select ${held.next}`));
+    await user.keyboard("{/Shift}");
+  });
+
+  // A wheel is read one task after it, once the page has answered it: here the focus leaves the
+  // parked checkbox for the body in the wheel's own task, as the reader's own doing, so the read
+  // finds it there with the checkbox still in the page, and nothing is owed. A read in the wheel's
+  // own dispatch would find the focus in the leaving row and owe the landing again.
+  test("When the act is read: a wheel is read a task after it, so a focus moved onto the body in its own task ends what is owed", async () => {
+    const user = userEvent.setup();
+    const held = await owedTakeOut(user);
+    const mark = listMark(held.last);
+    act(() => {
+      mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+      mark.blur();
+    });
+    await act(afterTask);
+    await held.letGo();
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe("the body");
+  });
+
+  // A window blur ends a press's wait unread: the press ended what was owed, and its pointerup
+  // after the blur reads nothing, so the rows' going lands nothing.
+  test("When the act is read: a window blur between a press's pointerdown and its pointerup ends the wait unread, and nothing lands once the rows go", async () => {
+    const user = userEvent.setup();
+    const held = await owedTakeOut(user);
+    const mark = listMark(held.last);
+    act(() => {
+      mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      window.dispatchEvent(new Event("blur"));
+      mark.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    });
+    await act(afterTask);
+    await held.letGo();
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    expect(focusedName()).toBe("the body");
+  });
+
+  // Remembered: while the bar is up and nothing is owed, a focus in a row named leaving is
+  // remembered from the focus events. The writes land, and the read after them takes the two rows
+  // away, the focus with them onto the body, and then the bar: the remembered control has left
+  // the page, so the bar's going owes the landing, made at the marked rows' place.
+  const remembered: readonly (readonly [string, ListReader])[] = [
+    [
+      "j from the row above into the row marked last, a key with its own keyup",
+      async (user, held) => {
+        act(() => listMark(held.before).focus());
+        await user.keyboard("j");
+        expect(focusedRow()).toBe(held.last);
+      },
+    ],
+    [
+      "a press on the checkbox of the row marked last that the engine cancels",
+      async (_user, held) => {
+        const mark = listMark(held.last);
+        await pressFor100ms(mark, mark, "pointercancel");
+      },
+    ],
+    [
+      "the focused checkbox of the row marked last taken out of the page with the engine's focusout (Chromium, WebKit)",
+      async (_user, held) => {
+        act(() => listMark(held.last).focus());
+        restores.push(blurOnRemoval());
+      },
+    ],
+    [
+      "the focused checkbox of the row marked last taken out of the page with no focusout (Firefox)",
+      async (_user, held) => {
+        act(() => listMark(held.last).focus());
+      },
+    ],
+    [
+      "a window blur with the focus on the checkbox of the row marked last",
+      async (_user, held) => {
+        act(() => listMark(held.last).focus());
+        act(() => {
+          window.dispatchEvent(new Event("blur"));
+        });
+      },
+    ],
+  ];
+  for (const [what, reader] of remembered) {
+    test(`Remembered: ${what} while the bar is up is remembered, and the bar's going with that row owes the landing at the marked rows' place`, async () => {
+      const user = userEvent.setup();
+      const held = await holdTakeOut(user);
+      await reader(user, held);
+      expect(screen.getByRole("toolbar", { name: "Selected issues" })).toBeInTheDocument();
+      await held.letGo();
+      await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+      await waitFor(() => expect(focusedName()).toBe(`Select ${held.next}`));
+      await afterFrameAndTasks();
+      expect(focusedName()).toBe(`Select ${held.next}`);
+    });
+  }
+});
 
 // When a write sent again by Finish is refused or stopped, its row stops being named as leaving.
 // Here a refused Start next keeps CORE-2 marked, then Finish sends the rank write again and it

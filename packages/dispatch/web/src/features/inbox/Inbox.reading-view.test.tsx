@@ -5,14 +5,16 @@
  * the server's own moves do to it. Each row stays at happy-dom's own 1024 px, or says where it
  * moves the window (`movableReadingPaneWidth`). The column beside the list is `Inbox.test.tsx`'s.
  */
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the motion hold's bare pointermove over the hidden list and its pointerleave, which user-event has no form for: its hover sends a fixed mouse sequence to a row, which the list's hand would hold.
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
+import { disarm } from "../../__tests__/armed-press";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { type FocusMove, watchMoves } from "../../__tests__/laid-out-rows";
 import {
   answerAskSnoozes,
   answerInboxDismisses,
@@ -1801,5 +1803,564 @@ test("below 1280 px clearing the agent filter beside the column keeps a row's wa
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+/** Makes the test's document drop the focus from a control taken out of the page as Chromium and
+ *  WebKit do, with a `blur` and a `focusout` on it as it goes. happy-dom, as Firefox does, sends
+ *  neither. Answers what gives happy-dom its own removal back. */
+function blurOnRemoval(): () => void {
+  const remove = Node.prototype.removeChild;
+  const removal = spyOn(Node.prototype, "removeChild").mockImplementation(function <T extends Node>(
+    this: Node,
+    child: T
+  ): T {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && child.contains(focused)) focused.blur();
+    return remove.call(this, child) as T;
+  });
+  return () => removal.mockRestore();
+}
+
+/** A key pressed with Meta as macOS sends one, ⌘C say: Meta's keydown and the key's, on `target`,
+ *  and no keyup, which Chromium and WebKit do not send for a key released while Meta is held. */
+function metaKeyDown(target: Element, key: string, code: string): void {
+  act(() => {
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, code: "MetaLeft", key: "Meta", metaKey: true })
+    );
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code, key, metaKey: true }));
+  });
+}
+
+/** A pointer press on `target` as an engine sends one a hand holds for 100 ms: its `pointerdown`
+ *  and the focus it moves, onto `focus`, or off what holds it onto the body where `focus` is null;
+ *  then its `pointerup` and its `click`, or its `pointercancel` and no click. */
+async function pressFor100ms(
+  target: Element,
+  focus: HTMLElement | null,
+  end: "pointercancel" | "pointerup"
+): Promise<void> {
+  act(() => {
+    target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    const focused = document.activeElement;
+    if (focus !== null) focus.focus();
+    else if (focused instanceof HTMLElement) focused.blur();
+  });
+  await act(() => Bun.sleep(100));
+  act(() => {
+    target.dispatchEvent(new PointerEvent(end, { bubbles: true }));
+    if (end === "pointerup" && target instanceof HTMLElement) target.click();
+  });
+}
+
+/** Resolves after a task, once a `setTimeout(…, 0)` queued before it has run. */
+function afterTask(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  return promise;
+}
+
+/** The open row's press held while its row is drawn in its reading view (`owedOpenRow`,
+ *  `snoozedOpenRow`). */
+interface HeldOpenRow {
+  /** Lets the press take the open row away, and waits until the reading view shows the next row.
+   *  A second call does nothing more. */
+  readonly letGo: () => Promise<void>;
+  /** The open row's own mark in its reading view. */
+  readonly mark: HTMLElement;
+  /** The row the reading view shows once the open row has gone. */
+  readonly next: string;
+}
+
+/** The bar's Dismiss of the open row held while its landing is owed (`owedOpenRow`), with the
+ *  page's moves. */
+interface OwedOpenRow extends HeldOpenRow {
+  /** Every focus the page asks for, from before the press (`watchMoves`). */
+  readonly focused: readonly FocusMove[];
+  /** What the page has scrolled into view since the bar's press, each where it stands
+   *  (`placeOf`). */
+  readonly scrolled: () => readonly string[];
+}
+
+/** What the reader does while the open row's press is held. */
+type ViewReader = (user: UserEvent, held: HeldOpenRow) => Promise<void>;
+
+// The selection bar's hand-off over the Inbox's reading view at 390 px, one rule at a time, each
+// act of the reader's sent as an engine sends it (`useLastMarkedPlace`'s doc states each rule).
+// Below 1280 px with a row open the view stands in the list's place, and the hand-off reads the
+// open row alone: the view is that row for where the focus stands (`MarkedList`'s `row`), its
+// own mark is the row's mark, and its landing is made on the next row's own mark in its view.
+describe("the selection bar's hand-off over the Inbox reading view at 390 px, by each rule and each kind of the reader's act", () => {
+  /** What each case puts back as it ends, last first. */
+  const restores: (() => unknown)[] = [];
+  afterEach(async () => {
+    for (const restore of restores.splice(0).reverse()) await restore();
+    disarm();
+  });
+
+  /** The middle of three threads opened and marked in its reading view (`markOpenThread`), and
+   *  the bar's Dismiss pressed over it with the press's own apply held on the reads it cancels
+   *  (`useInboxDismiss`): the bar goes, the row stays drawn in its view, named leaving, and the
+   *  bar's hand-off parks the focus on the row's own mark there and owes its landing until
+   *  `letGo` lets the apply take the row away. */
+  async function owedOpenRow(user: UserEvent): Promise<OwedOpenRow> {
+    restores.push(movableReadingPaneWidth(390).restore);
+    restores.push(serveThreads().restore);
+    const moves = watchMoves();
+    restores.push(moves.restore);
+    const { queryClient, unmount } = renderInbox("/?group=none");
+    restores.push(unmount);
+    const mark = await markOpenThread(user);
+    const apply = Promise.withResolvers<void>();
+    const cancel = spyOn(queryClient, "cancelQueries").mockReturnValue(apply.promise);
+    restores.push(() => cancel.mockRestore());
+    const scrolledBefore = moves.scrolled.length;
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
+    let released = false;
+    const letGo = async () => {
+      if (released) return;
+      released = true;
+      cancel.mockRestore();
+      await act(async () => {
+        apply.resolve();
+        await apply.promise;
+      });
+      await waitFor(() => expect(viewRow()).toBe("reply:c3"));
+    };
+    const scrolled = () => moves.scrolled.slice(scrolledBefore).map(placeOf);
+    return { focused: moves.focused, letGo, mark, next: "reply:c3", scrolled };
+  }
+
+  /** The middle of three asks opened and marked in its reading view, and the bar's Snooze picked
+   *  over it with its write held (`snoozeOpenRow`): the bar stays up, saying it is snoozing, and
+   *  the row stays drawn in its view, named leaving. `letGo` lets the write land, and the commit
+   *  that draws its answer takes the row, its view and the bar away together. */
+  async function snoozedOpenRow(user: UserEvent): Promise<HeldOpenRow> {
+    restores.push(movableReadingPaneWidth(390).restore);
+    const snoozes = serveHeldSnoozes(SNOOZED_ROWS);
+    restores.push(snoozes.restore);
+    const { unmount } = renderInbox();
+    restores.push(unmount);
+    const mark = await snoozeOpenRow(user);
+    let released = false;
+    const letGo = async () => {
+      if (released) return;
+      released = true;
+      await snoozes.land();
+      await waitFor(() => expect(viewRow()).toBe("ask-c"));
+    };
+    return { letGo, mark, next: "ask-c" };
+  }
+
+  /** Waits until the reading view shows the row `next` and the focus has landed on that row's own
+   *  mark there, and reads it still there a frame and two tasks on. */
+  async function landsInView(next: string): Promise<void> {
+    await waitFor(() => expect(viewRow()).toBe(next));
+    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
+    await afterFrameAndTasks();
+    expect(placeOf(document.activeElement)).toBe(placeOf(viewMark()));
+  }
+
+  // Owed, parked: the bar goes while the open row is still drawn in its view. The focus its
+  // going dropped onto the body is parked with no scroll on the row's own mark in its view, the
+  // mark of the row marked last, and nothing else is focused while the row is drawn.
+  test("Owed: the bar gone while the open row is drawn parks the focus on that row's own mark in its view, with no scroll", async () => {
+    const user = userEvent.setup();
+    const held = await owedOpenRow(user);
+    const parkedOn = held.focused.at(-1);
+    expect(parkedOn && `${placeOf(parkedOn.target)} ${JSON.stringify(parkedOn.options)}`).toBe(
+      `${placeOf(held.mark)} {"preventScroll":true}`
+    );
+    expect(parkedOn?.target === held.mark).toBe(true);
+    const from = held.focused.length;
+    await afterFrameAndTasks();
+    expect(placeOf(document.activeElement)).toBe(placeOf(held.mark));
+    expect(held.focused.length).toBe(from);
+    expect(held.scrolled()).toEqual([]);
+  });
+
+  // Landed: once the open row has gone and the selection has been handed on, the landing is made
+  // on the next row's own mark in its view, never in the list the view hides.
+  test("Landed: once the open row has gone, the focus lands on the next row's own mark in its view, never in the hidden list", async () => {
+    const user = userEvent.setup();
+    const held = await owedOpenRow(user);
+    const focus = recordFocus();
+    restores.push(focus.stop);
+    await held.letGo();
+    await landsInView(held.next);
+    expect(focus.landed.filter((place) => place.startsWith("the list"))).toEqual([]);
+    expect(held.scrolled()).toEqual([]);
+  });
+
+  // Handed on: a move of the page's own, made after the landing was owed, to a control that
+  // stays ends the landing unmade: the focus stays where the page put it once the row goes.
+  test("Handed on: the page's own move of the focus to a control that stays, while the landing is owed, ends it unmade", async () => {
+    const user = userEvent.setup();
+    const held = await owedOpenRow(user);
+    const stays = screen.getByRole("button", { name: "History back" });
+    act(() => stays.focus());
+    await held.letGo();
+    await afterFrameAndTasks();
+    expect(stays).toHaveFocus();
+  });
+
+  // The act's end stands: the pointer travels over the list the view hides while the bar's
+  // Dismiss of the open row and another is out, so the list keeps drawing both rows
+  // (`useMotionHold`). The reader's wheel over the parked mark is read while the open row is named
+  // leaving, so the landing is owed again with that row, the view. Dispatch refuses the Dismiss,
+  // which ends the names and puts the rows back: the open row is still listed with the focus in
+  // its view, so it did not go, and nothing lands. The landing a refusal with no act before it
+  // makes is made on that same mark (`a refused Dismiss of the open row ends its name`, above).
+  test("the act's end stands: a wheel over the parked mark of an open row a refused Dismiss then keeps lands nothing once no row is named leaving", async () => {
+    const user = userEvent.setup();
+    restores.push(movableReadingPaneWidth(390).restore);
+    const threads = serveHeldDismiss();
+    restores.push(threads.restore);
+    const moves = watchMoves();
+    restores.push(moves.restore);
+    const { unmount } = renderInbox("/?group=none");
+    restores.push(unmount);
+    const mark = await markTwoThreads(user);
+    // The pointer keeps travelling over the hidden list, a move every 100 ms, so the hold never
+    // finds it still for the 400 ms that would let it adopt the read it holds back.
+    travel();
+    const moving = setInterval(travel, 100);
+    restores.push(() => clearInterval(moving));
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(mark)));
+    act(() => {
+      mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    });
+    await afterFrameAndTasks();
+    const from = moves.focused.length;
+    await threads.refuse();
+    await screen.findByText(/^Could not dismiss 2 threads: /);
+    clearInterval(moving);
+    rest();
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c2", "reply:c3"]));
+    await afterFrameAndTasks();
+    expect(viewRow()).toBe("reply:c2");
+    expect(placeOf(document.activeElement)).toBe(placeOf(mark));
+    expect(moves.focused.slice(from).map((move) => placeOf(move.target))).toEqual([]);
+  });
+
+  // The open row is a row: a focus anywhere in the view is a focus in the open row. The reader's
+  // Shift+Tab takes the focus from the parked mark onto the view's Back, a control of the view
+  // that is no mark: read once the key has been answered, it stands in the open row, which is
+  // leaving, so the landing is owed again, and is made on the next row's own mark in its view.
+  test("the open row is a row: Shift+Tab from the parked mark onto the view's Back leaves the focus in the open row, and the landing is made in the next row's view", async () => {
+    const user = userEvent.setup();
+    const held = await owedOpenRow(user);
+    const back = within(screen.getByTestId("inbox-reading-view")).getByRole("button", {
+      name: "Back to the Inbox list",
+    });
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    await act(afterTask);
+    expect(back).toHaveFocus();
+    const focus = recordFocus();
+    restores.push(focus.stop);
+    await held.letGo();
+    await landsInView(held.next);
+    expect(focus.landed.filter((place) => place.startsWith("the list"))).toEqual([]);
+  });
+
+  // Cancelled: the reader's own act ends what is owed, and is read once the page has answered it.
+  // Where it leaves the focus in the open row - on the parked mark, or on another control of the
+  // view a key moved it to - or on the body because the control it was on went with the view,
+  // the landing stays owed, and is made on the next row's own mark in its view.
+  const stillOwed: readonly (readonly [string, ViewReader])[] = [
+    [
+      "Tab from the parked mark onto the next control of the view, a key with its own keyup",
+      async (user) => {
+        await user.keyboard("{Tab}");
+        await act(afterTask);
+        expect(placeOf(document.activeElement).startsWith("the view of reply:c2")).toBe(true);
+      },
+    ],
+    [
+      "⌘C on the parked mark, whose keyup never comes",
+      async (_user, held) => {
+        metaKeyDown(held.mark, "c", "KeyC");
+        await act(afterTask);
+      },
+    ],
+    [
+      "a press on the parked mark that the engine cancels",
+      async (_user, held) => {
+        await pressFor100ms(held.mark, held.mark, "pointercancel");
+        await act(afterTask);
+      },
+    ],
+    [
+      "a wheel over the parked mark",
+      async (_user, held) => {
+        act(() => {
+          held.mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        });
+        await act(afterTask);
+      },
+    ],
+    [
+      "Tab onto the next control of the view, which then goes with the engine's focusout before the key's keyup (Chromium, WebKit)",
+      async (user, held) => {
+        await user.keyboard("{Tab>}");
+        restores.push(blurOnRemoval());
+        await held.letGo();
+        expect(document.activeElement).toBe(document.body);
+        await user.keyboard("{/Tab}");
+      },
+    ],
+    [
+      "Tab onto the next control of the view, which then goes with no focusout before the key's keyup (Firefox)",
+      async (user, held) => {
+        await user.keyboard("{Tab>}");
+        await held.letGo();
+        expect(document.activeElement).toBe(document.body);
+        await user.keyboard("{/Tab}");
+      },
+    ],
+  ];
+  for (const [what, reader] of stillOwed) {
+    test(`Cancelled: ${what} leaves the focus in the open row, or on the body its control left, so the landing stays owed and is made in the next row's view`, async () => {
+      const user = userEvent.setup();
+      const held = await owedOpenRow(user);
+      await reader(user, held);
+      await held.letGo();
+      await landsInView(held.next);
+    });
+  }
+
+  // The same rule's other side: an act that leaves the focus on the body by the reader's own doing
+  // - a press on a blank part of the page - ends what is owed, and so does an act whose wait a
+  // window blur ended unread: nothing lands once the open row goes.
+  const ended: readonly (readonly [string, ViewReader])[] = [
+    [
+      "a press held 100 ms on a blank part of the page, then its click",
+      () => pressFor100ms(document.body, null, "pointerup"),
+    ],
+    [
+      "Tab onto the next control of the view with a window blur before its keyup",
+      async (user) => {
+        await user.keyboard("{Tab>}");
+        act(() => {
+          window.dispatchEvent(new Event("blur"));
+        });
+        await user.keyboard("{/Tab}");
+        await act(afterTask);
+      },
+    ],
+  ];
+  for (const [what, reader] of ended) {
+    test(`Cancelled: ${what} ends what is owed, and nothing lands once the open row goes`, async () => {
+      const user = userEvent.setup();
+      const held = await owedOpenRow(user);
+      await reader(user, held);
+      await held.letGo();
+      await afterFrameAndTasks();
+      await afterFrameAndTasks();
+      expect(placeOf(document.activeElement)).toBe("the body");
+    });
+  }
+
+  // When the act is read: each act is read once the page has answered it, and nothing lands
+  // between the act and that read. Here the open row goes before the read is due, which drops the
+  // focus onto the body from the control the act left it on: nothing lands until the read, and
+  // the read, finding that control gone with the view, makes the landing.
+  const readLate: readonly (readonly [string, ViewReader, ViewReader])[] = [
+    [
+      "Tab is read a task after its own keyup",
+      (user) => user.keyboard("{Tab>}"),
+      (user) => user.keyboard("{/Tab}"),
+    ],
+    [
+      "a press held 100 ms is read a task after its pointerup, and its click",
+      async (_user, held) => {
+        act(() => {
+          held.mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        });
+        await act(() => Bun.sleep(100));
+      },
+      async () => {
+        act(() => {
+          document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+          document.body.click();
+        });
+      },
+    ],
+    [
+      "a press the engine cancels is read a task after its pointercancel",
+      async (_user, held) => {
+        act(() => {
+          held.mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        });
+      },
+      async () => {
+        act(() => {
+          document.body.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true }));
+        });
+      },
+    ],
+    [
+      "a press whose mark leaves the page with the engine's focusout is heard at its pointerup on the document (Chromium, WebKit)",
+      async (_user, held) => {
+        act(() => {
+          held.mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        });
+        restores.push(blurOnRemoval());
+      },
+      async () => {
+        act(() => {
+          viewMark().dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        });
+      },
+    ],
+    [
+      "a press whose mark leaves the page with no focusout is heard at its pointerup on the document (Firefox)",
+      async (_user, held) => {
+        act(() => {
+          held.mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        });
+      },
+      async () => {
+        act(() => {
+          viewMark().dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        });
+      },
+    ],
+  ];
+  for (const [what, first, answer] of readLate) {
+    test(`When the act is read: ${what}, and the open row's going before then lands nothing until it`, async () => {
+      const user = userEvent.setup();
+      const held = await owedOpenRow(user);
+      await first(user, held);
+      await held.letGo();
+      await afterFrameAndTasks();
+      expect(placeOf(document.activeElement)).toBe("the body");
+      await answer(user, held);
+      await landsInView(held.next);
+    });
+  }
+
+  // A key pressed with Meta is read a task after its keydown, since macOS sends no keyup for a
+  // key released while Meta is held: ⌘C on the parked mark leaves the focus in the open row, so
+  // the landing is owed again and made once the row goes.
+  test("When the act is read: ⌘C, whose keyup never comes, is read a task after its keydown, and the landing is made once the open row goes", async () => {
+    const user = userEvent.setup();
+    const held = await owedOpenRow(user);
+    metaKeyDown(held.mark, "c", "KeyC");
+    await act(afterTask);
+    await held.letGo();
+    await landsInView(held.next);
+  });
+
+  // A modifier pressed alone is no act: Shift held on the parked mark ends nothing, so the open
+  // row's going while it is held is landed at once, before its keyup.
+  test("When the act is read: Shift held alone is no act, and the open row's going while it is held is landed at once", async () => {
+    const user = userEvent.setup();
+    const held = await owedOpenRow(user);
+    await user.keyboard("{Shift>}");
+    await held.letGo();
+    await waitFor(() => expect(placeOf(document.activeElement)).toBe(placeOf(viewMark())));
+    await user.keyboard("{/Shift}");
+  });
+
+  // A wheel is read one task after it, once the page has answered it: here the focus leaves the
+  // parked mark for the body in the wheel's own task, so the read finds it there with the mark
+  // still in the page, the reader's own doing, and nothing is owed. A read in the wheel's own
+  // dispatch would find the focus in the open row and owe the landing again.
+  test("When the act is read: a wheel is read a task after it, so a focus moved onto the body in its own task ends what is owed", async () => {
+    const user = userEvent.setup();
+    const held = await owedOpenRow(user);
+    act(() => {
+      held.mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+      held.mark.blur();
+    });
+    await act(afterTask);
+    await held.letGo();
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    expect(placeOf(document.activeElement)).toBe("the body");
+  });
+
+  // A window blur ends a press's wait unread: the press ended what was owed, and its pointerup
+  // after the blur reads nothing, so the open row's going lands nothing.
+  test("When the act is read: a window blur between a press's pointerdown and its pointerup ends the wait unread, and nothing lands once the open row goes", async () => {
+    const user = userEvent.setup();
+    const held = await owedOpenRow(user);
+    act(() => {
+      held.mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      window.dispatchEvent(new Event("blur"));
+      held.mark.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    });
+    await act(afterTask);
+    await held.letGo();
+    await afterFrameAndTasks();
+    await afterFrameAndTasks();
+    expect(placeOf(document.activeElement)).toBe("the body");
+  });
+
+  // Remembered: while the bar is up and nothing is owed, a focus in the open row, which is named
+  // leaving, is remembered from the focus events. The bar's Snooze lands, and its answer takes the
+  // row, its view and the bar away in one commit, the focus with the view onto the body before the
+  // bar's going can read it there: the remembered control has left the page, so the going owes the
+  // landing, made on the next row's own mark in its view.
+  const remembered: readonly (readonly [string, ViewReader])[] = [
+    [
+      "Space on the row's own mark in its view, a key with its own keyup, which unticks it",
+      async (user, held) => {
+        act(() => held.mark.focus());
+        await user.keyboard(" ");
+        expect(held.mark).not.toBeChecked();
+      },
+    ],
+    [
+      "a press held 100 ms on the row's own mark in its view, whose click unticks it",
+      async (_user, held) => {
+        await pressFor100ms(held.mark, held.mark, "pointerup");
+        expect(held.mark).not.toBeChecked();
+      },
+    ],
+    [
+      "a press on the row's own mark in its view that the engine cancels",
+      async (_user, held) => {
+        await pressFor100ms(held.mark, held.mark, "pointercancel");
+      },
+    ],
+    [
+      "the focused mark of the row in its view taken out of the page with the engine's focusout (Chromium, WebKit)",
+      async (_user, held) => {
+        act(() => held.mark.focus());
+        restores.push(blurOnRemoval());
+      },
+    ],
+    [
+      "the focused mark of the row in its view taken out of the page with no focusout (Firefox)",
+      async (_user, held) => {
+        act(() => held.mark.focus());
+      },
+    ],
+    [
+      "a window blur with the focus on the row's own mark in its view",
+      async (_user, held) => {
+        act(() => held.mark.focus());
+        act(() => {
+          window.dispatchEvent(new Event("blur"));
+        });
+      },
+    ],
+  ];
+  for (const [what, reader] of remembered) {
+    test(`Remembered: ${what} while the bar is up is remembered, and the bar's going with the row owes the landing in the next row's view`, async () => {
+      const user = userEvent.setup();
+      const held = await snoozedOpenRow(user);
+      await reader(user, held);
+      expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
+      await held.letGo();
+      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+      await landsInView(held.next);
+    });
   }
 });

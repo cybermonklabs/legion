@@ -1,6 +1,6 @@
-import { beforeAll, describe, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, the motion hold's bare pointermove, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
+// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, the motion hold's bare pointermove and its pointerleave, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
@@ -20,7 +20,7 @@ import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldNotDisabled } from "../../__tests__/held-press";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
+import { type FocusMove, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import {
   rows as listRows,
   optionNames,
@@ -9867,4 +9867,672 @@ describe("selection bar line pointer focus and Inbox keymap", () => {
       getInbox.mockRestore();
     }
   });
+});
+
+/** Makes the test's document drop the focus from a control taken out of the page as Chromium and
+ *  WebKit do, with a `blur` and a `focusout` on it as it goes. happy-dom, as Firefox does, sends
+ *  neither. Answers what gives happy-dom its own removal back. */
+function blurOnRemoval(): () => void {
+  const remove = Node.prototype.removeChild;
+  const removal = spyOn(Node.prototype, "removeChild").mockImplementation(function <T extends Node>(
+    this: Node,
+    child: T
+  ): T {
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && child.contains(focused)) focused.blur();
+    return remove.call(this, child) as T;
+  });
+  return () => removal.mockRestore();
+}
+
+/** A key pressed with Meta as macOS sends one, ⌘C say: Meta's keydown and the key's, on `target`,
+ *  and no keyup, which Chromium and WebKit do not send for a key released while Meta is held. */
+function metaKeyDown(target: Element, key: string, code: string): void {
+  act(() => {
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, code: "MetaLeft", key: "Meta", metaKey: true })
+    );
+    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code, key, metaKey: true }));
+  });
+}
+
+/** A pointer press on `target` as an engine sends one a hand holds for 100 ms: its `pointerdown`
+ *  and the focus it moves, onto `focus`, or off what holds it onto the body where `focus` is null;
+ *  then its `pointerup` and its `click`, or its `pointercancel` and no click. */
+async function pressFor100ms(
+  target: Element,
+  focus: HTMLElement | null,
+  end: "pointercancel" | "pointerup"
+): Promise<void> {
+  act(() => {
+    target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    const focused = document.activeElement;
+    if (focus !== null) focus.focus();
+    else if (focused instanceof HTMLElement) focused.blur();
+  });
+  await act(() => Bun.sleep(100));
+  act(() => {
+    target.dispatchEvent(new PointerEvent(end, { bubbles: true }));
+    if (end === "pointerup" && target instanceof HTMLElement) target.click();
+  });
+}
+
+/** Resolves after a task, once a `setTimeout(…, 0)` queued before it has run. */
+function afterTask(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  return promise;
+}
+
+/** The id of the Inbox row that holds the focus, else null. */
+function focusedInboxRow(): string | null {
+  return document.activeElement?.closest<HTMLElement>("[data-inbox-row]")?.dataset.inboxRow ?? null;
+}
+
+/** The pointer travelling over the Inbox's list, as its motion hold hears it (`useMotionHold`): a
+ *  move over the list of its rows, on no row. The hold keeps the read the list drew meanwhile. */
+function travel(): void {
+  const items = screen.getByTestId("inbox-list").querySelector("ul");
+  if (items === null) throw new Error("the list draws no rows");
+  fireEvent.pointerMove(items);
+}
+
+/** The pointer leaving that list, so its motion hold adopts the read it was holding back. */
+function rest(): void {
+  const root = screen.getByTestId("inbox-list").firstElementChild;
+  if (root === null) throw new Error("the list has no rows' root");
+  fireEvent.pointerLeave(root);
+}
+
+/** Four rows of the Inbox's list by their place, as a case of the bar's hand-off reads them: the
+ *  two a bar press is over, the upper marked last, the row above them and the row after them,
+ *  which stands at their place once they have gone. */
+interface PressedRows {
+  readonly before: string;
+  readonly last: string;
+  readonly next: string;
+  readonly other: string;
+}
+
+/** The bar's press held over `PressedRows` (`owedDismiss`, `heldSnooze`). */
+interface HeldPress extends PressedRows {
+  /** Lets the press take its two rows away, and waits until the list no longer draws them. A
+   *  second call does nothing more. */
+  readonly letGo: () => Promise<void>;
+}
+
+/** The bar's Dismiss held while its landing is owed (`owedDismiss`), with the page's moves. */
+interface OwedPress extends HeldPress {
+  /** Every focus the page asks for, from before the press (`watchMoves`). */
+  readonly focused: readonly FocusMove[];
+  /** What the page has scrolled into view since the bar's press, each by its row or its name
+   *  (`focusedInboxRowOf`). */
+  readonly scrolled: () => readonly string[];
+}
+
+/** What the reader does while the bar's press is held. */
+type InboxReader = (user: UserEvent, held: HeldPress) => Promise<void>;
+
+/** The two widths at which the Inbox draws its list: below 1280 px with no row open, each row a
+ *  card, and from 1280 px with the reading column beside it, each row a short one. */
+const LIST_WIDTHS = [
+  ["the Inbox list", false],
+  ["the Inbox list beside the reading column", true],
+] as const;
+
+// The selection bar's hand-off over the Inbox's list, one rule at a time, each act of the
+// reader's sent as an engine sends it (`useLastMarkedPlace`'s doc states each rule), at both
+// widths the list is drawn at. The rows are laid down the window 100 px each from its top, and
+// the two the bar's press is over are the third and the fourth, the third marked last.
+for (const [host, column] of LIST_WIDTHS) {
+  describe(`the selection bar's hand-off over ${host}, by each rule and each kind of the reader's act`, () => {
+    /** What each case puts back as it ends, last first. */
+    const restores: (() => unknown)[] = [];
+    afterEach(async () => {
+      for (const restore of restores.splice(0).reverse()) await restore();
+      disarm();
+    });
+
+    /** Twelve threads, the window scrolled `scrollY` down the rows, and the bar's Dismiss pressed
+     *  over the third and the fourth with the press's own apply held on the reads it cancels
+     *  (`useInboxDismiss`): the bar goes, and both rows stay drawn, named leaving, until `letGo`
+     *  lets the apply take them away. The bar's hand-off parks the focus meanwhile and owes its
+     *  landing; the case reads where it parked it. */
+    async function owedDismiss(user: UserEvent, scrollY = 0): Promise<OwedPress> {
+      if (column) restores.push(widenToReadingPane());
+      restores.push(listThreads(12));
+      const settle = Promise.withResolvers<{ dismissed: number }>();
+      answerInboxDismisses().mockReturnValue(settle.promise);
+      restores.push(() =>
+        act(async () => {
+          settle.resolve({ dismissed: 2 });
+        })
+      );
+      restores.push(layRowsDown(scrollY));
+      const moves = watchMoves();
+      restores.push(moves.restore);
+      const { queryClient, unmount } = renderInbox("/?group=none");
+      restores.push(unmount);
+      await waitFor(() => expect(rowIds()).toHaveLength(12));
+      const [before = "", last = "", other = "", next = ""] = rowIds().slice(1, 5);
+      await user.click(markOf(other));
+      await user.click(markOf(last));
+      await screen.findByText("2 selected");
+      const apply = Promise.withResolvers<void>();
+      const cancel = spyOn(queryClient, "cancelQueries").mockReturnValue(apply.promise);
+      restores.push(() => cancel.mockRestore());
+      const scrolledBefore = moves.scrolled.length;
+      await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+      expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+      await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+      let released = false;
+      const letGo = async () => {
+        if (released) return;
+        released = true;
+        cancel.mockRestore();
+        await act(async () => {
+          apply.resolve();
+          await apply.promise;
+        });
+        await waitFor(() => expect(rowIds()).not.toContain(last));
+      };
+      const scrolled = () => moves.scrolled.slice(scrolledBefore).map(focusedInboxRowOf);
+      return { before, focused: moves.focused, last, letGo, next, other, scrolled };
+    }
+
+    /** Twelve asks, and the bar's Snooze picked over the third and the fourth with its write held
+     *  until `letGo`: the bar stays up, saying it is snoozing, and both rows stay drawn, named
+     *  leaving. The write lands at `letGo`, and the commit that draws its answer takes the two
+     *  rows and the bar away together. */
+    async function heldSnooze(user: UserEvent): Promise<HeldPress> {
+      if (column) restores.push(widenToReadingPane());
+      const rows = Array.from({ length: 12 }, (_, index) =>
+        inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+      );
+      let served: InboxRow[] = rows;
+      const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+      const landing = Promise.withResolvers<void>();
+      const snoozeAsk = answerAskSnoozes().mockImplementation(
+        async (id, { snoozed_until: until }) => {
+          await landing.promise;
+          served = served.map((each) =>
+            each.id === id ? { ...each, snoozed_until: until } : each
+          );
+          return { snoozed_until: until };
+        }
+      );
+      const getAsk = mockAskReads(rows);
+      const getIssue = mockIssueReads();
+      restores.push(() => {
+        getAsk.mockRestore();
+        getInbox.mockRestore();
+        getIssue.mockRestore();
+        snoozeAsk.mockRestore();
+      });
+      restores.push(layRowsDown(0));
+      const { unmount } = renderInbox("/?group=none");
+      restores.push(unmount);
+      await waitFor(() => expect(rowIds()).toHaveLength(12));
+      const [before = "", last = "", other = "", next = ""] = rowIds().slice(1, 5);
+      await user.click(markOf(other));
+      await user.click(markOf(last));
+      await screen.findByText("2 selected");
+      await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+      await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+      await screen.findByText("Snoozing 2…");
+      let released = false;
+      const letGo = async () => {
+        if (released) return;
+        released = true;
+        await act(async () => {
+          landing.resolve();
+          await landing.promise;
+        });
+        await waitFor(() => expect(rowIds()).not.toContain(last));
+      };
+      return { before, last, letGo, next, other };
+    }
+
+    /** Waits until the focus has landed on the mark of the row `id`, and is still there a frame
+     *  and two tasks on. */
+    async function landsOn(id: string): Promise<void> {
+      await waitFor(() => expect(focusPlace()).toBe(`the mark of ${id}`));
+      await afterFrameAndTasks();
+      expect(focusPlace()).toBe(`the mark of ${id}`);
+    }
+
+    // Owed, parked: the bar goes while the press's rows are still drawn. The focus its going
+    // dropped onto the body is parked with no scroll on the mark of the row marked last, where
+    // the reader can see part of it, else on the list's own stop.
+    test("Owed: the bar gone while its rows are drawn parks the focus on the mark of the row marked last, with no scroll", async () => {
+      const user = userEvent.setup();
+      const held = await owedDismiss(user);
+      const parkedOn = held.focused.at(-1);
+      expect(
+        parkedOn && `${focusedInboxRowOf(parkedOn.target)} ${JSON.stringify(parkedOn.options)}`
+      ).toBe(`${held.last} {"preventScroll":true}`);
+      expect(parkedOn?.target === markOf(held.last)).toBe(true);
+      const from = held.focused.length;
+      await afterFrameAndTasks();
+      expect(focusPlace()).toBe(`the mark of ${held.last}`);
+      expect(held.focused.length).toBe(from);
+      expect(held.scrolled()).toEqual([]);
+      expect(window.scrollY).toBe(0);
+    });
+
+    test("Owed: with the mark of the row marked last scrolled out of sight, the bar's going parks the focus on the list's own stop, with no scroll", async () => {
+      const user = userEvent.setup();
+      // Four rows above the window: the third row stands from -200 to -100 px.
+      const held = await owedDismiss(user, 4 * LAID_ROW_PX);
+      const stop = screen.getByTestId("inbox-list");
+      await waitFor(() => expect(stop).toHaveFocus());
+      const parkedOn = held.focused.at(-1);
+      expect(parkedOn?.target === stop).toBe(true);
+      expect(parkedOn?.options).toEqual({ preventScroll: true });
+      expect(held.scrolled()).toEqual([]);
+      expect(window.scrollY).toBe(4 * LAID_ROW_PX);
+    });
+
+    // Landed: once the press's rows have gone and the foot's pass has run, the landing is made
+    // once, on the mark of the row now at the place of the row marked last, with no scroll.
+    test("Landed: once the two rows have gone, the focus lands once on the mark of the row now at their place, with no scroll", async () => {
+      const user = userEvent.setup();
+      const held = await owedDismiss(user);
+      const from = held.focused.length;
+      await held.letGo();
+      await landsOn(held.next);
+      expect(
+        held.focused
+          .slice(from)
+          .map((move) => `${focusedInboxRowOf(move.target)} ${JSON.stringify(move.options)}`)
+      ).toEqual([`${held.next} {"preventScroll":true}`]);
+      expect(held.scrolled()).toEqual([]);
+      expect(window.scrollY).toBe(0);
+    });
+
+    // Handed on: a move of the page's own, made after the landing was owed, to a control that
+    // stays ends the landing unmade: the focus stays where the page put it once the rows go.
+    test("Handed on: the page's own move of the focus to the mark of a row that stays, while the landing is owed, ends it unmade", async () => {
+      const user = userEvent.setup();
+      const held = await owedDismiss(user);
+      act(() => markOf(held.before).focus());
+      await held.letGo();
+      await afterFrameAndTasks();
+      expect(focusPlace()).toBe(`the mark of ${held.before}`);
+    });
+
+    // The act's end stands: the pointer travels over the list while the bar's Dismiss is out, so
+    // the list keeps drawing the two rows (`useMotionHold`). The reader's wheel over the parked
+    // mark is read while its row is named leaving, so the landing is owed again with that row.
+    // Dispatch refuses the Dismiss, which ends the rows' names and puts them back: the row the
+    // wheel left the focus in is still listed with the focus in it, so it did not go, and nothing
+    // lands. The landing a refusal with no act before it makes is made on that same mark.
+    test("the act's end stands: a wheel over the parked mark of a row a refused Dismiss then keeps lands nothing once no row is named leaving", async () => {
+      const user = userEvent.setup();
+      if (column) restores.push(widenToReadingPane());
+      restores.push(listThreads(12));
+      const answer = Promise.withResolvers<{ dismissed: number }>();
+      answerInboxDismisses().mockImplementation(() => answer.promise);
+      restores.push(layRowsDown(0));
+      const moves = watchMoves();
+      restores.push(moves.restore);
+      const { unmount } = renderInbox("/?group=none");
+      restores.push(unmount);
+      await waitFor(() => expect(rowIds()).toHaveLength(12));
+      const [last = "", other = ""] = rowIds().slice(2, 4);
+      await user.click(markOf(other));
+      await user.click(markOf(last));
+      await screen.findByText("2 selected");
+      // The pointer keeps travelling over the list, a move every 100 ms, so the hold never finds
+      // it still for the 400 ms that would let it adopt the read it holds back (`useMotionHold`).
+      travel();
+      const moving = setInterval(travel, 100);
+      restores.push(() => clearInterval(moving));
+      // Pressed by a key, so the pointer does not leave the list for the bar on its way there.
+      act(() => screen.getByRole("button", { name: "Dismiss selected threads" }).focus());
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(focusPlace()).toBe(`the mark of ${last}`));
+      act(() => {
+        markOf(last).dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+      });
+      await afterFrameAndTasks();
+      const from = moves.focused.length;
+      await act(async () => {
+        answer.reject(new ApiError(409, { error: "conflict" }));
+        await answer.promise.catch(() => undefined);
+      });
+      await screen.findByText(/^Could not dismiss 2 threads: /);
+      clearInterval(moving);
+      rest();
+      await waitFor(() => expect(rowIds()).toContain(last));
+      await afterFrameAndTasks();
+      expect(focusPlace()).toBe(`the mark of ${last}`);
+      expect(moves.focused.slice(from).map((move) => focusedInboxRowOf(move.target))).toEqual([]);
+    });
+
+    // Cancelled: the reader's own act ends what is owed, and is read once the page has answered
+    // it. Where it leaves the focus in a row named leaving - the parked mark, or a control of a
+    // leaving row a key moved it to - or on the body because the control it was on went with its
+    // row, the landing stays owed, and is made at the place of the row marked last.
+    const stillOwed: readonly (readonly [string, InboxReader])[] = [
+      [
+        "Tab from the parked mark onto the next control of a leaving row, a key with its own keyup",
+        async (user, held) => {
+          await user.keyboard("{Tab}");
+          await act(afterTask);
+          expect([held.last, held.other]).toContain(focusedInboxRow());
+        },
+      ],
+      [
+        "⌘C on the parked mark, whose keyup never comes",
+        async (_user, held) => {
+          metaKeyDown(markOf(held.last), "c", "KeyC");
+          await act(afterTask);
+        },
+      ],
+      [
+        "a press on the parked mark that the engine cancels",
+        async (_user, held) => {
+          const mark = markOf(held.last);
+          await pressFor100ms(mark, mark, "pointercancel");
+          await act(afterTask);
+        },
+      ],
+      [
+        "a wheel over the parked mark",
+        async (_user, held) => {
+          act(() => {
+            markOf(held.last).dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+          });
+          await act(afterTask);
+        },
+      ],
+      [
+        "Tab onto the next control of a leaving row, whose rows then go with the engine's focusout before the key's keyup (Chromium, WebKit)",
+        async (user, held) => {
+          await user.keyboard("{Tab>}");
+          restores.push(blurOnRemoval());
+          await held.letGo();
+          expect(document.activeElement).toBe(document.body);
+          await user.keyboard("{/Tab}");
+        },
+      ],
+      [
+        "Tab onto the next control of a leaving row, whose rows then go with no focusout before the key's keyup (Firefox)",
+        async (user, held) => {
+          await user.keyboard("{Tab>}");
+          await held.letGo();
+          expect(document.activeElement).toBe(document.body);
+          await user.keyboard("{/Tab}");
+        },
+      ],
+    ];
+    for (const [what, reader] of stillOwed) {
+      test(`Cancelled: ${what} leaves the focus in a leaving row, or on the body its control left, so the landing stays owed and is made at the marked rows' place`, async () => {
+        const user = userEvent.setup();
+        const held = await owedDismiss(user);
+        await reader(user, held);
+        await held.letGo();
+        await landsOn(held.next);
+      });
+    }
+
+    // The same rule's other side: an act that leaves the focus on the body by the reader's own
+    // doing - a press on a blank part of the page - ends what is owed, and so does an act whose
+    // wait a window blur ended unread: nothing lands once the rows go.
+    const ended: readonly (readonly [string, InboxReader])[] = [
+      [
+        "a press held 100 ms on a blank part of the page, then its click",
+        () => pressFor100ms(document.body, null, "pointerup"),
+      ],
+      [
+        "Tab onto the next control of a leaving row with a window blur before its keyup",
+        async (user) => {
+          await user.keyboard("{Tab>}");
+          act(() => {
+            window.dispatchEvent(new Event("blur"));
+          });
+          await user.keyboard("{/Tab}");
+          await act(afterTask);
+        },
+      ],
+    ];
+    for (const [what, reader] of ended) {
+      test(`Cancelled: ${what} ends what is owed, and nothing lands once the rows go`, async () => {
+        const user = userEvent.setup();
+        const held = await owedDismiss(user);
+        await reader(user, held);
+        await held.letGo();
+        await afterFrameAndTasks();
+        await afterFrameAndTasks();
+        expect(focusPlace()).toBe("the body");
+      });
+    }
+
+    // When the act is read: each act is read once the page has answered it, and nothing lands
+    // between the act and that read. Here the press's rows go before the read is due, which drops
+    // the focus onto the body from the control the act left it on: nothing lands until the read,
+    // and the read, finding that control gone with its row, makes the landing.
+    const readLate: readonly (readonly [string, InboxReader, InboxReader])[] = [
+      [
+        "Tab is read a task after its own keyup",
+        (user) => user.keyboard("{Tab>}"),
+        (user) => user.keyboard("{/Tab}"),
+      ],
+      [
+        "a press held 100 ms is read a task after its pointerup, and its click",
+        async (_user, held) => {
+          act(() => {
+            markOf(held.last).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          });
+          await act(() => Bun.sleep(100));
+        },
+        async () => {
+          act(() => {
+            document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+            document.body.click();
+          });
+        },
+      ],
+      [
+        "a press the engine cancels is read a task after its pointercancel",
+        async (_user, held) => {
+          act(() => {
+            markOf(held.last).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          });
+        },
+        async () => {
+          act(() => {
+            document.body.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true }));
+          });
+        },
+      ],
+      [
+        "a press whose mark leaves the page with the engine's focusout is heard at its pointerup on the document (Chromium, WebKit)",
+        async (_user, held) => {
+          act(() => {
+            markOf(held.last).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          });
+          restores.push(blurOnRemoval());
+        },
+        async (_user, held) => {
+          act(() => {
+            markOf(held.next).dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+          });
+        },
+      ],
+      [
+        "a press whose mark leaves the page with no focusout is heard at its pointerup on the document (Firefox)",
+        async (_user, held) => {
+          act(() => {
+            markOf(held.last).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          });
+        },
+        async (_user, held) => {
+          act(() => {
+            markOf(held.next).dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+          });
+        },
+      ],
+    ];
+    for (const [what, first, answer] of readLate) {
+      test(`When the act is read: ${what}, and the rows that go before then land nothing until it`, async () => {
+        const user = userEvent.setup();
+        const held = await owedDismiss(user);
+        await first(user, held);
+        await held.letGo();
+        await afterFrameAndTasks();
+        expect(focusPlace()).toBe("the body");
+        await answer(user, held);
+        await landsOn(held.next);
+      });
+    }
+
+    // A key pressed with Meta is read a task after its keydown, since macOS sends no keyup for a
+    // key released while Meta is held: ⌘C on the parked mark leaves the focus in the leaving row,
+    // so the landing is owed again and made once the rows go.
+    test("When the act is read: ⌘C, whose keyup never comes, is read a task after its keydown, and the landing is made once the rows go", async () => {
+      const user = userEvent.setup();
+      const held = await owedDismiss(user);
+      metaKeyDown(markOf(held.last), "c", "KeyC");
+      await act(afterTask);
+      await held.letGo();
+      await landsOn(held.next);
+    });
+
+    // A modifier pressed alone is no act: Shift held on the parked mark ends nothing, so the rows
+    // that go while it is held are landed at once, before its keyup.
+    test("When the act is read: Shift held alone is no act, and the rows that go while it is held are landed at once", async () => {
+      const user = userEvent.setup();
+      const held = await owedDismiss(user);
+      await user.keyboard("{Shift>}");
+      await held.letGo();
+      await waitFor(() => expect(focusPlace()).toBe(`the mark of ${held.next}`));
+      await user.keyboard("{/Shift}");
+    });
+
+    // A wheel is read one task after it, once the page has answered it: here the focus leaves
+    // the parked mark for the body in the wheel's own task, so the read finds it there with the
+    // mark still in the page, the reader's own doing, and nothing is owed. A read in the wheel's
+    // own dispatch would find the focus in the leaving row and owe the landing again.
+    test("When the act is read: a wheel is read a task after it, so a focus moved onto the body in its own task ends what is owed", async () => {
+      const user = userEvent.setup();
+      const held = await owedDismiss(user);
+      const mark = markOf(held.last);
+      act(() => {
+        mark.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+        mark.blur();
+      });
+      await act(afterTask);
+      await held.letGo();
+      await afterFrameAndTasks();
+      await afterFrameAndTasks();
+      expect(focusPlace()).toBe("the body");
+    });
+
+    // A window blur ends a press's wait unread: the press ended what was owed, and its pointerup
+    // after the blur reads nothing, so the rows' going lands nothing.
+    test("When the act is read: a window blur between a press's pointerdown and its pointerup ends the wait unread, and nothing lands once the rows go", async () => {
+      const user = userEvent.setup();
+      const held = await owedDismiss(user);
+      const mark = markOf(held.last);
+      act(() => {
+        mark.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        window.dispatchEvent(new Event("blur"));
+        mark.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      });
+      await act(afterTask);
+      await held.letGo();
+      await afterFrameAndTasks();
+      await afterFrameAndTasks();
+      expect(focusPlace()).toBe("the body");
+    });
+
+    // Remembered: while the bar is up and nothing is owed, a focus in a row named leaving is
+    // remembered from the focus events. The bar's Snooze lands, and its answer takes the two
+    // rows and the bar away in one commit, the focus with the rows onto the body before the bar's
+    // going can read it there: the remembered control has left the page, so the going owes the
+    // landing, made at the place of the row marked last.
+    const remembered: readonly (readonly [string, InboxReader])[] = [
+      [
+        "Space on the mark of the row marked last, a key with its own keyup, which unticks it",
+        async (user, held) => {
+          act(() => markOf(held.last).focus());
+          await user.keyboard(" ");
+          expect(markOf(held.last)).not.toBeChecked();
+        },
+      ],
+      [
+        "a press held 100 ms on the mark of the row marked last, whose click unticks it",
+        async (_user, held) => {
+          const mark = markOf(held.last);
+          await pressFor100ms(mark, mark, "pointerup");
+          expect(mark).not.toBeChecked();
+        },
+      ],
+      [
+        "a press on the mark of the row marked last that the engine cancels",
+        async (_user, held) => {
+          const mark = markOf(held.last);
+          await pressFor100ms(mark, mark, "pointercancel");
+        },
+      ],
+      [
+        "the focused mark of the row marked last taken out of the page with the engine's focusout (Chromium, WebKit)",
+        async (_user, held) => {
+          act(() => markOf(held.last).focus());
+          restores.push(blurOnRemoval());
+        },
+      ],
+      [
+        "the focused mark of the row marked last taken out of the page with no focusout (Firefox)",
+        async (_user, held) => {
+          act(() => markOf(held.last).focus());
+        },
+      ],
+      [
+        "a window blur with the focus on the mark of the row marked last",
+        async (_user, held) => {
+          act(() => markOf(held.last).focus());
+          act(() => {
+            window.dispatchEvent(new Event("blur"));
+          });
+        },
+      ],
+    ];
+    for (const [what, reader] of remembered) {
+      test(`Remembered: ${what} while the bar is up is remembered, and the bar's going with that row owes the landing at the marked rows' place`, async () => {
+        const user = userEvent.setup();
+        const held = await heldSnooze(user);
+        await reader(user, held);
+        expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
+        await held.letGo();
+        expect(screen.queryByRole("toolbar", { name: "Selected rows" })).toBeNull();
+        await landsOn(held.next);
+      });
+    }
+  });
+}
+
+/** The id of the Inbox row `element` stands in, else its own name, for a focus a case reads. */
+function focusedInboxRowOf(element: Element): string {
+  return (
+    element.closest<HTMLElement>("[data-inbox-row]")?.dataset.inboxRow ??
+    element.getAttribute("aria-label") ??
+    element.tagName
+  );
+}
+
+// A press on a control the bar's running action holds in a marked row counts as the bar's, on
+// a phone, where the drawer's cards each draw their ask's own Snooze and the bar's Snooze holds
+// the marked cards' ones while its write is out (`snoozeMarkedCardsOnAPhone`). Here one press,
+// held 100 ms as a hand holds it, on the upper marked card's held Snooze, and the engine leaves
+// the focus on the body after it, as WebKit does after a click on a button. The press takes
+// nothing but the hold, and the bar's pick stays the cause: once the write lands and the bar goes
+// with the two cards, the focus goes where the pick alone puts it, on the mark of the card now at
+// the place of the card marked last.
+test("on a phone, a press held 100 ms on a marked card's held Snooze, which leaves the focus on the body, counts as the bar's, and the focus lands where the pick alone lands", async () => {
+  expect(
+    await snoozeMarkedCardsOnAPhone((_user, held) => pressFor100ms(held, null, "pointerup"))
+  ).toBe("the mark of ask-d");
 });
