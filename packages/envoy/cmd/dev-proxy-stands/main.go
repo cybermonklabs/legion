@@ -104,7 +104,10 @@
 // Every stand's requests are read back at the recording route this prints for it, GET
 // <records URL>/records/<stand>, whose answer is the JSON array of what that stand was sent:
 // each record's method, path, query, host, header and body. That is how a shell script asserts
-// what a service received with no Go program of its own.
+// what a service received with no Go program of its own. The AWS stand's refusals are read back
+// beside them, GET <records URL>/refusals/aws, the JSON array of why each call it refused did
+// not verify, in order (`the signature is …; want …` for a call signed with another secret), so a
+// script can tell a refusal of the signature from a refusal of the key id or the session token.
 //
 // It writes one JSON object to standard output naming every address, every recording route and
 // every file it wrote - the authority's certificate and key, which
@@ -610,9 +613,10 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		proxyrulestest.NewMicrosoftStand(proxyrulestest.MicrosoftOptions{}).Answer,
 		proxyrulestest.NewAzureResourceStand(proxyrulestest.AzureResourceOptions{}).Answer,
 	))
-	services[standAWS].AnswerWith(proxyrulestest.NewAWSStand(proxyrulestest.AWSOptions{
+	aws := proxyrulestest.NewAWSStand(proxyrulestest.AWSOptions{
 		KeyID: o.awsKeyID, SecretKey: o.awsSecretKey, SessionToken: o.awsSessionToken,
-	}).Answer)
+	})
+	services[standAWS].AnswerWith(aws.Answer)
 	// The model stand grants until a check sets another answer, so a stack driven with no
 	// call to the answer route judges a request through to a grant.
 	firstAnswer, err := modelAnswerOf(modelAnswerRequest{Verdict: "grant"})
@@ -664,7 +668,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	records := &http.Server{Handler: recordsHandler(services, model, github, iam, exchange), ReadHeaderTimeout: 30 * time.Second}
+	records := &http.Server{Handler: recordsHandler(services, model, github, aws, iam, exchange), ReadHeaderTimeout: 30 * time.Second}
 	recordsURL, stopRecords, err := serveRecords(records, o.recordsAddress)
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)
@@ -704,13 +708,13 @@ func serveRecords(server *http.Server, addr string) (string, func(), error) {
 	return "http://" + listener.Addr().String(), func() { _ = server.Close() }, nil
 }
 
-// recordsHandler is the things the recording server answers: GET /records/<stand>, the JSON
-// array of every request that stand was sent, each record's method, path, query, host, header and
-// body, which is what a check script reads a result back from; the model, GitHub and Anthropic
-// stands' answer routes; and the two lists of what the iam and anthropic-token stands minted. They
-// are served here because a check that drives one case after another needs one address to set
-// and read them at and the recording server is the address it already has.
-func recordsHandler(services map[string]*proxyrulestest.Service, model *proxyrulestest.ModelStand, github *proxyrulestest.GitHubStand, iam *iamStand, exchange *anthropicExchangeStand) http.Handler {
+// recordsHandler is the things the recording server answers: GET /records/<stand>, the JSON array
+// of every request that stand was sent, each record's method, path, query, host, header and body;
+// GET /refusals/aws, the JSON array of why each AWS call it refused did not verify; the model,
+// GitHub and Anthropic stands' answer routes; and the two lists of what the iam and anthropic-token
+// stands minted. They are served here because a check that drives one case after another needs one
+// address to set and read them at and the recording server is the address it already has.
+func recordsHandler(services map[string]*proxyrulestest.Service, model *proxyrulestest.ModelStand, github *proxyrulestest.GitHubStand, aws *proxyrulestest.AWSStand, iam *iamStand, exchange *anthropicExchangeStand) http.Handler {
 	mux := http.NewServeMux()
 	for _, name := range slices.Sorted(maps.Keys(services)) {
 		service := services[name]
@@ -721,6 +725,19 @@ func recordsHandler(services map[string]*proxyrulestest.Service, model *proxyrul
 			_ = encoder.Encode(service.Requests())
 		})
 	}
+	mux.HandleFunc("GET /refusals/"+standAWS, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ")
+		// Refusals answers a copy of its own, and nil where the stand-in refused nothing. The
+		// empty slice is what makes that read as [] rather than null, which is the difference
+		// between "this run was refused nothing" and a route a check cannot read.
+		refusals := aws.Refusals()
+		if refusals == nil {
+			refusals = []string{}
+		}
+		_ = encoder.Encode(refusals)
+	})
 	mux.HandleFunc("POST "+modelAnswerPath, answerRoute(modelAnswerOf, model.Answers,
 		func(answer proxyrulestest.ModelAnswer) map[string]string {
 			return map[string]string{"text": answer.Text, "delay": answer.Delay.String(), "obey_guidance": strconv.FormatBool(answer.ObeyGuidance)}

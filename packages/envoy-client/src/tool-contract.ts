@@ -10,6 +10,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { STORED_TOPIC_KINDS } from "./stream-topics";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
   type ConnectionState,
@@ -41,17 +42,18 @@ const PUBLISH_COUNTS =
   "recipients_connected is how many of those are running now. A listener that counts neither " +
   "sends neither, and a role topic names its holder instead.";
 
-const STORED_DELIVERY =
-  "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, " +
-  "whatsapp, team; a role message reaches its holder as a stored copy on the holder's agent " +
-  "topic), and reaches each subscribed session once from the durable consumer its listener " +
-  "relays to it, also one that was away or restarted. A 200 means the stream stored the message " +
-  "for each subscribed session's consumer, not that any recipient has read it.";
+/** What a subscription and a publish reach, in envoy_subscribe's and envoy_publish's texts. */
+export const STORED_DELIVERY =
+  `Every notification topic is stored (${STORED_TOPIC_KINDS.join(", ")}; a role message reaches ` +
+  "its holder as a stored copy on the holder's agent topic), and reaches each subscribed session " +
+  "once from the durable consumer its listener relays to it, also one that was away or restarted. " +
+  "A 200 means the stream stored the message for each subscribed session's consumer, not that any " +
+  "recipient has read it.";
 
 // The listener's 503 under `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`): the bus refused the
 // message before anything went out, because the deployed stream does not capture its topic for
 // now (a hub move's quiesce). It is temporary, and the transport throws the listener's own text.
-const NOT_SENT_GUIDE =
+export const NOT_SENT_GUIDE =
   "An error that says the message was not sent means nothing was stored, so the same message may " +
   "be sent again later.";
 

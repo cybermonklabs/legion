@@ -218,7 +218,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	var lifetime *int
 	var live bool
 	var enr enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
+	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, `+grantAndEnrollmentLive("g", "e")+`,
 		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, e.issuer, c.service, c.host, e.projects
 		from grants g join enrollments e on e.id=g.enrollment_id join requests r on r.id=g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where g.id=$1`, grantID).
@@ -1259,6 +1259,13 @@ func (m *Machine) LiveGrants(ctx context.Context, enrollmentID string) ([]Grant,
 // whether a grant is live uses it beside revoked_at is null.
 func grantUnexpired(alias string) string {
 	return "(" + alias + ".expires_at is null or " + alias + ".expires_at > now())"
+}
+
+// grantAndEnrollmentLive is the SQL predicate that grant alias g and its enrollment alias e are
+// both live: the grant not revoked and unexpired (grantUnexpired), and the enrollment not revoked
+// and its lease not lapsed. A grant's release and every read of the proxy port ask it alike.
+func grantAndEnrollmentLive(g, e string) string {
+	return g + ".revoked_at is null and " + grantUnexpired(g) + " and " + e + ".revoked_at is null and enrollment_lease_live(" + e + ".lease_expires_at)"
 }
 
 // insertGrant writes a grant that lasts lifetimeSeconds from now, or, when nil, until its session

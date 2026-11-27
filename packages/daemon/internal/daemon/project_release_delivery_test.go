@@ -400,9 +400,11 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 // has come back, as the role message, the phase-ended message and the hook prompt above do
 // (bootStartComing): before the boot's start of it has run, and while the start's process is
 // launching and registered. Once the claim has stood ready past the first-turn bound its session
-// holds the role, and the ask is published to it once, under its row's key. The negative control
-// is deliverHeld without that wait: each of those attempts then publishes to the topic nobody
-// holds yet, and the row counts publishes the test wants none of.
+// holds the role, and the ask is published to it once, under its row's key. The listener names that
+// session as the one it stored the ask for (holdBy), so the ask's end records the boot's start as
+// the launch told (workflow.MergeForwardAskEnded) and sends that launch no second ask: the outbox
+// is left empty. The negative control is deliverHeld without that wait: each of those attempts then
+// publishes to the topic nobody holds yet, and the row counts publishes the test wants none of.
 func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -433,6 +435,7 @@ func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *
 
 	rig.ready(t, machine, stored)
 	rig.publisher.setAbsent()
+	rig.publisher.holdBy(func() string { return machine.View().Claim.Session })
 	rig.run(t)
 	attempts, delivered := rig.publisher.snapshot()
 	if attempts != 1 || len(delivered) != 1 || delivered[0].topic != topic || delivered[0].keep ||
