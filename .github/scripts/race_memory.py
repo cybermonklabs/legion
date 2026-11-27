@@ -10,6 +10,8 @@ run must still say something. `go test` buffers a package's output until the pac
 neither: the log stops mid-step with no output at all, which is how this job failed. This script
 writes a line every 5 s as the run goes, naming the tests running at that moment and the largest
 process of the tree, so the last lines before a kill name what was running and how big it was.
+A paused parallel test is not running, and a line names at most NAMES_BYTES of tests, counting
+the rest, so every line stays one a log reader can take.
 
 The number is one process, the largest of the tree, and not a sum over it: one race binary is
 what grows, and a total over `go test`, the compiler's children and that binary would hide which
@@ -52,6 +54,16 @@ SAMPLE_SECONDS = 5.0
 # run, so a paused test is not named as running. "output" carries the text and changes nothing.
 NOT_RUNNING_ACTIONS = frozenset({"pass", "fail", "skip", "pause"})
 RUN_ACTIONS = frozenset({"run", "cont"})
+
+# A line names at most this many bytes of test names, then says how many more run. A log reader
+# must be able to take every line: `gh run view --log` and `--log-failed` up to gh 2.105 read the
+# log with Go's bufio.Scanner, which stops at the first line over 64 KiB, prints nothing after it
+# and exits 0. A sample that named every paused test of envoy-go-race-docs grew to 193,662 bytes
+# and hid the rest of that job's log, its failing test and the step's own end, from such a reader
+# (job 140239891619). That job's own events, replayed with paused tests left out, never had more
+# than 17 tests running at once, 1,201 bytes of names, so the cap drops no name of a run like it;
+# what passes the cap is counted, not named.
+NAMES_BYTES = 2048
 
 
 def status_field(text: str, field: str) -> str | None:
@@ -182,10 +194,33 @@ class RunningTests:
                 self._running.discard(name)
 
     def names(self) -> str:
-        """The running tests, sorted, or `none`."""
+        """The running tests, sorted, as named() writes them."""
         with self._lock:
             running = sorted(self._running)
-        return ", ".join(running) if running else "none"
+        return named(running)
+
+
+def named(tests: list[str]) -> str:
+    """`none`, or the tests in their order, as many as NAMES_BYTES holds, then how many more run.
+
+    The count is whole whatever the cap drops, so a line still says how many tests ran at once.
+    """
+    if not tests:
+        return "none"
+    shown: list[str] = []
+    size = 0
+    for name in tests:
+        cost = len(name.encode()) + (2 if shown else 0)
+        if size + cost > NAMES_BYTES:
+            break
+        shown.append(name)
+        size += cost
+    rest = len(tests) - len(shown)
+    if not rest:
+        return ", ".join(shown)
+    if not shown:
+        return f"{rest} running; the first name alone passes the line's {NAMES_BYTES}-byte cap"
+    return f"{', '.join(shown)}, and {rest} more ({len(tests)} in all)"
 
 
 class Log:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `race_memory.py`: a command's status passes through, a peak over the limit fails the
-# step and names the tests that were running, a run within the limit ends with the peak, and a
-# `go test -json` stream's output reaches the log.
+# step and names the tests that were running, a run within the limit ends with the peak, a
+# `go test -json` stream's output reaches the log, and a line names at most NAMES_BYTES of tests.
 #
 # Each case runs the real script around a stand-in command — a shell or a Python program that
 # prints a -json stream and grows — so no Go, no race binary and no database are needed. The two
@@ -157,5 +157,32 @@ check "exits 0" "$(is "$status" 0)"
 check "the --- FAIL line shows" "$(contains "$out" '^--- FAIL: TestA (0.00s)$')"
 check "the package's own line shows" "$(contains "$out" '^FAIL.*legion/internal/dispatch/docs')"
 check "the -json envelope does not" "$(is "$(contains "$out" '"Action"')" false)"
+
+echo "case: a line names at most NAMES_BYTES of tests and counts the rest"
+# 3,000 tests running at once, each name about as long as a generated table's subtest: main's
+# sampler, which named them all, wrote a line of about 190 kB, which `gh run view --log` (gh up to
+# 2.105) stops reading at and prints nothing after (job 140239891619).
+capped=$(peak '
+import race_memory
+tests = race_memory.RunningTests()
+for n in range(3000):
+    tests.record({"Action": "run", "Test": "TestATableOfEveryCombination/%04d-N-E-P-L-N-E-P-L" % n})
+line = race_memory.Sample(seconds=1.0, rss_kb=1, hwm_kb=1, comm="docs.test", tests=tests.names()).line()
+print(len(line.encode()))
+print(line)
+print(race_memory.named(["TestA", "TestB"]))
+print(race_memory.named([]))
+print(race_memory.named(["T" * (race_memory.NAMES_BYTES + 1), "TestB"]))
+')
+check "the line is at most the cap and its fixed text, far under 64 KiB" \
+  "$([ "${capped%%$'\n'*}" -le 2300 ] && echo true || echo false)"
+check "it names the first tests in order" \
+  "$(contains "$capped" 'tests running: TestATableOfEveryCombination/0000-N-E-P-L-N-E-P-L, TestATableOfEveryCombination/0001-')"
+check "it counts the tests it leaves out, and the whole" \
+  "$(contains "$capped" ', and [0-9][0-9]* more (3000 in all)$')"
+check "a list under the cap is named whole" "$(contains "$capped" '^TestA, TestB$')"
+check "no test running is none" "$(contains "$capped" '^none$')"
+check "a first name over the cap is counted, not cut" \
+  "$(contains "$capped" '^2 running; the first name alone passes the line.s 2048-byte cap$')"
 
 summary "race_memory.py"
