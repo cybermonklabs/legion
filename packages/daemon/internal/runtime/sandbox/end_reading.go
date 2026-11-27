@@ -387,8 +387,9 @@ func (e endReading) detail() string {
 // The record is held in memory alone. A daemon that restarts between the act and the pod's end
 // has lost it, so an end the daemon itself made is then read as an end from outside the pod and
 // its roles are relaunched uncharged, as for every end from outside a pod (supervise's
-// endedFromOutside). An act whose pod meanToEndPodOf could not read writes no record either, and
-// its end is read the same way.
+// endedFromOutside). An act whose pod meanToEndPodOf could not read writes no record either, nor
+// does a failed launch's suspension of a pod the store had not yet seen (meanToEndStoredPodOf), and
+// each such end is read the same way.
 func (r *Runtime) meanToEndPod(uid, act string) {
 	if uid == "" {
 		return
@@ -400,33 +401,47 @@ func (r *Runtime) meanToEndPod(uid, act string) {
 }
 
 // meanToEndPodOf is meanToEndPod for the pod the Sandbox s owns now, which is the pod the caller's
-// act is about to end. It reads the pod store first, so the common case makes no API call. The
-// store can lag the API: the Agent Sandbox controller may have made the pod a moment ago and the
-// informer not yet delivered it, and an act that ended that pod with no record would have its end
-// read as one from outside the pod (deletedByAnother). So where the store holds no pod s owns, a
-// same-named pod it does not own included, the pod is read by s's name from the API server
-// (apiPod), and recorded where s owns it. A pod the API server does not hold records nothing: there
-// is no pod for the act to end, and a same-named pod s does not own is no process of its claims'.
-// A read that fails is logged at warning level, with the Sandbox and the error, and records
-// nothing, which costs what a restart's lost record costs (meanToEndPod).
+// act is about to end. It reads the pod store first (meanToEndStoredPodOf), so the common case
+// makes no API call. The store can lag the API: the Agent Sandbox controller may have made the pod
+// a moment ago and the informer not yet delivered it, and an act that ended that pod with no record
+// would have its end read as one from outside the pod (deletedByAnother). So where the store holds
+// no pod s owns, a same-named pod it does not own included, the pod is read by s's name from the
+// API server (apiPod), on ctx, and recorded where s owns it. A pod the API server does not hold
+// records nothing: there is no pod for the act to end, and a same-named pod s does not own is no
+// process of its claims'. A read that fails is logged at warning level, with the Sandbox and the
+// error, and records nothing, which costs what a restart's lost record costs (meanToEndPod).
 func (r *Runtime) meanToEndPodOf(ctx context.Context, s *sandbox, act string) {
-	if s == nil {
+	if s == nil || r.meanToEndStoredPodOf(s, act) {
 		return
+	}
+	pod, err := r.apiPod(ctx, s.Name)
+	if err != nil {
+		r.log.Warn("sandbox runtime: could not read the pod an act of the daemon's is about to end; its end is not recorded as the daemon's own",
+			"sandbox", s.Name, "uid", s.UID, "act", act, "error", err)
+		return
+	}
+	if ownedBy(pod, s.UID) {
+		r.meanToEndPod(string(pod.UID), act)
+	}
+}
+
+// meanToEndStoredPodOf is meanToEndPod for the pod the Sandbox s owns in the pod store now, and
+// answers whether the store held one; it reads nothing from the API server. meanToEndPodOf reads
+// the store through it first. A failed launch's suspension records its end through it alone
+// (daemonEnd.storeOnly, suspendFailedLaunch): that suspension has one bound for its patch, which an
+// API read before the patch would share and could spend, and a pod the store has not yet seen there
+// is the pod of a launch that failed before its role started, which no claim's locator names, so a
+// record of its end would answer for no claim.
+func (r *Runtime) meanToEndStoredPodOf(s *sandbox, act string) bool {
+	if s == nil {
+		return false
 	}
 	pod := r.viewOf(s.Name, s).pod
 	if pod == nil {
-		read, err := r.apiPod(ctx, s.Name)
-		if err != nil {
-			r.log.Warn("sandbox runtime: could not read the pod an act of the daemon's is about to end; its end is not recorded as the daemon's own",
-				"sandbox", s.Name, "uid", s.UID, "act", act, "error", err)
-			return
-		}
-		if !ownedBy(read, s.UID) {
-			return
-		}
-		pod = read
+		return false
 	}
 	r.meanToEndPod(string(pod.UID), act)
+	return true
 }
 
 // takeIntendedEnd is the consumer of the records meanToEndPod writes: it answers the act the

@@ -732,8 +732,9 @@ func (f *feed) check() error {
 // call is ctx bounded for one call no client of the runtime bounds whole: a GitHub App token mint;
 // a pod log Stream, which client-go bounds by the client's timeout per attempt and not across its
 // Retry-After retries (rest/request.go, Request.Stream), so a log read fails fast rather than hold
-// its caller; and a failed launch's suspension of its Sandbox (suspendFailedLaunch), which waits an
-// overloaded server out for no longer than this.
+// its caller; and a failed launch's suspension of its Sandbox (suspendFailedLaunch), whose one
+// request is the suspension patch, which waits an overloaded server out for no longer than this:
+// its record of the daemon's end reads the pod store alone, so no read of the pod shares the bound.
 func call(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, apiTimeout)
 }
@@ -1096,12 +1097,12 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 // which suspend sends, and each suspension that names nothing beside its mode (daemonEnd,
 // suspendOver) — an issue's close and release (endIssuePod), a launch's suspension of a pod whose
 // end carries no reason to record (suspendRecordingEnd), and a failed launch's
-// (suspendFailedLaunch). suspendOver records it only where it suspends a Sandbox not yet
-// Suspended: one already Suspended takes no patch that ends its pod, so the launch that writes the
-// reset mark on such a Sandbox (relaunch) records nothing. It is given by what the suspension
-// names, never read from the shape of the patch, so it is recorded whichever patch suspends the
-// Sandbox: the bare JSON patch of the mode (sendSuspended), or the merge patch a reset mark makes
-// of it (suspendOver).
+// (suspendFailedLaunch), which records it from the pod store alone (meanToEndStoredPodOf).
+// suspendOver records it only where it suspends a Sandbox not yet Suspended: one already Suspended
+// takes no patch that ends its pod, so the launch that writes the reset mark on such a Sandbox
+// (relaunch) records nothing. It is given by what the suspension names, never read from the shape
+// of the patch, so it is recorded whichever patch suspends the Sandbox: the bare JSON patch of the
+// mode (sendSuspended), or the merge patch a reset mark makes of it (suspendOver).
 const daemonSuspendedAct = "the daemon suspended the pod's sandbox"
 
 // daemonDeletedAct is the act the daemon's end of a pod is recorded under (meanToEndPodOf) where

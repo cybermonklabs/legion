@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -562,6 +563,72 @@ func TestAnActThatCannotReadItsUnseenPodRecordsNothingAndWarns(t *testing.T) {
 	close(release)
 	if end := g.awaitEndReading(recorded); end.reading != runtime.PodEndNotOurs || end.words != deletedByAnother {
 		t.Fatalf("read %+v of the pod the unrecorded suspension ended, want %s from its deletion timestamp", end, runtime.PodEndNotOurs)
+	}
+}
+
+// spentContexts lets every request through at once and refuses one whose context has ended, as
+// client-go's wait on its rate limiter does before it sends a request (limited): the fakes answer
+// any request whatever its context, and a request a real client sends on a spent context fails.
+type spentContexts struct{}
+
+func (spentContexts) Wait(ctx context.Context) error { return ctx.Err() }
+func (spentContexts) Accept()                        {}
+func (spentContexts) TryAccept() bool                { return true }
+func (spentContexts) Stop()                          {}
+func (spentContexts) QPS() float32                   { return 0 }
+
+// A launch that failed once its Running patch was sent suspends its Sandbox again on one bound of
+// apiTimeout (suspendFailedLaunch), and reaches it with no pod in the store: the patch's answer was
+// lost before the controller made one. Its record of the daemon's end reads the store alone, so no
+// read of the pod comes before the patch to spend that bound. Here every read of the pod after the
+// Running patch blocks until its context ends, as one the API server never answers in time, and
+// the suspension still sends its patch and leaves the Sandbox Suspended rather than Running.
+func TestAFailedLaunchsSuspensionSendsItsPatchHoweverSlowAPodReadWouldBe(t *testing.T) {
+	t.Parallel()
+	name := SandboxName(workerToken)
+	var slow atomic.Bool
+	log := &logBuffer{}
+	g := newRig(t, nil, withLog(log), withClientLimiter(spentContexts{}),
+		withPodReads(func(ctx context.Context, pod string) error {
+			if !slow.Load() || pod != name {
+				return nil
+			}
+			<-ctx.Done()
+			return ctx.Err()
+		}))
+	g.spawn(workerSpec(t))
+	if err := g.r.suspend(g.ctx, g.sandbox(name)); err != nil {
+		t.Fatal(err)
+	}
+	g.eventually("the pod of the Suspended Sandbox to go", func() bool { return g.pod(name) == nil && g.r.storedPod(name) == nil })
+	// From here the controller stand-in makes no pod, so the store holds none when the launch fails.
+	g.setHold(true)
+	apply := k8stesting.ObjectReaction(generationTracker{g.dyn.Tracker()})
+	var lost atomic.Bool
+	g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
+		patch := a.(k8stesting.PatchAction)
+		if patch.GetName() != name || !modePatched(t, string(patch.GetPatch()), modeRunning) || !lost.CompareAndSwap(false, true) {
+			return false, nil, nil
+		}
+		if _, _, err := apply(a); err != nil {
+			return true, nil, err
+		}
+		slow.Store(true)
+		return true, nil, errors.New("the answer to the Running patch was lost")
+	})
+	spec := workerSpec(t)
+	spec.Generation = 2
+
+	if err := failedLaunch(t, g, spec); err == nil || !strings.Contains(err.Error(), "set its sandbox running") {
+		t.Fatalf("the launch = %v, want it to fail at its Running patch", err)
+	}
+
+	if s := g.sandbox(name); s == nil || s.mode() != modeSuspended {
+		t.Fatalf("the failed launch left the sandbox %+v, want it Suspended: a read of the pod before the patch spent the suspension's bound; the log:\n%s",
+			s, log.String())
+	}
+	if strings.Contains(log.String(), "could not suspend the sandbox of a failed launch") {
+		t.Errorf("the failed launch's suspension failed; the log:\n%s", log.String())
 	}
 }
 

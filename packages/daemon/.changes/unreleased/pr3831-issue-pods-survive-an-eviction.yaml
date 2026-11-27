@@ -11,15 +11,22 @@ body: |-
   message names a container of the pod using more memory, or more ephemeral storage, than it
   requested, since that is the pod's own use; one whose message names no container of the pod
   over its request is a neighbour's and is continued, and so is one for disk use in the pod's
-  `emptyDir` volumes, which the message names no container for. An end the daemon started itself
-  stays its own whatever the kubelet writes. So that this holds for a pod the daemon's informer
-  has not yet seen, a suspension, a relabel or a delete of the pod's Sandbox reads the pod from the
-  API server, and a launch try's bound (`sandbox.Runtime.LaunchBound`) grows by 2 minutes for
-  those reads, to about 6 h 7 min at the defaults (6 h 12 min with `keep_volume`). An end from
-  outside the pod is told to the next process as an end from outside the pod, not as the daemon's
-  replacement of the pod. Its relaunch waits in the wake pacing's second queue, as a displaced
-  relaunch does, because it charges no death; the first queue stays the relaunch of a role whose
-  own process died.
+  `emptyDir` volumes, which the message names no container for. An end the daemon started itself,
+  and recorded before it made it, stays its own whatever the kubelet writes. So that this holds
+  for a pod the daemon's informer has not yet seen, a suspension, a relabel or a delete of the
+  pod's Sandbox reads the pod from the API server, and a launch try's bound
+  (`sandbox.Runtime.LaunchBound`) grows by 2 minutes for those reads, to about 6 h 7 min at the
+  defaults (6 h 12 min with `keep_volume`). A read that fails records nothing: the daemon logs
+  `sandbox runtime: could not read the pod an act of the daemon's is about to end; its end is not
+  recorded as the daemon's own` at warning level, makes the act all the same, and reads the pod's
+  end as one from outside the pod, so its roles are relaunched uncharged, as after a daemon
+  restart that lost the record. The suspension of a launch that failed after its `Running` patch
+  reads no pod and records only one the informer has seen, so no read spends that suspension's
+  30 s bound; no role's process had started in the pod of that launch. An end from outside the pod
+  is told to the next process as an end from outside the pod, not as the daemon's replacement of
+  the pod. Its relaunch waits in the wake pacing's second queue, as a displaced relaunch does,
+  because it charges no death; the first queue stays the relaunch of a role whose own process
+  died.
 
   A death charged for memory or for the pod's own disk is told in plain words, with its number and
   before the runtime's own detail, in the role's next task and in the claim's `lastDeathCause`: the

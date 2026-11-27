@@ -8617,8 +8617,11 @@ The line is written before any claim is decided on its reading and says what end
 Two readings say something outside the pod ended it:
 
 - the informer saw the pod carrying a deletion timestamp that no act of the daemon's own accounts for, while the pod was not yet terminal.
-  The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and it records each such act of its own before it makes it, so an end no record of its own answers for was made by something else.
-  That record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged;
+  The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and before each such act of its own it records the pod the act ends, so an end no record of its own answers for was made by something else, but for the three ends of its own below that no record answers for.
+  It finds that pod in its informer's store, or, where the store has not yet seen it, as for a pod the controller made a moment before, it reads the pod from the API server (`meanToEndPodOf`).
+  A read that fails records nothing: the daemon logs `sandbox runtime: could not read the pod an act of the daemon's is about to end; its end is not recorded as the daemon's own` at warning level, naming the Sandbox and the error, makes the act all the same, and reads the pod's end as an end from outside the pod, so its roles are relaunched uncharged.
+  The suspension of the Sandbox of a launch that failed after its `Running` patch looks in the store alone (`suspendFailedLaunch`), because a read before its patch would spend the patch's one 30 s bound and could leave the Sandbox `Running`; a pod the store has not yet seen then gets no record, which costs no role anything, since no role's process had started in the pod of that launch.
+  The record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged;
 
 - the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
   `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `end_reading.go`).

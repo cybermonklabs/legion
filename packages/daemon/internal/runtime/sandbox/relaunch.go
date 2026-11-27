@@ -976,8 +976,15 @@ func (r *Runtime) stillFetching(pod *corev1.Pod) string {
 // controller made later would run a valid token for a claim the supervisor counts as failed. It is
 // not cancelled with the caller, and it is bounded by apiTimeout: it is part of the launch, so it
 // waits out an API server answering it overloaded (resend), but no longer than that, so a daemon
-// stop never waits a boot timeout on it. A suspension that still fails is logged; the next
-// relaunch suspends the Sandbox in any case.
+// stop never waits a boot timeout on it. That bound is the suspension patch's alone, since the
+// suspension sends no other request: its record of the daemon's end reads the pod store alone
+// (daemonEnd.storeOnly, meanToEndStoredPodOf). Both callers reach it, in the usual case, with no
+// pod in the store, so the API read the other acts make where the store lags (meanToEndPodOf)
+// would come before the patch nearly every time, and a read slow to answer, or answered overloaded
+// and sent again, could spend the bound and have the patch fail on it, leaving the Sandbox Running.
+// A pod the store has not yet seen is the pod of a launch that failed before its role started,
+// which no claim's locator names, so a record of its end would answer for no claim. A suspension
+// that still fails is logged; the next relaunch suspends the Sandbox in any case.
 //
 // The suspension is sent as for a Running Sandbox, whatever s says, since the Running patch may
 // have been applied, over the pod the store holds as it stands before the suspension
@@ -985,14 +992,15 @@ func (r *Runtime) stillFetching(pod *corev1.Pod) string {
 // a cause local to it (volumeFault) thus leaves the reset mark (volumeResetAnnotation), as
 // ReplacePod and the release leave it: the next launch reads no pod once the suspension has taken
 // this one down, and it resets the volume on the mark. Every other failed launch sends the bare
-// JSON patch of the mode alone (sendSuspended). Either way the daemon's end of the pod is recorded
-// under daemonSuspendedAct, since this suspension names nothing beside the mode (daemonEnd).
+// JSON patch of the mode alone (sendSuspended). Either way the daemon's end of a pod the store
+// holds is recorded under daemonSuspendedAct, since this suspension names nothing beside the mode
+// (daemonEnd).
 func (r *Runtime) suspendFailedLaunch(ctx context.Context, token claim.Token, s *sandbox) {
 	suspending, cancel := call(context.WithoutCancel(ctx))
 	defer cancel()
 	sent := *s
 	sent.Spec.OperatingMode = modeRunning
-	if _, err := r.suspendOver(suspending, &sent, r.storedPod(s.Name), daemonEnd{}); err != nil {
+	if _, err := r.suspendOver(suspending, &sent, r.storedPod(s.Name), daemonEnd{storeOnly: true}); err != nil {
 		r.log.Error("sandbox runtime: could not suspend the sandbox of a failed launch", "claim", token, "err", err)
 	}
 }
@@ -1881,9 +1889,18 @@ func (e ownEnd) annotations() map[string]*string {
 // own. It records that end under daemonSuspendedAct, for the pod the Sandbox owns when the record
 // is written (meanToEndPodOf), and it writes no annotation, so suspendOver sends the bare JSON
 // patch of the mode for it (sendSuspended) unless the pod calls for the reset mark.
-type daemonEnd struct{}
+type daemonEnd struct {
+	// storeOnly records the end of the pod the store holds alone, with no read of the API server
+	// (meanToEndStoredPodOf): a failed launch's suspension, whose one bound is its patch's
+	// (suspendFailedLaunch).
+	storeOnly bool
+}
 
-func (daemonEnd) meanToEnd(ctx context.Context, r *Runtime, s *sandbox) {
+func (e daemonEnd) meanToEnd(ctx context.Context, r *Runtime, s *sandbox) {
+	if e.storeOnly {
+		r.meanToEndStoredPodOf(s, daemonSuspendedAct)
+		return
+	}
 	r.meanToEndPodOf(ctx, s, daemonSuspendedAct)
 }
 
