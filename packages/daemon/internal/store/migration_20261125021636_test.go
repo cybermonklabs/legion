@@ -25,6 +25,7 @@ const sessionRunVersion = 20261125021636
 // as a column it does not know. The control of the back-fill is the migration without its update:
 // the claim with a session then reads a session that never finished a turn, and this test fails.
 func TestAClaimsSessionRunIsStoredWith20261125021636(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, sessionRunVersion-1)

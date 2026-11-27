@@ -6,8 +6,9 @@ import {
 import type { IssueStatus } from "../project/board-model";
 
 /** The statuses of work that moves: started, and not done. Typed by the status names, so a
- *  misspelt one fails the type check rather than leave an issue idle. */
-const MOVING_STATUSES: ReadonlySet<string> = new Set<IssueStatus>([
+ *  misspelt one fails the type check rather than leave an issue idle. Dashboard's children's bar
+ *  draws a child in one of them in the progress colour (`dashboard/ProgressTiles.tsx`). */
+export const MOVING_STATUSES: ReadonlySet<string> = new Set<IssueStatus>([
   "in_progress",
   "needs_review",
   "testing",

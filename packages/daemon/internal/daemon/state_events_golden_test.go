@@ -357,6 +357,7 @@ func dropNullMembers(value any) any {
 // messages leave, and the fixture runs on a fixed clock under a fixed run id, so it is the same on
 // every run (stateGoldenRig.record says how the database's own times are put on that clock).
 func TestStateEventsGolden(t *testing.T) {
+	t.Parallel()
 	r := newStateGoldenRig(t)
 	ctx := context.Background()
 	issue := func(key string, at phase.Phase, status, rank string) record.Issue {

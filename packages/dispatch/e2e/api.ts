@@ -418,6 +418,12 @@ export function getIssueDecisions(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/legion`: the issue's Legion state as the sampler recorded the daemon
+ *  of its project, which Dashboard's track and agents part draw from. */
+export function getIssueLegion(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/legion", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`

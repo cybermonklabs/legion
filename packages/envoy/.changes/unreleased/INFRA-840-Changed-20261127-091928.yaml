@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  `gcp:ClusteredNatsHub` and `gcp:NatsHub` take `authCallout` beside their own session listener
+  (`listener`, or the clustered hub's `tailnet.listener`), where they refused the pair before. The
+  listener still connects by its seed: its key is in the callout's `auth_users`, beside every other
+  static user's, so nats-server admits it by its nkey with its listener grant and never asks the
+  auth service. A hub that serves its clients through its tailnet, and so always runs that
+  listener, can now turn the callout on. `privateProjects` still refuses the seeded listener, as
+  it refuses every user but the auth service's. The callout alone narrows no client that presents
+  no credential: while `sessionUser` is set, such a client becomes the session user without asking
+  the auth service, as before.
+time: 2026-11-27T09:19:28Z
+custom:
+    Issue: INFRA-840
