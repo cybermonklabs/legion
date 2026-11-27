@@ -89,7 +89,12 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 	if err := os.WriteFile(toolCall, []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p := startClaudeBridge(t, "trap 'kill $!; cat "+toolCall+"; exit 0' TERM\n"+
+	// CONTROL ONLY: LEGION_TEST_CONTROL_STALL=trap stalls the stand-in's answer to SIGTERM by 4 s.
+	stall := ""
+	if os.Getenv("LEGION_TEST_CONTROL_STALL") == "trap" {
+		stall = "sleep 4; "
+	}
+	p := startClaudeBridge(t, "trap '"+stall+"kill $!; cat "+toolCall+"; exit 0' TERM\n"+
 		"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
 	state, left := p.hangUp()
 	if code := state.ExitCode(); code != 0 || !strings.Contains(p.logged(), "could not write to the shim") {
