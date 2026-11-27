@@ -785,7 +785,7 @@ func TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued(t *testing.T) {
 		if span, ok := restartSpan(starts); ok && span+2*testexec.ClockTick < restartTimeout {
 			t.Fatalf("run %d: install began the unit read after its restart %s after the read before it ran its first line: it ended the restart before the restart's 200ms timeout", runs, span)
 		} else if ok {
-			t.Logf("run %d: install began the unit read after its restart %s after the read before it ran its first line, against the restart's %s timeout", runs, span, restartTimeout)
+			t.Logf("run %s: install began the unit read after its restart %s after the read before it ran its first line, against the restart's %s timeout", runs, span, restartTimeout)
 		}
 		_, statErr := os.Stat(r.calls + ".queued")
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {

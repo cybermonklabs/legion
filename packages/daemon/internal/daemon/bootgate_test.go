@@ -1328,7 +1328,7 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 			t.Errorf("run %d: Oh My Pi ran %d times, want the one the stop interrupted", runs, n)
 		}
 		if t.Failed() || elapsed <= gateStopsWithin {
-			t.Logf("run %d: the gate took %s to stop, against %s", runs, elapsed, gateStopsWithin)
+			t.Logf("run %s: the gate took %s to stop, against %s", runs, elapsed, gateStopsWithin)
 			return
 		}
 		late := f.markedAt(t, "count").Sub(f.markedAt(t, "prefixed"))

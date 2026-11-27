@@ -447,7 +447,7 @@ func rerunWithin(t *testing.T) (until time.Time, within time.Duration) {
 func (c childRun) endedInTime(t *testing.T, runs int, stopped time.Time, took time.Duration, err error, until time.Time, within time.Duration) (again bool) {
 	t.Helper()
 	if took <= stopBound {
-		t.Logf("run %d: the run ended %s after the stop, against %s (the grace, WaitDelay and two seconds)", runs, took, stopBound)
+		t.Logf("run %s: the run ended %s after the stop, against %s (the grace, WaitDelay and two seconds)", runs, took, stopBound)
 		return false
 	}
 	began, ok := c.began()
