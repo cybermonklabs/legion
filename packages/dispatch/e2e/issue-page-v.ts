@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page, type Route } from "@playwright/test";
 
 import { CONTROL_LABELS, type StatementState } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import {
   createIssue,
   createIssueArtifact,

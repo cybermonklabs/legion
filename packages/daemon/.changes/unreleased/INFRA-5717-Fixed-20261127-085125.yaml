@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    A role's CodeGraph sync no longer lets its write-ahead log grow past a gigabyte. The worker
+    image sets `CODEGRAPH_NO_WAL_DEFER=1` for every process of an issue pod, and the warm-up's
+    builds carry it too, so CodeGraph keeps SQLite's own checkpoint interval: a sync of 500 changed
+    files of this repository grew the log to 165 MiB with it and to 1,190 MiB without it.
+    `runtime.kubernetes.pod.env` may not set the variable.
+time: 2026-11-27T08:51:25Z
+custom:
+    Issue: INFRA-5717

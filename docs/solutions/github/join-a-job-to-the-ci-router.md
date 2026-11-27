@@ -456,8 +456,9 @@ dispatch-browser. The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
 find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
 carries. The slow suites go the
-other way: the queue is where their result normally comes from, and a pull request runs them only
-when it carries the label `full-ci`, or `lane:<filter>` for one of them. The
+other way: the queue is where their result normally comes from, and a pull request runs one only
+under its `lane:<output>` label, for a need the pull request names (`full-ci` runs them all, for
+the few cases `.github/ci-notes/ci.md` names). The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's
 site on a push trigger of its own.
 

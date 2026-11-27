@@ -1375,7 +1375,15 @@ RUN rm -f /opt/codegraph/node /usr/bin/chromium /usr/lib/chromium/chromium \
 # CodeGraph's telemetry
 # and update-check opt-out (ranked above CODEGRAPH_TELEMETRY, above stored config, above
 # default-on) — every worker's own `codegraph` call, and the warm-up the tmux daemon runs outside
-# this image, must never phone home for an automatic, non-opt-in tool. No PUPPETEER_EXECUTABLE_PATH:
+# this image, must never phone home for an automatic, non-opt-in tool. CODEGRAPH_NO_WAL_DEFER=1:
+# CodeGraph keeps SQLite's own checkpoint interval during `sync` and an `index` over an existing
+# index, where it would turn the interval off and fold the write-ahead log through a background
+# valve. Measured on CodeGraph 1.6.4 in a Job of an issue pod's shape (INFRA-5717 R3): a `sync` of
+# 500 changed files of cybermonklabs/legion grew `.codegraph/codegraph.db-wal` to 1,190 MiB without
+# it and to 165 MiB with it, and took 254 s with it against 137 s without; on 1.5.0 the log passed
+# 1 GiB in 9 s, and in an issue pod on 2026-11-26 it passed 15 GB and filled the disk. The warm-up
+# sets it for its own builds too (internal/workspace's codegraphEnvironment). No
+# PUPPETEER_EXECUTABLE_PATH:
 # Oh My Pi picks its browser by that variable first, else the first of google-chrome-stable,
 # google-chrome, chromium, chromium-browser and chrome on PATH (then /usr/bin/chromium and its
 # neighbours), and downloads Chrome for Testing only with none of those — so the image's chromium on
@@ -1388,6 +1396,7 @@ ENV OMP_PROFILE=legion \
     HOME=/home/legion \
     USER=legion \
     DO_NOT_TRACK=1 \
+    CODEGRAPH_NO_WAL_DEFER=1 \
     PATH=/opt/legion/bin:/opt/omp/bin:/opt/codegraph/bin:/usr/local/bin:/usr/bin:/bin
 # Numeric uid:gid (user `legion`, created above) so Kubernetes `runAsNonRoot` can verify it from the
 # image alone.
