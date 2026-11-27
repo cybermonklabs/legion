@@ -6,11 +6,17 @@ package daemon
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +24,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -375,7 +382,8 @@ type teardownEffectsRoute struct {
 
 // teardownEffectsTrace is a case's known-good or known-bad trace: an outcome record. Documents is
 // each document of the case's issue the trace wrote, with the body its recorded edits leave
-// (heldout-case.ts OutcomeRecord's `documents`), nil where it states none.
+// (heldout-case.ts OutcomeRecord's `documents`): nil where the trace has no `documents` key, which
+// states nothing, and empty where it states that it wrote no document.
 type teardownEffectsTrace struct {
 	ID        string
 	Actions   []teardownEffectsTraceAction
@@ -392,8 +400,8 @@ type teardownEffectsDocument struct {
 
 // teardownEffectsWorldIDs is text with each id of the replay's Dispatch that ids names written as
 // the world's id (ids: the replay's id to the world's), the other way round of the mapping the
-// replay names the world's ids by (teardownEffectsRun.artifacts), as outcome.ts writes a run's
-// scratch ids back as the world's (seed.ts's dispatch-fixture.json `ids`).
+// replay names the world's ids by (teardownEffectsRun.ids), as outcome.ts writes a run's scratch
+// ids back as the world's (seed.ts's dispatch-fixture.json `ids`).
 func teardownEffectsWorldIDs(text string, ids map[string]string) string {
 	for _, given := range slices.Sorted(maps.Keys(ids)) {
 		text = strings.ReplaceAll(text, given, ids[given])
@@ -402,24 +410,51 @@ func teardownEffectsWorldIDs(text string, ids map[string]string) string {
 }
 
 // teardownEffectsDocumentFaults names each document a trace states that the replay's Dispatch does
-// not hold as stated, after the trace's last write: held is each document of the issue by its file
-// name, with its latest version and that version's text, which is compared with each of the
-// replay's ids written as the world's (teardownEffectsWorldIDs). A document the replay does not
-// hold, another version or another text is a fault.
-func teardownEffectsDocumentFaults(stated []teardownEffectsDocument, held map[string]teardownEffectsDocument, ids map[string]string) []string {
+// not hold as stated, after the trace's last write, and each document of the case's issue the
+// replay wrote that the trace does not state. held is each document of the issue by its file name,
+// with its latest version and that version's text, which is compared with each of the replay's ids
+// written as the world's (teardownEffectsWorldIDs). written is the file name of each document of
+// the issue the replay wrote. A stated document the replay does not hold, another version, another
+// text (named by its first line that differs) and a written document the trace does not state are
+// faults, so a trace that states no document fails where the replay wrote one.
+func teardownEffectsDocumentFaults(stated []teardownEffectsDocument, held map[string]teardownEffectsDocument, written []string, ids map[string]string) []string {
 	var faults []string
 	for _, want := range stated {
 		got, ok := held[want.Name]
+		body := teardownEffectsWorldIDs(got.Body, ids)
 		switch {
 		case !ok:
 			faults = append(faults, fmt.Sprintf("the trace states %s at version %d, and the replay's Dispatch holds no document of that name", want.Name, want.Version))
 		case got.Version != want.Version:
 			faults = append(faults, fmt.Sprintf("the trace states %s at version %d, and the replay's Dispatch holds version %d", want.Name, want.Version, got.Version))
-		case teardownEffectsWorldIDs(got.Body, ids) != want.Body:
-			faults = append(faults, fmt.Sprintf("%s version %d: the trace states the body %q, and the replay's Dispatch holds %q", want.Name, want.Version, want.Body, teardownEffectsWorldIDs(got.Body, ids)))
+		case body != want.Body:
+			faults = append(faults, fmt.Sprintf("%s version %d: %s", want.Name, want.Version, teardownEffectsFirstDifference(want.Body, body)))
+		}
+	}
+	for _, name := range written {
+		if !slices.ContainsFunc(stated, func(want teardownEffectsDocument) bool { return want.Name == name }) {
+			faults = append(faults, fmt.Sprintf("the replay wrote %s, and the trace states no such document", name))
 		}
 	}
 	return faults
+}
+
+// teardownEffectsFirstDifference names the first line at which the body a trace states (want) and
+// the body the replay's Dispatch holds (got) differ, each line quoted, "no line" past a body's end.
+func teardownEffectsFirstDifference(want, got string) string {
+	a, b := strings.Split(want, "\n"), strings.Split(got, "\n")
+	line := func(lines []string, i int) string {
+		if i < len(lines) {
+			return strconv.Quote(lines[i])
+		}
+		return "no line"
+	}
+	for i := range max(len(a), len(b)) {
+		if i >= len(a) || i >= len(b) || a[i] != b[i] {
+			return fmt.Sprintf("line %d is %s in the body the trace states, and %s in the body the replay's Dispatch holds", i+1, line(a, i), line(b, i))
+		}
+	}
+	return "the bodies are the same"
 }
 
 // teardownEffectsTraceAction is one scored action of a trace (heldout-case.ts OutcomeAction).
@@ -459,6 +494,22 @@ type teardownEffectsWorld struct {
 			Phase, Author string
 			Version       int
 			Body          json.RawMessage
+		}
+		// Comments and Asks are the issue's comments and questions, each named by the world's id,
+		// and Results each result recorded against a check of its Verification document.
+		Comments []struct {
+			ID, Author, Body string
+			At               time.Time
+		}
+		Asks []struct {
+			ID, Author, Question, State string
+			At                          time.Time
+			Options                     []string
+			Answer                      *string
+		}
+		Results []struct {
+			Check, Role, Verdict, Commit string
+			At                           time.Time
 		}
 		Issues []teardownEffectsDispatchIssue
 		Steps  []teardownEffectsStepRun
@@ -966,11 +1017,10 @@ func teardownEffectsTraceAnswer(seq int, op string, code *string, replayed []tea
 // teardownEffectsTraceWrite is the trace's Dispatch write a as the run replay's writer makes one
 // (applyDispatch): the event of its kind, by the role's session, and a readback that holds the
 // record the event names. A handoff's head is mapped to its commit (sha) and takes the version
-// that version gives its phase; a result's commit is mapped too. It writes what the run replay
-// writes: a handoff, an issue comment, a result and a question. Any other write is an error, a
-// document among them (Dispatch's artifact.created event names no text, so a trace holds none),
-// and so is a write on another issue than key. A request-approval is not made here: the replay
-// makes it through the real dispatch CLI, as a refused write (teardownEffectsApprovalRefusal).
+// that version gives its phase; a result's commit is mapped too. It makes a handoff, a result and
+// a question, each on the issue key alone; any other command is an error. Every other Dispatch
+// write of a trace goes through the real dispatch CLI, as the role makes it
+// (teardownEffectsTraceCommand).
 func teardownEffectsTraceWrite(key, session string, a teardownEffectsTraceAction, sha func(string) string, version func(phase string) int) (teardownEffectsEvent, teardownEffectsReadback, error) {
 	var readback teardownEffectsReadback
 	author := teardownEffectsActor{Kind: "session", ID: session}
@@ -1009,14 +1059,10 @@ func teardownEffectsTraceWrite(key, session string, a teardownEffectsTraceAction
 		fields["id"], fields["commit_sha"] = id, sha(commit)
 		event.Type, event.Payload = "result.recorded", map[string]any{"result_id": id}
 		records = map[string]any{"results": map[string]any{"checks": []any{map[string]any{"block_id": teardownEffectsString(fields, "check"), "results": []any{fields}}}}}
-	case "comment":
-		event.Type, event.Payload = "comment.created", fields
 	case "ask":
 		fields["id"] = id
 		event.Type, event.Payload = "ask.opened", fields
 		records = map[string]any{"asks": []any{map[string]any{"id": id, "question": fields["question"], "options": fields["options"]}}}
-	case "artifact":
-		return event, readback, fmt.Errorf("the trace's document write at action %d holds no text: Dispatch's artifact.created event names none, so the replay cannot make it", a.Seq)
 	default:
 		return event, readback, fmt.Errorf("the replay makes no Dispatch write of the command %s (the trace's action %d)", a.Command, a.Seq)
 	}
@@ -1034,8 +1080,8 @@ func teardownEffectsTraceWrite(key, session string, a teardownEffectsTraceAction
 
 // teardownEffectsApprovalCommand is the command of a trace's Dispatch write that asks a person to
 // approve a document, `dispatch request-approval`. The replay makes it through the real dispatch
-// CLI as the role's session, and takes it only as a refused write: Dispatch's acceptance of it
-// fails the replay (teardownEffectsApprovalRefusal).
+// CLI as the role's session (teardownEffectsTraceCommand), and takes Dispatch's acceptance of it
+// as a made write and two refusals of it as refused writes (teardownEffectsApprovalRefusal).
 const teardownEffectsApprovalCommand = "request-approval"
 
 // The causes of a refused request-approval (teardownEffectsRefusal).
@@ -1064,41 +1110,30 @@ type teardownEffectsRefusal struct {
 // `dispatch request-approval` posts to: POST /api/v1/artifacts/{id}/approval-requests.
 var teardownEffectsApprovalRoute = regexp.MustCompile(`^/api/v1/artifacts/[^/]+/approval-requests$`)
 
-// teardownEffectsApprovalRequest is the document and the summary of the trace's request-approval a.
-// a must be a write on the issue key that names both fields as text, and no other field.
-func teardownEffectsApprovalRequest(key string, a teardownEffectsTraceAction) (artifact, summary string, err error) {
-	if a.Target != key {
-		return "", "", fmt.Errorf("the trace's request-approval at action %d is on %s, and the replay writes on %s alone", a.Seq, a.Target, key)
-	}
-	for _, field := range slices.Sorted(maps.Keys(a.Fields)) {
-		if field != "artifact" && field != "summary" {
-			return "", "", fmt.Errorf("the trace's request-approval at action %d names the field %s, and the replay makes a request of an artifact and a summary alone", a.Seq, field)
-		}
-	}
-	artifact, summary = teardownEffectsString(a.Fields, "artifact"), teardownEffectsString(a.Fields, "summary")
-	if strings.TrimSpace(artifact) == "" || strings.TrimSpace(summary) == "" {
-		return "", "", fmt.Errorf("the trace's request-approval at action %d names no artifact or no summary as text", a.Seq)
-	}
-	return artifact, summary, nil
-}
-
-// teardownEffectsApprovalRefusal is the refusal of the trace's request-approval of the document
-// reference on the issue key, as the real dispatch CLI made it again. exit is the CLI's exit code,
-// printed is what it printed, asked is the number of requests it sent Dispatch, and sent is each of
-// those requests that came back, with Dispatch's answer, in order. It takes two refusals alone,
-// and neither changes anything:
+// teardownEffectsApprovalRefusal is what the real dispatch CLI made of the request-approval c, a
+// trace's request of the document c names (`artifact`, the issue's primary document where it
+// names none) on its issue: exit is the CLI's exit code, printed is what it printed, asked is the
+// number of requests it sent Dispatch, and sent is each of those requests that came back, with
+// Dispatch's answer as the recording proxy keeps it (teardownEffectsStartProxy), in order. Where
+// Dispatch took the approval request and the CLI exited 0, the request is a made write, and it
+// answers no refusal. It takes two refusals besides, and neither changes anything:
 //   - plan-approval: the CLI sent one approval request, Dispatch refused it 409
 //     PLAN_APPROVED_BY_REVIEW, and the CLI exited 1;
 //   - missing-artifact: the CLI sent no approval request and exited 1, and Dispatch's answer to
 //     the CLI's last read of the issue lists no document by that reference, as the CLI's resolver
-//     matches one: `spec` the issue's primary document, any other reference an id, a slug or a
-//     filename.
+//     matches one: `spec` (or no reference) the issue's primary document, any other reference an
+//     id, a slug or a filename.
 //
 // Every other outcome is an error, which makes the replay HARNESS, so it is never a passing
-// control: Dispatch's acceptance of the approval request; another write of the CLI's that Dispatch
-// took; a request that got no answer, or an answer of 500 or more (a transport or server failure);
-// any other refusal; and a refusal the CLI printed nothing of.
-func teardownEffectsApprovalRefusal(key, reference string, exit int, printed string, asked int, sent []teardownEffectsHTTP) (*teardownEffectsRefusal, error) {
+// control: an acceptance the CLI exited otherwise than 0 on; another write of the CLI's that
+// Dispatch took; a request that got no answer, or an answer of 500 or more (a transport or server
+// failure); any other refusal; a read of the issue that is no JSON; and a refusal the CLI printed
+// nothing of.
+func teardownEffectsApprovalRefusal(c teardownEffectsCommand, exit int, printed string, asked int, sent []teardownEffectsHTTP) (*teardownEffectsRefusal, error) {
+	key, reference := c.Issue, c.flag("artifact")
+	if reference == "" {
+		reference = "spec"
+	}
 	if asked != len(sent) {
 		return nil, fmt.Errorf("the CLI sent Dispatch %d requests, and %d came back: a transport failure, not a refusal", asked, len(sent))
 	}
@@ -1113,7 +1148,7 @@ func teardownEffectsApprovalRefusal(key, reference string, exit int, printed str
 		case x.Status >= 400:
 			return nil, fmt.Errorf("Dispatch refused the CLI's %s %s, which is no approval request: a refusal of another cause", x.route(), teardownEffectsStatusText(x.status()))
 		case x.Method != "GET":
-			return nil, fmt.Errorf("Dispatch took the CLI's %s (%d), a change that a refused request-approval does not make", x.route(), x.Status)
+			return nil, fmt.Errorf("Dispatch took the CLI's %s (%d), a change that a request-approval does not make", x.route(), x.Status)
 		case x.Path == "/api/v1/issues/"+key:
 			issue = &sent[i]
 		}
@@ -1130,6 +1165,10 @@ func teardownEffectsApprovalRefusal(key, reference string, exit int, printed str
 				Primary        bool
 			}
 			PrimaryArtifactID string `json:"primary_artifact_id"`
+		}
+		var text string
+		if json.Unmarshal(issue.Answer, &text) == nil {
+			return nil, fmt.Errorf("Dispatch's answer to the CLI's read of %s is no JSON (the recording proxy keeps such an answer as a string)", key)
 		}
 		if err := json.Unmarshal(issue.Answer, &read); err != nil {
 			return nil, fmt.Errorf("Dispatch's answer to the CLI's read of %s: %w", key, err)
@@ -1148,7 +1187,10 @@ func teardownEffectsApprovalRefusal(key, reference string, exit int, printed str
 		x := requests[0]
 		code := teardownEffectsOutcomeCode(x.status())
 		if x.Status < 400 {
-			return nil, fmt.Errorf("Dispatch took the approval request (%s %d): an acceptance, and the replay makes a request-approval only as a refused write", x.route(), x.Status)
+			if exit != 0 {
+				return nil, fmt.Errorf("Dispatch took the approval request (%s %d), and the CLI exited %d", x.route(), x.Status, exit)
+			}
+			return nil, nil
 		}
 		if x.Status != 409 || code != "PLAN_APPROVED_BY_REVIEW" {
 			return nil, fmt.Errorf("Dispatch refused the approval request %s, which is not its refusal of a plan (409 PLAN_APPROVED_BY_REVIEW)", teardownEffectsStatusText(x.status()))
@@ -1164,6 +1206,459 @@ func teardownEffectsApprovalRefusal(key, reference string, exit int, printed str
 		return nil, fmt.Errorf("the CLI printed nothing of its refusal (%s)", refusal.Cause)
 	}
 	return &refusal, nil
+}
+
+// The forms a flag of a dispatch command takes (teardownEffectsFlag), as the CLI derives them from
+// each field's kind (packages/envoy-client/src/dispatch-command.ts): `--<name> <value>`, a text
+// read from a file (`--<name>-file <path>`), JSON read from a file (`--<name>-json-file <path>`),
+// and a boolean, `--<name>` alone, whose name says which value it sends (`force`, `no-force`).
+const (
+	teardownEffectsPlain = iota
+	teardownEffectsText
+	teardownEffectsJSON
+	teardownEffectsSet
+)
+
+// teardownEffectsFlag is one flag of a dispatch command: its name, its value and its form.
+type teardownEffectsFlag struct {
+	Name, Value string
+	Form        int
+}
+
+// teardownEffectsCommand is a Dispatch write as the role's `dispatch` CLI makes it: the command,
+// its flags in order, the issue it writes on, the version of the document the write must make (0
+// where none is stated), and the case's own name for the comment it makes ("" for none), which
+// joins the replay's id map once Dispatch gives the comment its id.
+type teardownEffectsCommand struct {
+	Command, Issue, Name string
+	Flags                []teardownEffectsFlag
+	Version              int
+}
+
+// flag is the value of c's flag name, "" where c has none.
+func (c teardownEffectsCommand) flag(name string) string {
+	for _, f := range c.Flags {
+		if f.Name == name {
+			return f.Value
+		}
+	}
+	return ""
+}
+
+// argv is the command and its arguments, each text or JSON value written by file, which answers the
+// path it wrote the flag's value to.
+func (c teardownEffectsCommand) argv(file func(flag, value string) string) []string {
+	args := []string{c.Command}
+	for _, f := range c.Flags {
+		switch f.Form {
+		case teardownEffectsText:
+			args = append(args, "--"+f.Name+"-file", file(f.Name, f.Value))
+		case teardownEffectsJSON:
+			args = append(args, "--"+f.Name+"-json-file", file(f.Name, f.Value))
+		case teardownEffectsSet:
+			args = append(args, "--"+f.Name)
+		default:
+			args = append(args, "--"+f.Name, f.Value)
+		}
+	}
+	return args
+}
+
+// String is the command as a failure names it, each value read from a file named by its flag.
+func (c teardownEffectsCommand) String() string {
+	return "dispatch " + strings.Join(c.argv(func(flag, _ string) string { return "<" + flag + ">" }), " ")
+}
+
+// teardownEffectsCommandFields is each field a trace's Dispatch write may name, by its command, in
+// the order the command's flags are given. Each is the CLI's own field of that command, but where
+// the trace names it as Dispatch's event does: a comment's `ask_id` is `--reply-to-ask`, and its
+// `id` is the case's own name for it, which the CLI is not given. An upload's and an edit's
+// `version` is the version the write makes, which the answer must name and which is not sent.
+var teardownEffectsCommandFields = map[string][]string{
+	"comment":                      {"body", "reply_to", "ask_id", "turn", "id"},
+	"message":                      {"body"},
+	"issue-update":                 {"status", "before", "after"},
+	"artifact":                     {"name", "content", "summary", "force", "version"},
+	"doc-edit":                     {"artifact", "ops", "summary", "version"},
+	"plan-approve":                 {"artifact", "version"},
+	teardownEffectsApprovalCommand: {"artifact", "summary", "include_verification"},
+}
+
+// teardownEffectsDocumentRef is a reference to a document of an issue, which a doc-edit can target
+// instead of an issue: dispatch://ACME-118/spec, or dispatch://ACME-118/artifact/<slug>. Its first
+// group is the issue and its second the document (`spec`, or `artifact/` and the slug).
+var teardownEffectsDocumentRef = regexp.MustCompile(`^dispatch://([A-Z][A-Z0-9]*-\d+)/(spec|artifact/[A-Za-z0-9._-]+)$`)
+
+// teardownEffectsTraceCommand is the trace's Dispatch write a as the role's `dispatch` CLI makes it
+// (teardownEffectsCommand), on the case's issue key or on another issue of held, the issues the
+// case's world seeds; a doc-edit targets a document of one of them by its reference too. A field
+// that names a record by the case's own name is given the id the replay's Dispatch gave it (ids,
+// by `comment/<name>`, `ask/<name>` and `artifact/<name>`): a reply's comment, an answer's
+// question, a document. Each text the write writes is mapped too: each reference to a comment or a
+// question of key by its case name and each document id in a body (teardownEffectsCaseRefs), and,
+// in the text of a document (an upload's content, an edit's markdown), each bare `serves` or
+// `needs` pointer is first written as the importer writes it in a starting document
+// (teardownEffectsBarePointers). Anything else is an error, which makes the replay HARNESS, and
+// names the field: a target the world does not hold, a field the command takes no flag of, a name
+// the replay's Dispatch holds no record of, and a value of another kind than its flag's.
+func teardownEffectsTraceCommand(key string, held []string, a teardownEffectsTraceAction, ids map[string]string) (teardownEffectsCommand, error) {
+	where := fmt.Sprintf("the trace's %s at action %d", a.Command, a.Seq)
+	fields, ok := teardownEffectsCommandFields[a.Command]
+	if !ok {
+		return teardownEffectsCommand{}, fmt.Errorf("the replay makes no Dispatch write of the command %s (the trace's action %d)", a.Command, a.Seq)
+	}
+	for _, field := range slices.Sorted(maps.Keys(a.Fields)) {
+		if !slices.Contains(fields, field) {
+			return teardownEffectsCommand{}, fmt.Errorf("%s names the field %s, of which dispatch %s takes no flag", where, field, a.Command)
+		}
+	}
+	c := teardownEffectsCommand{Command: a.Command, Issue: a.Target, Flags: []teardownEffectsFlag{{Name: "issue", Value: a.Target}}}
+	document := teardownEffectsString(a.Fields, "artifact")
+	if m := teardownEffectsDocumentRef.FindStringSubmatch(a.Target); m != nil && a.Command == "doc-edit" {
+		c.Issue, c.Flags, document = m[1], []teardownEffectsFlag{{Name: "ref", Value: a.Target}}, strings.TrimPrefix(m[2], "artifact/")
+	}
+	if !slices.Contains(held, c.Issue) {
+		return teardownEffectsCommand{}, fmt.Errorf("%s is on %s, which the case's world does not hold", where, a.Target)
+	}
+	switch {
+	case document != "":
+	case a.Command == "doc-edit":
+		// An edit that names no document edits the issue's primary one, its spec.
+		document = "spec"
+	default:
+		document = teardownEffectsString(a.Fields, "name")
+	}
+	for _, field := range fields {
+		value, ok := a.Fields[field]
+		if !ok {
+			continue
+		}
+		text, isText := value.(string)
+		flag := strings.ReplaceAll(field, "_", "-")
+		var err error
+		switch field {
+		case "body", "summary", "name":
+			if !isText {
+				return c, fmt.Errorf("%s names %s as no text", where, field)
+			}
+			if field == "body" {
+				text = teardownEffectsCaseRefs(text, key, ids)
+			}
+			c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Value: text, Form: teardownEffectsText})
+		case "content":
+			if !isText {
+				return c, fmt.Errorf("%s names %s as no text", where, field)
+			}
+			text = teardownEffectsCaseRefs(teardownEffectsBarePointers(c.Issue, document, text), key, ids)
+			c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Value: text, Form: teardownEffectsText})
+		case "reply_to", "ask_id", "artifact":
+			kind := map[string]string{"reply_to": "comment", "ask_id": "ask", "artifact": "artifact"}[field]
+			if !isText || text == "" {
+				return c, fmt.Errorf("%s names %s as no text", where, field)
+			}
+			given, named := ids[kind+"/"+text]
+			switch {
+			case named:
+				text = given
+			case kind != "artifact":
+				return c, fmt.Errorf("%s names the %s %s by %s, and the replay's Dispatch holds no %s the case names so", where, kind, text, field, kind)
+			}
+			if field == "ask_id" {
+				flag = "reply-to-ask"
+			}
+			c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Value: text})
+		case "turn", "status":
+			if !isText || text == "" {
+				return c, fmt.Errorf("%s names %s as no text", where, field)
+			}
+			c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Value: text})
+		case "before", "after":
+			if !isText || !slices.Contains(held, text) {
+				return c, fmt.Errorf("%s moves %s %s %v on the board, which the case's world does not hold", where, a.Target, field, value)
+			}
+			c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Value: text})
+		case "id":
+			if !isText || text == "" {
+				return c, fmt.Errorf("%s names its id as no text", where)
+			}
+			c.Name = text
+		case "force", "include_verification":
+			set, isBool := value.(bool)
+			if !isBool {
+				return c, fmt.Errorf("%s names %s as no boolean", where, field)
+			}
+			if !set {
+				flag = "no-" + flag
+			}
+			c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Form: teardownEffectsSet})
+		case "version":
+			number, isNumber := value.(float64)
+			if !isNumber || number < 1 || number != float64(int(number)) {
+				return c, fmt.Errorf("%s names the version %v, which is no version", where, value)
+			}
+			if a.Command == "plan-approve" {
+				c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Value: strconv.Itoa(int(number))})
+			} else {
+				c.Version = int(number)
+			}
+		case "ops":
+			if text, err = teardownEffectsEditOps(value, c.Issue, document, key, ids); err != nil {
+				return c, fmt.Errorf("%s: %w", where, err)
+			}
+			c.Flags = append(c.Flags, teardownEffectsFlag{Name: flag, Value: text, Form: teardownEffectsJSON})
+		}
+	}
+	return c, nil
+}
+
+// teardownEffectsEditOps is a doc-edit's operations as the replay sends them, in JSON: each the
+// trace's own, but the text it writes (`markdown`, `with`), whose bare pointers are written as the
+// importer writes them in a document of the issue owner by its name or slug (document), and whose
+// references to a record the case names are given the replay's ids (teardownEffectsCaseRefs). The
+// text an operation finds or anchors on is the document's own, and stays as it is.
+func teardownEffectsEditOps(ops any, owner, document, key string, ids map[string]string) (string, error) {
+	list, ok := ops.([]any)
+	if !ok || len(list) == 0 {
+		return "", fmt.Errorf("its ops are %v, and an edit holds a list of one operation or more", ops)
+	}
+	sent := make([]any, len(list))
+	for i, op := range list {
+		fields, ok := op.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("its operation %d is %v, which is no object", i, op)
+		}
+		fields = maps.Clone(fields)
+		for _, written := range []string{"markdown", "with"} {
+			if text, ok := fields[written].(string); ok {
+				fields[written] = teardownEffectsCaseRefs(teardownEffectsBarePointers(owner, document, text), key, ids)
+			}
+		}
+		sent[i] = fields
+	}
+	encoded, err := json.Marshal(sent)
+	return string(encoded), err
+}
+
+// teardownEffectsCaseRef is a reference to a comment or a question of an issue, by an id or a
+// name: its issue, its kind and the id (seed.ts caseDispatchRefs).
+var teardownEffectsCaseRef = regexp.MustCompile(`dispatch://([A-Z][A-Z0-9]*-\d+)/(comment|ask)/([A-Za-z0-9][A-Za-z0-9_-]*)`)
+
+// teardownEffectsCaseRefs is text with each reference to a comment or a question of key by a name
+// ids holds (`dispatch://ACME-41/comment/c-1`) written with the id the replay's Dispatch gave it,
+// and each document id ids holds written as the replay's, as lane R's seed maps the world's names
+// in the run's prompt (seed.ts caseDispatchRefs and the gate documents' ids): Dispatch refuses an
+// id it did not give. Any other reference, and any other text, is left as it is.
+func teardownEffectsCaseRefs(text, key string, ids map[string]string) string {
+	text = teardownEffectsCaseRef.ReplaceAllStringFunc(text, func(ref string) string {
+		m := teardownEffectsCaseRef.FindStringSubmatch(ref)
+		if given, ok := ids[m[2]+"/"+m[3]]; ok && m[1] == key {
+			return "dispatch://" + m[1] + "/" + m[2] + "/" + given
+		}
+		return ref
+	})
+	for _, named := range slices.Sorted(maps.Keys(ids)) {
+		if stated, ok := strings.CutPrefix(named, "artifact/"); ok && stated != "" {
+			text = strings.ReplaceAll(text, stated, ids[named])
+		}
+	}
+	return text
+}
+
+// teardownEffectsMade is what a dispatch command made: the id of the record its write made (a
+// comment's, a message's), and, for an upload or an edit of a document, that document's id and the
+// version the write made (0 where it made none).
+type teardownEffectsMade struct {
+	ID, Document string
+	Version      int
+}
+
+// teardownEffectsCheckRoute is a request the CLI sends before it writes, which writes nothing: the
+// check of a document's text that `dispatch artifact` makes (POST /api/v1/markdown/round-trip and
+// file-round-trip).
+var teardownEffectsCheckRoute = regexp.MustCompile(`^/api/v1/markdown/`)
+
+// teardownEffectsArtifactRoute is a route of one document: its id is the first group.
+var teardownEffectsArtifactRoute = regexp.MustCompile(`^/api/v1/artifacts/([^/]+)/`)
+
+// teardownEffectsCommandMade is what the real dispatch CLI made of c, the role's write: exit is its
+// exit code, printed what it printed, asked the number of requests it sent Dispatch, and sent each
+// of them that came back, with Dispatch's answer as the recording proxy keeps it, in order. The
+// write is made where every request came back, the CLI exited 0, and Dispatch took each write, a
+// request that is no read and no check of a text (teardownEffectsCheckRoute). The last such
+// write's answer says what it made: the record's id, and, for an upload or an edit, the document
+// and the version, which must be the version c names. Every other outcome is an error, which makes
+// the replay HARNESS: it names the command, and Dispatch's status and code where Dispatch refused a
+// request, or what the CLI printed where it refused the write before Dispatch refused any request.
+func teardownEffectsCommandMade(c teardownEffectsCommand, exit int, printed string, asked int, sent []teardownEffectsHTTP) (teardownEffectsMade, error) {
+	var made teardownEffectsMade
+	if asked != len(sent) {
+		return made, fmt.Errorf("%s sent Dispatch %d requests, and %d came back: a transport failure", c, asked, len(sent))
+	}
+	var writes []teardownEffectsHTTP
+	var refused *teardownEffectsHTTP
+	for i, x := range sent {
+		if x.Status >= 400 && refused == nil {
+			refused = &sent[i]
+		}
+		if x.Method != "GET" && x.Method != "HEAD" && !teardownEffectsCheckRoute.MatchString(x.Path) {
+			writes = append(writes, x)
+		}
+	}
+	switch {
+	case exit != 0 && refused != nil:
+		return made, fmt.Errorf("%s exited %d: Dispatch refused %s %s", c, exit, refused.route(), teardownEffectsStatusText(refused.status()))
+	case exit != 0:
+		return made, fmt.Errorf("%s exited %d before Dispatch refused any request: %s", c, exit, strings.TrimSpace(printed))
+	case len(writes) == 0:
+		return made, fmt.Errorf("%s exited 0 and sent Dispatch no write", c)
+	}
+	for _, x := range writes {
+		if x.Status >= 400 {
+			return made, fmt.Errorf("%s exited 0, and Dispatch refused %s %s", c, x.route(), teardownEffectsStatusText(x.status()))
+		}
+	}
+	last := writes[len(writes)-1]
+	id, document, version, err := teardownEffectsAnswerOf(last.Answer)
+	if err != nil {
+		return made, fmt.Errorf("%s: Dispatch's answer to %s: %w", c, last.route(), err)
+	}
+	made.ID = id
+	if c.Command == "artifact" || c.Command == "doc-edit" {
+		made.Document, made.Version = document, version
+		if m := teardownEffectsArtifactRoute.FindStringSubmatch(last.Path); m != nil {
+			made.Document = m[1]
+		}
+	}
+	if c.Name != "" && made.ID == "" {
+		return made, fmt.Errorf("%s: Dispatch's answer to %s names no id for the comment the case names %s", c, last.route(), c.Name)
+	}
+	if c.Version != 0 && made.Version != c.Version {
+		return made, fmt.Errorf("%s: the trace states that its write makes version %d, and Dispatch's answer to %s names version %d", c, c.Version, last.route(), made.Version)
+	}
+	return made, nil
+}
+
+// teardownEffectsAnswerOf reads what the answer of a Dispatch write names: the id of the record
+// it made (its own `id`, else an approval request's `ask.id`), the document it wrote
+// (`artifact.id`), and the version it names (`version`, a number or an object holding one as
+// `number`; 0 for none, null among them). An answer that is no JSON object is an error.
+func teardownEffectsAnswerOf(answer []byte) (id, document string, version int, err error) {
+	var read struct {
+		ID  string `json:"id"`
+		Ask struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+		Version json.RawMessage `json:"version"`
+	}
+	if err := json.Unmarshal(answer, &read); err != nil {
+		return "", "", 0, fmt.Errorf("no record: %w", err)
+	}
+	var numbered struct{ Number int }
+	if json.Unmarshal(read.Version, &numbered) != nil {
+		_ = json.Unmarshal(read.Version, &numbered.Number)
+	}
+	id = read.ID
+	if id == "" {
+		id = read.Ask.ID
+	}
+	return id, read.Artifact.ID, numbered.Number, nil
+}
+
+// Observe actual bytes on one HTTP hop: the pane's to the real daemon, where only the tool routes
+// are observed (boot, registration, and asynchronous lifecycle calls are not tool answers), or the
+// dispatch CLI's to Dispatch, where every request is observed. asked counts each observed request,
+// and records holds each that came back, with its answer, so a request that got no answer (a
+// transport failure) shows as a gap between the two.
+type teardownEffectsProxy struct {
+	mu      sync.Mutex
+	url     string
+	asked   int
+	records []teardownEffectsHTTP
+}
+
+// teardownEffectsStartProxy starts a proxy to target that records each request observe names. An
+// answer is recorded as the JSON its sender wrote: Dispatch gzips an answer of a kilobyte or more to
+// a caller that takes gzip, as the dispatch CLI's bun does (compressAnswers in
+// packages/envoy/internal/dispatch/api/response_compression.go), and the proxy passes those bytes
+// to the caller as they came and records their decompressed text. An answer that is no JSON is
+// recorded as a JSON string of its text.
+func teardownEffectsStartProxy(t *testing.T, target string, observe func(path string) bool) *teardownEffectsProxy {
+	t.Helper()
+	dest, err := url.Parse(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &teardownEffectsProxy{}
+	forward := httputil.NewSingleHostReverseProxy(dest)
+	type requestKey struct{}
+	forward.ModifyResponse = func(res *http.Response) error {
+		sent, ok := res.Request.Context().Value(requestKey{}).(teardownEffectsHTTP)
+		if !ok {
+			return nil
+		}
+		answer, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			return err
+		}
+		res.Body = io.NopCloser(bytes.NewReader(answer))
+		if strings.EqualFold(res.Header.Get("Content-Encoding"), "gzip") {
+			if unzipped, err := gzip.NewReader(bytes.NewReader(answer)); err == nil {
+				if text, err := io.ReadAll(unzipped); err == nil {
+					answer = text
+				}
+			}
+		}
+		if !json.Valid(answer) {
+			answer, _ = json.Marshal(string(answer))
+		}
+		sent.Answer, sent.Status = answer, res.StatusCode
+		p.mu.Lock()
+		p.records = append(p.records, sent)
+		p.mu.Unlock()
+		return nil
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if observe(req.URL.Path) {
+			p.mu.Lock()
+			p.asked++
+			p.mu.Unlock()
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				http.Error(w, "cannot observe request", 400)
+				return
+			}
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			req = req.WithContext(context.WithValue(req.Context(), requestKey{}, teardownEffectsHTTP{At: time.Now(), Method: req.Method, Path: req.URL.Path, Body: body}))
+		}
+		forward.ServeHTTP(w, req)
+	}))
+	p.url = server.URL
+	t.Cleanup(server.Close)
+	return p
+}
+
+func (p *teardownEffectsProxy) since(from int) []teardownEffectsHTTP {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.records[from:])
+}
+
+func (p *teardownEffectsProxy) mark() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.records)
+}
+
+// observed is the number of requests the proxy observed, and each of them that came back, with its
+// answer, in order.
+func (p *teardownEffectsProxy) observed() (int, []teardownEffectsHTTP) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.asked, slices.Clone(p.records)
 }
 
 // teardownEffectsApplied is one recorded change a replay makes again, and how it makes it. apply
@@ -1756,9 +2251,10 @@ func TestTeardownEffectsTraceAnswer(t *testing.T) {
 	}
 }
 
-// A trace's Dispatch write is made by the run replay's own writer: a handoff, an issue comment, a
-// result and a question each become the event and the readback record that writer takes, its
-// commits mapped; a write the run replay does not make is refused, by the writer's own rule or here.
+// A trace's handoff, result and question are made by the run replay's own writer: each becomes the
+// event and the readback record that writer takes, its commits mapped. Any other command is the
+// real CLI's (teardownEffectsTraceCommand), and this writer refuses it, as it refuses a write on
+// another issue and a write that lacks what its record needs.
 func TestTeardownEffectsTraceWrite(t *testing.T) {
 	t.Parallel()
 	const session = "11111111-2222-4333-8444-555555555555"
@@ -1790,138 +2286,19 @@ func TestTeardownEffectsTraceWrite(t *testing.T) {
 	if e.Type != "result.recorded" || !ok || block != "k1" || result["commit_sha"] != "sha-of-c1" || result["verdict"] != "pass" || result["run"] != "go test ./..." {
 		t.Fatalf("the result made %+v, the record %v of check %s", e, result, block)
 	}
-	if e, _ := made(write("comment", "ACME-12", map[string]any{"body": "Look 1 is pending."})); e.Type != "comment.created" || e.Payload["body"] != "Look 1 is pending." {
-		t.Fatalf("the comment made %+v", e)
-	}
 	if e, readback := made(write("ask", "ACME-12", map[string]any{"question": "Which?", "options": []any{"a", "b"}})); e.Type != "ask.opened" || len(readback.Asks) != 1 || readback.Asks[0].Question != "Which?" || string(readback.Asks[0].Options) != `["a","b"]` {
 		t.Fatalf("the question made %+v, %+v", e, readback.Asks)
 	}
-
-	// A reply is a comment the run replay's writer does not make.
-	e, readback, err := teardownEffectsTraceWrite("ACME-12", session, write("comment", "ACME-12", map[string]any{"body": "Yes.", "reply_to": "c-1"}), sha, version)
-	if fault, _ := teardownEffectsDispatchFault(&readback, e); err != nil || fault == "" {
-		t.Fatalf("a reply made %+v (%v), and the writer takes it", e, err)
-	}
 	for _, refused := range []teardownEffectsTraceAction{
-		write("artifact", "ACME-12", map[string]any{"artifact": map[string]any{"name": "notes.md"}}),
+		write("comment", "ACME-12", map[string]any{"body": "Look 1 is pending."}),
+		write("artifact", "ACME-12", map[string]any{"name": "notes.md", "content": "Notes.\n"}),
 		write("issue-update", "ACME-12", map[string]any{"status": "blocked"}),
-		write("comment", "ACME-10", map[string]any{"body": "On the parent."}),
+		write("ask", "ACME-10", map[string]any{"question": "On the parent?", "options": []any{"yes"}}),
 		write("handoff-write", "ACME-12", map[string]any{"phase": "implement"}),
 	} {
 		if _, _, err := teardownEffectsTraceWrite("ACME-12", session, refused, sha, version); err == nil {
 			t.Fatalf("made the write %s on %s %v", refused.Command, refused.Target, refused.Fields)
 		}
-	}
-}
-
-// A trace's request-approval names the document and the summary of the request the replay sends
-// again, on the case's own issue, and nothing else: one on another issue, one that names another
-// field, and one with no document or no summary as text are refused before any request is sent.
-func TestTeardownEffectsApprovalRequest(t *testing.T) {
-	t.Parallel()
-	asked := func(target string, fields map[string]any) teardownEffectsTraceAction {
-		return teardownEffectsTraceAction{Kind: "dispatch", Command: teardownEffectsApprovalCommand, Target: target, Seq: 1, At: time.Date(2030, 1, 7, 15, 1, 0, 0, time.UTC), Fields: fields}
-	}
-	artifact, summary, err := teardownEffectsApprovalRequest("ACME-12", asked("ACME-12", map[string]any{"artifact": "plan.md", "summary": "Approve the plan."}))
-	if err != nil || artifact != "plan.md" || summary != "Approve the plan." {
-		t.Fatalf("read the request of %q with %q, %v; want plan.md and its summary", artifact, summary, err)
-	}
-	for _, row := range []struct {
-		name   string
-		action teardownEffectsTraceAction
-		fault  string
-	}{
-		{"on another issue", asked("ACME-10", map[string]any{"artifact": "plan.md", "summary": "Approve the plan."}), "is on ACME-10"},
-		{"with another field", asked("ACME-12", map[string]any{"artifact": "spec", "summary": "Approve both.", "include_verification": true}), "names the field include_verification"},
-		{"with no document", asked("ACME-12", map[string]any{"summary": "Approve the plan."}), "no artifact or no summary"},
-		{"with a blank summary", asked("ACME-12", map[string]any{"artifact": "plan.md", "summary": " "}), "no artifact or no summary"},
-		{"with a document that is no text", asked("ACME-12", map[string]any{"artifact": 7, "summary": "Approve the plan."}), "no artifact or no summary"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			if _, _, err := teardownEffectsApprovalRequest("ACME-12", row.action); err == nil || !strings.Contains(err.Error(), row.fault) {
-				t.Fatalf("read %v, %v; want an error that names %q", row.action.Fields, err, row.fault)
-			}
-		})
-	}
-}
-
-// A request-approval the replay sends again through the real dispatch CLI passes only as one of
-// the two refusals a trace's request can hold, and neither changes anything: the CLI's own refusal
-// of a document the issue does not hold, made before any approval request, with no status or code,
-// and Dispatch's 409 PLAN_APPROVED_BY_REVIEW of a plan. Each of these is an error, which no control
-// passes: Dispatch's acceptance of the request, with any exit code; another write Dispatch took; a
-// request with no answer, or one answered 500 or more; another refusal; a document the issue holds;
-// two requests; another exit code; and a refusal the CLI printed no words of.
-func TestTeardownEffectsApprovalRefusal(t *testing.T) {
-	t.Parallel()
-	const key, approval = "ACME-12", "/api/v1/artifacts/a-plan/approval-requests"
-	http := func(method, path string, status int, answer string) teardownEffectsHTTP {
-		return teardownEffectsHTTP{Method: method, Path: path, Status: status, Answer: json.RawMessage(answer)}
-	}
-	refusal := func(code string) string { return `{"code":"` + code + `","error":"refused"}` }
-	const spec = `{"id":"a-spec","slug":"spec-md","name":"spec.md","primary":true}`
-	const plan = `{"id":"a-plan","slug":"plan-md","name":"plan.md","primary":false}`
-	issue := func(artifacts ...string) teardownEffectsHTTP {
-		return http("GET", "/api/v1/issues/"+key, 200, `{"key":"ACME-12","primary_artifact_id":"a-spec","artifacts":[`+strings.Join(artifacts, ",")+`]}`)
-	}
-	blocks := http("GET", "/api/v1/artifacts/a-plan/blocks", 200, `{"blocks":[]}`)
-	planned := func(answer teardownEffectsHTTP) []teardownEffectsHTTP {
-		return []teardownEffectsHTTP{issue(spec, plan), blocks, answer}
-	}
-	missing := []teardownEffectsHTTP{issue(spec), issue(spec)}
-	refused := http("POST", approval, 409, refusal("PLAN_APPROVED_BY_REVIEW"))
-	accepted := http("POST", approval, 201, `{"ask":{"id":"ask-1"},"version":1}`)
-	const missingText = `document "plan.md" not found by slug; this issue's documents: spec-md (spec.md)`
-	const planText = "PLAN_APPROVED_BY_REVIEW: a plan is approved by its plan review, not by a person"
-	status, code := 409, "PLAN_APPROVED_BY_REVIEW"
-	for _, row := range []struct {
-		name      string
-		reference string
-		exit      int
-		printed   string
-		lost      int
-		sent      []teardownEffectsHTTP
-		want      *teardownEffectsRefusal
-		fault     string
-	}{
-		{name: "a plan, which Dispatch refuses 409 PLAN_APPROVED_BY_REVIEW", reference: "plan.md", exit: 1, printed: planText + "\n", sent: planned(refused),
-			want: &teardownEffectsRefusal{Cause: teardownEffectsPlanApproval, Status: &status, Code: &code, Diagnostic: planText}},
-		{name: "a document the issue does not hold, which the CLI refuses before any request", reference: "plan.md", exit: 1, printed: missingText + "\n", sent: missing,
-			want: &teardownEffectsRefusal{Cause: teardownEffectsMissingArtifact, Diagnostic: missingText}},
-		{name: "Dispatch took the request, opening it for a person", reference: "plan.md", printed: "Approval requested for plan.md", sent: planned(accepted), fault: "an acceptance"},
-		{name: "Dispatch took the request of a document approved already", reference: "plan.md", printed: "plan.md is already approved", sent: planned(http("POST", approval, 200, `{"ask":null,"version":1}`)), fault: "an acceptance"},
-		{name: "Dispatch took the request, and the CLI exited 1", reference: "plan.md", exit: 1, printed: "Approval requested for plan.md", sent: planned(accepted), fault: "an acceptance"},
-		{name: "another refusal of the request", reference: "plan.md", exit: 1, printed: "NO_VERSION: no settled version", sent: planned(http("POST", approval, 409, refusal("NO_VERSION"))), fault: "409 NO_VERSION"},
-		{name: "a refusal of the request that names no code", reference: "plan.md", exit: 1, printed: "HTTP_409: conflict", sent: planned(http("POST", approval, 409, `"conflict"`)), fault: "refused the approval request 409,"},
-		{name: "a summary Dispatch refuses", reference: "plan.md", exit: 1, printed: "SUMMARY_INPUT: summary is blank", sent: planned(http("POST", approval, 400, refusal("SUMMARY_INPUT"))), fault: "400 SUMMARY_INPUT"},
-		{name: "a server failure of the request", reference: "plan.md", exit: 1, printed: "HTTP_503: unavailable", sent: planned(http("POST", approval, 503, refusal("UNAVAILABLE"))), fault: "server failure"},
-		{name: "a server failure of the read of the issue", reference: "plan.md", exit: 1, printed: "HTTP_500", sent: []teardownEffectsHTTP{http("GET", "/api/v1/issues/"+key, 500, `"boom"`)}, fault: "server failure"},
-		{name: "a request that got no answer", reference: "plan.md", exit: 1, printed: "fetch failed", lost: 1, sent: missing, fault: "transport failure"},
-		{name: "no request that reached Dispatch", reference: "plan.md", exit: 1, printed: "Unable to connect", fault: "answered no read"},
-		{name: "a read of the issue Dispatch refused", reference: "plan.md", exit: 1, printed: "NOT_FOUND: no issue", sent: []teardownEffectsHTTP{http("GET", "/api/v1/issues/"+key, 404, refusal("NOT_FOUND"))}, fault: "404 NOT_FOUND"},
-		{name: "another write Dispatch took", reference: "plan.md", exit: 1, printed: missingText, sent: []teardownEffectsHTTP{issue(spec), http("POST", "/api/v1/issues/"+key+"/comments", 201, `{"id":"c-1"}`)}, fault: "a change"},
-		{name: "a document the issue holds, refused before the request (an open decision block)", reference: "plan.md", exit: 1, printed: "dispatch request-approval refuses an open block", sent: []teardownEffectsHTTP{issue(spec, plan), blocks}, fault: "holds the document plan-md (plan.md)"},
-		{name: "a document the issue holds, named by its slug", reference: "plan-md", exit: 1, printed: "refused", sent: []teardownEffectsHTTP{issue(spec, plan)}, fault: "holds the document plan-md (plan.md)"},
-		{name: "the spec, which names the issue's primary document", reference: "spec", exit: 1, printed: "refused", sent: []teardownEffectsHTTP{issue(spec)}, fault: "holds the document spec-md (spec.md)"},
-		{name: "two approval requests", reference: "plan.md", exit: 1, printed: planText, sent: []teardownEffectsHTTP{issue(spec, plan), refused, refused}, fault: "2 approval requests"},
-		{name: "a plan's refusal the CLI exited 0 on", reference: "plan.md", printed: planText, sent: planned(refused), fault: "exited 0"},
-		{name: "a missing document the CLI exited 2 on, a usage error", reference: "plan.md", exit: 2, printed: missingText, sent: missing, fault: "exited 2"},
-		{name: "a refusal the CLI printed no words of", reference: "plan.md", exit: 1, printed: " \n", sent: planned(refused), fault: "printed nothing"},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := teardownEffectsApprovalRefusal(key, row.reference, row.exit, row.printed, len(row.sent)+row.lost, row.sent)
-			if row.want != nil {
-				if err != nil || !reflect.DeepEqual(got, row.want) {
-					t.Fatalf("judged %+v, %v; want %+v", got, err, row.want)
-				}
-				return
-			}
-			if got != nil || err == nil || !strings.Contains(err.Error(), row.fault) {
-				t.Fatalf("judged %+v, %v; want no refusal and an error that names %q", got, err, row.fault)
-			}
-		})
 	}
 }
 
@@ -2385,44 +2762,63 @@ func TestTeardownEffectsTakesCarriedKinds(t *testing.T) {
 // A trace's documents read as the case file holds them, and lane D's control holds each to the
 // document the real Dispatch holds after the trace's last write: its latest version and that
 // version's text, with each id the replay's Dispatch gave a record the world names written as the
-// world's. With no id to map, the text is compared as Dispatch holds it.
+// world's, and a differing text named by its first line that differs. With no id to map, the text
+// is compared as Dispatch holds it. A document the replay wrote that the trace does not state is a
+// fault too, so a trace that states no document fails where the replay wrote one, and one with no
+// `documents` key states nothing.
 func TestTeardownEffectsDocumentFaults(t *testing.T) {
 	t.Parallel()
 	cases := teardownEffectsCasesAt(t, teardownEffectsCarriedFile, func(cases []map[string]any) []map[string]any {
 		good := teardownEffectsMember(cases[0], "traces", "good").(map[string]any)
 		good["documents"] = []any{map[string]any{"name": "verification.md", "version": 2, "body": "See dispatch://ACME-12/comment/c-1 and art-design.\n"}}
+		teardownEffectsMember(cases[0], "traces", "bad").(map[string]any)["documents"] = []any{}
 		return cases
 	})
 	stated := cases[0].Traces.Good.Documents
 	if want := []teardownEffectsDocument{{Name: "verification.md", Version: 2, Body: "See dispatch://ACME-12/comment/c-1 and art-design.\n"}}; !reflect.DeepEqual(stated, want) {
 		t.Fatalf("the trace's documents read as %+v, want %+v", stated, want)
 	}
+	if none, unstated := cases[0].Traces.Bad.Documents, cases[1].Traces.Good.Documents; none == nil || len(none) != 0 || unstated != nil {
+		t.Fatalf("an empty `documents` reads as %#v and none as %#v, want an empty list and nil", none, unstated)
+	}
 	given := "See dispatch://ACME-12/comment/0b6c2f1e-0000-4000-8000-000000000001 and 7d2a9b4c-0000-4000-8000-000000000002.\n"
 	ids := map[string]string{"0b6c2f1e-0000-4000-8000-000000000001": "c-1", "7d2a9b4c-0000-4000-8000-000000000002": "art-design"}
 	held := map[string]teardownEffectsDocument{"verification.md": {Name: "verification.md", Version: 2, Body: given}}
-	if faults := teardownEffectsDocumentFaults(stated, held, ids); len(faults) != 0 {
+	if faults := teardownEffectsDocumentFaults(stated, held, []string{"verification.md"}, ids); len(faults) != 0 {
 		t.Fatalf("the document as stated, with the replay's ids, reads as faults %v", faults)
 	}
 	// With no ids to map, the replay's ids stay in the text, and the stated body is not the one held.
-	if faults := teardownEffectsDocumentFaults(stated, held, map[string]string{}); len(faults) != 1 || !strings.Contains(faults[0], "the trace states the body") {
-		t.Fatalf("with no ids mapped, the faults are %v, want the body named", faults)
+	if faults := teardownEffectsDocumentFaults(stated, held, nil, map[string]string{}); len(faults) != 1 ||
+		!strings.Contains(faults[0], `line 1 is "See dispatch://ACME-12/comment/c-1 and art-design." in the body the trace states, and "See dispatch://ACME-12/comment/0b6c2f1e`) {
+		t.Fatalf("with no ids mapped, the faults are %v, want the first line named", faults)
 	}
 	plain := []teardownEffectsDocument{{Name: "plan.md", Version: 1, Body: "The plan.\n"}}
-	if faults := teardownEffectsDocumentFaults(plain, map[string]teardownEffectsDocument{"plan.md": plain[0]}, map[string]string{}); len(faults) != 0 {
+	if faults := teardownEffectsDocumentFaults(plain, map[string]teardownEffectsDocument{"plan.md": plain[0]}, nil, map[string]string{}); len(faults) != 0 {
 		t.Fatalf("a document held as stated, with no ids, reads as faults %v", faults)
 	}
 	for _, row := range []struct {
-		name string
-		held map[string]teardownEffectsDocument
-		want string
+		name    string
+		stated  []teardownEffectsDocument
+		held    map[string]teardownEffectsDocument
+		written []string
+		want    string
 	}{
-		{"another version", map[string]teardownEffectsDocument{"verification.md": {Name: "verification.md", Version: 3, Body: given}}, "holds version 3"},
-		{"another text", map[string]teardownEffectsDocument{"verification.md": {Name: "verification.md", Version: 2, Body: "Other.\n"}}, `holds "Other.\n"`},
-		{"no document of the name", map[string]teardownEffectsDocument{}, "holds no document of that name"},
+		{"another version", stated, map[string]teardownEffectsDocument{"verification.md": {Name: "verification.md", Version: 3, Body: given}}, nil, "holds version 3"},
+		{"another text", stated, map[string]teardownEffectsDocument{"verification.md": {Name: "verification.md", Version: 2, Body: "Other.\n"}}, nil,
+			`verification.md version 2: line 1 is "See dispatch://ACME-12/comment/c-1 and art-design." in the body the trace states, and "Other." in the body the replay's Dispatch holds`},
+		{"a text with a line more", plain, map[string]teardownEffectsDocument{"plan.md": {Name: "plan.md", Version: 1, Body: "The plan.\nMore.\n"}}, nil,
+			`line 2 is "" in the body the trace states, and "More." in the body the replay's Dispatch holds`},
+		{"a text with a line less", []teardownEffectsDocument{{Name: "plan.md", Version: 1, Body: "The plan.\nMore.\n"}}, map[string]teardownEffectsDocument{"plan.md": plain[0]}, nil,
+			`line 2 is "More." in the body the trace states, and "" in the body the replay's Dispatch holds`},
+		{"no document of the name", stated, map[string]teardownEffectsDocument{}, nil, "holds no document of that name"},
+		{"a document written and stated by none", nil, held, []string{"verification.md"}, "the replay wrote verification.md, and the trace states no such document"},
 	} {
-		if faults := teardownEffectsDocumentFaults(stated, row.held, ids); len(faults) != 1 || !strings.Contains(faults[0], row.want) {
+		if faults := teardownEffectsDocumentFaults(row.stated, row.held, row.written, ids); len(faults) != 1 || !strings.Contains(faults[0], row.want) {
 			t.Errorf("%s: faults %v, want one naming %q", row.name, faults, row.want)
 		}
+	}
+	if got := teardownEffectsFirstDifference("a\nb", "a"); got != `line 2 is "b" in the body the trace states, and no line in the body the replay's Dispatch holds` {
+		t.Errorf("a body cut short reads as %q, want its missing line named", got)
 	}
 }
 

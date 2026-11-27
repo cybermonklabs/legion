@@ -93,7 +93,16 @@ const Readback = z.object({
   results: z.object({
     checks: z.array(z.object({ results: z.array(Fields).nullable() })).nullable(),
   }),
-  documents: z.array(z.object({ id: z.string(), name: z.string(), kind: z.string() })).optional(),
+  documents: z
+    .array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        kind: z.string(),
+        primary: z.boolean().optional(),
+      })
+    )
+    .optional(),
   versions: z
     .array(z.object({ artifact_id: z.string(), number: z.number(), markdown: z.string() }))
     .optional(),
@@ -255,6 +264,39 @@ type DispatchWrite = Omit<Extract<Pending, { kind: "dispatch" }>, "kind"> & {
   actor: { kind: string; id: string };
 };
 
+/** Each event that Dispatch writes in the request of a write after that write's own event, by the
+ * write's event type (testdata/dispatch-follow-ons.json, with the server's file and function of
+ * each; lane D's replay reads the same file). */
+const FOLLOW_ONS = z
+  .object({ writes: z.record(z.string(), z.object({ followOns: z.array(z.string()) })) })
+  .parse(
+    JSON.parse(
+      readFileSync(path.join(import.meta.dir, "testdata", "dispatch-follow-ons.json"), "utf8")
+    )
+  ).writes;
+
+/** `events` without each follow-on: an event whose actor and `created_at` (its request's
+ * transaction time) are those of the write before it, and whose type is on that write's list in
+ * FOLLOW_ONS. It is part of that write, so it is no action and no other actor's write. */
+function withoutFollowOns<
+  T extends { type: string; created_at: string; actor: { kind: string; id: string } },
+>(events: readonly T[]): T[] {
+  const kept: T[] = [];
+  let lead: T | undefined;
+  for (const event of events) {
+    const follows =
+      lead !== undefined &&
+      event.actor.kind === lead.actor.kind &&
+      event.actor.id === lead.actor.id &&
+      event.created_at === lead.created_at &&
+      (FOLLOW_ONS[lead.type]?.followOns ?? []).includes(event.type);
+    if (follows) continue;
+    lead = event;
+    kept.push(event);
+  }
+  return kept;
+}
+
 /** The Dispatch writes after the seed, each with the actor Dispatch names as its writer: those of
  * the role's own sessions (`own`) are its actions, and every other actor's (Dispatch itself, a
  * seeded person, another session) is kept apart, as no action of the role's. */
@@ -270,49 +312,103 @@ function dispatchWrites(
   );
   // A `*.delivery` event is Dispatch's own attempt to hand a comment or an ask to its target
   // through Envoy, and a run's Dispatch has no Envoy (start_dispatch's FAKE_ENVOY_PORT), so each
-  // one failed there: no write of the role's. The write it delivers keeps its targets.
-  const writes = readback.events
-    .filter((event) => event.seq > readback.seedThrough && !event.type.endsWith(".delivery"))
-    .map((event): DispatchWrite => {
-      const payload = event.payload;
-      let fields = payload;
-      let target = event.issue_key;
-      switch (event.type) {
-        case "handoff.recorded": {
-          const body = handoffs.get(String(payload.handoff_id));
-          if (body === undefined)
-            throw new Error(`missing handoff ${payload.handoff_id} at event ${event.seq}`);
-          fields = {
-            ...payload,
-            body: typeof body === "string" ? Fields.parse(JSON.parse(body)) : body,
-          };
-          break;
-        }
-        case "result.recorded": {
-          const result = results.get(payload.result_id);
-          fields = {
-            ...payload,
-            ...result,
-            check: payload.check_block_id ?? "",
-            commit: payload.commit_sha ?? "",
-          };
-          if (typeof payload.issue === "string") target = payload.issue;
-          break;
-        }
+  // one failed there: no write of the role's. The write it delivers keeps its targets. An event
+  // Dispatch wrote in the request of the write before it is part of that write (withoutFollowOns).
+  const writes = withoutFollowOns(
+    readback.events.filter(
+      (event) => event.seq > readback.seedThrough && !event.type.endsWith(".delivery")
+    )
+  ).map((event): DispatchWrite => {
+    const payload = event.payload;
+    let fields = payload;
+    let target = event.issue_key;
+    let command = commands.get(event.type) ?? event.type;
+    switch (event.type) {
+      case "ask.opened": {
+        const request = approvalRequest(payload, readback.documents ?? []);
+        if (request !== undefined) [command, fields] = ["request-approval", request];
+        break;
       }
-      const { kind, id } = event.actor;
-      return {
-        command: commands.get(event.type) ?? event.type,
-        target,
-        fields,
-        actor: { kind, id },
-        at: event.created_at,
-      };
-    });
+      case "artifact.approved":
+        // A plan review's approval (`dispatch plan-approve`); a person's review is the answer
+        // of an approval request, which keeps its event type.
+        if (payload.kind === "plan")
+          [command, fields] = ["plan-approve", { version: payload.version ?? null }];
+        break;
+      case "handoff.recorded": {
+        const body = handoffs.get(String(payload.handoff_id));
+        if (body === undefined)
+          throw new Error(`missing handoff ${payload.handoff_id} at event ${event.seq}`);
+        fields = {
+          ...payload,
+          body: typeof body === "string" ? Fields.parse(JSON.parse(body)) : body,
+        };
+        break;
+      }
+      case "result.recorded": {
+        const result = results.get(payload.result_id);
+        fields = {
+          ...payload,
+          ...result,
+          check: payload.check_block_id ?? "",
+          commit: payload.commit_sha ?? "",
+        };
+        if (typeof payload.issue === "string") target = payload.issue;
+        break;
+      }
+    }
+    const { kind, id } = event.actor;
+    return {
+      command,
+      target,
+      fields,
+      actor: { kind, id },
+      at: event.created_at,
+    };
+  });
   const ours = (write: DispatchWrite) => write.actor.kind === "session" && own.has(write.actor.id);
   return {
     actions: writes.filter(ours).map((write) => ({ kind: "dispatch", ...write })),
     others: writes.filter((write) => !ours(write)),
+  };
+}
+
+/** An approval request's ask, as Dispatch's `ask.opened` payload holds it (the server's own test
+ * of one is its `approval` part): its question, and each document it names at its version. */
+const ApprovalAsk = z.object({
+  question: z.string(),
+  approval: z.object({
+    documents: z
+      .array(z.object({ artifact_id: z.string(), name: z.string(), version: z.number() }))
+      .min(1),
+  }),
+});
+
+/** The fields of a run's approval request as a trace's `request-approval` states them: the
+ * document it names (`artifact`, its file name), absent where it is the issue's spec, which
+ * `dispatch request-approval` asks for when it names none; `include_verification` where the
+ * request names the Verification document too; and its `summary`, read after the question's own
+ * opening as Dispatch reads it back (docs.ApprovalAskSummary in packages/envoy/internal/dispatch).
+ * Undefined for an ask that is no approval request, and for one whose question does not open so. */
+function approvalRequest(
+  payload: z.infer<typeof Fields>,
+  documents: readonly { id: string; name: string; primary?: boolean | undefined }[]
+): z.infer<typeof Fields> | undefined {
+  const ask = ApprovalAsk.safeParse(payload).data;
+  if (ask === undefined) return undefined;
+  const named = ask.approval.documents.map(({ name, version }) => `${name} (version ${version})`);
+  const listed =
+    named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named.at(-1)}` : (named[0] ?? "");
+  const opening = `Approve ${listed}?`;
+  if (!ask.question.startsWith(opening)) return undefined;
+  const rest = ask.question.slice(opening.length);
+  if (rest !== "" && !rest.startsWith(" ")) return undefined;
+  const [lead] = ask.approval.documents;
+  const spec = documents.find(({ id }) => id === lead?.artifact_id)?.primary === true;
+  return {
+    ...(spec || lead === undefined ? {} : { artifact: lead.name }),
+    ...(ask.approval.documents.length > 1 ? { include_verification: true } : {}),
+    summary: rest.trimStart(),
   };
 }
 

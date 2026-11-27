@@ -289,6 +289,129 @@ test("the role's actions are its own session's Dispatch writes, each with its ac
   expect(parseOutcome(readFileSync(path.join(dir, "outcome.json"), "utf8"))).toEqual(got);
 });
 
+// Catches: an event Dispatch itself wrote in the request of the role's write recorded as an action
+// of the role's, which no trace states, so a run that made the write holds an action no control
+// holds. A reply under a resolved thread reopens its root (comment.reopened) and a version moves
+// the document's open approval request (ask.edited), each at its write's time and by its writer
+// (testdata/dispatch-follow-ons.json): each is part of its write, and neither an action nor another
+// actor's write. The same type at another time is a write of its own.
+test("an event Dispatch writes in the request of a write is part of that write, and no action", () => {
+  const { dir } = syntheticRun();
+  const role = { kind: "session", id: "ses-synthetic" };
+  const event = (seq: number, fraction: string, type: string, payload: object) => ({
+    seq,
+    created_at: `2026-01-07T15:00:02.${fraction}Z`,
+    type,
+    issue_key: "ACME-12",
+    actor: role,
+    payload,
+  });
+  addEvents(
+    dir,
+    event(12, "000000007", "comment.created", { id: "c-2", body: "Yes.", reply_to: "c-1" }),
+    event(13, "000000007", "comment.reopened", { id: "c-1" }),
+    event(14, "000000008", "artifact.version", { artifact_id: "art-plan", name: "plan.md" }),
+    event(15, "000000008", "ask.edited", { id: "ask-approval" }),
+    event(16, "000000009", "ask.edited", { id: "ask-other" })
+  );
+  const got = writeOutcome(dir);
+  const written = got.actions.flatMap((action) =>
+    action.kind === "dispatch" && action.seq > 0 ? [action.command] : []
+  );
+  const count = (command: string) => written.filter((each) => each === command).length;
+  expect([
+    count("comment"),
+    count("doc-edit"),
+    count("edit-ask"),
+    count("comment.reopened"),
+  ]).toEqual([1, 1, 1, 0]);
+  expect(got.otherWrites ?? []).toEqual([]);
+});
+
+// Catches: a run's approval request recorded as an `ask` and its plan review's approval as
+// `artifact.approved`, while a trace states `request-approval` and `plan-approve`, so the reader
+// reads a control and a run differently. An ask is an approval request where its payload holds the
+// server's `approval` part; its fields are the trace's: the document it names (none for the issue's
+// spec), whether the Verification document goes with it, and the summary after the question's own
+// opening. A plain ask stays an `ask`, and a person's review keeps its event type.
+test("a run's approval request and plan approval read as a trace's request-approval and plan-approve", () => {
+  const { dir } = syntheticRun();
+  const file = path.join(dir, "dispatch-readback.json");
+  const readback = JSON.parse(readFileSync(file, "utf8"));
+  readback.documents = [
+    ...(readback.documents ?? []),
+    { id: "art-spec", name: "spec.md", kind: "doc", primary: true },
+    { id: "art-plan", name: "plan.md", kind: "doc", primary: false },
+  ];
+  writeFileSync(file, JSON.stringify(readback));
+  const role = { kind: "session", id: "ses-synthetic" };
+  const person = { kind: "user", id: "usr-acme" };
+  const event = (seq: number, fraction: string, type: string, actor: object, payload: object) => ({
+    seq,
+    created_at: `2026-01-07T15:00:02.${fraction}Z`,
+    type,
+    issue_key: "ACME-12",
+    actor,
+    payload,
+  });
+  const documents = (...named: [string, string, number][]) =>
+    named.map(([artifact_id, name, version]) => ({ artifact_id, name, version }));
+  addEvents(
+    dir,
+    event(12, "000000007", "ask.opened", role, {
+      id: "ask-spec",
+      kind: "approval",
+      question:
+        "Approve spec.md (version 2) and verification.md (version 1)? The rollout runs in stages.",
+      approval: {
+        documents: documents(["art-spec", "spec.md", 2], ["art-v", "verification.md", 1]),
+      },
+    }),
+    event(13, "000000008", "ask.opened", role, {
+      id: "ask-plan",
+      kind: "approval",
+      question: "Approve plan.md (version 1)? The plan of the rollout.",
+      approval: { documents: documents(["art-plan", "plan.md", 1]) },
+    }),
+    event(14, "000000009", "ask.opened", role, {
+      id: "ask-day",
+      question: "Which day?",
+      options: [],
+    }),
+    event(15, "000000010", "artifact.approved", role, {
+      artifact_id: "art-plan",
+      name: "plan.md",
+      version: 1,
+      kind: "plan",
+    }),
+    event(16, "000000011", "artifact.approved", person, {
+      artifact_id: "art-spec",
+      name: "spec.md",
+      version: 2,
+      kind: "person",
+    })
+  );
+  const got = writeOutcome(dir);
+  expect(
+    got.actions
+      .filter(
+        (action) =>
+          action.kind === "dispatch" &&
+          ["request-approval", "ask", "plan-approve"].includes(action.command)
+      )
+      .map((action) => (action.kind === "dispatch" ? [action.command, action.fields] : []))
+  ).toEqual([
+    ["request-approval", { include_verification: true, summary: "The rollout runs in stages." }],
+    ["request-approval", { artifact: "plan.md", summary: "The plan of the rollout." }],
+    ["ask", { id: "ask-day", question: "Which day?", options: [] }],
+    ["plan-approve", { version: 1 }],
+  ]);
+  expect(got.otherWrites?.map(({ command }) => command)).toEqual(["artifact.approved"]);
+  expect(
+    parseOutcome(readFileSync(file.replace("dispatch-readback.json", "outcome.json"), "utf8"))
+  ).toEqual(got);
+});
+
 // A GitHub action is gh-standin.ts's record of the call alone: the request gh makes for it, as
 // gh-standin read the arguments, and the change it kept, which is what the call did. outcome.ts
 // reads no argument of the call again: a short flag is what gh-standin says it is, and a call that

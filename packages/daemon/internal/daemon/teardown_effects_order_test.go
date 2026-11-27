@@ -1,10 +1,13 @@
 package daemon
 
+//ci:reads packages/pi-legion/scripts/skill-scenarios/testdata/dispatch-follow-ons.json TestTeardownEffectsOrderFoldsFollowOns reads the follow-on route table through ../../../pi-legion
+
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -109,7 +113,9 @@ type teardownEffectsActor struct {
 }
 
 // teardownEffectsEvent is one event of dispatch-readback.json (seed.ts case-readback): Dispatch's
-// own envelope, with the actor that wrote it and the time Dispatch committed it.
+// own envelope, with the actor that wrote it and the time Dispatch committed it. followOns is each
+// event Dispatch itself wrote in the same request after it (teardownEffectsFollowOns), by type, and
+// followed whether the order placed them, so that the replay checks its own write wrote the same.
 type teardownEffectsEvent struct {
 	Seq        int64                `json:"seq"`
 	Type       string               `json:"type"`
@@ -117,10 +123,51 @@ type teardownEffectsEvent struct {
 	ArtifactID string               `json:"artifact_id"`
 	Actor      teardownEffectsActor `json:"actor"`
 	Payload    map[string]any       `json:"payload"`
+	followOns  []string
+	followed   bool
+}
+
+// teardownEffectsFollowOnsFile is the one table of the events Dispatch writes in the request of a
+// write after that write's own event, by the write's event type, with the server's file and
+// function of each beside it; outcome.ts reads the same file, so that no follow-on is an action.
+const teardownEffectsFollowOnsFile = "../../../pi-legion/scripts/skill-scenarios/testdata/dispatch-follow-ons.json"
+
+// teardownEffectsFollowOns is that table: each event that is part of the write that leads it,
+// which the replay makes again whole, and never a write of its own. The order joins an event to
+// the write before it by its actor, its time (the events of one request share their transaction's)
+// and its type.
+var teardownEffectsFollowOns = sync.OnceValue(func() map[string][]string {
+	var table struct {
+		Writes map[string]struct{ FollowOns []string }
+	}
+	data, err := os.ReadFile(teardownEffectsFollowOnsFile)
+	if err == nil {
+		err = json.Unmarshal(data, &table)
+	}
+	if err != nil || len(table.Writes) == 0 {
+		panic(fmt.Sprintf("read the follow-on route table %s: %v", teardownEffectsFollowOnsFile, err))
+	}
+	followOns := map[string][]string{}
+	for write, entry := range table.Writes {
+		followOns[write] = entry.FollowOns
+	}
+	return followOns
+})
+
+// teardownEffectsFollowOnsOf is each follow-on event of the Dispatch write c, by type; none for any
+// other change.
+func teardownEffectsFollowOnsOf(c *teardownEffectsChange) []string {
+	if c.event == nil {
+		return nil
+	}
+	return c.event.followOns
 }
 
 // teardownEffectsReadback is the part of dispatch-readback.json the replay reads: the event log
-// with its seed cursor, and the records whose bodies the events do not carry.
+// with its seed cursor, and the records whose bodies the events do not carry: each document with
+// its latest text, the text of each version an event wrote (`versions`, absent from a readback
+// taken before seed.ts read them), each handoff, each question (an approval request with the
+// documents it names), and each result.
 type teardownEffectsReadback struct {
 	SeedThrough int64                  `json:"seedThrough"`
 	Events      []teardownEffectsEvent `json:"events"`
@@ -130,6 +177,11 @@ type teardownEffectsReadback struct {
 		Kind string `json:"kind"`
 		Text string `json:"text"`
 	} `json:"documents"`
+	Versions []struct {
+		ArtifactID string `json:"artifact_id"`
+		Number     int    `json:"number"`
+		Markdown   string `json:"markdown"`
+	} `json:"versions"`
 	Handoffs []struct {
 		ID      string               `json:"id"`
 		Phase   string               `json:"phase"`
@@ -137,17 +189,41 @@ type teardownEffectsReadback struct {
 		Body    json.RawMessage      `json:"body"`
 		Author  teardownEffectsActor `json:"author"`
 	} `json:"handoffs"`
-	Asks []struct {
-		ID       string          `json:"id"`
-		Question string          `json:"question"`
-		Options  json.RawMessage `json:"options"`
-	} `json:"asks"`
+	Asks    []teardownEffectsAsk `json:"asks"`
 	Results struct {
 		Checks []struct {
 			ID      string           `json:"block_id"`
 			Results []map[string]any `json:"results"`
 		} `json:"checks"`
 	} `json:"results"`
+}
+
+// teardownEffectsAsk is a question as the readback holds it: an approval request names the
+// documents it asks a person to approve, each at its version (`approval`, nil for any other ask).
+type teardownEffectsAsk struct {
+	ID       string          `json:"id"`
+	Question string          `json:"question"`
+	Options  json.RawMessage `json:"options"`
+	Approval *struct {
+		Documents []teardownEffectsApprovalDocument `json:"documents"`
+	} `json:"approval"`
+}
+
+// teardownEffectsApprovalDocument is one document an approval request names, at its version.
+type teardownEffectsApprovalDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Name       string `json:"name"`
+	Version    int    `json:"version"`
+}
+
+// versionText is the text of version number of the document id, as the readback read it.
+func (b *teardownEffectsReadback) versionText(id string, number int) (string, bool) {
+	for _, v := range b.Versions {
+		if v.ArtifactID == id && v.Number == number {
+			return v.Markdown, true
+		}
+	}
+	return "", false
 }
 
 // handoffBody is the stored body of the handoff record id: Dispatch keeps it as a string, and an
@@ -404,11 +480,30 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 		changes = append(changes, c)
 	}
 	seedThrough := plan.Readback.SeedThrough
+	// The last event placed, which a later event of the same request joins as a follow-on
+	// (teardownEffectsFollowOns), and whether its action in outcome.json was taken here (Dispatch's or
+	// the daemon's own write), so a follow-on's is taken here too; a change's follow-ons have their
+	// actions taken with the change's below.
+	var lead struct {
+		event *teardownEffectsEvent
+		taken bool
+	}
 	for _, e := range plan.Readback.Events {
 		if strings.HasSuffix(e.Type, ".delivery") {
 			continue
 		}
+		if l := lead.event; l != nil && e.Actor == l.Actor && e.CreatedAt.Equal(l.CreatedAt) && slices.Contains(teardownEffectsFollowOns()[l.Type], e.Type) {
+			l.followOns = append(l.followOns, e.Type)
+			// outcome.ts records no action of a follow-on; one written before it folded them holds
+			// one at the write's own time, which is taken here.
+			if lead.taken && e.Seq > seedThrough {
+				take("dispatch", e.CreatedAt)
+			}
+			continue
+		}
 		event := e
+		event.followed = true
+		lead.event, lead.taken = &event, false
 		c := teardownEffectsChange{Kind: "dispatch", Source: fmt.Sprintf("dispatch-readback.json event %d", e.Seq), What: e.Type, At: caseAt(e.CreatedAt), from: e.CreatedAt, to: e.CreatedAt, event: &event}
 		if e.Seq <= seedThrough {
 			// The case's starting state: the boot creates the issue and sets its status, and
@@ -431,6 +526,7 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 			if _, ok := take("dispatch", e.CreatedAt); !ok {
 				return plan, fmt.Errorf("%s (%s) has no action in outcome.json: the records disagree", c.Source, e.Type)
 			}
+			lead.taken = true
 			continue
 		}
 		c.fault, c.unsupported = teardownEffectsDispatchFault(&plan.Readback, e)
@@ -448,6 +544,11 @@ func teardownEffectsOrder(dir string, calls []teardownEffectsCall, clock, launch
 			return plan, fmt.Errorf("%s (%s) is outcome.json action %d, which records the change %s: the records disagree on what the call did", c.Source, c.What, action.Seq, action.Change.Action)
 		}
 		c.OutcomeSeq = action.Seq
+		// outcome.ts records no action of a follow-on; one written before it folded them holds one
+		// at the write's own time, after the write's, which is taken with it.
+		for range teardownEffectsFollowOnsOf(c) {
+			take(c.Kind, c.from)
+		}
 	}
 	moves, err := teardownEffectsWorkspaceMoves(dir, launched)
 	if err != nil {
@@ -658,12 +759,16 @@ func teardownEffectsWorkspaceMoves(dir string, launched time.Time) ([]teardownEf
 }
 
 // teardownEffectsDispatchFault is why the replay cannot write e again ("" when it can): it writes
-// a handoff, an issue comment, a result, a question and a document, each as its author did.
-// unsupported says the fault is the kind of write itself, one the replay never makes (a status
-// write, a claim, a reply, an answer, a question of a document, a file, a document its author
-// changed after making it), and not a record the readback lacks or an author the write cannot have.
+// a handoff, a comment on the issue (a reply in a comment's thread and an answer on a question
+// among them), a message, a status of the issue, a result, a question, an approval request, a plan
+// review's approval and a document and each of its versions, each as its author did
+// (teardownEffectsEventRequest). unsupported says the fault is the kind of write itself, one the
+// replay never makes (a claim, a comment anchored on a document or a reply to a block of one, a
+// question of a document, another change of the issue than its status, a person's review, a
+// file), and not a record the readback lacks or an author the write cannot have.
 func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsEvent) (fault string, unsupported bool) {
 	text := func(key string) string { s, _ := e.Payload[key].(string); return s }
+	set := func(field string) bool { v, ok := e.Payload[field]; return ok && v != nil && v != "" && v != false }
 	switch e.Type {
 	case "handoff.recorded":
 		if e.Actor.Kind != "session" {
@@ -672,14 +777,39 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 		if _, _, _, ok := b.handoffBody(text("handoff_id")); !ok {
 			return "its record " + text("handoff_id") + " is not in the readback", false
 		}
-	case "comment.created":
-		for _, field := range []string{"reply_to", "ask_id", "anchor", "artifact_id", "block_id"} {
-			if v, ok := e.Payload[field]; ok && v != nil && v != "" {
-				return "a reply, an answer on a question or an anchored comment (" + field + ")", true
+	case "comment.created", "message.created":
+		unmade := []string{"anchor", "artifact_id", "block_id", "reply_block", "suggestion"}
+		if e.Type == "message.created" {
+			unmade = []string{"target", "reply_block"}
+		}
+		for _, field := range unmade {
+			if set(field) {
+				return "a post anchored on a document, aimed at a party or replying to a block (" + field + ")", true
 			}
 		}
 		if _, ok := e.Payload["body"].(string); !ok {
 			return "its event carries no body", false
+		}
+		if set("body_truncated") {
+			return "its event carries the start of its body alone", false
+		}
+	case "issue.updated", "issue.closed":
+		changed, ok := e.Payload["changed"].([]any)
+		if !ok {
+			return "its event names no field it changed", false
+		}
+		status := false
+		for _, field := range changed {
+			switch field {
+			case "status":
+				status = true
+			case "closed_at":
+			default:
+				return fmt.Sprintf("a change of the issue's %v, and the replay makes a change of its status alone", field), true
+			}
+		}
+		if !status || text("status") == "" {
+			return "its event changes no status", false
 		}
 	case "result.recorded":
 		if e.Actor.Kind != "session" {
@@ -688,36 +818,62 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 		if _, _, ok := b.result(text("result_id")); !ok {
 			return "its result " + text("result_id") + " is not in the readback", false
 		}
+	case "ask.answered":
+		if _, ok := e.Payload["answer"].(map[string]any); !ok {
+			return "its event carries no answer", false
+		}
+	case "ask.resolved":
+		resolution, _ := e.Payload["resolution"].(map[string]any)
+		if kind, _ := resolution["kind"].(string); kind != "resolved" {
+			return fmt.Sprintf("a resolution of kind %v, and the replay makes a resolve of a question alone", resolution["kind"]), true
+		}
 	case "ask.opened":
+		ask := slices.IndexFunc(b.Asks, func(ask teardownEffectsAsk) bool { return ask.ID == text("id") })
+		if ask < 0 {
+			return "its question " + text("id") + " is not in the readback", false
+		}
+		if approval := b.Asks[ask].Approval; approval != nil {
+			if _, ok := teardownEffectsApprovalSummary(b.Asks[ask].Question, approval.Documents); !ok {
+				return "its approval request's question does not open as Dispatch's approval question does", false
+			}
+			break
+		}
 		for _, field := range []string{"block_id", "anchor", "artifact_id"} {
-			if v, ok := e.Payload[field]; ok && v != nil && v != "" {
+			if set(field) {
 				return "a question of a document (" + field + ")", true
 			}
 		}
-		found := false
-		for _, ask := range b.Asks {
-			found = found || ask.ID == text("id")
+	case "artifact.approved":
+		if text("kind") != "plan" {
+			return "a review of kind " + text("kind") + ", and the replay makes a plan review's alone", true
 		}
-		if !found {
-			return "its question " + text("id") + " is not in the readback", false
-		}
-	case "artifact.created":
+	case "artifact.created", "artifact.version":
+		id, name, version := teardownEffectsWrittenVersion(e)
 		kind := ""
 		for _, d := range b.Documents {
-			if d.ID == e.ArtifactID {
+			if d.ID == id {
 				kind = d.Kind
 			}
 		}
 		switch kind {
 		case "":
-			return "the readback holds no document " + e.ArtifactID, false
+			return "the readback holds no document " + id, false
 		case "doc":
 		default:
-			return "the readback holds " + e.ArtifactID + " as a " + kind + ", which the replay does not make", true
+			return "the readback holds " + id + " as a " + kind + ", which the replay does not make", true
 		}
+		if _, ok := b.versionText(id, version); ok {
+			break
+		}
+		if e.Type == "artifact.version" {
+			return fmt.Sprintf("the readback holds no text of version %d of %s (%s)", version, name, id), false
+		}
+		// A readback that holds no text of a document's first version (one taken before seed.ts
+		// read each version's text) holds its latest text, which is that text only where nothing
+		// changed the document since.
 		for _, later := range b.Events {
 			changed := later.Type == "artifact.version" || later.Type == "artifact.human_edited" || later.Type == "artifact.renamed" || later.Type == "artifact.removed"
-			if later.Seq > e.Seq && later.ArtifactID == e.ArtifactID && changed {
+			if later.Seq > e.Seq && later.ArtifactID == id && changed {
 				return "the readback holds only the document's latest text, and " + later.Type + " changed it after it was made", later.Actor == e.Actor
 			}
 		}
@@ -725,6 +881,170 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 		return "the replay writes no " + e.Type, true
 	}
 	return "", false
+}
+
+// teardownEffectsWrittenVersion is the document a document's event wrote, its file name and the
+// version it wrote (outcome.ts writtenVersion): an artifact.created event's new document, at its
+// first version where the event names none, and an artifact.version event's document and version.
+func teardownEffectsWrittenVersion(e teardownEffectsEvent) (id, name string, version int) {
+	var written struct {
+		ArtifactID string `json:"artifact_id"`
+		Name       string `json:"name"`
+		Version    struct{ Number int }
+		Artifact   struct {
+			ID, Name string
+			Versions []struct{ Number int }
+		}
+	}
+	encoded, _ := json.Marshal(e.Payload)
+	_ = json.Unmarshal(encoded, &written)
+	if e.Type == "artifact.version" {
+		id, name, version = written.ArtifactID, written.Name, written.Version.Number
+	} else {
+		id, name, version = written.Artifact.ID, written.Artifact.Name, 1
+		if len(written.Artifact.Versions) > 0 {
+			version = written.Artifact.Versions[0].Number
+		}
+	}
+	if id == "" {
+		id = e.ArtifactID
+	}
+	return id, name, version
+}
+
+// teardownEffectsApprovalSummary is the summary of an approval request whose question is question
+// and whose documents are documents, as Dispatch reads it back (docs.ApprovalAskSummary in
+// packages/envoy/internal/dispatch): the question is `Approve <each document as "name (version
+// n)", the last after "and">?`, then a space and the summary where the request gave one. It is
+// false for a question that does not open so.
+func teardownEffectsApprovalSummary(question string, documents []teardownEffectsApprovalDocument) (string, bool) {
+	named := make([]string, len(documents))
+	for i, d := range documents {
+		named[i] = fmt.Sprintf("%s (version %d)", d.Name, d.Version)
+	}
+	listed := strings.Join(named, "")
+	if len(named) > 1 {
+		listed = strings.Join(named[:len(named)-1], ", ") + " and " + named[len(named)-1]
+	}
+	rest, ok := strings.CutPrefix(question, "Approve "+listed+"?")
+	if !ok || len(documents) == 0 || rest != "" && !strings.HasPrefix(rest, " ") {
+		return "", false
+	}
+	return strings.TrimPrefix(rest, " "), true
+}
+
+// teardownEffectsRequest is one Dispatch request that makes a run's write again, as the API route
+// its `dispatch` command calls takes it: its method, path and body, to which its sender adds the
+// actor; the kind and the run's id of the record it makes, which joins the replay's id map under
+// `<kind>/<id>` with the id Dispatch's answer names; and the version of a document that answer
+// must name (0 for none).
+type teardownEffectsRequest struct {
+	Method, Path string
+	Body         map[string]any
+	Kind, ID     string
+	Version      int
+}
+
+// teardownEffectsEventRequest is the request that makes the run's Dispatch write e again on the
+// issue key, from e and the readback b, which teardownEffectsDispatchFault takes: a comment on the
+// issue with its reply's comment or its answer's question and turn, a message with the message it
+// replies to, a status, a question, an approval request of the documents it names (its summary
+// read back as Dispatch reads it), a plan review's approval, and a document's first version and
+// each later one, each the text of that version as the readback read it, written under its name,
+// which makes the document's next version. A record a field names by the run's id is named by the
+// replay's (ids, by `<kind>/<the run's id>`), and so is each reference of a body or a document's
+// text to a comment or a question of key (teardownEffectsCaseRefs). A record the replay holds no id
+// of is an error.
+func teardownEffectsEventRequest(key string, e teardownEffectsEvent, b *teardownEffectsReadback, ids map[string]string) (teardownEffectsRequest, error) {
+	text := func(field string) string { s, _ := e.Payload[field].(string); return s }
+	prefix := "/api/v1/issues/" + key
+	given := func(kind, field, id string) (string, error) {
+		if mapped, ok := ids[kind+"/"+id]; ok {
+			return mapped, nil
+		}
+		return "", fmt.Errorf("%s names the %s %s by %s, which the replay made no record of", e.Type, kind, id, field)
+	}
+	switch e.Type {
+	case "comment.created", "message.created":
+		kind, reply := "comment", map[string]string{"reply_to": "comment", "ask_id": "ask"}
+		if e.Type == "message.created" {
+			kind, reply = "message", map[string]string{"in_reply_to": "message"}
+		}
+		body := map[string]any{"body": teardownEffectsCaseRefs(text("body"), key, ids)}
+		for _, field := range slices.Sorted(maps.Keys(reply)) {
+			if id := text(field); id != "" {
+				mapped, err := given(reply[field], field, id)
+				if err != nil {
+					return teardownEffectsRequest{}, err
+				}
+				body[field] = mapped
+			}
+		}
+		if turn := text("turn"); turn != "" && body["ask_id"] != nil {
+			body["turn"] = turn
+		}
+		return teardownEffectsRequest{Method: http.MethodPost, Path: prefix + "/" + kind + "s", Body: body, Kind: kind, ID: text("id")}, nil
+	case "issue.updated", "issue.closed":
+		return teardownEffectsRequest{Method: http.MethodPatch, Path: prefix, Body: map[string]any{"status": text("status")}}, nil
+	case "ask.answered", "ask.resolved":
+		// A person's answer of a question (POST /api/v1/asks/{id}/answer, as seed.ts answers one,
+		// on the question's first state) and a resolve of one (`dispatch resolve-ask`: POST
+		// /api/v1/asks/{id}/resolve), on the replay's question.
+		ask, err := given("ask", "id", text("id"))
+		if err != nil {
+			return teardownEffectsRequest{}, err
+		}
+		if e.Type == "ask.resolved" {
+			resolution, _ := e.Payload["resolution"].(map[string]any)
+			return teardownEffectsRequest{Method: http.MethodPost, Path: "/api/v1/asks/" + ask + "/resolve", Body: map[string]any{"kind": "resolved", "reason": resolution["reason"]}}, nil
+		}
+		answer, _ := e.Payload["answer"].(map[string]any)
+		selected, _ := answer["selected"].([]any)
+		if selected == nil {
+			selected = []any{}
+		}
+		return teardownEffectsRequest{Method: http.MethodPost, Path: "/api/v1/asks/" + ask + "/answer", Body: map[string]any{"selected": selected, "text": answer["text"], "expected_edited_at": nil}}, nil
+	case "ask.opened":
+		for _, ask := range b.Asks {
+			if ask.ID != text("id") {
+				continue
+			}
+			if ask.Approval == nil {
+				return teardownEffectsRequest{Method: http.MethodPost, Path: prefix + "/asks", Body: map[string]any{"question": ask.Question, "options": ask.Options}, Kind: "ask", ID: ask.ID}, nil
+			}
+			documents := ask.Approval.Documents
+			summary, _ := teardownEffectsApprovalSummary(ask.Question, documents)
+			artifact, err := given("artifact", "approval", documents[0].ArtifactID)
+			if err != nil {
+				return teardownEffectsRequest{}, err
+			}
+			body := map[string]any{"summary": summary}
+			if len(documents) > 1 {
+				body["include_verification"] = true
+			}
+			return teardownEffectsRequest{Method: http.MethodPost, Path: "/api/v1/artifacts/" + artifact + "/approval-requests", Body: body, Kind: "ask", ID: ask.ID, Version: documents[0].Version}, nil
+		}
+	case "artifact.approved":
+		artifact, err := given("artifact", "artifact_id", text("artifact_id"))
+		if err != nil {
+			return teardownEffectsRequest{}, err
+		}
+		version, _ := e.Payload["version"].(float64)
+		return teardownEffectsRequest{Method: http.MethodPost, Path: "/api/v1/artifacts/" + artifact + "/plan-reviews", Body: map[string]any{"version": int(version)}}, nil
+	case "artifact.created", "artifact.version":
+		id, _, version := teardownEffectsWrittenVersion(e)
+		for _, d := range b.Documents {
+			if d.ID != id {
+				continue
+			}
+			content, ok := b.versionText(id, version)
+			if !ok {
+				content = d.Text
+			}
+			return teardownEffectsRequest{Method: http.MethodPost, Path: prefix + "/artifacts", Body: map[string]any{"name": d.Name, "content": teardownEffectsCaseRefs(content, key, ids)}, Kind: "artifact", ID: id, Version: version}, nil
+		}
+	}
+	return teardownEffectsRequest{}, fmt.Errorf("the replay writes no %s", e.Type)
 }
 
 // teardownEffectsDaemonWrite says whether e is a write by the session of a project's Legion daemon
@@ -1520,7 +1840,7 @@ func TestTeardownEffectsOrderRefusesUnplacedFacts(t *testing.T) {
 		{name: "a pull request change outcome.json records otherwise", edits: [][3]string{changed("merge")}, want: "is outcome.json action 3, which records the change merge: the records disagree on what the call did"},
 		{name: "a pull request opened while its branch moved", edits: [][3]string{{"calls.jsonl", `"at":"2026-11-27T00:07:13.830Z"`, `"at":"2026-11-27T00:07:05.300Z"`}, {"calls.jsonl", `"done":"2026-11-27T00:07:13.872Z"`, `"done":"2026-11-27T00:07:05.500Z"`}, {"outcome.json", "2030-01-07T15:00:35.840834969Z", "2030-01-07T15:00:27.310834969Z"}}, want: "overlap, so their order is unknown"},
 		{name: "a completion answered outside every call", edits: [][3]string{{"daemon.log", "2026-11-27T00:07:27.350Z", "2026-11-27T00:07:30.000Z"}}, want: "falls inside 0 legion calls: an unpaired request"},
-		{name: "a Dispatch write the replay cannot make", edits: [][3]string{{"dispatch-readback.json", `"type": "result.recorded"`, `"type": "message.created"`}}, want: "precedes legion call 2 (toolu_05published_accepted): the replay writes no message.created"},
+		{name: "a Dispatch write the replay cannot make", edits: [][3]string{{"dispatch-readback.json", `"type": "result.recorded"`, `"type": "issue.claimed"`}}, want: "precedes legion call 2 (toolu_05published_accepted): the replay writes no issue.claimed"},
 		{name: "a call whose result the transcript lacks", edits: [][3]string{{"sessions/7d1e5a12-0c05-4a12-9b12-a5120c05a512.jsonl", `"toolCallId":"toolu_05published_accepted"`, `"toolCallId":"toolu_05_elsewhere"`}}, want: "legion call 2 (toolu_05published_accepted) has no recorded result"},
 		{name: "a seeded document changed after the seed", edits: [][3]string{{"dispatch-readback.json", `"id": 9005,`, `"id": 9010, "issue_key": "ACME-12", "artifact_id": "art-acme-12-verification", "seq": 7, "actor": {"kind": "session", "id": "rig-seed"}, "created_at": "2026-11-27T00:07:20.000000Z", "type": "artifact.version", "payload": {}}, {"id": 9005,`}}, want: "which the replay cannot seed"},
 		{name: "a workspace move inside the refused call", edits: [][3]string{{"workspace-ops.jsonl", commit, `"start":"2026-11-27T00:06:55.100+00:00","end":"2026-11-27T00:06:55.200+00:00"`}}, want: "workspace-ops.jsonl:6 (jj operation a8a30e0ab996) (@- 92e496e0dbed653a0675d987ce34492368592cbc..d9585820bbbfe46ceb0a69284276fa120eefd9c5: commit 3797d8d1fd89561fed2d1f3e01a45f1e97975df4) falls inside legion call 1 (toolu_01local_only_refused)"},
@@ -1586,11 +1906,12 @@ func TestTeardownEffectsOrderAuditRecords(t *testing.T) {
 }
 
 // A HARNESS verdict is typed by its cause, never read from its reason. A Dispatch write the replay
-// does not make (a status write, a reply), of the session whose legion call it precedes and scored
-// by outcome.json, is the role's write, named by its record, its outcome.json action and case time,
-// its author and that call. The same write by another session, a handoff by a person, a write whose
-// record the readback lacks or whose event carries no body, and a seeded write the replay cannot
-// make are the harness's own records. Each row changes one event of the control.
+// does not make (a claim, a board move, a comment anchored on a document), of the session whose
+// legion call it precedes and scored by outcome.json, is the role's write, named by its record, its
+// outcome.json action and case time, its author and that call. The same write by another session,
+// a handoff by a person, a write whose record the readback lacks or whose event carries no body or
+// names no change, and a seeded write the replay cannot make are the harness's own records. Each
+// row changes one event of the control.
 func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 	t.Parallel()
 	const role = "7d1e5a12-0c05-4a12-9b12-a5120c05a512"
@@ -1607,17 +1928,21 @@ func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 		want  string
 		fault *teardownEffectsFault
 	}{
-		{"the role's status write", 6, func(e map[string]any) { e["type"] = "issue.updated" }, "precedes legion call 2 (toolu_05published_accepted): the replay writes no issue.updated", roleWrite("issue.updated")},
-		{"the role's reply", 6, func(e map[string]any) {
-			e["type"], payload(e)["reply_to"], payload(e)["body"] = "comment.created", "cmt-1", "Done."
-		}, "a reply, an answer on a question or an anchored comment (reply_to)", roleWrite("comment.created")},
-		{"another session's status write", 6, func(e map[string]any) {
-			e["type"], e["actor"] = "issue.updated", map[string]any{"kind": "session", "id": "ses-acme-12-tester"}
-		}, "the replay writes no issue.updated", records},
+		{"the role's claim", 6, func(e map[string]any) { e["type"] = "issue.claimed" }, "precedes legion call 2 (toolu_05published_accepted): the replay writes no issue.claimed", roleWrite("issue.claimed")},
+		{"the role's move on the board", 6, func(e map[string]any) {
+			e["type"], payload(e)["status"], payload(e)["changed"] = "issue.updated", "in_progress", []any{"rank"}
+		}, "a change of the issue's rank, and the replay makes a change of its status alone", roleWrite("issue.updated")},
+		{"the role's comment anchored on a document", 6, func(e map[string]any) {
+			e["type"], payload(e)["anchor"], payload(e)["body"] = "comment.created", map[string]any{"artifact": "art-acme-12-verification", "quote": "k1"}, "Done."
+		}, "a post anchored on a document, aimed at a party or replying to a block (anchor)", roleWrite("comment.created")},
+		{"another session's claim", 6, func(e map[string]any) {
+			e["type"], e["actor"] = "issue.claimed", map[string]any{"kind": "session", "id": "ses-acme-12-tester"}
+		}, "the replay writes no issue.claimed", records},
 		{"a person's handoff", 5, func(e map[string]any) { e["actor"] = map[string]any{"kind": "user", "id": "usr-acme"} }, "precedes legion call 1 (toolu_01local_only_refused): a handoff written by a user", records},
 		{"the role's result the readback lacks", 6, func(e map[string]any) { payload(e)["result_id"] = "res-missing" }, "its result res-missing is not in the readback", records},
 		{"the role's comment whose event carries no body", 6, func(e map[string]any) { e["type"] = "comment.created" }, "its event carries no body", records},
-		{"a seeded write the replay cannot make", 2, func(e map[string]any) { e["type"] = "message.created" }, "which the replay cannot seed: the replay writes no message.created", records},
+		{"the role's update whose event names no change", 6, func(e map[string]any) { e["type"] = "issue.updated" }, "its event names no field it changed", records},
+		{"a seeded write the replay cannot make", 2, func(e map[string]any) { e["type"] = "issue.claimed" }, "which the replay cannot seed: the replay writes no issue.claimed", records},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -1634,6 +1959,45 @@ func TestTeardownEffectsOrderTypesTheRoleWrite(t *testing.T) {
 			want, _ := json.Marshal(row.fault)
 			if string(got) != string(want) {
 				t.Fatalf("typed the HARNESS cause %s, want %s", got, want)
+			}
+		})
+	}
+}
+
+// A run's reply in a comment's thread, its answer on a question, its message and its status are
+// writes the replay makes again: each is placed before the call it preceded, joined to the
+// outcome.json action that scores it, as every other write of the role's is.
+func TestTeardownEffectsOrderPlacesTheRoleWrites(t *testing.T) {
+	t.Parallel()
+	payload := func(event map[string]any) map[string]any { p, _ := event["payload"].(map[string]any); return p }
+	for _, row := range []struct {
+		name, event string
+		edit        func(event map[string]any)
+	}{
+		{"a reply in a comment's thread", "comment.created", func(e map[string]any) { payload(e)["reply_to"], payload(e)["body"] = "cmt-1", "Done." }},
+		{"an answer on a question", "comment.created", func(e map[string]any) {
+			payload(e)["ask_id"], payload(e)["turn"], payload(e)["body"] = "ask-1", "human", "Yes."
+		}},
+		{"a message", "message.created", func(e map[string]any) { payload(e)["body"] = "k1 passes at the pushed head." }},
+		{"a status", "issue.updated", func(e map[string]any) { payload(e)["status"], payload(e)["changed"] = "testing", []any{"status"} }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "run")
+			if err := os.CopyFS(dir, os.DirFS(teardownEffectsLocalOnlyHead)); err != nil {
+				t.Fatal(err)
+			}
+			teardownEffectsEditEvent(t, filepath.Join(dir, "dispatch-readback.json"), 6, func(e map[string]any) {
+				e["type"] = row.event
+				row.edit(e)
+			})
+			plan, err := teardownEffectsOrderOf(t, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			placed := teardownEffectsPlacedOf(plan.Steps[1].Before)
+			if want := (teardownEffectsPlaced{"dispatch", row.event, 4}); len(placed) != 3 || placed[2] != want {
+				t.Fatalf("placed %+v before the second call, want %+v last", placed, want)
 			}
 		})
 	}
@@ -1667,6 +2031,105 @@ func teardownEffectsEditEvent(t *testing.T, path string, seq float64, edit func(
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Catches: an event Dispatch itself writes in the request of the role's write (each route's list is
+// teardownEffectsFollowOns, read from packages/envoy/internal/dispatch and cited there) taken for a
+// write of its own that the replay cannot make, so a run that made the write replays HARNESS. Each
+// row makes the control's event 6 a write of one route and adds, right after it, an event of the
+// same request (its actor and its time) with its action in outcome.json: the follow-on is part of
+// the write, placed as its follow-on, with no change of its own. The same event at another time is
+// a write of its own, which the replay does not make.
+func TestTeardownEffectsOrderFoldsFollowOns(t *testing.T) {
+	t.Parallel()
+	const at = "2030-01-07T15:00:40.260834969Z"
+	for _, row := range []struct {
+		name, lead string
+		payload    map[string]any
+		followOns  []string
+		elsewhere  bool
+		want       string
+	}{
+		{name: "a reply that reopens its thread (api/comment_create.go, createComment)", lead: "comment.created", payload: map[string]any{"body": "Reopened.", "reply_to": "cmt-1"}, followOns: []string{"comment.reopened"}},
+		{name: "a document's version that moves its approval request (api/artifacts.go, docs.MoveApprovalAsk)", lead: "artifact.version", payload: map[string]any{"artifact_id": "art-acme-12-verification", "name": "verification.md", "version": map[string]any{"number": 2}}, followOns: []string{"ask.edited"}},
+		{name: "a close that withdraws the asks and releases the claim (api/issue_patch.go)", lead: "issue.closed", payload: map[string]any{"status": "done", "changed": []any{"status", "closed_at"}}, followOns: []string{"ask.resolved", "issue.released"}},
+		{name: "a status that changes nothing else", lead: "issue.updated", payload: map[string]any{"status": "testing", "changed": []any{"status"}}},
+		{name: "an approval request's answer with its review (api/reviews.go, recordArtifactReview)", lead: "ask.answered", payload: map[string]any{"id": "ask-1", "answer": map[string]any{"selected": []any{"Approve"}, "text": "Approve"}}, followOns: []string{"artifact.approved"}},
+		{name: "a follow-on type at another time", lead: "comment.created", payload: map[string]any{"body": "Done."}, followOns: []string{"comment.reopened"}, elsewhere: true, want: "(comment.reopened"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "run")
+			if err := os.CopyFS(dir, os.DirFS(teardownEffectsLocalOnlyHead)); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "dispatch-readback.json")
+			var readback map[string]any
+			data, err := os.ReadFile(path)
+			if err == nil {
+				err = json.Unmarshal(data, &readback)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, _ := readback["events"].([]any)
+			var placed []any
+			for _, e := range events {
+				placed = append(placed, e)
+				event, _ := e.(map[string]any)
+				if event["seq"] != float64(6) {
+					continue
+				}
+				event["type"], event["payload"] = row.lead, row.payload
+				for _, followOn := range row.followOns {
+					added := maps.Clone(event)
+					added["type"], added["payload"] = followOn, map[string]any{"id": "ask-1"}
+					if row.elsewhere {
+						added["created_at"] = "2026-11-27T00:07:20.000000Z"
+					}
+					placed = append(placed, added)
+				}
+			}
+			readback["events"] = placed
+			readback["versions"] = []any{
+				map[string]any{"artifact_id": "art-acme-12-verification", "number": 1, "markdown": "# Verification\n"},
+				map[string]any{"artifact_id": "art-acme-12-verification", "number": 2, "markdown": "# Verification, again\n"},
+			}
+			if data, err = json.Marshal(readback); err == nil {
+				err = os.WriteFile(path, data, 0o600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			outcome := filepath.Join(dir, "outcome.json")
+			text, err := os.ReadFile(outcome)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Each follow-on's action follows the write's, at the write's own time.
+			for range row.followOns {
+				text = []byte(strings.Replace(string(text), `"seq": 4,`, `"seq": 4, "at": "`+at+`"}, {"kind": "dispatch", "seq": 40,`, 1))
+			}
+			if err := os.WriteFile(outcome, text, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := teardownEffectsOrderOf(t, dir)
+			if row.want != "" {
+				if err == nil || !strings.Contains(err.Error(), row.want) {
+					t.Fatalf("placed the run with error %v, want one naming %q", err, row.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := plan.Steps[1].Before
+			last := before[len(before)-1]
+			if len(before) != 3 || last.What != row.lead || last.OutcomeSeq != 4 || !slices.Equal(last.event.followOns, row.followOns) || !last.event.followed {
+				t.Fatalf("placed %+v before the second call, its last with follow-ons %v, want %s with %v", teardownEffectsPlacedOf(before), last.event.followOns, row.lead, row.followOns)
+			}
+		})
 	}
 }
 
