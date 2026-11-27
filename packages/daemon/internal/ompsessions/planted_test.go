@@ -260,6 +260,7 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 		config.User, config.Password = reader, password
 		trace := &tracer{}
 		config.Tracer = trace
+		config.DefaultQueryExecMode = execMode
 		conn, err := pgx.ConnectConfig(ctx, config)
 		if err != nil {
 			t.Fatal(err)

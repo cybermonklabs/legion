@@ -347,6 +347,7 @@ func tracedConn(t *testing.T, dsn string, trace *tracer) *Conn {
 		t.Fatal(err)
 	}
 	config.Tracer = trace
+	config.DefaultQueryExecMode = execMode
 	c, err := pgx.ConnectConfig(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)

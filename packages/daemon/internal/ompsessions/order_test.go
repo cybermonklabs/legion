@@ -136,6 +136,7 @@ func TestEveryTransactionPinsBeforeItsWork(t *testing.T) {
 	}
 	traced := &recorder{}
 	config.Tracer = traced
+	config.DefaultQueryExecMode = execMode
 	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		t.Fatal(err)

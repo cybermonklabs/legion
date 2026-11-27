@@ -553,12 +553,30 @@ func Connect(ctx context.Context, dsnFile string) (*Conn, error) {
 	return ConnectURL(ctx, dsn)
 }
 
+// execMode is how each statement of the client after the opening is sent: pgx's
+// QueryExecModeDescribeExec, the extended protocol with the statement's arguments bound, through
+// the unnamed prepared statement, described afresh on each run. The client names no prepared
+// statement, because a PgBouncer pool with max_prepared_statements keeps a client's statement name
+// after the server refused its Parse (1.25.2 does, measured in CI's left-setting test: a Written
+// whose Parse met no table, 42P01, left its name, and the next Written of the same text was
+// refused FATAL, "prepared statement name is already in use", 08P01). With pgx's default, a
+// statement cache that names each statement after its text, that refusal ends the client's
+// connection, and the client closes a server connection it could have used. The unnamed statement
+// is the server's own and no pool tracks it. The opening itself is one simple-protocol message
+// whatever the mode (BeginTx sends TxOptions.BeginQuery through Exec with no arguments).
+const execMode = pgx.QueryExecModeDescribeExec
+
 // ConnectURL opens the session database at dsn, a URL ReadDSN read, and is the one place the
 // package builds a Conn: inTransaction opens another connection only in place of one that ended,
-// from this one's configuration, inside the same Conn. A refusal names the database's address,
-// never the URL's password (pgdsn.ConnectError).
+// from this one's configuration, inside the same Conn, so with the same execMode. A refusal names
+// the database's address, never the URL's password (pgdsn.ConnectError).
 func ConnectURL(ctx context.Context, dsn string) (*Conn, error) {
-	conn, err := pgx.Connect(ctx, dsn)
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, pgdsn.ConnectError(dsnFileSetting, dsn, err)
+	}
+	config.DefaultQueryExecMode = execMode
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		return nil, pgdsn.ConnectError(dsnFileSetting, dsn, err)
 	}
