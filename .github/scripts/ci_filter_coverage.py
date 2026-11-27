@@ -47,7 +47,7 @@ from pathlib import Path
 
 import yaml
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
+from workflow_paths import REQUIRED_CHECKS, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -2351,8 +2351,7 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # either. pr-title needs no job, so it cannot read that output, and its name carries the event
 # alone: on a dispatch of main too it is `pr-title (dispatch)`, which main's ruleset does not read.
 # What keeps a skipped pr-title from posting a pass named pr-title is that its name is an
-# expression at all.
-REQUIRED_CHECKS = ("ci-ok", "pr-title")
+# expression at all. REQUIRED_CHECKS, the names main's ruleset requires, is workflow_paths.py's.
 VERDICT_JOB = "ci-ok"
 REF_OUTPUT = "ref_is_main"
 REF_OUTPUT_VALUE = "${{ steps.ref.outputs.is_main }}"

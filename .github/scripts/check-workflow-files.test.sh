@@ -829,8 +829,11 @@ YAML
 run_check "$root"
 check "exits 0 while the three texts are one" "$(is "$status" 0)"
 
+# has_text <text> <fixed string>: whether the text holds the string, read as text, not a regex.
+has_text() { grep -Fq -- "$2" <<<"$1" && echo true || echo false; }
+
 # held_file <root> <name: value> <if: line, or empty for none>: a workflow whose job `held` is
-# named for the required check ci-ok, beside a job that waits for it.
+# named for a required check, beside a job that waits for it.
 held_file() {
   {
     printf 'name: Lanes\non: pull_request_review\njobs:\n  held:\n    name: %s\n' "$2"
@@ -841,17 +844,23 @@ held_file() {
 }
 named_trust="\${{ $trust && 'ci-ok' || 'lanes (not run)' }}"
 if_trust="\${{ $trust }}"
-# Each drift the reviewer of #5346 planted in a copy of large-pr-lanes.yaml, where a rule that
-# chose its jobs by the first term of the condition passed over every one of them.
+# held_drift <label> <name> <if, or empty> [<check>]: each drift the reviewer of #5346 planted in
+# a copy of large-pr-lanes.yaml, where a rule that chose its jobs by the first term of the
+# condition passed over every one of them; the refusal names the check and both conditions.
 held_drift() {
-  local label=$1 name=$2 if_line=$3
+  local label=$1 name=$2 if_line=$3 check_name=${4:-ci-ok} wanted own
   echo "case: the name and the if: of a job named for a required check differ: $label"
   root=$(fixture "one-condition-$label")
   held_file "$root" "$name" "$if_line"
   run_check "$root"
+  wanted=${name#\$\{\{ }
+  wanted=${wanted%% && \'"$check_name"\'*}
+  own=${if_line#\$\{\{ }
+  own=${own% \}\}}
+  if [ -n "$if_line" ]; then own="\`$own\` holds"; else own='nothing skips it (it has no `if:`)'; fi
   check "exits 1" "$(is "$status" 1)"
   check "names the job, the check and both conditions" \
-    "$(contains "$out" "^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml: job 'held' is named ci-ok, a check main's ruleset requires, where ")"
+    "$(has_text "$out" ".github/workflows/ci.yaml: job 'held' is named $check_name, a check main's ruleset requires, where \`$wanted\` holds, and runs where $own.")"
   check "refuses that one and nothing else" "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 }
 held_drift name-first-term-changed "\${{ github.event.review.state == 'commented' && contains(github.event.pull_request.labels.*.name, 'large-pr') && 'ci-ok' || 'lanes (not run)' }}" "$if_trust"
@@ -859,6 +868,77 @@ held_drift if-prefixed "$named_trust" "\${{ github.repository == 'o/r' && $trust
 held_drift name-prefixed "\${{ github.repository == 'o/r' && $trust && 'ci-ok' || 'lanes (not run)' }}" "$if_trust"
 held_drift if-first-term-dropped "$named_trust" "\${{ contains(github.event.pull_request.labels.*.name, 'large-pr') }}"
 held_drift if-deleted "$named_trust" ""
+held_drift other-branch-quote "\${{ $trust && 'ci-ok' || 'lanes (didn''t run)' }}" "\${{ github.repository == 'o/r' && $trust }}"
+held_drift pr-title "\${{ $trust && 'pr-title' || 'title (not run)' }}" "\${{ github.repository == 'o/r' && $trust }}" pr-title
+
+# The selection itself changed: a job named by its id, a name in a form the rule does not read.
+for shape in id-ci-ok id-pr-title unread-form; do
+  echo "case: a job a required check is named for, selected by its $shape"
+  root=$(fixture "one-condition-select-$shape")
+  case $shape in
+    id-ci-ok) job=ci-ok name='' want="job 'ci-ok' is named ci-ok by its job id, which GitHub names a job by when it has no \`name:\`" ;;
+    id-pr-title) job=pr-title name='' want="job 'pr-title' is named pr-title by its job id" ;;
+    unread-form) job=held name="    name: \${{ $trust && 'ci-ok' }}" want="job 'held' carries \`name: \${{ $trust && 'ci-ok' }}\`, which can evaluate to ci-ok, a check main's ruleset requires, in a form this rule does not read" ;;
+  esac
+  {
+    printf 'name: Lanes\non: pull_request_review\njobs:\n  %s:\n' "$job"
+    [ -z "$name" ] || printf '%s\n' "$name"
+    printf '    if: %s\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hold\n' "$if_trust"
+  } > "$root/.github/workflows/ci.yaml"
+  run_check "$root"
+  check "exits 1" "$(is "$status" 1)"
+  check "names it" "$(has_text "$out" "$want")"
+done
+
+echo "case: the held job's name drifts, and so does a job beside it: both are reported"
+root=$(fixture one-condition-both-drift)
+cat > "$root/.github/workflows/ci.yaml" <<YAML
+name: Lanes
+on: pull_request_review
+jobs:
+  held:
+    name: \${{ github.event.review.state == 'commented' && 'ci-ok' || 'lanes (not run)' }}
+    if: $if_trust
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hold
+  lead:
+    if: \${{ github.event.review.state == 'approved' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo lead
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "reports the name" "$(has_text "$out" "job 'held' is named ci-ok, a check main's ruleset requires, where")"
+check "and the job beside it, held to the held job's own if:" \
+  "$(has_text "$out" "job 'lead' waits for no job and writes \`github.event.review.state == 'approved'\` where job 'held', which a required check is named for, writes \`$trust\`")"
+check "two problems" "$(contains "$out" '^2 problem(s) across the 1 workflow file(s) under .github/workflows$')"
+
+echo "case: a workflow that calls ci.yaml names no job for ci-ok"
+root=$(fixture one-condition-caller)
+printf 'name: CI\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n  ci-ok:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n' \
+  > "$root/.github/workflows/ci.yaml"
+cat > "$root/.github/workflows/lanes.yaml" <<YAML
+name: Lanes
+on: pull_request_review
+permissions:
+  contents: read
+jobs:
+  held:
+    name: \${{ $trust && 'ci_ok' || 'lanes (not run)' }}
+    if: $if_trust
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hold
+  approval:
+    if: $if_trust
+    uses: ./.github/workflows/ci.yaml
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says nothing holds the queue while the call runs" \
+  "$(has_text "$out" "a job of this workflow calls .github/workflows/ci.yaml, whose own verdict is posted as \`<job> / ci-ok\`, which main's ruleset does not read, and no job of this workflow is named for ci-ok")"
 
 echo "case: a job named for a required check as a plain word, with an if:"
 root=$(fixture one-condition-plain-name)
@@ -866,7 +946,7 @@ held_file "$root" "ci-ok" "$if_trust"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "says a skip would post a passing check" \
-  "$(contains "$out" "job 'held' is named ci-ok, a check main's ruleset requires, as a plain word, and carries an \`if:\`")"
+  "$(contains "$out" "job 'held' is named ci-ok by its \`name:\`, a check main's ruleset requires, as a plain word, and carries an \`if:\`")"
 
 echo "case: a job beside it that the event alone decides writes another condition"
 root=$(fixture one-condition-job-drift)
@@ -895,7 +975,7 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the job that waits for nothing" \
-  "$(contains "$out" "job 'lead' waits for no job and writes \`github.event.review.state == 'approved'\` where job 'held' writes")"
+  "$(contains "$out" "job 'lead' waits for no job and writes \`github.event.review.state == 'approved'\` where job 'held', which a required check is named for, writes")"
 check "and not the job that waits for lead" "$(is "$(contains "$out" "job 'after'")" false)"
 check "refuses that one and nothing else" "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
@@ -940,5 +1020,28 @@ YAML
 run_check "$root"
 check "reads each as declaring no scope, with no traceback" "$(is "$(contains "$out" '^Traceback')" false)"
 check "and finishes its report, the files sound" "$(contains "$out" '^all 3 workflow files under .github/workflows are within')"
+
+echo "case: a caller of files whose jobs are a list or a string, or whose scope level is a list"
+root=$(fixture call-odd-shapes)
+printf 'on: workflow_call\njobs:\n  - one\n' > "$root/.github/workflows/jobs-list.yaml"
+printf 'on: workflow_call\njobs: none\n' > "$root/.github/workflows/jobs-text.yaml"
+printf 'on: workflow_call\npermissions:\n  contents: [read]\njobs:\n  x:\n    permissions:\n      issues: [write]\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo x\n' \
+  > "$root/.github/workflows/level-list.yaml"
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Caller
+on: push
+permissions:
+  contents: read
+jobs:
+  a:
+    uses: ./.github/workflows/jobs-list.yaml
+  b:
+    uses: ./.github/workflows/jobs-text.yaml
+  c:
+    uses: ./.github/workflows/level-list.yaml
+YAML
+run_check "$root"
+check "reads each as declaring no scope, with no traceback" "$(is "$(contains "$out" '^Traceback\|Error:')" false)"
+check "and finishes its report" "$(contains "$out" 'workflow file(s) under .github/workflows\|^all 4 workflow files under .github/workflows are within')"
 
 summary "check-workflow-files.sh"

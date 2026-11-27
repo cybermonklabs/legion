@@ -268,6 +268,8 @@ touch "$work/runs-fail"
 run_lead
 check "runs the suites rather than follow nothing" "$(is "$(output)" "run=true ")"
 check "and warns" "$(contains "$out" '::warning::GitHub refused the approval-time runs at abc')"
+check "with the remedy, naming this run and that the earlier ones it could not read come first" \
+  "$(contains "$out" 'first each earlier one whose ci-ok failed (GitHub refused the runs at this head, so they are not named here), then gh run rerun 41 --failed (this run), and then each later one')"
 
 self='ci-ok|in_progress|-|1'
 lead_done='lead|completed|success|1'
@@ -288,6 +290,20 @@ reads "$self;approval / pi-legion / pi-legion|completed|failure|1;approval / ci-
 run_hold
 check "fails, so the head's ci-ok is red" "$(is "$status" 1)"
 check "says why" "$(contains "$out" '::error::approval / ci-ok concluded failure, so this ci-ok fails')"
+
+# The remedy every failure prints: each approval-time run at the head whose ci-ok failed, oldest
+# first, this one among them, then each later one; read again at the failure, since the runs
+# before it may have failed meanwhile.
+echo "case: the verdict fails, after two earlier runs at the head failed"
+reset
+head_runs 38 39
+reads_of 38 "ci-ok|completed|failure|1"
+reads_of 39 "ci-ok|completed|cancelled|1"
+reads "$self;approval / pi-legion / pi-legion|completed|failure|1;approval / ci-ok|completed|failure|1"
+run_hold
+check "fails" "$(is "$status" 1)"
+check "with the re-runs, one run to each command, oldest first, this one among them" \
+  "$(contains "$out" 'every approval-time run at abc whose ci-ok failed: gh run rerun 38 --failed; gh run rerun 39 --failed; gh run rerun 41 --failed (this run), and then each later one the same way')"
 
 echo "case: the verdict is cancelled"
 reset
@@ -353,7 +369,7 @@ START=0 run_hold
 check "fails at once rather than hold the head pending to its timeout" "$(is "$status" 1)"
 check "says why" "$(contains "$out" '::error::no job of approval is listed 0 s after lead ended, neither its jobs nor its skip, so this ci-ok fails: the caller was cancelled, or it waits behind another approval-time run')"
 check "that a waiting caller runs once the other ends, and what to re-run when" \
-  "$(contains "$out" "keeps it waiting rather than cancelling it and starts it, running every suite, once that run ends. Once this whole run has ended, re-run its failed jobs (gh run rerun 41 --failed)")"
+  "$(contains "$out" "keeps it waiting rather than cancelling it and starts it, running every suite, once that run ends. Re-run, oldest first and each once it has ended .GitHub refuses a re-run of a run still running, HTTP 403., every approval-time run at abc whose ci-ok failed: gh run rerun 41 --failed (this run)")"
 
 follower="$self;$lead_done;approval|completed|skipped|1"
 echo "case: the caller is skipped, and the run it follows passes"
@@ -386,7 +402,20 @@ run_hold
 check "fails" "$(is "$status" 1)"
 check "naming the run" "$(contains "$out" '::error::the ci-ok of run 40 concluded failure, so this ci-ok fails')"
 check "and the order to re-run in: the run it followed, then this one" \
-  "$(contains "$out" "re-run run 40's failed jobs first (gh run rerun 40 --failed), and then this run's (gh run rerun 41 --failed)")"
+  "$(contains "$out" "whose ci-ok failed: gh run rerun 40 --failed; gh run rerun 41 --failed (this run)")"
+
+echo "case: the caller is skipped, and the run it follows followed a run that failed"
+# 37 ran the suites and failed; 38 followed 37 and was still open when this run chose it.
+reset
+head_runs 37 38
+reads_of 37 "ci-ok|completed|failure|1"
+reads_of 38 "ci-ok|in_progress|-|1" "ci-ok|in_progress|-|1" "ci-ok|completed|failure|1"
+reads "$follower"
+run_hold
+check "follows 38" "$(contains "$out" '^following run 38, the approval-time run at abc$')"
+check "fails with it" "$(is "$status" 1)"
+check "and says to re-run 37, then 38, then this one" \
+  "$(contains "$out" "whose ci-ok failed: gh run rerun 37 --failed; gh run rerun 38 --failed; gh run rerun 41 --failed (this run)")"
 
 echo "case: the caller is skipped, and no run at the head is open or passed any more"
 reset
@@ -400,7 +429,7 @@ reads "$follower"
 run_hold
 check "fails" "$(is "$status" 1)"
 check "says what to re-run, one run to each command, oldest first, then this one" \
-  "$(contains "$out" 'Re-run the failed jobs of each, oldest first, the first before any other, since each later one follows the earliest open or passed: gh run rerun 38 --failed; gh run rerun 39 --failed; then this run.s, gh run rerun 41 --failed')"
+  "$(contains "$out" 'whose ci-ok failed: gh run rerun 38 --failed; gh run rerun 39 --failed; gh run rerun 41 --failed (this run)')"
 check "and names no run that ran no ci-ok" "$(is "$(contains "$out" 'rerun 40')" false)"
 check "and no command of two runs, which gh refuses" "$(is "$(contains "$out" 'gh run rerun [0-9][0-9]* [0-9]')" false)"
 

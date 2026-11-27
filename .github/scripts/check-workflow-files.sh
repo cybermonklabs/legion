@@ -68,15 +68,21 @@
 #      head: .github/workflows/large-pr-lanes.yaml, which calls ci.yaml on an approval, is the
 #      caller this was written for. A caller with no `permissions` anywhere passes GitHub's
 #      default, which this check cannot read, so it is refused too.
-#   9. a job whose `name:` is a condition that decides whether the job runs, written as
-#      `<condition> && '<name>' || '<other>'`, whose `<condition>` is not its own `if:` word for
-#      word; and, where the file holds other jobs whose `if:` is such a condition too, any two of
-#      them that differ. GitHub leaves a skipped job's name unevaluated, so a job named for a
-#      required check writes its whole condition into its name, and the name and the two `if:`s
-#      are then the same text in three places with nothing holding them together:
-#      .github/workflows/large-pr-lanes.yaml is the file this was written for, where a `lead`
-#      that admits an approval its ci-ok does not runs every slow suite with no ci-ok holding the
-#      queue. A file whose jobs carry no such name is not its business.
+#   9. a job that a check main's ruleset requires is named for, read from its `name:` or, where it
+#      has none, its job id, as GitHub names it: named so as a plain word while it carries an
+#      `if:` (where the `if:` skips it, its check run, of that name, reads as a pass); named so by
+#      a `<condition> && '<check>' || '<other>'` expression whose condition is not its own `if:`
+#      word for word (GitHub evaluates the name only where the job runs); named by an expression
+#      that can yield the check's name in any other form, which this rule cannot read; and, in its
+#      file, each job that waits for nothing whose `if:` is not that job's. A job is selected by
+#      the name it can carry, not by its condition's text, so no drift of a condition, a name or
+#      an `if:` takes it out of the rule; an expression that yields the check's name only where
+#      its condition fails (the `ci-ok (dispatch)` name of the main CI workflow) is evaluated wherever its job runs, and
+#      a skipped one posts the expression's text, so it is held to nothing here. And a workflow
+#      that calls ci.yaml must name a job for ci-ok: its call posts `<job> / ci-ok`, which no
+#      ruleset reads, so only a job of its own holds the queue while the call runs.
+#      .github/workflows/large-pr-lanes.yaml is the file this was written for, where a `lead` that
+#      admits an approval its ci-ok does not runs every slow suite with no ci-ok holding the queue.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # faults.
@@ -108,7 +114,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from workflow_paths import repeated_keys
+from workflow_paths import REQUIRED_CHECKS, repeated_keys
 
 WORKFLOWS = Path(".github/workflows")
 SUFFIXES = {".yaml", ".yml"}
@@ -256,7 +262,7 @@ def granted(block: object) -> dict[str, int]:
         level = {"read-all": 1, "write-all": 2}.get(block)
         return {} if level is None else {scope: level for scope in SCOPES}
     if isinstance(block, dict):
-        return {str(scope): LEVELS[level] for scope, level in block.items() if level in LEVELS}
+        return {str(scope): LEVELS[level] for scope, level in block.items() if isinstance(level, str) and level in LEVELS}
     return {}
 
 
@@ -278,7 +284,9 @@ def check_call_permissions(path: Path, document: dict, jobs: dict) -> None:
             continue
         need: dict[str, int] = {}
         blocks = [called.get("permissions")]
-        blocks += [body.get("permissions") for body in (called.get("jobs") or {}).values() if isinstance(body, dict)]
+        called_jobs = called.get("jobs")
+        bodies = called_jobs.values() if isinstance(called_jobs, dict) else ()
+        blocks += [body.get("permissions") for body in bodies if isinstance(body, dict)]
         for block in blocks:
             for scope, level in granted(block).items():
                 need[scope] = max(need.get(scope, 0), level)
@@ -302,13 +310,14 @@ def check_call_permissions(path: Path, document: dict, jobs: dict) -> None:
                           f"with no signal on the head." + limits(path))
 
 
-# Rule 9. The checks main's ruleset requires (.github/ci-notes/ci.md, the paragraph that begins
-# "Main's ruleset requires ci-ok and pr-title"), and a name that yields one of them only where a
-# condition holds: `<condition> && '<check>' || '<other>'`, the whole of it in one `${{ }}` or in
-# none.
-REQUIRED_CHECKS = ("ci-ok", "pr-title")
-NAMED_CHECK = re.compile(r"^\s*(?:\$\{\{)?\s*(?P<condition>.*?)\s*&&\s*'(?P<check>[^']*)'\s*\|\|\s*'[^']*'\s*(?:\}\})?\s*$",
-                         re.S)
+# Rule 9. A name that yields a check only where a condition holds: `<condition> && '<check>' ||
+# '<other>'`, the whole of it in one `${{ }}` or in none, a quote in a literal written twice.
+NAMED_CHECK = re.compile(r"^\s*(?:\$\{\{)?\s*(?P<condition>.*?)\s*&&\s*'(?P<check>(?:[^']|'')*)'\s*\|\|\s*"
+                         r"'(?P<other>(?:[^']|'')*)'\s*(?:\}\})?\s*$", re.S)
+QUOTED_LITERAL = re.compile(r"'((?:[^']|'')*)'")
+# The workflow whose call a caller must hold the queue beside (rule 9's last clause), and the check
+# it posts.
+CI_WORKFLOW, CI_VERDICT = "./.github/workflows/ci.yaml", "ci-ok"
 
 
 def condition_text(value: object) -> str:
@@ -320,58 +329,74 @@ def condition_text(value: object) -> str:
     return " ".join(text.split())
 
 
+def unquote(literal: str) -> str:
+    return literal.replace("''", "'")
+
+
 def check_one_condition(path: Path, jobs: dict) -> None:
-    """Rule 9: a job that a required check is named for runs exactly where its name says it is
-    that check. A skipped job's check run is a passing required check, and GitHub leaves a skipped
-    job's name unevaluated, so such a job:
-      * writes its whole `if:` into its name, `<if> && '<check>' || '<other>'`: a job whose name
-        yields a required check under one condition and whose `if:` is another, or absent, is
-        refused, whatever term differs;
-      * is never named for the check as a plain word while it carries an `if:`;
-    and every job of its file that waits for nothing (`needs:` absent), which the event alone
-    decides as it does that job, writes the same `if:`. A job is held by the check its name
-    yields, not by its condition's text, so no drift of the condition takes a job out of the
-    rule. A name that yields another name under its condition is no such job: the
-    `pr-title (dispatch)` and `ci-ok (dispatch)` names of the main CI workflow."""
-    named = holder = ""
+    """Rule 9, which the header says in full. Every job is read: its name is its `name:`, or its job
+    id where it has none, as GitHub names it; a plain name that is a required check, or an
+    expression any literal of which is one, selects the job. The first selected job's own `if:`
+    is the condition every job of the file that waits for nothing must write, whether or not its
+    name agrees with it, so a drift of the name is reported beside a drift of the others."""
+    held = holder = None
     for job_id, job in jobs.items():
-        if not isinstance(job, dict) or "name" not in job:
+        if not isinstance(job, dict):
             continue
         own = condition_text(job.get("if", ""))
-        name = str(job["name"]).strip()
-        if name in REQUIRED_CHECKS:
-            if own:
-                problem(path, f"{path}: job '{job_id}' is named {name}, a check main's ruleset "
-                              f"requires, as a plain word, and carries an `if:`, so where that "
-                              f"`if:` skips the job its check run {name} reads as a pass. Write "
+        name = str(job.get("name", job_id)).strip()
+        given = "its `name:`" if "name" in job else "its job id, which GitHub names a job by when it has no `name:`"
+        if "${{" not in name:
+            if name in REQUIRED_CHECKS and own:
+                problem(path, f"{path}: job '{job_id}' is named {name} by {given}, a check main's "
+                              f"ruleset requires, as a plain word, and carries an `if:`, so where "
+                              f"that `if:` skips the job its check run {name} reads as a pass. Write "
                               f"the `if:` into the name: `${{{{ <if> && '{name}' || '<another "
                               f"name>' }}}}`." + limits(path))
             continue
-        match = NAMED_CHECK.match(name)
-        if not match or match.group("check") not in REQUIRED_CHECKS:
+        yields = {unquote(q) for q in QUOTED_LITERAL.findall(name)} & set(REQUIRED_CHECKS)
+        if not yields:
             continue
+        match = NAMED_CHECK.match(name)
+        if match is None:
+            problem(path, f"{path}: job '{job_id}' carries `name: {name}`, which can evaluate to "
+                          f"{', '.join(sorted(yields))}, a check main's ruleset requires, in a form "
+                          f"this rule does not read. Write it as `${{{{ <if> && '<check>' || "
+                          f"'<another name>' }}}}`, with the job's `if:` as its condition."
+                          + limits(path))
+            continue
+        check = unquote(match.group("check"))
+        if check not in REQUIRED_CHECKS:
+            continue  # it yields the check only where its condition fails (the header's rule 9)
         wanted = condition_text(match.group("condition"))
         if wanted != own:
-            problem(path, f"{path}: job '{job_id}' is named {match.group('check')}, a check main's "
-                          f"ruleset requires, where `{wanted}` holds, and runs where "
+            problem(path, f"{path}: job '{job_id}' is named {check}, a check main's ruleset "
+                          f"requires, where `{wanted}` holds, and runs where "
                           f"{f'`{own}` holds' if own else 'nothing skips it (it has no `if:`)'}. "
                           f"GitHub evaluates the name only where the job runs, so the two must be "
                           f"one text, or the check is posted where it should not be, or "
                           f"missing where it should." + limits(path))
-        elif not named:
-            named, holder = own, str(job_id)
-    if not named:
+        if holder is None:
+            held, holder = own, str(job_id)
+    calls_ci = any(isinstance(job, dict) and str(job.get("uses", "")).strip() == CI_WORKFLOW for job in jobs.values())
+    if calls_ci and holder is None:
+        problem(path, f"{path}: a job of this workflow calls {CI_WORKFLOW[2:]}, whose own verdict is "
+                      f"posted as `<job> / {CI_VERDICT}`, which main's ruleset does not read, and no "
+                      f"job of this workflow is named for {CI_VERDICT}, so nothing holds the pull "
+                      f"request out of the queue while the call runs. Name the job that holds it "
+                      f"`${{{{ <if> && '{CI_VERDICT}' || '<another name>' }}}}`." + limits(path))
+    if holder is None:
         return
     for job_id, job in jobs.items():
         if not isinstance(job, dict) or str(job_id) == holder or "needs" in job:
             continue
         own = condition_text(job.get("if", ""))
-        if own != named:
+        if own != held:
             problem(path, f"{path}: job '{job_id}' waits for no job and writes "
-                          f"`{own or 'no if:'}` where job '{holder}' writes `{named}` in its "
-                          f"`name:` and its `if:`. The jobs of this file that the event alone "
-                          f"decides must write one condition, or one of them runs where the job "
-                          f"named for the check does not." + limits(path))
+                          f"`{own or 'no if:'}` where job '{holder}', which a required check is named "
+                          f"for, writes `{held or 'no if:'}` in its `if:`. The jobs of this file that "
+                          f"the event alone decides must write one condition, or one of them runs "
+                          f"where the job named for the check does not." + limits(path))
 
 
 def job_uses(node: object) -> list[str]:

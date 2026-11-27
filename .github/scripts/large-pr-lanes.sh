@@ -43,16 +43,16 @@
 #            (LARGE_PR_HOLD_ENDED_READS reads in a row) fails;
 #          * when CALLER is skipped (`lead` chose to follow), it chooses again by to_follow, waits
 #            for that run's ci-ok and concludes as it did. When no run is open or passed any more,
-#            it fails, printing one `gh run rerun <id> --failed` per failed run at this head,
-#            oldest first, then its own;
+#            it fails;
 #          * when neither is listed LARGE_PR_HOLD_START_SECONDS after `lead` ended (or after this
 #            job began, with no `lead` listed), it fails, naming why: the caller was cancelled, or
 #            it waits behind another approval-time run of this merge commit, which starts it once
-#            it ends. A re-run of this run's failed jobs, once the whole run has ended, concludes
-#            as the suites that then ran did.
-#          Every failure says what to re-run and in what order: a run that followed another does
-#          not take that run's next verdict on its own, and GitHub refuses a re-run of a run that
-#          is still running.
+#            it ends.
+#          Every failure, and `lead`'s warning when it cannot read the runs, prints one remedy
+#          (remedy): a `gh run rerun <id> --failed` for each approval-time run at this head whose
+#          ci-ok failed, oldest first, this run's among them, then each later one the same way. A
+#          run that followed another does not take that run's next verdict on its own, and GitHub
+#          refuses a re-run of a run that is still running.
 #
 # Its inputs, from the step's env:
 #   label: GH_TOKEN, and GITHUB_EVENT_PATH and GITHUB_REPOSITORY as Actions sets them.
@@ -185,14 +185,34 @@ to_follow() {
 # after the first followed it, and follows the earliest run open or passed when it runs again.
 # `gh run rerun` takes one run, and refuses a run still running (HTTP 403).
 rerun_lines() {
-  awk '$2 == "completed" && $3 != "success" && $3 != "skipped" { printf "gh run rerun %s --failed; ", $1 }' <<<"$1"
+  awk '$2 == "completed" && $3 != "success" { printf "gh run rerun %s --failed; ", $1 }' <<<"$1"
+}
+
+# remedy [<rows of earlier_runs>, or `-` when GitHub refused them]: what to re-run, and in what
+# order, once this run's ci-ok has failed or may: every approval-time run at this head whose ci-ok
+# failed, oldest first, this one among them, then each later one. Without rows it reads them again,
+# since by the time a run fails the runs before it may have failed too (a follower of a follower).
+# The one text every failure of this script prints.
+remedy() {
+  local rows earlier
+  if [ $# -gt 0 ]; then
+    rows=$1
+  elif ! rows=$(earlier_runs); then
+    rows=-
+  fi
+  if [ "$rows" = - ]; then
+    earlier="first each earlier one whose ci-ok failed (GitHub refused the runs at this head, so they are not named here), then "
+  else
+    earlier=$(rerun_lines "$rows")
+  fi
+  printf '%s' "Re-run, oldest first and each once it has ended (GitHub refuses a re-run of a run still running, HTTP 403), every approval-time run at $HEAD_SHA whose ci-ok failed: ${earlier}gh run rerun $GITHUB_RUN_ID --failed (this run), and then each later one the same way. A run that followed another does not take that run's next verdict on its own: re-run, it follows the earliest earlier run that is open or passed, so the run it followed goes first."
 }
 
 lead() {
   need GH_TOKEN GITHUB_REPOSITORY GITHUB_RUN_ID HEAD_SHA GITHUB_OUTPUT
   local rows follow
   if ! rows=$(earlier_runs); then
-    echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made, so this approval runs the suites itself. If another approval-time run is testing this head, this run's call of ci.yaml waits behind it in ci.yaml's concurrency group (ci-<merge commit>), which keeps it waiting rather than cancelling it (cancel-in-progress is false), lists no job meanwhile, and runs every suite once that run ends; this run's ci-ok fails $HOLD_START_LIMIT s after this job ends, and once this whole run has ended, re-running its failed jobs (gh run rerun $GITHUB_RUN_ID --failed) concludes it as those suites did"
+    echo "::warning::GitHub refused the approval-time runs at $HEAD_SHA at every attempt gh-read.sh made, so this approval runs the suites itself. If another approval-time run is testing this head, this run's call of ci.yaml waits behind it in ci.yaml's concurrency group (ci-<merge commit>), which keeps it waiting rather than cancelling it (cancel-in-progress is false), lists no job meanwhile, and runs every suite once that run ends; this run's ci-ok then fails $HOLD_START_LIMIT s after this job ends. $(remedy -)"
     echo "run=true" >>"$GITHUB_OUTPUT"
     return 0
   fi
@@ -206,8 +226,8 @@ lead() {
   echo "run=true" >>"$GITHUB_OUTPUT"
 }
 
-# conclude <job name> <conclusion> <url> <what it is> <what to re-run>: the hold's verdict, from
-# one ci-ok.
+# conclude <job name> <conclusion> <url> <what it is>: the hold's verdict, from one ci-ok, with the
+# remedy when it failed.
 conclude() {
   echo "$1 concluded $2: $3"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
@@ -215,7 +235,7 @@ conclude() {
       >>"$GITHUB_STEP_SUMMARY"
   fi
   [ "$2" = success ] && return 0
-  echo "::error::$1 concluded $2, so this ci-ok fails: that job's own log names the jobs that failed. $5"
+  echo "::error::$1 concluded $2, so this ci-ok fails: that job's own log names the jobs that failed. $(remedy)"
   return 1
 }
 
@@ -243,14 +263,13 @@ caller_rows() {
 # it the newest one listed is the earlier attempt's.
 hold_caller() {
   local want="$CALLER / ci-ok" ended=0 jobs=$1 verdict status conclusion attempt url
-  local rerun="Once this run has ended, re-run its failed jobs (gh run rerun $GITHUB_RUN_ID --failed), and only then each later approval-time run at this head, oldest first: each followed this one, and a follower re-run before it follows nothing open or passed"
   while true; do
     verdict=$(awk -F'\t' -v want="$want" '$1 == want' <<<"$jobs")
     if [ -n "$verdict" ]; then
       IFS=$'\t' read -r _ status conclusion attempt url <<<"$verdict"
       if [ "$status" = completed ] &&
         { [ "$attempt" = "$GITHUB_RUN_ATTEMPT" ] || [ "$(caller_rows "$jobs" "\$4 == $GITHUB_RUN_ATTEMPT")" -eq 0 ]; }; then
-        conclude "$want" "$conclusion" "$url" "which ran every fast job and every slow suite this change's paths select" "$rerun"
+        conclude "$want" "$conclusion" "$url" "which ran every fast job and every slow suite this change's paths select"
         return
       fi
     fi
@@ -260,7 +279,7 @@ hold_caller() {
     if [ "$(caller_rows "$jobs" '$2 != "completed"')" -eq 0 ]; then
       ended=$((ended + 1))
       if [ "$ended" -ge "$HOLD_ENDED_READS" ]; then
-        echo "::error::no job of $CALLER is open and $want has not concluded on attempt $GITHUB_RUN_ATTEMPT, $ended reads in a row, so this run reaches no verdict and this ci-ok fails. $rerun"
+        echo "::error::no job of $CALLER is open and $want has not concluded on attempt $GITHUB_RUN_ATTEMPT, $ended reads in a row, so this run reaches no verdict and this ci-ok fails. $(remedy)"
         return 1
       fi
     else
@@ -281,7 +300,7 @@ hold_follow() {
   done
   followed=$(to_follow "$rows")
   if [ -z "$followed" ]; then
-    echo "::error::$CALLER is skipped, so this approval follows the approval-time run at $HEAD_SHA, and none of that head's runs is open or passed now: the one it followed failed or was cancelled. Re-run the failed jobs of each, oldest first, the first before any other, since each later one follows the earliest open or passed: $(rerun_lines "$rows")then this run's, gh run rerun $GITHUB_RUN_ID --failed. GitHub refuses a re-run of a run still running (HTTP 403)"
+    echo "::error::$CALLER is skipped, so this approval follows the approval-time run at $HEAD_SHA, and none of that head's runs is open or passed now: the one it followed failed or was cancelled. $(remedy "$rows")"
     return 1
   fi
   echo "following run $followed, the approval-time run at $HEAD_SHA"
@@ -289,8 +308,7 @@ hold_follow() {
     if verdict=$(read_jobs "$followed"); then
       IFS=$'\t' read -r _ status conclusion _ url < <(awk -F'\t' '$1 == "ci-ok"' <<<"$verdict") || status=''
       if [ "$status" = completed ]; then
-        conclude "the ci-ok of run $followed" "$conclusion" "$url" "the approval-time run at this head that this approval follows" \
-          "This run followed run $followed, and does not take that run's next verdict on its own: re-run run $followed's failed jobs first (gh run rerun $followed --failed), and then this run's (gh run rerun $GITHUB_RUN_ID --failed), which follows its new attempt"
+        conclude "the ci-ok of run $followed" "$conclusion" "$url" "the approval-time run at this head that this approval follows"
         return
       fi
     fi
@@ -321,7 +339,7 @@ hold() {
       else
         [ -n "$started" ] || started=$SECONDS
         if [ $((SECONDS - started)) -ge "$HOLD_START_LIMIT" ]; then
-          echo "::error::no job of $CALLER is listed $HOLD_START_LIMIT s after lead ended, neither its jobs nor its skip, so this ci-ok fails: the caller was cancelled, or it waits behind another approval-time run of this merge commit in ci.yaml's concurrency group, which keeps it waiting rather than cancelling it and starts it, running every suite, once that run ends. Once this whole run has ended, re-run its failed jobs (gh run rerun $GITHUB_RUN_ID --failed): the new attempt concludes as the suites that ran did. GitHub refuses a re-run while the run is still running (HTTP 403)"
+          echo "::error::no job of $CALLER is listed $HOLD_START_LIMIT s after lead ended, neither its jobs nor its skip, so this ci-ok fails: the caller was cancelled, or it waits behind another approval-time run of this merge commit in ci.yaml's concurrency group, which keeps it waiting rather than cancelling it and starts it, running every suite, once that run ends. $(remedy)"
           return 1
         fi
       fi

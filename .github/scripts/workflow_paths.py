@@ -18,6 +18,9 @@ import yaml
 
 # Directories a walk never enters: version control and installed dependencies.
 SKIP_DIRS = {".git", ".jj", "node_modules", ".venv", "vendor"}
+# The checks main's ruleset requires, by check run name (.github/ci-notes/ci.md, the paragraph that
+# begins "Main's ruleset requires ci-ok and pr-title"): the one list every checker reads them from.
+REQUIRED_CHECKS = ("ci-ok", "pr-title")
 
 
 def walk(root: Path = Path(".")) -> list[str]:
