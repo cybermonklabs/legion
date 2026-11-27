@@ -2415,6 +2415,37 @@ func (w *workflowRuntime) openUncountedRuns(ctx context.Context) error {
 	return nil
 }
 
+// repairOpenChecks gives each open look of the project's production checks that has no look id of
+// its own an id and a new task of that look, and each open check that has no generation the one
+// its issue's record gives it (workflow's RepairOpenChecks, R6 of dispatch://INFRA-3518), in one
+// transaction of its own under the lock every fact applies under. run runs it beside
+// openUncountedRuns, before the listing's reconcile, the boot's first admission pass, and before
+// any fact, so no leave the reconcile applies from the listing, no re-entry and no start row of
+// this boot reads a check before it. It closes no check; it logs how many looks it gave an id and
+// how many checks it gave a generation when it gave any, once its transaction has committed, and
+// never a look id or a task.
+func (w *workflowRuntime) repairOpenChecks(ctx context.Context) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the repair of the open production checks with every fact: %w", err)
+		}
+		looks, generations, err := w.engine.RepairOpenChecks(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if looks != 0 || generations != 0 {
+			store.OnCommit(ctx, func() {
+				w.log.Info("gave open production check looks a look id and a new task, and open checks the generation they opened at",
+					"looks", looks, "generations", generations)
+			})
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("repair the open production checks of %s: %w", w.dispatchProject, err)
+	}
+	return nil
+}
+
 // terminal applies a claim's ready or failure as it happens, on a context the daemon's stop does
 // not end: the fact is the supervisor's observation of a claim that has already reached that
 // state, so it is worth landing even while the daemon is going down, and nothing of the stop can

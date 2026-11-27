@@ -3188,11 +3188,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A suspension that holds — the operator's or the controller's — holds its
 		// claim until a resume lifts it: the start, and the task it gives, wait on the row's
-		// backoff. StartedBy refuses the same in the claim's own decision. A check start does not
-		// wait: its look cannot run, and ends, its cause naming the holder (checkLookHeld).
+		// backoff. StartedBy refuses the same in the claim's own decision. A check start of a new
+		// look does not wait: its look cannot run, and ends, its cause naming the holder
+		// (checkLookHeld). The boot's new task of a look that is open already
+		// (record.SuperviseRequest.LookReissue, workflow's RepairOpenChecks) waits as a phase start
+		// does: it starts no look, so the hold ends none, and a last look's end would close the
+		// check as not run (R6 of dispatch://INFRA-3518). The look's own bound still ends the look
+		// while the row waits, and the row then finishes at its fence (checkLookHolds).
 		if found {
 			if held := machine.Claim(); held.RuleHolds() {
-				if payload.CheckLook > 0 {
+				if payload.CheckLook > 0 && !payload.LookReissue {
 					return r.checkLookHeld(ctx, row, payload, *check, held.Holder())
 				}
 				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
@@ -5034,15 +5039,17 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 	return nil, nil
 }
 
-// checkLookHeld is a check start that met a hold of the check's own role: a suspension of the
-// operator's or the controller's (supervise.Claim.RuleHolds), holds naming whose
+// checkLookHeld is the start of a new look that met a hold of the check's own role: a suspension
+// of the operator's or the controller's (supervise.Claim.RuleHolds), holds naming whose
 // (supervise.Claim.Holder). A phase start waits for the resume that lifts it, but a look cannot
 // run while the role is held, and its bound would end it anyway, so the look ends now as one
 // nobody reported (intake.CheckLookEnded, of check, the one checkLookHolds read) and the row
 // finishes without acting. Its cause names the holder — `operator hold` or `controller hold` —
 // so the retry the look names says whose resume it waited on. The event is the
 // issue, the check (record.ProductionCheck.ID) and the look: the same look held twice is one
-// fact, and a later check's look 1 another than the replaced check's.
+// fact, and a later check's look 1 another than the replaced check's. The boot's new task of a
+// look that is open already (record.SuperviseRequest.LookReissue) never comes here: it waits for
+// the resume as a phase start does.
 func (r *outbox) checkLookHeld(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, check record.ProductionCheck,
 	holds supervise.SuspendSource) error {
 	r.log.Info("production check start finishes without acting", "row", row.ID, "issue", row.Issue, "look", payload.CheckLook,

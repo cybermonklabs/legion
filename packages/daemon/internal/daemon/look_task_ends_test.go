@@ -38,6 +38,8 @@ const (
 	lookEndsChild       = "LEGION-209"
 	lookEndsFirstLookID = "LOOKIDFIRSTLOOK00000000001"
 	lookEndsOldTask     = "Production check of LEGION-209: old look 1 task [LOOKIDFIRSTLOOK00000000001]"
+	// lookEndsOlderTask is look 1's task as an older daemon wrote it: it gives no look id.
+	lookEndsOlderTask = "Production check of LEGION-209: an older daemon's look 1 task, which gives no look id"
 )
 
 // lookEndsRig wires a real Postgres store, workflow engine, admission, outbox runner and supervisor
@@ -177,6 +179,22 @@ func (r *lookEndsRig) drain() {
 	}
 }
 
+// boot runs the boot's pass over the open production checks (workflow's RepairOpenChecks) in one
+// transaction under the lock every fact applies under, as the daemon's boot runs it before any
+// fact.
+func (r *lookEndsRig) boot() {
+	r.t.Helper()
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return err
+		}
+		_, _, err := r.engine.RepairOpenChecks(ctx, tx)
+		return err
+	}); err != nil {
+		r.t.Fatalf("repair the open checks at the boot: %v", err)
+	}
+}
+
 // seedChildCheck creates a running root (with slot and open lifecycle), a done child LEGION-209
 // with an open look 1 production check carrying lookEndsFirstLookID, and a ready tester claim on
 // LEGION-209.
@@ -276,10 +294,11 @@ func assertOldTaskGone(t *testing.T, place string, machine *supervise.Machine, o
 }
 
 // TestALooksTaskEndsAtEveryPlace holds the R4 inventory of every place where a production-check
-// look's task can go out or stay (except "the boot's re-issue of the same look", which needs the
-// boot step of T8 and is added there). Each row sends a look's task that the turn match does not
-// take, ends the look that way, and passes only when that task's text never reaches the connection
-// after the end and the claim's pending task is not that task once the rows have run.
+// look's task can go out or stay. Each row sends a look's task that the turn match does not take,
+// ends the look that way, and passes only when that task's text never reaches the connection after
+// the end and the claim's pending task is not that task once the rows have run. The boot's re-issue
+// of the same look also passes only when the new task of that look, which gives the look id the
+// boot made, reaches the connection (R6).
 func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 	t.Parallel()
 
@@ -633,5 +652,47 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		}
 		machine.Wait()
 		assertOldTaskGone(t, "a start row an older binary queued", machine, lookEndsOldTask, conn.Prompts())
+	})
+
+	t.Run("the boot's re-issue of the same look", func(t *testing.T) {
+		r := newLookEndsRig(t, base)
+		opened := base.Add(-time.Hour)
+		token, machine, conn, check := r.seedChildCheck(opened)
+		// An older daemon started look 1: the check holds no look id, and the look's task, which
+		// gives none, waits behind the tester's turn, unsent.
+		check.LookID, check.LookIDLook, check.LookIDOpenedAt = "", 0, time.Time{}
+		putProductionCheck(r.t, r.pool, r.records, check)
+		if err := machine.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+			t.Fatalf("start turn: %v", err)
+		}
+		if err := machine.Handle(r.ctx, supervise.RequestDeliver{Claim: token, ID: "outbox:older-look-1", Task: lookEndsOlderTask, Generation: 1,
+			CheckLook: supervise.CheckLook{Look: 1, OpenedAt: opened}}); err != nil {
+			t.Fatalf("deliver the older daemon's look 1 task: %v", err)
+		}
+		machine.Wait()
+		if p := machine.Claim().Pending; p == nil || p.Task != lookEndsOlderTask || !p.ConfirmedAt.IsZero() {
+			t.Fatalf("pending after the older daemon's deliver = %+v, want its unconfirmed task", p)
+		}
+		before := len(conn.Prompts())
+
+		// The boot gives look 1 an id of its own and queues the look's new task, which the outbox
+		// runs; then the turn ends and the claim sends what it holds.
+		r.boot()
+		r.drain()
+		if err := machine.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+			t.Fatalf("end turn: %v", err)
+		}
+		machine.Wait()
+		sent := conn.Prompts()[before:]
+		assertOldTaskGone(t, "the boot's re-issue of the same look", machine, lookEndsOlderTask, sent)
+		id := readProductionCheck(t, r.pool, r.records, lookEndsChild).CurrentLookID()
+		reached := false
+		for _, p := range sent {
+			reached = reached || id != "" && strings.Contains(p.Message, "This look has the look id `"+id+"`.")
+		}
+		if p := machine.Claim().Pending; id == "" || !reached || p == nil || p.LookID != id || p.CheckLook.Look != 1 {
+			t.Errorf("the boot's re-issue of the same look: look 1's id after the boot = %q, its new task sent %t, pending %+v; want an id, and its task carrying it sent and pending",
+				id, reached, p)
+		}
 	})
 }

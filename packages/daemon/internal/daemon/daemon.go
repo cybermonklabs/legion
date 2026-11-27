@@ -747,9 +747,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// TestRunExitsAtOnceWhenPostgresRefusesThePassword,
 		// TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword).
 		plan.nats.log(log)
-		// The open of the uncounted runs, the three probes and the cutover repair after them run
-		// one after another on this goroutine, so they share one hold mark (a sequential flow);
-		// whether the daemon is stopping is still read from ctx.
+		// The open of the uncounted runs, the repair of the open production checks, the three
+		// probes and the cutover repair after them run one after another on this goroutine, so they
+		// share one hold mark (a sequential flow); whether the daemon is stopping is still read from
+		// ctx.
 		probing := store.WithTransactionTracking(ctx)
 		// The runs no start of this release counted, which an earlier release began, get their
 		// open row first (openUncountedRuns): before the listing's reconcile, the boot's first
@@ -760,6 +761,17 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		opening, cancelOpening := context.WithTimeout(probing, bootTimeout)
 		err := workflow.openUncountedRuns(opening)
 		cancelOpening()
+		// Each open look of a production check with no look id of its own gets one and a new task
+		// of that look, and each open check with no generation the one its issue's record gives it
+		// (repairOpenChecks, R6 of dispatch://INFRA-3518), beside the open of the uncounted runs
+		// and for the same reason: before the listing's reconcile, whose leaves read a check's
+		// generation, and before any fact. It is one Postgres transaction with a bound of its own,
+		// and a failure of it stops the boot as the reconcile's own transaction's does.
+		if err == nil {
+			repairing, cancelRepairing := context.WithTimeout(probing, bootTimeout)
+			err = workflow.repairOpenChecks(repairing)
+			cancelRepairing()
+		}
 		if err == nil {
 			err = bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
 				readinessAttempt(func(attempt context.Context) error {

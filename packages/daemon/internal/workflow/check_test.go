@@ -817,8 +817,10 @@ type ranAgainLeave struct {
 // ranAgainLeaves is every way an issue that ran again leaves the workflow with no merge of its new
 // run: a re-entered child parked in backlog, icebox or triage, or set done with no merged pull
 // request; a re-admitted root parked in backlog, set done with no merge, closed by close_root, and
-// moved to done by a transition on no merge of its new run. The table's one transition to done is
-// the merge's (TableOf), so the last is a transition on the merge its check already checks.
+// moved to done by a transition on no merge of its new run; and a child whose check an older binary
+// opened, with no generation, which re-enters after the boot gave the check the child's generation
+// (olderBinarysChildCheckRig) and is parked. The table's one transition to done is the merge's
+// (TableOf), so the transition is a transition on the merge its check already checks.
 func ranAgainLeaves() []ranAgainLeave {
 	var leaves []ranAgainLeave
 	for _, status := range []string{"backlog", "icebox", "triage", "done"} {
@@ -843,6 +845,17 @@ func ranAgainLeaves() []ranAgainLeave {
 		})
 	}
 	return append(leaves,
+		ranAgainLeave{
+			name: "a re-entered child whose check an older binary opened, given its generation at the boot, to backlog", issue: "LEGION-209",
+			setup: func(t *testing.T) checkRig {
+				rig := olderBinarysChildCheckRig(t)
+				reenterChild(t, rig)
+				return rig
+			},
+			leave: func(t *testing.T, rig checkRig) {
+				rig.apply("leave", intake.DispatchIssue{Key: "LEGION-209", Seq: 4, Type: "issue.updated", Status: "backlog", Title: "child", Parent: "LEGION-208", Rank: "V"})
+			},
+		},
 		ranAgainLeave{
 			name: "a re-admitted root closed by close_root", issue: "LEGION-208", setup: readmittedRootRig,
 			leave: func(t *testing.T, rig checkRig) {
@@ -877,7 +890,9 @@ func ranAgainLeaves() []ranAgainLeave {
 // ended, one retire_look row of its look, and a close line with no replacedBy. The controls close
 // nothing: a done child a person parks and sets done again, also under a root reopened inside its
 // linger, whose re-admission deleted the child's merged pull request and left its generation as it
-// was; and a first merge, which opens the check at the issue's generation.
+// was, and also with a check an older binary opened, parked after the boot gave that check the
+// child's generation (olderBinarysChildCheckRig); and a first merge, which opens the check at the
+// issue's generation.
 func TestAnIssueThatRanAgainAndLeftWithNoMergeClosesItsCheck(t *testing.T) {
 	t.Parallel()
 	for _, tc := range ranAgainLeaves() {
@@ -924,6 +939,7 @@ func TestAnIssueThatRanAgainAndLeftWithNoMergeClosesItsCheck(t *testing.T) {
 	}
 	for _, tc := range []ranAgainLeave{
 		{name: "a done child parked and set done again", setup: childCheckRig, leave: park},
+		{name: "a done child whose check an older binary opened, parked after the boot", setup: olderBinarysChildCheckRig, leave: park},
 		{
 			name: "a done child of a root reopened inside its linger, parked and set done again",
 			setup: func(t *testing.T) checkRig {
@@ -1014,17 +1030,45 @@ func TestTheCloseOfACheckAtALeaveQueuesNothingOfItsOwn(t *testing.T) {
 // lingers the tree holds a check that the release before closed at the re-entry, and the close
 // waits on nothing and leaves that check open. The control is a done child that never ran again,
 // whose check the close waits on.
+//
+// What becomes of the running child's open check after the close is the close's own rule
+// (unfinishedHandOvers). A root that stayed done hands the child over to a tree of its own: the
+// check stays open under that tree, no look starts while the child runs, and the check ends at the
+// child's merge (the replaced check closes not run, naming the merge), at its leave with no merge,
+// or at its bound, one row each. A root a person parked hands over nothing of a child not at its
+// merge, and closes the child's claims with the rest of the tree: no look starts, and the check
+// closes not run at its bound, with no Dispatch status write, no claim close and no suspension of
+// the child.
 func TestALingeringTreeWaitsOnNoCheckThatARunClosed(t *testing.T) {
 	t.Parallel()
 	rerun := checkOpened.Add(24 * time.Hour)
+	handedOver := func(end func(t *testing.T, rig checkRig)) func(t *testing.T, rig checkRig) {
+		return func(t *testing.T, rig checkRig) {
+			t.Helper()
+			handOverReadmits(t, rig)
+			if child, check := issueRecord(t, rig.pool, "LEGION-209"), productionCheck(t, rig.pool, "LEGION-209"); child == nil || child.Tree != "LEGION-209" ||
+				check == nil || !check.Open() || !check.OpenedAt.Equal(checkOpened) || check.Looks != 1 {
+				t.Fatalf("the handed-over child = %+v with its check %+v, want it a root of its own tree with its check of merge-43 open at look 1", child, check)
+			}
+			lookWaitsWhileTheChildRuns(t, rig)
+			end(t, rig)
+		}
+	}
 	for _, tc := range []struct {
 		name    string
 		reenter bool
 		run     func(t *testing.T, rig checkRig)
+		// moved is the status admission records for the person's move of the root, which the close
+		// of the linger reads (unfinishedHandOvers); "" leaves the record as the engine wrote it.
+		moved string
 		// waits is the merge commit whose check the close waits on, "" for none.
 		waits string
 		// open says the child's check stays open through the close.
 		open bool
+		// handed says the close hands the child over to a tree of its own.
+		handed bool
+		// then is what follows the close.
+		then func(t *testing.T, rig checkRig)
 	}{
 		{name: "a child that re-entered and then merged", reenter: true, waits: "merge-44", open: true,
 			run: func(t *testing.T, rig checkRig) { mergeRerun(t, rig, rerun) }},
@@ -1033,6 +1077,41 @@ func TestALingeringTreeWaitsOnNoCheckThatARunClosed(t *testing.T) {
 		}},
 		{name: "a child that re-entered and still runs", reenter: true, open: true, run: func(*testing.T, checkRig) {}},
 		{name: "a done child that never ran again", waits: "merge-43", open: true, run: func(*testing.T, checkRig) {}},
+		{name: "a running child its done root hands over, whose check ends at its merge", reenter: true, moved: "done", open: true, handed: true,
+			run: func(*testing.T, checkRig) {}, then: handedOver(func(t *testing.T, rig checkRig) {
+				mark := rig.logged.Len()
+				mergeRerun(t, rig, rerun)
+				check := productionCheck(t, rig.pool, "LEGION-209")
+				closes := checkCloseLines(rig.logged.String()[mark:], "LEGION-209")
+				if check == nil || !check.Open() || check.MergeSHA != "merge-44" || check.OpenedGeneration != 9 || len(closes) != 1 ||
+					!strings.Contains(closes[0], "mergeCommit=merge-43") || !strings.Contains(closes[0], "outcome=not_run") || !strings.Contains(closes[0], "replacedBy=merge-44") {
+					t.Fatalf("the check after the handed child's merge = %+v with closes %q, want merge-43's closed not run, replaced by the open check of merge-44 at generation 9", check, closes)
+				}
+			})},
+		{name: "a running child its done root hands over, whose check ends at its leave with no merge", reenter: true, moved: "done", open: true, handed: true,
+			run: func(*testing.T, checkRig) {}, then: handedOver(func(t *testing.T, rig checkRig) {
+				mark := rig.logged.Len()
+				rig.apply("handed-parked", intake.DispatchIssue{Key: "LEGION-209", Seq: 6, Type: "issue.updated", Status: "backlog", Title: "child", Parent: "LEGION-208", Rank: "V", HandedOver: true})
+				checkClosedNotRun(t, rig)
+				if !strings.Contains(rig.logged.String()[mark:], `msg="workflow: production check of a run that left with no merge closes as not run" issue=LEGION-209`) {
+					t.Fatalf("the journal of the handed child's leave =\n%s\nwant the close of its check as a run that left with no merge", rig.logged.String()[mark:])
+				}
+			})},
+		{name: "a running child its done root hands over, whose check ends at its bound", reenter: true, moved: "done", open: true, handed: true,
+			run: func(*testing.T, checkRig) {}, then: handedOver(func(t *testing.T, rig checkRig) {
+				checkBoundWhileTheChildRuns(t, rig)
+			})},
+		{name: "a running child its parked root's close hands nothing, whose check closes at its bound", reenter: true, moved: "backlog", open: true,
+			run: func(*testing.T, checkRig) {}, then: func(t *testing.T, rig checkRig) {
+				after := lastOutboxID(t, rig.pool)
+				lookWaitsWhileTheChildRuns(t, rig)
+				checkBoundWhileTheChildRuns(t, rig)
+				for _, row := range closeAndSuspendRows(t, rig.pool, after) {
+					if strings.HasPrefix(row, "LEGION-209 ") {
+						t.Fatalf("rows of the child after the close = %q, want no Dispatch status write, no claim close and no suspension of it", row)
+					}
+				}
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1041,7 +1120,14 @@ func TestALingeringTreeWaitsOnNoCheckThatARunClosed(t *testing.T) {
 				reenterChild(t, rig)
 			}
 			tc.run(t, rig)
-			rig.apply("root-closed", intake.DispatchIssue{Key: "LEGION-208", Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
+			if tc.moved == "backlog" {
+				rig.apply("root-parked", intake.DispatchIssue{Key: "LEGION-208", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"})
+			} else {
+				rig.apply("root-closed", intake.DispatchIssue{Key: "LEGION-208", Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
+			}
+			if tc.moved != "" {
+				recordTheStatusAMoveShows(t, rig.pool, "LEGION-208", tc.moved)
+			}
 			rig.clock.now = rig.clock.now.Add(2 * time.Hour)
 			_, err := intake.ApplyFact(context.Background(), rig.pool, "outbox", "linger:LEGION-208:7", intake.LingerExpired{Issue: "LEGION-208", Generation: 7}, rig.engine, admissionStub{})
 			check := productionCheck(t, rig.pool, "LEGION-209")
@@ -1052,8 +1138,17 @@ func TestALingeringTreeWaitsOnNoCheckThatARunClosed(t *testing.T) {
 				if err != nil {
 					t.Fatalf("the linger's expiry = %v, want the tree closed", err)
 				}
-				if got := superviseRequests(t, rig.pool, "tree_close"); got["LEGION-209/tester"] != 1 {
-					t.Fatalf("tree_close rows = %v, want the child's tester's", got)
+				closed := superviseRequests(t, rig.pool, "tree_close")
+				for _, role := range claim.Roles {
+					if closed["LEGION-209/"+string(role)] != 1 {
+						t.Fatalf("tree_close rows = %v, want each of the child's claims closed once", closed)
+					}
+				}
+				if got := handoverFences(t, rig.pool); slices.Equal(got, []string{"LEGION-209"}) != tc.handed || len(got) > 1 {
+					t.Fatalf("hand-over fences = %v, want the child handed over %t", got, tc.handed)
+				}
+				if tc.then != nil {
+					tc.then(t, rig)
 				}
 				return
 			}
@@ -1065,6 +1160,68 @@ func TestALingeringTreeWaitsOnNoCheckThatARunClosed(t *testing.T) {
 				t.Fatalf("tree_close rows = %v, want none while the close waits", got)
 			}
 		})
+	}
+}
+
+// handOverReadmits is admit's readmit of the running child LEGION-209 that its done root's
+// linger close handed to Legion, as the hand-over's own todo applies it (admit's
+// consumeHandover): a root of its own tree at its next generation, 9, in admitted with status
+// todo, handed over from LEGION-208, its hand-over fence gone and its tree running. Its check
+// keeps the tree it opened in.
+func handOverReadmits(t *testing.T, rig checkRig) {
+	t.Helper()
+	child := issueRecord(t, rig.pool, "LEGION-209")
+	child.Tree, child.Generation, child.Phase = "LEGION-209", child.Generation+1, phase.Admitted
+	child.Status, child.DispatchStatus, child.HandedOver, child.HandedOverFrom = "todo", "todo", true, "LEGION-208"
+	child.LingerUntil, child.LastDispatchSeq = nil, 5
+	seedIssue(t, rig.pool, *child)
+	if _, err := rig.pool.Exec(context.Background(), "delete from handovers where issue = 'LEGION-209'"); err != nil {
+		t.Fatal(err)
+	}
+	seedSlot(t, rig.pool, record.Slot{Issue: "LEGION-209", Index: 1})
+}
+
+// lookWaitsWhileTheChildRuns ends look 1 of LEGION-209's check at its bound and brings the wake
+// that names due while the child runs: the look ends and names its wake, and the wake starts no
+// look and is queued again.
+func lookWaitsWhileTheChildRuns(t *testing.T, rig checkRig) {
+	t.Helper()
+	looks := len(lookStarts(t, rig.pool, "LEGION-209"))
+	rig.apply("look-bound", intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "look bound", OpenedAt: checkOpened})
+	check := productionCheck(t, rig.pool, "LEGION-209")
+	if check == nil || !check.Open() || check.Looks != 1 || check.LookOpen || check.WakeAt == nil {
+		t.Fatalf("the check after its look's bound while the child runs = %+v, want open at look 1, the look ended and a wake named", check)
+	}
+	wake := *check.WakeAt
+	rig.clock.now = wake
+	rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, WakeAt: wake, Reason: "the retry of a look nobody reported: look bound"})
+	if check = productionCheck(t, rig.pool, "LEGION-209"); !check.Open() || check.Looks != 1 || check.LookOpen || check.WakeAt == nil || !check.WakeAt.After(wake) {
+		t.Fatalf("the check at its wake while the child runs = %+v, want look 1 still ended and the wake deferred past %s", check, wake)
+	}
+	if got := len(lookStarts(t, rig.pool, "LEGION-209")); got != looks {
+		t.Fatalf("look start rows = %d, want %d: no look starts while the child runs", got, looks)
+	}
+}
+
+// checkBoundWhileTheChildRuns brings LEGION-209's check to its bound while the child runs: it
+// closes as not run, and its last look never starts.
+func checkBoundWhileTheChildRuns(t *testing.T, rig checkRig) {
+	t.Helper()
+	looks := len(lookStarts(t, rig.pool, "LEGION-209"))
+	rig.clock.now = checkOpened.Add(checkBound)
+	rig.apply("bound", intake.CheckBound{Issue: "LEGION-209"})
+	checkClosedNotRun(t, rig)
+	if got := len(lookStarts(t, rig.pool, "LEGION-209")); got != looks {
+		t.Fatalf("look start rows = %d, want %d: the bound starts no last look while the child runs", got, looks)
+	}
+}
+
+// checkClosedNotRun fails unless LEGION-209's check of merge-43 is closed as not run.
+func checkClosedNotRun(t *testing.T, rig checkRig) {
+	t.Helper()
+	if check := productionCheck(t, rig.pool, "LEGION-209"); check == nil || check.Open() || check.Outcome != record.CheckNotRun || check.LookOpen ||
+		!check.OpenedAt.Equal(checkOpened) || check.MergeSHA != "merge-43" {
+		t.Fatalf("the child's check = %+v, want the check of merge-43 closed as not run", check)
 	}
 }
 
@@ -1112,6 +1269,27 @@ func readmittedRootRig(t *testing.T) checkRig {
 	}
 	if _, err := rig.pool.Exec(context.Background(), "delete from pull_requests where issue = 'LEGION-208'"); err != nil {
 		t.Fatal(err)
+	}
+	return rig
+}
+
+// olderBinarysChildCheckRig is childCheckRig's done child LEGION-209 with its open check as a
+// binary before dispatch://INFRA-3518 leaves it, with no generation and no look id, after this
+// release's boot (Engine.RepairOpenChecks): the boot gives the check the child's generation, 7,
+// and its open look 1 an id and a new task.
+func olderBinarysChildCheckRig(t *testing.T) checkRig {
+	t.Helper()
+	rig := childCheckRig(t)
+	if _, err := rig.pool.Exec(context.Background(), `update production_checks set opened_generation = null, look_id = null, look_id_look = null,
+		look_id_opened_at = null where issue = 'LEGION-209'`); err != nil {
+		t.Fatal(err)
+	}
+	rebooted(t, rig.pool)
+	if looks, generations := repairOpenChecks(t, rig.pool, rig.engine); looks != 1 || generations != 1 {
+		t.Fatalf("the boot gave %d looks an id and %d checks a generation, want the child's look and its check", looks, generations)
+	}
+	if check := productionCheck(t, rig.pool, "LEGION-209"); check == nil || !check.Open() || check.OpenedGeneration != 7 || check.CurrentLookID() == "" {
+		t.Fatalf("the child's check after the boot = %+v, want it open at generation 7 with an id of its look", check)
 	}
 	return rig
 }
