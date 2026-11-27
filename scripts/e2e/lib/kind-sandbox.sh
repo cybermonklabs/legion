@@ -12,11 +12,17 @@
 # runner carries, and the node image comes from this repository's own package, not Docker Hub. A
 # caller that does not call it creates the cluster with the kind on PATH (or LEGION_E2E_KIND) and
 # that kind's own default node image.
-# kind_sandbox_create NAME WORK makes the cluster NAME with its kubeconfig in a file of WORK
-# (kind_kubeconfig) and the context kind-NAME (kind_context). Its one node (kind_node) carries no
-# label or taint of Legion's, since Legion's pods share a cluster's general nodes, and the cluster
-# has the legion namespace and kind's standard storage class. kind_k runs kubectl against that file
-# and context alone, so the caller's kubeconfig and its current context are never read.
+# kind_sandbox_create NAME WORK [VOLUMES] makes the cluster NAME with its kubeconfig in a file of
+# WORK (kind_kubeconfig) and the context kind-NAME (kind_context). Its one node (kind_node) carries
+# no label or taint of Legion's, since Legion's pods share a cluster's general nodes, and the
+# cluster has the legion namespace and kind's standard storage class. VOLUMES, where given, is a
+# host directory that holds the node's local-path volumes, the ones that class makes: a kind
+# extraMounts entry puts it at /var/local-path-provisioner, where kind's provisioner writes each
+# volume, so a proof whose volumes outgrow the disk of docker's own storage puts them on a disk
+# with room. kind delete cluster leaves the volumes' files there, for the caller to remove. Without
+# it the cluster is made with no configuration file, on the node's own disk. kind_k runs kubectl
+# against that file and context alone, so the caller's kubeconfig and its current context are
+# never read.
 # kind_sandbox_install_agent_sandbox WORK applies Agent Sandbox's release manifest at the version
 # internal/runtime/sandbox speaks, pinned by sha256, and waits for its controller.
 # kind_sandbox_install_gvisor WORK installs gVisor's dated release, pinned by sha512, into the
@@ -63,10 +69,21 @@ kind_sandbox_install_kind() {
 
 kind_sandbox_create() {
   kind_cluster=$1 kind_context=kind-$1 kind_kubeconfig=$2/kubeconfig kind_node=$1-control-plane
-  "$kind_bin" create cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" --wait 180s ${kind_node_image:+--image "$kind_node_image"}
+  if [ -n "${3:-}" ]; then
+    cat >"$2/kind-config.yaml" <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: $3
+        containerPath: /var/local-path-provisioner
+EOF
+  fi
+  "$kind_bin" create cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" --wait 180s ${kind_node_image:+--image "$kind_node_image"} ${3:+--config "$2/kind-config.yaml"}
   kind_k create namespace legion
   kind_k get storageclass standard -o name
-  note "kind $("$kind_bin" version), node $(kind_k get node "$kind_node" -o jsonpath='{.status.nodeInfo.kubeletVersion} {.status.allocatable.cpu} cpu {.status.allocatable.memory} memory')"
+  note "kind $("$kind_bin" version), node $(kind_k get node "$kind_node" -o jsonpath='{.status.nodeInfo.kubeletVersion} {.status.allocatable.cpu} cpu {.status.allocatable.memory} memory')${3:+, local-path volumes in $3}"
 }
 
 kind_sandbox_install_agent_sandbox() {

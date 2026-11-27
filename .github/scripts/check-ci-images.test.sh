@@ -255,6 +255,11 @@ YAML
 #!/usr/bin/env bash
 docker run --rm --network kind "\$kind_busybox" true
 YAML
+  # The same shape in issue-pod-start-kind.sh, whose driver container and volume removal run it.
+  cat > "$root/scripts/e2e/issue-pod-start-kind.sh" <<YAML
+#!/usr/bin/env bash
+docker run --rm --network kind "\$kind_busybox" true
+YAML
   echo "$root"
 }
 
