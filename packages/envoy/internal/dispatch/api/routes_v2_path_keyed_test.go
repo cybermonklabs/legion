@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // TestEveryPathKeyedBehaviourHoldsOnV2 runs, through its /api/v2 route, each behaviour server code
@@ -71,7 +72,7 @@ func TestEveryPathKeyedBehaviourHoldsOnV2(t *testing.T) {
 		}
 	})
 
-	t.Run("a project-scoped write is refused on another project", func(t *testing.T) {
+	t.Run("a project-scoped write reaches another public project's object and no private one's", func(t *testing.T) {
 		caller := newBrokerCaller(t)
 		const token = "a-token-scoped-to-one-project"
 		tour.brokerTokens.Says(token, liveNamedToken(caller.jkt))
@@ -81,30 +82,58 @@ func TestEveryPathKeyedBehaviourHoldsOnV2(t *testing.T) {
 			tour.handler.ServeHTTP(response, caller.presenting(t, method, path, token, body))
 			return response
 		}
-		other := tour.issue(t)
-		project := tour.projectOf(t, other)
-		// One write of each object a /api/v2 row's ProjectOf resolves its project from, each
-		// pointed at the other project's object: a refusal naming both projects is the check
-		// having resolved the object, where one it resolved to nothing names the token's alone.
-		for _, write := range []struct {
+		type write struct {
 			resolver, method, path string
 			body                   any
-		}{
-			{"issue", http.MethodPatch, "/api/v2/issues/" + other.Key, map[string]any{"title": "Retitled by a scoped token"}},
-			{"project", http.MethodPost, "/api/v2/projects/" + project + "/artifacts", map[string]any{"name": "scoped.md", "content": "# Scoped"}},
-			{"artifact", http.MethodPost, "/api/v2/artifacts/" + other.Document + "/comments", map[string]any{"body": "A scoped remark."}},
-			{"ask", http.MethodPatch, "/api/v2/asks/" + tour.ask(t, other), map[string]any{"question": "Which way now?"}},
-			// The comment's state, not PATCH /comments/{id}: that row needs the person scope, and
-			// its gate answers a broker token OAUTH_SCOPE_REQUIRED before this check is reached.
-			{"comment", http.MethodPut, "/api/v2/comments/" + tour.comment(t, other) + "/state", map[string]any{"state": "resolved"}},
-			{"message", http.MethodPost, "/api/v2/messages/" + tour.targetedMessage(t, other) + "/deliveries", map[string]any{"delivery": "btw"}},
-			{"result", http.MethodPut, "/api/v2/results/" + tour.result(t, other) + "/state", map[string]any{"state": "retracted", "reason": "Scoped."}},
-		} {
+		}
+		// One write of each object a /api/v2 row's ProjectOf resolves its project from, each
+		// pointed at an object of issue's project, which is not the token's.
+		writesOf := func(issue tourIssue) []write {
+			project := tour.projectOf(t, issue)
+			return []write{
+				{"issue", http.MethodPatch, "/api/v2/issues/" + issue.Key, map[string]any{"title": "Retitled by a scoped token"}},
+				{"project", http.MethodPost, "/api/v2/projects/" + project + "/artifacts", map[string]any{"name": "scoped.md", "content": "# Scoped"}},
+				{"artifact", http.MethodPost, "/api/v2/artifacts/" + issue.Document + "/comments", map[string]any{"body": "A scoped remark."}},
+				{"ask", http.MethodPatch, "/api/v2/asks/" + tour.ask(t, issue), map[string]any{"question": "Which way now?"}},
+				// The comment's state, not PATCH /comments/{id}: that row needs the person scope,
+				// and its gate answers a broker token OAUTH_SCOPE_REQUIRED before this check is
+				// reached.
+				{"comment", http.MethodPut, "/api/v2/comments/" + tour.comment(t, issue) + "/state", map[string]any{"state": "resolved"}},
+				{"message", http.MethodPost, "/api/v2/messages/" + tour.targetedMessage(t, issue) + "/deliveries", map[string]any{"delivery": "btw"}},
+				{"result", http.MethodPut, "/api/v2/results/" + tour.result(t, issue) + "/state", map[string]any{"state": "retracted", "reason": "Scoped."}},
+			}
+		}
+
+		// A credential that names one project writes every public project's objects, as one that
+		// names none does (#4682, project_scope.go). The check fails closed on a target it resolves
+		// to no project, so an answer that is not PROJECT_SCOPE is the check having resolved the
+		// object to its public project and passed the write to the handler.
+		public := tour.issue(t)
+		for _, write := range writesOf(public) {
 			response := present(write.method, write.path, write.body)
-			if code, message := refusalOf(t, response); response.Code != http.StatusForbidden || code != "PROJECT_SCOPE" ||
-				!strings.Contains(message, brokerTestProject) || !strings.Contains(message, project) {
-				t.Errorf("%s %s (its %s's project %s) under a token scoped to %s: %d %s, want 403 PROJECT_SCOPE naming both",
-					write.method, write.path, write.resolver, project, brokerTestProject, response.Code, response.Body.String())
+			if code, _ := refusalOf(t, response); code == apicode.ProjectScope.Name() || response.Code >= http.StatusInternalServerError {
+				t.Errorf("%s %s (its %s's public project %s) under a token scoped to %s: %d %s, want the handler's answer",
+					write.method, write.path, write.resolver, tour.projectOf(t, public), brokerTestProject, response.Code, response.Body.String())
+			}
+		}
+
+		// The one exception is a private project the credential does not name: its object is
+		// answered as a target that resolves to no project, naming the token's project alone, so
+		// the answer says nothing of what the private project holds. The objects are made while
+		// the project is public, then it is made private.
+		private := tour.issue(t)
+		privateProject := tour.projectOf(t, private)
+		privateWrites := writesOf(private)
+		seedExec(t, tour.database, "the other project made private", `
+			update projects set owner = 'alice', visibility = 'private' where key = $1
+		`, privateProject)
+		want := outsideProjectScopeError(brokerTestProject).message
+		for _, write := range privateWrites {
+			response := present(write.method, write.path, write.body)
+			if code, message := refusalOf(t, response); response.Code != http.StatusForbidden || code != apicode.ProjectScope.Name() || message != want {
+				t.Errorf("%s %s (its %s's private project %s) under a token scoped to %s: %d %s, want 403 %s %q",
+					write.method, write.path, write.resolver, privateProject, brokerTestProject, response.Code, response.Body.String(),
+					apicode.ProjectScope.Name(), want)
 			}
 		}
 

@@ -468,6 +468,7 @@ var goingToolRoutesV2 = map[string][]goingToolRoute{
 			Path: map[string]string{"key": "issue"},
 		},
 	},
+	"dispatch_deploy": {{Method: http.MethodPost, Pattern: "/api/v2/deploys"}},
 	"dispatch_artifact": {
 		{
 			Method: http.MethodPost, Pattern: "/api/v2/issues/{key}/artifacts",
