@@ -507,7 +507,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "dispatch-client/0.1.0"
           },
           "body": {
             "commit": "1111111111111111111111111111111111111111",
@@ -533,7 +534,8 @@
           "path": "/api/v1/deploys?repo=acme/widgets",
           "headers": {
             "Accept": "application/json",
-            "Authorization": "Bearer secret"
+            "Authorization": "Bearer secret",
+            "User-Agent": "dispatch-client/0.1.0"
           },
           "body": null
         }

@@ -49,7 +49,7 @@ func TestTheReadNamesItself(t *testing.T) {
 			t.Cleanup(named.Close)
 			dispatch := Dispatch{
 				BaseURL: named.URL,
-				Account: ciphertoken.NewAccountToken(tokenFile(t, "projected-token")),
+				Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", tokenFile(t, "projected-token")),
 				HTTP:    named.Client(),
 				Commit:  tc.commit,
 			}
