@@ -359,8 +359,8 @@ func (e *Engine) promptReaders(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	repo, head := taskHead(pr)
-	if head == "" || fact.Repo != repo || fact.Head != head {
+	_, head := taskHead(pr)
+	if head == "" {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
