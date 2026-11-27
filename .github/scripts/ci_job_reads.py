@@ -1205,6 +1205,12 @@ DAEMON_PLAIN_PACKAGES = leg_run_packages(DAEMON_LEGS, DAEMON_PLAIN_JOB, go_legs.
 DAEMON_RACE_LEG_PACKAGES = go_legs.job_packages(DAEMON_LEGS[DAEMON_RACE_JOB])
 
 
+def names_pattern(names):
+    """The anchored alternation of whole test names a step's -run or -skip writes, quoted for the
+    shell: `'^(Name|Name|…)$'`, the names sorted."""
+    return f"'^({'|'.join(sorted(names))})$'"
+
+
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
 # of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,
 # promptreferences_omp_test.go's prompt reference probe, reads no file of the repository and stays
@@ -1235,7 +1241,7 @@ PLUGIN_PACK_TESTS = ["TestTheRealPluginsOnTheRealOhMyPi", "TestTheAgentModelChec
 PLUGIN_PACK_PACKAGE = "internal/daemon"
 PLUGIN_PACK_JOB = "plugin-pack"
 PLUGIN_PACK_STEP = "Pack the plugin releases and run the prompt probes on the real Oh My Pi"
-PLUGIN_PACK_PATTERN = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS))})$'"
+PLUGIN_PACK_PATTERN = names_pattern(PLUGIN_PACK_TESTS)
 PLUGIN_PACK_SCRIPT = f"go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: a package moved out of the race step while the
@@ -1323,25 +1329,29 @@ hold_plugin_pack_tests()
 # ---------------------------------------------------------------- the session client under left settings
 # internal/ompsessions' test of the session client under each setting another client can leave on
 # a server connection, `packages/daemon/internal/ompsessions/left_test.go#TestTheClientHoldsUnderEveryLeftSetting`:
-# it starts a PostgreSQL 16 server and a PgBouncer in front of it with docker, from the two images
-# the daemon-go legs' pull step pulls first (`packages/daemon/internal/ompsessions/searchpath_test.go#Postgres16Image`
-# and `packages/daemon/internal/ompsessions/searchpath_test.go#PoolImage`), and reads no LEGION_TEST_*
-# variable. It runs in a step of its own, with -v: under `go test` without -v, Go prints a passing
-# test's log lines nowhere, so the test's last log line, its count of each server's cases and of
-# the client's logged statements, reaches the job's log only from a step that runs it with -v, and
-# -v on the plain legs' step would print every test of every package that step runs. That step,
-# which runs the test's package, skips it by name, so it runs once per run of the router. The step
-# runs in the plain leg that runs its package (SESSION_CLIENT_LEFT_LEG), so its build is the test
-# build that leg's plain step compiled, and it reads nothing that step does not read.
+# it starts a PostgreSQL 16 server and a PgBouncer in front of it with docker, from two images
+# the daemon-go plain legs pull first: the pull step every plain leg runs pulls the PgBouncer one
+# (`packages/daemon/internal/ompsessions/searchpath_test.go#PoolImage`), and a pull step of its own
+# in the one leg that runs this test pulls the PostgreSQL 16 one
+# (`packages/daemon/internal/ompsessions/searchpath_test.go#Postgres16Image`). It reads no
+# LEGION_TEST_* variable. It runs in a step of its own, with -v: under `go test` without -v, Go
+# prints a passing test's log lines nowhere, so the test's last log line, its count of each
+# server's cases and of the client's logged statements, reaches the job's log only from a step
+# that runs it with -v, and -v on the plain legs' step would print every test of every package that
+# step runs. That step, which runs the test's package, skips it by name, so it runs once per run of
+# the router. The step runs in the plain leg that runs its package (SESSION_CLIENT_LEFT_LEG), so
+# its build is the test build that leg's plain step compiled, and it reads nothing that step does
+# not read.
 # Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
 # script, so the -skip and the -run cannot come to name different tests.
 SESSION_CLIENT_LEFT_TESTS = ["TestTheClientHoldsUnderEveryLeftSetting"]
 SESSION_CLIENT_LEFT_PACKAGE = "internal/ompsessions"
 SESSION_CLIENT_LEFT_SOURCE = f"{DAEMON}/{SESSION_CLIENT_LEFT_PACKAGE}"
-# The leg the step's `if:` names, `matrix.leg == 2`: a move of the step changes both.
+# The leg the step's `if:` names, `matrix.leg == 2`, as the PostgreSQL 16 pull step's does: a move
+# of the step changes all three.
 SESSION_CLIENT_LEFT_LEG = "2"
 SESSION_CLIENT_LEFT_STEP = "Test the session client under left settings"
-SESSION_CLIENT_LEFT_PATTERN = f"'^({'|'.join(sorted(SESSION_CLIENT_LEFT_TESTS))})$'"
+SESSION_CLIENT_LEFT_PATTERN = names_pattern(SESSION_CLIENT_LEFT_TESTS)
 # The 10-minute -timeout is Go's own default written out, so the job's timeout-minutes counts it.
 SESSION_CLIENT_LEFT_SCRIPT = (f"go test -count=1 -v -timeout 10m -run {SESSION_CLIENT_LEFT_PATTERN} "
                               f"./{SESSION_CLIENT_LEFT_PACKAGE}/")
@@ -1350,11 +1360,8 @@ SESSION_CLIENT_LEFT_SCRIPT = (f"go test -count=1 -v -timeout 10m -run {SESSION_C
 # the package moved into a race leg would run the test there too, since only the plain step skips
 # it, and moved to another plain leg it would leave this step compiling the package's test build
 # again in a leg whose plain step compiles none of it.
-_left_legs = DAEMON_LEGS[DAEMON_PLAIN_JOB]
-_left_whole = [package for package, group in
-               map(go_legs.item, _left_legs.get(go_legs.leg_key(_left_legs, SESSION_CLIENT_LEFT_LEG)) or [])
-               if group is None]
-if SESSION_CLIENT_LEFT_PACKAGE not in _left_whole:
+if SESSION_CLIENT_LEFT_PACKAGE not in [p.package for p in go_legs.places(DAEMON_LEGS)[0] if p.job == DAEMON_PLAIN_JOB
+                                       and str(p.leg) == SESSION_CLIENT_LEFT_LEG and p.group is None]:
     raise ValueError(f"the session client's left-setting test is in {SESSION_CLIENT_LEFT_PACKAGE}, which leg "
                      f"{SESSION_CLIENT_LEFT_LEG} of {DAEMON_PLAIN_JOB} in {GO_LEGS} does not run whole, while "
                      f"{job_file(DAEMON_PLAIN_JOB)}'s step \"{SESSION_CLIENT_LEFT_STEP}\" runs the test in that leg "
@@ -1421,7 +1428,7 @@ SUPERVISE_TABLE_TESTS = ["TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryS
 SUPERVISE_TABLE_PACKAGE = "internal/supervise"
 SUPERVISE_TABLE_SOURCE = f"{DAEMON}/{SUPERVISE_TABLE_PACKAGE}"
 SUPERVISE_TABLE_STEP = "Test the supervise table's two pure pins (no database)"
-SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
+SUPERVISE_TABLE_PATTERN = names_pattern(SUPERVISE_TABLE_TESTS)
 SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: the plain legs' step skips them, and this package
@@ -1433,7 +1440,7 @@ if SUPERVISE_TABLE_PACKAGE not in DAEMON_PLAIN_PACKAGES:
                      f"that runs them")
 # The plain legs' step skips both lists' tests, the supervise table's pins and the session client's
 # left-setting test, as one anchored pattern of their names, sorted as each list's own pattern is.
-DAEMON_PLAIN_SKIP = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS + SESSION_CLIENT_LEFT_TESTS))})$'"
+DAEMON_PLAIN_SKIP = names_pattern(SUPERVISE_TABLE_TESTS + SESSION_CLIENT_LEFT_TESTS)
 DAEMON_PLAIN_SCRIPT = legs_script(DAEMON, DAEMON_PLAIN_JOB,
                                   f"go test -count=1 -timeout 15m -skip {DAEMON_PLAIN_SKIP}")
 DAEMON_RACE_SCRIPT = legs_script(DAEMON, DAEMON_RACE_JOB,
@@ -1676,12 +1683,6 @@ BACKEND_COUNT_TESTS = {
                                   "TestTheChainSkipsAbsenceAndStopsOnABrokenSource"],
     BACKEND_COUNT_BROKER_API: ["TestSettingsNameTheGoogleExchangeAudienceOnEitherStore"],
 }
-
-
-def names_pattern(names):
-    """The anchored alternation of whole test names a step's -run or -skip writes, quoted for the
-    shell: `'^(Name|Name|…)$'`, the names sorted."""
-    return f"'^({'|'.join(sorted(names))})$'"
 
 
 # The counter's own test, which envoy-go-skips runs beside the unit legs: its controls run the

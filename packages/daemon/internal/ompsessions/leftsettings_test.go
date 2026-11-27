@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -68,7 +69,7 @@ func TestLeftSettingsHoldsEveryParameterOfTheClass(t *testing.T) {
 		want[name] = true
 	}
 	for _, table := range storeTables {
-		want["temporary table "+table] = true
+		want[temporaryTable+table] = true
 	}
 	held := map[string]int{}
 	for _, setting := range LeftSettings {
@@ -103,18 +104,7 @@ func TestLeftSettingsHoldsEveryParameterOfTheClass(t *testing.T) {
 
 // exemptReasons are the two reasons an entry may be exempt for: an exempt entry's Reason starts with
 // one of them, then says why it holds for the package's own statements.
-var exemptReasons = []string{
-	"It cannot change a result, an error or the durability of a statement of the client: ",
-	"It acts only while no transaction of the client runs on the connection: ",
-}
-
-// neverExempt are the thirteen parameters the client depends on: each is set, in the opening message
-// or by its BEGIN clause, or is a dependency the code no longer has, and none is exempt.
-var neverExempt = []string{
-	"statement_timeout", "lock_timeout", "idle_in_transaction_session_timeout", "transaction_timeout", "bytea_output",
-	"exit_on_error", "client_encoding", "default_tablespace", "default_table_access_method", "search_path",
-	"default_transaction_read_only", "quote_all_identifiers", "cloudsql_session_read_only",
-}
+var exemptReasons = []string{cannotChange, actsBetween}
 
 // heldSetting is what an entry must be: its kind, its form, and the text after SET LOCAL <name> in
 // OpenRead and in OpenWrite.
@@ -129,7 +119,12 @@ type heldSetting struct {
 // search_path, restrict_nonsystem_relation_kind and row_security pins, row_security off in a read
 // alone), the other entries the openings set by SET LOCAL to a value of their own or TO DEFAULT, the
 // ones only the set_config statement can set because a supported server lacks them, the six the
-// BEGIN clause sets, and the two the code no longer depends on.
+// BEGIN clause sets, and the two the code no longer depends on. Among them are the thirteen
+// parameters the client depends on (statement_timeout, lock_timeout,
+// idle_in_transaction_session_timeout, transaction_timeout, bytea_output, exit_on_error,
+// client_encoding, default_tablespace, default_table_access_method, search_path,
+// default_transaction_read_only, quote_all_identifiers and cloudsql_session_read_only), so none of
+// them can be exempt.
 var heldSettings = map[string]heldSetting{
 	"application_name":                    {SetInOpening, SetLocal, "= 'legion-session-client'", "= 'legion-session-client'"},
 	"exit_on_error":                       {SetInOpening, SetLocal, "TO DEFAULT", "TO DEFAULT"},
@@ -231,14 +226,15 @@ func settingFaults(setting LeftSetting) []string {
 }
 
 // Every entry of the list has one kind of the four and its reason, and names the statement that
-// leaves it (settingFaults). None of the thirteen parameters the client depends on is exempt. The
-// entries whose kind and values the requirements fix have them (heldSettings): application_name,
-// exit_on_error, the timeouts, the search_path, restrict_nonsystem_relation_kind and row_security
-// pins with row_security off in a read alone, role, default_tablespace, default_table_access_method,
-// client_encoding and synchronous_commit by SET LOCAL; cloudsql_session_read_only,
-// transaction_timeout and every Cloud SQL index advisor and job scheduler parameter by the
-// set_config statement; the six transaction parameters by the BEGIN clause; bytea_output,
-// quote_all_identifiers and each temporary table as no longer a dependency.
+// leaves it (settingFaults). The entries whose kind and values the requirements fix have them
+// (heldSettings): application_name, exit_on_error, the timeouts, the search_path,
+// restrict_nonsystem_relation_kind and row_security pins with row_security off in a read alone,
+// role, default_tablespace, default_table_access_method, client_encoding and synchronous_commit by
+// SET LOCAL; cloudsql_session_read_only, transaction_timeout and every Cloud SQL index advisor and
+// job scheduler parameter by the set_config statement; the six transaction parameters by the BEGIN
+// clause; bytea_output, quote_all_identifiers and each temporary table as no longer a dependency.
+// heldSettings holds each of the thirteen parameters the client depends on, so none of them is
+// exempt.
 // The left statements the left-setting test needs at least are the ones it names (heldLefts).
 func TestEveryLeftSettingHasOneKindAndItsReason(t *testing.T) {
 	byName := map[string]LeftSetting{}
@@ -246,11 +242,6 @@ func TestEveryLeftSettingHasOneKindAndItsReason(t *testing.T) {
 		byName[setting.Name] = setting
 		for _, fault := range settingFaults(setting) {
 			t.Errorf("%s: %s", setting.Name, fault)
-		}
-	}
-	for _, name := range neverExempt {
-		if setting, ok := byName[name]; ok && setting.Kind == Exempt {
-			t.Errorf("%s: it is exempt, and the client depends on it: set it in the opening or by BEGIN, or name why the code no longer depends on it", name)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(heldSettings)) {
@@ -279,7 +270,7 @@ func TestEveryLeftSettingHasOneKindAndItsReason(t *testing.T) {
 		t.Errorf("the list holds no parameter of %v, the Cloud SQL index advisor's and job scheduler's", setByConfig)
 	}
 	for _, table := range storeTables {
-		name := "temporary table " + table
+		name := temporaryTable + table
 		setting, ok := byName[name]
 		if !ok {
 			t.Errorf("%s: the list holds no entry", name)
@@ -432,7 +423,10 @@ func TestTheOpeningsArePlainSQLThatPsqlSendsAsTheyStand(t *testing.T) {
 				t.Fatalf("%s: %s's value is %T, want one raw (backquoted) string literal, which a reader copies as it stands",
 					fset.Position(specs[0].Values[0].Pos()), opening.name, specs[0].Values[0])
 			}
-			text := strings.TrimSuffix(strings.TrimPrefix(literal.Value, "`"), "`")
+			text, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				t.Fatalf("%s: %s's raw string literal does not unquote: %v", fset.Position(literal.Pos()), opening.name, err)
+			}
 			if text != opening.constant {
 				t.Fatalf("UNKNOWN: the literal open.go writes for %s is not the constant the package compiles", opening.name)
 			}

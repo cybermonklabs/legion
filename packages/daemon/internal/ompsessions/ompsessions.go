@@ -25,6 +25,7 @@ package ompsessions
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -395,10 +396,7 @@ func repairless(s step) bool {
 	if !errors.As(s.err, &pgErr) {
 		return false
 	}
-	severity := pgErr.SeverityUnlocalized
-	if severity == "" {
-		severity = pgErr.Severity
-	}
+	severity := cmp.Or(pgErr.SeverityUnlocalized, pgErr.Severity)
 	return severity == "FATAL" || severity == "PANIC" || pgErr.Code == readOnlySQLTransaction || pgErr.Code == insufficientPrivilege
 }
 

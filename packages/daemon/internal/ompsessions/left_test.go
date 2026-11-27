@@ -31,10 +31,11 @@ const noDockerForLeftSettings = "no docker on PATH, so the test cannot start the
 	"LEGION_TEST_* variable: CI's daemon-go job runs it in a step of its own, and elsewhere it runs where docker is on PATH, " +
 	"starting both servers itself."
 
-// The test's two waits (D9 of the plan). The admin holds the row of the case's session FOR UPDATE
-// for leftRowHold while the client's Append waits for it, which a left statement_timeout or
-// lock_timeout of 50 ms cancels; and the tracer waits leftPause, sending nothing, before the second
-// statement of the case's first Read transaction, in which a left
+// The test's two waits, which give a left timeout of 50 ms time to act inside a transaction of the
+// client, whose own statements end before one would. The admin holds the row of the case's session
+// FOR UPDATE for leftRowHold while the client's Append waits for it, which a left
+// statement_timeout or lock_timeout of 50 ms cancels; and the tracer waits leftPause, sending
+// nothing, before the second statement of the case's first Read transaction, in which a left
 // idle_in_transaction_session_timeout of 50 ms ends the connection.
 const (
 	leftRowHold = 150 * time.Millisecond
@@ -45,14 +46,15 @@ const (
 // client's Terminate went, and for the server's log to hold a line the test's own statement wrote.
 const leftBound = 10 * time.Second
 
-// leftServerPort names PostgreSQL 16's unix socket in its directory: .s.PGSQL.5432.
-const leftServerPort = "5432"
+// leftServerPort is PostgreSQL 16's port, which names its unix socket in its directory:
+// .s.PGSQL.5432.
+const leftServerPort = 5432
 
 // postgres16Start is the command PostgreSQL 16's container runs as the test's own uid (poolUser):
 // initdb, with trust for every connection, since the socket's directory is the test's alone, mode
 // 0700; then the server, on its unix socket in the mounted directory alone, with the log settings
-// of the plan's D8 and of testdata/pg16-statement-log.jsonl's capture: jsonlog, one file
-// (log/server.json, never rotated), a line for each statement when it ends
+// the log rule reads (clientStatementsInLog), which testdata/pg16-statement-log.jsonl's capture used
+// too: jsonlog, one file (log/server.json, never rotated), a line for each statement when it ends
 // (log_min_duration_statement = 0), and the statement's text on each ERROR line. initdb looks the
 // running user up, and the image's /etc/passwd lacks the test's uid, so where it is missing the
 // command names it postgres through the image's nss_wrapper, as the image's own entrypoint does
@@ -86,21 +88,20 @@ const (
 // leftNames are the logins and databases prepareLeftServer makes on the server: client, the
 // client's login on the direct run, which makes and owns the tables in database as a pod's agent
 // login may; lockedOut, a login with CONNECT and no right on public or the tables; and readOnly,
-// which defaults each transaction to read-only. password is each login's, "" where the server
-// trusts its socket. The role with no right on the tables is LeftSettings' own (noRightsRole).
+// which defaults each transaction to read-only. The role with no right on the tables is
+// LeftSettings' own (noRightsRole).
 type leftNames struct {
-	client, lockedOut, database, readOnly, password string
+	client, lockedOut, database, readOnly string
 }
 
 // leftNamesOnPostgres16 are leftNames on the PostgreSQL 16 the test starts.
 var leftNamesOnPostgres16 = leftNames{client: "legion_client", lockedOut: "left_locked_out", database: "leftset", readOnly: "leftset_ro"}
 
-// leftServer is how the case runner reaches the servers, whatever started them: the URLs of the
-// test's superuser, directly, on names.database (admin), on names.readOnly (adminRO) and on a
-// database no case writes (maintenance); of the client's login on names.database and on
-// names.readOnly, and of names.lockedOut on names.database, directly; of the PgBouncer entries and
-// the admin console, "" where no pool runs; and the path of the server's jsonlog file, "" where the
-// test cannot read the server's log.
+// leftServer is how the case runner reaches the servers: the URLs of the test's superuser,
+// directly, on names.database (admin), on names.readOnly (adminRO) and on a database no case
+// writes (maintenance); of the client's login on names.database and on names.readOnly, and of
+// names.lockedOut on names.database, directly; of the PgBouncer entries and the admin console; and
+// the path of the server's jsonlog file.
 type leftServer struct {
 	names                              leftNames
 	admin, adminRO, maintenance        string
@@ -119,13 +120,13 @@ type leftServer struct {
 // that the test reads SHOW VERSION and sends RECONNECT on its admin console.
 func startLeftServers(t *testing.T, docker string) leftServer {
 	t.Helper()
-	dir := testtmp.Dir(t, ".s.PGSQL."+leftServerPort)
+	dir := testtmp.Dir(t, ".s.PGSQL."+strconv.Itoa(leftServerPort))
 	user, err := poolUser(os.Getuid(), os.Getgid())
 	if err != nil {
 		t.Fatal(err)
 	}
 	direct := func(login, database string) string {
-		address, err := socketURL(login, "", database, dir, leftServerPort)
+		address, err := socketURL(login, "", database, dir, strconv.Itoa(leftServerPort))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,7 +146,7 @@ func startLeftServers(t *testing.T, docker string) leftServer {
 	prepareLeftServer(t, server)
 
 	poolDir := startPool(t, docker, poolTarget{
-		host: dir, port: 5432, auth: "trust", users: [][2]string{{"postgres", ""}}, admins: "postgres", lifo: true, ready: poolSet,
+		host: dir, port: leftServerPort, auth: "trust", users: [][2]string{{"postgres", ""}}, admins: "postgres", lifo: true, ready: poolSet,
 		entries: []poolEntry{
 			{name: poolSet, database: names.database, user: "postgres", size: 1},
 			{name: poolSet4, database: names.database, user: "postgres", size: 4},
@@ -195,18 +196,13 @@ var readOnlyAt = time.Date(2026, 11, 27, 11, 0, 0, 0, time.UTC).UnixMilli()
 // as a pod's agent login may, and neither the login locked out nor the role without rights reaches a
 // table. names.readOnly gets Oh My Pi's two tables, which the client's login may read and write,
 // with readOnlySession in them, and only then default_transaction_read_only = on, so that no session
-// starts on it before the default does (Departure 1 of the plan: a database default reaches only the
-// sessions that start after it, and on names.database it would make every later case read-only).
+// starts on it before the default does: a database default reaches only the sessions that start
+// after it, and on names.database it would make every later case read-only.
 func prepareLeftServer(t *testing.T, s leftServer) {
 	t.Helper()
 	ctx := context.Background()
 	n, noRights := s.names, noRightsRole(t)
-	login := func(role string) string {
-		if n.password == "" {
-			return "CREATE ROLE " + role + " LOGIN"
-		}
-		return "CREATE ROLE " + role + " LOGIN PASSWORD '" + n.password + "'"
-	}
+	login := func(role string) string { return "CREATE ROLE " + role + " LOGIN" }
 	run := func(address string, statements ...string) {
 		t.Helper()
 		conn, err := pgx.Connect(ctx, address)
@@ -255,10 +251,12 @@ var (
 	leftReplacedAt = leftFirstAt.Add(2 * time.Minute)
 )
 
-// poolerResets are the six parameters every PgBouncer release resets for each client (spec R4):
-// DateStyle, client_encoding, TimeZone, standard_conforming_strings and application_name, which it
-// always tracks, and IntervalStyle, which track_extra_parameters adds. The pooled run has no case
-// for them.
+// poolerResets are the six parameters every PgBouncer release resets for each client: DateStyle,
+// client_encoding, TimeZone, standard_conforming_strings and application_name, which it always
+// tracks, and IntervalStyle, which track_extra_parameters adds (src/varcache.c, src/main.c,
+// src/proto.c and src/objects.c at pgbouncer_1_24_1). PgBouncer sets each on the server connection
+// to the next client's own value before that client's query, so what another client left of them
+// never reaches the client, and the pooled run has no case for them.
 var poolerResets = []string{"DateStyle", "client_encoding", "TimeZone", "standard_conforming_strings", "application_name", "IntervalStyle"}
 
 // leftCase is one case a run leaves on the server connection the client then gets: its subtest's
@@ -267,10 +265,12 @@ var poolerResets = []string{"DateStyle", "client_encoding", "TimeZone", "standar
 // superuser has the direct run's client sign in as the test's superuser, the one login that may send
 // the left statement, where it signs in as the client's login otherwise; unrepairable is a left
 // statement under which the client cannot repair the connection, which the case wants closed
-// (closed) where an entry's case wants it kept (pid).
+// (closed) where an entry's case wants it kept (pid). mode is the query mode of the client's Conn,
+// 0 for the one ConnectURL gives it (tracedConn).
 type leftCase struct {
 	name, entry, left, probe string
 	superuser, unrepairable  bool
+	mode                     pgx.QueryExecMode
 }
 
 // leftCases are a run's cases of LeftSettings: one for each parameter the server has (has, its
@@ -331,7 +331,7 @@ func userSettings(t *testing.T, conn *pgx.Conn) map[string]bool {
 	return has
 }
 
-// The conditions of a case, each computed apart and named when it fails (D8 of the plan):
+// The conditions of a case, each computed apart and named when it fails:
 // operations, each operation answered what it reports; data, the admin reads in the tables what the
 // client reported writing, byte for byte; temp, each temporary table of the client's backend holds
 // no row; app, the client's transaction reads legion-session-client as its application_name, and
@@ -422,7 +422,8 @@ func sqlstate(err error) string {
 }
 
 // leftClient runs a case's operations: the package's own functions on a Conn (packageClient), or,
-// for a control, copies of their statements in main's helper (controlClient).
+// for a control, copies of their statements in the helper as it stood before the openings
+// (controlClient).
 type leftClient interface {
 	written(ctx context.Context, path string) (time.Time, bool, error)
 	findByID(ctx context.Context, id string) (string, bool, error)
@@ -482,13 +483,13 @@ func (p packageClient) inside(ctx context.Context) (app, isolation string, pid u
 
 func (p packageClient) conn() *pgx.Conn { return p.c.c }
 
-// mainShape is the control's helper, the client's inTransaction as it stood before the openings
-// (main at 17767e49): pgx.BeginTxFunc with the access mode, then SET LOCAL search_path =
+// beforeOpenings is the control's helper, the client's inTransaction as it stood before the
+// openings (main at 17767e49): pgx.BeginTxFunc with the access mode, then SET LOCAL search_path =
 // pg_catalog, pg_temp, in a read SET LOCAL row_security = off, then SET LOCAL
 // restrict_nonsystem_relation_kind = 'view, foreign-table', each a statement of its own, and
 // ROLLBACK on every error. It sets nothing else another client could have left, and closes no
 // connection.
-func mainShape(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pgx.Tx) error) error {
+func beforeOpenings(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pgx.Tx) error) error {
 	access := pgx.ReadWrite
 	if readOnly {
 		access = pgx.ReadOnly
@@ -508,12 +509,12 @@ func mainShape(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pgx.T
 }
 
 // controlClient is the control's client: copies of the statements of the package's functions, in
-// mainShape on the one connection c, as the client ran them before the openings.
+// beforeOpenings on the one connection c, as the client ran them before the openings.
 type controlClient struct{ c *pgx.Conn }
 
 func (m controlClient) written(ctx context.Context, path string) (time.Time, bool, error) {
 	var mtime int64
-	err := mainShape(ctx, m.c, true, func(tx pgx.Tx) error {
+	err := beforeOpenings(ctx, m.c, true, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", path).Scan(&mtime)
 	})
 	if isUndefinedTable(err) || errors.Is(err, pgx.ErrNoRows) {
@@ -528,7 +529,7 @@ func (m controlClient) written(ctx context.Context, path string) (time.Time, boo
 func (m controlClient) findByID(ctx context.Context, id string) (string, bool, error) {
 	suffix := "_" + id + ".jsonl"
 	var path string
-	err := mainShape(ctx, m.c, true, func(tx pgx.Tx) error {
+	err := beforeOpenings(ctx, m.c, true, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, "SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2 ORDER BY mtime_ms DESC, path ASC LIMIT 1",
 			utf8.RuneCountInString(suffix), suffix).Scan(&path)
 	})
@@ -541,7 +542,7 @@ func (m controlClient) findByID(ctx context.Context, id string) (string, bool, e
 func (m controlClient) read(ctx context.Context, path string) ([]byte, bool, error) {
 	var buffer bytes.Buffer
 	ok := false
-	err := mainShape(ctx, m.c, true, func(tx pgx.Tx) error {
+	err := beforeOpenings(ctx, m.c, true, func(tx pgx.Tx) error {
 		buffer.Reset()
 		ok = false
 		rows, err := tx.Query(ctx, "SELECT 0 AS kind, 0::bigint AS start_offset, content FROM public.omp_session_files WHERE path = $1 "+
@@ -569,7 +570,7 @@ func (m controlClient) read(ctx context.Context, path string) ([]byte, bool, err
 }
 
 func (m controlClient) createTables(ctx context.Context) error {
-	return mainShape(ctx, m.c, false, func(tx pgx.Tx) error {
+	return beforeOpenings(ctx, m.c, false, func(tx pgx.Tx) error {
 		for _, statement := range createTables {
 			if _, err := tx.Exec(ctx, statement); err != nil {
 				return err
@@ -584,7 +585,7 @@ func (m controlClient) importSession(ctx context.Context, path string, content [
 		return "", err
 	}
 	inserted := false
-	err := mainShape(ctx, m.c, false, func(tx pgx.Tx) error {
+	err := beforeOpenings(ctx, m.c, false, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, "INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, $2, $3, $4) "+
 			"ON CONFLICT (path) DO NOTHING", path, string(content), mtime.UnixMilli(), len(content))
 		if err != nil {
@@ -632,10 +633,10 @@ func (m controlClient) replace(ctx context.Context, path string, saved int64, co
 	})
 }
 
-// write is the package's write in mainShape: the row at path locked and its byte_len compared with
-// saved, which a test's write here never leaves Absent, before apply.
+// write is the package's write in beforeOpenings: the row at path locked and its byte_len compared
+// with saved, which a test's write here never leaves Absent, before apply.
 func (m controlClient) write(ctx context.Context, path string, saved int64, apply func(pgx.Tx) error) error {
-	return mainShape(ctx, m.c, false, func(tx pgx.Tx) error {
+	return beforeOpenings(ctx, m.c, false, func(tx pgx.Tx) error {
 		held := Absent
 		err := tx.QueryRow(ctx, "SELECT byte_len FROM public.omp_session_files WHERE path = $1 FOR UPDATE", path).Scan(&held)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -650,7 +651,7 @@ func (m controlClient) write(ctx context.Context, path string, saved int64, appl
 
 func (m controlClient) inside(ctx context.Context) (app, isolation string, pid uint32, err error) {
 	var backend int32
-	err = mainShape(ctx, m.c, true, func(tx pgx.Tx) error {
+	err = beforeOpenings(ctx, m.c, true, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, insideRead).Scan(&app, &isolation, &backend)
 	})
 	return app, isolation, uint32(backend), err
@@ -668,8 +669,9 @@ func clientOf(conn *Conn, control bool) leftClient {
 }
 
 // pauseInNextTransaction has trace wait leftPause, sending nothing, before the second statement
-// of the next transaction its connection opens (D9 of the plan): under the client, between the
-// opening and the work; under the control, between begin and its first SET LOCAL.
+// of the next transaction its connection opens, so that a left idle_in_transaction_session_timeout
+// acts inside it: under the client, between the opening and the work; under the control, between
+// begin and its first SET LOCAL.
 func pauseInNextTransaction(trace *tracer) {
 	opened, paused := false, false
 	trace.hook(func(_ *pgx.Conn, sql string) {
@@ -861,7 +863,7 @@ func (r *leftRun) onBackend(t *testing.T, client leftClient, address string, rea
 	read(further)
 }
 
-// operate runs a case's operations on client (D8 of the plan), at a session of the case's own,
+// operate runs a case's operations on client, at a session of the case's own,
 // and records in o what each answered (operations), what the tables hold after each write (data),
 // and the client's application_name and isolation level (app, isolation). backend is the backend
 // the entry was left on, which the client's transactions must run on. It answers the backend the
@@ -993,12 +995,14 @@ func (r *leftRun) heldAppend(ctx context.Context, client leftClient, path string
 
 // entryCase runs c, a case of an entry (or the empty search_path, or the unrepairable server
 // connection): it leaves c on the server connection the client then gets, runs the operations on
-// the package's client, or on the control's where control, and computes the case's conditions.
-// Directly, the client's Conn is built around a connection on which the test sent c's left
-// statement, with a tracer in its configuration, which each connection the client opens in its
-// place keeps. Through PgBouncer, the test sends the statement from a client of the pool leftset
-// and closes it, and the client then connects through the same pool, whose one server connection
-// PgBouncer hands it.
+// the package's client, or, where control, on the control's, but for a case that names a query
+// mode, which a control runs the package's own client in, and computes the case's conditions. A
+// control records nothing for the log rule. Directly, the client's Conn is built around a
+// connection on which the test sent c's left statement, with a tracer in its configuration, which
+// each connection the client opens in its place keeps. Through PgBouncer, the test sends the
+// statement from a client of the pool leftset and closes it, and the client then connects through
+// the same pool, whose one server connection PgBouncer hands it. Either way the Conn sends in c's
+// query mode (tracedConnIn).
 func (r *leftRun) entryCase(t *testing.T, c leftCase, control bool) *leftOutcome {
 	t.Helper()
 	ctx := context.Background()
@@ -1018,18 +1022,18 @@ func (r *leftRun) entryCase(t *testing.T, c leftCase, control bool) *leftOutcome
 		if err != nil {
 			t.Fatal(err)
 		}
-		conn = tracedConn(t, r.server.pooled, trace)
+		conn = tracedConnIn(t, r.server.pooled, trace, c.mode)
 	} else {
 		address := r.server.client
 		if c.superuser {
 			address = r.server.admin
 		}
-		conn = tracedConn(t, address, trace)
+		conn = tracedConnIn(t, address, trace, c.mode)
 		if left, leftValue, err = leaveOn(ctx, conn.c, c); err != nil {
 			t.Fatal(err)
 		}
 	}
-	client := clientOf(conn, control)
+	client := clientOf(conn, control && c.mode == 0)
 	trace.take()
 	inside := r.operate(t, client, trace, left, o)
 
@@ -1196,11 +1200,11 @@ func (r *leftRun) poolOfFour(t *testing.T) *leftOutcome {
 	return o
 }
 
-// readOnlyDefault is the case of the database's read-only default (database leftset_ro, Departure
-// 1 of the plan), on both runs: each write answers *ReadOnlyDefaultError, each read answers the
-// session the database holds, the tables still hold their one row, and the client's backend is the
-// one it started on and still in pg_stat_activity, with no connection opened in its place. The
-// control's writes land, and it puts the tables back as they were.
+// readOnlyDefault is the case of the database's read-only default (names.readOnly, a database of
+// its own: prepareLeftServer says why), on both runs: each write answers *ReadOnlyDefaultError, each
+// read answers the session the database holds, the tables still hold their one row, and the
+// client's backend is the one it started on and still in pg_stat_activity, with no connection
+// opened in its place. The control's writes land, and it puts the tables back as they were.
 func (r *leftRun) readOnlyDefault(t *testing.T, control bool) *leftOutcome {
 	t.Helper()
 	ctx := context.Background()
@@ -1279,9 +1283,8 @@ func (r *leftRun) restoreReadOnly(t *testing.T) {
 	}
 }
 
-// leftFixed is one of a run's fixed cases (D8 of the plan): its name, how it runs, and whether it
-// leaves what it left on the server connection of the pool leftset, which the pooled run then
-// renews.
+// leftFixed is one of a run's fixed cases: its name, how it runs, and whether it leaves what it
+// left on the server connection of the pool leftset, which the pooled run then renews.
 type leftFixed struct {
 	name   string
 	run    func(t *testing.T) *leftOutcome
@@ -1320,25 +1323,37 @@ func (r *leftRun) fixedCases() []leftFixed {
 	return append(cases, leftFixed{name: readOnlyCase, run: func(t *testing.T) *leftOutcome { return r.readOnlyDefault(t, false) }})
 }
 
-// leftControl is one control of a run (D8 of the plan's last bullet): an entry main's helper breaks,
-// or a fixed case, the condition the control wants to fail, and caught, which reports whether the
-// operations failed as the control names; directOnly is a control the pooled run leaves out.
+// leftControl is one control of a run, a fault the test must catch: an entry the helper as it stood
+// before the openings breaks, or a fixed case it breaks, or, where mode is set, the case of entry
+// with the package's own client sending in that query mode, which the control's name says; the
+// condition the control wants to fail, and caught, which reports whether the operations failed as
+// the control names. directOnly is a control the pooled run leaves out, and pooledOnly one the
+// direct run leaves out.
 type leftControl struct {
-	entry, fixed, named string
-	caught              func(o *leftOutcome) bool
-	directOnly          bool
+	entry, fixed, name, named string
+	caught                    func(o *leftOutcome) bool
+	directOnly, pooledOnly    bool
+	mode                      pgx.QueryExecMode
 }
 
-// leftControls are the controls: the case of each entry main's helper breaks, and the two fixed
-// cases it breaks, run in mainShape, each wanting its named condition to fail, and failing as the
-// fault would.
+// leftControls are the controls, ten on each run, each wanting its named condition to fail, and
+// failing as the fault would. The first ten run in beforeOpenings: the case of each entry the helper
+// as it stood before the openings breaks, and the two fixed cases it breaks; the pooled run leaves
+// out client_encoding's, since PgBouncer sets it for each client (poolerResets). The last runs
+// through PgBouncer alone: array_nulls' case with the package's own client in pgx's default query
+// mode, a statement cache that names each statement after its text. PgBouncer 1.25.2 with
+// max_prepared_statements keeps the name of a statement the server refused at Parse, so the
+// client's Written with the tables missing (42P01) leaves its name there, the next Written of that
+// text is refused FATAL (08P01, "prepared statement name is already in use"), and the client closes
+// the server connection the entry was left on and runs on another (execMode in ompsessions.go). A
+// server alone keeps no refused name, so the direct run has no such control.
 var leftControls = []leftControl{
 	{entry: "statement_timeout", named: condOperations, caught: func(o *leftOutcome) bool { return o.carries("57014") }},
 	{entry: "lock_timeout", named: condOperations, caught: func(o *leftOutcome) bool { return o.carries("55P03") }},
 	{entry: "idle_in_transaction_session_timeout", named: condOperations, caught: func(o *leftOutcome) bool {
 		err := o.errs["Read"]
-		var pgErr *pgconn.PgError
-		return err != nil && (!errors.As(err, &pgErr) || pgErr.Code == "25P03")
+		code := sqlstate(err)
+		return err != nil && (code == "" || code == "25P03")
 	}},
 	{entry: "exit_on_error", named: condPID, caught: func(*leftOutcome) bool { return true }},
 	{entry: "client_encoding", named: condData, caught: func(*leftOutcome) bool { return true }, directOnly: true},
@@ -1354,6 +1369,8 @@ var leftControls = []leftControl{
 		}
 		return false
 	}},
+	{entry: "array_nulls", name: "pgx's default query mode", mode: pgx.QueryExecModeCacheStatement, named: condPID,
+		caught: func(*leftOutcome) bool { return true }, pooledOnly: true},
 }
 
 // subtest runs a case as a subtest of t, which fails naming each condition that failed, and counts
@@ -1390,8 +1407,12 @@ func (r *leftRun) control(t *testing.T, control leftControl, name string, run fu
 			t.Logf("left-setting control %s %q caught, %s: %s", r.name, name, control.named, o.failure(control.named))
 			return
 		}
-		t.Errorf("control: under %s main's helper passes the condition %s as the test reads it (%s), so the test cannot catch the fault it is for",
-			name, control.named, o.summary())
+		runs := "the helper as it stood before the openings"
+		if control.mode != 0 {
+			runs = "the client"
+		}
+		t.Errorf("control: under %s %s passes the condition %s as the test reads it (%s), so the test cannot catch the fault it is for",
+			name, runs, control.named, o.summary())
 	})
 }
 
@@ -1457,7 +1478,7 @@ func (r *leftRun) run(t *testing.T, cases []leftCase, fixed []leftFixed, control
 	}
 	for _, control := range controls {
 		switch {
-		case control.directOnly && r.pooled:
+		case control.directOnly && r.pooled, control.pooledOnly && !r.pooled:
 			continue
 		case control.fixed == unrepairableCase:
 			r.control(t, control, unrepairableCase, func(t *testing.T) *leftOutcome { return r.entryCase(t, r.unrepairable(), true) })
@@ -1470,25 +1491,24 @@ func (r *leftRun) run(t *testing.T, cases []leftCase, fixed []leftFixed, control
 				t.Errorf("control: the run has no case of %s, the entry the control leaves", control.entry)
 				continue
 			}
-			r.control(t, control, control.entry, func(t *testing.T) *leftOutcome { return r.entryCase(t, cases[index], true) })
+			c := cases[index]
+			c.mode = control.mode
+			r.control(t, control, cmp.Or(control.name, control.entry), func(t *testing.T) *leftOutcome { return r.entryCase(t, c, true) })
 			after(true)
 		}
 	}
 	r.holdLog(t)
 }
 
-// holdLog holds R4's clause on the server's log: each statement of each transaction of the client
-// shows legion-session-client (clientStatementsInLog over the backends the client's transactions ran
-// on), and the log holds a statement for each opening the client sent at least, so it logged each of
-// its transactions. It reads the log once a statement the watcher sent after the run is in it: the
-// log collector writes what each backend sent it in order, and every backend of the client sent its
-// lines before its answer, so by then the log holds them all.
+// holdLog holds the server's log to naming the client on each of its statements, so that a reader
+// of the log can tell them from any other client's: each statement of each transaction of the
+// client shows legion-session-client (clientStatementsInLog over the backends the client's
+// transactions ran on), and the log holds a statement for each opening the client sent at least, so
+// it logged each of its transactions. It reads the log once a statement the watcher sent after the
+// run is in it: the log collector writes what each backend sent it in order, and every backend of
+// the client sent its lines before its answer, so by then the log holds them all.
 func (r *leftRun) holdLog(t *testing.T) {
 	t.Helper()
-	if r.server.log == "" {
-		t.Logf("left-setting %s log rule not held: the test cannot read this server's log", r.name)
-		return
-	}
 	ctx := context.Background()
 	mark := fmt.Sprintf("left-setting log mark %s %d", r.name, time.Now().UnixNano())
 	if _, err := r.watcher.Exec(ctx, "SELECT '"+mark+"'"); err != nil {
@@ -1502,7 +1522,7 @@ func (r *leftRun) holdLog(t *testing.T) {
 	}) {
 		t.Fatalf("the server's log %s holds no line of the statement %q %s after it ran", r.server.log, mark, leftBound)
 	}
-	statements, other, problems := clientStatementsInLog(jsonlog, r.pids, OpenRead, OpenWrite)
+	statements, other, problems := clientStatementsInLog(jsonlog, r.pids)
 	r.statements, r.other = statements, len(other)
 	t.Logf("left-setting %s log rule: %d statements of the client on %d backends, %d under another name, %d problems",
 		r.name, statements, len(r.pids), len(other), len(problems))
@@ -1522,7 +1542,7 @@ var pgBouncerAnswer = regexp.MustCompile(`\APgBouncer ([0-9]+)\.([0-9]+)\.([0-9]
 // pgBouncerVersion is PgBouncer's version as SHOW VERSION on its admin console answers it. The test
 // fails on an answer of another shape, printing it, and at 1.26.0 or later, which resets
 // default_transaction_read_only for each client and so would hide the fault the read-only cases are
-// for (spec R4).
+// for (https://github.com/pgbouncer/pgbouncer/releases/tag/pgbouncer_1_26_0).
 func pgBouncerVersion(t *testing.T, console *pgx.Conn) string {
 	t.Helper()
 	var answer string
@@ -1560,7 +1580,7 @@ func postgresVersion(t *testing.T, conn *pgx.Conn) string {
 }
 
 // The client holds under each setting another client can leave on a server connection of the
-// session database's pool (spec R4), on PostgreSQL 16 directly and again through PgBouncer 1.25.2
+// session database's pool, on PostgreSQL 16 directly and again through PgBouncer 1.25.2
 // in transaction mode, each started by the test with docker (startLeftServers). Each run has one
 // case for each entry of LeftSettings the server has, role and each temporary table included,
 // which the server's own parameters of context user must not outgrow (userSettings); the pooled run
@@ -1573,8 +1593,10 @@ func postgresVersion(t *testing.T, conn *pgx.Conn) string {
 // app, isolation and pid (leftConditions). Each run's fixed cases are an empty search_path, one
 // server connection the client cannot repair, four in a row directly or a pool of four with three
 // through PgBouncer, and the database's read-only default (fixedCases); and each run's count of
-// cases must be its entries plus its fixed cases. Its controls run main's helper (mainShape) on the
-// entries and the fixed cases it breaks, and each must fail the condition it names (leftControls).
+// cases must be its entries plus its fixed cases. Its controls run the helper as it stood before the
+// openings (beforeOpenings) on the entries and the fixed cases it breaks, and, through PgBouncer,
+// the client in pgx's default query mode on one entry, and each must fail the condition it names
+// (leftControls).
 // At the end of each run the server's jsonlog shows legion-session-client on every statement of
 // every transaction of the client (holdLog). The test's last line is its summary, which CI's run
 // of the test records.
@@ -1586,8 +1608,8 @@ func TestTheClientHoldsUnderEveryLeftSetting(t *testing.T) {
 	runLeftSettings(t, startLeftServers(t, docker))
 }
 
-// runLeftSettings is TestTheClientHoldsUnderEveryLeftSetting on server, however it was started:
-// the versions, the class, the direct run and the pooled run, their counts and the summary.
+// runLeftSettings is TestTheClientHoldsUnderEveryLeftSetting on server: the versions, the class,
+// the direct run and the pooled run, their counts and the summary.
 func runLeftSettings(t *testing.T, server leftServer) {
 	maintenance := connectFor(t, server.maintenance)
 	postgres := postgresVersion(t, maintenance)

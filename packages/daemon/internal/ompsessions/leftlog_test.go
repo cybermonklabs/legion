@@ -107,8 +107,9 @@ func excerpt(line []byte) string {
 }
 
 // clientStatementsInLog is the log rule of TestTheClientHoldsUnderEveryLeftSetting, which holds
-// R4's clause that the server's log shows legion-session-client on every statement of every
-// transaction of the client. It reads jsonlog, the jsonlog file of a PostgreSQL 16 server started
+// that the server's log shows legion-session-client on every statement of every transaction of the
+// client, so that a reader of the log can tell the client's statements from any other client's on
+// the same server. It reads jsonlog, the jsonlog file of a PostgreSQL 16 server started
 // with log_min_duration_statement = 0 and log_min_error_statement = error, for the lines of the
 // backends whose pids are in pids, the ones the client's connections ran on. It answers the number
 // of statements of the client it found; each of them that showed an application_name other than
@@ -119,7 +120,7 @@ func excerpt(line []byte) string {
 // object: one that is not, and whose pid the rule cannot read or is in pids, is a problem. The lines
 // of every other pid (the postmaster, the checkpointer, the test's own backends) are left out. For
 // each pid in pids, in file order, a transaction window starts at a statement, execute or ERROR line
-// whose text is openRead or openWrite whole (the ERROR line is a refused opening's), and ends at the
+// whose text is OpenRead or OpenWrite whole (the ERROR line is a refused opening's), and ends at the
 // next COMMIT or ROLLBACK line, at the next opening, or at the end of the pid's lines. Inside a
 // window:
 //   - the COMMIT or ROLLBACK line that ends it is left out: it shows the session's own name again,
@@ -144,7 +145,7 @@ func excerpt(line []byte) string {
 //
 // A line outside every window is left out: PgBouncer's own statements on a server connection, such
 // as the SET of a parameter it tracks before a client's first query, come between windows.
-func clientStatementsInLog(jsonlog []byte, pids map[uint32]bool, openRead, openWrite string) (statements int, other, problems []string) {
+func clientStatementsInLog(jsonlog []byte, pids map[uint32]bool) (statements int, other, problems []string) {
 	inWindow, aborted := map[uint32]bool{}, map[uint32]bool{}
 	number := 0
 	for line := range bytes.Lines(jsonlog) {
@@ -174,7 +175,7 @@ func clientStatementsInLog(jsonlog []byte, pids map[uint32]bool, openRead, openW
 		step, text, ok := logStatement(record)
 		counted := ok && step != "parse" && step != "bind"
 		switch {
-		case counted && (text == openRead || text == openWrite):
+		case counted && (text == OpenRead || text == OpenWrite):
 			inWindow[pid], aborted[pid] = true, false
 		case counted && endsTransaction(text):
 			inWindow[pid] = false
@@ -391,7 +392,7 @@ func TestTheLogRuleCountsEveryStatementOfTheClientUnderItsName(t *testing.T) {
 	)
 	for _, r := range rows {
 		t.Run(r.name, func(t *testing.T) {
-			statements, other, problems := clientStatementsInLog(r.jsonlog, r.pids, OpenRead, OpenWrite)
+			statements, other, problems := clientStatementsInLog(r.jsonlog, r.pids)
 			t.Logf("statements=%d other-name=%d problems=%d", statements, len(other), len(problems))
 			for _, entry := range other {
 				t.Logf("other name: %s", entry)

@@ -18,13 +18,15 @@
 # is packages/daemon's own packages, so no read leaves this job with them. The third is
 # internal/ompsessions' left-setting test (SESSION_CLIENT_LEFT_TESTS), which a step of its own in
 # plain leg 2 runs by name with -v, so that its summary line reaches the log: the step runs the
-# package the plain step runs there, and starts its servers from the two images the pull step
-# pulls, so no read leaves this gate with it.
+# package the plain step runs there, and starts its servers from PgBouncer, which the plain legs'
+# pull step pulls, and PostgreSQL 16, which a pull step of leg 2 alone pulls, so no read leaves
+# this gate with it.
 # Every step here is in a job of the file daemon-go calls whose id is not ci.yaml's, so each
 # citation names that file (DAEMON_FILE).
 DAEMON_FILE = job_file("daemon-go")
-# The plain legs' pull of the images their tests start, which the reads below cite.
-DAEMON_PULL_STEP = "Pull the NATS, PgBouncer and PostgreSQL 16 test container images"
+# The pull every plain leg runs of the images their tests start, PostgreSQL 16 apart, which leg 2
+# pulls in a step of its own; the reads below cite both.
+DAEMON_PULL_STEP = "Pull the NATS and PgBouncer test container images"
 GATE = gate("daemon_go_tests", "daemon-go", runs=[
     script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                at(DAEMON_PLAIN_LEGS_JOB, "Stage 1 live proof", DAEMON_FILE), DAEMON, ["./cmd/legion"], mode="build"),
@@ -113,7 +115,9 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     (f"{ENVOY}/internal/testnats/nats.go", f"{at(DAEMON_RACE_LEGS_JOB, 'Pull the NATS test container images', DAEMON_FILE)} "
                                            f"const HubImage"),
     (f"{DAEMON}/internal/ompsessions/searchpath_test.go", f"{at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PULL_STEP, DAEMON_FILE)} "
-                                                          f"consts PoolImage, Postgres16Image"),
+                                                          f"const PoolImage, "
+                                                          f"{at(DAEMON_PLAIN_LEGS_JOB, 'Pull the PostgreSQL 16 test container image', DAEMON_FILE)} "
+                                                          f"const Postgres16Image"),
 ) + forced_order_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FORCED_ORDER_STEP, DAEMON_FILE)
   + ceiling_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + service_settings_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + service_settings_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)

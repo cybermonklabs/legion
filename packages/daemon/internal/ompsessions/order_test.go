@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -12,32 +11,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
-
-// recorder is a pgx QueryTracer that keeps the text of every statement its connection sends, in
-// order: pgx traces each Exec, Query and QueryRow, and Begin, Commit and Rollback are Execs of
-// their own.
-type recorder struct {
-	mu   sync.Mutex
-	sent []string
-}
-
-func (r *recorder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sent = append(r.sent, data.SQL)
-	return ctx
-}
-
-func (r *recorder) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-// take is what the connection sent since the last take.
-func (r *recorder) take() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	sent := r.sent
-	r.sent = nil
-	return sent
-}
 
 // shown is statement as a failure names it: OpenRead or OpenWrite by its name, since each runs to
 // many lines, and any other statement quoted, to its first line.
@@ -104,16 +77,12 @@ func orderFailure(sent []string) string {
 
 // misordered is a transaction helper of the shape the package's transactions had before the
 // openings, the control TestEveryTransactionPinsBeforeItsWork must catch: pgx's own begin read
-// only, sent as a message of its own, then each pin as a statement of its own, then the work.
+// only, sent as a message of its own, then each pin as a statement of its own (beforeOpenings),
+// then the work.
 func misordered(ctx context.Context, conn *pgx.Conn) error {
-	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		for _, statement := range []string{"SET LOCAL search_path = pg_catalog, pg_temp", "SET LOCAL row_security = off",
-			"SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'", "SELECT 1"} {
-			if _, err := tx.Exec(ctx, statement); err != nil {
-				return err
-			}
-		}
-		return nil
+	return beforeOpenings(ctx, conn, true, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, "SELECT 1")
+		return err
 	})
 }
 
@@ -123,33 +92,24 @@ func misordered(ctx context.Context, conn *pgx.Conn) error {
 // rollback: a statement before the opening, or an opening sent as several messages, would run under
 // what another client left on the connection, and a left idle_in_transaction_session_timeout could
 // end the connection between two of them, which TestEveryPoolPinsItsSearchPath, reading inside the
-// work, cannot see. The order is read from a pgx QueryTracer on the package's own kind of
-// connection, a Conn around pgx.Connect's as ConnectURL builds one, for each exported call that
+// work, cannot see. The order is read from the tracer of the package's own kind of connection, a
+// Conn around one pgx connection as ConnectURL builds one (tracedConn), for each exported call that
 // runs a statement. The control is a helper of the shape the transactions had before the openings,
 // pgx's begin read only and then each pin as a statement of its own: the check must name its begin.
 func TestEveryTransactionPinsBeforeItsWork(t *testing.T) {
 	ctx := context.Background()
 	dsn := testdb.PlainDatabase(t, "legion_ompsessions_order")
-	config, err := pgx.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	traced := &recorder{}
-	config.Tracer = traced
-	config.DefaultQueryExecMode = execMode
-	conn, err := pgx.ConnectConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessions := &Conn{c: conn}
-	t.Cleanup(func() { _ = sessions.Close(context.Background()) })
+	traced := &tracer{}
+	sessions := tracedConn(t, dsn, traced)
+	conn := sessions.c
 
 	live := t.Run("control: a transaction opened by begin, then a statement for each pin", func(t *testing.T) {
 		traced.take()
 		if err := misordered(ctx, conn); err != nil {
 			t.Fatal(err)
 		}
-		failure := orderFailure(traced.take())
+		sent, _ := traced.take()
+		failure := orderFailure(texts(sent))
 		if !strings.Contains(failure, `statement 1, "begin read only", is not OpenRead or OpenWrite whole`) {
 			t.Errorf("the check found %q, want it to name the begin read only that opened the transaction", failure)
 		}
@@ -189,9 +149,10 @@ func TestEveryTransactionPinsBeforeItsWork(t *testing.T) {
 			if err := call.run(); err != nil {
 				t.Fatal(err)
 			}
-			sent := traced.take()
-			if failure := orderFailure(sent); failure != "" {
-				t.Errorf("%s: %s; it sent %q", call.name, failure, sent)
+			sent, _ := traced.take()
+			statements := texts(sent)
+			if failure := orderFailure(statements); failure != "" {
+				t.Errorf("%s: %s; it sent %q", call.name, failure, statements)
 			}
 		})
 	}

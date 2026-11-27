@@ -45,7 +45,8 @@ name: CI job daemon-go
 #     LEGION_KEPT_PROPERTY_RUNS in daemon-go-race-legs, read by internal/daemon's keptPropertyEnv;
 #   * tmux, jj and Oh My Pi in both, and uv in daemon-go-legs, each refused-without by a test the
 #     job runs (the comment on each step says which), and the images those tests start: NATS in
-#     both, and PgBouncer and PostgreSQL 16 in daemon-go-legs;
+#     both, PgBouncer in daemon-go-legs, and PostgreSQL 16 in leg 2 of daemon-go-legs, which runs
+#     the one test that starts it;
 #   * the user-namespace sysctl internal/launcher's role-namespace tests need, in
 #     daemon-go-race-legs, which runs them;
 #   * setup-go and the go-daemon cache restore in both, this module's build cache. The `test`
@@ -108,10 +109,10 @@ jobs:
     # on 2026-11-24), and its 1-minute -timeout. That is under 45 minutes. The forced-order step
     # adds its compile of a hooked nats-server under the detector, up to 5 minutes, and
     # forced-order.sh's 10-minute -timeout, so 60. The session client's left-setting step adds its
-    # run and its 10-minute -timeout. It has no green run yet, and a green run ends inside that
-    # -timeout, so its run counts as 10 minutes here until its first green run's measured duration
-    # is written in its place: 80. A leg runs a share of the plain step, so no leg needs more.
-    timeout-minutes: 80
+    # run, 2.7 minutes (161 s in run 46069045387, its first green run), its pull of PostgreSQL 16,
+    # 13 s there, and its 10-minute -timeout, so 73. A leg runs a share of the plain step, so no leg
+    # needs more.
+    timeout-minutes: 73
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -130,7 +131,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 80 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 73 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL; internal/cipher runs in the plain step), and the Stage 1
@@ -195,19 +196,17 @@ jobs:
       - uses: ./.github/actions/install-uv
 
       # The NATS tests of the plain step's packages (internal/admit, internal/natsauth,
-      # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1;
-      # internal/ompsessions' TestEveryPoolPinsItsSearchPath starts PoolImage, PgBouncer 1.25.2,
-      # and its TestTheClientHoldsUnderEveryLeftSetting starts Postgres16Image, PostgreSQL 16.16,
-      # directly and behind PoolImage; each starts with docker, and each is pulled first for the
-      # reason the action gives. The two other NATS images the module's tests start are the race
-      # packages' (daemon-go-race-legs below).
-      - name: Pull the NATS, PgBouncer and PostgreSQL 16 test container images
+      # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1,
+      # and internal/ompsessions' TestEveryPoolPinsItsSearchPath starts PoolImage, PgBouncer
+      # 1.25.2, with docker; each is pulled first for the reason the action gives. The two other
+      # NATS images the module's tests start are the race packages' (daemon-go-race-legs below),
+      # and PostgreSQL 16 is pulled in leg 2 alone, by the step before the one test that starts it.
+      - name: Pull the NATS and PgBouncer test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
             packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
-            packages/daemon/internal/ompsessions/searchpath_test.go Postgres16Image
 
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
@@ -233,19 +232,31 @@ jobs:
       # and the other job's from the one list and holds each step to it, so the skip and the run
       # cannot come to name different tests.
       #
-      # It skips internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting too, which the next
-      # step runs by name with -v: ci_job_reads.py's SESSION_CLIENT_LEFT_TESTS builds both steps'
-      # texts and joins its name and the two pins into this one -skip, sorted.
+      # It skips internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting too, which the step
+      # "Test the session client under left settings" below runs by name with -v: ci_job_reads.py's
+      # SESSION_CLIENT_LEFT_TESTS builds both steps' texts and joins its name and the two pins into
+      # this one -skip, sorted.
       - name: Test the Go daemon
         run: |
           set -o pipefail
           python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheClientHoldsUnderEveryLeftSetting|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
+      # internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting, which the next step runs,
+      # starts Postgres16Image, PostgreSQL 16.16, with docker, directly and behind PoolImage, which
+      # the pull step above pulled. No other test of the module starts it, so it is pulled here, in
+      # leg 2 alone, the leg that runs that step, for the reason the action gives.
+      - name: Pull the PostgreSQL 16 test container image
+        if: matrix.leg == 2
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/daemon/internal/ompsessions/searchpath_test.go Postgres16Image
+
       # internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting, by name: the session client
       # under each setting another client can leave on a server connection, on a PostgreSQL 16
       # server directly and through a PgBouncer in front of it, which the test starts itself with
-      # docker from the two images the pull step above pulled, so the step needs none of the job's
+      # docker from the two images the pull steps above pulled, so the step needs none of the job's
       # services. It is a step of its own for its log: under `go test` without -v, Go prints a
       # passing test's log lines nowhere, so the test's last log line, `left-setting summary …`,
       # which counts each server's cases and the client's logged statements, reaches the job's log

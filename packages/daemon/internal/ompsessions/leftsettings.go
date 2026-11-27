@@ -127,8 +127,9 @@ func toDefault(name, reason, left string) LeftSetting {
 // setConfig is an entry some supported server lacks, which the openings' set_config statement sets
 // to its reset value on a server that has it.
 func setConfig(name, reason, left string, servers Servers) LeftSetting {
-	return LeftSetting{Name: name, Kind: SetInOpening, Form: SetConfig, ReadValue: "TO DEFAULT", WriteValue: "TO DEFAULT",
-		Reason: reason, Left: leftBy(name, left), Servers: servers}
+	s := toDefault(name, reason, left).on(servers)
+	s.Form = SetConfig
+	return s
 }
 
 // byBegin is an entry the openings' BEGIN clause sets, left by the statement left.

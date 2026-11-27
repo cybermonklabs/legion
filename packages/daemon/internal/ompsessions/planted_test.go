@@ -256,11 +256,13 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 				t.Fatalf("%s: %v", statement, err)
 			}
 		}
+		// The reader's Conn is built as ConnectURL builds one, in the query mode ConnectURL gave
+		// db.conn, so it sends as the client sends whatever mode ConnectURL sets.
 		config := db.admin.Config().Copy()
 		config.User, config.Password = reader, password
 		trace := &tracer{}
 		config.Tracer = trace
-		config.DefaultQueryExecMode = execMode
+		config.DefaultQueryExecMode = db.conn.c.Config().DefaultQueryExecMode
 		conn, err := pgx.ConnectConfig(ctx, config)
 		if err != nil {
 			t.Fatal(err)

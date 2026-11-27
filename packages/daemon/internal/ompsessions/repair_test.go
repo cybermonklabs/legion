@@ -68,7 +68,8 @@ func TestEachFailureOfATransactionIsClosedRetriedOrReturned(t *testing.T) {
 			{at: atReopen, try: 2, err: server("FATAL", "28000", `role "legion" is not permitted to log in`)},
 			{at: atReopen, try: 4, err: lost},
 		}, refuse},
-		// No test server refuses an opening; root c-cloudsql sends it under Cloud SQL's locked read-only session.
+		// No test server refuses an opening; Cloud SQL can, under its locked read-only session
+		// (cloudsql_session_read_only = locked).
 		{5, "opening: the server refuses it, any SQLSTATE", []step{
 			{at: atOpening, try: 1, err: server("ERROR", "42704", `unrecognized configuration parameter "restrict_nonsystem_relation_kind"`)},
 			{at: atOpening, try: 2, err: readOnly},
@@ -262,6 +263,15 @@ func sentCount(sent []sentTo, statement string) int {
 	return n
 }
 
+// texts are the statements of sent, in order.
+func texts(sent []sentTo) []string {
+	statements := make([]string, len(sent))
+	for i, s := range sent {
+		statements[i] = s.sql
+	}
+	return statements
+}
+
 // isWork reports whether sql is a statement of a transaction's work: none of the openings, the
 // read-only check, COMMIT and ROLLBACK.
 func isWork(sql string) bool {
@@ -321,11 +331,7 @@ func repairDatabase(t *testing.T, prefix string) (string, *pgx.Conn) {
 	t.Helper()
 	ctx := context.Background()
 	dsn := testdb.PlainDatabase(t, prefix)
-	admin, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = admin.Close(context.Background()) })
+	admin := connectFor(t, dsn)
 	for _, statement := range createTables {
 		if _, err := admin.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
@@ -340,14 +346,26 @@ func repairDatabase(t *testing.T, prefix string) (string, *pgx.Conn) {
 
 // tracedConn is the package's own kind of connection, a Conn around one pgx connection as
 // ConnectURL builds one, opened from dsn with trace as its tracer, and closed when the test ends.
+// It sends in the query mode ConnectURL gives a connection (clientMode), not one written here
+// again, so it sends as the client does whatever mode ConnectURL sets, and the pooled cases of
+// TestTheClientHoldsUnderEveryLeftSetting fail where ConnectURL stops setting execMode.
 func tracedConn(t *testing.T, dsn string, trace *tracer) *Conn {
 	t.Helper()
+	return tracedConnIn(t, dsn, trace, 0)
+}
+
+// tracedConnIn is tracedConn in the query mode mode, 0 for the one ConnectURL gives a connection.
+func tracedConnIn(t *testing.T, dsn string, trace *tracer, mode pgx.QueryExecMode) *Conn {
+	t.Helper()
+	if mode == 0 {
+		mode = clientMode(t, dsn)
+	}
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	config.Tracer = trace
-	config.DefaultQueryExecMode = execMode
+	config.DefaultQueryExecMode = mode
 	c, err := pgx.ConnectConfig(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -355,6 +373,19 @@ func tracedConn(t *testing.T, dsn string, trace *tracer) *Conn {
 	conn := &Conn{c: c}
 	t.Cleanup(func() { _ = conn.Close(context.Background()) })
 	return conn
+}
+
+// clientMode is the query mode ConnectURL gives a connection to dsn: it opens one, reads the mode
+// from the connection's configuration, and closes it.
+func clientMode(t *testing.T, dsn string) pgx.QueryExecMode {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := ConnectURL(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	return conn.c.Config().DefaultQueryExecMode
 }
 
 // testLogin is a login of the test's own, signed in with a password of its own that the test draws
@@ -411,8 +442,8 @@ func setDatabaseDefault(t *testing.T, admin *pgx.Conn, setting string) {
 	}
 }
 
-// noRollback is what is wrong with sent where a failed try rolled back, "" for nothing: R3 closes
-// a connection it cannot repair while its transaction is open, so the pool closes the server
+// noRollback is what is wrong with sent where a failed try rolled back, "" for nothing: the client
+// closes a connection it cannot repair while its transaction is open, so the pool closes the server
 // connection rather than hand it to the next client.
 func noRollback(sent []sentTo) string {
 	if n := sentCount(sent, "rollback"); n > 0 {
@@ -470,27 +501,9 @@ func TestTheClientClosesEachConnectionItCannotRepairAndTriesATransactionAtMostFo
 			if n := sentCount(sent, insertRow); n != ends+1 {
 				t.Errorf("the write's first statement ran %d times, want once on each of %d tries: each try runs the transaction from its start", n, ends+1)
 			}
-			var content string
-			var byteLen, mtime int64
-			if err := admin.QueryRow(ctx, "SELECT content, byte_len, mtime_ms FROM public.omp_session_files WHERE path = $1", path).Scan(&content, &byteLen, &mtime); err != nil {
-				t.Fatal(err)
-			}
-			rows, err := admin.Query(ctx, "SELECT start_offset, content FROM public.omp_session_files_parts WHERE path = $1 ORDER BY start_offset", path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			parts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
-				var offset int64
-				var part string
-				err := row.Scan(&offset, &part)
-				return fmt.Sprintf("%d:%s", offset, part), err
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if want := []string{"0:" + string(claudeContent)}; content != "" || byteLen != int64(len(claudeContent)) || mtime != podSessionWritten || !slices.Equal(parts, want) {
-				t.Errorf("the row is content %q, byte_len %d, mtime_ms %d, parts %q; want it written once: no content of its own, %d, %d, %q",
-					content, byteLen, mtime, parts, len(claudeContent), podSessionWritten, want)
+			if got, want := stored(ctx, admin, path), storedRow("", len(claudeContent), time.UnixMilli(podSessionWritten),
+				[2]string{"0", string(claudeContent)}); got != want {
+				t.Errorf("the row is %s; want it written once: %s", got, want)
 			}
 		})
 	}
@@ -675,11 +688,7 @@ func TestALostConnectionIsTriedAgainBeforeCommitAndNotAfter(t *testing.T) {
 		trace := &tracer{}
 		conn := tracedConn(t, roleURL, trace)
 		// The login's own second connection ends its first: a login may end a backend of its own.
-		killer, err := pgx.Connect(ctx, roleURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = killer.Close(context.Background()) })
+		killer := connectFor(t, roleURL)
 		if _, err := admin.Exec(ctx, "ALTER ROLE "+role+" NOLOGIN"); err != nil {
 			t.Fatal(err)
 		}
@@ -691,7 +700,7 @@ func TestALostConnectionIsTriedAgainBeforeCommitAndNotAfter(t *testing.T) {
 				endBackend(t, killer, c.PgConn().PID())
 			}
 		})
-		_, _, err = Written(ctx, conn, podSessionFile)
+		_, _, err := Written(ctx, conn, podSessionFile)
 		trace.hook(nil)
 		sent, connects := trace.take()
 		parsed, perr := url.Parse(roleURL)
@@ -746,10 +755,7 @@ func TestAWriteUnderAReadOnlyDefaultRefusesAndKeepsItsConnection(t *testing.T) {
 			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "default_transaction_read_only = on") {
 				t.Errorf("%s under a read-only default = %v; want a *ReadOnlyDefaultError naming default_transaction_read_only = on", write.name, err)
 			}
-			var statements []string
-			for _, s := range sent {
-				statements = append(statements, s.sql)
-			}
+			statements := texts(sent)
 			if want := []string{OpenWrite, readOnlyCheck, "rollback"}; !slices.Equal(statements, want) {
 				t.Errorf("%s sent %d statements, %q; want the opening, the read-only check and ROLLBACK alone", write.name, len(statements), statements)
 			}
@@ -782,7 +788,7 @@ func TestAWriteUnderAReadOnlyDefaultRefusesAndKeepsItsConnection(t *testing.T) {
 		trace := &tracer{}
 		conn := tracedConn(t, roleURL, trace)
 		var reset string
-		if err := conn.c.QueryRow(ctx, "SELECT reset_val FROM pg_catalog.pg_settings WHERE name = 'default_transaction_read_only'").Scan(&reset); err != nil || reset != "on" {
+		if err := conn.c.QueryRow(ctx, readOnlyCheck).Scan(&reset); err != nil || reset != "on" {
 			t.Fatalf("control: as %s the reset value of default_transaction_read_only is %q, %v; want on, the login's default", role, reset, err)
 		}
 		refusesEachWrite(t, conn, trace, admin)
@@ -794,7 +800,7 @@ func TestAWriteUnderAReadOnlyDefaultRefusesAndKeepsItsConnection(t *testing.T) {
 		trace := &tracer{}
 		conn := tracedConn(t, dsn, trace)
 		var reset string
-		if err := conn.c.QueryRow(ctx, "SELECT reset_val FROM pg_catalog.pg_settings WHERE name = 'default_transaction_read_only'").Scan(&reset); err != nil || reset != "on" {
+		if err := conn.c.QueryRow(ctx, readOnlyCheck).Scan(&reset); err != nil || reset != "on" {
 			t.Fatalf("control: in the database the reset value of default_transaction_read_only is %q, %v; want on, the database's default", reset, err)
 		}
 		refusesEachWrite(t, conn, trace, admin)
@@ -862,15 +868,11 @@ func TestTheOpeningStopsALeftTransactionTimeout(t *testing.T) {
 			}
 
 			live := t.Run("control: a transaction that does not stop the left timer is ended", func(t *testing.T) {
-				raw, err := pgx.Connect(ctx, dsn)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = raw.Close(context.Background()) })
+				raw := connectFor(t, dsn)
 				if _, err := raw.Exec(ctx, left); err != nil {
 					t.Fatal(err)
 				}
-				err = pgx.BeginTxFunc(ctx, raw, database.control(t), func(tx pgx.Tx) error {
+				err := pgx.BeginTxFunc(ctx, raw, database.control(t), func(tx pgx.Tx) error {
 					time.Sleep(pause)
 					var one int
 					return tx.QueryRow(ctx, "SELECT 1").Scan(&one)
