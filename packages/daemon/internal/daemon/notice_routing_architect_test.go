@@ -15,8 +15,8 @@ import (
 // parents loop back to the child: that walk ends at the root. The same notices about a phase
 // worker of the child go to the child's own running architect, which is the one that acts on its
 // worker, and a root architect's own wake goes to the root's claim, as every notice of the root
-// does. The runs are the outbox's own (holdsRole), so deliverNotice, its fence (earlierNoticeFor)
-// and the ready's release (releaseWaiting) all pick this architect.
+// does. The runs are the outbox's own (holdsRole), so deliverNotice and its fence
+// (earlierNoticeFor) both pick this architect, whose ready then releases the notice.
 func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
 	t.Parallel()
 	root, parent, child, grandchild, orphan, stray, unrecorded := "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-77"

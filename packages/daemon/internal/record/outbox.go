@@ -498,9 +498,9 @@ type Notice struct {
 	// The moment is kept here rather than read back from the row's next_at because the two part
 	// company: a failed attempt rewrites next_at to its backoff (RetryOutbox), while the turn the
 	// pacing gave this wake never moves. The outbox writes that wake's one line from it, on
-	// whichever attempt publishes (the daemon's wakeRan), and a ready that releases the
-	// architect's waiting notices leaves the row where it stands only while the moment is still
-	// ahead (the daemon's releaseWaiting), so a catch-up still held stays held, and one whose turn
+	// whichever attempt publishes (the daemon's wakeRan), and a ready that releases the rows
+	// waiting for the architect leaves the row where it stands only while the moment is still
+	// ahead (Store.ExpediteWaits), so a catch-up still held stays held, and one whose turn
 	// has come is released like any other notice rather than waiting out a backoff the pacing
 	// never asked for. It is the daemon's own bookkeeping, so the publish drops it (Published) as
 	// it drops ResendOf; a re-held copy keeps it for that one line alone, its next_at being the
@@ -1098,8 +1098,9 @@ var CatchUpHeldAt = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 // in the state's wakesWaiting, test the moment with it, so none of them takes it for a deadline.
 // Two statements of the store compare next_at with CatchUpHeldAt itself (ReleaseHeldCatchUp,
 // CatchUpHeld), and the other readers rely on the held moment sorting after any now: the outbox
-// runs a row only once its next_at has come, and the daemon's releaseWaiting and pacedCatchUps
-// tell a held notice by a PacedAt still ahead of now.
+// runs a row only once its next_at has come, and a ready's release of the rows waiting for an
+// architect (Store.ExpediteWaits) and the daemon's pacedCatchUps tell a held notice by a PacedAt
+// still ahead of now.
 func CatchUpIsHeld(at time.Time) bool {
 	return at.Equal(CatchUpHeldAt)
 }

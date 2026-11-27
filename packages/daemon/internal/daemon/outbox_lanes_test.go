@@ -639,7 +639,7 @@ func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
 	}
 }
 
-// A notice waiting for a later attempt is released by its architect's ready (releaseWaiting): the
+// A notice waiting for its architect's ready is released by that ready (releaseReady): the
 // expedite that makes it due wakes its lane as it commits, and the notice is published with no
 // timer fired — neither the lane's wait for the hour it was due at nor the sweep.
 func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
@@ -654,8 +654,9 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 	runner.records = wakingRecords(runner)
 	runLanes(t, runner, clock)
 
-	commitRows(t, pool, runner.records, "held-notice", mustOutboxRow(t, "LEGION-2",
-		record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, clock.Now().Add(time.Hour)))
+	held := mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, clock.Now().Add(time.Hour))
+	held.Wait.WaitFor = record.WaitForReady(architect)
+	commitRows(t, pool, runner.records, "held-notice", held)
 	testwait.Eventually(t, "the lane armed its wait for the hour", func() bool {
 		live, _ := clock.armed(time.Hour)
 		return live == 1
@@ -664,7 +665,7 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 		t.Fatalf("delivered %+v before the release, want nothing", delivered)
 	}
 
-	if err := runner.releaseWaiting(context.Background(), architect); err != nil {
+	if err := runner.releaseReady(context.Background(), architect); err != nil {
 		t.Fatalf("release the architect's notices: %v", err)
 	}
 	testwait.Eventually(t, "the released notice was published and its lane dropped its wait", func() bool {

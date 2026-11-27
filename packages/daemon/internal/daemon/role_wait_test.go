@@ -57,12 +57,14 @@ var roleWaitCases = []roleWaitCase{
 }
 
 // roleWaitPublisher is a notify.Publisher that counts every publish attempt (Publish and
-// PublishKept), records each publish with the clock moment it arrived at, and answers each with
-// err (or takes it with holder when err is nil).
+// PublishKept), records each publish with the clock moment it arrived at, runs during while the
+// publish is in flight where it is set, and answers each with err (or takes it with holder when
+// err is nil).
 type roleWaitPublisher struct {
 	clock     *heldClock
 	holder    func() string
 	err       error
+	during    func()
 	publishes []roleWaitPublish
 }
 
@@ -76,6 +78,9 @@ type roleWaitPublish struct {
 
 func (p *roleWaitPublisher) Publish(_ context.Context, topic, message string, _ any, key string) (string, error) {
 	p.publishes = append(p.publishes, roleWaitPublish{at: p.clock.Now(), topic: topic, message: message, key: key})
+	if p.during != nil {
+		p.during()
+	}
 	if p.err != nil {
 		return "", p.err
 	}
@@ -87,6 +92,9 @@ func (p *roleWaitPublisher) Publish(_ context.Context, topic, message string, _ 
 
 func (p *roleWaitPublisher) PublishKept(_ context.Context, topic, message string, _ any, key string) (bool, error) {
 	p.publishes = append(p.publishes, roleWaitPublish{at: p.clock.Now(), topic: topic, message: message, key: key, keep: true})
+	if p.during != nil {
+		p.during()
+	}
 	if p.err != nil {
 		return false, p.err
 	}

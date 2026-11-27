@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -321,11 +320,13 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // listener's report queues carries none, and is owed none, because that publish was answered and
 // wrote the line already.
 // A copy is due at once when copyDueAtOnce says so, and otherwise after the next of
-// noticeReholdDelays. It is queued again once per delay; the failure of its last copy is logged
-// and queues nothing. Each published copy of a row is queued again once, marked processed under
-// the row's dedupe key and the copy's count: a publish whose 200 was lost is retried under the
-// same key, an earlier listener reports each failed forward under a fresh event id, and during a
-// rollout one publish can draw both a 504 from one listener and an exception from another, which
+// noticeReholdDelays. Either way it waits for its architect's ready (record.WaitForReady), so the
+// architect's next ready makes it due at once (outbox.releaseReady) and a turn start of a session
+// that took nothing does not. It is queued again once per delay; the failure of its last copy is
+// logged and queues nothing. Each published copy of a row is queued again once, marked processed
+// under the row's dedupe key and the copy's count: a publish whose 200 was lost is retried under
+// the same key, an earlier listener reports each failed forward under a fresh event id, and during
+// a rollout one publish can draw both a 504 from one listener and an exception from another, which
 // queue one copy between them.
 //
 // The publish's row finishes once the listener answers, and an earlier listener reports a failed
@@ -387,6 +388,7 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 	if err != nil {
 		return fmt.Errorf("the copy is a notice the outbox refuses: %w", err)
 	}
+	row.Wait.WaitFor = record.WaitForReady(reported.architect)
 	superseded := false
 	// The re-hold is its own transaction, so it owns the commit hook the row's write registers
 	// (projectRecords, store.OnCommit), as ApplyFact does for a fact's rows, and the hook that
@@ -483,8 +485,9 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, issue *reco
 // notice already sent, and recipient, the session the report (or the listener's 504 answer, as its
 // holder) names. A copy is due at once when the architect's agent has said it is ready
 // (supervise.SaidReady), and it is the first copy or its report names a session other than the
-// one the claim is ready on: that ready has passed, so no release (releaseWaiting) would make the
-// copy due, and every later notice to the architect would wait behind it. The first covers a
+// one the claim is ready on: that ready has passed, so its release (outbox.releaseReady, which the
+// copy's record.WaitForReady waits for) does not come again before the claim's next ready, and
+// every later notice to the architect would wait behind it. The first covers a
 // relaunch that reported ready inside the receipt window; a later copy that failed on another
 // session went where the role no longer is. A later copy whose report names no session (the
 // listener names none for no_holder, or when it could not read the holder) says nothing about
@@ -543,87 +546,4 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 		return reportedNotice{}, false
 	}
 	return reportedNotice{issue: issue, notice: notice, row: row, architect: claim.Token(token)}, true
-}
-
-// releaseWaiting makes due at once every notice waiting for a later attempt that goes to one of
-// architects now (noticeArchitect), once their claims are ready: each agent said it can be
-// prompted (supervise.SaidReady), having booted or taken its Envoy role back. A boot's ready comes
-// before the name — the session claims its role at its first turn — so a notice this releases, and
-// the catch-up that same ready writes, can still be refused no_holder and wait the outbox's own
-// backoff (record.RetryBackoff, one second doubling to a cap of 64) until the name is taken. What
-// the release ends is the wait for the architect, not the wait for the role. That covers a copy
-// waiting out its re-send delay, whichever session it failed on (a Go relaunch resumes the
-// claim's session file, so the relaunched agent registers the very session id the stopped one
-// had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting
-// minutes for a stopped session's registration to lapse would otherwise hold back every later
-// notice to that architect behind the fence, after the architect is back. Released, the notices
-// go in the order they were written, ahead of the ones behind them. The waiting notices and their
-// trees are one repeatable read, each tree read once; the fence is not read, since a release only
-// makes a notice due and its send still passes the fence.
-//
-// A catch-up the wake pacing still holds to its turn is left where it stands: its wait is not the
-// architect being away — the architect is running, which is why a start wrote a catch-up instead
-// of launching one — but the turn the operator's rate gave this wake, and a ready that pulled it
-// forward would let a whole restart's worth of catch-ups out in the minute the first architect
-// reported ready, which is the wave the pacing exists to spread. What is held back is the row
-// whose reserved moment is still ahead of now (record.Notice.PacedAt), not every row the pacing
-// ever marked: a catch-up whose turn came and whose attempt then failed waits on a backoff of its
-// own, and that wait is one a ready releases like any other, since the pacing has had its say.
-func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) error {
-	now := r.now()
-	released := []record.OutboxRow{}
-	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		waiting, err := r.records.WaitingNotices(ctx, tx, r.dispatchProject, now)
-		if err != nil {
-			return err
-		}
-		routes := map[string]noticeRoute{}
-		for _, row := range waiting {
-			payload, err := record.DecodeOutboxPayload(row)
-			if err != nil {
-				return fmt.Errorf("decode waiting notice row %d: %w", row.ID, err)
-			}
-			notice, ok := payload.(record.Notice)
-			if !ok || notice.PacedAt.After(now) {
-				continue
-			}
-			issue, route, err := r.readNoticeRoute(ctx, tx, row.Issue, routes)
-			if errors.Is(err, errNoticeUnroutable) {
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			if owner, err := noticeArchitect(route.project, route.issues, issue, notice, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
-				released = append(released, row)
-			}
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("read the notices waiting for %v: %w", architects, err)
-	}
-	if len(released) == 0 {
-		return nil
-	}
-	// The release is its own transaction, so it owns the commit hooks the expedites register
-	// (projectRecords, store.OnCommit), each released notice's lane woken once they commit, and the
-	// hook that logs the release.
-	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		for _, row := range released {
-			if _, err := r.records.ExpediteOutbox(ctx, tx, row, now); err != nil {
-				return err
-			}
-		}
-		store.OnCommit(ctx, func() {
-			ids := make([]int64, len(released))
-			for i, row := range released {
-				ids[i] = row.ID
-			}
-			r.log.Info("outbox notices released: their architect is ready", "architects", architects, "rows", ids)
-		})
-		return nil
-	}); err != nil {
-		return fmt.Errorf("release the notices waiting for %v: %w", architects, err)
-	}
-	return nil
 }

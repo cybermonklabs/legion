@@ -584,6 +584,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask, plan.designNews, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
+		plan.claimChanged = workflow.claimChanged
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		// The run's boot event, and from it on the state event of every write the run makes. The
 		// boot row is queued in a transaction of its own, which commits before either switch below
@@ -1322,6 +1323,10 @@ type plan struct {
 	launchRounds *launchRounds
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
+	// claimChanged tells the workflow each change of a claim that an outbox row waiting for that
+	// claim waits on (supervise.Deps.ClaimChanged); nil without a workflow, whose daemon runs no
+	// outbox.
+	claimChanged func(before, after supervise.ClaimView)
 	// sessionLost and sessionStoreFault tell the workflow that a claim forgot its recorded session
 	// and why, and that a start could not reach the session store at all; nil without a
 	// workflow, where neither is reported to anyone.
@@ -2134,10 +2139,10 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 // transaction that could see another instant.
 //
 // The rows are the ones a ready would otherwise release and the pacing holds back (the outbox's
-// releaseWaiting reads the same set through the same WaitingNotices and leaves behind exactly the
-// rows whose reserved moment is still ahead of now): a row whose moment has come is a wake that
-// is running or about to, or one whose attempt failed and is waiting on a backoff of its own, and
-// neither is a wake the pacing holds. Each goes to the architect of its own issue, a root's or a
+// releaseReady leaves behind, by the same rule, exactly the rows whose reserved moment is still
+// ahead of now, record.Store.ExpediteWaits): a row whose moment has come is a wake that is running
+// or about to, or one whose attempt failed and is waiting on a backoff of its own, and neither is a
+// wake the pacing holds. Each goes to the architect of its own issue, a root's or a
 // child's, whose token it is composed for exactly as the line that wake writes composes it (the
 // outbox's wakeRan), since the row names the issue and the kind alone. A project whose outbox
 // holds no such row allocates nothing.
@@ -2275,6 +2280,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		TreeClosable:            p.treeClosable,
 		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,
+		ClaimChanged:            p.claimChanged,
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,

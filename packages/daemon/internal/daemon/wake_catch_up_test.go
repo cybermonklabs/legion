@@ -289,10 +289,10 @@ func TestFortyStartsOfRunningArchitectsWriteCatchUpsOnTheLimitersSchedule(t *tes
 	}
 }
 
-// A ready of an architect releases the notices that wait for it (releaseWaiting), and a catch-up
-// the pacing holds is not one of them: its wait is the turn the operator's rate gave this wake,
-// not the architect being away. A notice waiting on the outbox's backoff beside it is released as
-// it always was.
+// A ready of an architect releases the notices that wait for it (releaseReady), and a catch-up
+// the pacing holds is not one of them, even one that waits for that architect: its wait is the
+// turn the operator's rate gave this wake, not the architect being away. A notice waiting on its
+// backoff beside it is released as it always was.
 func TestAReadyLeavesAPacedCatchUpAtItsOwnMoment(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -307,10 +307,14 @@ func TestAReadyLeavesAPacedCatchUpAtItsOwnMoment(t *testing.T) {
 
 	due := now.Add(5 * testWakeInterval)
 	paced := pacedCatchUp(t, pool, records, "LEGION-1", 1, now, due)
+	if _, err := pool.Exec(ctx, "update outbox set wait_for = $2 where id = $1", paced, record.WaitForReady(architect)); err != nil {
+		t.Fatalf("make the paced catch-up wait for its architect's ready: %v", err)
+	}
 	held := mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, now.Add(time.Minute))
+	held.Wait.WaitFor = record.WaitForReady(architect)
 	enqueueOutbox(t, pool, records, held)
 
-	if err := runner.releaseWaiting(ctx, architect); err != nil {
+	if err := runner.releaseReady(ctx, architect); err != nil {
 		t.Fatalf("release the notices waiting for %s: %v", architect, err)
 	}
 
@@ -756,7 +760,7 @@ func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
 	}
 
 	now = reserved.Add(2 * time.Second)
-	if err := runner.releaseWaiting(ctx, architect); err != nil {
+	if err := runner.releaseReady(ctx, architect); err != nil {
 		t.Fatalf("release the notices waiting for %s: %v", architect, err)
 	}
 	released := noticeRows(t, pool)[0]

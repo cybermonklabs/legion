@@ -1440,6 +1440,24 @@ type Deps struct {
 	// is followed by. It is called inside the machine's decision, so it returns at once. nil is
 	// told nothing.
 	WakeQueued func(token claim.Token, issue string, role claim.Role)
+	// ClaimChanged is told each change of the claim that a row of the daemon's outbox waiting for
+	// that claim waits on (internal/daemon's claimChanged, dispatch://INFRA-4131/spec#b-r-wait-ready
+	// and #b-r-wait-event), with the view the change replaced and the view it published (claimChanged
+	// names them): the state, the launch (Generation), the ready (LastReady), the turn's start
+	// (LastTurnStart), the pending delivery (another delivery, or its confirmation), the end of a
+	// send in flight (ClaimView.SendInFlight), the end of a suspension that holds (RuleHolds), and a
+	// caller that waits for no decision refused the machine's lock while the decision held it
+	// (PublishUpdateAsk's ErrMachineBusy). A decision that changed none of them, a turn's tool step
+	// among them, tells nothing.
+	//
+	// It is told at the end of the decision that made the change, once the machine's lock is
+	// released (unlock), never inside the decision: a reader woken inside it would read the claim as
+	// it stood before it, which is why the daemon also posts the end of a turn to an issue's other
+	// claims after the decision (internal/daemon's wakeIssue). So the callback may read the machine,
+	// Claim included. It is called on the goroutine that made the decision, so it returns at once.
+	// The daemon also tells its own hook of each machine it begins to supervise (internal/daemon's
+	// supervisor.add). nil tells no one.
+	ClaimChanged func(before, after ClaimView)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
 	// beside whatever goroutine feeds the machine its events, and the decision writes the claim
@@ -2128,6 +2146,15 @@ type Machine struct {
 	// ended them, for the daemon to read across a decision (TurnsEnded). It is atomic so that read
 	// never waits on mu.
 	turnsEnded atomic.Uint64
+	// told is the view the last decision published at its end (unlock), or the one NewMachine
+	// published: what the next decision's change of the claim is read against (claimChanged). A
+	// view a decision publishes at a write in its middle (persist) is not it, since a change that
+	// write published is still that decision's to tell. It is written and read under mu.
+	told *publishedView
+	// busyRefused is whether a caller that waits for no decision was refused mu while a section
+	// held it (PublishUpdateAsk's ErrMachineBusy) since the end of a section last told one
+	// (tellChanged). It is atomic, since the caller it refused holds no lock to write it under.
+	busyRefused atomic.Bool
 }
 
 // sending is the send in flight (startSend): its delivery id and generation, and whether an answer
@@ -2249,6 +2276,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		m.askFirst = true
 	}
 	m.publish()
+	m.told = m.view.Load()
 	return m, nil
 }
 
@@ -2510,7 +2538,9 @@ const (
 //     role-message lane of this claim's issue, one row at a time (record.LaneKey), so a caller
 //     that waited would hold every role message of that issue behind that decision. Held, the
 //     call answers ErrMachineBusy having published nothing, and the row's next attempt is still
-//     the first publish.
+//     the first publish. The refusal is marked (busyRefused), and the end of the section that
+//     holds the lock tells the daemon of it (Deps.ClaimChanged), so the row runs again once that
+//     section is over rather than at its backoff (dispatch://INFRA-4131/spec#b-r-wait-event).
 //  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
 //     is one an earlier ask of round already reached. Two rows of one round — a row left by an
 //     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
@@ -2556,6 +2586,7 @@ const (
 // mark is bookkeeping of it.
 func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish func(context.Context) (bool, error)) (UpdateAskOutcome, error) {
 	if !m.mu.TryLock() {
+		m.busyRefused.Store(true)
 		return 0, ErrMachineBusy
 	}
 	defer m.unlock()
@@ -3018,25 +3049,74 @@ func (m *Machine) stoppingProcess() func() {
 // load of a process the decision left registered, or ends the load of one it left no longer
 // booting, which gives its issue pod's start to the next role (endPodLoad), tells the daemon of a
 // wait for the wake pacing that began or ended in the decision (tellWakeQueue), publishes the
-// claim, says the machine decides nothing, then releases mu.
+// claim, says the machine decides nothing, releases mu, and then tells the daemon of each change
+// of the claim a row waiting for it waits on, and of a caller refused mu meanwhile (tellChanged).
 //
-// Every decision of a machine ends here, which is what makes it the place those five are kept:
-// every locked section that can change the wake, the credit, the intent or the claim's process
-// ends in unlock, and a section that takes mu without it reads the claim or counts goroutines and
-// changes none of them. The sections that defer it are Handle, which every event and every timer
-// of this package comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold),
-// PublishUpdateAsk, StartedBy, ReadProcess, Retree and the refresh gate's reclaimCredit; the
-// sections that take mu without it are Claim, OnDurableState, Wait, compaction and the two
-// goroutine tails in delivery.go and secrets.go. It is that rule a section added later has to
-// keep, rather than this list of the sections there are now.
+// Every decision of a machine ends here, which is what makes it the place those six are kept:
+// every locked section that can change the wake, the credit, the intent, the claim's process or
+// what a waiting row waits on ends in unlock, and a section that takes mu without it reads the
+// claim or counts goroutines and changes none of them. The sections that defer it are Handle,
+// which every event and every timer of this package comes through, ReleaseUncertainLaunch,
+// markRound (PodUpdateTold), PublishUpdateAsk, StartedBy, ReadProcess, Retree and the refresh
+// gate's reclaimCredit; the sections that take mu without it are Claim, OnDurableState, Wait,
+// compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
+// added later has to keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.endPodPark()
 	m.endPodLoad()
 	m.tellWakeQueue()
 	m.publish()
+	before, after := m.told, m.view.Load()
+	m.told = after
 	m.decide(nil)
 	m.mu.Unlock()
+	m.tellChanged(before, after)
+}
+
+// tellChanged tells the daemon the change of the claim the section that published after made,
+// before being the view the section before it ended on (Deps.ClaimChanged), where it changed what a
+// row waiting for the claim waits on (claimChanged) or a caller was refused mu meanwhile
+// (busyRefused), whose mark it clears. It runs once mu is released (unlock), so the daemon's hook
+// may read the machine and a row it makes due reads the claim the section left. The mark is read
+// after the release, so no refusal is lost between two sections: one made before the release is
+// this section's, and one made under the next holder is told by whichever end reads it first. A
+// refusal made under a section that takes mu without unlock (Claim, Wait) is told at the end of
+// the next section that ends in unlock, and the row it refused waits its backoff until then.
+func (m *Machine) tellChanged(before, after *publishedView) {
+	refused := m.busyRefused.Swap(false)
+	if m.deps.ClaimChanged == nil || !refused && !claimChanged(before.ClaimView, after.ClaimView) {
+		return
+	}
+	// A stored view is never written again (publish), and the callback is handed views of its
+	// own, as View hands every reader that keeps what it reads.
+	was, now := before.ClaimView, after.ClaimView
+	was.Claim, now.Claim = copyClaim(was.Claim), copyClaim(now.Claim)
+	m.deps.ClaimChanged(was, now)
+}
+
+// claimChanged is whether the claim as after shows it differs from before in what a row of the
+// daemon's outbox waiting for the claim waits on (Deps.ClaimChanged,
+// dispatch://INFRA-4131/spec#b-r-wait-ready and #b-r-wait-event): its state, its launch
+// (Generation), its ready (LastReady), its turn's start (LastTurnStart), its pending delivery or
+// that delivery's confirmation, the end of its send in flight, or the end of a suspension that
+// holds (RuleHolds). A send or a hold that begins ends no row's wait, and a decision that records
+// a turn's tool step alone (toolStepped) changes none of these.
+func claimChanged(before, after ClaimView) bool {
+	return before.State != after.State || before.Generation != after.Generation ||
+		!before.LastReady.Equal(after.LastReady) || !before.LastTurnStart.Equal(after.LastTurnStart) ||
+		pendingChanged(before.Pending, after.Pending) ||
+		before.SendInFlight && !after.SendInFlight || before.RuleHolds() && !after.RuleHolds()
+}
+
+// pendingChanged is whether the pending delivery after is another than before, or the same with
+// its confirmation changed: a task queued, retired or replaced, confirmed by a turn, or its
+// confirmation taken back.
+func pendingChanged(before, after *Delivery) bool {
+	if before == nil || after == nil {
+		return (before == nil) != (after == nil)
+	}
+	return before.ID != after.ID || !before.ConfirmedAt.Equal(after.ConfirmedAt)
 }
 
 // OnDurableState installs the daemon callback for the durable transitions it acts on: ready,

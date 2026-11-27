@@ -249,13 +249,19 @@ func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]c
 	return unfinished, nil
 }
 
-// add supervises m, starting the goroutine that feeds it. The caller holds mu.
+// add supervises m, starting the goroutine that feeds it. The caller holds mu. A machine added is
+// a claim the daemon's record now holds a machine for, so the daemon's claim-change hook is told
+// of it (supervise.Deps.ClaimChanged, from the zero view to the machine's first): an outbox row
+// that waited for the claim's machine, a start owed (roleWaitGate), runs at once.
 func (s *supervisor) add(token claim.Token, m *supervise.Machine) {
 	m.OnDurableState(s.durableState)
 	queue := newInbox()
 	s.machines[token] = &member{machine: m, inbox: queue, issue: m.Claim().Issue}
 	all := append(slices.Clip(s.supervised()), m)
 	s.all.Store(&all)
+	if s.deps.ClaimChanged != nil {
+		s.deps.ClaimChanged(supervise.ClaimView{}, m.View())
+	}
 	s.feeding.Add(1)
 	// One claim's events are handled one at a time on this goroutine, beside every other
 	// machine's, and each decision writes the claim through the store, so the machine works under

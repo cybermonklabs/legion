@@ -277,9 +277,9 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 // notice has, catchUpSuperseded, stoppedWithTree and architectEnded end it. Every other notice
 // goes to the architect that owns its issue (record.OwningArchitect), by runs, from the issue's
 // parent for a notice the architect above it must hear (record.NoticeStartsAtParent). The
-// publish (deliverNotice), the fence (earlierNoticeFor) and a ready's release (releaseWaiting)
-// all ask this, so each finds a notice the same architect. project is the tree's claim project
-// token.
+// publish (deliverNotice) and the fence (earlierNoticeFor) both ask this, so each finds a notice
+// the same architect, and the notice waits for the architect the publish found (roleWait), whose
+// ready makes it due (outbox.releaseReady). project is the tree's claim project token.
 func noticeArchitect(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
 	if notice.CatchUp != nil {
 		return claim.NewToken(project, issue.Key, claim.RoleArchitect)

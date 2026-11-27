@@ -54,13 +54,19 @@ func (r laneReport) envelope(t *testing.T) []byte {
 	return envelope
 }
 
-// architectClaimOn creates issue's architect claim in state, registered as session.
+// architectClaimOn creates issue's architect claim in state, registered as session. A claim
+// registered or suspended has been launched, so it is at its first launch's generation, as
+// supervise's writeTry gives each launch one: the role-wait gate publishes nothing to a claim in
+// either state with no launch (roleWaitGate).
 func architectClaimOn(t *testing.T, sup *supervisor, issue string, state supervise.ClaimState, session string) {
 	t.Helper()
 	token := mustClaimToken(t, issue, claim.RoleArchitect)
 	c := supervise.Claim{
 		Token: token, Project: "legion", Tree: "LEGION-1", Issue: issue, Role: claim.RoleArchitect,
 		State: state, Session: session,
+	}
+	if state == supervise.StateRegistered || state == supervise.StateSuspended {
+		c.Generation = 1
 	}
 	if state == supervise.StateLaunching || state == supervise.StateShimConnected {
 		c.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "1:1",
@@ -886,7 +892,7 @@ func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T)
 						t.Fatalf("ready at %s: %v", clock.Sub(start), err)
 					}
 					machine.Wait()
-					if err := runner.releaseWaiting(context.Background(), architectTopicToken(t, "LEGION-1")); err != nil {
+					if err := runner.releaseReady(context.Background(), architectTopicToken(t, "LEGION-1")); err != nil {
 						t.Fatalf("release at %s: %v", clock.Sub(start), err)
 					}
 					readyDone = true
@@ -929,9 +935,33 @@ func architectTopicToken(t *testing.T, issue string) claim.Token {
 	return mustClaimToken(t, issue, claim.RoleArchitect)
 }
 
-// A ready releases every notice its architect owns now that waits for a later attempt, a re-held
-// copy or one held on the outbox's backoff; a notice owned by another architect of the tree keeps
-// its time. One release serves every architect that became ready, each in its own tree.
+// architectsWaitingNotices enqueues, due at later, the notices of
+// TestAReadyArchitectReleasesOnlyItsOwnNotices, each waiting for the architect its last run found
+// (record.OutboxWait.WaitFor): a re-held copy of the root's and one of another tree's root's, which
+// wait for their architect's ready as every copy does (reholdNotice); the root's own, held while
+// its architect had not said it was ready, which waits for any change of that claim; and a copy of
+// the sub-architect's, which waits for the sub-architect's ready.
+func architectsWaitingNotices(t *testing.T, pool *store.Pool, records record.Store, later time.Time) {
+	t.Helper()
+	for _, c := range []struct {
+		issue, architect string
+		resends          int
+		waits            func(claim.Token) string
+	}{
+		{"LEGION-1", "LEGION-1", 1, record.WaitForReady}, // a re-held copy of the root's
+		{"LEGION-1", "LEGION-1", 0, record.WaitForClaim}, // the root's, held while its architect was not ready
+		{"LEGION-3", "LEGION-2", 1, record.WaitForReady}, // the sub-architect's: LEGION-3 is under LEGION-2, whose sub-architect runs
+		{"LEGION-9", "LEGION-9", 1, record.WaitForReady}, // another tree's root's
+	} {
+		row := mustOutboxRow(t, c.issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Resends: c.resends}, later)
+		row.Wait.WaitFor = c.waits(architectTopicToken(t, c.architect))
+		enqueueOutbox(t, pool, records, row)
+	}
+}
+
+// A ready releases every notice that waits for its architect, a re-held copy or one held while
+// the architect was away; a notice that waits for another architect of the tree keeps its time.
+// One release serves every architect that became ready, each in its own tree.
 func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -943,20 +973,9 @@ func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
 	architectClaimOn(t, sup, "LEGION-2", supervise.StateWorking, "ses_sub")
 	architectClaimOn(t, sup, "LEGION-9", supervise.StateReady, "ses_other")
 	now := time.Now()
-	later := now.Add(noticeReholdDelays[1])
-	for _, c := range []struct {
-		issue   string
-		resends int
-	}{
-		{"LEGION-1", 1}, // a re-held copy of the root's
-		{"LEGION-1", 0}, // the root's, held on backoff
-		{"LEGION-3", 1}, // the sub-architect's: LEGION-3 is under LEGION-2, whose sub-architect runs
-		{"LEGION-9", 1}, // another tree's root's
-	} {
-		enqueueOutbox(t, pool, records, mustOutboxRow(t, c.issue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Resends: c.resends}, later))
-	}
+	architectsWaitingNotices(t, pool, records, now.Add(noticeReholdDelays[1]))
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: func() time.Time { return now }}
-	if err := runner.releaseWaiting(context.Background(), architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9")); err != nil {
+	if err := runner.releaseReady(context.Background(), architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9")); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	rows, err := pool.Query(context.Background(), "select issue, next_at <= $1 from outbox where "+notStateRows+" order by id", now)
@@ -978,7 +997,7 @@ func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
 	}
 }
 
-// The ready route's hook only records a ready architect, so the agent's ready is answered without
+// The ready route's hook only records a ready claim, so the agent's ready is answered without
 // waiting on a release; the workflow's release loop then releases the architect's waiting notice.
 func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 	t.Parallel()
@@ -987,7 +1006,10 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateRegistered, "ses_arch")
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Resends: 1}, time.Now().Add(noticeReholdDelays[1])))
+	architect := architectTopicToken(t, "LEGION-1")
+	copied := mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Resends: 1}, time.Now().Add(noticeReholdDelays[1]))
+	copied.Wait.WaitFor = record.WaitForReady(architect)
+	enqueueOutbox(t, pool, records, copied)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
 	w := &workflowRuntime{outbox: runner, log: quietLogger(), readied: newWakeSet[claim.Token]()}
 	due := func() bool {
@@ -999,7 +1021,7 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 		return due
 	}
 
-	w.claimReady(supervise.Claim{Token: architectTopicToken(t, "LEGION-1"), Role: claim.RoleArchitect})
+	w.claimReady(supervise.Claim{Token: architect, Role: claim.RoleArchitect, State: supervise.StateReady})
 	if due() {
 		t.Fatalf("the hook released the notice itself, so the ready route waited on the release")
 	}

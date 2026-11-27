@@ -4416,7 +4416,7 @@ func (s *Postgres) ExpediteOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow,
 
 // catchUpPacedAhead is a catch-up the wake pacing holds to a moment still ahead of $2, the
 // caller's now: a notice whose paced_at is after it (Notice.PacedAt), which only a catch-up the
-// pacing marked carries. The daemon's releaseWaiting reads the same rule off the decoded notice.
+// pacing marked carries. The daemon's pacedCatchUps reads the same rule off the decoded notice.
 const catchUpPacedAhead = `(outbox.kind = 'notice' and outbox.payload ? 'paced_at'
 	and (outbox.payload->>'paced_at')::timestamptz > $2)`
 

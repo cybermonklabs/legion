@@ -3155,15 +3155,27 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 // readyWorkerTask). A claim that holds a delivery is sent it with the sentence in front, and one
 // whose held task that send drops instead is given the daemon's own delivery there
 // (sendPending's relaunchAfterDrop).
+//
+// Each ready whose write the store took is logged, readyLine, the agent's retry of a ready
+// included (reready), since that retry writes the claim again.
 func finishReady(m *Machine, ctx context.Context) error {
 	if err := m.durableWrite(ctx, StateReady, m.persist); err != nil {
 		return err
 	}
+	m.log.Info(readyLine, "generation", m.claim.Generation)
 	if err := m.queueRelaunch(ctx); err != nil {
 		return err
 	}
 	return m.sendPending(ctx)
 }
+
+// readyLine is the message a ready is logged under, at Info, once the store has taken its write
+// (finishReady), with the claim, which the machine's own logger names, and the launch it is the
+// ready of (generation). It is pinned, as the turn lines are, because a reader of the daemon's log
+// counts a claim's readies by it against its launches (`supervise: launched`), and reads by the
+// two how often the daemon published to a role that was ready
+// (dispatch://INFRA-4131/spec#b-r-production).
+const readyLine = "supervise: ready"
 
 // reready persists the in-memory ready state before answering an agent retry: a prior ready's
 // claim write may have failed after the machine made the transition. A retained launch-time

@@ -446,8 +446,10 @@ func launchedController(ctx context.Context, st *store.Store, project string) (s
 	return supervise.Claim{}, nil
 }
 
-// claimReadyHook is the ready route's hook: the daemon's controller's ready goes to its keeper, and
-// every other claim's to the workflow's (nil for a daemon with no workflow).
+// claimReadyHook is the ready route's hook: every claim's ready goes to the workflow's (nil for a
+// daemon with no workflow), which releases the outbox rows that wait for it, and the daemon's
+// controller's goes to its keeper first, so the controller is handed its start message before the
+// controller notices waiting for it are released behind it.
 func claimReadyHook(keeper *controllerKeeper, workflow func(supervise.Claim)) func(supervise.Claim) {
 	if keeper == nil {
 		return workflow
@@ -455,7 +457,6 @@ func claimReadyHook(keeper *controllerKeeper, workflow func(supervise.Claim)) fu
 	return func(c supervise.Claim) {
 		if c.Role == claim.RoleController {
 			keeper.ready(c)
-			return
 		}
 		if workflow != nil {
 			workflow(c)

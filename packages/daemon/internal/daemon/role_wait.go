@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -89,8 +91,9 @@ func (w roleWaiting) Unwrap() error { return w.err }
 //     (no machine for an ending kind, or a failed or retired claim for any kind that ends on one);
 //   - wait is a roleWaiting when this run must publish nothing and wait instead (no machine for a
 //     waiting kind, a failed or retired controller claim under `controller: daemon`, an
-//     unregistered launch, or a not-ready registered launch or non-release suspension that this
-//     row has already published to in the claim's current Generation).
+//     unregistered launch, a claim suspended before any launch, or a not-ready registered launch
+//     or non-release suspension that this row has already published to in the claim's current
+//     Generation).
 //
 // When ended is empty and wait is nil, the executor may publish.
 type roleGate struct {
@@ -109,7 +112,9 @@ func endsWithoutClaim(kind record.OutboxKind) bool {
 
 // publishesOncePerLaunch is whether a claim in view's state allows at most one publish of a row
 // per Claim.Generation: a registered launch that has not said it is ready, or a claim suspended by
-// any source other than the idle release (operator, controller, daemon, exit, unknown).
+// any source other than the idle release (operator, controller, daemon, exit, unknown). A claim in
+// such a state at Generation 0 has had no launch (supervise's writeTry raises the generation at
+// each launch try), so no session of it can take a publish, and the gate allows none.
 func publishesOncePerLaunch(view supervise.ClaimView) bool {
 	return view.State == supervise.StateRegistered || (view.State == supervise.StateSuspended && !view.Released())
 }
@@ -132,7 +137,8 @@ func publishesOncePerLaunch(view supervise.ClaimView) bool {
 //     nothing (key claim:<token>);
 //   - registered not ready, or suspended by any source other than the release: publish once for
 //     the claim's Generation (when row.Wait.WaitLaunch != view.Generation), otherwise wait and
-//     publish nothing (key claim:<token>);
+//     publish nothing (key claim:<token>); a claim suspended before its first launch (Generation
+//     0) has no session to take the publish, so it publishes nothing and waits for the launch;
 //   - released (no launch in progress): publish — callers that wake a released role themselves
 //     already ran wakeForDelivery / deliveryWake before reaching the gate, so only a role the
 //     daemon will not wake, a pause-held role_message, or a controller_notice reaches here;
@@ -163,7 +169,11 @@ func (r *outbox) roleWaitGate(row record.OutboxRow, topic string) roleGate {
 		return roleGate{view: view, wait: r.roleWait(topic, view, nil,
 			wait.Errorf("outbox row %d (%s) for %s waits for %s's launch %d, which is %s, to register its session",
 				row.ID, row.Kind, row.Issue, token, view.Generation, view.State))}
-	case publishesOncePerLaunch(view) && view.Generation != 0 && row.Wait.WaitLaunch == view.Generation:
+	case publishesOncePerLaunch(view) && view.Generation == 0:
+		return roleGate{view: view, wait: r.roleWait(topic, view, nil,
+			wait.Errorf("outbox row %d (%s) for %s waits for %s, which is %s and has had no launch, to launch",
+				row.ID, row.Kind, row.Issue, token, view.State))}
+	case publishesOncePerLaunch(view) && row.Wait.WaitLaunch == view.Generation:
 		return roleGate{view: view, wait: r.roleWait(topic, view, nil,
 			wait.Errorf("outbox row %d (%s) for %s already published to %s's launch %d (%s) and waits for it to say it is ready",
 				row.ID, row.Kind, row.Issue, token, view.Generation, view.State))}
@@ -177,14 +187,15 @@ func (r *outbox) roleWaitGate(row record.OutboxRow, topic string) roleGate {
 // no publish. waiting is the wait itself (a wait.ErrWaiting) as the executor words it, which the
 // role wait unwraps to, so settle and every reader of the error still read it as that wait. When
 // the run published to a not-ready registered launch or non-release suspension, launch records
-// view.Generation so roleWaitNext stores it into record.OutboxWait.WaitLaunch.
+// view.Generation so roleWaitNext stores it into record.OutboxWait.WaitLaunch (the gate allows
+// no such publish at Generation 0, so launch is never 0 for one).
 func (r *outbox) roleWait(topic string, view supervise.ClaimView, answer, waiting error) error {
 	token, held := r.heldTopic(topic)
 	w := roleWaiting{topic: topic, token: token, held: held, view: view, err: waiting}
 	var unheld unheldSession
 	if answer != nil && !errors.As(answer, &unheld) {
 		w.published, w.answer = true, answer
-		if held && publishesOncePerLaunch(view) && view.Generation != 0 {
+		if held && publishesOncePerLaunch(view) {
 			w.launch = view.Generation
 		}
 	}
@@ -199,7 +210,7 @@ func (r *outbox) roleWait(topic string, view supervise.ClaimView, answer, waitin
 func (r *outbox) roleWaitPublished(topic string, view supervise.ClaimView, waiting error) error {
 	token, held := r.heldTopic(topic)
 	w := roleWaiting{topic: topic, token: token, held: held, view: view, published: true, err: waiting}
-	if held && publishesOncePerLaunch(view) && view.Generation != 0 {
+	if held && publishesOncePerLaunch(view) {
 		w.launch = view.Generation
 	}
 	return w
@@ -272,6 +283,67 @@ func (w eventWaiting) Unwrap() error { return w.err }
 // so settle and every reader of the error still read it as that wait.
 func eventWait(key string, waiting error) error {
 	return eventWaiting{key: key, err: waiting}
+}
+
+// readyReleasedLine is the one line a ready's release writes once its transaction commits
+// (releaseReady), naming the claims that said they are ready and the rows it made due.
+const readyReleasedLine = "outbox rows released: their role is ready"
+
+// releaseReady makes due at once every row that waits for one of tokens' claims, each of which has
+// said it is ready (workflow's claimReady, dispatch://INFRA-4131/spec#b-r-wait-ready): a row the
+// gate holds or that waits for the role's name (record.WaitForClaim), and a row on the capped
+// waits of a refusal while the claim said it was ready (record.WaitForReady), which only a ready
+// makes due. Each row's step goes back to 0, a row a lane holds is marked woken so that its retry
+// makes it due at once, and a catch-up the wake pacing holds to a moment still ahead of now keeps
+// that moment, since its wait is the turn the operator's rate gave it and not the architect being
+// away (record.Store.ExpediteWaits). Once the release commits it writes one line naming the claims
+// and the rows it made due.
+//
+// A row waits for the claim its last run read: a notice for the architect it was routed to then
+// (noticeArchitect), so a notice whose routing moved to another architect since runs at its next
+// step, at most RoleWaitBackoffMost later. A launch says it is ready before its session takes its
+// role's Envoy name, so a row this releases can be refused because no session holds the role; it
+// then waits for that name (roleWaiting.awaitsName), not for another ready.
+func (r *outbox) releaseReady(ctx context.Context, tokens ...claim.Token) error {
+	keys := make([]string, 0, 2*len(tokens))
+	for _, token := range tokens {
+		keys = append(keys, record.WaitForClaim(token), record.WaitForReady(token))
+	}
+	return r.expediteWaits(ctx, keys, func(rows []int64) {
+		r.log.Info(readyReleasedLine, "claims", tokens, "rows", rows)
+	})
+}
+
+// releaseChanged makes due at once every row that waits for one of keys, which a change of one of
+// this daemon's claims made happen (workflow's claimChanged): the claim's own key, its tree's, and
+// its ready's where the change was a ready (dispatch://INFRA-4131/spec#b-r-wait-event), on the same
+// rules as a ready's release (releaseReady). A claim changes at every turn, so this release writes
+// no line of its own: each row it makes due writes its wait's lines as it runs (logWait).
+func (r *outbox) releaseChanged(ctx context.Context, keys []string) error {
+	return r.expediteWaits(ctx, keys, nil)
+}
+
+// expediteWaits makes due, in a transaction of its own, every row that waits for one of keys
+// (record.Store.ExpediteWaits), and calls released with the rows it made due once that transaction
+// has committed, where it made any and released is set. The transaction owns the commit hooks the
+// expedite registers (projectRecords), so each row's lane is woken once the rows are due.
+func (r *outbox) expediteWaits(ctx context.Context, keys []string, released func(rows []int64)) error {
+	now := r.now()
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		due, err := r.records.ExpediteWaits(ctx, tx, keys, now)
+		if err != nil || len(due) == 0 || released == nil {
+			return err
+		}
+		ids := make([]int64, len(due))
+		for i, row := range due {
+			ids[i] = row.ID
+		}
+		store.OnCommit(ctx, func() { released(ids) })
+		return nil
+	}); err != nil {
+		return fmt.Errorf("release the outbox rows that wait for %v: %w", keys, err)
+	}
+	return nil
 }
 
 // listenerRefused is whether err is the listener's refusal of a role publish that can keep its row:

@@ -2414,7 +2414,7 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 	}
 	architect := mustClaimToken(t, woken, claim.RoleArchitect)
 
-	if err := runner.releaseWaiting(ctx, architect); err != nil {
+	if err := runner.releaseReady(ctx, architect); err != nil {
 		t.Fatalf("release the notices waiting for %s: %v", architect, err)
 	}
 	if after, _ := noticeRowOf(t, pool, woken); !after.nextAt.Equal(catchUp.nextAt) {
