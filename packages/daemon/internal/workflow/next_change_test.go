@@ -183,7 +183,7 @@ func (r *waitRig) changeMerges(key string, number int, merge, head string) {
 	seedIssue(r.t, r.pool, issue)
 	seedPhase(r.t, r.pool, record.PhaseRow{Issue: key, Role: claim.RoleMerger, Claim: "change-merger", HandoffCommit: head})
 	seedPR(r.t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: waitRepo, Number: number, Branch: claim.IssueBranch(key),
-		Base: "main", HeadSHA: head, Generation: issue.Generation, Failing: []string{}})
+		Base: "main", HeadSHA: head, Generation: int64(issue.Generation), Failing: []string{}})
 	r.fact(intake.PullRequestMerged{Repo: waitRepo, Number: number, MergeSHA: merge, HeadSHA: head, MergedAt: r.now})
 }
 

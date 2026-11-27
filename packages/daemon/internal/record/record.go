@@ -2716,6 +2716,10 @@ type Store interface {
 	// OpenDefects is every defect of issue that no withdrawal ended and no merged change carried,
 	// oldest first.
 	OpenDefects(ctx context.Context, tx pgx.Tx, issue string) ([]Defect, error)
+	// Defects is every reason of a next change the issue holds, of any kind and whatever its
+	// state, oldest first: the judge of the close reads it before it records a check's fail as a
+	// reason, so a fail whose deciding result an earlier change carried records none.
+	Defects(ctx context.Context, tx pgx.Tx, issue string) ([]Defect, error)
 	// Defect is the defect id of issue, of any kind and whether or not it holds still, nil where
 	// issue holds no defect of that id: the one read that tells a withdrawal what it would end.
 	Defect(ctx context.Context, tx pgx.Tx, issue string, id int64) (*Defect, error)

@@ -126,6 +126,30 @@ func (s *Postgres) OpenDefects(ctx context.Context, tx pgx.Tx, issue string) ([]
 	return open, nil
 }
 
+// Defects is every reason of a next change the issue holds, of any kind and whatever its state,
+// oldest first: the one read of a check's whole history, which the judge of the close asks
+// before it records a check's fail as a reason, so a fail whose deciding result an earlier
+// change already carried records none.
+func (s *Postgres) Defects(ctx context.Context, tx pgx.Tx, issue string) ([]Defect, error) {
+	rows, err := tx.Query(ctx, "select "+defectColumns+" from defects where issue = $1 order by id", issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the defects of %s: %w", issue, err)
+	}
+	defer rows.Close()
+	held := []Defect{}
+	for rows.Next() {
+		defect, err := scanDefect(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the defects of %s: %w", issue, err)
+		}
+		held = append(held, defect)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the defects of %s: %w", issue, err)
+	}
+	return held, nil
+}
+
 func (s *Postgres) Defect(ctx context.Context, tx pgx.Tx, issue string, id int64) (*Defect, error) {
 	defect, err := scanDefect(tx.QueryRow(ctx, "select "+defectColumns+" from defects where issue = $1 and id = $2", issue, id))
 	if errors.Is(err, pgx.ErrNoRows) {
