@@ -59,7 +59,7 @@ import { useIssueNames } from "../one-line";
 import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { useOutlineWriter } from "../outline-writer";
-import { editWords, noteAfterDraw, type OwnAct } from "../own-act";
+import { editNote, noteAfterDraw, type OwnAct } from "../own-act";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
 import {
   authorKind,
@@ -78,7 +78,13 @@ import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
 import { treeContext } from "../target-naming";
-import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
+import {
+  focusedRowIn,
+  focusIsLoose,
+  nearestRowIn,
+  nodeRowSelectorOf,
+  TAB_STOP_ROW,
+} from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { issueAsksQuery } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
@@ -367,16 +373,8 @@ export function SpecFilterBody({
   const drawnView = useRef(view);
   drawnView.current = view;
   const noteEdit = useCallback((row: string, block: DisplayTree) => {
-    const id = tree.current?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
-    if (id === undefined) return;
-    ownEdit.current = {
-      ended: false,
-      id,
-      kind: "edit",
-      root: drawnView.current,
-      row,
-      words: editWords(block),
-    };
+    const note = editNote(tree.current, row, block, drawnView.current);
+    if (note !== undefined) ownEdit.current = note;
   }, []);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
@@ -436,15 +434,12 @@ export function SpecFilterBody({
       focusIsLoose(container)
     ) {
       ownEdit.current = undefined;
-      const key = order[Math.min(held.index, order.length - 1)];
-      const nearest =
-        key === undefined ? null : container?.querySelector<HTMLElement>(rowSelectorOf(key));
-      if (nearest !== null && nearest !== undefined) moveToRow(nearest);
+      const nearest = nearestRowIn(container, order, held.index);
+      if (nearest !== null) moveToRow(nearest);
     }
     ownEdit.current = noteAfterDraw(ownEdit.current, view, editingRow);
-    const holder = document.activeElement?.closest<HTMLElement>("[data-node-row]");
-    const focusedKey =
-      holder != null && container?.contains(holder) === true ? holder.dataset.rowKey : undefined;
+    const holder = focusedRowIn(container);
+    const focusedKey = holder?.dataset.rowKey;
     heldRow.current =
       focusedKey === undefined
         ? undefined

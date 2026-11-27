@@ -27,3 +27,23 @@ export function nodeRowSelectorOf(id: string): string {
 export function focusIsLoose(tree: HTMLElement | null): boolean {
   return focusOnDocument() || (tree !== null && document.activeElement?.contains(tree) === true);
 }
+
+/** The row of `tree` that holds the focus, on the row itself or on a control inside it; null
+ *  where the focus is on no row of it. */
+export function focusedRowIn(tree: HTMLElement | null): HTMLElement | null {
+  const row = document.activeElement?.closest<HTMLElement>("[data-node-row]") ?? null;
+  return row !== null && tree?.contains(row) === true ? row : null;
+}
+
+/** The row of `tree` nearest to the place `index` among the rows whose keys `order` holds in the
+ *  order they are drawn: the row now at that place, or the last where none is; null where `tree`
+ *  draws neither. A tree hands the focus on to it where a drop the reader caused takes out the
+ *  row that held the focus (`IssueTree.tsx`'s and `SpecFilterBody.tsx`'s `heldRow`). */
+export function nearestRowIn(
+  tree: HTMLElement | null,
+  order: readonly string[],
+  index: number
+): HTMLElement | null {
+  const key = order[Math.min(index, order.length - 1)];
+  return key === undefined ? null : (tree?.querySelector<HTMLElement>(rowSelectorOf(key)) ?? null);
+}
