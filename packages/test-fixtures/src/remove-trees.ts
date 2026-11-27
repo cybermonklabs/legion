@@ -10,7 +10,7 @@
  *
  * It imports only `node:` modules, so it runs as a plain bun script, outside `bun test`.
  */
-import { chmodSync, lstatSync, readdirSync, rmSync, type Stats } from "node:fs";
+import { rmSync, type Stats } from "node:fs";
 import { join } from "node:path";
 
 const failures: string[] = [];

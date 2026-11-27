@@ -705,7 +705,7 @@ function reminderOver(claim: ClaimCapability, record: LegionIssue): PhaseReminde
     saveEntry: () => {},
     claim: () => claim,
     readRecord: async () => record,
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: () => {} },
