@@ -132,34 +132,37 @@ test.each([
       return `http://127.0.0.1:${away.port}`;
     },
   ],
-])("a listener that asks for no credential keeps its calls while the broker %s", async (_, broker) => {
-  // A pod with no Envoy bearer presents its broker credential on every listener call. The
-  // credential fails fast where the broker cannot answer, so the call goes without it and stands
-  // on the listener's own answer, at once, rather than waiting out its 5 s attempt.
-  const fetched: { readonly url: string; readonly authorization: string | null }[] = [];
-  const client = createEnvoyClient({
-    baseUrl: "http://listener.test",
-    retry: false,
-    fetch: async (url, init) => {
-      fetched.push({
-        url: String(url),
-        authorization: new Headers(init?.headers).get("Authorization"),
-      });
-      return Response.json({
-        role: "implementer",
-        holder: "ses_holder",
-        last_seen: 1,
-        state: "live",
-      });
-    },
-    credential: brokerCredential(podEnvironment(broker(), "http://dispatch.test"), POD_SESSION),
-  });
-  const started = Date.now();
-  await client.getRole("implementer");
-  expect(Date.now() - started).toBeLessThan(2_000);
-  expect(fetched).toHaveLength(1);
-  expect(fetched[0]?.authorization).toBeNull();
-});
+])(
+  "a listener that asks for no credential keeps its calls while the broker %s",
+  async (_, broker) => {
+    // A pod with no Envoy bearer presents its broker credential on every listener call. The
+    // credential fails fast where the broker cannot answer, so the call goes without it and stands
+    // on the listener's own answer, at once, rather than waiting out its 5 s attempt.
+    const fetched: { readonly url: string; readonly authorization: string | null }[] = [];
+    const client = createEnvoyClient({
+      baseUrl: "http://listener.test",
+      retry: false,
+      fetch: async (url, init) => {
+        fetched.push({
+          url: String(url),
+          authorization: new Headers(init?.headers).get("Authorization"),
+        });
+        return Response.json({
+          role: "implementer",
+          holder: "ses_holder",
+          last_seen: 1,
+          state: "live",
+        });
+      },
+      credential: brokerCredential(podEnvironment(broker(), "http://dispatch.test"), POD_SESSION),
+    });
+    const started = Date.now();
+    await client.getRole("implementer");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(fetched).toHaveLength(1);
+    expect(fetched[0]?.authorization).toBeNull();
+  }
+);
 
 /** A broker at a port of its own that answers each trade as `answer` does. */
 function brokerAt(answer: () => Promise<Response>): string {
@@ -223,34 +226,41 @@ test.each([
   20_000
 );
 
-test.each([
-  6_000, 8_000,
-])("a fresh process's first trade that takes %i ms: the call is answered with the token, after one 401", async (tradeMs) => {
-  // Every hook and command line call is a fresh process, so its first listener call waits on
-  // its first trade. Each attempt's credential waits 4 s of the attempt's 5; the first ends
-  // without a token, goes without it, and a listener that wants one answers 401, which the
-  // call tries again; the next attempt's credential is waiting on the same trade when it lands.
-  const broker = brokerAt(async () => {
-    await Bun.sleep(tradeMs);
-    return granted();
-  });
-  const fetched: (string | null)[] = [];
-  const client = createEnvoyClient({
-    baseUrl: "http://listener.test",
-    fetch: async (_url, init) => {
-      if (init?.signal?.aborted) throw init.signal.reason;
-      const authorization = new Headers(init?.headers).get("Authorization");
-      fetched.push(authorization);
-      return authorization === null
-        ? Response.json({ error: "this listener wants a credential" }, { status: 401 })
-        : Response.json({ role: "implementer", holder: "ses_holder", last_seen: 1, state: "live" });
-    },
-    credential: brokerCredential(podEnvironment(broker, "http://dispatch.test"), POD_SESSION),
-  });
-  await client.getRole("implementer");
-  expect(fetched.at(-1)).toStartWith("DPoP ");
-  expect(fetched.filter((one) => one === null)).toHaveLength(1);
-}, 40_000);
+test.each([6_000, 8_000])(
+  "a fresh process's first trade that takes %i ms: the call is answered with the token, after one 401",
+  async (tradeMs) => {
+    // Every hook and command line call is a fresh process, so its first listener call waits on
+    // its first trade. Each attempt's credential waits 4 s of the attempt's 5; the first ends
+    // without a token, goes without it, and a listener that wants one answers 401, which the
+    // call tries again; the next attempt's credential is waiting on the same trade when it lands.
+    const broker = brokerAt(async () => {
+      await Bun.sleep(tradeMs);
+      return granted();
+    });
+    const fetched: (string | null)[] = [];
+    const client = createEnvoyClient({
+      baseUrl: "http://listener.test",
+      fetch: async (_url, init) => {
+        if (init?.signal?.aborted) throw init.signal.reason;
+        const authorization = new Headers(init?.headers).get("Authorization");
+        fetched.push(authorization);
+        return authorization === null
+          ? Response.json({ error: "this listener wants a credential" }, { status: 401 })
+          : Response.json({
+              role: "implementer",
+              holder: "ses_holder",
+              last_seen: 1,
+              state: "live",
+            });
+      },
+      credential: brokerCredential(podEnvironment(broker, "http://dispatch.test"), POD_SESSION),
+    });
+    await client.getRole("implementer");
+    expect(fetched.at(-1)).toStartWith("DPoP ");
+    expect(fetched.filter((one) => one === null)).toHaveLength(1);
+  },
+  40_000
+);
 
 test("inside the renewal window, a broker that hangs leaves the call its live token and the time to send it", async () => {
   // The token in hand is past its renewal, its half life (`renewalAt`), so the call waits for the

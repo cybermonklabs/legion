@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
-import { realHostTool } from "@legion/test-fixtures/host-tools";
+import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Server, Subprocess } from "bun";
 
@@ -142,9 +142,9 @@ const childHome = temporaryDirectory("round-robin-proxy-home");
 /** One link, `python3`, to python3 itself, first on the PATH of each run-server.sh run below:
  *  run-server.sh starts held-port.py with the python3 on PATH, and a mise shim there would read
  *  `childHome` for its config, refuse the caller's mise config above the checkout as untrusted
- *  or find no version, and exit 1 before the server starts (`realHostTool`). */
+ *  or find no version, and exit 1 before the server starts (`hostTool`). */
 const realPython = temporaryDirectory("round-robin-proxy-python");
-const python3 = realHostTool("python3");
+const python3 = hostTool("python3");
 beforeAll(() => {
   if (python3 !== null) symlinkSync(python3, join(realPython, "python3"));
 });

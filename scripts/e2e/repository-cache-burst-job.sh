@@ -129,8 +129,10 @@
 # (skills/legion-worker/references/tools.md). With a retry, the log read is the newest pod's whole
 # log, read once its container has terminated.
 #
-# This script is synchronous, runs for as long as the Job does (about ten minutes on the default
-# repository, which is its first clone, two uploads and two bursts), and its clean-up is a trap, so
+# This script is synchronous, runs for as long as the Job does (about twenty minutes on the default
+# repository, which is its first clone, two uploads and two bursts: its pod ran 19m17s and 20m31s
+# in the two runs of 2026-11-26 and 2026-11-27, after the issue pod's fill took on the jj import
+# and the checkout), and its clean-up is a trap, so
 # a role that runs it from its own bash tool runs it detached, the way docs/kubernetes.md, "Running
 # a workload in the cluster from a role", sets out: the tool kills a call that runs past its timeout
 # faster than any trap runs. Run it with `--dry-run` first:

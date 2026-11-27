@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The autodeploy's read of the schema version reads the clock once for each try, so every try
+  gives its database client a bound of at least one second. A clock that reached the deadline
+  between the deadline test and the bound gave the client 0, which it reads as no bound, and that
+  deploy could wait with no end.
+time: 2026-11-16T21:45:00Z
+custom:
+    Issue: pr4194

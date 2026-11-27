@@ -1,0 +1,5 @@
+kind: Changed
+body: '`dispatch steps --issue <KEY>` lists each task of the issue''s plan, a task with no run included, before the other tasks with runs, so the header''s `<m> tasks` counts the plan''s tasks that have not run too. Before the runs of each task of the plan it prints a line `task <task> needs <needs>: <place> <step> <state>, …`: the tasks it needs as a list, `[a,b]`, `[]` where it needs none, or `-` where its plan node records none, none of which a task id can be, then each step the plan gives it at the state Dispatch answers. A script that reads the run lines skips that line: its third word is `needs`, where a run line''s third word is its kind.'
+time: 2026-11-22T04:01:23.341084511Z
+custom:
+    Issue: pr4948

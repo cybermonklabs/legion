@@ -7,8 +7,8 @@ import (
 )
 
 // TestEveryGETRouteStatesOneReadClass holds the declarations to classing their reads: every GET
-// route of the table with its test hooks in (readOnlyTable, the table routesNotMounted walks too),
-// read off the table rather than listed, so a GET route added later fails here until its file
+// route the server mounts with its test hooks in (readOnlyTable), read off the declarations rather
+// than listed, so a GET route added later fails here until its file
 // states a class. It fails for each GET route stating none, each class that is no class at all,
 // each readWritesState route with no WriteNote, and each route that is not a GET stating a class.
 // It reads them from readClassRefusals, the check register refuses a table by, so the test and the

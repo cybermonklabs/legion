@@ -195,7 +195,7 @@ func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue)
 	teardowns := rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key})
 
 	rig.awaitUnownedReleased(issue)
-	idleRigEventually(t, idleRigRecordWait, "the daemon's line of the teardown of "+issue.key+"'s pod", func() bool {
+	idleRigEventually(t, "the daemon's line of the teardown of "+issue.key+"'s pod", func() bool {
 		return rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key}) > teardowns
 	})
 
@@ -236,7 +236,7 @@ func idleRigAwaitIdleCandidates(t *testing.T, rig *idleWakeRig, issues []idleRig
 			t.Logf("the rig's other pods, as the wait last read them: %s", stood)
 		}
 	}()
-	idleRigEventually(t, idleRigRecordWait, "the rig's other pods standing as pods the idle release would take", func() bool {
+	idleRigEventually(t, "the rig's other pods standing as pods the idle release would take", func() bool {
 		claims := rig.api.claims()
 		for _, issue := range issues {
 			state := listedClaim(t, claims, rig.token(issue)).State
@@ -289,7 +289,7 @@ func idleRigPodMadeAgain(t *testing.T, rig *idleWakeRig, issue idleRigIssue, reg
 			t.Log(rig.diagnose())
 		}
 	}()
-	idleRigEventually(t, idleRigPodWait, "the pod of "+issue.key+" made again with its role registered", func() bool {
+	idleRigEventually(t, "the pod of "+issue.key+" made again with its role registered", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered >= registrations &&
 			idleRigWorking(rig.api.claim(token).State)
 	})
@@ -313,7 +313,7 @@ func (r *idleWakeRig) stopRole(issue idleRigIssue) {
 	if status != http.StatusOK && status != http.StatusAccepted {
 		r.t.Fatalf("the operator's stop of %s = %d %s", token, status, body)
 	}
-	idleRigEventually(r.t, idleRigRecordWait, "the stopped role of "+issue.key+" recording no process", func() bool {
+	idleRigEventually(r.t, "the stopped role of "+issue.key+" recording no process", func() bool {
 		stopped := r.api.claim(token)
 		return stopped.State == string(supervise.StateRetired) && stopped.Locator == nil
 	})

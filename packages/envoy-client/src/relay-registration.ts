@@ -2,12 +2,13 @@
 //
 // One registration of a session that holds a relay, as every host makes it: the topics the
 // listener will store for the session, the relay's delivery request, the outage told once
-// (`inboundUnavailable`, `./consumer-delivery`), and, where an edge listener refuses topics of no
+// (`inboundUnavailable`, `./inbound-outage`), and, where an edge listener refuses topics of no
 // project of the session's token, exactly those topics dropped, the session told which, and the
 // rest registered again.
 
-import type { ConsumerDelivery, InboundUnavailable } from "./consumer-delivery";
+import type { ConsumerDelivery } from "./consumer-delivery";
 import { envoyNoticeText } from "./delivery-ledger";
+import type { InboundUnavailable } from "./inbound-outage";
 import { registrationTopics } from "./stream-topics";
 import { type DeliveryRequest, EnvoyApiError, expandSubscriptionTopics } from "./transport";
 
@@ -24,7 +25,8 @@ export interface RelayRegistration<Result> {
   /**
    * Why the session holds no relay subject when `relay` is undefined, in words a notice may hold
    * (`natsFailureReason` of the failure of the NATS call that would have opened it); the refusal and
-   * the outage notice name it. Undefined when the host has no failure to name.
+   * the outage notice name it, and the outage report hands it to the host's `held`
+   * (`InboundUnavailable.noRelay`). Undefined when the host has no failure to name.
    */
   readonly relayMissing?: string;
   /** This session's own agent subject, which every registration carries. */
@@ -49,11 +51,19 @@ export interface RelayRegistration<Result> {
    * session's token (`projectRefusedTopics`) for `reason`, and tells the session which, once, where
    * it tells it an outage (`refusedTopicsNoticeText`): the host takes them out of what it follows,
    * so no later registration of its carries them, and the session does not go on believing it
-   * follows them. `registerWithRelay` sends the rest at once, whichever path registered.
+   * follows them. `registerWithRelay` sends the rest at once, whichever path registered, unless
+   * the host's stop began (`stopping`).
    */
   readonly drop: (topics: readonly string[], reason: string) => void;
   /** Where the one line naming the topics `drop` was given goes. */
   readonly log: (line: string) => void;
+  /**
+   * The host's own reading that the session's stop began. Once it answers true, no registration
+   * is sent again and no topic is dropped (R24 of dispatch://INFRA-3589): a stopping session
+   * closes its relay on purpose, and its record is deleted next. When it is not given, the
+   * session never reads as stopping.
+   */
+  readonly stopping?: () => boolean;
 }
 
 /**
@@ -107,14 +117,34 @@ function projectRefusedTopics(
 export class NoRelaySubjectError extends Error {}
 
 /**
+ * Why a registration is refused once its session's stop has begun (R24 of
+ * dispatch://INFRA-3589): the stop closes the relay on purpose and deletes the session's record
+ * next, so the registration has nothing to ask for. `registerWithRelay` throws it, and so does a
+ * host that refuses a registration before it builds one.
+ */
+export class RegistrationStoppingError extends Error {
+  override readonly name = "RegistrationStoppingError";
+
+  constructor() {
+    super("this session is stopping, so it registers nothing");
+  }
+}
+
+/**
  * One registration, as every host that holds a relay makes it: the topics the listener will
  * store (`registrationTopics`), stamped on the relay before the registration carries them, then
  * sent, with the outage told once whichever way it ends.
  *
+ * A registration whose host began stopping (`stopping`) before it is sent is refused first, with
+ * `RegistrationStoppingError`, whether or not the session holds a relay subject: it sends nothing
+ * and tells the outage report nothing.
+ *
  * A session with no relay subject open is refused here rather than registered: every
  * registration asks for consumer delivery, a session receives only what its own consumer holds,
  * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
- * The host's next heartbeat tries again.
+ * The outage report holds this at the session's start (`InboundUnavailable.noRelay`), and the
+ * host's next try opens the relay and registers. The first such refusal of the hold goes to the
+ * host's `held` at once, with why the relay is missing (`relayMissing`).
  *
  * An edge listener refuses a whole registration that names one topic of no project of the
  * session's token (`PROJECT_TOPIC_REFUSALS`), and the host sends its topics again at every
@@ -124,6 +154,11 @@ export class NoRelaySubjectError extends Error {}
  * registered again at once; each round drops at least one topic, so it
  * ends. Any other refusal, and a project refusal naming nothing but the session's own agent
  * subject, fails the registration as before.
+ *
+ * The resend stops at the host's stop (`stopping`). A project refusal answered once the stop
+ * began fails the registration as any other refusal does: no topic is dropped, nothing is
+ * logged, nothing is sent again, and the outage report gets the refusal, which it tells to no
+ * stopping session (`InboundUnavailableOptions.stopping`).
  */
 export async function registerWithRelay<Result>({
   relay,
@@ -136,12 +171,14 @@ export async function registerWithRelay<Result>({
   answered,
   drop,
   log,
+  stopping = () => false,
 }: RelayRegistration<Result>): Promise<Result> {
+  if (stopping()) throw new RegistrationStoppingError();
   if (relay === undefined) {
     const refused = new NoRelaySubjectError(
       `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
     );
-    outage.refused(refused);
+    outage.noRelay(refused, relayMissing);
     throw refused;
   }
   let topics = registrationTopics(ownAgentSubject, followed(), roles);
@@ -152,7 +189,7 @@ export async function registerWithRelay<Result>({
       result = await send(topics, relay.registration());
     } catch (error) {
       const refused = projectRefusedTopics(error, topics, ownAgentSubject);
-      if (refused === undefined) {
+      if (refused === undefined || stopping()) {
         outage.refused(error);
         throw error;
       }

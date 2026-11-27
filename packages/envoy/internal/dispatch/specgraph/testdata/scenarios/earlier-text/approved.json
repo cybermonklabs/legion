@@ -8,7 +8,7 @@
         {
           "version": 1,
           "at": "2026-11-01T00:00:00Z",
-          "block": ":::requirement{#sessions-keep-their-messages kind=\"behavior\"}\nEnvoy keeps each message of a session until the session reads it.\n:::\n"
+          "document": "---\ntype: requirement\nid: sessions-keep-their-messages\nkind: behavior\ntext:\n  - Envoy keeps each message of a session until the session reads it.\n"
         }
       ]
     },
@@ -20,12 +20,12 @@
         {
           "version": 1,
           "at": "2026-11-01T00:00:00Z",
-          "block": ":::requirement{#a-session-reads-its-messages-in-order kind=\"behavior\" parent=\"sessions-keep-their-messages\"}\nA session reads its messages in the order that Envoy received them.\n:::\n"
+          "document": "---\ntype: requirement\nid: a-session-reads-its-messages-in-order\nkind: behavior\nparent: sessions-keep-their-messages\ntext:\n  - A session reads its messages in the order that Envoy received them.\n"
         },
         {
           "version": 2,
           "at": "2026-11-12T00:00:00Z",
-          "block": ":::requirement{#a-session-reads-its-messages-in-order kind=\"behavior\" parent=\"sessions-keep-their-messages\"}\nA session reads its messages in the order that their senders wrote them.\n:::\n"
+          "document": "---\ntype: requirement\nid: a-session-reads-its-messages-in-order\nkind: behavior\nparent: sessions-keep-their-messages\ntext:\n  - A session reads its messages in the order that their senders wrote them.\n"
         }
       ]
     },
@@ -37,7 +37,7 @@
         {
           "version": 1,
           "at": "2026-11-01T00:00:00Z",
-          "block": ":::check{#messages-come-in-the-order-of-their-writes serves=\"a-session-reads-its-messages-in-order\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"github.com/sjawhar/envoy/cmd/listener TestMessagesComeInTheOrderOfTheirWrites\" job=\"go-checks\"}\nClaim: Two messages that one sender writes reach the session in the order of the writes.\nProcedure: The program writes two messages from one sender and reads the session.\nIt must find them in the order of the writes.\nFailing example: A listener that delivers the newest message first.\n:::\n"
+          "document": "---\ntype: check\nid: messages-come-in-the-order-of-their-writes\nserves: a-session-reads-its-messages-in-order\nsubject: code\nprocedure: program\ntest:\n  runner: go\n  selector: github.com/sjawhar/envoy/cmd/listener TestMessagesComeInTheOrderOfTheirWrites\n  job: go-checks\nclaim: Two messages that one sender writes reach the session in the order of the writes.\nprocedure_text:\n  - The program writes two messages from one sender and reads the session.\n  - It must find them in the order of the writes.\nfailing_example:\n  - A listener that delivers the newest message first.\n"
         }
       ]
     }

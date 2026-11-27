@@ -14,8 +14,9 @@ import (
 
 // What a priority's issue list is held to, from R1 of dispatch://INFRA-5609: 9 of 10 reads within
 // 200 ms, read 200 times on one connection after ten reads that warm it. The bound is a time, which
-// the race detector stretches, so this file is out of the race build and envoy-go's plain step runs
-// it (ci_job_reads.py derives that step's list from this tag).
+// the race detector stretches, so this file is out of the race build, and envoy-go-alone's step
+// "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" runs
+// it (ci_job_reads.py's RACE_IMPOSSIBLE_ALONE_TESTS names it there).
 const (
 	priorityListBound    = 200 * time.Millisecond
 	priorityListReads    = 200
@@ -133,10 +134,4 @@ func measurePriorityList(t *testing.T, corpus listCorpus, forced forcedPlan, req
 		t.Errorf("%s answers %s at the 90th percentile, over the bound of %s (%d of %d reads over it); its plan's widest join filter is %q, which threw away %.0f rows over its runs",
 			described, p90.Round(time.Millisecond), priorityListBound, over, len(reads), node.name(), removed)
 	}
-}
-
-// nearestRank is the q quantile of sorted by the nearest-rank rule: the smallest read that at
-// least q of the reads are at or under.
-func nearestRank(sorted []time.Duration, q float64) time.Duration {
-	return sorted[int(math.Ceil(q*float64(len(sorted))))-1]
 }

@@ -18,6 +18,7 @@ import (
 // (TestACISettlementWakesTheReleasedPhaseWorker) is the control: here it wakes nobody, queues no
 // start, records no resume, and the settlement's own role messages (tellChecks) go to nobody.
 func TestASettlementOnAWaitingParentWakesNoRoleAndTellsNone(t *testing.T) {
+	t.Parallel()
 	rig := newWakeRig(t)
 	waited := wakeAt.Add(-time.Hour)
 	held := record.ChildrenWait{Start: phase.Implementing, Task: "Continue root. Issue: LEGION-208. Phase: implementing.", Since: waited,
@@ -50,6 +51,7 @@ func TestASettlementOnAWaitingParentWakesNoRoleAndTellsNone(t *testing.T) {
 // like any root moved to the backlog), and a child a person closes stands at done. The fact of
 // the run that outlives the phase, the moment of the wait, stays as it was.
 func TestAWaitingParentThatLeavesTheWorkflowTakesItsHeldStartWithIt(t *testing.T) {
+	t.Parallel()
 	t.Run("a root a person moves to the backlog lingers", func(t *testing.T) {
 		pool := migratedPool(t)
 		waiting := cwSeedWaiting(t, pool, cwParent, phase.Implementing)

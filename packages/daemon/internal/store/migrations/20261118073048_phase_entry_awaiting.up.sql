@@ -1,0 +1,63 @@
+-- 20261118073048_phase_entry_awaiting.up.sql -- the entry a resume raises keeps the wait it
+-- answers, not the text that wait was rendered into (dispatch://INFRA-3136/spec R2).
+--
+-- phases.entry_awaiting is record.PhaseRow.EntryAwaiting: the wait a person answered, as JSON of
+-- record.Awaiting (the shape pending_task_deliveries.resume holds), on the root architect's entry
+-- that the resume of that answer raised (workflow's ResumeAwaitedRoot), and null on every entry
+-- anything else raised. Every other raise writes null over it (workflow's enter), and a
+-- re-admission resets it with the task (record.Store.ClearGeneration). It has two readers. The
+-- sweep's send of such an entry again, for a claim the resume's own start never reached
+-- (workflow.Engine.SendArchitectStart), builds the start the resume queued from it: the wait and
+-- no text, which the send renders from the record as it stands then
+-- (workflow.ResumeAwaitedRootTask, through the daemon's rootTask), asking whether the person's
+-- review the wait names is still their word (workflow.SupersedingApproval). And the admission pass
+-- reads whether it is set (record's PhaseEntries) for the sweep's reach over a root the answer's
+-- own pass promoted past admitted (workflow.ArchitectAtWork).
+--
+-- It replaces phases.entry_verbatim (20261114061900_phase_entry_verbatim), the mark that the sweep
+-- sends such an entry's stored task as written. That task was rendered at the raise, so a send of
+-- it after the person approved the version they had reviewed still asked for the revision the
+-- approval had answered. The resume was the mark's one setter, so nothing reads it once the sweep
+-- renders the entry at its send, and the third statement drops it.
+--
+-- The first statement adds the column, null on every row. The second gives every row whose mark
+-- was set the empty wait: an entry a resume raised under the release before this one, which kept
+-- the text and no wait. Such a root stays in the sweep's reach as it was, and a send of its entry
+-- again renders the resume of a person's act with no detail ("A person acted on <KEY>; read the
+-- issue's asks and its spec.") followed by how the gate and the asks stand at that send, which is
+-- true whatever the person did. A resume whose start reached its claim is sent nothing again, so
+-- for nearly every such row the empty wait is never read.
+--
+-- There is no down file: migrations here are forward-only. A daemon of the release before this one
+-- cannot run on this schema: its phases read and its phases write name entry_verbatim (record's
+-- Phases, PhaseEntries and PutPhase), so each fails on the missing column, and every admission
+-- pass fails with them. Before its image is pinned, stop this release's daemon and run the one
+-- transaction below. docs/kubernetes.md carries it under "An issue's repository follows the one
+-- Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API
+-- contract entry 20261125181104)".
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   alter table phases add column if not exists entry_verbatim boolean not null default false;
+--   alter table phases add column if not exists entry_awaiting jsonb;
+--   update phases set entry_verbatim = true where entry_awaiting is not null;
+--   alter table phases drop column entry_awaiting;
+--   delete from schema_version where version = 20261118073048;
+--   commit;
+--   SQL
+--
+-- The first add puts back the column that release reads and writes, at the default it was added
+-- with, and the update marks each entry a resume raised, so that release sends the task the row
+-- keeps as written, as it did before this one. The drop and the delete go together and are owed
+-- to the roll-forward: with the column dropped and the row deleted, store.apply finds no row of
+-- this version and runs this file again, whose first statement would fail on a column left
+-- standing. The second add lets the block run twice: on a store it already ran on, it adds the
+-- column back empty, the update marks nothing and the drop takes the column away again.
+--
+-- What the way back costs is the wait on each entry a resume raised before it: the roll-forward
+-- gives each such entry the empty wait, as it gives an entry of the release before this one. A
+-- rollback that crosses contract 146 runs the block of that contract's own section after this
+-- one, which drops entry_verbatim again.
+alter table phases add column entry_awaiting jsonb;
+update phases set entry_awaiting = '{}'::jsonb where entry_verbatim;
+alter table phases drop column entry_verbatim;

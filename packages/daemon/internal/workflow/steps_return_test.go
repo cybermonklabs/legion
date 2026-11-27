@@ -205,7 +205,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 
 	t.Run("a plan whose one step is the tester is refused: it has no implementer", func(t *testing.T) {
 		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
-		refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given)...)
+		refusals := plan.Refusals(given, builtinDeployment)
 		want := []plan.Refusal{
 			{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."},
 			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet."},
@@ -441,7 +441,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		if len(starts) != planners+1 {
 			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
 		}
-		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). " + testerVerdictLabel + ": fail."
+		report := strings.TrimPrefix(handoffPartOf(t, "LEGION-208", "test", 1), " ") + " " + testerVerdictLabel + ": fail."
 		if start := starts[len(starts)-1]; start.FreshSession || start.Phase != phase.Planning || !strings.Contains(start.Task, report) {
 			t.Fatalf("the planner's start = %+v, want a start of planning in its own session whose task holds the tester's report %q", start, report)
 		}
