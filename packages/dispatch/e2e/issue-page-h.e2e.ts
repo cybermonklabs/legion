@@ -1776,13 +1776,16 @@ test.describe("the shared controls of Details keep the focus while their write l
       const { three, two } = seeded.keys;
       await gotoIssue(page, `/issues/${two}`);
       await openDetails(page);
+      // The hold goes on before the edit starts: reads pass through it until a write has gone
+      // out, and a route installed the moment before the Enter that sends the write can let that
+      // write reach Dispatch unheld.
+      const issue = await holdIssue(page, two, true);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
       const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
       await open.focus();
       await page.keyboard.press("Enter");
       await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();
       await page.keyboard.type(three);
-      const issue = await holdIssue(page, two, true);
       // The box's Enter sends the list, so Save never held the focus as the save went out.
       await page.keyboard.press("Enter");
       await issue.writeOut;
