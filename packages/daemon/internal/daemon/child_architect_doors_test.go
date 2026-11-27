@@ -383,7 +383,9 @@ func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishes(t *testing.T) {
 // architect. The child's architect starts while the notices wait, and the attempt after the
 // backoff walks the owner again and finds that architect launching: the notices still go to the
 // parent's architect. A failed claim holds no role, so the notices go on up to the root's
-// architect.
+// architect. The rig's root is itself in implementing, and the parent is an open child under it on
+// the Dispatch chain, so the root waits in awaiting_children too and its own architect is told of
+// its hold: that architect, the one above the child when the parent's failed, hears both holds.
 func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 	t.Parallel()
 	const parent = "LEGION-5"
@@ -393,10 +395,13 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 		by       supervise.SuspendSource
 		released bool
 		above    string
+		// holds is the number of awaiting-children notices the architect above the child hears:
+		// the parent's, and the root's own where that architect is the root's.
+		holds int
 	}{
-		{name: "the parent's architect works", state: supervise.StateWorking, above: parent},
-		{name: "the parent's architect is released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, released: true, above: parent},
-		{name: "the parent's architect failed", state: supervise.StateFailed, above: doorRoot},
+		{name: "the parent's architect works", state: supervise.StateWorking, above: parent, holds: 1},
+		{name: "the parent's architect is released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, released: true, above: parent, holds: 1},
+		{name: "the parent's architect failed", state: supervise.StateFailed, above: doorRoot, holds: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newChildArchitectRig(t)
@@ -447,8 +452,14 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 			if len(started) != 1 || !reflect.DeepEqual(started[0], want) {
 				t.Fatalf("the architect of %s was published %#v of the child-status kind, want the one notice %#v of %s's start", tc.above, started, want, doorChild)
 			}
-			if len(waiting) != 1 || waiting[0].Kind != workflow.AwaitingChildrenNoticeKind {
-				t.Fatalf("the architect of %s was published %+v beside the child's start, want the one awaiting-children notice of %s", tc.above, waiting, parent)
+			holds := 0
+			for _, notice := range waiting {
+				if notice.Kind == workflow.AwaitingChildrenNoticeKind {
+					holds++
+				}
+			}
+			if len(waiting) != tc.holds || holds != tc.holds {
+				t.Fatalf("the architect of %s was published %+v beside the child's start, want %d awaiting-children notices and nothing else", tc.above, waiting, tc.holds)
 			}
 			for _, notice := range rig.noticesTo(doorChild)[1:] {
 				if notice.Kind == "child-status" || notice.Phase == phase.Admitted {
