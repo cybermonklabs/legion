@@ -463,7 +463,7 @@ func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 }
 
 // mainsNewestAtTheLastMerge is the newest migration main carried at this branch's last forward
-// merge (main 6d2aa6c3, 2026-11-27): the merge-holds kind list.
+// merge (main 69ee4c8b, 2026-11-27): the merge-holds kind list.
 const mainsNewestAtTheLastMerge = 20261126110259
 
 // This migration stands above every migration main carried at that merge. Migrate applies every
