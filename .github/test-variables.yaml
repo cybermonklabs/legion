@@ -21,9 +21,10 @@
 #   tool          each gate is in a `Benchmark…` function or in a file whose first 15 lines carry
 #                 the tool line, `legion: tool - …`: a tool reads what the person running it hands
 #                 it, and no job runs it.
-#   opt-out       the gate skips only where the variable is set, a person's opt-out on a machine
-#                 that lacks what the test needs: some job ci-ok needs runs the test, and none of
-#                 them sets the variable in the step that runs it.
+#   opt-out       a person's opt-out on a machine that lacks what the test needs, a variable
+#                 whose gate skips where it is set. The search does not read which way the gate
+#                 skips; it checks that some job ci-ok needs runs the test, and that none of them
+#                 sets the variable in the step that runs it.
 #
 # A gate in a tool holds under any row, since the tool reads what its runner hands it, and so does
 # a gate that never skips on GitHub Actions (it fails there, or its condition cannot hold there);

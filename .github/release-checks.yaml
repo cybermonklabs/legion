@@ -1,7 +1,9 @@
-# Each step of a release workflow (.github/workflows/release*.yaml) that runs a check, with the
-# artifact it checks. A release checks only what it alone builds - the tarball it packs, the image
-# it builds, the notes it renders - before it publishes it; every test of the tree's source runs
-# in a job ci-ok needs, before the merge. .github/scripts/check-test-reach.sh reads this list:
+# Each step of a release workflow (.github/workflows/release*.yaml) that runs a test command, with
+# the artifact it checks, and some of those workflows' other check steps; a check step that runs
+# no test command may be left out, as pi_envoy_build's and pi_legion_build's tarball checks and
+# each job's tripwire are. A release checks only what it alone builds - the tarball it packs, the
+# image it builds, the notes it renders - before it publishes it; every test of the tree's source
+# runs in a job ci-ok needs, before the merge. .github/scripts/check-test-reach.sh reads this list:
 #
 #   - a release step that runs a test command (`go test`, `bun test`, `playwright test`, a
 #     `*.test.sh` harness, a `bun run` script that comes to one) and is not listed here fails it,

@@ -3,9 +3,11 @@
 # workflows and the tree, runs no `go`, `bun` or build command, and fails on each of the nine ways
 # a test can be left out of every such job while each job stays green:
 #
-#   1. tag: a `_test.go` file whose `//go:build` constraint names a tag (no platform: `linux`,
-#      `unix`, `race`, the other GOOS and GOARCH names, `cgo`, `goN.M` and their negations all
-#      pass) that no required step's `go test` passes for that file's package;
+#   1. tag: a `_test.go` file whose `//go:build` constraint names a tag that no required step's
+#      `go test` passes for that file's package. A name go_build_tags.py's is_tag reads as no tag
+#      passes, negated or not: a GOOS or GOARCH name (`linux` among them), an architecture
+#      feature (`amd64.v1`), `goN.M`, a `goexperiment.` name, and `unix`, `cgo`, `gc`, `gccgo`,
+#      `race`, `msan`, `asan`, `ignore`, `boringcrypto` and `odatrace`;
 #   2. skip: a test one required step's `-skip` leaves out and no other required step runs;
 #   3. variable: a variable gate - a Go function, or a Bun `skip`/`skipIf`/`if` condition, that
 #      reads an environment variable (by a literal name, through a constant of its own package,
@@ -24,8 +26,9 @@
 #        prerequisite: the gate calls testprereq.Require, requireOrSkip or skipWithout, or reads
 #          GITHUB_ACTIONS and fails there;
 #        tool: the gate is in a `Benchmark…` function or a file that carries the tool line;
-#        opt-out: the gate skips only where the variable is set, a person's opt-out: some
-#          required job runs the gate's test, and no required step that runs it sets the variable.
+#        opt-out: a person's opt-out, a variable whose gate skips where it is set (which way the
+#          gate skips is not read): some required job runs the gate's test, and no required step
+#          that runs it sets the variable.
 #      A gate in a tool holds under any row. A variable a test only sets is no gate, and neither
 #      is one its package's own tests pass to a child process (`"NAME=value"`, `NAME + "="`) or a
 #      test that its package's tests start again as a child (`-test.run=^TestXHelper$`) reads:
@@ -183,6 +186,7 @@ import shlex
 import subprocess
 import sys
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -194,21 +198,21 @@ from go_build_tags import EXTRA_ARCH, EXTRA_OS, go_skips_dir, is_tag
 
 ROOT = Path.cwd()
 WORKFLOWS = ".github/workflows"
-CI = f"{WORKFLOWS}/ci.yaml"
+CI = steps.WORKFLOW
 REGISTRY = ".github/test-variables.yaml"
 RELEASE_CHECKS = ".github/release-checks.yaml"
 # The tests dispatch://INFRA-3411's lists give a home the tree does not give them yet, until that
 # issue's last pull request: each passes while the search finds it, and fails once it does not.
 UNHOMED = ".github/test-reach-unhomed.yaml"
 VERDICT = "ci-ok"
-# The jobs main's ruleset requires besides the verdict, which ci-ok does not need.
-ALSO_REQUIRED = ("ci-ok", "pr-title")
+# The jobs main's ruleset requires that ci-ok does not need: the verdict itself, and pr-title.
+ALSO_REQUIRED = (VERDICT, "pr-title")
 CLASSES = ("set", "selector", "prerequisite", "tool", "opt-out")
 JOB_CLASSES = ("set", "selector")
 TOOL_LINE = re.compile(r"^\s*(?:#|//|--|;|\*|/\*)\s*legion: tool - \S")
 NOT_A_TEST_LINE = re.compile(r"^\s*(?:#|//|--|;|\*|/\*)\s*legion: not a test - \S")
-# The words of rule 4, with their inflections and no longer word: `check-…` and `_test` count,
-# `checkout`, `latest` and `testdata` do not.
+# The words of rule 4, with their inflections and not inside a longer word: `check-…` and
+# `_test` count, `checkout`, `latest` and `testdata` do not.
 TEST_WORDS = re.compile(r"(?<![A-Za-z])(?:proof|smoke|check|test)(?:s|es|ed|ing|er|ers)?(?![A-Za-z])",
                         re.IGNORECASE)
 HEAD_LINES = 15
@@ -218,7 +222,7 @@ class Unreadable(Exception):
     """An input this search cannot read, which it will not guess at: exit 2."""
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True)
 class Finding:
     kind: str
     path: str
@@ -267,12 +271,44 @@ def head(path: str) -> list[str]:
     return read_text(path).splitlines()[:HEAD_LINES]
 
 
+def carries_tool_line(path: str) -> bool:
+    return any(TOOL_LINE.match(line) for line in head(path))
+
+
 def norm(path: str) -> str:
     return os.path.normpath(path).replace(os.sep, "/").removeprefix("./")
 
 
 def join(directory: str, path: str) -> str:
     return norm(os.path.join(directory, path)) if directory not in ("", ".") else norm(path)
+
+
+# The line breaks str.splitlines splits a text at.
+LINE_BREAK = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
+
+
+def lines_of(text: str) -> Iterator[str]:
+    """The lines of a text as str.splitlines gives them, one at a time, so that a reader that
+    stops at a file's first lines splits no more of it."""
+    start = 0
+    for match in LINE_BREAK.finditer(text):
+        yield text[start:match.start()]
+        start = match.end()
+    if start < len(text):
+        yield text[start:]
+
+
+class LineCounter:
+    """The line of each offset of one text, asked in increasing order: each answer counts only
+    the text since the offset asked before it."""
+
+    def __init__(self, text: str):
+        self.text, self.at, self.line = text, 0, 1
+
+    def line_of(self, offset: int) -> int:
+        self.line += self.text.count("\n", self.at, offset)
+        self.at = offset
+        return self.line
 
 
 # --------------------------------------------------------------------------------- the workflows
@@ -328,7 +364,7 @@ def scheduled_only(condition) -> bool:
     text = text.removeprefix("${{").removesuffix("}}").strip()
     terms = [term.strip().strip("()").strip() for term in text.split("||")]
     events = [EVENT_TERM.fullmatch(term) for term in terms]
-    return bool(terms) and all(events) and {e.group(1) for e in events} <= SCHEDULED
+    return all(events) and {e.group(1) for e in events} <= SCHEDULED
 
 
 # What GitHub sets in every job's environment.
@@ -386,7 +422,6 @@ class Part:
 @dataclass
 class RunStep:
     part: Part
-    index: int
     name: str
     line: int
     workdir: str
@@ -417,7 +452,7 @@ def parts_of(job_id: str, workflow: str, name: str, body: dict, document: dict, 
     required = required and not scheduled_only(body.get("if"))
     inputs = inputs or {}
     uses = str(body.get("uses") or "")
-    if uses.startswith(f"./{WORKFLOWS}/"):
+    if uses.startswith(steps.LOCAL_WORKFLOW):
         path = uses.removeprefix("./")
         if not (ROOT / path).is_file():
             raise Unreadable(f"{workflow}'s {name} calls {path}, which is not in the repository")
@@ -442,6 +477,11 @@ def parts_of(job_id: str, workflow: str, name: str, body: dict, document: dict, 
     return found
 
 
+def step_keys(step: dict) -> frozenset[str]:
+    """The names a list gives a workflow step by: its name, its id and its uses."""
+    return frozenset(str(step[key]) for key in ("name", "id", "uses") if step.get(key))
+
+
 def run_steps(part: Part) -> list[RunStep]:
     contexts = part.contexts
     values = {**steps.env_text(part.document.get("env"), contexts), **steps.env_text(part.body.get("env"), contexts)}
@@ -450,17 +490,17 @@ def run_steps(part: Part) -> list[RunStep]:
     found = []
     for index, step in enumerate(part.body.get("steps") or []):
         name = str(step.get("name") or f"step {index + 1}")
-        keys = frozenset(str(step[key]) for key in ("name", "id", "uses") if step.get(key))
+        keys = step_keys(step)
         step_values = {**values, **steps.env_text(step.get("env"), contexts)}
         skipped = bool(step.get("continue-on-error"))
         scheduled = scheduled_only(step.get("if"))
         line = getattr(step, "line", 0)
         # Each step of a composite action sees what the action's earlier steps wrote into
         # $GITHUB_ENV, as each later step of the job does.
-        for run in step_runs(part, step, contexts):
+        for run in step_runs(part, step):
             run_scheduled = scheduled or scheduled_only(run.condition)
             env = frozenset(base | written | set(step_values) | set(run.values))
-            found.append(RunStep(part, index, f"{name} ({run.action})" if run.action else name, line, run.workdir,
+            found.append(RunStep(part, f"{name} ({run.action})" if run.action else name, line, run.workdir,
                                  run.script, env, frozenset(exported(run.script)), skipped, run_scheduled,
                                  {**step_values, **run.values}, name, keys))
             if not run_scheduled:
@@ -477,10 +517,11 @@ class StepRun:
     condition: object = None  # an action's step's own `if:`
 
 
-def step_runs(part: Part, step: dict, contexts: dict) -> list[StepRun]:
+def step_runs(part: Part, step: dict) -> list[StepRun]:
     """What one workflow step runs, with the leg's matrix values and the caller's inputs read in:
     its own run:, or the run: of each step of the local composite action it uses, under the
     inputs its `with:` gives them."""
+    contexts = part.contexts
     if step.get("run"):
         return [StepRun(steps.substitute(str(step["run"]), contexts),
                         steps.substitute(step_workdir(part.document, part.body, step), contexts), {})]
@@ -592,9 +633,7 @@ CONSTRAINT_LINE = re.compile(r"^//go:build\s+(.+?)\s*$")
 class GoFile:
     path: str
     directory: str
-    module: str  # the module's directory
     is_test: bool
-    package: str
     constraint: str | None
     constraint_line: int
     tests: list[tuple[str, int]]
@@ -610,14 +649,14 @@ class GoFile:
 
     @property
     def tool(self) -> bool:
-        return any(TOOL_LINE.match(line) for line in head(self.path))
+        return carries_tool_line(self.path)
 
 
-def go_header(text: str) -> tuple[str | None, int, str]:
-    """The `//go:build` expression of a file's leading comments, its line, and the package name."""
-    constraint, line, package = None, 0, ""
+def go_header(text: str) -> tuple[str | None, int]:
+    """The `//go:build` expression of a file's leading comments, and its line."""
+    constraint, line = None, 0
     in_block = False
-    for number, raw in enumerate(text.splitlines(), start=1):
+    for number, raw in enumerate(lines_of(text), start=1):
         stripped = raw.strip()
         if in_block:
             if "*/" in stripped:
@@ -631,11 +670,8 @@ def go_header(text: str) -> tuple[str | None, int, str]:
         if stripped.startswith("/*"):
             in_block = "*/" not in stripped
             continue
-        words = stripped.split()
-        if words[0] == "package" and len(words) > 1:
-            package = words[1]
         break
-    return constraint, line, package
+    return constraint, line
 
 
 @dataclass
@@ -686,14 +722,14 @@ def go_tree(files: list[str]) -> GoTree:
         if any(part == "testdata" or part == "vendor" or part.startswith((".", "_")) for part in parts):
             continue
         directory = "/".join(parts[:-1]) or "."
-        module = tree.module_of(directory)
-        if module is None:
+        if tree.module_of(directory) is None:
             continue
         text = read_text(path)
-        constraint, line, package = go_header(text)
+        constraint, line = go_header(text)
         is_test = path.endswith("_test.go")
         tests = []
         if is_test:
+            lines = LineCounter(text)
             for match in GO_TEST_FUNC.finditer(text):
                 name = match.group(1)
                 if name == "TestMain":
@@ -701,9 +737,8 @@ def go_tree(files: list[str]) -> GoTree:
                 suffix = re.sub(r"^(Test|Fuzz|Example|Benchmark)", "", name)
                 if suffix and suffix[0].islower():
                     continue
-                number = text.count("\n", 0, match.start()) + 1
-                tests.append((name, number))
-        go_file = GoFile(path, directory, module, is_test, package, constraint, line, tests, text)
+                tests.append((name, lines.line_of(match.start())))
+        go_file = GoFile(path, directory, is_test, constraint, line, tests, text)
         tree.files[path] = go_file
         tree.by_directory[directory].append(go_file)
     return tree
@@ -714,7 +749,7 @@ UNIX = frozenset({"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "i
                   "netbsd", "openbsd", "solaris"})
 
 
-def truths(tags: str, race: bool, goarch: str, goos: str = "linux") -> frozenset[str]:
+def truths(tags: str, race: bool, goos: str, goarch: str) -> frozenset[str]:
     """The names a constraint reads as true in a step's build: its GOOS (linux unless the runner
     or the step says otherwise) and its architecture, cgo, every release, the step's -tags and,
     under -race, race."""
@@ -731,18 +766,17 @@ class GoRun:
     its environment."""
 
     step: RunStep
-    text: str
     directories: list[str]
     tags: str
     race: bool
     run: str
     skip: list[str]
+    goos: str
     goarch: str
     env: frozenset[str]
-    goos: str = "linux"
 
     def __post_init__(self) -> None:
-        self.true = truths(self.tags, self.race, self.goarch, self.goos)
+        self.true = truths(self.tags, self.race, self.goos, self.goarch)
         self.directory_set = set(self.directories)
         self._files: dict[str, list[GoFile]] = {}
         self._pattern = None
@@ -797,12 +831,12 @@ def split_levels(pattern: str) -> list[str]:
     return levels
 
 
-def buildable_directory(tree: GoTree, directory: str, true: set[str], goarch: str, goos: str = "linux") -> bool:
+def buildable_directory(tree: GoTree, directory: str, true: set[str], goos: str, goarch: str) -> bool:
     return any(f.builds(true, goos, goarch) for f in tree.by_directory.get(directory, []))
 
 
-def expand_pattern(tree: GoTree, workdir: str, argument: str, true: set[str], goarch: str,
-                   goos: str = "linux") -> list[str]:
+def expand_pattern(tree: GoTree, workdir: str, argument: str, true: set[str], goos: str,
+                   goarch: str) -> list[str]:
     """The package directories one argument of a go command names, from its directory."""
     if argument.endswith("/...") or argument == "...":
         base = argument[:-4].rstrip("/") if argument != "..." else "."
@@ -822,7 +856,7 @@ def expand_pattern(tree: GoTree, workdir: str, argument: str, true: set[str], go
                         skipped = True
                         break
                     parent = parent / part
-                if not skipped and buildable_directory(tree, directory, true, goarch, goos):
+                if not skipped and buildable_directory(tree, directory, true, goos, goarch):
                     found.append(directory)
         return found
     if argument.startswith((".", "/")):
@@ -896,7 +930,7 @@ def split_shell(text: str, operators: tuple[str, ...] = ("&&", "||", ";", "|")) 
     return parts
 
 
-def static_answer(tree: GoTree, goarch: str, goos: str = "linux"):
+def static_answer(tree: GoTree, goos: str, goarch: str):
     """The answer go_test_steps.read_block asks for, read off the tree: the alternation
     go-tagged-tests.sh prints, the packages a legs job's go_legs.py lister stands for (the union
     of the job's legs, go_test_steps.legs_packages), and the import paths `go list … | grep …`
@@ -916,10 +950,10 @@ def static_answer(tree: GoTree, goarch: str, goos: str = "linux"):
         words = shlex.split(stages[0])
         if words[:2] != ["go", "list"] or any(word.startswith("-") for word in words[2:]):
             raise steps.Refused(f"{step.label}: `{text}` is no package lister this search reads")
-        true = truths("", False, goarch, goos)
+        true = truths("", False, goos, goarch)
         directories = []
         for argument in words[2:] or ["."]:
-            directories += expand_pattern(tree, step.workdir, argument, true, goarch, goos)
+            directories += expand_pattern(tree, step.workdir, argument, true, goos, goarch)
         paths = [tree.import_path(d) or d for d in dict.fromkeys(directories)]
         for stage in stages[1:]:
             grep = GREP.match(stage)
@@ -951,7 +985,7 @@ def step_go_runs(tree: GoTree, step: RunStep) -> list[GoRun]:
     if shared is None:
         return []
     goos, goarch = platform(step, {})
-    return [go_run(tree, step, command) for command in steps.commands_of(shared, static_answer(tree, goarch, goos))]
+    return [go_run(tree, step, command) for command in steps.commands_of(shared, static_answer(tree, goos, goarch))]
 
 
 def platform(step: RunStep, command_env: dict) -> tuple[str, str]:
@@ -963,13 +997,13 @@ def platform(step: RunStep, command_env: dict) -> tuple[str, str]:
 
 def go_run(tree: GoTree, step: RunStep, command: steps.GoTest, extra: frozenset = frozenset()) -> GoRun:
     goos, goarch = platform(step, command.env)
-    true = truths(command.tags, command.race, goarch, goos)
+    true = truths(command.tags, command.race, goos, goarch)
     directories = []
     for argument in command.packages:
-        directories += expand_pattern(tree, command.step.workdir, argument, true, goarch, goos)
-    return GoRun(step, command.text, list(dict.fromkeys(directories)), command.tags, command.race,
-                 command.run, steps.skip_names(command.skip) or [], goarch,
-                 frozenset(step.env | step.exported | inline_env(step.script) | set(command.env) | extra), goos)
+        directories += expand_pattern(tree, command.step.workdir, argument, true, goos, goarch)
+    return GoRun(step, list(dict.fromkeys(directories)), command.tags, command.race,
+                 command.run, steps.skip_names(command.skip) or [], goos, goarch,
+                 frozenset(step.env | step.exported | inline_env(step.script) | set(command.env) | extra))
 
 
 # The scripts that build one package's test binary with `go test -c` and run tests of it with
@@ -1095,7 +1129,8 @@ def unrun_reason(go_file: GoFile, name: str, candidates: list[GoRun], building: 
         return (f"it reads raceEnabled, so only a step without -race runs it whole, and each required step "
                 f"that runs it ({labels([run for run in building if run.runs(name)])}) runs it under -race")
     kept_out = " (its `//go:build " + go_file.constraint + "` keeps it out of each -race build)" if (
-        go_file.constraint and "race" in constraint_names(go_file.constraint)) else ""
+        go_file.constraint and "race" in constraint_names(go_file.constraint)
+        and not any(run.race for run in building)) else ""
     return f"each required step that builds it{kept_out} ({labels(building)}) leaves it out by its -run or -skip"
 
 
@@ -1191,7 +1226,6 @@ class GoFunc:
     name: str  # the function's name (methods: the method's)
     receiver: bool
     params: list[str]
-    line: int
     body: list[Tok]
     results: list[str]  # the result type's tokens
 
@@ -1231,7 +1265,7 @@ def go_functions(go_file: GoFile, tokens: list[Tok]) -> list[GoFunc]:
                         body_start += 1
                     if body_start < len(tokens) and tokens[body_start].text == "{":
                         body_end = match_close(tokens, body_start)
-                        found.append(GoFunc(go_file, name, receiver, params, token.line,
+                        found.append(GoFunc(go_file, name, receiver, params,
                                             tokens[body_start + 1:body_end],
                                             [t.text for t in tokens[close + 1:body_start] if t.kind != "nl"]))
                         index = body_end + 1
@@ -1317,18 +1351,13 @@ class HelperGate:
 class GoGates:
     """Every variable gate of the Go tree. Only the files that read a variable, call
     testprereq.Require, or call a function that gates on or returns a read are read token by
-    token; every package's constants, imports and child-process variables are read off its text."""
+    token; a package's constants, imports and child-process variables are read off its text the
+    first time a gate asks for them."""
 
     def __init__(self, tree: GoTree):
         self.tree = tree
-        self.constants: dict[str, dict[str, str]] = {}
-        self.imports: dict[str, dict[str, str]] = {}
-        for directory, files in tree.by_directory.items():
-            constants: dict[str, str] = {}
-            for go_file in files:
-                constants.update(go_constants(go_file.text))
-                self.imports[go_file.path] = go_imports(go_file.text)
-            self.constants[directory] = constants
+        self._constants: dict[str, dict[str, str]] = {}
+        self._imports: dict[str, dict[str, str]] = {}
         self._child: dict[str, set[str]] = {}
         self._main: dict[str, set[str]] = {}
         self._package_taint: dict[str, dict[str, set]] = {}
@@ -1345,6 +1374,22 @@ class GoGates:
             self._functions[go_file.path] = go_functions(go_file, go_tokens(go_file.text))
         return self._functions[go_file.path]
 
+    def constants(self, directory: str) -> dict[str, str]:
+        """The string constants and variables a package's files declare, by name."""
+        if directory not in self._constants:
+            constants: dict[str, str] = {}
+            for go_file in self.tree.by_directory.get(directory, []):
+                constants.update(go_constants(go_file.text))
+            self._constants[directory] = constants
+        return self._constants[directory]
+
+    def imports(self, path: str) -> dict[str, str]:
+        """The packages a Go file imports, by the name the file calls each."""
+        if path not in self._imports:
+            go_file = self.tree.files.get(path)
+            self._imports[path] = go_imports(go_file.text) if go_file else {}
+        return self._imports[path]
+
     def constant(self, directory: str, path: str, spelled: str) -> str | None:
         """The string a literal, a name or a `pkg.Name` names, through a constant of its own
         package or of the package an import names."""
@@ -1352,11 +1397,11 @@ class GoGates:
         if literal is not None:
             return literal
         if "." not in spelled:
-            return self.constants.get(directory, {}).get(spelled)
+            return self.constants(directory).get(spelled)
         alias, _, name = spelled.partition(".")
-        imported = self.imports.get(path, {}).get(alias)
+        imported = self.imports(path).get(alias)
         target = self.tree.directory_of(imported) if imported else None
-        return self.constants.get(target, {}).get(name) if target else None
+        return self.constants(target).get(name) if target else None
 
     def child_env(self, directory: str) -> set[str]:
         if directory not in self._child:
@@ -1409,11 +1454,12 @@ class GoGates:
             return None
         close = match_close(tokens, index + 3)
         argument = self.spelled(tokens[index + 4:close])
+        # A parameter shadows a name of the package: the read is of what each caller hands it.
+        if argument in function.params:
+            return {("param", function.params.index(argument))}, close + 1
         name = self.constant(function.file.directory, function.file.path, argument)
         if name is not None:
             return {name}, close + 1
-        if argument in function.params:
-            return {("param", function.params.index(argument))}, close + 1
         return set(), close + 1
 
     def reads_in(self, function: GoFunc, tokens: list[Tok], tainted: dict) -> set:
@@ -1424,7 +1470,7 @@ class GoGates:
         opened on a URL a variable names holds no variable."""
         found = set()
         index = 0
-        imports = self.imports.get(function.file.path, {})
+        imports = self.imports(function.file.path)
         while index < len(tokens):
             read = self.read(function, tokens, index)
             if read is not None:
@@ -1445,10 +1491,9 @@ class GoGates:
                 if (index + 3 < len(tokens) and tokens[index + 1].text == "." and tokens[index + 3].text == "("
                         and not after_dot):
                     qualified = (imports.get(token.text, token.text), tokens[index + 2].text)
-                    if token.text in imports:
-                        target = self.tree.directory_of(imports[token.text])
-                        if target:
-                            found |= self.returning.get((target, tokens[index + 2].text), frozenset())
+                    target = self.tree.directory_of(imports[token.text]) if token.text in imports else None
+                    if target:
+                        found |= self.returning.get((target, tokens[index + 2].text), frozenset())
                     if token.text in tainted:
                         found |= tainted[token.text]
                     if qualified not in VALUE_CALLS and qualified[0] not in VALUE_PACKAGES:
@@ -1499,7 +1544,6 @@ class GoGates:
 
     def package_taint(self, directory: str) -> dict[str, set]:
         if directory not in self._package_taint:
-            self._package_taint[directory] = {}
             globals_ = set()
             for go_file in self.tree.by_directory.get(directory, []):
                 globals_ |= set(PACKAGE_VAR.findall(go_file.text))
@@ -1523,7 +1567,7 @@ class GoGates:
         is known before its callers are read. A function returning anything else - a store, a
         server - carries no variable to its callers: what it does with the read is a gate of its
         own, read where it is."""
-        testing = [f for f in self.tree.files.values() if f.is_test or "testing" in self.imports[f.path].values()]
+        testing = [f for f in self.tree.files.values() if f.is_test or "testing" in self.imports(f.path).values()]
         readers = [f for f in testing if ENV_READ_TEXT.search(f.text)]
         everything = [function for go_file in readers for function in self.functions(go_file)]
         for _ in range(2):
@@ -1588,8 +1632,7 @@ class GoGates:
         if not names:
             return
         test = function.name if (go_file.is_test and not function.receiver
-                                 and re.match(r"^(Test|Fuzz|Example|Benchmark)", function.name)
-                                 and function.name != "TestMain") else None
+                                 and any(name == function.name for name, _ in go_file.tests)) else None
         self.gates.append(Gate("go", go_file.path, line, names, go_file, test, prerequisite,
                                fails and "GITHUB_ACTIONS" in names,
                                function.name.startswith("Benchmark") or go_file.tool))
@@ -1626,7 +1669,7 @@ class GoGates:
 
     def helper_calls(self, function: GoFunc) -> None:
         tokens = [t for t in function.body if t.kind != "nl"]
-        imports = self.imports.get(function.file.path, {})
+        imports = self.imports(function.file.path)
         for index, token in enumerate(tokens):
             if token.kind != "ident" or index + 1 >= len(tokens):
                 continue
@@ -1656,8 +1699,8 @@ class GoGates:
         tainted = self.taint(function)
         tokens = function.body
         found = []
-        packages = frozenset(self.imports.get(function.file.path, {}))
-        constants = self.constants.get(function.file.directory, {})
+        packages = frozenset(self.imports(function.file.path))
+        constants = self.constants(function.file.directory)
         fails = bool(calls_in(tokens, packages) & ASSERT_CALLS)
         index = 0
         while index < len(tokens):
@@ -1675,9 +1718,7 @@ class GoGates:
                 variables = self.reads_in(function, header, tainted)
                 if variables:
                     calls = set().union(*(self.branch_calls(function, branch, packages, tainted) for branch in branches))
-                    if (calls & (SKIP_CALLS | {"Require"}) or (
-                            calls & ASSERT_CALLS
-                            and not self.checks_the_environment(header, branches, tainted, packages, constants))):
+                    if self.is_gate(calls, header, branches, tainted, packages, constants):
                         found.append((variables, token.line, "Require" in calls, fails))
             elif token.kind == "ident" and token.text == "switch":
                 open_at = header_close(tokens, index + 1)
@@ -1687,9 +1728,8 @@ class GoGates:
                 for case_header, case_body in switch_cases(tokens[open_at + 1:match_close(tokens, open_at)]):
                     variables = tag_variables | self.reads_in(function, case_header, tainted)
                     calls = self.branch_calls(function, case_body, packages, tainted)
-                    if variables and (calls & (SKIP_CALLS | {"Require"}) or (
-                            calls & ASSERT_CALLS and not self.checks_the_environment(
-                                tokens[index + 1:open_at] + case_header, [case_body], tainted, packages, constants))):
+                    if variables and self.is_gate(calls, tokens[index + 1:open_at] + case_header, [case_body],
+                                                  tainted, packages, constants):
                         found.append((variables, token.line, "Require" in calls, fails))
             elif (token.text == "testprereq" and index + 3 < len(tokens) and tokens[index + 1].text == "."
                     and tokens[index + 2].text == "Require" and tokens[index + 3].text == "("):
@@ -1701,6 +1741,14 @@ class GoGates:
             index += 1
         self._gates[function] = found
         return found
+
+    def is_gate(self, calls: set[str], condition: list[Tok], branches: list[list[Tok]], tainted: dict,
+                packages: frozenset, constants: dict) -> bool:
+        """Whether an `if` or a `case` whose condition holds a read gates, by the calls its branches
+        make: one skips or calls testprereq.Require, or one asserts and the block is no assertion
+        about the environment (checks_the_environment)."""
+        return bool(calls & (SKIP_CALLS | {"Require"})) or (
+            bool(calls & ASSERT_CALLS) and not self.checks_the_environment(condition, branches, tainted, packages, constants))
 
     def checks_the_environment(self, condition: list[Tok], branches: list[list[Tok]], tainted: dict,
                                packages: frozenset, constants: dict) -> bool:
@@ -1715,7 +1763,8 @@ class GoGates:
         index = 0
         while index < len(tokens):
             token = tokens[index]
-            if token.text == "os" and index + 2 < len(tokens) and tokens[index + 2].text in ENV_READS:
+            if (token.text == "os" and index + 3 < len(tokens) and tokens[index + 1].text == "."
+                    and tokens[index + 2].text in ENV_READS and tokens[index + 3].text == "("):
                 index = match_close(tokens, index + 3) + 1
                 continue
             if token.kind == "ident" and not (index > 0 and tokens[index - 1].text == "."):
@@ -1741,7 +1790,7 @@ class GoGates:
         or checks the variable's own value (checks_the_environment): such a check is the block's own
         reading or writing of what the variable names, and asserts nothing of what the test
         proves."""
-        constants = self.constants.get(function.file.directory, {})
+        constants = self.constants(function.file.directory)
         kept: list[Tok] = []
         index = 0
         while index < len(branch):
@@ -1887,18 +1936,14 @@ def strip_comments(text: str) -> str:
 
 def balanced(text: str, start: int) -> int:
     """The index just past the bracket that closes text[start], strings skipped."""
-    pairs = {"(": ")", "[": "]", "{": "}"}
     stack, index = [], start
     while index < len(text):
         char = text[index]
         if char in "\"'`":
-            end = index + 1
-            while end < len(text) and text[end] != char:
-                end += 2 if text[end] == "\\" else 1
-            index = end + 1
+            index = _string_end(text, index)
             continue
-        if char in pairs:
-            stack.append(pairs[char])
+        if char in CLOSING:
+            stack.append(CLOSING[char])
         elif char in ")]}":
             if stack and stack[-1] == char:
                 stack.pop()
@@ -1973,7 +2018,6 @@ def _string_end(text: str, start: int) -> int:
 
 @dataclass
 class TsModule:
-    path: str
     text: str  # comments stripped
     blank: str  # comments stripped and strings blanked, at the same offsets
     declarations: dict[str, tuple[int, int]]  # name -> span of its value
@@ -2030,7 +2074,7 @@ class TsTree:
                         continue
                     exported, _, local = entry.partition(" as ")
                     imports[(local or exported).strip()] = (resolved, exported.strip())
-            self.modules[path] = TsModule(path, text, blank, declarations, functions, imports, destructured)
+            self.modules[path] = TsModule(text, blank, declarations, functions, imports, destructured)
         return self.modules[path]
 
     def resolve(self, directory: str, source: str) -> str | None:
@@ -2231,30 +2275,42 @@ def ts_gates(tree: TsTree, files: list[str]) -> list[Gate]:
     """The gates of the test files that read a variable, or import a module of their own that
     does: no other file can hold one."""
     gates = []
+    # Whether a module a test file imports reads a variable, asked once for each module.
+    reads_env: dict[str, bool] = {}
+
+    def reads_a_variable(source: str | None) -> bool:
+        if not source:
+            return False
+        if source not in reads_env:
+            reads_env[source] = TS_ENV_TEXT.search(read_text(source)) is not None
+        return reads_env[source]
+
     for path in files:
         raw = read_text(path)
         if not re.search(r"""from\s+["'](?:bun:test|@playwright/test)["']""", raw):
             continue
         if not TS_ENV_TEXT.search(raw) and not any(
-                (source := tree.resolve(str(Path(path).parent), imported)) and TS_ENV_TEXT.search(read_text(source))
+                reads_a_variable(tree.resolve(str(Path(path).parent), imported))
                 for imported in TS_RELATIVE_IMPORT.findall(raw)):
             continue
         module = tree.module(path)
         blank = module.blank
         sites: list[tuple[tuple[int, int], int, str]] = []
+        lines = LineCounter(blank)
         for match in TS_GATE_CALL.finditer(blank):
             open_at = match.end() - 1
             close = balanced(blank, open_at) - 1
             span = (open_at + 1, close)
             if match.group(1) in ("skip", "fixme"):
-                first = split_top(blank[open_at + 1:close])[0]
+                first = split_operator(blank[open_at + 1:close], ",")[0]
                 begin = open_at + 1 + len(first) - len(first.lstrip())
                 head_text = first.strip()
                 if (not head_text or head_text[0] in "\"'`" or "=>" in head_text.split("\n")[0]
                         or head_text.startswith(("async", "function", "{"))):
                     continue
                 span = (begin, open_at + 1 + len(first))
-            sites.append((span, blank.count("\n", 0, match.start()) + 1, match.group(1)))
+            sites.append((span, lines.line_of(match.start()), match.group(1)))
+        lines = LineCounter(blank)
         for match in TS_IF.finditer(blank):
             open_at = match.end() - 1
             close = balanced(blank, open_at)
@@ -2267,8 +2323,8 @@ def ts_gates(tree: TsTree, files: list[str]) -> list[Gate]:
                 if blank[tail:tail + 1] == "{":
                     body += blank[tail:balanced(blank, tail)]
             if TS_GUARDED.search(body):
-                sites.append(((open_at + 1, close - 1), blank.count("\n", 0, match.start()) + 1, "block"))
-        tool = any(TOOL_LINE.match(line) for line in head(path))
+                sites.append(((open_at + 1, close - 1), lines.line_of(match.start()), "block"))
+        tool = carries_tool_line(path)
         for span, line, kind in sites:
             variables, chained = tree.chain(path, span)
             if not variables:
@@ -2279,29 +2335,6 @@ def ts_gates(tree: TsTree, files: list[str]) -> list[Gate]:
             gates.append(Gate("bun", path, line, frozenset(variables), None, None,
                               bool(TS_PREREQUISITE.search(chained)), on_actions, tool))
     return gates
-
-
-def split_top(text: str) -> list[str]:
-    parts, depth, current, index = [], 0, "", 0
-    while index < len(text):
-        char = text[index]
-        if char in "\"'`":
-            end = _string_end(text, index)
-            current += text[index:end]
-            index = end
-            continue
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth -= 1
-        if char == "," and depth == 0:
-            parts.append(current)
-            current = ""
-        else:
-            current += char
-        index += 1
-    parts.append(current)
-    return parts
 
 
 # --------------------------------------------------------------------- what a Bun step runs
@@ -2334,31 +2367,40 @@ def runs_lines(path: str) -> list[tuple[str, list[str], int]]:
 
 BUN_VALUE_FLAGS = {"--timeout", "--preload", "-t", "--test-name-pattern", "--rerun-each", "--max-concurrency",
                    "--reporter", "--reporter-outfile", "--seed", "--coverage-reporter", "--coverage-dir", "-r",
-                   "--path-ignore-patterns", "--bail"}
+                   "--path-ignore-patterns"}
 PLAYWRIGHT_VALUE_FLAGS = {"--config", "-c", "--project", "--grep", "-g", "--grep-invert", "--workers", "-j",
                           "--reporter", "--shard", "--timeout", "--retries", "--repeat-each", "--output",
                           "--max-failures", "--tsconfig"}
 GH_EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 
+# Each script's commands and each command's words, split once: the readers of a step split the
+# same texts again and again. Each call returns a list of its own, which its caller may extend.
+_commands: dict[str, tuple[str, ...]] = {}
+_words: dict[str, tuple[str, ...]] = {}
+
 
 def commands(script: str) -> list[str]:
     """The simple commands of a script's lines, split at `&&`, `||`, `;` and `|`, braces and
     subshell parentheses dropped, continuation lines joined."""
-    text = GH_EXPRESSION.sub("GHEXPR", "\n".join(script_lines(script))).replace("\\\n", " ")
-    found = []
-    for line in text.split("\n"):
-        for part in split_shell(line):
-            part = part.strip().strip("{}()").strip()
-            if part:
-                found.append(part)
-    return found
+    if script not in _commands:
+        text = GH_EXPRESSION.sub("GHEXPR", "\n".join(script_lines(script))).replace("\\\n", " ")
+        found = []
+        for line in text.split("\n"):
+            for part in split_shell(line):
+                part = part.strip().strip("{}()").strip()
+                if part:
+                    found.append(part)
+        _commands[script] = tuple(found)
+    return list(_commands[script])
 
 
 def words_of(command: str) -> list[str]:
-    try:
-        return shlex.split(command)
-    except ValueError:
-        return command.split()
+    if command not in _words:
+        try:
+            _words[command] = tuple(shlex.split(command))
+        except ValueError:
+            _words[command] = tuple(command.split())
+    return list(_words[command])
 
 
 # The checkout's root as a step's own script names it: a step that runs a repository script from
@@ -2515,7 +2557,7 @@ class BunReader:
             index += 1
             if word.startswith("-"):
                 flag, _, value = word.partition("=")
-                if flag in BUN_VALUE_FLAGS and not value and flag != "--bail":
+                if flag in BUN_VALUE_FLAGS and not value:
                     value = arguments[index] if index < len(arguments) else ""
                     index += 1
                 if flag == "--path-ignore-patterns":
@@ -2699,6 +2741,13 @@ def what(gate: Gate) -> str:
     return "the file's tests"
 
 
+def gate_runners(gate: Gate, tree: GoTree, go: list[GoRun], bun: list[BunRun]) -> list[tuple[RunStep, frozenset[str]]]:
+    """Each required run of a gate's test: its step, and the variables in its environment."""
+    if gate.language == "go":
+        return [(r.step, r.env) for r in go_runners(tree, go, gate.file, gate.test)]
+    return [(r.step, r.env) for r in bun if gate.path in r.files]
+
+
 def class_fails(row: Row, gate: Gate, variable: str, tree: GoTree, go: list[GoRun], bun: list[BunRun]) -> str:
     """Why the row's class does not hold for this gate, or "". A gate in a tool (a Benchmark, a
     file that carries the tool line) holds under any row: a tool reads what its runner hands it,
@@ -2708,30 +2757,28 @@ def class_fails(row: Row, gate: Gate, variable: str, tree: GoTree, go: list[GoRu
     (never_skips_on_actions): there the test runs, and fails without what it needs."""
     if gate.tool or gate.fails_on_actions:
         return ""
-    if row.klass in JOB_CLASSES or row.klass == "opt-out":
-        if gate.language == "go":
-            runners = [(r.step, r.env) for r in go_runners(tree, go, gate.file, gate.test)]
-        else:
-            runners = [(r.step, r.env) for r in bun if gate.path in r.files]
-        ran = sorted({step.part.job for step, _ in runners})
-        if row.klass == "opt-out":
-            setting = sorted({step.part.job for step, env in runners if variable in env})
-            if not runners:
-                return f"its row's class is opt-out, and no required job runs {what(gate)}"
-            if setting:
-                return (f"its row's class is opt-out, and {', '.join(setting)} runs {what(gate)} with it set, "
-                        "which opts that run out")
-            return ""
+    if row.klass == "opt-out":
+        runners = gate_runners(gate, tree, go, bun)
+        if not runners:
+            return f"its row's class is opt-out, and no required job runs {what(gate)}"
+        setting = sorted({step.part.job for step, env in runners if variable in env})
+        if setting:
+            return (f"its row's class is opt-out, and {', '.join(setting)} runs {what(gate)} with it set, "
+                    "which opts that run out")
+        return ""
+    if row.klass in JOB_CLASSES:
         if row.script:
             # The variable is set inside the script, which the row's job runs; the check of the
             # script is the row's own (variable_findings).
             return ""
-        if not any(step.part.job in row.jobs and variable in env for step, env in runners):
-            return (f"its row's class is {row.klass}, and no job it names ({', '.join(row.jobs)}) runs "
-                    f"{what(gate)} with it set" + (f"; {', '.join(ran)} runs it" if ran else "; no required job runs it"))
-        return ""
+        runners = gate_runners(gate, tree, go, bun)
+        if any(step.part.job in row.jobs and variable in env for step, env in runners):
+            return ""
+        ran = sorted({step.part.job for step, _ in runners})
+        return (f"its row's class is {row.klass}, and no job it names ({', '.join(row.jobs)}) runs "
+                f"{what(gate)} with it set" + (f"; {', '.join(ran)} runs it" if ran else "; no required job runs it"))
     if row.klass == "prerequisite":
-        if gate.prerequisite or gate.fails_on_actions:
+        if gate.prerequisite:
             return ""
         return ("its row's class is prerequisite, and this gate neither calls testprereq.Require, "
                 "requireOrSkip or skipWithout nor reads GITHUB_ACTIONS and fails there")
@@ -2755,6 +2802,8 @@ def is_script(path: str) -> bool:
         return False
     if path.endswith(SCRIPT_EXTENSIONS):
         return True
+    if path in _texts:
+        return _texts[path].startswith("#!")
     try:
         with open(ROOT / path, "rb") as handle:
             return handle.read(2) == b"#!"
@@ -2842,15 +2891,17 @@ def script_findings(files: list[str], flows: Workflows, tree: GoTree, go: list[G
             resolved = resolver.resolve(str(Path(path).parent), source)
             if resolved and TS_SOURCE.search(resolved):
                 pending_modules.append(resolved)
-    texts += [(path, comment_free(path, read_text(path))) for path in sorted(reached_files)]
+    # Each file is read, its comments dropped, only when the walk takes it off the queue.
+    pending: list[tuple[str, str | None]] = [*texts, *((path, None) for path in sorted(reached_files))]
     reached: set[str] = set()
-    pending = texts
     while pending:
         path, text = pending.pop()
+        if text is None:
+            text = comment_free(path, read_text(path))
         for found in mentions.of(path, text):
             if found not in reached:
                 reached.add(found)
-                pending.append((found, comment_free(found, read_text(found))))
+                pending.append((found, None))
     found = []
     for path in candidates:
         if path in reached:
@@ -2866,8 +2917,6 @@ def script_findings(files: list[str], flows: Workflows, tree: GoTree, go: list[G
     return found + marker_findings(candidates)
 
 
-# A harness of a script it tests, by its name.
-HARNESS_NAME = re.compile(r"[._]test\.(?:sh|bash)$")
 # A header's first line of prose that says the script is a test or a proof (`A proof that…`,
 # `Tests for…`, `The smoke test of…`), where the word is what the script is, not what a thing it
 # starts or reads is (`A smoke stack.`, `Starts the stack the smoke checks run on.`).
@@ -2899,7 +2948,7 @@ def marker_findings(candidates: list[str]) -> list[Finding]:
         marked = next((number for number, line in enumerate(lines, start=1) if NOT_A_TEST_LINE.match(line)), 0)
         if not marked:
             continue
-        if HARNESS_NAME.search(path):
+        if steps.HARNESS_NAME.search(path):
             what = "it is a harness (*.test.sh)"
         elif calls_itself_a_test(lines):
             what = "its header calls it a test, a proof or a smoke test"
@@ -2937,8 +2986,9 @@ def package_script_texts(reader: BunReader, cwd: str, words: list[str], seen: se
 # A `go test` is a test command unless it builds its binary alone (`-c`) or runs none of its tests
 # (`-run '^$'`, as ci-caches.yaml's fill starts each test binary to link and cache it).
 GO_RUNS_NONE = r"(?!.*\s-c\b)(?!.*\s-run[= ]?[\"']?\^\$[\"']?(?:\s|$))"
-TEST_COMMAND = re.compile(rf"\bgo\s+(?:-C\s+\S+\s+)?test\b{GO_RUNS_NONE}|\bbun\s+test\b|\bplaywright\s+test\b|\.test\.sh\b|_test\.sh\b")
-GO_TEST_COMMAND = re.compile(rf"\bgo\s+(?:-C\s+\S+\s+)?test\b{GO_RUNS_NONE}")
+GO_TEST = rf"\bgo\s+(?:-C\s+\S+\s+)?test\b{GO_RUNS_NONE}"
+TEST_COMMAND = re.compile(rf"{GO_TEST}|\bbun\s+test\b|\bplaywright\s+test\b|\.test\.sh\b|_test\.sh\b")
+GO_TEST_COMMAND = re.compile(GO_TEST)
 RELEASE_WORKFLOW = re.compile(rf"^{re.escape(WORKFLOWS)}/release[^/]*\.ya?ml$")
 
 
@@ -2999,10 +3049,6 @@ def outside_steps(files: list[str], flows: Workflows) -> list[Outside]:
     return found
 
 
-def carries_tool_line(path: str) -> bool:
-    return any(TOOL_LINE.match(line) for line in head(path))
-
-
 def uncovered(step: RunStep, reader: BunReader, tree: GoTree, go: list[GoRun], bun: list[BunRun],
               harnesses: set[str]) -> list[str]:
     """What a step no merge waits for runs that no required job runs in the same mode: each test
@@ -3031,7 +3077,7 @@ def uncovered(step: RunStep, reader: BunReader, tree: GoTree, go: list[GoRun], b
     cwd = step.workdir
     for command in commands(step.script):
         path = repository_script(cwd, words_of(command))
-        if path is not None and HARNESS_NAME.search(path):
+        if path is not None and steps.HARNESS_NAME.search(path):
             read += 1
             if path not in harnesses:
                 missing.append(path)
@@ -3048,12 +3094,12 @@ def outside_findings(outside: list[Outside], flows: Workflows, reader: BunReader
     lists it. Any other passes where a required job runs that very line in that very directory,
     or where its workflow carries the tool line and every test it runs a required job runs in the
     same mode. A step that runs no test command is not read."""
-    required_lines = {(step.workdir, squash(line)) for step in required_steps(flows) for line in script_lines(step.script)}
-    harnesses = set()
+    required_lines, harnesses = set(), set()
     for step in required_steps(flows):
+        required_lines |= {(step.workdir, squash(line)) for line in script_lines(step.script)}
         for command in commands(step.script):
             path = repository_script(step.workdir, words_of(command))
-            if path is not None:
+            if path is not None and steps.HARNESS_NAME.search(path):
                 harnesses.add(path)
     found = []
     for entry in outside:
@@ -3108,7 +3154,8 @@ class ReleaseCheck:
 
 def release_checks() -> list[ReleaseCheck]:
     if not (ROOT / RELEASE_CHECKS).is_file():
-        raise Unreadable(f"{RELEASE_CHECKS} is missing: it is the list of each release step that runs a check")
+        raise Unreadable(f"{RELEASE_CHECKS} is missing: it lists each release step that runs a test command, "
+                         "with the artifact it checks")
     entries = load_yaml(RELEASE_CHECKS).get("checks")
     if not isinstance(entries, list):
         raise Unreadable(f"{RELEASE_CHECKS} has no `checks:` list")
@@ -3153,8 +3200,7 @@ def release_findings(entries: list[ReleaseCheck]) -> list[Finding]:
             finding(f"{entry.workflow} has no job {entry.job}")
             continue
         job_steps = job.get("steps") or []
-        index = next((i for i, step in enumerate(job_steps)
-                      if entry.step in {str(step[key]) for key in ("name", "id", "uses") if step.get(key)}), None)
+        index = next((i for i, step in enumerate(job_steps) if entry.step in step_keys(step)), None)
         if index is None:
             finding(f"job {entry.job} of {entry.workflow} has no step whose name, id or uses is {entry.step}")
             continue
@@ -3165,9 +3211,10 @@ def release_findings(entries: list[ReleaseCheck]) -> list[Finding]:
                        | inline_env(script)) - RUNNER_ENV
         built = set()
         for earlier in job_steps[:index]:
-            text = json.dumps(earlier.get("with") or {}) + "\n" + str(earlier.get("run") or "")
-            built |= {a or b for a, b in ENV_REFERENCE.findall(text)} | env_written(str(earlier.get("run") or ""))
-            environment |= env_written(str(earlier.get("run") or ""))
+            run = str(earlier.get("run") or "")
+            written = env_written(run)
+            built |= {a or b for a, b in ENV_REFERENCE.findall(json.dumps(earlier.get("with") or {}) + "\n" + run)} | written
+            environment |= written
         if not (environment & built) - RUNNER_ENV:
             finding("it runs go test, and its environment holds no variable an earlier step of its job built, so it "
                     f"tests the tree's source and not the artifact it names ({entry.artifact})")
@@ -3214,6 +3261,8 @@ def unhomed() -> list[Unhomed]:
     listed = document.get("unhomed")
     if not isinstance(listed, list):
         raise Unreadable(f"{UNHOMED} has no `unhomed:` list")
+    # A `listed` finding is of an entry of this list, never of a test, so no entry names one.
+    kinds = [kind for kind in KINDS if kind != "listed"]
     found, seen = [], set()
     for entry in listed:
         line = getattr(entry, "line", 0)
@@ -3221,9 +3270,9 @@ def unhomed() -> list[Unhomed]:
             raise Unreadable(f"{UNHOMED}:{line}: an entry is a mapping of `finding` and `row` alone")
         finding, row = str(entry["finding"]).strip(), str(entry["row"]).strip()
         kind = finding.split(": ", 1)[0]
-        if kind not in KINDS or finding.count(": ") < 2 or not row:
+        if kind not in kinds or finding.count(": ") < 2 or not row:
             raise Unreadable(f"{UNHOMED}:{line}: `{finding}` is no `<kind>: <path>: <subject>` of a kind "
-                             f"this search finds ({', '.join(KINDS)}), or its entry names no row")
+                             f"this search finds ({', '.join(kinds)}), or its entry names no row")
         if finding in seen:
             raise Unreadable(f"{UNHOMED}:{line}: `{finding}` is listed twice")
         seen.add(finding)
