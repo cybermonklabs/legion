@@ -55,7 +55,11 @@
  *  Dispatch refuses the view, or a frame breaks the contract; 2 on a usage error. */
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { LIVE_SOCKET_MAX_AGE_CLOSE, type LegionBoardFacts, type LegionBoardResponse } from "@legion/contracts";
+import {
+  type LegionBoardFacts,
+  type LegionBoardResponse,
+  LIVE_SOCKET_MAX_AGE_CLOSE,
+} from "@legion/contracts";
 
 import { REQUEST_DEADLINE_MS } from "../web/src/api/client";
 import {
@@ -398,7 +402,9 @@ function parseView(text: string): DeliveryLiveView {
     }
   } else if (kind === "legion") {
     if (!("project" in value) || typeof value.project !== "string" || value.project === "") {
-      throw new UsageError(`a legion view's "project" is the key of the project whose board it shows`);
+      throw new UsageError(
+        `a legion view's "project" is the key of the project whose board it shows`
+      );
     }
   } else {
     throw new UsageError(
@@ -490,7 +496,8 @@ function holds(body: DeliveryLiveBody): Sections {
     session_groups: null,
     set: null,
   };
-  if (isLegionBoard(body)) return { ...none, maps: { issues: Object.keys(body.issues ?? {}).length } };
+  if (isLegionBoard(body))
+    return { ...none, maps: { issues: Object.keys(body.issues ?? {}).length } };
   if (!isTimeline(body)) return none;
   return {
     counts: Object.fromEntries(
@@ -817,7 +824,8 @@ export function legionEntryAt(entry: LegionBoardFacts, moment: number): Record<s
   return {
     ...entry,
     as_of: null,
-    growth: growth === null ? null : { ...growth, hours_by_phase: { ...(growth.hours_by_phase ?? {}) } },
+    growth:
+      growth === null ? null : { ...growth, hours_by_phase: { ...(growth.hours_by_phase ?? {}) } },
     hours_by_phase: phases,
     slot_hours: entry.slot_hours + (growth?.slot_hours ?? 0) * hours,
     work_hours: entry.work_hours + (growth?.work_hours ?? 0) * hours,
@@ -957,6 +965,10 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
         ),
       ];
     }
+    default:
+      // The probe drives the timeline, measures, pipeline and legion views; the `/ws/live`
+      // `legion_issue` view is read by no probe row.
+      throw new Error(`the delivery-live probe drives no ${view.kind} view`);
   }
 }
 

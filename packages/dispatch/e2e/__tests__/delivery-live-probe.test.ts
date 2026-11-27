@@ -552,9 +552,18 @@ const legionArgs = (dispatch: { readonly url: string }) =>
 const pushedAt = "2026-11-20T08:00:00Z";
 const legionPush = (sub: string) => [
   JSON.stringify({
-    body: legionBoard(pushedAt, { "INFRA-1": openIssue(pushedAt, 0), "INFRA-2": closedIssue(0, "2026-11-19T12:00:00Z") }, 4),
+    body: legionBoard(
+      pushedAt,
+      { "INFRA-1": openIssue(pushedAt, 0), "INFRA-2": closedIssue(0, "2026-11-19T12:00:00Z") },
+      4
+    ),
     changed_at: pushedAt,
-    revs: { counts: {}, fields: {}, items: {}, maps: { issues: { "INFRA-1": "a1", "INFRA-2": "b1" } } },
+    revs: {
+      counts: {},
+      fields: {},
+      items: {},
+      maps: { issues: { "INFRA-1": "a1", "INFRA-2": "b1" } },
+    },
     seq: "7",
     sub,
     type: "snapshot",
@@ -593,14 +602,23 @@ test(
 
     expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view: legionView }]);
     // The snapshot counts the board's one map, and the delta names the entry it sends.
-    const frames = run.lines.filter((line): line is ProbeFrameLine => line.type === "snapshot" || line.type === "delta");
+    const frames = run.lines.filter(
+      (line): line is ProbeFrameLine => line.type === "snapshot" || line.type === "delta"
+    );
     expect(frames.map((line) => [line.type, line.maps])).toEqual([
       ["snapshot", { issues: 2 }],
       ["delta", { issues: ["INFRA-2"] }],
     ]);
-    expect(dispatch.reads.map((url) => url.pathname)).toEqual(["/api/v1/projects/INFRA/legion/board"]);
+    expect(dispatch.reads.map((url) => url.pathname)).toEqual([
+      "/api/v1/projects/INFRA/legion/board",
+    ]);
     expect(
-      comparisons(run.lines).map(({ equal, measures, prs, runs }) => ({ equal, measures, prs, runs }))
+      comparisons(run.lines).map(({ equal, measures, prs, runs }) => ({
+        equal,
+        measures,
+        prs,
+        runs,
+      }))
     ).toEqual([{ equal: true, measures: { differ: [], equal: true }, prs: null, runs: null }]);
   },
   // The wait for the delta line, then the wait for the exit after SIGINT.
@@ -615,7 +633,10 @@ test(
         for (const text of legionPush(sub)) socket.send(text);
       },
       routes: {
-        "/api/v1/projects/INFRA/legion/board": legionRead({ ...openIssue(readAt, 1), work_hours: 3.52 }),
+        "/api/v1/projects/INFRA/legion/board": legionRead({
+          ...openIssue(readAt, 1),
+          work_hours: 3.52,
+        }),
       },
     });
     const run = runProbe([...legionArgs(dispatch), "--compare"]);
