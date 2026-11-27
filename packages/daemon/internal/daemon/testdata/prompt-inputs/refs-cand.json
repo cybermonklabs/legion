@@ -1,0 +1,62 @@
+{
+  "description": "Candidate reference exercise table for scripts/e2e/prompt-inputs.sh --refs. On the base checkout, both retained and removed skill:// paths resolve in the packaged plugins. On the rewritten candidate head, each retained path resolves and each removed path does not.",
+  "withheld_control_launch": "planner/omp",
+  "launches": {
+    "architect-root/omp": {
+      "retained": "skill://legion-architect/references/design-gate.md",
+      "removed": "skill://legion-architect/references/surface-round.md"
+    },
+    "architect-child/omp": {
+      "retained": "skill://legion-architect/references/wake-routing.md",
+      "removed": "skill://legion-architect/references/plan-changes.md"
+    },
+    "planner/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/withheld-capability.md"
+    },
+    "implementer/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/withheld-capability.md"
+    },
+    "tester/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/gvisor.md"
+    },
+    "reviewer/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/gvisor.md"
+    },
+    "merger/omp": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/withheld-capability.md"
+    },
+    "controller-headless/omp": {
+      "retained": "skill://legion-controller/references/triage.md",
+      "removed": "skill://legion-controller/references/backlog-stewardship.md"
+    },
+    "controller-interactive/omp": {
+      "retained": "skill://legion-controller/references/triage.md",
+      "removed": "skill://legion-controller/references/backlog-stewardship.md"
+    },
+    "planner/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/withheld-capability.md"
+    },
+    "implementer/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/withheld-capability.md"
+    },
+    "tester/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/gvisor.md"
+    },
+    "reviewer/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/gvisor.md"
+    },
+    "merger/claude": {
+      "retained": "skill://legion-worker/references/tools.md",
+      "removed": "skill://legion-worker/references/withheld-capability.md"
+    }
+  }
+}
