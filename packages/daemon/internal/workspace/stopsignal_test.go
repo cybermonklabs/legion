@@ -98,7 +98,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// script asks for. A stop that raced that line would end the helper with the group's
 		// SIGTERM rather than leave it to the SIGKILL, and this row — which reads only that the
 		// helper is gone — would pass on the opposite of what it claims.
-		helper := `trap '' TERM; : >"$2"; ` + commandLives
+		helper := `trap '' TERM; sleep 2.5; : >"$2"; ` + commandLives
 		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
 
 		started := time.Now()
