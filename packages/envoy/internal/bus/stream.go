@@ -359,9 +359,10 @@ var streamSubjects = []string{
 	DispatchTopicPrefix + ">",
 	"notifications.github.>",
 	"notifications.slack.>",
-	// The Go Legion daemon's notices for the project's controller
-	// (notifications.legion.<project>.controller); its workflow notices go to each owning
-	// architect's role topic.
+	// The Go Legion daemon's state lane (notifications.legion.<token>.state) and, from a daemon of
+	// an earlier release, its controller notices (notifications.legion.<project>.controller; a
+	// current daemon sends them to the controller's role topic); its workflow notices go to each
+	// owning architect's role topic.
 	"notifications.legion.>",
 	"notifications.ghostwispr.>",
 	"notifications.whatsapp.>",
@@ -441,8 +442,9 @@ var privateStreamSubjects = []string{
 	// message sent to one session (contracts.AgentSubject, and contracts.LegacyAgentSubject in
 	// the old form).
 	contracts.AgentTopicPrefix + ">",
-	// The Legion daemon's notices for one project's controller (daemon notify.ControllerTopic),
-	// which only the session holding that project's controller role may register
+	// The Legion daemon's state lane (notifications.legion.<token>.state), which no session may
+	// register, and, from a daemon of an earlier release, its notices for one project's
+	// controller, which only the session holding that project's controller role may register
 	// (ControllerNoticeRole), and no other session may.
 	contracts.LegionNoticeTopicPrefix + ">",
 	// A failed delivery's report, carrying the undelivered message's payload and the session it

@@ -96,7 +96,7 @@ func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Reposit
 	if err != nil {
 		return "", "", err
 	}
-	response, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).CurlGet(ctx, "repos/"+repo.String(), token)
+	response, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).CurlGet(ctx, "repos/"+repo.String(), token, leakguard.DirectoryToken)
 	if err != nil {
 		return "", "", fmt.Errorf("the helper could not read %s from GitHub: %w", repo, err)
 	}

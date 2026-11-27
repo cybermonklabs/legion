@@ -3277,19 +3277,20 @@ func (s *Postgres) RecordClaimLeft(ctx context.Context, tx pgx.Tx, key string, l
 	return nil
 }
 
-func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project string) (bool, error) {
-	// The controllers row is keyed by the project token `legion controller start` mints under
-	// (api/controller.go), and registered is controller.Record.Registered's rule: a session holds
-	// the current capability.
+func (s *Postgres) ControllerSession(ctx context.Context, tx pgx.Tx, project string) (string, error) {
 	token, err := claim.ProjectToken(project)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	var registered bool
-	if err := tx.QueryRow(ctx, "select exists (select 1 from controllers where project = $1 and session <> '')", token).Scan(&registered); err != nil {
-		return false, fmt.Errorf("read whether %s has a registered controller: %w", project, err)
+	var session string
+	err = tx.QueryRow(ctx, "select session from controllers where project = $1", token).Scan(&session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
 	}
-	return registered, nil
+	if err != nil {
+		return "", fmt.Errorf("read the session of %s's registered controller: %w", project, err)
+	}
+	return session, nil
 }
 
 // ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
