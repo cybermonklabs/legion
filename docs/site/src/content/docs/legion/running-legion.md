@@ -841,7 +841,7 @@ What each part is for:
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
   told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
-  link, on its open children (before its first phase or in `awaiting_children`), or for a slot it needs and does not hold — while the project's line
+  link, on its open children (before its first phase or in `awaiting_children`), on the checks of its goal in `verifying`, or for a slot it needs and does not hold — while the project's line
   can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
   the line can move, one whose only quiet issues gave their slot back to wait on work outside

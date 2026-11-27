@@ -89,9 +89,6 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
       commit: "1111111111111111111111111111111111111111",
     }),
   issueResults: (client) => client.issueResults("DSP-1"),
-  recordDeploy: (client) =>
-    client.recordDeploy({ repo: "acme/widgets", program: "worker", commit: "1111111111111111111111111111111111111111" }),
-  deploys: (client) => client.deploys("acme/widgets"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
   recordDeploy: (client) =>

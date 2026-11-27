@@ -4808,7 +4808,8 @@ func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, is
 }
 
 // branchLeftNotice is the owning architect's notice of a next change's branch left where it
-// stands (startBranchAtBase): where its tip is, why Legion did not move it, and what to do first.
+// stands (startBranchAtBase): where its tip is, why Legion did not move it, and that the next
+// change's first task is told to merge the base forward.
 // A merge snapshot that names only its pull request gives no merged head (record.BranchFrom), and
 // then the notice says Legion does not know it rather than print an empty commit.
 func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Result) record.Notice {

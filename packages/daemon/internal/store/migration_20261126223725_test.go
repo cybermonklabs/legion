@@ -462,18 +462,22 @@ func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 	})
 }
 
-// mainsNewestAtTheLastMerge is the newest migration main carried at this branch's forward merge of
-// 2026-11-26 (main 20ee90deba1e): the merge-holds kind list.
+// mainsNewestAtTheLastMerge is the newest migration main carried at this branch's last forward
+// merge (main 6d2aa6c3, 2026-11-27): the merge-holds kind list.
 const mainsNewestAtTheLastMerge = 20261126110259
 
-// This migration stands above every migration main carries, which is what keeps each list and each
-// function it writes the last word on a database main migrated as well as on a fresh one. Migrate
-// applies every unrecorded migration in version order, so a migration of main below this one that
-// wrote outbox_kind_check, issues_phase_check or one of the four functions again would be applied
-// after this one on a database main migrated, where it would overwrite what this migration writes,
-// or fail its ADD CONSTRAINT over a row of a kind its list leaves out (SQLSTATE 23514). At a
-// forward merge that brings a migration of main above this one, this test goes red and the file is
-// renumbered above it, as 20261126110259_merge_holds_changed was twice.
+// This migration stands above every migration main carried at that merge. Migrate applies every
+// unrecorded migration in version order, so on a database main migrated, a migration of main
+// above this one is already recorded when this one runs; this one would then write
+// outbox_kind_check, issues_phase_check and its four functions over main's, and a list that leaves
+// out the kind of a waiting row fails its ADD CONSTRAINT (SQLSTATE 23514). This test holds the
+// stamp against mainsNewestAtTheLastMerge, a constant, so a forward merge that brings a newer
+// migration of main does not turn it red. What does is
+// TestADatabaseMainMigratedEndsAtTheSchemaOfAFreshDatabase, where that migration rewrites a list or
+// a function this one writes (its control, this branch at the old stamp below main's
+// 20261126110259, failed), and store_test.go's "a database main migrated with the merge holds",
+// which fails 23514 on a waiting row of a kind left out. At such a merge, renumber this file above
+// main's newest and move this constant with it.
 func TestTheDoneByChecksMigrationStandsAboveEveryMigrationMainCarries(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()

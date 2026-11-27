@@ -811,11 +811,9 @@ not happened yet;
 or `fail`, a requirement observed as not met, or a defect of the change, naming the issue, the pull
 request, the merge commit, what it drove and what failed.
 A `fail` starts the next change of the issue ([the close](#the-close)) and goes to no controller.
-A defect with a clear fix that the look finds outside the issue goes to its owner, as a Dispatch
-comment that mentions the architect of the tree whose code it is, or to the controller, which files
-an issue only when no tree owns that code.
-Only one that needs a decision is a Dispatch ask on Legion's daily report issue, so you decide
-whether it needs an issue.
+A defect with a clear fix that the look finds outside the issue goes to the controller, which files
+an issue.
+Only one that needs a decision is a Dispatch ask, so you decide whether it needs an issue.
 The record is those results and the pull request.
 Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
 stored microseconds unchanged. That field alone selects a report on that check: without it,
