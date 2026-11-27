@@ -1229,8 +1229,12 @@ func newJJMarks(t *testing.T) jjMarks {
 }
 
 // started is the shell a jj runs as its first act, and ended the shell it runs as its last.
-func (m jjMarks) started() string { return testexec.MarkStart(`'` + string(m) + `'/$$.started`) }
-func (m jjMarks) ended() string   { return testexec.MarkNow(`'` + string(m) + `'/$$.ended`) }
+// CONTROL COMMIT, never for merge: every marked jj is held 11 s in its own run, as a loaded
+// machine can hold it, past every bound its row's request had.
+func (m jjMarks) started() string {
+	return testexec.MarkStart(`'`+string(m)+`'/$$.started`) + "; sleep 11"
+}
+func (m jjMarks) ended() string { return testexec.MarkNow(`'` + string(m) + `'/$$.ended`) }
 
 // script is a jj that marks its start, runs body, marks its end, and exits with the status body
 // left in status.
