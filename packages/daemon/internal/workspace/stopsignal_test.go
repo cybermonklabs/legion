@@ -57,8 +57,9 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		// at the end is one the command's own SIGTERM handler removed.
 		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
 
+		holdCPU0For(t, 16, runqHold) // CONTROL (never merged)
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, held("sh", "-c", script, "sh", lock, ready))
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
@@ -101,8 +102,9 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		helper := `trap '' TERM; : >"$2"; ` + commandLives
 		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
 
+		holdCPU0For(t, 16, runqHold) // CONTROL (never merged)
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, held("sh", "-c", script, "sh", ready, helper, marker, trapped))
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
@@ -122,8 +124,9 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		timeout := time.Second
-		run := NewRunner(timeout, map[string]string{"git": fakeGit})
+		run := NewRunner(timeout, map[string]string{"git": heldTool(t, dir, "held-git", fakeGit)}) // CONTROL (never merged)
 
+		holdCPU0For(t, 16, runqHold) // CONTROL (never merged)
 		started := time.Now()
 		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
 		elapsed := time.Since(started)
