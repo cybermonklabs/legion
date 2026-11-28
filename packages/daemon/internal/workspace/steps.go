@@ -11,7 +11,7 @@ import (
 // open at a time, and logs each step's duration as the step ends, so the log says where the time
 // went and, while the provision still runs, which step it is in (the step after the last one
 // logged). workspace-init's provision keeps one (cmd/legion's workspaceInit), from its start to its
-// end, and hands it to Provision (Request.Steps), which hands it to the issue pod's fill (issuePod,
+// end, and hands it to Provision (Request.Steps), which hands it to the issue pod's fill (remote,
 // CacheStream); each place that starts a step begins it by a name fixed where it opens, so a name
 // says what runs in that step on every path that reaches it. The tmux runtime keeps none: a nil
 // *Steps does nothing, and its provision's log gains no line.

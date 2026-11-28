@@ -267,9 +267,9 @@ run_arm() {
   second_pod=$(result_value second-pod)
   second_issue=$(result_value second-issue)
   pod=${second_pod#*/}
-  cp "$arm_work/issue-pod-start/legion.yaml" "$evidence/$arm/legion.yaml"
-  cp "$result" "$evidence/$arm/result"
-  kind_k -n legion get pod "$pod" -o yaml >"$evidence/$arm/second-pod.yaml"
+  cp "$arm_work/issue-pod-start/legion.yaml" "$arm_evidence/legion.yaml"
+  cp "$result" "$arm_evidence/result"
+  kind_k -n legion get pod "$pod" -o yaml >"$arm_evidence/second-pod.yaml"
   note "first pod $first_pod, ended before the second; second pod $second_pod for $second_issue on $repository"
   note "GitHub's tip of $default_branch: $tip_t0 before the second launch (T0), $tip_t1 once it returned (T1)"
   pass
@@ -326,11 +326,14 @@ run_arm() {
     sleep 2
   done
   local sparse summary_diff stat status files tree found
-  sparse=$(read_in_workspace jj sparse list)
+  # jj diff --summary is the one jj command here that snapshots the working copy, reading every
+  # file of it: jj sparse list needs no snapshot, and jj diff --stat reads the one --summary took
+  # (--ignore-working-copy), so jj reads a large tree once per arm.
+  sparse=$(read_in_workspace jj sparse list --ignore-working-copy)
   [ "$sparse" = . ] || fail "jj sparse list printed $(printf %q "$sparse"), want ."
   summary_diff=$(read_in_workspace jj diff --summary)
   [ -z "$summary_diff" ] || fail "jj diff --summary printed $(printf %q "$summary_diff"), want nothing"
-  stat=$(read_in_workspace jj diff --stat)
+  stat=$(read_in_workspace jj diff --stat --ignore-working-copy)
   [ "$stat" = '0 files changed, 0 insertions(+), 0 deletions(-)' ] ||
     fail "jj diff --stat printed $(printf %q "$stat"), want only 0 files changed, 0 insertions(+), 0 deletions(-)"
   status=$(read_in_workspace git status --porcelain --untracked-files=no)

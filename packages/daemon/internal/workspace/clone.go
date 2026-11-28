@@ -52,13 +52,16 @@ printf 'username=x-access-token\npassword=%s\n' "$(cat "$LEGION_PROVISIONING_TOK
 `
 
 // remote is how a clone or fetch reaches the repository: its environment, one-shot credential
-// directory and token, ordinary tmux branches, and optional Kubernetes issue-pod fill state.
+// directory and token, ordinary tmux branches, optional Kubernetes issue-pod fill state, and the
+// provision's step clock (Request.Steps), which Provision hands it once it opened the source and
+// the issue pod's fill begins each of its steps on; nil, the tmux runtime's, logs nothing.
 type remote struct {
 	env      []string
 	dir      string
 	token    string
 	branches []string
 	issue    *issuePod
+	steps    *Steps
 }
 
 // scrub is text with the credential's token replaced by ***, so that nothing a run under the
@@ -70,15 +73,6 @@ func (r remote) scrub(text string) string {
 		return text
 	}
 	return strings.ReplaceAll(text, r.token, "***")
-}
-
-// steps is the step clock the issue pod's fill begins its steps on (issuePod.steps), and nil, which
-// logs nothing, for the tmux runtime's remote.
-func (r remote) steps() *Steps {
-	if r.issue == nil {
-		return nil
-	}
-	return r.issue.steps
 }
 
 // newProvisioningCredential ports workspace.ts's createProvisioningCredential, the one-shot
@@ -177,15 +171,13 @@ type Source interface {
 // issuePod is the state ForIssuePod carries for one Kubernetes issue pod: its source's settings,
 // the repository, the issue's bookmark and the default branch it was admitted against. fetched
 // records that the clone path already fetched GitHub, so the configuration step does not repeat
-// that transfer. steps is the provision's step clock (Request.Steps), which Provision hands it once
-// it opened the source, and the fill begins each of its steps on.
+// that transfer.
 type issuePod struct {
 	issuePodSource
 	repository ghrepo.Repository
 	bookmark   string
 	defaultRef string
 	fetched    bool
-	steps      *Steps
 }
 
 // ForIssuePod reaches GitHub with the mounted provisioning token and, when cacheURL is non-empty,
@@ -355,7 +347,7 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 	}
 	// From here the clone is made: an issue pod's fill stages it (clone-stage) and then fills it,
 	// each of its steps begun where it starts.
-	source.steps().Begin("clone-stage")
+	source.steps.Begin("clone-stage")
 	if exists {
 		if err := rolefile.RemoveTree(cloneDir); err != nil {
 			return fmt.Errorf("remove incomplete clone %s: %w", cloneDir, err)
@@ -428,7 +420,7 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 		var err error
 		stream, err = StreamCache(ctx, run, CacheStream{
 			Repo: issue.repository, URL: issue.cacheURL, Token: issue.cacheToken,
-			Log: issue.log, Clock: issue.clock, Bound: issue.bound, Steps: issue.steps,
+			Log: issue.log, Clock: issue.clock, Bound: issue.bound, Steps: source.steps,
 		}, gitDir)
 		logCacheSource(issue.log, stream)
 		if err != nil {
@@ -442,19 +434,19 @@ func issuePodClone(ctx context.Context, run Runner, steps cloneSteps, temporary 
 	}
 	// Cache readiness, streaming, verification and GitHub each have their own bounds.
 	// Only the Jujutsu setup below spends this clone budget.
-	issue.steps.Begin("jj-init")
+	source.steps.Begin("jj-init")
 	steps.deadline = steps.clock.Now().Add(steps.bound)
 	if err := steps.run(ctx, run, []string{"jj", "git", "init", "--colocate", temporary}, nil); err != nil {
 		return err
 	}
-	issue.steps.Begin("jj-clone-working-copy")
+	source.steps.Begin("jj-clone-working-copy")
 	if err := steps.runIn(ctx, run, temporary, []string{"jj", "sparse", "set", "--clear", "--color=never", "-R", temporary}, nil); err != nil {
 		return err
 	}
 	if err := steps.runIn(ctx, run, temporary, []string{"jj", "abandon", "@", "--color=never", "-R", temporary}, nil); err != nil {
 		return err
 	}
-	issue.steps.Begin("jj-track")
+	source.steps.Begin("jj-track")
 	for _, branch := range defaults {
 		track, err := onClone(temporary, "bookmark", "track", originRow(branch))
 		if err != nil {
@@ -507,7 +499,7 @@ func logCacheSource(log func(string), stream StreamReport) {
 // the fetch, and ref-pruning, the local branches, the refs a fresh clone drops and origin/HEAD.
 func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remote, fresh bool) (int64, int, []string, error) {
 	issue := source.issue
-	issue.steps.Begin("github-delta")
+	source.steps.Begin("github-delta")
 	gitDir := filepath.Join(cloneDir, ".git")
 	request := FetchRequest{Repo: issue.repository, Log: issue.log, Clock: issue.clock, Bound: issue.bound}
 	held := newFetchCredential(source, issue.token)
@@ -548,7 +540,7 @@ func fetchIssuePod(ctx context.Context, run Runner, cloneDir string, source remo
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	issue.steps.Begin("ref-pruning")
+	source.steps.Begin("ref-pruning")
 	if err := setIssueHeads(ctx, run, gitDir, defaults); err != nil {
 		return 0, 0, nil, err
 	}

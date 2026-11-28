@@ -12,35 +12,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
-// checkoutMarkerFile is the marker Provision writes inside a workspace's `.jj` directory just
-// before `jj sparse reset` into a workspace that holds no file Legion did not write (one
-// createWorkspace registered in this provision, or one whose marker is already there), and removes
-// once that checkout succeeds. While it exists beside an empty sparse-pattern set, the next
-// provision knows the last checkout Legion started was cut short, so it clears every entry of the
-// workspace except `.jj` and `.git` before running `jj sparse reset` again. Without the marker, a
-// workspace whose sparse patterns an agent cleared keeps its untracked files.
+// checkoutMarkerFile is the marker Provision writes inside a workspace's `.jj` directory as soon as
+// createWorkspace has registered it, with no file yet, and keeps through every provision that finds
+// it there with no sparse pattern, until a `jj sparse reset` into the workspace succeeds and
+// Provision removes it. While it exists beside an empty sparse-pattern set, the next provision
+// knows the last checkout Legion started, or was about to start, was cut short, so it clears every
+// entry of the workspace except `.jj` and `.git` before running `jj sparse reset` again. Without
+// the marker, a workspace whose sparse patterns an agent cleared keeps its untracked files.
 const checkoutMarkerFile = "legion-checkout"
 
-// writeCheckoutMarker creates or truncates `.jj/legion-checkout` in dir through openJJ and openIn,
-// following no link and refusing any non-regular entry there.
+// writeCheckoutMarker creates or truncates `.jj/legion-checkout` in dir through openJJ and
+// rolefile.OpenRegular, following no link and refusing any entry there that is no regular file.
 func writeCheckoutMarker(dir string) error {
 	jj, err := openJJ(dir, nil)
 	if err != nil {
 		return fmt.Errorf("write checkout marker of workspace %s: %w", dir, err)
 	}
 	defer jj.Close()
-	file, err := openIn(jj, checkoutMarkerFile, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NONBLOCK|unix.O_NOCTTY, 0o644)
+	file, err := rolefile.OpenRegular(int(jj.Fd()), checkoutMarkerFile, filepath.Join(jj.Name(), checkoutMarkerFile), unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("write checkout marker of workspace %s: %w", dir, err)
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return fmt.Errorf("write checkout marker of workspace %s: %w", dir, err)
-	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
-		return fmt.Errorf("the checkout marker %s is not a regular file (%s)", filepath.Join(jj.Name(), checkoutMarkerFile), info.Mode().Type())
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("write checkout marker of workspace %s: %w", dir, err)
@@ -49,46 +40,33 @@ func writeCheckoutMarker(dir string) error {
 }
 
 // hasCheckoutMarker reports whether `.jj/legion-checkout` exists as a regular file in dir, opened
-// through openJJ and openIn without following a link or blocking on a special file.
+// through openJJ and rolefile.OpenRegular without following a link or blocking on a special file.
 func hasCheckoutMarker(dir string) (bool, error) {
 	jj, err := openJJ(dir, nil)
 	if err != nil {
 		return false, fmt.Errorf("read checkout marker of workspace %s: %w", dir, err)
 	}
 	defer jj.Close()
-	file, err := openIn(jj, checkoutMarkerFile, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOCTTY, 0)
+	file, err := rolefile.OpenRegular(int(jj.Fd()), checkoutMarkerFile, filepath.Join(jj.Name(), checkoutMarkerFile), unix.O_RDONLY, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read checkout marker of workspace %s: %w", dir, err)
 	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return false, fmt.Errorf("read checkout marker of workspace %s: %w", dir, err)
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("the checkout marker %s is not a regular file (%s)", filepath.Join(jj.Name(), checkoutMarkerFile), info.Mode().Type())
-	}
+	file.Close()
 	return true, nil
 }
 
-// removeCheckoutMarker removes `.jj/legion-checkout` in dir through openJJ and unlinkat, following
-// no link. A missing marker is no error.
+// removeCheckoutMarker removes `.jj/legion-checkout` in dir through openJJ and rolefile.Unlinkat,
+// following no link. A missing marker is no error.
 func removeCheckoutMarker(dir string) error {
 	jj, err := openJJ(dir, nil)
 	if err != nil {
 		return fmt.Errorf("remove checkout marker of workspace %s: %w", dir, err)
 	}
 	defer jj.Close()
-	for {
-		err = unix.Unlinkat(int(jj.Fd()), checkoutMarkerFile, 0)
-		if !errors.Is(err, unix.EINTR) {
-			break
-		}
-	}
-	if err != nil && !errors.Is(err, unix.ENOENT) {
+	if err := rolefile.Unlinkat(int(jj.Fd()), checkoutMarkerFile, 0); err != nil && !errors.Is(err, unix.ENOENT) {
 		return fmt.Errorf("remove checkout marker of workspace %s: %w", dir, &fs.PathError{
 			Op:   "unlinkat",
 			Path: filepath.Join(jj.Name(), checkoutMarkerFile),

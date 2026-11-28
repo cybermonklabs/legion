@@ -68,9 +68,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err != nil {
 		return Workspace{}, err
 	}
-	if source.issue != nil {
-		source.issue.steps = request.Steps
-	}
+	source.steps = request.Steps
 	defer func() {
 		_ = source.remove()
 	}()
@@ -89,8 +87,16 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		if err := restoreGitWorktree(ctx, run, workspace, request.Log); err != nil {
 			return Workspace{}, err
 		}
-	} else if err := createWorkspace(ctx, run, workspace, request.Log); err != nil {
-		return Workspace{}, err
+	} else {
+		if err := createWorkspace(ctx, run, workspace, request.Log); err != nil {
+			return Workspace{}, err
+		}
+		// The marker goes on the workspace as soon as it is registered, with no file yet, so a
+		// provision stopped anywhere from here to the checkout's end leaves it marked, and the next
+		// one clears whatever a cut-short checkout wrote before checking out again.
+		if err := writeCheckoutMarker(workspace.Dir); err != nil {
+			return Workspace{}, err
+		}
 	}
 	checkout := !exists
 	clearCheckout := false
@@ -187,12 +193,6 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		release, err := request.checkoutPlace(ctx)
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: wait for a checkout's place: %w", workspace.Dir, err)
-		}
-		if markCheckout {
-			if err := writeCheckoutMarker(workspace.Dir); err != nil {
-				release()
-				return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
-			}
 		}
 		_, err = runCheckedInWithin(ctx, run, workspace, request.checkoutBound(), []string{"jj", "sparse", "reset"})
 		release()

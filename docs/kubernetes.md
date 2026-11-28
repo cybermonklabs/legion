@@ -6686,46 +6686,6 @@ reviewer, merger):
    A role whose git or jj fails on a lock reads a note that says the same and tells the role to run the command again in about 16 minutes (`StaleGitLockNote`, `internal/workspace/jjgit.go`).
    The note's last sentence tells the role to tell the issue's architect if the lock is still there.
 
-#### Provision step times
-
-`workspace-init` logs the time of each step of the provision as it ends:
-`workspace-init: step <name> took <seconds>s`, in seconds with one decimal, and once the last has ended `workspace-init: steps took <seconds>s`, just before its last line, `workspace-init: <dir> on <bookmark> from <default branch>`.
-One clock in the process times every step (`workspace.Steps`), and each instant of the run belongs to one step, so the steps add up to the total but for each line's rounding to a tenth.
-A provision that fails logs `workspace-init: step <name> failed after <seconds>s` for the step it failed in, then its error, which stays the log's last line, the one the daemon's quote of the failed container ends with.
-A refusal of the provision's input, before it touches the volume, logs nothing on stdout.
-While a provision runs, the step it is in is the one after the last step its log names.
-
-A new clone runs these steps, in this order:
-
-- `inputs`, the checks of the provision's flags, variables, token and tools;
-
-- `stale-locks`, the removal of the stale git locks a killed process left;
-
-- `clone-stage`, the clone's staging directory beside it, the removal of a stale one, and its `git init`;
-
-- where a cache is named, `cache-wait`, the wait for a ready cache; `bucket-attempt`, the bucket's `/packs`, downloads and refs, which ends at once where the cache serves no `/packs`; where the bucket did not fill the clone, `cache-transfer`, the removal of what the bucket's attempt wrote and the stream from `/tar`; then `pack-check`, the packs' checksums (or `git index-pack` for a pack the tar sent without its index), and `history-check`, `git fsck --connectivity-only`.
-  A bucket attempt whose own check fails logs its `pack-check`, and its `history-check` where its packs passed, before `cache-transfer`;
-
-- `github-delta`, GitHub's `HEAD`, the origin's configuration and the fetch, with its retries;
-
-- `ref-pruning`, the local default branches, the removal of every ref but the default branches' and the issue's, and `origin/HEAD`;
-
-- `jj-init` (`jj git init --colocate`), `jj-clone-working-copy` (the clone's sparse clear and the abandon of its working-copy commit) and `jj-track` (the default branches' tracking and the clone's rename into place);
-
-- `jj-configuration`, the clone's jj settings;
-
-- `workspace-registration`, the issue workspace's `jj workspace add`;
-
-- `configuration`, the git worktree's lock and the clone's git configuration;
-
-- `checkout`, the wait for a checkout's place and `jj sparse reset`.
-
-On a clone that is already there, the provision runs `update-stale` (`jj workspace update-stale`) after `stale-locks` where the issue's workspace is there too, and then `jj-configuration`, `github-delta`, `ref-pruning`, `jj-import` (`jj git import`), `jj-track` and `workspace-registration`, which restores the workspace's git worktree where the workspace is there and adds it where not; then, for a workspace that was there, `checkout-check`, whether its checkout finished; then `configuration`, and where the workspace is new or holds no sparse pattern, `checkout-clear` (when a prior checkout that Legion started was cut short) and `checkout`.
-
-Before running `jj sparse reset` into a freshly registered workspace or one already marked, `Provision` writes `.jj/legion-checkout` without following a link and removes it once the checkout succeeds (and removes any leftover marker when `checkout-check` finds the workspace already checked out).
-On a retry after a killed checkout, the workspace holds no sparse pattern and `.jj/legion-checkout` is still there, so `checkout-clear` removes every entry of the workspace directory except `.jj` and `.git` without following a link before `checkout` runs `jj sparse reset` again.
-Where a workspace holds no sparse pattern and no marker (an agent cleared its patterns), `checkout-clear` does not run and `checkout` writes no marker, so the workspace's untracked files stay.
-
 The pod's disk is declared in the pod template itself, as a generic ephemeral volume (`issuePod.disk`, `podkind.go`):
 `ReadWriteOnce`, of `runtime.kubernetes.issue_volume` (50Gi by default) and `storage_class`.
 Kubernetes creates its claim when the pod starts, names it `<pod>-issue` after the pod and the volume, makes the pod its owner, and deletes it when the pod goes;
@@ -7167,6 +7127,46 @@ Its launcher's command then adds `--microvm`, and, where the deployment sets `ru
 
 The image probe runs as a Sandbox of its own, `legion-probe-<project>-<digest12>`, with `shutdownPolicy: Delete`, its one container carrying the probe's own fixed reservation
 — 500m and 1Gi, over a 5Gi disk bound and a 1Gi disk request (`probeReservation`, `internal/daemon/kubernetes.go`), none of an issue pod's, since `legion probe-image` starts one Oh My Pi at a time and runs no lane, and a probe sized as an issue pod could keep the daemon from booting on a full pool ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes), [Issue sizing](#issue-sizing-one-reservation-per-pod)).
+
+#### Provision step times
+
+`workspace-init` logs the time of each step of the provision as it ends:
+`workspace-init: step <name> took <seconds>s`, in seconds with one decimal, and once the last has ended `workspace-init: steps took <seconds>s`, just before its last line, `workspace-init: <dir> on <bookmark> from <default branch>`.
+One clock in the process times every step (`workspace.Steps`), and each instant of the run belongs to one step, so the steps add up to the total but for each line's rounding to a tenth.
+A provision that fails logs `workspace-init: step <name> failed after <seconds>s` for the step it failed in, then its error, which stays the log's last line, the one the daemon's quote of the failed container ends with.
+A refusal of the provision's input, before it touches the volume, logs nothing on stdout.
+While a provision runs, the step it is in is the one after the last step its log names.
+
+A new clone runs these steps, in this order:
+
+- `inputs`, the checks of the provision's flags, variables, token and tools;
+
+- `stale-locks`, the removal of the stale git locks a killed process left;
+
+- `clone-stage`, the clone's staging directory beside it, the removal of a stale one, and its `git init`;
+
+- where a cache is named, `cache-wait`, the wait for a ready cache; `bucket-attempt`, the bucket's `/packs`, downloads and refs, which ends at once where the cache serves no `/packs`; where the bucket did not fill the clone, `cache-transfer`, the removal of what the bucket's attempt wrote and the stream from `/tar`; then `pack-check`, the packs' checksums (or `git index-pack` for a pack the tar sent without its index), and `history-check`, `git fsck --connectivity-only`.
+  A bucket attempt whose own check fails logs its `pack-check`, and its `history-check` where its packs passed, before `cache-transfer`;
+
+- `github-delta`, GitHub's `HEAD`, the origin's configuration and the fetch, with its retries;
+
+- `ref-pruning`, the local default branches, the removal of every ref but the default branches' and the issue's, and `origin/HEAD`;
+
+- `jj-init` (`jj git init --colocate`), `jj-clone-working-copy` (the clone's sparse clear and the abandon of its working-copy commit) and `jj-track` (the default branches' tracking and the clone's rename into place);
+
+- `jj-configuration`, the clone's jj settings;
+
+- `workspace-registration`, the issue workspace's `jj workspace add` and its checkout marker (below);
+
+- `configuration`, the git worktree's lock and the clone's git configuration;
+
+- `checkout`, the wait for a checkout's place and `jj sparse reset`.
+
+On a clone that is already there, the provision runs `update-stale` (`jj workspace update-stale`) after `stale-locks` where the issue's workspace is there too, and then `jj-configuration`, `github-delta`, `ref-pruning`, `jj-import` (`jj git import`), `jj-track` and `workspace-registration`, which restores the workspace's git worktree where the workspace is there and adds it where not; then, for a workspace that was there, `checkout-check`, whether its checkout finished; then `configuration`, and where the workspace is new or holds no sparse pattern, `checkout-clear` (where the workspace still carries the checkout marker, below) and `checkout`.
+
+As soon as `workspace-registration` has registered a fresh workspace, before `configuration`, `Provision` writes `.jj/legion-checkout` without following a link, and the marker stays through every retry until a `jj sparse reset` succeeds, after which `Provision` removes it (`checkout-check` also removes a leftover marker from a workspace it finds already checked out).
+On a retry after a provision stopped anywhere between the registration and the checkout's end, the workspace holds no sparse pattern and `.jj/legion-checkout` is still there, so `checkout-clear` removes every entry of the workspace directory except `.jj` and `.git` without following a link before `checkout` runs `jj sparse reset` again.
+Where a workspace holds no sparse pattern and no marker (an agent cleared its patterns), `checkout-clear` does not run and `checkout` writes no marker, so the workspace's untracked files stay.
 
 ### The repository cache
 
@@ -10320,7 +10320,7 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   Its log (`kubectl -n legion logs <pod> -c workspace-init`) has one line for each step as the
   step ends, `workspace-init: step <name> took <seconds>s`, so a pod long in `Pending` is in the
   step after the last one named there, in the order
-  [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) lists them.
+  [Provision step times](#provision-step-times) lists them.
   It waits on no other issue pod and takes no lock, since the clone it provisions is on the
   issue's own volume.
   The launch that created the pod waits for the role's launcher, which starts only once the init

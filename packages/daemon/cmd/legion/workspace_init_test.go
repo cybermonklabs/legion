@@ -836,7 +836,7 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	}
 	workspace := v.workspace("LEGION-42")
 	const fill = "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub ("
-	lines := strings.Split(strings.TrimSuffix(withoutStepLines(strings.Join(printed, "\n")+"\n"), "\n"), "\n")
+	lines := slices.DeleteFunc(slices.Clone(printed), stepLine.MatchString)
 	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from main"; len(lines) != 2 || !strings.HasPrefix(lines[0], fill) || lines[1] != want {
 		t.Fatalf("stdout %q, want the fill line then %q, besides the step lines", printed, want)
 	}

@@ -76,7 +76,7 @@ type FetchRequest struct {
 // only for /packs and /tar; /healthz remains public. Bound limits the verification of what /tar
 // streamed, counted from the stream's end; zero takes FetchTimeout. The attempt on the cache's
 // bucket holds BucketFetchTimeout of its own. Steps, when set, is the step clock of the provision
-// the fill is part of (issuePod.steps), on which StreamCache begins cache-wait, bucket-attempt,
+// the fill is part of (remote.steps), on which StreamCache begins cache-wait, bucket-attempt,
 // cache-transfer, and each verification's pack-check and history-check; nil, as the repository
 // cache's own tests leave it, logs nothing.
 type CacheStream struct {

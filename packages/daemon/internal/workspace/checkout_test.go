@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func cutShortCheckoutTools(t *testing.T, record, partial string) map[string]stri
 	wrapper := filepath.Join(t.TempDir(), "jj")
 	script := "#!/bin/sh\n" +
 		"case \" $* \" in *' sparse reset '*)\n" +
-		"  if [ -f .jj/legion-checkout ]; then printf 'present\\n' > '" + record + "'; else printf 'absent\\n' > '" + record + "'; fi\n" +
+		"  if [ -f .jj/" + checkoutMarkerFile + " ]; then printf 'present\\n' > '" + record + "'; else printf 'absent\\n' > '" + record + "'; fi\n" +
 		"  cp -RP '" + partial + "/.' .\n" +
 		"  exit 137\n" +
 		";; esac\n" +
@@ -61,6 +62,8 @@ type checkoutObserverRunner struct {
 	inner       Runner
 	sawCheckout bool
 	sawMarker   bool
+	// err is the marker's lstat error at that moment, other than its absence.
+	err error
 }
 
 func (r *checkoutObserverRunner) Timeout() time.Duration { return r.inner.Timeout() }
@@ -68,13 +71,11 @@ func (r *checkoutObserverRunner) Timeout() time.Duration { return r.inner.Timeou
 func (r *checkoutObserverRunner) Run(ctx context.Context, command Command) (Result, error) {
 	if isCheckout(command.Argv) {
 		r.sawCheckout = true
-		entries, err := os.ReadDir(filepath.Join(command.Dir, ".jj"))
-		if err == nil {
-			for _, entry := range entries {
-				if entry.Name() == "legion-checkout" {
-					r.sawMarker = true
-				}
-			}
+		switch _, err := os.Lstat(filepath.Join(command.Dir, ".jj", checkoutMarkerFile)); {
+		case err == nil:
+			r.sawMarker = true
+		case !errors.Is(err, fs.ErrNotExist):
+			r.err = err
 		}
 	}
 	return r.inner.Run(ctx, command)
@@ -158,8 +159,79 @@ func TestProvisionRedoesACheckoutThatWasCutShort(t *testing.T) {
 	if diff := strings.TrimSpace(runSetup(t, working.Dir, "jj", "diff", "--summary", "-R", working.Dir)); diff != "" {
 		t.Errorf("jj diff --summary = %q, want empty", diff)
 	}
-	if _, err := os.Lstat(filepath.Join(working.Dir, ".jj", "legion-checkout")); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Lstat(filepath.Join(working.Dir, ".jj", checkoutMarkerFile)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("after a finished checkout, .jj/legion-checkout lstat = %v, want ErrNotExist", err)
+	}
+}
+
+// A freshly registered workspace is marked as soon as it is registered, before the provision's
+// configuration: a provision stopped between the registration and the checkout (here, its wait for
+// a checkout's place ends) leaves the workspace marked, so the next provision keeps the marker
+// through a checkout that is then cut short, and the one after that clears what the cut-short
+// checkout wrote (checkout-clear) before it checks out the whole tree.
+func TestProvisionMarksAWorkspaceAsSoonAsItIsRegistered(t *testing.T) {
+	t.Parallel()
+	run := newLocalRunner(t)
+	tree := map[string]string{"alpha.txt": "alpha content\n", "half.txt": "first half\nsecond half\n"}
+	pushTreeFiles(t, run.remote, "main", tree)
+	req := provisionRequest(t)
+	location, err := Location(req.StateDir, req.Repo, req.Issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(location.Dir, ".jj", checkoutMarkerFile)
+
+	// The step clock logs the registration's line as the configuration begins.
+	var markedAtConfiguration bool
+	stopped := req
+	stopped.Steps = NewSteps(newTestClock(), func(line string) {
+		if strings.HasPrefix(line, "step workspace-registration ") {
+			_, err := os.Lstat(marker)
+			markedAtConfiguration = err == nil
+		}
+	})
+	stopped.CheckoutSlot = func(context.Context) (func(), error) { return nil, context.Canceled }
+	if _, err := Provision(context.Background(), run, stopped); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Provision whose wait for a checkout's place ended = %v, want context.Canceled", err)
+	}
+	if !markedAtConfiguration {
+		t.Errorf("the freshly registered workspace held no .jj/%s as its configuration began", checkoutMarkerFile)
+	}
+	if _, err := os.Lstat(marker); err != nil {
+		t.Fatalf("after a provision stopped before its checkout, .jj/%s lstat = %v, want the marker there", checkoutMarkerFile, err)
+	}
+
+	partial := t.TempDir()
+	if err := os.WriteFile(filepath.Join(partial, "half.txt"), []byte("first half\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "marker.txt")
+	cut := &checkoutRunner{inner: run, checkout: NewRunner(testTimeout, cutShortCheckoutTools(t, record, partial))}
+	if _, err := Provision(context.Background(), cut, req); err == nil {
+		t.Fatal("the second Provision succeeded despite its cut-short checkout stand-in")
+	}
+	if recorded, err := os.ReadFile(record); err != nil || strings.TrimSpace(string(recorded)) != "present" {
+		t.Fatalf("the cut-short checkout recorded .jj/%s as %q (%v), want present", checkoutMarkerFile, recorded, err)
+	}
+
+	var steps []string
+	again := req
+	again.Steps = NewSteps(newTestClock(), func(line string) { steps = append(steps, line) })
+	working, err := Provision(context.Background(), run, again)
+	if err != nil {
+		t.Fatalf("third Provision: %v", err)
+	}
+	if !slices.ContainsFunc(steps, func(line string) bool { return strings.HasPrefix(line, "step checkout-clear ") }) {
+		t.Errorf("the provision after the cut-short checkout logged %q, want its checkout-clear", steps)
+	}
+	requireCheckedOut(t, working)
+	for rel, want := range tree {
+		if got, err := os.ReadFile(filepath.Join(working.Dir, rel)); err != nil || string(got) != want {
+			t.Errorf("%s after the third Provision = %q (%v), want %q", rel, got, err, want)
+		}
+	}
+	if _, err := os.Lstat(marker); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("after a finished checkout, .jj/%s lstat = %v, want ErrNotExist", checkoutMarkerFile, err)
 	}
 }
 
@@ -176,7 +248,7 @@ func TestProvisionKeepsTheFilesOfAWorkspaceItDidNotCheckOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Provision: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(working.Dir, ".jj", "legion-checkout")); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Lstat(filepath.Join(working.Dir, ".jj", checkoutMarkerFile)); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("after a finished checkout, .jj/legion-checkout lstat = %v, want ErrNotExist", err)
 	}
 
@@ -194,6 +266,9 @@ func TestProvisionKeepsTheFilesOfAWorkspaceItDidNotCheckOut(t *testing.T) {
 	}
 	if !observer.sawCheckout {
 		t.Fatal("second Provision ran no `jj sparse reset`")
+	}
+	if observer.err != nil {
+		t.Fatalf("lstat of .jj/%s as the second Provision's checkout started: %v", checkoutMarkerFile, observer.err)
 	}
 	if observer.sawMarker {
 		t.Error("second Provision wrote .jj/legion-checkout for a workspace whose patterns an agent cleared")
@@ -226,7 +301,7 @@ func TestProvisionRemovesTheMarkerOfAFinishedCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Provision: %v", err)
 	}
-	marker := filepath.Join(working.Dir, ".jj", "legion-checkout")
+	marker := filepath.Join(working.Dir, ".jj", checkoutMarkerFile)
 	if err := os.WriteFile(marker, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}

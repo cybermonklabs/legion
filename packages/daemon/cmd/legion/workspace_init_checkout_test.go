@@ -8,13 +8,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
+
+// fixtureTreeFile is the path and the content withFixtureTree gives the tree's i-th nested file.
+func fixtureTreeFile(i int) (rel, body string) {
+	return fmt.Sprintf("d%02d/s%02d/f%04d.txt", i/100, (i/10)%10, i), fmt.Sprintf("file %04d body line\n", i)
+}
 
 // withFixtureTree gives the volume a bare remote whose defaultBranch holds one commit containing
 // nestedCount files in nested directories, an executable file, a symlink, an empty file and a
@@ -38,8 +42,7 @@ func (v *issueVolume) withFixtureTree(t *testing.T, defaultBranch string, nested
 	}
 
 	for i := range nestedCount {
-		rel := fmt.Sprintf("d%02d/s%02d/f%04d.txt", i/100, (i/10)%10, i)
-		body := fmt.Sprintf("file %04d body line\n", i)
+		rel, body := fixtureTreeFile(i)
 		writeInline("100644", rel, []byte(body))
 	}
 	writeInline("100755", "bin/run.sh", []byte("#!/bin/sh\necho ok\n"))
@@ -88,7 +91,6 @@ func assertWholeCheckout(t *testing.T, v *issueVolume, ws string, wantCount int)
 		t.Fatalf("git ls-tree -r HEAD listed %d entries, want %d", len(lines), wantCount)
 	}
 
-	entries := make([]treeEntry, 0, len(lines))
 	var regularPaths strings.Builder
 	regularEntries := make([]treeEntry, 0, len(lines))
 	for _, line := range lines {
@@ -101,8 +103,6 @@ func assertWholeCheckout(t *testing.T, v *issueVolume, ws string, wantCount int)
 			t.Fatalf("unexpected ls-tree metadata: %q", line)
 		}
 		e := treeEntry{mode: fields[0], sha: fields[2], path: path}
-		entries = append(entries, e)
-
 		full := filepath.Join(ws, filepath.FromSlash(e.path))
 		info, err := os.Lstat(full)
 		if err != nil {
@@ -171,8 +171,8 @@ func assertWholeCheckout(t *testing.T, v *issueVolume, ws string, wantCount int)
 			found++
 		}
 	}
-	if found != len(entries) {
-		t.Errorf("find counted %d files and links outside .git/.jj, want %d", found, len(entries))
+	if found != len(lines) {
+		t.Errorf("find counted %d files and links outside .git/.jj, want %d", found, len(lines))
 	}
 
 	if diff := v.jj(t, "diff", "--summary", "-R", ws); diff != "" {
@@ -218,12 +218,12 @@ func TestWorkspaceInitRedoesACheckoutThatWasCutShort(t *testing.T) {
 	// Stage half of the tree's files plus the first half of large.bin's bytes.
 	partial := t.TempDir()
 	for i := range nestedCount / 2 {
-		rel := fmt.Sprintf("d%02d/s%02d/f%04d.txt", i/100, (i/10)%10, i)
+		rel, body := fixtureTreeFile(i)
 		full := filepath.Join(partial, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(full, []byte(fmt.Sprintf("file %04d body line\n", i)), 0o644); err != nil {
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -262,7 +262,7 @@ func TestWorkspaceInitRedoesACheckoutThatWasCutShort(t *testing.T) {
 		t.Fatalf("stat cut large.bin: %v", err)
 	}
 	if cutInfo.Size() != int64(len(large)/2) {
-		t.Fatalf("cut large.bin size = %s, want %d", strconv.FormatInt(cutInfo.Size(), 10), len(large)/2)
+		t.Fatalf("cut large.bin size = %d, want %d", cutInfo.Size(), len(large)/2)
 	}
 
 	// Second provision with the real jj must redo the checkout from an empty working copy.

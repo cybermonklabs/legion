@@ -1227,13 +1227,14 @@ the workspace's registration with no files (`jj workspace add --sparse-patterns 
 bookmark, and the clone's git configuration. The checkout of the working copy (`jj sparse reset`
 in the new workspace) writes only that workspace and runs with the lock released; at most 16
 checkouts run at once, and a provision waiting on its repository's store lock holds no place
-among them. Before `jj sparse reset` into a freshly registered workspace or one already marked,
-`Provision` writes `.jj/legion-checkout` without following a link and removes it once the checkout
-succeeds (and removes any leftover marker when `CheckedOut` answers true). A workspace whose
-checkout Legion started and that was cut short holds no sparse pattern and keeps that marker, so
-its next provision clears every entry of the workspace directory except `.jj` and `.git` without
-following a link before running `jj sparse reset` again; a workspace with no sparse patterns and no
-marker (one whose patterns an agent cleared) keeps its untracked files and gets no marker. A
+among them. As soon as it registers a fresh workspace, before the clone's git configuration,
+`Provision` writes `.jj/legion-checkout` without following a link, and keeps it through every
+retry until a `jj sparse reset` succeeds, then removes it (and removes any leftover marker when
+`CheckedOut` answers true). A workspace whose provision was cut short anywhere between its
+registration and its checkout's end holds no sparse pattern and keeps that marker, so its next
+provision clears every entry of the workspace directory except `.jj` and `.git` without following
+a link before running `jj sparse reset` again; a workspace with no sparse patterns and no marker
+(one whose patterns an agent cleared) keeps its untracked files and gets no marker. A
 removal takes the issue's turn and holds the store lock only for its jj commands on the clone and
 the move of the workspace aside to `<dir>.removing`; the directory is deleted after the lock is
 released, and a `<dir>.removing` a crash left is cleared by the issue's next removal.

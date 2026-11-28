@@ -902,7 +902,7 @@ func runCheckedOnClone(ctx context.Context, run Runner, cloneDir string, args ..
 // made, nothing more (issuePodClone fetched it); and for the tmux runtime's clone, the default
 // branch and the issue's.
 func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, source remote) error {
-	source.steps().Begin("jj-configuration")
+	source.steps.Begin("jj-configuration")
 	setting, err := runCheckedOnClone(ctx, run, cloneDir, "config", "get", "git.abandon-unreachable-commits")
 	if err != nil {
 		return err
@@ -923,11 +923,11 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		if err != nil {
 			return err
 		}
-		source.issue.steps.Begin("jj-import")
+		source.steps.Begin("jj-import")
 		if _, err := runCheckedOnClone(ctx, run, cloneDir, "git", "import"); err != nil {
 			return err
 		}
-		source.issue.steps.Begin("jj-track")
+		source.steps.Begin("jj-track")
 		for _, branch := range defaults {
 			if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(branch)); err != nil {
 				return err
