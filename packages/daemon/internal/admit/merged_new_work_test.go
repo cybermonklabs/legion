@@ -975,11 +975,40 @@ func TestARootContinuationKeepsMemberWorkAndArchitectTask(t *testing.T) {
 		}
 		row = record.PhaseRowOf(rows, claim.RoleArchitect)
 	})
-	// The promotion resumes the standing run and raises no entry: the row still names entry 2. A
-	// send of entry 2's work derives its text from the record at the send (SendArchitectStart), so
-	// no start's text is compared here.
+	// The promotion resumes the standing run and raises no entry: the row still names entry 2.
 	if row.Entry != 2 || row.EntryTask == "" {
 		t.Fatalf("the architect's row after the request = %+v, want its entry 2 kept", row)
+	}
+	// No start supersedes the pending task: each architect start that carries a task is a send of
+	// entry 2 itself. A send derives its text from the record at the send (SendArchitectStart), so
+	// the entry it names is compared, not its text.
+	entries, err := pool.Query(context.Background(), `select coalesce((payload->>'entry')::bigint, 0) from outbox
+		where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' and payload->>'role' = $2
+		and coalesce(payload->>'task', '') <> '' order by id`, mnwRoot, string(claim.RoleArchitect))
+	if err != nil {
+		t.Fatalf("read the architect starts of %s: %v", mnwRoot, err)
+	}
+	var sent []int64
+	for entries.Next() {
+		var entry int64
+		if err := entries.Scan(&entry); err != nil {
+			t.Fatalf("scan an architect start of %s: %v", mnwRoot, err)
+		}
+		sent = append(sent, entry)
+	}
+	if err := entries.Err(); err != nil {
+		t.Fatalf("read the architect starts of %s: %v", mnwRoot, err)
+	}
+	entries.Close()
+	// The architect's claim stands suspended, so the promotion resumes it on its standing entry.
+	if len(sent) == 0 {
+		t.Fatalf("no architect start of %s carries a task after the request, want its suspended architect resumed on entry %d", mnwRoot, row.Entry)
+	}
+	for _, entry := range sent {
+		if entry != row.Entry {
+			t.Fatalf("the architect starts of %s that carry a task name entries %v, want each entry %d: a start of another entry would supersede the pending task",
+				mnwRoot, sent, row.Entry)
+		}
 	}
 	applyFact(t, pool, admission, "mnw-gate-request", intake.GateRequestFound{Issue: mnwRoot, Generation: root.TreeRun(), ArtifactID: "spec-" + mnwRoot,
 		RequestAsk: "ask-700", Since: 2})
