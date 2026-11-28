@@ -87,6 +87,27 @@ test("a link whose marked words hold a second mark is one anchor", async () => {
   }
 });
 
+// A link that opens with such a mark has no anchor before the mark: once the anchors inside the
+// mark join, the mark holds one anchor, which a later pass joins to the anchors after it.
+test("a link that opens with marked words holding a second mark is one anchor", async () => {
+  const { body, unmount } = await painted("[**p `q`** r](https://example.com/w)");
+  try {
+    const anchors = [...body.querySelectorAll("a")];
+    expect(
+      anchors.map((anchor) => anchor.outerHTML),
+      "the link that opens with marked words holding a second mark was drawn as more than one anchor"
+    ).toHaveLength(1);
+    const [anchor] = anchors;
+    expect(anchor).toHaveAttribute("href", "https://example.com/w");
+    expect(anchor?.textContent).toBe("p q r");
+    expect(anchor?.querySelector("strong code")?.textContent, "the anchor lost its marks").toBe(
+      "q"
+    );
+  } finally {
+    unmount();
+  }
+});
+
 test("two links to the same address split by plain words stay two", async () => {
   const { body, unmount } = await painted(
     "[one](https://example.com/x) and [two](https://example.com/x)"

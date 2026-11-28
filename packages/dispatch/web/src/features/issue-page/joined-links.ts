@@ -49,12 +49,23 @@ function linkOf(node: Node | null): HTMLAnchorElement | null {
  * same `href` that stand side by side, with nothing between them but the mark elements around
  * each, are one link: the first anchor takes the words of every other, each marked run keeping
  * its mark inside it, and the others go. Two links to one address with any words between them
- * stay two. Each paint draws the anchors anew, so the row's pass calls this after each paint,
- * before it links what the words cite (`RowText.tsx`). An anchor something else draws into or
- * owns, a reference's, a picture's or the row's own, is left as it is (`JOINABLE`); a link the
- * painter draws whole, such as an `https://` one, is joined.
+ * stay two. A join can leave a mark around one anchor only, which a pass that has gone by it never
+ * joins to its neighbours, so this passes over the anchors until a pass joins nothing. Each paint
+ * draws the anchors anew, so the row's pass calls this after each paint, before it links what the
+ * words cite (`RowText.tsx`). An anchor something else draws into or owns, a reference's, a
+ * picture's or the row's own, is left as it is (`JOINABLE`); a link the painter draws whole, such
+ * as an `https://` one, is joined.
  */
 export function joinSplitLinks(element: Element): void {
+  while (joinPass(element)) {
+    // Each join takes at least one anchor off the page, so a pass that joins nothing comes.
+  }
+}
+
+/** One pass of `joinSplitLinks` over the anchors of `element` in document order; whether it
+ *  joined any. */
+function joinPass(element: Element): boolean {
+  let joined = false;
   for (const anchor of [...element.querySelectorAll<HTMLAnchorElement>(JOINABLE)]) {
     // An anchor an earlier one took the words of has left the element.
     if (!element.contains(anchor)) continue;
@@ -71,8 +82,12 @@ export function joinSplitLinks(element: Element): void {
     ) {
       run.push(next);
     }
-    if (run.length > 1) join(anchor, run);
+    if (run.length > 1) {
+      join(anchor, run);
+      joined = true;
+    }
   }
+  return joined;
 }
 
 /** Makes `joined`, the link of the first piece of `run`, the one anchor around the words of every
