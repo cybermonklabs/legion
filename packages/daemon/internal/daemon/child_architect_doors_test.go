@@ -339,7 +339,7 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 // under it holds the parent in awaiting_children (dispatch://INFRA-3320), and that move tells the
 // architect above the child first, with the awaiting-children notice of the parent; the child's
 // start is the one other notice it gets. The parent's architect works, or the idle release took
-// its pod, or it failed. A released claim holds its role (record.HoldsRole), so the first attempt
+// its pod, or it failed. A released claim holds its role (supervise.HoldsRole), so the first attempt
 // of each notice wakes the pod and waits on its backoff, as on INFRA's daemon (INFRA-4640,
 // INFRA-4318), and the child's start waits behind the parent's earlier notice to the same
 // architect. The child's architect starts while the notices wait, and the attempt after the

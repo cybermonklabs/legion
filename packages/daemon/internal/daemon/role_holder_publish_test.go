@@ -165,9 +165,9 @@ func queuedRoleHolders(t *testing.T, pool *store.Pool) ([]string, int) {
 
 // The executor reads the issue's set from the claims at run time and sends it whole: a claim
 // counts while it holds its role (supervise.HoldsRole) and records a session. A retired, a
-// failed and a suspended claim whose suspension is not the idle release's leave the set, and so
-// does a claim with no session yet. The set is read when the row runs, not when it is queued, so a
-// claim that ended between the two is gone.
+// failed and a suspended claim whose suspension is neither the idle release's nor the work hold's
+// leave the set, and so does a claim with no session yet. The set is read when the row runs, not
+// when it is queued, so a claim that ended between the two is gone.
 func TestTheExecutorPublishesTheHeldSetAtRunTime(t *testing.T) {
 	t.Parallel()
 	const issue = "LEGION-208"
@@ -417,10 +417,11 @@ func TestBootQueuesEveryRecentIssue(t *testing.T) {
 // suspensionsKeepTheirRole is whether a claim suspended by each source holds its role, which is
 // whether Dispatch's set keeps naming its session (supervise.HoldsRole): the idle release's
 // suspension, which a project pause's stop makes too, keeps the session, the phase and the task,
-// and the next wake resumes the same session, so the role is still the claim's; every other source
-// stops the agent until a rule or a resume starts it again, and the role with it. One row for each
-// source, so a change of what a source does is one row's edit;
-// TestEverySuspensionSourceHasARowOfItsOwn holds the table to the sources supervise declares.
+// and the next wake resumes the same session, so the role is still the claim's; the work hold's
+// stop keeps them too, and the hold's opening resumes the same session, so its role is still the
+// claim's as well; every other source stops the agent until a rule or a resume starts it again,
+// and the role with it. One row for each source, so a change of what a source does is one row's
+// edit; TestEverySuspensionSourceHasARowOfItsOwn holds the table to the sources supervise declares.
 var suspensionsKeepTheirRole = []struct {
 	by    supervise.SuspendSource
 	keeps bool
@@ -431,6 +432,7 @@ var suspensionsKeepTheirRole = []struct {
 	{supervise.SuspendedByDaemon, false},
 	{supervise.SuspendedByExit, false},
 	{supervise.SuspendedByUnknown, false},
+	{supervise.SuspendedByHold, true},
 }
 
 func TestEverySuspensionSourceHasARowOfItsOwn(t *testing.T) {
@@ -508,15 +510,15 @@ func (r *heldRoleRig) step(name string, state supervise.ClaimState, by supervise
 }
 
 // A suspension keeps its claim's role in the set Dispatch is sent only where its source does
-// (suspensionsKeepTheirRole). The idle release's changes no holder, so it queues nothing, and the
-// set names the session through the suspension and through the resume over the kept session —
-// queued, launching, the agent's hello and its registration: an idle release is not the loss of a
-// role, and the set does not empty and fill again around it. Every other source ends the role: the
-// suspension queues the set without the session, and the first step of the resume over the session
-// the claim kept, a queued claim or a launching one, queues the set with it again, before the agent
-// registers, since a claim queued or launched over its session holds its role
-// (supervise.HoldsRole). Each source is resumed both ways: through the queue, and straight into the
-// launch.
+// (suspensionsKeepTheirRole). The idle release's and the work hold's change no holder, so they
+// queue nothing, and the set names the session through the suspension and through the resume over
+// the kept session — queued, launching, the agent's hello and its registration: an idle release
+// or a work hold is not the loss of a role, and the set does not empty and fill again around it.
+// Every other source ends the role: the suspension queues the set without the session, and the
+// first step of the resume over the session the claim kept, a queued claim or a launching one,
+// queues the set with it again, before the agent registers, since a claim queued or launched over
+// its session holds its role (supervise.HoldsRole). Each source is resumed both ways: through the
+// queue, and straight into the launch.
 //
 // The control is the code before this change, which read a role as held only while a process ran
 // (supervise.HoldsCapability): there the idle release queues the empty set, and neither a queued
@@ -548,12 +550,12 @@ func TestASuspensionKeepsItsClaimsRoleOnlyWhereItsSourceDoes(t *testing.T) {
 
 // A claim the idle release suspended holds its role until the claim ends or its role moves to
 // another session, and each of those changes queues its publication: a failure and a retirement
-// send the set without the session; a suspension by any other source over the released claim,
-// which changes its source alone (supervise's suspendedAgain: a linger, a leave, a park, an
-// operator's or the controller's suspend), sends the set without it too, one row for each such
-// source (suspensionsKeepTheirRole); a session the claim forgot, as a fresh start forgets it,
-// sends the set without it; and a resume whose agent registers under another session sends the
-// set naming the new session in the old one's place, with no empty set between them.
+// send the set without the session; a suspension over the released claim by a source that does
+// not keep the role, which changes its source alone (supervise's suspendedAgain: a linger, a
+// leave, a park, an operator's or the controller's suspend), sends the set without it too, one row
+// for each such source (suspensionsKeepTheirRole); a session the claim forgot, as a fresh start
+// forgets it, sends the set without it; and a resume whose agent registers under another session
+// sends the set naming the new session in the old one's place, with no empty set between them.
 //
 // The control is the code before this change, under which the release had already sent the empty
 // set: there no end of a released claim queues a publication, and the resume names no session

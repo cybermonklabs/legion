@@ -94,12 +94,12 @@ func openHolderTree(t *testing.T, s *Store) {
 // row it writes names another. A claim's session holds its role in the states and suspension
 // sources supervise.HoldsRole answers true for, so the agent's registration, a new session while
 // the role is held, and each end — retirement, failure and a suspension by any source but the
-// idle release's — queue it, through every write that stores a claim: PutClaim,
-// PutClaimAndDelivery, RetireDelivery and AdmitClaim. A write that changes no holder queues
-// nothing: a ready, a turn's start and end, a second write of an ended claim, an admission that
-// launches the claim again over the session it kept and that session's registration, and the idle
-// release's suspension. A pending row of the issue is made due again rather than queued beside,
-// so the outbox never holds two.
+// idle release's or the work hold's — queue it, through every write that stores a claim:
+// PutClaim, PutClaimAndDelivery, RetireDelivery and AdmitClaim. A write that changes no holder
+// queues nothing: a ready, a turn's start and end, a second write of an ended claim, an admission
+// that launches the claim again over the session it kept and that session's registration, and the
+// idle release's suspension. A pending row of the issue is made due again rather than queued
+// beside, so the outbox never holds two.
 func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

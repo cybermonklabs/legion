@@ -314,17 +314,17 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // role sessions is queued when the write changes the session the row names as the holder of c's
 // role (roleHolder, EnqueueRoleHolders): the agent registers, a new session takes the role, or the
 // claim leaves the states that hold it (supervise.HoldsRole) — it retires, fails, or is suspended
-// by any source but the idle release's — or comes back to them. The idle release's suspension and
-// a pause's stop, which both suspend as released, keep the session and its role, and so does the
-// launch that resumes that session, so none of them queues a publication. The state event is
-// queued when the write moves the state the state route serves at c's issue's role, or lists c's
-// issue first (storedClaim.unlisted, queueClaimState). Both are read against the row the write
-// replaces, read under its lock (lockedClaim). The two switches (queuesRoleHolders, queuesState)
-// depend on no stored row, so putClaim reads them inside tx before it takes that lock: a write for
-// which both are off writes the row without reading it first (upsertClaim) and queues nothing. A
-// write that changes neither queues nothing either. A write of a claim of another project's issue
-// queues no publication, since only that project's daemon runs a row keyed by its issue
-// (queuesRoleHolders).
+// by any source but the idle release's or the work hold's — or comes back to them. The idle
+// release's suspension and a pause's stop, which both suspend as released, keep the session and
+// its role, and so do the work hold's stop and the launch that resumes that session, so none of
+// them queues a publication. The state event is queued when the write moves the state the state
+// route serves at c's issue's role, or lists c's issue first (storedClaim.unlisted,
+// queueClaimState). Both are read against the row the write replaces, read under its lock
+// (lockedClaim). The two switches (queuesRoleHolders, queuesState) depend on no stored row, so
+// putClaim reads them inside tx before it takes that lock: a write for which both are off writes
+// the row without reading it first (upsertClaim) and queues nothing. A write that changes neither
+// queues nothing either. A write of a claim of another project's issue queues no publication,
+// since only that project's daemon runs a row keyed by its issue (queuesRoleHolders).
 // A write that queued a row wakes that row's lane once tx commits, as the hook of tx's commit
 // (wakeRoleHolders, and the state events' wake, PublishState): no caller wakes it. Every claim
 // write goes through here — PutClaim, PutClaimAndDelivery, RetireDelivery, ReleaseHolds,

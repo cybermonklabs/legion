@@ -20,7 +20,9 @@ body: |-
   latest 64 seconds after its agent's ready, where that is later than those 2 minutes. The
   architects go on. The stop
   is a suspension source of its own, `hold`: no rule starts the claim, the daemon keeps its pod, and
-  `legion claims list` shows it as `suspended:hold`. A pod update round passes over such a claim as
+  `legion claims list` shows it as `suspended:hold`.
+  A worker the hold stopped stays in Dispatch's role holders of its issue through the hold, as a
+  worker the idle release suspended does. A pod update round passes over such a claim as
   it passes over a role the daemon suspended: it does not ask it or wait for it. The daemon keeps
   no copy of a workspace and the stopped worker cannot push, so where a role process runs in the
   pod, the round reads the issue workspace through that process at each attempt and replaces the

@@ -3402,8 +3402,9 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 // package declares, which are every value the claims table's checks allow, so no statement spells
 // the rule again and a state or a source added there is read here with nothing added. So a claim
 // the idle release or a pause's stop suspended (supervise.SuspendedByReleased) holds its role, and
-// so does one launched again over the session it kept; a failed or a retired claim holds none, and
-// neither does one any other source suspended.
+// so does one the work hold suspended (supervise.SuspendedByHold) and one launched again over the
+// session it kept; a failed or a retired claim holds none, and neither does one any other source
+// suspended.
 var roleHoldingStates, roleHoldingSources = roleHoldingPairs()
 
 func roleHoldingPairs() (states, sources []string) {
