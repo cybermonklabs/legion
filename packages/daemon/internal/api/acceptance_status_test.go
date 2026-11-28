@@ -194,7 +194,9 @@ func TestAnAcceptanceWhoseFactDoesNotTakeWritesTheStatusBack(t *testing.T) {
 // took it, is read again: Dispatch shows the act's status past the read the write was fenced on,
 // made by no one but the daemon, so the act goes on to its fact as a write answered. A write that
 // failed before Dispatch took it reads the old status again and is answered DISPATCH_FAILED with
-// nothing applied.
+// nothing applied. Where the read after a lost answer fails too, nothing is applied, and a status
+// row is queued that writes the old status back only where Dispatch shows the act's status, since
+// nothing else would undo a write that landed.
 func TestAnAcceptanceWhoseAnswerWasLostIsReadAgain(t *testing.T) {
 	h, facts, statuses := newAcceptanceHarness(t, nil, nil)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -218,6 +220,19 @@ func TestAnAcceptanceWhoseAnswerWasLostIsReadAgain(t *testing.T) {
 	}
 	if want := []string{"LEGION-208=retro"}; !slices.Equal(statuses.acceptances, want) || len(facts.recorded()) != 1 {
 		t.Fatalf("acceptance writes %q and facts %#v, want the one retro and its sign-off applied", statuses.acceptances, facts.recorded())
+	}
+
+	// The answer is lost and the read after it fails: one conditional write back is queued.
+	h, facts, statuses = newAcceptanceHarness(t, nil, nil)
+	architect = newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.lostAnswer = errors.New("read the answer of PATCH /api/v1/issues/LEGION-208: unexpected EOF")
+	statuses.lostRead = errors.New("dial tcp 127.0.0.1:8080: i/o timeout")
+	message = refused(t, signOff(), http.StatusBadGateway, "DISPATCH_FAILED")
+	if len(facts.recorded()) != 0 || !strings.Contains(message, "may have landed") || !strings.Contains(message, "queued a write of needs_review back") {
+		t.Fatalf("with the read after the lost answer failing, facts = %#v and the answer %q; want no fact and the answer naming the queued write back", facts.recorded(), message)
+	}
+	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 1 {
+		t.Fatalf("outbox rows of LEGION-208 = %d, want the one conditional write back", rows)
 	}
 }
 

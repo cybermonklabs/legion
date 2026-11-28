@@ -85,8 +85,10 @@ type statusRecorder struct {
 	foreignOpen map[string][]dispatch.ForeignChild
 	acceptances []string
 	// lostAnswer, when set, is the answer of an acceptance write the fake took all the same, as a
-	// write whose answer was lost on its way back (a timeout, a body cut short).
+	// write whose answer was lost on its way back (a timeout, a body cut short); lostRead, when
+	// set, is the answer of every issue read made after the fake took an acceptance write.
 	lostAnswer error
+	lostRead   error
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
 	// gated steps, the design gates, a step, a step's rating, a step's experiment or a plan. It
@@ -196,6 +198,9 @@ func (r *statusRecorder) ListChildren(_ context.Context, parent string) ([]dispa
 
 func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	r.reads = append(r.reads, "issue:"+key)
+	if r.lostRead != nil && len(r.acceptances) > 0 {
+		return dispatch.Issue{}, r.lostRead
+	}
 	if err, fails := r.readFails[key]; fails {
 		return dispatch.Issue{}, err
 	}

@@ -927,6 +927,7 @@ func basisOfAnotherProject(issue, document string, version int) record.GateBasis
 // seed for the step waiting on OTHR-1564's open request, one row each. A step open on, or waiting
 // on, the project's own LEGION-100, whose events reach the daemon, gets none.
 func TestABasisOnAnotherProjectIsReadAtTheTick(t *testing.T) {
+	t.Parallel()
 	rig := newBasisSeedRig(t)
 	const (
 		open        = "LEGION-209"
@@ -1002,6 +1003,7 @@ func TestABasisOnAnotherProjectIsReadAtTheTick(t *testing.T) {
 // step, so the steps' rows do not pile up on the roots' lanes. A root out of the workflow, here on
 // the backlog, and a root whose tree lingers run nothing a seed could open or tell, and get none.
 func TestTheTickQueuesOneSeedForEachStepOfAnotherProjectsBasis(t *testing.T) {
+	t.Parallel()
 	rig := newBasisSeedRig(t)
 	const open, parked, lingering = "LEGION-209", "LEGION-210", "LEGION-211"
 	until := time.Now().Add(time.Hour)
@@ -1057,6 +1059,7 @@ func TestTheTickQueuesOneSeedForEachStepOfAnotherProjectsBasis(t *testing.T) {
 // with that daemon records the ancestor in a live tree (decisions: no notice to an ancestor's
 // architect in another project).
 func TestAGateSeedTellsNoArchitectOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBasisSeedRig(t)
 	const ancestor, document = "OTHR-1563", "artifact-1563"
 	putOutboxIssue(t, rig.pool, rig.records, record.Issue{Key: ancestor, Tree: ancestor, Project: "OTHR", Title: "elsewhere", Phase: phase.Planning, Generation: 1,

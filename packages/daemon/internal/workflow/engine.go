@@ -553,9 +553,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	}
 	// The event of a close_root's own done write, which reaches Dispatch before the close's fact,
 	// leaves nothing while the record holds the issue in the workflow (closeRootWriteAhead): the
-	// fact decides the close, and is taken or has the route write the status back.
+	// observation is recorded with the status kept (keepStatus), which stops admission at its
+	// sequence fence, and the fact decides the close, taken or with the route writing the status
+	// back.
 	if closeRootWriteAhead(issue, fact) {
-		return intake.Result{}, nil
+		return intake.Result{}, e.keepStatus(ctx, tx, *issue, fact)
 	}
 	if reasserted, err := e.sessionStatusWrite(ctx, tx, *issue, fact); err != nil || reasserted {
 		return intake.Result{}, err

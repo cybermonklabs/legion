@@ -703,6 +703,7 @@ func acrossProjectsBasis() record.GateBasis {
 // record whatever project it is in (workflow's RestingRoots), so the sign-off of LEGION-1 is
 // refused naming it, and taken once OTHR-2 is done.
 func TestARestingRootOfAnotherProjectHoldsTheSignOff(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	raw := record.NewStore()
@@ -748,6 +749,7 @@ func TestARestingRootOfAnotherProjectHoldsTheSignOff(t *testing.T) {
 // refused BASIS_ACCEPTED and records nothing, as a registration on an ancestor of its own project
 // accepted since its read is (workflow's acceptedBasis).
 func TestARegistrationOnAnAncestorAnotherProjectsDaemonRecordsAcceptedIsRefused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	raw := record.NewStore()

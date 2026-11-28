@@ -1738,7 +1738,13 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 		landed, ok, readErr := s.landedWrite(ctx, shown, a.status)
 		switch {
 		case readErr != nil:
-			err = fmt.Errorf("%w; the read after it failed too, so whether the write landed is not known (where it did, the status repair writes back the status of the phase the issue stands in once this act ends): %v", err, readErr)
+			queued := fmt.Sprintf("the daemon queued a write of %s back, which runs once Dispatch answers and only where Dispatch shows %s", shown.Status, a.status)
+			if qerr := s.queueWriteBackIfLanded(ctx, a, shown); qerr != nil {
+				queued = fmt.Sprintf("and queuing a write of %s back failed too: %v", shown.Status, qerr)
+			}
+			s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("the %s write of %s's %s may have landed in Dispatch, but its answer was lost (%v) and the read after it failed (%v), so nothing was recorded; %s. Retry %s",
+				a.status, a.issue, a.act, err, readErr, queued, a.act))
+			return
 		case ok:
 			written, err = landed, nil
 		}
@@ -1786,22 +1792,44 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 // readAndJudge reads the record of issue, nil for none, and asks judge of it, nil to judge
 // nothing, in one read-only transaction of its own.
 func (s *server) readAndJudge(ctx context.Context, issue string, judge func(context.Context, pgx.Tx, string) (*intake.Refusal, error)) (*record.Issue, *intake.Refusal, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	recorded, err := s.records.Issue(ctx, tx, issue)
-	if err != nil {
-		return nil, nil, err
-	}
+	var recorded *record.Issue
 	var refusal *intake.Refusal
-	if judge != nil {
-		if refusal, err = judge(ctx, tx, issue); err != nil {
-			return nil, nil, err
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if recorded, err = s.records.Issue(ctx, tx, issue); err != nil {
+			return err
 		}
+		if judge != nil {
+			refusal, err = judge(ctx, tx, issue)
+		}
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
 	}
-	return recorded, refusal, tx.Commit(ctx)
+	return recorded, refusal, nil
+}
+
+// queueWriteBackIfLanded queues, for a write of a.status whose landing is not known (its answer
+// was lost and the read after it failed), the daemon's own status row that writes shown's status
+// back only where Dispatch shows a.status (record.StatusWrite.ObservedStatus). The outbox runs it
+// once Dispatch answers, under the issue's lock, and finishes it with no write where the act's
+// write never landed; nothing else would put that status back, since the status repair passes
+// over an issue Dispatch shows done and over the two phases close_root takes, which have no status
+// of their own.
+func (s *server) queueWriteBackIfLanded(ctx context.Context, a acceptAct, shown dispatch.Issue) error {
+	if shown.Status == "" {
+		return errors.New("Dispatch's read before the write named no status to write back")
+	}
+	return store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		row, err := record.NewOutboxRow(a.issue, record.OrdinaryStatusWrite(shown.Status, a.status,
+			fmt.Sprintf("The %s of %s may have written %s in Dispatch while its answer was lost, and the daemon recorded nothing of it, so %s is written back.", a.act, a.issue, a.status, shown.Status)),
+			time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		return s.records.Enqueue(ctx, tx, row)
+	})
 }
 
 // moveNotTaken says whether Dispatch shows the issue (shown) at a status its record has not

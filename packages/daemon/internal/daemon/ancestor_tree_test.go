@@ -605,6 +605,7 @@ func TestAStaleEventOfAMovedAncestorBringsBackNoAncestryHold(t *testing.T) {
 // under a live tree of the issue's own project, which a chain read on through the parent would
 // reach and hold the issue under.
 func TestAChainEndsBeforeItsFirstAncestorOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	const tree = "LEGION-1"
 	for _, tc := range []struct{ name, key, parent string }{
 		{name: "a parent of another project", key: "LEGION-10", parent: "OTHR-5"},
@@ -634,6 +635,7 @@ func TestAChainEndsBeforeItsFirstAncestorOfAnotherProject(t *testing.T) {
 // stays in its own project's line, and a member of a live tree at implementing keeps its tree, its
 // phase and its run. The two lines run the same steps and differ only in the parent the moves name.
 func TestARootMovedUnderAParentOfAnotherProjectKeepsWhatAMoveToNoParentKeeps(t *testing.T) {
+	t.Parallel()
 	const tree, full, queued, member, foreign = "LEGION-1", "LEGION-2", "LEGION-13", "LEGION-14", "OTHR-5"
 	// kept is what the test compares of one issue after the moves.
 	type kept struct {

@@ -1357,6 +1357,7 @@ func statusWriteOf(row record.OutboxRow) (record.StatusWrite, bool) {
 // event would record the retro Dispatch shows, and the fact would then queue no retro row at all,
 // which is no window but no seam either. Dropped, the fact always queues the row the seam holds.
 func TestRegistrationIsRefusedOnceAnotherProjectsDaemonAcceptsTheAncestor(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	for _, seam := range []string{"afterSignOffStatusWrite", "beforeOutboxStatusWrite"} {
 		t.Run(seam, func(t *testing.T) {
 			legion, other := crossProjectRigs(t, 2)
@@ -1466,6 +1467,7 @@ func TestRegistrationIsRefusedOnceAnotherProjectsDaemonAcceptsTheAncestor(t *tes
 // (beforeOutboxStatusWrite) until then, so the proof reads Dispatch as the acceptance left it, and
 // not as a later row repaired it.
 func TestARepairTickDuringASignOffWritesNothingOverItsAcceptance(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	legion, other := crossProjectRigs(t, 2)
 	ticks := make(chan time.Time)
 	written := &seamAct{}
@@ -1630,6 +1632,7 @@ func repairTickInsideSignOff(r *personHandoverRig, ticks chan<- time.Time, key s
 // OTHR-6, in triage, is put under it after the tick. Only LEGION's daemon runs: OTHR is a project
 // of the same Dispatch whose daemon this proof needs no part of.
 func TestSignOffAndCloseRootRefuseAChildOfAnotherProjectFiledAfterTheTick(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	ticks := make(chan time.Time)
 	natsURL := testnats.URL(t)
 	r := newProjectRigOn(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}), natsURL, "LEGION", "acme/widgets", 2)
@@ -1704,6 +1707,7 @@ func TestSignOffAndCloseRootRefuseAChildOfAnotherProjectFiledAfterTheTick(t *tes
 // person's done would be reopened as retro, and the close's event, once applied, would take the
 // record out of the workflow while Dispatch kept the retro.
 func TestAnAcceptanceWritesNothingOverAPersonsMoveTheConsumerHasNotApplied(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	drop := &consumerDrop{}
 	natsURL := testnats.URL(t)
 	r := newProjectRigOn(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}), natsURL, "LEGION", "acme/widgets", 2)
@@ -1765,6 +1769,7 @@ func TestAnAcceptanceWritesNothingOverAPersonsMoveTheConsumerHasNotApplied(t *te
 // OTHR-1's tree. That half can fail only where the daemon records OTHR-1, which this rig's daemon
 // never does; TestAGateSeedTellsNoArchitectOfAnotherProject holds the case where it does.
 func TestPendingBasisOnAnotherProjectOpensAtTheTick(t *testing.T) {
+	// Not parallel: the scratch-Dispatch rig holds its boot (1 min), Dispatch's readiness (2 min) and each reply (10 s) to fixed spans, which rigs beside it can push it past; its five callers already parallel carry that risk until the rig waits on the events instead (#5735).
 	ticks := make(chan time.Time)
 	natsURL := testnats.URL(t)
 	r := newProjectRigOn(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}), natsURL, "LEGION", "acme/widgets", 2)

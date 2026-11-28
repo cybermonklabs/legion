@@ -77,6 +77,7 @@ func (d *childrenListing) failLists() {
 // accepting returns to). A failed list of the children ends nothing: the row and the wait stand,
 // and the tick logs one warning.
 func TestControllerTickReadsChildrenOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// opened is a runtime of project LEGION whose one tick has read the child, open under the
 	// parent, and moved the parent into awaiting_children.
