@@ -9,8 +9,8 @@ body: |-
   waits on a running worker: an update it cannot hand over at once queues behind every update
   queued before it, for a feeder to hand on, and a browser's read loop waits before its next
   update so storage lag still slows a browser. A commit during the worker's retirement waits for
-  its final drain only while no feeder runs; with a feeder running, it queues its update for the
-  feeder to store. Two refusals on a closed issue now close the room for its issue, so its
+  its final drain only while no feeder runs; with a feeder running, it queues its update and
+  returns. Two refusals on a closed issue now close the room for its issue, so its
   browsers reconnect read-only: a browser update the append gate cuts from the batch its own call
   stores, which was neither stored nor refused, and a commit's parked bytes, which failed the room
   and so lost an edit the room took while the issue was open.
