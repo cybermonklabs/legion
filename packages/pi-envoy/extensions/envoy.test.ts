@@ -11587,6 +11587,77 @@ console.log(JSON.stringify(args));
     expect(moved.content[0]?.text ?? "").toContain(notice);
   });
 
+  // The model's envoy_subscribe of a topic takes that topic's turn as a plugin's subscription
+  // does: it follows the topic once the subscription of it already running has ended. So the
+  // plugin's subscription whose registration fails takes back no topic the model was told it
+  // follows: the model's call follows the topic again after that failure and registers it.
+  test("the model's envoy_subscribe of a topic a plugin's subscription is registering waits for it, and when that registration fails, follows the topic again and keeps it followed", async () => {
+    const topic = "notifications.github.acme.widgets.pr.7.checks";
+    const { fixture, context, registrations, holdRegistration, refuseRegistrations } =
+      await gatedRoleFixture("subscribe-tool-takes-its-turn", "ses_tool_turn");
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
+    const held = holdRegistration("ses_tool_turn");
+    const plugin = subscribeLegionNotice("ses_tool_turn", topic, context, "legion-controller").then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    await held.reached;
+    const registered = registrations.length;
+    let toolEnded = false;
+    const subscribing = subscribeTool.execute("", { topics: [topic] }).finally(() => {
+      toolEnded = true;
+    });
+    for (let step = 0; step < 20; step += 1) {
+      const drained = Promise.withResolvers<void>();
+      setImmediate(drained.resolve);
+      await drained.promise;
+    }
+    const waited = !toolEnded && registrations.length === registered;
+
+    const refused = refuseRegistrations(2);
+    held.release();
+    expect(String(await plugin)).toContain("listener unavailable");
+    await refused;
+    const answer = await subscribing;
+
+    expect(await followedTopics(fixture.tools, context)).toContain(topic);
+    expect(answer.isError).toBeFalsy();
+    expect(answer.details).toMatchObject({ added: [topic], already: [] });
+    expect(waited).toBe(true);
+  });
+
+  // A plugin's subscription that lasts beyond any role makes a subject the held role's topics
+  // follow the session's own too (`claimOwn`). One whose registration fails opened nothing, so it
+  // gives that subject back to the role, and the role's end closes it.
+  test("a plugin's subscription with no role of a subject only the held role's topics follow, whose registration fails, leaves the subject the role's, so the role's end drops it", async () => {
+    const alerts = "notifications.slack.*.C0ALERTS.message";
+    const previous = process.env.ENVOY_ROLE_TOPICS;
+    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ "legion-controller": [alerts] });
+    try {
+      // A fresh module instance, as every row of this file takes one: the query keys the cache,
+      // and this instance must read the ENVOY_ROLE_TOPICS set above when it is created.
+      const { fixture, context, roleTool, refuseRegistrations } = await gatedRoleFixture(
+        "unbound-subscribe-of-role-subject-fails",
+        "ses_unbound_fail"
+      );
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+      const refused = refuseRegistrations(2);
+      await expect(subscribeLegionNotice("ses_unbound_fail", alerts, context)).rejects.toThrow(
+        "listener unavailable"
+      );
+      await refused;
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+
+      const moved = await roleTool.execute("", { role: "reviewer" });
+      expect(moved.isError).toBeFalsy();
+      expect(await followedTopics(fixture.tools, context)).not.toContain(alerts);
+    } finally {
+      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
+      else process.env.ENVOY_ROLE_TOPICS = previous;
+    }
+  });
+
   test("injects a post-takeover forwarded role event into B only", async () => {
     const role = "legion-controller";
     const roleTopic = `notifications.role.${role}`;

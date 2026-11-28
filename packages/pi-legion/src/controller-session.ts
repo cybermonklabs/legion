@@ -151,11 +151,13 @@ export function createControllerSession(
   // keeps it for its whole life, as it keeps its Slack channels (`watchedWorkflowsKept`). It is
   // undefined until that registration.
   let watchedWorkflows: readonly WatchedTopic[] | undefined;
-  // The watched topics this process told its session wait after a 503 and has not yet told
-  // landed (`subscribeWatchedTopic`). A later registration ends the watched task of the claim that
-  // told it, so the set is the process's: whichever claim's subscription of such a topic lands
-  // tells the session it landed.
-  const watchedToldWaiting = new Set<string>();
+  // The watched topics whose landed notice this process owes: each one it told a session waits
+  // after a 503 and has not yet told landed (`subscribeWatchedTopic`), with the session it told the
+  // wait, or undefined once a failure other than a 503 followed it, so the next 503 tells it again.
+  // A later registration ends the watched task of the claim that told it, so the map is the
+  // process's: whichever claim's subscription of such a topic lands tells the session it landed,
+  // and a claim for a session the map does not name tells that session the topic waits.
+  const watchedToldWaiting = new Map<string, string | undefined>();
   // The watched subscriptions of the last claim that finished, which a later registration aborts:
   // the claim they were made for is replaced, and a claim of the new one makes its own.
   let watchedSubscriptions: AbortController | undefined;

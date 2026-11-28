@@ -12,10 +12,12 @@ body: |-
   name. A Legion plugin's subscription whose registration fails unfollows its topic only when
   that subscription followed it: a renewed subscription of a topic the session already follows,
   as each claim of a Legion controller makes for its watched and Slack topics, leaves that topic
-  followed and its role mark in place. Subscriptions of one topic run one after another, so a
-  later one follows the topic again after an earlier one failed. The log line of a failed removal
-  now names the resumed controller's retired role-owned topics. Plugin interface version 7, which
-  pi-envoy reads; install it with the `@sjawhar/pi-legion` released beside it.
+  followed and its role mark in place, and one that is the session's own gives a role topic's
+  subject it took over back to that role. Subscriptions of one topic, through the plugin
+  interface or the model's `envoy_subscribe`, run one after another, so a later one follows the
+  topic again after an earlier one failed. The log line of a failed removal now names the resumed
+  controller's retired role-owned topics. Plugin interface version 7, which pi-envoy reads;
+  install it with the `@sjawhar/pi-legion` released beside it.
 time: 2026-11-27T23:28:09Z
 custom:
     Issue: INFRA-4122

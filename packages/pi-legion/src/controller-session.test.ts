@@ -971,6 +971,107 @@ test("watched workflows: a later claim tells no landed notice of a topic that ne
   }
 });
 
+// The wait is told to a session, not to the process. A `/new` or `/resume` moves the controller to
+// another session, which was told nothing: when the re-claim's subscription of a topic that waits
+// is answered 503 too, the new session is told the topic waits, and once the topic lands it is
+// told so once.
+test("watched workflows: a topic told it waits is told it waits again in the session a re-claim moves to, and told once that it landed", async () => {
+  jest.useFakeTimers();
+  let withholding = true;
+  const run = watchingController({
+    subscribe: (topic) =>
+      topic === NIGHTLY_SCHEDULE && withholding ? Promise.reject(withheld()) : Promise.resolve(),
+  });
+  const after = "ses_controller_after_new";
+  const moved = {
+    ...run.context,
+    sessionManager: { getSessionId: () => after },
+  } as unknown as SessionContext;
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await turnsUntil(() => run.lines.length > 0, "the first session's 503 log line", ROW_TURNS);
+    await run.controller.reclaimAfterSessionChange(moved);
+    await turnsUntil(() => run.lines.length > 1, "the new session's 503 log line", ROW_TURNS);
+    withholding = false;
+    jest.advanceTimersByTime(1_000);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 1,
+      "the new session's next watched topic asked for",
+      ROW_TURNS
+    );
+    for (let spare = 0; spare < 20; spare++) await settled();
+
+    expect(run.subscribedFor.filter((each) => each.endsWith(NIGHTLY_SCHEDULE))).toEqual([
+      `${CONTROLLER_SESSION} ${NIGHTLY_SCHEDULE}`,
+      `${after} ${NIGHTLY_SCHEDULE}`,
+      `${after} ${NIGHTLY_SCHEDULE}`,
+    ]);
+    expect(run.lines).toHaveLength(2);
+    const told = toldWatched(run);
+    expect(told).toHaveLength(3);
+    expect(told[0]).toContain(WITHHELD);
+    expect(told[1]).toContain(WITHHELD);
+    expect(told[2]).not.toContain(WITHHELD);
+    expect(told[2]).toContain(NIGHTLY_SCHEDULE);
+    expect(run.exits).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    run.controller.stop();
+    run.stopSink();
+  }
+});
+
+// A refusal other than a 503 gives the topic up for that claim and leaves its landed notice owed.
+// The session was told the subscription failed after it was told the topic waits, so the next
+// claim whose subscription of the topic Envoy answers 503 tells it again that the topic waits, and
+// once the topic lands, that it landed.
+test("watched workflows: after a refusal that follows a 503, the next claim's 503 of that topic tells the session again that it waits", async () => {
+  jest.useFakeTimers();
+  const refusal = "POST /v1/interests/subscribe failed with 400: the topic is not a subject";
+  const answers = [withheld(), new Error(refusal), withheld()];
+  let asks = 0;
+  const run = watchingController({
+    subscribe: (topic) => {
+      if (topic !== NIGHTLY_SCHEDULE) return Promise.resolve();
+      const answer = answers[asks++];
+      return answer === undefined ? Promise.resolve() : Promise.reject(answer);
+    },
+  });
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await turnsUntil(() => run.lines.length > 0, "the first claim's 503 log line", ROW_TURNS);
+    jest.advanceTimersByTime(1_000);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 1,
+      "the refused topic given up and the next one asked for",
+      ROW_TURNS
+    );
+    await run.controller.claim(run.context);
+    await turnsUntil(() => run.lines.length > 2, "the typed claim's 503 log line", ROW_TURNS);
+    jest.advanceTimersByTime(1_000);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 2,
+      "the typed claim's next watched topic asked for",
+      ROW_TURNS
+    );
+    for (let spare = 0; spare < 20; spare++) await settled();
+
+    expect(asked(run, NIGHTLY_SCHEDULE)).toBe(4);
+    const told = toldWatched(run);
+    expect(told).toHaveLength(4);
+    expect(told[0]).toContain(WITHHELD);
+    expect(told[1]).toContain(refusal);
+    expect(told[2]).toContain(WITHHELD);
+    for (const notice of [WITHHELD, refusal]) expect(told[3]).not.toContain(notice);
+    expect(told[3]).toContain(NIGHTLY_SCHEDULE);
+    expect(run.exits).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    run.controller.stop();
+    run.stopSink();
+  }
+});
+
 // What the session refuses to take is no failure of the claim: a notice `pi.sendMessage` throws on
 // is logged with its text, and the claim, its ready and the watched topics go on. A refused notice
 // is not told again, and the topic it was about is still asked for.
@@ -1112,6 +1213,10 @@ test("watched workflows: any other refusal of a watched topic gives that topic u
     for (const named of ["acme/widgets/nightly.yaml", NIGHTLY_SCHEDULE, refusal]) {
       expect(toldWatched(run)[0]).toContain(named);
     }
+    // A renewal that fails leaves a topic that worked followed, so the notice claims no deafness.
+    expect(toldWatched(run)[0]).toContain(
+      "may not hear those runs until the controller claims its role again"
+    );
     expectTheClaimAsBefore(run);
   } finally {
     run.stopSink();
