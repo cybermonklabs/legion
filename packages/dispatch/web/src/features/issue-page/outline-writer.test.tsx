@@ -1,4 +1,5 @@
-import { beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 
@@ -11,6 +12,12 @@ import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./o
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+// A row that pins the clock (`setSystemTime`) and is ended by the command's guard never reaches
+// its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  setSystemTime();
 });
 
 // R7: the writer adds no request. It reads the issue's asks, comments and messages under the keys
@@ -39,16 +46,18 @@ test("a window focus more than 30 s after the load reads the writer's asks, comm
       await waitFor(() => expect(client.isFetching()).toBe(0));
       // The reader leaves the window and comes back to it more than 30 s after the load.
       setSystemTime(Date.now() + 31_000);
-      act(() => {
+      await act(async () => {
         focusManager.setFocused(false);
         focusManager.setFocused(true);
+        // The client hears a focus a few microtasks after it: it awaits `resumePausedMutations`
+        // before `QueryCache.onFocus` (`QueryClient.mount`), and a turn of the event loop runs
+        // them.
+        await turn();
       });
-      // Long enough for a read the focus started to have been sent.
-      await act(async () => {
-        const waited = Promise.withResolvers<void>();
-        setTimeout(waited.resolve, 50);
-        await waited.promise;
-      });
+      // By then a read the focus started has been called: TanStack calls a refetch's read as it
+      // starts it (`Query.fetch`), so the state and the counts read here are the ones such a read
+      // would have changed.
+      expect(client.isFetching(), "the window's focus started a read").toBe(0);
       expect(
         reads.map((read) => read.mock.calls.length),
         "the window's focus read the asks, the comments or the messages again"
