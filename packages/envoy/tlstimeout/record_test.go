@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/envoy/tlstimeout/tlstimeouttest"
 )
 
@@ -32,7 +33,7 @@ func curlStandIn(t *testing.T, then string) (program, argv, env string) {
 	dir := t.TempDir()
 	program, argv, env = filepath.Join(dir, "curl"), filepath.Join(dir, "argv"), filepath.Join(dir, "env")
 	script := "#!/bin/sh\necho ran >> '" + filepath.Join(dir, "runs") + "'\nprintf '%s\\n' \"$@\" > '" + argv + "'\nenv > '" + env + "'\n" + then
-	if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(program, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return program, argv, env
@@ -578,7 +579,7 @@ func TestARecordKeepsItsStampPrivateAndRefusesALink(t *testing.T) {
 					t.Fatal(err)
 				}
 				target := filepath.Join(t.TempDir(), "elsewhere")
-				if err := os.WriteFile(target, nil, 0o600); err != nil {
+				if err := testexec.WriteFile(target, nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
 				old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
