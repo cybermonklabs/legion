@@ -1,4 +1,4 @@
-mode: atomic
+mode: count
 github.com/sjawhar/envoy/internal/fold/fold.go:21.2,21.24 1 1
 github.com/sjawhar/envoy/internal/fold/fold.go:22.3,22.33 1 2
 github.com/sjawhar/envoy/internal/fold/fold.go:23.4,24.32 2 1

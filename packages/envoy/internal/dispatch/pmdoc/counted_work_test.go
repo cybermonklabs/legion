@@ -3,7 +3,6 @@ package pmdoc
 import (
 	"bufio"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"math"
@@ -14,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"runtime/coverage"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,15 +22,13 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// The parent names the operation and the directories in which the child takes its snapshots.
+// The parent selects the input and operation through the child's environment.
 const (
 	countedModeEnv  = "PMDOC_COUNTED_MODE"
 	countedRowEnv   = "PMDOC_COUNTED_ROW"
 	countedShapeEnv = "PMDOC_COUNTED_SHAPE"
 	countedOpEnv    = "PMDOC_COUNTED_OP"
 	countedSizeEnv  = "PMDOC_COUNTED_SIZE"
-	countedPOEnv    = "PMDOC_COUNTED_PO"
-	countedOEnv     = "PMDOC_COUNTED_O"
 )
 
 // countedMark begins the line that proves the requested child operation ran and reports its result.
@@ -72,24 +68,18 @@ type countedMeasurement struct {
 	Outcome                 string
 }
 
-// countedBuild keeps the coverage tools and the startup baseline for the life of this test binary.
+// countedBuild keeps the covered binary and the startup baseline for the life of this test binary.
 var countedBuild struct {
-	buildOnce, noneOnce  sync.Once
-	dir, binary, covdata string
-	modules              map[string]string
-	buildErr             error
-	none                 countedStatementRun
-	noneErr              error
+	buildOnce, noneOnce sync.Once
+	dir, binary         string
+	modules             map[string]string
+	buildErr            error
+	none                countedStatementRun
+	noneErr             error
 }
 
 // TestMain removes the shared build directory after all tests that use it have ended.
 func TestMain(m *testing.M) {
-	switch os.Getenv(countedModeEnv) {
-	case "count", "none":
-		if code := initializeCountedSnapshots(m); code != 0 {
-			os.Exit(code)
-		}
-	}
 	code := m.Run()
 	if countedBuild.dir != "" {
 		if err := os.RemoveAll(countedBuild.dir); err != nil {
@@ -100,22 +90,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// initializeCountedSnapshots runs no tests. A Go test binary initializes the coverage metadata
-// hash and counter mode in m.Run's teardown, not on entry (internal/coverage/cfile.InitHook).
-// Run that teardown once before the real helper starts so the public snapshot APIs can work.
-func initializeCountedSnapshots(m *testing.M) int {
-	flag.Parse()
-	run := flag.Lookup("test.run").Value
-	target := run.String()
-	// The testing package defines test.run as a string flag, so both Set calls accept any string.
-	_ = run.Set("^$")
-	code := m.Run()
-	_ = run.Set(target)
-	return code
-}
-
 // countedCommand waits on the test's deadline and keeps the command's output with a failure.
-func countedCommand(t *testing.T, what, binary string, args ...string) ([]byte, error) {
+func countedCommand(t *testing.T, what string, env []string, binary string, args ...string) ([]byte, error) {
 	t.Helper()
 	ctx := testwait.Context(t)
 	// A subprocess of go can inherit these descriptors. A file lets the wait end
@@ -126,6 +102,9 @@ func countedCommand(t *testing.T, what, binary string, args ...string) ([]byte, 
 	}
 	defer log.Close()
 	cmd := exec.CommandContext(ctx, binary, args...)
+	if len(env) != 0 {
+		cmd.Env = append(cmd.Environ(), env...)
+	}
 	cmd.Stdout, cmd.Stderr = log, log
 	runErr := cmd.Run()
 	out, err := os.ReadFile(log.Name())
@@ -141,12 +120,11 @@ func countedCommand(t *testing.T, what, binary string, args ...string) ([]byte, 
 	return out, nil
 }
 
-// buildCounted builds every non-standard dependency with atomic coverage so the child can clear
-// its counters. The command-line -race=false overrides GOFLAGS, including when cgo is disabled.
-// The build and its snapshots share a directory because covdata treats commas in -i as separators.
+// buildCounted instruments every non-standard dependency in count mode. The command-line
+// -race=false overrides GOFLAGS, including when cgo is disabled.
 func buildCounted(t *testing.T) error {
 	t.Helper()
-	listed, err := countedCommand(t, "list the packages to count", "go", "list", "-race=false", "-deps",
+	listed, err := countedCommand(t, "list the packages to count", nil, "go", "list", "-race=false", "-deps",
 		"-f", "{{if not .Standard}}{{.ImportPath}} {{with .Module}}{{.Path}}{{end}}{{end}}", ".")
 	if err != nil {
 		return err
@@ -174,53 +152,25 @@ func buildCounted(t *testing.T) error {
 	if err != nil {
 		return err
 	}
-	if strings.Contains(root, ",") {
-		return fmt.Errorf("temporary directory %q contains a comma, which covdata treats as an input separator", root)
-	}
 	dir, err := os.MkdirTemp(root, "pmdoc-counted-")
 	if err != nil {
 		return err
 	}
 	countedBuild.dir = dir
 	countedBuild.binary = filepath.Join(dir, "pmdoc.test")
-	countedBuild.covdata = filepath.Join(dir, "covdata")
-	if _, err := countedCommand(t, "build the counted pmdoc test binary", "go", "test", "-c", "-race=false",
-		"-cover", "-covermode=atomic", "-coverpkg="+strings.Join(packages, ","), "-o", countedBuild.binary, "."); err != nil {
-		return err
-	}
-	// Build the tool once rather than letting go tool covdata rebuild it on each snapshot.
-	if _, err := countedCommand(t, "build covdata", "go", "build", "-race=false", "-o", countedBuild.covdata, "cmd/covdata"); err != nil {
+	if _, err := countedCommand(t, "build the counted pmdoc test binary", nil, "go", "test", "-c", "-race=false",
+		"-cover", "-covermode=count", "-coverpkg="+strings.Join(packages, ","), "-o", countedBuild.binary, "."); err != nil {
 		return err
 	}
 	countedBuild.modules = modules
 	return nil
 }
 
-// countedSnapshots reserves directories with no test name, which can also contain a comma.
-func countedSnapshots(dir string, withPreparation bool) (operation, combined string, err error) {
-	operation = filepath.Join(dir, "O")
-	if err := os.Mkdir(operation, 0o700); err != nil {
-		return "", "", err
-	}
-	if withPreparation {
-		combined = filepath.Join(dir, "PO")
-		if err := os.Mkdir(combined, 0o700); err != nil {
-			return "", "", err
-		}
-	}
-	return operation, combined, nil
-}
-
-// readCountedSnapshot converts the snapshot to the same text format the fixture exercises.
-func readCountedSnapshot(t *testing.T, dir, what string) (countedProfile, error) {
-	t.Helper()
-	profile := filepath.Join(dir, "profile.txt")
-	if _, err := countedCommand(t, "read "+what, countedBuild.covdata, "textfmt", "-i="+dir, "-o="+profile); err != nil {
-		return countedProfile{}, err
-	}
+// readCountedProfile reads the text file that testing writes when the child finishes.
+func readCountedProfile(profile, what string) (countedProfile, error) {
 	file, err := os.Open(profile)
 	if err != nil {
-		return countedProfile{}, err
+		return countedProfile{}, fmt.Errorf("read %s: %w", what, err)
 	}
 	defer file.Close()
 	result, err := parseCountedProfile(file, countedBuild.modules)
@@ -232,13 +182,18 @@ func readCountedSnapshot(t *testing.T, dir, what string) (countedProfile, error)
 
 // runCountedChild requires exactly one measurement, so a child that skipped does not look like a
 // child that measured no work. The log identifies the operation if the shared wait has to kill it.
-func runCountedChild(t *testing.T, binary, what string, env ...string) (countedMeasurement, error) {
+func runCountedChild(t *testing.T, binary, what, profile string, env ...string) (countedMeasurement, error) {
 	t.Helper()
 	t.Logf("starting %s", what)
-	out, stderr, err := testwait.RunChild(t, binary, 0, "^TestHeavyBodiesCountedHelper$", env...)
-	if err != nil {
-		return countedMeasurement{}, fmt.Errorf("%s: %w\n%s\n%s", what, err, out, stderr)
+	args := []string{"-test.run=^TestHeavyBodiesCountedHelper$", "-test.v", "-test.count=1", "-test.timeout=0"}
+	if profile != "" {
+		args = append(args, "-test.coverprofile="+profile)
 	}
+	output, err := countedCommand(t, what, env, binary, args...)
+	if err != nil {
+		return countedMeasurement{}, err
+	}
+	out := string(output)
 	var result countedMeasurement
 	found := false
 	for _, line := range strings.Split(out, "\n") {
@@ -253,23 +208,28 @@ func runCountedChild(t *testing.T, binary, what string, env ...string) (countedM
 		}
 	}
 	if !found {
-		return countedMeasurement{}, fmt.Errorf("%s wrote no %q line:\n%s\n%s", what, countedMark, out, stderr)
+		return countedMeasurement{}, fmt.Errorf("%s wrote no %q line:\n%s", what, countedMark, out)
 	}
 	return result, nil
 }
 
-// readCountedNone takes the startup snapshot once. It runs no builder and clears no counters.
+// runProfiledCountedChild reads one covered child's report and its profile.
+func runProfiledCountedChild(t *testing.T, what string, env ...string) (countedMeasurement, countedProfile, error) {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "profile.txt")
+	measured, err := runCountedChild(t, countedBuild.binary, what, file, env...)
+	if err != nil {
+		return countedMeasurement{}, countedProfile{}, err
+	}
+	profile, err := readCountedProfile(file, what)
+	return measured, profile, err
+}
+
+// readCountedNone measures startup once in a child that builds no input.
 func readCountedNone(t *testing.T) (countedStatementRun, error) {
 	t.Helper()
-	dir, err := os.MkdirTemp(countedBuild.dir, "none-")
-	if err != nil {
-		return countedStatementRun{}, err
-	}
-	if _, err := runCountedChild(t, countedBuild.binary, "the counted none baseline", countedModeEnv+"=none", countedOEnv+"="+dir); err != nil {
-		return countedStatementRun{}, err
-	}
-	profile, err := readCountedSnapshot(t, dir, "the counted none baseline")
-	return countedStatementRun{statements: profile.total}, err
+	measured, profile, err := runProfiledCountedChild(t, "the counted none baseline", countedModeEnv+"=none")
+	return countedStatementRun{units: measured.Units, statements: profile.total}, err
 }
 
 // countedChildSlots limits the number of memory-hungry leaves that may use children at once.
@@ -312,64 +272,47 @@ func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSampl
 	return samples
 }
 
-// readCountedSample reads O and, for a heavy body, PO. Those snapshots omit startup because the
-// child clears its counters. On the original scale prepared = none + P and whole = none + P + O.
-// Thus whole - prepared is O and whole - none is P + O. Restore the common baseline before
-// passing the readings to countedStatementDifferences, which also checks the input units.
+// readCountedSample subtracts the prepare-only child's statement total from the whole child's
+// total. It checks that the difference agrees with the sum of statements times the count change
+// in each block. For heavy bodies it also subtracts the startup-only child from the whole child,
+// so that reading includes the work of preparing the input.
 func readCountedSample(t *testing.T, row string, leaf countedShape, size int, none *countedStatementRun) countedSample {
 	t.Helper()
 	what := fmt.Sprintf("%s at %d", leaf.name, size)
-	dir, err := os.MkdirTemp(countedBuild.dir, "sample-")
-	if err != nil {
-		t.Fatalf("%s: %v", what, err)
+	env := func(mode string) []string {
+		return []string{countedModeEnv + "=" + mode, countedRowEnv + "=" + row, countedShapeEnv + "=" + leaf.shape,
+			countedOpEnv + "=" + leaf.operation, countedSizeEnv + "=" + strconv.Itoa(size)}
 	}
-	defer func() {
-		if err := os.RemoveAll(dir); err != nil {
-			t.Errorf("remove the snapshots for %s: %v", what, err)
-		}
-	}()
-	opDir, bothDir, err := countedSnapshots(dir, none != nil)
-	if err != nil {
-		t.Fatalf("%s: %v", what, err)
-	}
-	env := []string{countedRowEnv + "=" + row, countedShapeEnv + "=" + leaf.shape,
-		countedOpEnv + "=" + leaf.operation, countedSizeEnv + "=" + strconv.Itoa(size)}
-	measured, err := runCountedChild(t, countedBuild.binary, "the counted run of "+what,
-		append(env, countedModeEnv+"=count", countedOEnv+"="+opDir, countedPOEnv+"="+bothDir)...)
+	preparation, prepared, err := runProfiledCountedChild(t, "the prepare-only run of "+what, env("prepare")...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if measured.Size != size {
-		t.Fatalf("%s: the counted child built size %d, want %d", what, measured.Size, size)
-	}
-	op, err := readCountedSnapshot(t, opDir, "the operation snapshot for "+what)
+	measured, whole, err := runProfiledCountedChild(t, "the whole run of "+what, env("whole")...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared := countedStatementRun{units: measured.Size}
-	whole := countedStatementRun{units: measured.Units, statements: op.total}
-	busiest, busiestBlock := op.busiest, op.busiestBlock
+	if preparation.Size != size || measured.Size != size {
+		t.Fatalf("%s: the prepare-only and whole children built sizes %d and %d, want both to build %d", what, preparation.Size, measured.Size, size)
+	}
+	if preparation.Characters != measured.Characters {
+		t.Fatalf("%s: the prepare-only and whole children built %d and %d characters", what, preparation.Characters, measured.Characters)
+	}
+	op, err := countedWorkBetween(prepared, whole)
+	if err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+	operation, withPreparation, err := countedStatementDifferences(leaf.name, size, none,
+		countedStatementRun{units: preparation.Units, statements: prepared.total},
+		countedStatementRun{units: measured.Units, statements: whole.total})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op.total != operation {
+		t.Fatalf("%s: the blocks count %d operation-only statements, but the profile totals differ by %d", what, op.total, operation)
+	}
 	var invokingBytes uint64
 	if none != nil {
-		both, err := readCountedSnapshot(t, bothDir, "the combined snapshot for "+what)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if both.total < op.total || both.total > math.MaxUint64-none.statements {
-			t.Fatalf("%s: cannot combine %d statements with preparation, %d operation-only statements and a none baseline of %d", what, both.total, op.total, none.statements)
-		}
-		whole.statements = none.statements + both.total
-		prepared.statements = whole.statements - op.total
-		if both.busiest > busiest {
-			busiest, busiestBlock = both.busiest, both.busiestBlock
-		}
-	}
-	operation, withPreparation, err := countedStatementDifferences(leaf.name, size, none, prepared, whole)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if none != nil {
-		plain, err := runCountedChild(t, os.Args[0], "the invoking build's run of "+what, append(env, countedModeEnv+"=plain")...)
+		plain, err := runCountedChild(t, os.Args[0], "the invoking build's run of "+what, "", env("plain")...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -383,11 +326,11 @@ func readCountedSample(t *testing.T, row string, leaf countedShape, size int, no
 		units: measured.Units, characters: measured.Characters, operation: operation, withPreparation: withPreparation,
 		operationByModule: op.byModule, countedBytes: measured.Bytes, invokingBytes: invokingBytes,
 		searchedBytes: measured.Stages.Parse + measured.Stages.Render, scanBytes: measured.Stages.Scan,
-		updateItems: measured.Stages.Update, busiest: busiest, busiestBlock: busiestBlock, outcome: measured.Outcome,
+		updateItems: measured.Stages.Update, busiest: op.busiest, busiestBlock: op.busiestBlock, outcome: measured.Outcome,
 	}
 }
 
-// TestHeavyBodiesCountedHelper runs only the child operation. Until the old rows move to the new
+// TestHeavyBodiesCountedHelper runs the requested child mode. Until the old rows move to the new
 // harness, it also accepts their original request and reports the same outcome in their format.
 func TestHeavyBodiesCountedHelper(t *testing.T) {
 	t.Parallel()
@@ -412,14 +355,12 @@ func TestHeavyBodiesCountedHelper(t *testing.T) {
 		writeCensus(t)
 		return
 	}
-	operationDir, combinedDir := os.Getenv(countedOEnv), os.Getenv(countedPOEnv)
 	if mode == "none" {
-		writeCountedSnapshot(t, operationDir)
 		printCountedMeasurement(t, countedMeasurement{})
 		return
 	}
-	if mode != "count" && mode != "plain" {
-		t.Fatalf("%s = %q, want count, plain, none, or census", countedModeEnv, mode)
+	if mode != "prepare" && mode != "whole" && mode != "plain" {
+		t.Fatalf("%s = %q, want prepare, whole, plain, none, or census", countedModeEnv, mode)
 	}
 	row, shape, operation := os.Getenv(countedRowEnv), os.Getenv(countedShapeEnv), os.Getenv(countedOpEnv)
 	shapes, ok := countedRows[row]
@@ -434,64 +375,32 @@ func TestHeavyBodiesCountedHelper(t *testing.T) {
 		if leaf.shape != shape || leaf.operation != operation {
 			continue
 		}
-		if mode == "count" && leaf.heavyBody != (combinedDir != "") {
-			t.Fatalf("%s: combined snapshot directory %q does not match heavy body setting %t", leaf.name, combinedDir, leaf.heavyBody)
+		units, characters, run := leaf.prepare(t, size)
+		measured := countedMeasurement{Size: size, Units: units, Characters: characters}
+		if mode != "prepare" {
+			measured = measureCountedOperation(measured, run)
 		}
-		printCountedMeasurement(t, measureCountedOperation(t, leaf, size, mode == "count", operationDir, combinedDir))
+		printCountedMeasurement(t, measured)
 		return
 	}
 	t.Fatalf("%s has no counted shape %q with operation %q", row, shape, operation)
 }
 
-// measureCountedOperation measures allocation and stage counters only around the operation. The
-// two files in PO are summed by covdata, while O contains only the second counter snapshot.
-func measureCountedOperation(t *testing.T, leaf countedShape, size int, counted bool, operationDir, combinedDir string) countedMeasurement {
-	t.Helper()
-	clear := func() {
-		if err := coverage.ClearCounters(); err != nil {
-			t.Fatalf("clear coverage counters: %v", err)
-		}
-	}
-	if counted && combinedDir != "" {
-		clear()
-	}
-	units, characters, run := leaf.prepare(t, size)
-	if counted {
-		if combinedDir != "" {
-			writeCountedSnapshot(t, combinedDir)
-		}
-		clear()
-	}
+// measureCountedOperation measures allocation and stage counters only around the operation.
+func measureCountedOperation(measured countedMeasurement, run func() string) countedMeasurement {
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	start := readCountedStages()
-	outcome := run()
+	measured.Outcome = run()
 	end := readCountedStages()
 	runtime.ReadMemStats(&after)
-	if counted {
-		if combinedDir != "" {
-			writeCountedSnapshot(t, combinedDir)
-		}
-		writeCountedSnapshot(t, operationDir)
-	}
-	return countedMeasurement{Size: size, Units: units, Characters: characters,
-		Bytes: after.TotalAlloc - before.TotalAlloc, Outcome: outcome,
-		Stages: countedStages{Parse: end.Parse - start.Parse, Render: end.Render - start.Render,
-			Update: end.Update - start.Update, Scan: end.Scan - start.Scan}}
+	measured.Bytes = after.TotalAlloc - before.TotalAlloc
+	measured.Stages = countedStages{Parse: end.Parse - start.Parse, Render: end.Render - start.Render,
+		Update: end.Update - start.Update, Scan: end.Scan - start.Scan}
+	return measured
 }
 
-// writeCountedSnapshot writes metadata and a new counter file without resetting the counters.
-func writeCountedSnapshot(t *testing.T, dir string) {
-	t.Helper()
-	if err := coverage.WriteMetaDir(dir); err != nil {
-		t.Fatalf("write coverage metadata to %q: %v", dir, err)
-	}
-	if err := coverage.WriteCountersDir(dir); err != nil {
-		t.Fatalf("write coverage counters to %q: %v", dir, err)
-	}
-}
-
-// printCountedMeasurement reports the result after all requested snapshots have been written.
+// printCountedMeasurement reports the result before testing writes the coverage profile.
 func printCountedMeasurement(t *testing.T, result countedMeasurement) {
 	t.Helper()
 	encoded, err := json.Marshal(result)
@@ -501,29 +410,68 @@ func printCountedMeasurement(t *testing.T, result countedMeasurement) {
 	fmt.Printf("%s%s\n", countedMark, encoded)
 }
 
-// countedProfile holds the total and module totals, and the block whose counter is nearest to
-// wrapping. The block keeps the source position from the profile for the failure message.
+// countedProfile keeps the weighted statement total and the blocks in the producer's order.
 type countedProfile struct {
+	total  uint64
+	blocks []countedProfileBlock
+}
+
+// countedProfileBlock identifies a block and records its statement and execution counts.
+type countedProfileBlock struct {
+	position, module  string
+	statements, count uint64
+}
+
+// countedProfileDifference keeps the work after subtracting preparation, in all and by module.
+// It also keeps the block whose operation count is nearest to wrapping.
+type countedProfileDifference struct {
 	total, busiest uint64
 	byModule       map[string]uint64
 	busiestBlock   string
 }
 
-// countedPosition matches the start and end positions after a file name in a covdata profile.
+// countedWorkBetween compares profiles from the same binary. The testing package emits every
+// block in source order, including blocks that never ran, so the positions must match.
+func countedWorkBetween(prepared, whole countedProfile) (countedProfileDifference, error) {
+	if len(prepared.blocks) != len(whole.blocks) {
+		return countedProfileDifference{}, fmt.Errorf("the prepare-only and whole profiles have %d and %d blocks", len(prepared.blocks), len(whole.blocks))
+	}
+	op := countedProfileDifference{byModule: make(map[string]uint64)}
+	for i, after := range whole.blocks {
+		before := prepared.blocks[i]
+		if before.position != after.position || before.statements != after.statements {
+			return countedProfileDifference{}, fmt.Errorf("the prepare-only profile has %s (%d statements), but the whole profile has %s (%d statements) at block %d",
+				before.position, before.statements, after.position, after.statements, i+1)
+		}
+		if after.count < before.count {
+			return countedProfileDifference{}, fmt.Errorf("the block %s has whole count %d below its prepare-only count %d", after.position, after.count, before.count)
+		}
+		count := after.count - before.count
+		// Neither the product nor the sum can exceed the checked total of the whole profile.
+		work := after.statements * count
+		op.total += work
+		op.byModule[after.module] += work
+		if count > op.busiest {
+			op.busiest, op.busiestBlock = count, after.position
+		}
+	}
+	return op, nil
+}
+
+// countedPosition matches the start and end positions after a file name in a coverage profile.
 var countedPosition = regexp.MustCompile(`^[0-9]+\.[0-9]+,[0-9]+\.[0-9]+$`)
 
-// parseCountedProfile sums the statements times executions in an atomic coverage profile. It
-// refuses unknown packages and numbers outside the nonnegative signed 64-bit range accepted by
-// both old readers, and never returns a sum that wrapped.
+// parseCountedProfile reads a count-mode coverage profile and sums statements times executions.
+// It refuses unknown packages and integers outside the range both old readers accept.
 func parseCountedProfile(r io.Reader, modules map[string]string) (countedProfile, error) {
 	lines := bufio.NewScanner(r)
 	if !lines.Scan() && lines.Err() != nil {
 		return countedProfile{}, lines.Err()
 	}
-	if lines.Text() != "mode: atomic" {
-		return countedProfile{}, fmt.Errorf("coverage mode: got %q, want mode: atomic", lines.Text())
+	if lines.Text() != "mode: count" {
+		return countedProfile{}, fmt.Errorf("coverage mode: got %q, want mode: count", lines.Text())
 	}
-	result := countedProfile{byModule: make(map[string]uint64)}
+	var result countedProfile
 	for lines.Scan() {
 		line := lines.Text()
 		fields := strings.Fields(line)
@@ -560,10 +508,7 @@ func parseCountedProfile(r io.Reader, modules map[string]string) (countedProfile
 			return countedProfile{}, fmt.Errorf("profile line %q: statement total overflows uint64", line)
 		}
 		result.total += work
-		result.byModule[module] += work
-		if count > result.busiest {
-			result.busiest, result.busiestBlock = count, block
-		}
+		result.blocks = append(result.blocks, countedProfileBlock{position: block, module: module, statements: statements, count: count})
 	}
 	if err := lines.Err(); err != nil {
 		return countedProfile{}, err
@@ -606,10 +551,16 @@ func TestCountedBracketParagraph(t *testing.T) {
 	}
 }
 
-// TestTheCountedProfileReaderRefusesWhatItCannotCount uses the operation snapshot in "$d/O"
-// from the 2048-character bracket child. From the package directory, the capture command was:
+// TestTheCountedProfileReaderRefusesWhatItCannotCount uses the whole run of the 2048-character
+// bracket child. From the package directory, with the counted binary at "$d/pmdoc.test":
 //
-//	"$d/covdata" textfmt -i="$d/O" -pkg=github.com/sjawhar/envoy/internal/fold -o=testdata/counted-profile.txt
+//	PMDOC_COUNTED_MODE=whole PMDOC_COUNTED_ROW=TestCountedBracketParagraph \
+//	  PMDOC_COUNTED_SHAPE=brackets PMDOC_COUNTED_OP=read PMDOC_COUNTED_SIZE=2048 \
+//	  "$d/pmdoc.test" -test.run='^TestHeavyBodiesCountedHelper$' -test.v \
+//	  -test.count=1 -test.timeout=0 -test.coverprofile="$d/whole.txt"
+//	grep -E '^(mode:|github\.com/sjawhar/envoy/internal/fold/)' "$d/whole.txt" > testdata/counted-profile.txt
+//
+// Testing writes all covered packages to the profile, so the filter keeps just the fold package.
 //
 // In profile order the total is 1*1 + 1*2 + 2*1 + 1*2047 + 1*1024 + 1*1 + 1*0 + 1*0 = 3077.
 func TestTheCountedProfileReaderRefusesWhatItCannotCount(t *testing.T) {
@@ -626,9 +577,8 @@ func TestTheCountedProfileReaderRefusesWhatItCannotCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const busiest = pkg + "/fold.go:25.5,25.35"
-	if got.total != 3077 || got.byModule[module] != 3077 || got.busiest != 2047 || got.busiestBlock != busiest {
-		t.Fatalf("profile read as %+v, want 3077 statements, all in %s, and 2047 runs of %s", got, module, busiest)
+	if got.total != 3077 {
+		t.Fatalf("profile counted %d statements, want 3077", got.total)
 	}
 
 	mode, blocks, _ := strings.Cut(profile, "\n")
@@ -638,10 +588,44 @@ func TestTheCountedProfileReaderRefusesWhatItCannotCount(t *testing.T) {
 		t.Fatalf("first fixture block has %d fields, want 3: %q", len(fields), line)
 	}
 	block, statements, count := fields[0], fields[1], fields[2]
+	t.Run("operation-only counts", func(t *testing.T) {
+		const prior = pkg + "/fold.go:25.5,25.35 1 "
+		const busiest = pkg + "/fold.go:26.6,27.1"
+		preparation := strings.NewReplacer(
+			prior+"2047", prior+"2046",
+			busiest+" 1 1024", busiest+" 1 0",
+		).Replace(profile)
+		prepared, err := parseCountedProfile(strings.NewReader(preparation), modules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		op, err := countedWorkBetween(prepared, got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if op.total != 1025 || op.byModule[module] != 1025 || op.busiest != 1024 || op.busiestBlock != busiest {
+			t.Fatalf("operation-only work = %+v, want 1025 statements, all in %s, and 1024 runs of %s", op, module, busiest)
+		}
+	})
+	t.Run("a block count shrank", func(t *testing.T) {
+		const shrank = pkg + "/fold.go:32.2,32.10"
+		preparation := strings.Replace(profile, line, block+" "+statements+" 0", 1)
+		preparation = strings.Replace(preparation, shrank+" 1 0", shrank+" 1 1", 1)
+		prepared, err := parseCountedProfile(strings.NewReader(preparation), modules)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = countedWorkBetween(prepared, got)
+		if want := "the block " + shrank + " has whole count 0 below its prepare-only count 1"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want %q", err, want)
+		}
+	})
+
 	for _, tc := range []struct {
 		name, from, to, want string
 	}{
-		{"wrong mode", mode, "mode: set", "want mode: atomic"},
+		{"set mode", mode, "mode: set", "want mode: count"},
+		{"atomic mode", mode, "mode: atomic", "want mode: count"},
 		{"unknown package", line, strings.Replace(line, pkg, "example.com/uncounted", 1), `package "example.com/uncounted" is not counted`},
 		{"bad position", line, pkg + "/fold.go:bad " + statements + " " + count, "invalid block position"},
 		{"missing field", line, block + " " + statements, "want a block position, statements and count"},
