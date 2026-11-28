@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  Dispatch now enqueues an issue's embedding text once for a statement that inserts many versions
+  of the issue's primary document, not once for each version. Before, the trigger on
+  `artifact_versions` read and hashed the issue's latest spec again for each version, so a bulk
+  insert such as a seed or a restore did that work as many times as it inserted versions. The
+  rows the insert leaves are the same as before.
+time: 2026-11-28T06:26:54Z
+custom:
+    Issue: INFRA-6335
