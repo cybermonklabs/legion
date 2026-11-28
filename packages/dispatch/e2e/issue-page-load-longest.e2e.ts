@@ -65,8 +65,19 @@
  * With `ISSUE_PAGE_LOAD_TRACE=1`, `the acts made after the load, profiled` also records Chrome's
  * own trace through the same session (`Tracing`, the timeline's categories) around each fold and
  * unfold, from just before the act's steps to its result, and prints each task that dispatched
- * the act's press (`printTrace`): what a CPU profile reads as `(program)` split by the engine's
- * own events, style, layout and paint.
+ * the act's press, and each task of 2 ms or more after it up to the result (`printTrace`): what
+ * a CPU profile reads as `(program)` split by the engine's own events, style, layout and paint.
+ * With `ISSUE_PAGE_LOAD_INVALIDATIONS=1` beside it, the
+ * trace adds the engine's style invalidations and its selector statistics, and each such task
+ * prints what made its style recalculation reach the elements it did (`printInvalidations`):
+ * which element's attribute, class or state changed, the invalidation set and the selectors that
+ * change scheduled, the elements each set reached, and the selectors the recalculation spent its
+ * time on. Both categories slow the engine's style work, so a run with them reads the causes, and
+ * a run without them the times. With `ISSUE_PAGE_LOAD_REFOLD=1`, the fold and the unfold are made
+ * once more after the last act (`after-enters-<act>`), once the `Enter`s have bound the page's
+ * block editor to a row and let it go again. With `ISSUE_PAGE_LOAD_TRACE_FUNCTIONS=1`, the trace
+ * holds V8's samples too, and each traced task prints its script by function on the trace's own
+ * clock (`printTraceFunctions`), which needs no anchor to line a profile's clock up with the page's.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -1133,6 +1144,23 @@ const TRACE_CATEGORIES = [
   "v8.execute",
 ];
 
+/** The categories `ISSUE_PAGE_LOAD_INVALIDATIONS=1` adds to `TRACE_CATEGORIES`: the engine's style
+ *  invalidations (`printInvalidations`) and the selector statistics of each style recalculation.
+ *  Both slow the engine's style work, so a trace with them reads causes, not times. */
+const INVALIDATION_CATEGORIES = [
+  "disabled-by-default-devtools.timeline.invalidationTracking",
+  "disabled-by-default-blink.debug",
+];
+
+/** The category `ISSUE_PAGE_LOAD_TRACE_FUNCTIONS=1` adds to `TRACE_CATEGORIES`: V8's sampling
+ *  profiler inside the trace (`Profile`, `ProfileChunk`), whose samples carry the trace's own
+ *  clock, so each traced task's script is split by function with no anchor to line two clocks
+ *  up (`printTraceFunctions`). */
+const TRACE_FUNCTION_CATEGORIES = ["disabled-by-default-v8.cpu_profiler"];
+
+/** How many functions `printTraceFunctions` prints of a task, by self time and by total time. */
+const TRACE_FUNCTIONS = 12;
+
 /** The input events whose dispatch makes a task one of the act's input tasks: a press as
  *  Playwright makes it, a move to the point and then the button down and up. */
 const TRACE_INPUTS: Readonly<Record<string, true>> = {
@@ -1177,16 +1205,19 @@ interface TraceSpan {
   readonly tid: number;
 }
 
-/** Starts Chrome's trace of `TRACE_CATEGORIES` on `cdp`; answers how to end it, which answers the
+/** Starts Chrome's trace of `categories` on `cdp`; answers how to end it, which answers the
  *  trace's events as the session reported them. */
-async function startTrace(cdp: CDPSession): Promise<() => Promise<readonly unknown[]>> {
+async function startTrace(
+  cdp: CDPSession,
+  categories: readonly string[]
+): Promise<() => Promise<readonly unknown[]>> {
   const events: unknown[] = [];
   const collect = (batch: { readonly value: readonly unknown[] }): void => {
     events.push(...batch.value);
   };
   cdp.on("Tracing.dataCollected", collect);
   await cdp.send("Tracing.start", {
-    traceConfig: { includedCategories: TRACE_CATEGORIES, recordMode: "recordAsMuchAsPossible" },
+    traceConfig: { includedCategories: [...categories], recordMode: "recordAsMuchAsPossible" },
     transferMode: "ReportEvents",
   });
   return async () => {
@@ -1267,30 +1298,30 @@ function traceCounts(span: TraceSpan): string {
     .join("");
 }
 
-/**
- * Prints each task of the trace's main thread that dispatched one of the act's press events
- * (`TRACE_INPUTS`): `TRACE-TASK` with its time from the first such dispatch, its duration, the
- * time its script covers (`js`) and the events it dispatched; `TRACE-EVENT` for each of the
- * engine's own events in it (`TRACE_RENDERING`), with its time from the task's start, its
- * duration, whether a script forced it (`in-js`), and the counts a style recalculation and a
- * layout give; and `TRACE-SUM` for each kind of them, with how many came, their total, and the
- * part of it that no script forced.
- */
-function printTrace(label: string, width: number, events: readonly unknown[]): void {
-  const line = `${width} ${label} 1`;
-  const spans = traceSpans(events);
-  const typeOf = (span: TraceSpan): unknown => objectOf(span.args.data).type;
+/** The press's tasks of a trace: each top-level task (`RunTask`) of the main thread that
+ *  dispatched one of the act's press events (`TRACE_INPUTS`), with that thread's spans, the
+ *  dispatches, and the first of them, which each line times from. */
+interface PressTasks {
+  readonly first: TraceSpan;
+  readonly inputs: readonly TraceSpan[];
+  readonly tasks: readonly TraceSpan[];
+  readonly thread: readonly TraceSpan[];
+}
+
+/** Whether `inner` lies wholly inside `outer`. */
+function within(inner: TraceSpan, outer: TraceSpan): boolean {
+  return inner.start >= outer.start && inner.end <= outer.end;
+}
+
+/** The press's tasks of `spans`, or null where no press event was dispatched in them. */
+function pressTasks(spans: readonly TraceSpan[]): PressTasks | null {
   const inputs = spans.filter(
-    (span) => span.name === "EventDispatch" && TRACE_INPUTS[String(typeOf(span))] === true
+    (span) =>
+      span.name === "EventDispatch" && TRACE_INPUTS[String(objectOf(span.args.data).type)] === true
   );
   const first = inputs[0];
-  if (first === undefined) {
-    console.log(`TRACE ${line} no press event was dispatched in the trace (${spans.length} spans)`);
-    return;
-  }
+  if (first === undefined) return null;
   const thread = spans.filter((span) => span.pid === first.pid && span.tid === first.tid);
-  const within = (inner: TraceSpan, outer: TraceSpan) =>
-    inner.start >= outer.start && inner.end <= outer.end;
   const runs = thread.filter((span) => span.name === "RunTask");
   const tasks = runs.filter(
     (task) =>
@@ -1299,16 +1330,60 @@ function printTrace(label: string, width: number, events: readonly unknown[]): v
         (input) => input.pid === task.pid && input.tid === task.tid && within(input, task)
       )
   );
+  return { first, inputs, tasks, thread };
+}
+
+/** The shortest task after the press that `printTrace` prints beside the press's own, in µs. */
+const TRACE_LATER_TASK_US = 2_000;
+
+/**
+ * Prints each task of the trace's main thread that dispatched one of the act's press events
+ * (`TRACE_INPUTS`), and each other top-level task of that thread from the first such dispatch to
+ * the trace's end that lasts `TRACE_LATER_TASK_US` or more (`inputs=none`), in the order they
+ * ran: `TRACE-TASK` with its time from the first such dispatch, its duration, the
+ * time its script covers (`js`) and the events it dispatched; `TRACE-EVENT` for each of the
+ * engine's own events in it (`TRACE_RENDERING`), with its time from the task's start, its
+ * duration, whether a script forced it (`in-js`), and the counts a style recalculation and a
+ * layout give; and `TRACE-SUM` for each kind of them, with how many came, their total, and the
+ * part of it that no script forced. Where `functions` holds, each task's script by function as
+ * well, from the trace's own samples (`printTraceFunctions`).
+ */
+function printTrace(
+  label: string,
+  width: number,
+  events: readonly unknown[],
+  functions: boolean
+): void {
+  const line = `${width} ${label} 1`;
+  const spans = traceSpans(events);
+  const press = pressTasks(spans);
+  if (press === null) {
+    console.log(`TRACE ${line} no press event was dispatched in the trace (${spans.length} spans)`);
+    return;
+  }
+  const { first, inputs, thread } = press;
+  const sampled = functions ? traceSamples(events, first.pid, first.tid) : undefined;
+  const runs = thread.filter((span) => span.name === "RunTask");
+  const later = runs.filter(
+    (task) =>
+      task.start >= first.start &&
+      task.end - task.start >= TRACE_LATER_TASK_US &&
+      !press.tasks.includes(task) &&
+      !runs.some((outer) => outer !== task && within(task, outer))
+  );
+  const tasks = [...press.tasks, ...later].sort((a, b) => a.start - b.start);
   for (const [at, task] of tasks.entries()) {
     const inside = thread.filter((span) => within(span, task));
     const script = inside.filter((span) => TRACE_SCRIPT[span.name] === true);
     const dispatched = [
-      ...new Set(inputs.filter((input) => within(input, task)).map((input) => typeOf(input))),
+      ...new Set(
+        inputs.filter((input) => within(input, task)).map((input) => objectOf(input.args.data).type)
+      ),
     ];
     console.log(
       `TRACE-TASK ${line} task=${at + 1} start=${traceMs(task.start - first.start)} ` +
         `duration=${traceMs(task.end - task.start)} js=${traceMs(coveredUs(script))} ` +
-        `inputs=${dispatched.join(",")}`
+        `inputs=${dispatched.join(",") || "none"}`
     );
     for (const name of TRACE_RENDERING) {
       const own = inside.filter((span) => span.name === name);
@@ -1326,6 +1401,564 @@ function printTrace(label: string, width: number, events: readonly unknown[]): v
           `total=${traceMs(coveredUs(own))} ` +
           `native=${traceMs(coveredUs(own.filter((span) => !forced(span))))}`
       );
+    }
+    if (sampled !== undefined) printTraceFunctions(`${line} task=${at + 1}`, task, sampled);
+  }
+}
+
+/** The samples V8's profiler put in a trace (`TRACE_FUNCTION_CATEGORIES`) for one thread, each on
+ *  the trace's clock, in µs, for as long as until the next, with the tree of calls they stand in. */
+interface TraceSamples {
+  readonly nodes: ReadonlyMap<number, ProfileNode>;
+  readonly parents: ReadonlyMap<number, number>;
+  readonly samples: readonly Sample[];
+}
+
+/** The samples of the profile a trace holds for the thread `pid`/`tid`: its `Profile` event's
+ *  start, then each `ProfileChunk` of the same id, whose nodes come with their parent and whose
+ *  samples each come a `timeDeltas` entry after the one before. A profile of another thread of
+ *  the same process stands in where none names the thread. */
+function traceSamples(events: readonly unknown[], pid: number, tid: number): TraceSamples {
+  const starts = new Map<string, { readonly start: number; readonly tid: unknown }>();
+  const chunks: { readonly data: Readonly<Record<string, unknown>>; readonly id: string }[] = [];
+  for (const raw of events) {
+    const event = objectOf(raw);
+    if (event.pid !== pid) continue;
+    const data = objectOf(objectOf(event.args).data);
+    const id = String(event.id);
+    if (event.name === "Profile" && typeof data.startTime === "number") {
+      starts.set(id, { start: data.startTime, tid: event.tid });
+    }
+    if (event.name === "ProfileChunk") chunks.push({ data, id });
+  }
+  const ids = [...starts.entries()];
+  const chosen = (ids.find(([, profile]) => profile.tid === tid) ?? ids[0])?.[0];
+  const nodes = new Map<number, ProfileNode>();
+  const parents = new Map<number, number>();
+  const taken: { at: number; id: number }[] = [];
+  let at = chosen === undefined ? 0 : (starts.get(chosen)?.start ?? 0);
+  for (const chunk of chunks) {
+    if (chunk.id !== chosen) continue;
+    const profile = objectOf(chunk.data.cpuProfile);
+    for (const raw of Array.isArray(profile.nodes) ? profile.nodes : []) {
+      const node = objectOf(raw);
+      const frame = objectOf(node.callFrame);
+      if (typeof node.id !== "number") continue;
+      nodes.set(node.id, {
+        callFrame: {
+          columnNumber:
+            typeof frame.columnNumber === "number" ? Math.max(0, frame.columnNumber) : 0,
+          functionName: typeof frame.functionName === "string" ? frame.functionName : "",
+          lineNumber: typeof frame.lineNumber === "number" ? Math.max(0, frame.lineNumber) : 0,
+          url: typeof frame.url === "string" ? frame.url : "",
+        },
+        id: node.id,
+      });
+      if (typeof node.parent === "number") parents.set(node.id, node.parent);
+    }
+    const sampleIds = Array.isArray(profile.samples) ? profile.samples : [];
+    const deltas = Array.isArray(chunk.data.timeDeltas) ? chunk.data.timeDeltas : [];
+    for (const [index, id] of sampleIds.entries()) {
+      at += Number(deltas[index] ?? 0);
+      if (typeof id === "number") taken.push({ at, id });
+    }
+  }
+  const samples = taken.flatMap(({ at: sampledAt, id }, index) => {
+    const node = nodes.get(id);
+    if (node === undefined) return [];
+    return [{ at: sampledAt, lasts: (taken[index + 1]?.at ?? sampledAt) - sampledAt, node }];
+  });
+  return { nodes, parents, samples };
+}
+
+/**
+ * Prints a traced task's script by function, from the trace's own samples (`traceSamples`):
+ * `TRACE-FN-TIME` with how many samples fell in the task and what they cover, the engine's own
+ * time among it (`program`, which holds style, layout and paint), the garbage collector's and
+ * idle; `TRACE-FN-SELF` for the `TRACE_FUNCTIONS` functions with the most time on top of the
+ * stack; and `TRACE-FN-TOTAL` for the page's own functions (no module of `node_modules`) with the
+ * most time on the stack, their callees' included, each counted once in a sample.
+ */
+function printTraceFunctions(head: string, task: TraceSpan, sampled: TraceSamples): void {
+  const inside = sampled.samples.filter(
+    (sample) => sample.at >= task.start && sample.at < task.end
+  );
+  const self = new Map<string, { ms: number; readonly frame: ProfileNode["callFrame"] }>();
+  const total = new Map<string, { ms: number; readonly frame: ProfileNode["callFrame"] }>();
+  const engine = { gc: 0, idle: 0, program: 0 };
+  const add = (
+    into: Map<string, { ms: number; readonly frame: ProfileNode["callFrame"] }>,
+    frame: ProfileNode["callFrame"],
+    ms: number
+  ): void => {
+    const key = keyOf(frame);
+    const held = into.get(key);
+    if (held === undefined) into.set(key, { frame, ms });
+    else held.ms += ms;
+  };
+  for (const sample of inside) {
+    const ms = sample.lasts / 1000;
+    const frame = sample.node.callFrame;
+    if (frame.functionName === ENGINE.program) engine.program += ms;
+    else if (frame.functionName === ENGINE.gc) engine.gc += ms;
+    else if (frame.functionName === ENGINE.idle) engine.idle += ms;
+    if (!engineFrame(frame)) add(self, frame, ms);
+    const seen = new Set<string>();
+    for (
+      let at: number | undefined = sample.node.id;
+      at !== undefined;
+      at = sampled.parents.get(at)
+    ) {
+      const above = sampled.nodes.get(at)?.callFrame;
+      if (above === undefined || engineFrame(above) || seen.has(keyOf(above))) continue;
+      seen.add(keyOf(above));
+      add(total, above, ms);
+    }
+  }
+  const covered = inside.reduce((sum, sample) => sum + sample.lasts / 1000, 0);
+  console.log(
+    `TRACE-FN-TIME ${head} samples=${inside.length} sampled=${shown(covered)} ` +
+      `program=${shown(engine.program)} gc=${shown(engine.gc)} idle=${shown(engine.idle)}`
+  );
+  const ranked = (from: typeof self) =>
+    [...from.values()]
+      .map((entry) => ({ ...entry, mapped: mapFrame(entry.frame) }))
+      .sort((a, b) => b.ms - a.ms);
+  for (const entry of ranked(self).slice(0, TRACE_FUNCTIONS)) {
+    console.log(
+      `TRACE-FN-SELF ${head} ${shown(entry.ms)} ${entry.mapped.name} ${entry.mapped.place}`
+    );
+  }
+  for (const entry of ranked(total)
+    .filter(({ mapped }) => !mapped.place.startsWith("node_modules/"))
+    .slice(0, TRACE_FUNCTIONS)) {
+    console.log(
+      `TRACE-FN-TOTAL ${head} ${shown(entry.ms)} ${entry.mapped.name} ${entry.mapped.place}`
+    );
+  }
+}
+
+/** The invalidation tracking's events `printInvalidations` reads: a change on an element that
+ *  scheduled an invalidation set there (`schedule`), an element the engine's walk of the tree
+ *  found a pending set on or a set reached (`reach`), and an element marked for a style
+ *  recalculation, with the reason (`recalc`). */
+const INVALIDATION_EVENTS = {
+  reach: "StyleInvalidatorInvalidationTracking",
+  recalc: "StyleRecalcInvalidationTracking",
+  schedule: "ScheduleStyleInvalidationTracking",
+} as const;
+
+/** The event a style recalculation's selector statistics come in (`disabled-by-default-blink.debug`). */
+const SELECTOR_STATS_EVENT = "SelectorStats";
+
+/** How many groups of one kind, and how many selectors, a task prints at most. */
+const INVALIDATION_GROUPS = 30;
+const INVALIDATION_SELECTORS = 25;
+
+/** How many kinds of element one group of reached elements names at most. */
+const REACHED_KINDS = 4;
+
+/** How many raw events of each name a task prints, so a field the lines do not read still shows. */
+const INVALIDATION_RAW = 2;
+
+/** The most nodes the probe describes, and the most subtrees whose elements it counts. */
+const DESCRIBED_NODES = 1500;
+const COUNTED_SUBTREES = 40;
+
+/** How many `DOM.describeNode` calls the probe has in flight at once. */
+const DESCRIBE_BATCH = 100;
+
+/** One event of a trace at one instant of its thread, in µs, with its arguments and their `data`. */
+interface TraceMark {
+  readonly args: Readonly<Record<string, unknown>>;
+  readonly data: Readonly<Record<string, unknown>>;
+  readonly name: string;
+  readonly pid: number;
+  readonly raw: unknown;
+  readonly tid: number;
+  readonly ts: number;
+}
+
+/** The events of `names` in a trace, whatever their phase, by their time. */
+function traceMarks(events: readonly unknown[], names: ReadonlySet<string>): TraceMark[] {
+  const marks: TraceMark[] = [];
+  for (const raw of events) {
+    const event = objectOf(raw);
+    const { name, pid, tid, ts } = event;
+    if (typeof name !== "string" || !names.has(name)) continue;
+    if (typeof ts !== "number" || typeof pid !== "number" || typeof tid !== "number") continue;
+    const args = objectOf(event.args);
+    marks.push({ args, data: objectOf(args.data), name, pid, raw, tid, ts });
+  }
+  return marks.sort((a, b) => a.ts - b.ts);
+}
+
+/** `text` cut to `most` characters. */
+function clipped(text: string, most: number): string {
+  return text.length <= most ? text : `${text.slice(0, most - 1)}…`;
+}
+
+/** An element as an invalidation line names it: `full`, its tag, each `data-*` attribute with its
+ *  value, and its class; `kind`, the same with the `data-*` attributes' names alone, which the
+ *  elements of one kind share, so a line counts them together. */
+interface NamedElement {
+  readonly full: string;
+  readonly kind: string;
+}
+
+/** An element named by its tag and its attributes, CDP's flat list of names and values. */
+function namedElement(tag: string, attributes: readonly string[]): NamedElement {
+  const full: string[] = [];
+  const names: string[] = [];
+  let classes = "";
+  for (let at = 0; at + 1 < attributes.length; at += 2) {
+    const name = attributes[at] ?? "";
+    const value = attributes[at + 1] ?? "";
+    if (name === "class") classes = ` class="${clipped(value, 96)}"`;
+    if (!name.startsWith("data-")) continue;
+    full.push(value === "" ? `[${name}]` : `[${name}="${clipped(value, 48)}"]`);
+    names.push(`[${name}]`);
+  }
+  return { full: `${tag}${full.join("")}${classes}`, kind: `${tag}${names.join("")}${classes}` };
+}
+
+/** The elements the trace names by their backend ids, as `DOM.describeNode` reads them once the
+ *  act has shown its result. A node the page has let go of since is left out, and its lines name
+ *  it by the trace's own `nodeName`. */
+async function describeNodes(
+  cdp: CDPSession,
+  ids: readonly number[]
+): Promise<Map<number, NamedElement>> {
+  const named = new Map<number, NamedElement>();
+  const wanted = ids.slice(0, DESCRIBED_NODES);
+  for (let at = 0; at < wanted.length; at += DESCRIBE_BATCH) {
+    const described = await Promise.all(
+      wanted.slice(at, at + DESCRIBE_BATCH).map((backendNodeId) =>
+        cdp.send("DOM.describeNode", { backendNodeId }).then(
+          ({ node }) =>
+            [
+              backendNodeId,
+              namedElement(node.localName || node.nodeName.toLowerCase(), node.attributes ?? []),
+            ] as const,
+          () => null
+        )
+      )
+    );
+    for (const entry of described) if (entry !== null) named.set(entry[0], entry[1]);
+  }
+  return named;
+}
+
+/** How many elements the subtree of each node holds, itself counted, read in the page once the
+ *  act has shown its result; a node the page has let go of since is left out. */
+async function subtreeSizes(cdp: CDPSession, ids: readonly number[]): Promise<Map<number, number>> {
+  const sizes = new Map<number, number>();
+  for (const backendNodeId of ids.slice(0, COUNTED_SUBTREES)) {
+    const size = await cdp
+      .send("DOM.resolveNode", { backendNodeId })
+      .then(({ object }) =>
+        cdp.send("Runtime.callFunctionOn", {
+          functionDeclaration: "function () { return this.getElementsByTagName('*').length + 1; }",
+          objectId: object.objectId,
+          returnByValue: true,
+        })
+      )
+      .then(
+        ({ result }) => (typeof result.value === "number" ? result.value : null),
+        () => null
+      );
+    if (size !== null) sizes.set(backendNodeId, size);
+  }
+  return sizes;
+}
+
+/** An invalidation set as a line prints it: each flag the trace gives it (`allDescendantsMightBeInvalid`
+ *  where it invalidates its element's whole subtree), then the classes, ids, tag names and
+ *  attributes an element it reaches is matched on. */
+function setFeatures(set: Readonly<Record<string, unknown>>): string {
+  const parts = Object.entries(set)
+    .filter(([, value]) => value === true)
+    .map(([key]) => key);
+  for (const [key, mark] of [
+    ["classes", "."],
+    ["ids", "#"],
+    ["tagNames", ""],
+    ["attributes", "@"],
+  ] as const) {
+    const values = set[key];
+    if (Array.isArray(values)) parts.push(...values.map((value) => `${mark}${String(value)}`));
+  }
+  return parts.length === 0 ? "none" : clipped(parts.join(" "), 240);
+}
+
+/** The invalidation sets an event carries (`invalidationList`). */
+function setsOf(mark: TraceMark): readonly Readonly<Record<string, unknown>>[] {
+  const list = mark.data.invalidationList;
+  return Array.isArray(list) ? list.map((set) => objectOf(set)) : [];
+}
+
+/** The selectors the trace names for an event: its own `selectors`, and each of its sets'. */
+function selectorsOf(mark: TraceMark): string[] {
+  const found = new Set<string>();
+  const read = (value: unknown): void => {
+    if (!Array.isArray(value)) return;
+    for (const entry of value) {
+      const selector = typeof entry === "string" ? entry : objectOf(entry).selector;
+      if (typeof selector === "string") found.add(selector);
+    }
+  };
+  read(mark.data.selectors);
+  for (const set of setsOf(mark)) read(set.selectors);
+  return [...found];
+}
+
+/** What a scheduling event says changed on its element: an attribute, a class, an id or a
+ *  pseudo-class, by its name; else what the trace calls the invalidation. */
+function changeOf(mark: TraceMark): string {
+  for (const [key, word] of [
+    ["changedAttribute", "attribute"],
+    ["changedClass", "class"],
+    ["changedId", "id"],
+    ["changedPseudo", "pseudo"],
+  ] as const) {
+    const value = mark.data[key];
+    if (typeof value === "string") return `${word}:${value}`;
+  }
+  return `other:${String(mark.data.invalidatedSelectorId ?? mark.data.reason ?? "unknown")}`;
+}
+
+/** The script's frame an event names on top of its stack, mapped as the profile's are: the
+ *  trace counts its line and column from 1, a profile from 0. */
+function stackTopOf(mark: TraceMark): string {
+  const frames = mark.data.stackTrace;
+  const top = objectOf(Array.isArray(frames) ? frames[0] : undefined);
+  if (typeof top.url !== "string" || typeof top.lineNumber !== "number") return "none";
+  const mapped = mapFrame({
+    columnNumber: Math.max(0, Number(top.columnNumber ?? 1) - 1),
+    functionName: typeof top.functionName === "string" ? top.functionName : "",
+    lineNumber: Math.max(0, top.lineNumber - 1),
+    url: top.url,
+  });
+  return `${mapped.name}@${mapped.place}`;
+}
+
+/** A count of things by a key, each key's first thing kept. */
+function countBy<T>(things: readonly T[], keyOf: (thing: T) => string) {
+  const groups = new Map<string, { count: number; readonly first: T; readonly all: T[] }>();
+  for (const thing of things) {
+    const key = keyOf(thing);
+    const held = groups.get(key);
+    if (held === undefined) groups.set(key, { all: [thing], count: 1, first: thing });
+    else {
+      held.count += 1;
+      held.all.push(thing);
+    }
+  }
+  return [...groups.values()].sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Prints what made each press task's style recalculations reach the elements they did, from the
+ * trace `ISSUE_PAGE_LOAD_INVALIDATIONS=1` records (`INVALIDATION_CATEGORIES`), each line under the
+ * task's number as `printTrace` numbers it, each group most first:
+ *
+ * - `INVALIDATION-SCHEDULE`: each change that scheduled an invalidation set - the element (its
+ *   tag, `data-*` and class), the attribute, class, id or pseudo-class that changed, the set's
+ *   features, the selectors the trace names for it, how many events of the engine's walk the set
+ *   reached and on how many elements, and the script's frame that made the change;
+ * - `INVALIDATION-REACH`: the walk's events by their reason, set and selectors, with how many
+ *   elements each reached, and `INVALIDATION-REACH-ON` the kinds of element it reached;
+ * - `INVALIDATION-RECALC`: the elements marked for a recalculation, by the reason, whether the
+ *   mark covers the element's subtree, and the element's kind, with the elements such a subtree
+ *   holds now;
+ * - `SELECTOR-STATS`: the selectors the task's recalculations spent the most time matching,
+ *   summed over them, with their match attempts, matches and fast rejects;
+ * - `INVALIDATION-RAW`: the first events of each name as the trace gives them, cut short.
+ */
+async function printInvalidations(
+  label: string,
+  width: number,
+  events: readonly unknown[],
+  cdp: CDPSession
+): Promise<void> {
+  const line = `${width} ${label} 1`;
+  const press = pressTasks(traceSpans(events));
+  if (press === null) return;
+  const { first, tasks } = press;
+  const marks = traceMarks(
+    events,
+    new Set([...Object.values(INVALIDATION_EVENTS), SELECTOR_STATS_EVENT])
+  ).filter((mark) => mark.pid === first.pid && mark.tid === first.tid);
+  const seen = countBy(marks, (mark) => mark.name).map(
+    ({ count, first: mark }) => `${mark.name}=${count}`
+  );
+  console.log(`INVALIDATION-NAMES ${line} ${seen.join(" ") || "none"}`);
+  const inTask = (task: TraceSpan) =>
+    marks.filter((mark) => mark.ts >= task.start && mark.ts <= task.end);
+  const nodeOf = (mark: TraceMark): number | null =>
+    typeof mark.data.nodeId === "number" ? mark.data.nodeId : null;
+  const nodeIds = [
+    ...new Set(
+      tasks
+        .flatMap((task) => inTask(task))
+        .map(nodeOf)
+        .filter((id) => id !== null)
+    ),
+  ];
+  const named = await describeNodes(cdp, nodeIds);
+  const nameOf = (mark: TraceMark): NamedElement => {
+    const id = nodeOf(mark);
+    const held = id === null ? undefined : named.get(id);
+    if (held !== undefined) return held;
+    const traced = `${String(mark.data.nodeName ?? "unnamed")} (gone)`;
+    return { full: traced, kind: traced };
+  };
+  for (const [at, task] of tasks.entries()) {
+    const head = `${line} task=${at + 1}`;
+    const own = inTask(task);
+    const of = (name: string) => own.filter((mark) => mark.name === name);
+    const scheduled = of(INVALIDATION_EVENTS.schedule);
+    const reached = of(INVALIDATION_EVENTS.reach);
+    const recalculated = of(INVALIDATION_EVENTS.recalc);
+    // What the walk did with each set, by the set's id: its features, its selectors, and the
+    // events and elements it reached.
+    const bySet = new Map<
+      string,
+      { features: string; readonly nodes: Set<number>; reached: number; selectors: Set<string> }
+    >();
+    for (const mark of reached) {
+      for (const set of setsOf(mark)) {
+        const id = String(set.id);
+        const held = bySet.get(id) ?? {
+          features: setFeatures(set),
+          nodes: new Set<number>(),
+          reached: 0,
+          selectors: new Set<string>(),
+        };
+        held.reached += 1;
+        const node = nodeOf(mark);
+        if (node !== null) held.nodes.add(node);
+        for (const selector of selectorsOf(mark)) held.selectors.add(selector);
+        bySet.set(id, held);
+      }
+    }
+    for (const group of countBy(scheduled, (mark) => {
+      const set = bySet.get(String(mark.data.invalidationSet));
+      return `${nameOf(mark).kind} ${changeOf(mark)} ${set?.features ?? "unseen"}`;
+    }).slice(0, INVALIDATION_GROUPS)) {
+      const sets = new Set(group.all.map((mark) => String(mark.data.invalidationSet)));
+      const walk = [...sets].map((id) => bySet.get(id)).filter((set) => set !== undefined);
+      const nodes = new Set(walk.flatMap((set) => [...set.nodes]));
+      const selectors = new Set([
+        ...group.all.flatMap(selectorsOf),
+        ...walk.flatMap((set) => [...set.selectors]),
+      ]);
+      console.log(
+        `INVALIDATION-SCHEDULE ${head} count=${group.count} changed=${changeOf(group.first)} ` +
+          `selector-id=${String(group.first.data.invalidatedSelectorId ?? "none")} ` +
+          `set=${walk[0]?.features ?? "unseen"} ` +
+          `reached=${walk.reduce((sum, set) => sum + set.reached, 0)} elements=${nodes.size} ` +
+          `from=${stackTopOf(group.first)} on=${nameOf(group.first).full} ` +
+          `selectors=${[...selectors].join(" | ") || "none"}`
+      );
+    }
+    const reachGroups = countBy(reached, (mark) =>
+      [
+        String(mark.data.reason),
+        setsOf(mark).map(setFeatures).join(" + "),
+        String(mark.data.selectorPart ?? ""),
+        selectorsOf(mark).join(" | "),
+      ].join(" ~ ")
+    ).slice(0, INVALIDATION_GROUPS);
+    for (const [index, group] of reachGroups.entries()) {
+      const nodes = new Set(group.all.map(nodeOf).filter((id) => id !== null));
+      console.log(
+        `INVALIDATION-REACH ${head} group=${index + 1} count=${group.count} ` +
+          `elements=${nodes.size} reason=${String(group.first.data.reason)} ` +
+          `sets=${setsOf(group.first).map(setFeatures).join(" + ") || "none"} ` +
+          `part=${String(group.first.data.selectorPart ?? "none")} ` +
+          `selectors=${selectorsOf(group.first).join(" | ") || "none"}`
+      );
+      for (const kind of countBy(group.all, (mark) => nameOf(mark).kind).slice(0, REACHED_KINDS)) {
+        console.log(
+          `INVALIDATION-REACH-ON ${head} group=${index + 1} count=${kind.count} ` +
+            `on=${nameOf(kind.first).full}`
+        );
+      }
+    }
+    const subtrees = recalculated.filter((mark) => mark.data.subtree === true).map(nodeOf);
+    const sizes = await subtreeSizes(
+      cdp,
+      [...new Set(subtrees)].filter((id) => id !== null)
+    );
+    for (const group of countBy(recalculated, (mark) =>
+      [
+        String(mark.data.reason),
+        String(mark.data.subtree),
+        String(mark.data.extraData ?? ""),
+        nameOf(mark).kind,
+      ].join(" ~ ")
+    ).slice(0, INVALIDATION_GROUPS)) {
+      const held = group.all
+        .map((mark) => sizes.get(nodeOf(mark) ?? -1))
+        .filter((size) => size !== undefined);
+      console.log(
+        `INVALIDATION-RECALC ${head} count=${group.count} ` +
+          `reason=${String(group.first.data.reason)} ` +
+          `subtree=${group.first.data.subtree === true ? "yes" : "no"} ` +
+          `extra=${String(group.first.data.extraData ?? "none") || "none"} ` +
+          `subtree-elements=${held.length === 0 ? "n/a" : held.reduce((sum, size) => sum + size, 0)} ` +
+          `from=${stackTopOf(group.first)} on=${nameOf(group.first).full}`
+      );
+    }
+    const timings = of(SELECTOR_STATS_EVENT).flatMap((mark) => {
+      const stats = objectOf(mark.args.selector_stats);
+      const list = stats.selector_timings ?? mark.args.selector_timings;
+      return Array.isArray(list) ? list.map((entry) => objectOf(entry)) : [];
+    });
+    const bySelector = new Map<
+      string,
+      {
+        attempts: number;
+        elapsed: number;
+        fastRejects: number;
+        invalidations: number;
+        matches: number;
+      }
+    >();
+    for (const timing of timings) {
+      const selector = String(timing.selector);
+      const held = bySelector.get(selector) ?? {
+        attempts: 0,
+        elapsed: 0,
+        fastRejects: 0,
+        invalidations: 0,
+        matches: 0,
+      };
+      held.elapsed += Number(timing["elapsed (us)"] ?? timing.elapsed ?? 0);
+      held.attempts += Number(timing.match_attempts ?? 0);
+      held.matches += Number(timing.match_count ?? 0);
+      held.fastRejects += Number(timing.fast_reject_count ?? 0);
+      held.invalidations += Number(timing.invalidation_count ?? 0);
+      bySelector.set(selector, held);
+    }
+    const costly = [...bySelector.entries()].sort((a, b) => b[1].elapsed - a[1].elapsed);
+    console.log(
+      `SELECTOR-STATS-SUM ${head} events=${of(SELECTOR_STATS_EVENT).length} ` +
+        `selectors=${costly.length} ` +
+        `elapsed=${traceMs(costly.reduce((sum, [, held]) => sum + held.elapsed, 0))}`
+    );
+    for (const [selector, held] of costly.slice(0, INVALIDATION_SELECTORS)) {
+      console.log(
+        `SELECTOR-STATS ${head} elapsed=${traceMs(held.elapsed)} ` +
+          `attempts=${held.attempts} matches=${held.matches} fast-rejects=${held.fastRejects} ` +
+          `invalidations=${held.invalidations} ${clipped(selector, 400)}`
+      );
+    }
+    for (const name of [...Object.values(INVALIDATION_EVENTS), SELECTOR_STATS_EVENT]) {
+      for (const mark of of(name).slice(0, INVALIDATION_RAW)) {
+        console.log(`INVALIDATION-RAW ${head} ${clipped(JSON.stringify(mark.raw), 1500)}`);
+      }
     }
   }
 }
@@ -1600,13 +2233,27 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
   const load = await openLoad(browser, rate, presetPath(seeded.key, "conversation"), "none");
   const readCommits = process.env.ISSUE_PAGE_LOAD_COMMITS === "1";
   const readTrace = process.env.ISSUE_PAGE_LOAD_TRACE === "1";
+  const readInvalidations = readTrace && process.env.ISSUE_PAGE_LOAD_INVALIDATIONS === "1";
+  const readFunctions = readTrace && process.env.ISSUE_PAGE_LOAD_TRACE_FUNCTIONS === "1";
+  const traceCategories = [
+    ...TRACE_CATEGORIES,
+    ...(readInvalidations ? INVALIDATION_CATEGORIES : []),
+    ...(readFunctions ? TRACE_FUNCTION_CATEGORIES : []),
+  ];
   try {
     if (readCommits) await load.page.addInitScript(commitProbe);
     await load.goto();
     await waitForLoadEnd(load.page, load.requests);
     let next = 0;
-    for (const act of afterLoadOrder(LOAD_ACTS[width])) {
-      const label = `after-${boundWord(act.name)}`;
+    const acts = afterLoadOrder(LOAD_ACTS[width]);
+    // With `ISSUE_PAGE_LOAD_REFOLD=1`, the fold and the unfold once more after the last act, so
+    // after the `Enter`s have bound the page's block editor to a row and let it go again.
+    const refolds =
+      process.env.ISSUE_PAGE_LOAD_REFOLD === "1"
+        ? acts.filter((act) => TRACE_ACTS[act.kind] === true)
+        : [];
+    for (const [at, act] of [...acts, ...refolds].entries()) {
+      const label = `${at < acts.length ? "after" : "after-enters"}-${boundWord(act.name)}`;
       await waitForLoadEnd(load.page, load.requests);
       if (act.paging !== undefined) {
         // The load has just gone quiet again, so the rows it drew already say whether the
@@ -1624,7 +2271,14 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
       if (commits) await load.page.evaluate(() => window.__commitProbe?.arm());
       await load.cdp.send("Profiler.start");
       const endTrace =
-        readTrace && TRACE_ACTS[act.kind] === true ? await startTrace(load.cdp) : undefined;
+        readTrace && TRACE_ACTS[act.kind] === true
+          ? await startTrace(load.cdp, traceCategories)
+          : undefined;
+      // Whatever the invalidation categories make the engine redo once they are on is done here,
+      // before the act's first event, so the press's tasks hold only what the press changed.
+      if (endTrace !== undefined && readInvalidations) {
+        await load.page.evaluate(() => document.documentElement.getBoundingClientRect().height);
+      }
       const made = await makeSteps(load.page, next, act.steps, "now");
       const traced = await endTrace?.();
       const anchoredAt = await anchor(load.page);
@@ -1636,7 +2290,10 @@ test("the acts made after the load, profiled", async ({ browser, loadSeeds }, te
         spans: load.requests.spans(record.timeOrigin),
       };
       printAct(label, width, 1, profiled);
-      if (traced !== undefined) printTrace(label, width, traced);
+      if (traced !== undefined) printTrace(label, width, traced, readFunctions);
+      if (traced !== undefined && readInvalidations) {
+        await printInvalidations(label, width, traced, load.cdp);
+      }
       if (commits) {
         // The act has shown its result and the probe was armed for it alone, so this one read
         // holds every commit of the act's window; it prints them and decides nothing.
