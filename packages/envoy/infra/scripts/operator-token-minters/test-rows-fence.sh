@@ -293,31 +293,44 @@ if row fb; then
   passed "(fb) the fence removed, bound Warn, failing open, missing dispatch in a binding's or a policy's selector, with an exception, differing live from declared, unread or answered empty, beside a pod outside its names that runs as the broker or takes its database login or another of its Secrets, with no broker pod, beside any webhook backed in dispatch (one matching a guarded namespace, a cluster-scoped object or neither) or webhooks unread, answered empty or as {}, or a webhook's Service the walk cannot read (its jq error printed), or beside another guarded pair in dispatch, credits nothing"
 fi
 
-# --- (fc) Whoever can write the fence stays a finding while it is credited. ---
-fence_writer_row() {
-  local want
+# --- (fc) Whoever can write the fence stays a finding while it is credited. The three writes share
+# one world and one run, each on a ServiceAccount of its own: patch-binding on legion/worker and
+# delete-policy on legion/dispatch-measure, each the holder of a grant the fence credits, and
+# delete-named on legion/delete-named, which holds nothing else. The check prints each principal's
+# finding on a line of its own, naming it, so each write is still judged by its own line, exact,
+# beside the fence's credits (want_fence_credits); want_recorded holds the run's last line to the
+# FINDING and UNKNOWN lines it printed, so a line printed and not recorded fails the row. ---
+fence_writer_shared() {
+  local item want entry wants=() what="the writers of the fence ($*), each on a ServiceAccount of its own"
   fence_world
-  case "$1" in
-    patch-binding)
-      subject_grant operator-cluster "$(sa_subject legion worker)" patch admissionregistration.k8s.io validatingadmissionpolicybindings "" "" ""
-      want="FINDING system:serviceaccount:legion:worker: patch validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide"
-      ;;
-    delete-policy)
-      subject_grant operator-cluster "$(sa_subject legion worker)" delete admissionregistration.k8s.io validatingadmissionpolicies "" "" ""
-      want="FINDING system:serviceaccount:legion:worker: delete validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide, which removes the broker's pod fence"
-      ;;
-    delete-named)
-      subject_grant operator-cluster "$(sa_subject legion worker)" delete admissionregistration.k8s.io validatingadmissionpolicies "" "" broker-pod-connect
-      want="FINDING system:serviceaccount:legion:worker: delete validatingadmissionpolicies.admissionregistration.k8s.io broker-pod-connect cluster-wide, which removes the broker's pod fence"
-      ;;
-  esac
+  for item in "$@"; do
+    case "$item" in
+      patch-binding)
+        subject_grant operator-cluster "$(sa_subject legion worker)" patch admissionregistration.k8s.io validatingadmissionpolicybindings "" "" ""
+        want="FINDING system:serviceaccount:legion:worker: patch validatingadmissionpolicybindings.admissionregistration.k8s.io cluster-wide"
+        ;;
+      delete-policy)
+        subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" delete admissionregistration.k8s.io validatingadmissionpolicies "" "" ""
+        want="FINDING system:serviceaccount:legion:dispatch-measure: delete validatingadmissionpolicies.admissionregistration.k8s.io cluster-wide, which removes the broker's pod fence"
+        ;;
+      delete-named)
+        add_sa operator-cluster legion delete-named
+        subject_grant operator-cluster "$(sa_subject legion delete-named)" delete admissionregistration.k8s.io validatingadmissionpolicies "" "" broker-pod-connect
+        want="FINDING system:serviceaccount:legion:delete-named: delete validatingadmissionpolicies.admissionregistration.k8s.io broker-pod-connect cluster-wide, which removes the broker's pod fence"
+        ;;
+    esac
+    wants+=("$item"$'\t'"$want")
+  done
   fence_run
-  want_status 1 "a writer of the fence ($1)"
-  want_line "$want" "a writer of the fence ($1)"
-  want_fence_credits "a writer of the fence ($1)"
+  want_status 1 "$what"
+  want_recorded "$what"
+  for entry in "${wants[@]}"; do
+    want_line "${entry#*$'\t'}" "a writer of the fence (${entry%%$'\t'*})"
+  done
+  want_fence_credits "$what"
 }
 if row fc; then
-  each fence_writer_row patch-binding delete-policy delete-named
+  fence_writer_shared patch-binding delete-policy delete-named
   passed "(fc) a principal that can patch the fence's binding or delete its policy, outright or by name, stays a finding beside the credits"
 fi
 
@@ -343,50 +356,68 @@ if row fd; then
   passed "(fd) who can become dispatch-measure is an ALLOWANCE naming the chain and the residual while dispatch-measure holds its credited exec alone, and a finding once dispatch-measure can patch the admission policies"
 fi
 
-# --- (fj) Who can become a credited grant's holder reaches the residual too, and is named. ---
+# --- (fj) Who can become a credited grant's holder reaches the residual too, and is named. The
+# three share one world and one run, each chain from a principal of its own: token's
+# agent-sessions/runner-x, which can mint dispatch-measure's token; minter's Google service account
+# minter@; and member's Workload Identity member agent-sessions/runner-w, which
+# agent-sessions/runner-v can become by minting its token. No plant gives one a way to become
+# another, and every item expects exit 0, so the run still prints no FINDING at all. Each is still
+# judged by its own line: token's and runner-v's exact, the member's by its own text, and minter's
+# by one line that both starts with minter@'s text and ends with comment-delivery's exec and the
+# residual (want_line_with), since the member's ALLOWANCE ends the same way. The lines are judged
+# before the exit, so a right read as a finding fails naming its item; want_recorded holds the
+# run's last line to the FINDING and UNKNOWN lines it printed, so a line printed and not recorded
+# fails the row. ---
 # The comment-delivery account's resource, whose minters the check reads once its credited exec
 # carries the residual.
 readonly comment_delivery_res="//iam.googleapis.com/projects/$project/serviceAccounts/$comment_delivery"
-residual_chain_row() {
-  local want
+residual_chain_shared() {
+  local item what="the residual reached through each of $*, each from a principal of its own"
   fence_world
-  edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "agent-sessions", name: "runner-x"}, {namespace: "agent-sessions", name: "runner-w"}]'
-  case "$1" in
-    token)
-      # An agent's ServiceAccount that can mint dispatch-measure's token.
-      subject_grant operator-cluster "$(sa_subject agent-sessions runner-x)" create "" serviceaccounts token legion dispatch-measure
-      want="$(allowance_line system:serviceaccount:agent-sessions:runner-x "create serviceaccounts/token dispatch-measure in legion, so it can become system:serviceaccount:legion:dispatch-measure, which can create pods/exec in dispatch")"
-      ;;
-    minter)
-      # A Google service account that can mint comment-delivery's token.
-      iam "$comment_delivery_res" roles/iam.serviceAccountTokenCreator "serviceAccount:minter@$project.iam.gserviceaccount.com"
-      want="ALLOWANCE serviceAccount:minter@$project.iam.gserviceaccount.com: iam.serviceAccounts.getAccessToken"
-      ;;
-    member)
-      # A Workload Identity member that acts as comment-delivery, and an agent that can become it.
-      iam "$comment_delivery_res" roles/iam.workloadIdentityUser "serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]"
-      subject_grant operator-cluster "$(sa_subject agent-sessions runner-x)" create "" serviceaccounts token agent-sessions runner-w
-      want="$(allowance_line system:serviceaccount:agent-sessions:runner-x "create serviceaccounts/token runner-w in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-w, which can act as $comment_delivery (which can create pods/exec in dispatch) through Workload Identity")"
-      ;;
-  esac
+  edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "agent-sessions", name: "runner-x"}, {namespace: "agent-sessions", name: "runner-w"},
+    {namespace: "agent-sessions", name: "runner-v"}]'
+  for item in "$@"; do
+    case "$item" in
+      token)
+        # An agent's ServiceAccount that can mint dispatch-measure's token.
+        subject_grant operator-cluster "$(sa_subject agent-sessions runner-x)" create "" serviceaccounts token legion dispatch-measure
+        ;;
+      minter)
+        # A Google service account that can mint comment-delivery's token.
+        iam "$comment_delivery_res" roles/iam.serviceAccountTokenCreator "serviceAccount:minter@$project.iam.gserviceaccount.com"
+        ;;
+      member)
+        # A Workload Identity member that acts as comment-delivery, and an agent that can become it.
+        iam "$comment_delivery_res" roles/iam.workloadIdentityUser "serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]"
+        subject_grant operator-cluster "$(sa_subject agent-sessions runner-v)" create "" serviceaccounts token agent-sessions runner-w
+        ;;
+    esac
+  done
   fence_run
-  want_status 0 "the residual reached through $1"
-  want_fence_credits "the residual reached through $1"
-  [ "$(count_prefix "FINDING ")" -eq 0 ] || fail "the residual reached through $1: a FINDING line"
-  case "$1" in
-    minter)
-      want_text "$want" "the residual reached through $1"
-      want_text ", so it can act as serviceAccount:$comment_delivery, which can create pods/exec in dispatch, $fence_residual" "the residual reached through $1"
-      ;;
-    member)
-      want_text "ALLOWANCE serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]: " "the residual reached through $1"
-      want_line "$want" "the residual reached through $1"
-      ;;
-    *) want_line "$want" "the residual reached through $1" ;;
-  esac
+  for item in "$@"; do
+    case "$item" in
+      token)
+        want_line "$(allowance_line system:serviceaccount:agent-sessions:runner-x "create serviceaccounts/token dispatch-measure in legion, so it can become system:serviceaccount:legion:dispatch-measure, which can create pods/exec in dispatch")" \
+          "the residual reached through $item"
+        ;;
+      minter)
+        want_line_with "ALLOWANCE serviceAccount:minter@$project.iam.gserviceaccount.com: iam.serviceAccounts.getAccessToken" \
+          ", so it can act as serviceAccount:$comment_delivery, which can create pods/exec in dispatch, $fence_residual" "the residual reached through $item"
+        ;;
+      member)
+        want_text "ALLOWANCE serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]: " "the residual reached through $item"
+        want_line "$(allowance_line system:serviceaccount:agent-sessions:runner-v "create serviceaccounts/token runner-w in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-w, which can act as $comment_delivery (which can create pods/exec in dispatch) through Workload Identity")" \
+          "the residual reached through $item"
+        ;;
+    esac
+  done
+  [ "$(count_prefix "FINDING ")" -eq 0 ] || fail "$what: a FINDING line"
+  want_status 0 "$what"
+  want_recorded "$what"
+  want_fence_credits "$what"
 }
 if row fj; then
-  each residual_chain_row token minter member
+  residual_chain_shared token minter member
   passed "(fj) an agent that can mint dispatch-measure's token, a Google account that can mint comment-delivery's, and an agent that can become comment-delivery's Workload Identity member each print an ALLOWANCE naming the chain and the residual"
 fi
 
@@ -459,19 +490,33 @@ if row fn; then
 fi
 
 # --- (fk) A change of a pod in dispatch is no credit: broker-pod-update admits a change of any
-# pod's metadata, and a pod given the broker's label app=envoy-broker takes its Services' traffic. ---
-pod_change_row() {
+# pod's metadata, and a pod given the broker's label app=envoy-broker takes its Services' traffic.
+# The two verbs share one world and one run, each on a ServiceAccount of its own that holds a grant
+# the fence credits: patch on legion/dispatch-measure and update on legion/worker. The check prints
+# each principal's finding and each credit on a line of its own, naming it, so each verb is still
+# judged by its own line, exact, and by no CREDIT of its own principal for its grant, beside the
+# fence's credits (want_fence_credits); want_recorded holds the run's last line to the FINDING and
+# UNKNOWN lines it printed, so a line printed and not recorded fails the row. ---
+pod_change_shared() {
+  local entry verb who what="patch or update of pods in dispatch, each on a ServiceAccount of its own"
   fence_world
-  subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" "$1" "" pods "" dispatch ""
+  for entry in "$@"; do
+    IFS='|' read -r verb who <<<"$entry"
+    subject_grant operator-cluster "$(sa_subject legion "$who")" "$verb" "" pods "" dispatch ""
+  done
   fence_run
-  want_status 1 "dispatch-measure with $1 pods in dispatch"
-  want_line "FINDING system:serviceaccount:legion:dispatch-measure: $1 pods in dispatch" "dispatch-measure with $1 pods in dispatch"
-  ! has_prefix "CREDIT system:serviceaccount:legion:dispatch-measure: $1 pods in dispatch" ||
-    fail "dispatch-measure with $1 pods in dispatch: the grant is credited"
-  want_fence_credits "dispatch-measure with $1 pods in dispatch"
+  want_status 1 "$what"
+  want_recorded "$what"
+  for entry in "$@"; do
+    IFS='|' read -r verb who <<<"$entry"
+    want_line "FINDING system:serviceaccount:legion:$who: $verb pods in dispatch" "legion/$who with $verb pods in dispatch"
+    ! has_prefix "CREDIT system:serviceaccount:legion:$who: $verb pods in dispatch" ||
+      fail "legion/$who with $verb pods in dispatch: the grant is credited"
+  done
+  want_fence_credits "$what"
 }
 if row fk; then
-  each pod_change_row patch update
+  pod_change_shared "patch|dispatch-measure" "update|worker"
   passed "(fk) patch or update of pods in dispatch, by which a label-only patch puts another pod behind the broker's Services, stays a finding beside the fence's credits"
 fi
 
@@ -639,19 +684,33 @@ if row fr; then
 fi
 
 # --- (fh) An ephemeral container in dispatch is no credit: on a pod not the broker's it takes any
-# Secret of the namespace. ---
-fence_ephemeral_row() {
+# Secret of the namespace. The two verbs share one world and one run, each on a ServiceAccount of
+# its own that holds a grant the fence credits: patch on legion/worker and update on
+# legion/dispatch-measure. The check prints each principal's finding and each credit on a line of
+# its own, naming it, so each verb is still judged by its own line, exact, and by no CREDIT of its
+# own principal for its grant, beside the fence's credits (want_fence_credits); want_recorded holds
+# the run's last line to the FINDING and UNKNOWN lines it printed, so a line printed and not
+# recorded fails the row. ---
+fence_ephemeral_shared() {
+  local entry verb who what="patch or update of pods/ephemeralcontainers in dispatch, each on a ServiceAccount of its own"
   fence_world
-  subject_grant operator-cluster "$(sa_subject legion worker)" "$1" "" pods ephemeralcontainers dispatch ""
+  for entry in "$@"; do
+    IFS='|' read -r verb who <<<"$entry"
+    subject_grant operator-cluster "$(sa_subject legion "$who")" "$verb" "" pods ephemeralcontainers dispatch ""
+  done
   fence_run
-  want_status 1 "legion/worker with $1 pods/ephemeralcontainers in dispatch"
-  want_line "FINDING system:serviceaccount:legion:worker: $1 pods/ephemeralcontainers in dispatch" \
-    "legion/worker with $1 pods/ephemeralcontainers in dispatch"
-  ! has_prefix "CREDIT system:serviceaccount:legion:worker: $1 pods/ephemeralcontainers" ||
-    fail "legion/worker with $1 pods/ephemeralcontainers in dispatch: the grant is credited"
-  want_fence_credits "legion/worker with $1 pods/ephemeralcontainers in dispatch"
+  want_status 1 "$what"
+  want_recorded "$what"
+  for entry in "$@"; do
+    IFS='|' read -r verb who <<<"$entry"
+    want_line "FINDING system:serviceaccount:legion:$who: $verb pods/ephemeralcontainers in dispatch" \
+      "legion/$who with $verb pods/ephemeralcontainers in dispatch"
+    ! has_prefix "CREDIT system:serviceaccount:legion:$who: $verb pods/ephemeralcontainers" ||
+      fail "legion/$who with $verb pods/ephemeralcontainers in dispatch: the grant is credited"
+  done
+  want_fence_credits "$what"
 }
 if row fh; then
-  each fence_ephemeral_row patch update
+  fence_ephemeral_shared "patch|worker" "update|dispatch-measure"
   passed "(fh) patch or update of pods/ephemeralcontainers in dispatch stays a finding beside the fence's credits"
 fi
