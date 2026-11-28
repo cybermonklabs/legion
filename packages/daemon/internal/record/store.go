@@ -593,18 +593,15 @@ func (s *Postgres) HandedOffWithoutOpenOrMergedPullRequest(ctx context.Context, 
 	if err != nil {
 		return nil, fmt.Errorf("list the issues of %s %s: %w", project, what, err)
 	}
-	var handedOff []HandedOff
-	for rows.Next() {
+	handedOff, err := pgx.AppendRows([]HandedOff(nil), rows, func(row pgx.CollectableRow) (HandedOff, error) {
 		var commit string
-		issue, err := scanIssue(scanThen{row: rows, after: []any{&commit}})
+		issue, err := scanIssue(scanThen{row: row, after: []any{&commit}})
 		if err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("list the issues of %s %s: %w", project, what, err)
+			return HandedOff{}, err
 		}
-		handedOff = append(handedOff, HandedOff{Issue: *issue, Commit: commit})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		return HandedOff{Issue: *issue, Commit: commit}, nil
+	})
+	if err != nil {
 		return nil, fmt.Errorf("list the issues of %s %s: %w", project, what, err)
 	}
 	keys := make([]string, len(handedOff))
@@ -2739,7 +2736,8 @@ func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedC
 // holders took of those gates go beside them.
 //
 // A pull request that is not open goes, and its clock — the updated_at of the newest lifecycle
-// event it applied — is kept in cleared_pull_requests at its repository and number, the latest of
+// event it applied — is kept in cleared_pull_requests at its repository and number, the key of
+// pull_requests too, so no two rows one clear deletes share a row there; it keeps the latest of
 // every clear's, with the issue whose row the latest clear deleted and the moment of the clear's
 // transaction: GitHub can deliver an opened or a reopen of it after the clear, late or replayed
 // from a message the intake gave up on, however late, and the workflow records such an event only
@@ -2752,7 +2750,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 	tag, err := tx.Exec(ctx, `with cleared as (
 			delete from pull_requests where `+where+` and state <> 'open' returning issue, repo, number, head_updated_at)
 		insert into cleared_pull_requests (repo, number, issue, head_updated_at, cleared_at)
-		select distinct on (repo, number) repo, number, issue, head_updated_at, now() from cleared order by repo, number, head_updated_at desc
+		select repo, number, issue, head_updated_at, now() from cleared
 		on conflict (repo, number) do update set issue = excluded.issue,
 			head_updated_at = greatest(cleared_pull_requests.head_updated_at, excluded.head_updated_at), cleared_at = excluded.cleared_at`,
 		key)

@@ -801,14 +801,17 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 	return nil
 }
 
-// MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
-// key is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull request
-// the message is about: the issue's pull request that holds a merge forward of head, whichever
-// task's it is, and the issue's merge pull request where none does
-// (record.Store.MergePullRequestRow: the first task with a merge still to come, else the last
-// merge). It returns the issue and that pull request, with why a message of step to role about the
-// merge forward asked of head is no longer to be delivered (leftMergeForwardAt), "" while it is. An
-// issue the record does not hold is a nil issue, no pull request and no reason.
+// MergeForwardAt reads in tx what msg, a merge-forward message (record.MergeForwardMessage) of
+// issue key, is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull
+// request the message is about: the pull request msg names by its repository and number, where it
+// is the issue's (record.MergeForwardMessage.RepoOf, the issue's own repository for a row of the
+// release before, which names none); for a row that names no number, the issue's pull request that
+// holds a merge forward of msg's head, whichever task's it is, and the issue's merge pull request
+// where none does (record.Store.MergePullRequestRow: the first task with a merge still to come,
+// else the last merge). It returns the issue and that pull request, with why msg, a message of its
+// step to its role about the merge forward asked of its head, is no longer to be delivered
+// (leftMergeForwardAt), "" while it is. An issue the record does not hold is a nil issue, no pull
+// request and no reason.
 // The daemon's executor is its one caller: it reads the rule in one transaction at each attempt of
 // a row, just before it delivers (the daemon's mergeForwardMessage), so the executor judges each
 // queued row by this rule, and no row outlives the state it was written for. The workflow calls
@@ -818,7 +821,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 // restates their states for a row already queued. It is exported for that executor, which names
 // the pull request's repository and writes nothing of it, so the pull requests are read as rows
 // alone (record.Store.TaskPullRequestRows), with none of what each remembers of its settled heads.
-func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key, repo string, number int, role claim.Role, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
+func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, msg record.MergeForwardMessage) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return nil, nil, "", err
@@ -827,32 +830,29 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key, rep
 	if err != nil {
 		return nil, nil, "", err
 	}
-	if number > 0 {
-		if repo == "" {
-			repo = issue.GitHubRepo
-		}
-		pr, err := store.PullRequestRowByNumber(ctx, tx, repo, number)
+	if msg.PullRequest > 0 {
+		pr, err := store.PullRequestRowByNumber(ctx, tx, msg.RepoOf(issue.GitHubRepo), msg.PullRequest)
 		if err != nil {
 			return nil, nil, "", err
 		}
 		if pr != nil && pr.Issue != key {
 			pr = nil
 		}
-		return issue, pr, leftMergeForwardAt(*issue, lingers, pr, role, step, head), nil
+		return issue, pr, leftMergeForwardAt(*issue, lingers, pr, msg.Role, msg.Step, msg.Head), nil
 	}
 	prs, err := store.TaskPullRequestRows(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	at := slices.IndexFunc(prs, func(pr record.PullRequest) bool { return pr.MergeForward != nil && pr.MergeForward.Head == head })
+	at := slices.IndexFunc(prs, func(pr record.PullRequest) bool { return pr.MergeForward != nil && pr.MergeForward.Head == msg.Head })
 	if at >= 0 {
-		return issue, &prs[at], leftMergeForwardAt(*issue, lingers, &prs[at], role, step, head), nil
+		return issue, &prs[at], leftMergeForwardAt(*issue, lingers, &prs[at], msg.Role, msg.Step, msg.Head), nil
 	}
 	pr, err := store.MergePullRequestRow(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return issue, pr, leftMergeForwardAt(*issue, lingers, pr, role, step, head), nil
+	return issue, pr, leftMergeForwardAt(*issue, lingers, pr, msg.Role, msg.Step, msg.Head), nil
 }
 
 // leftMergeForwardAt says why a merge-forward message of step to role about the merge forward
@@ -1080,18 +1080,10 @@ func mergedForwardOf(asked *record.MergeForward, commit string) (record.LandedMe
 // it, the head moved and a read of the new head made one of its own, or a MERGEABLE read released
 // it and a later CONFLICTING read of the same head made a newer one, whose own row reads it - is
 // left as it is. It acts on nothing and moves nothing. The pull request is the one the fact names
-// by its repository and number (intake.ConflictConfirmDone.Repo), "" naming the issue's own
-// repository, as a row of the release before names none, and it is the fact's issue's.
+// by its repository and number (intake.ConflictConfirmDone.Repo, which the daemon's second read
+// sets from the row the record holds, so it is never empty), and it is the fact's issue's.
 func (e *Engine) conflictConfirmDone(ctx context.Context, tx pgx.Tx, fact intake.ConflictConfirmDone) (intake.Result, error) {
-	repo := fact.Repo
-	if repo == "" {
-		issue, err := e.store.Issue(ctx, tx, fact.Issue)
-		if err != nil || issue == nil {
-			return intake.Result{}, err
-		}
-		repo = issue.GitHubRepo
-	}
-	pr, err := e.pullRequest(ctx, tx, repo, fact.Number)
+	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.Issue != fact.Issue {
 		return intake.Result{}, err
 	}

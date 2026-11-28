@@ -664,16 +664,16 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		},
 	} {
 		// No release here ever recorded a migration of this pull request's stack: each lacks
-		// those numbered at or below its newest too, and the upgrade applies them (StackMigrations).
-		release.lacks = append(slices.Clone(release.lacks), stacksMigrationsUpTo(release.newest)...)
+		// those numbered at or below its newest too, and the upgrade applies them (stackMigrations).
+		release.lacks = append(slices.Clone(release.lacks), stackMigrationsUpTo(release.newest)...)
 		t.Run(release.name, func(t *testing.T) { upgradeFrom(t, release) })
 	}
 }
 
-// stacksMigrationsUpTo is StackMigrations numbered at or below newest.
-func stacksMigrationsUpTo(newest int) []int {
+// stackMigrationsUpTo is stackMigrations numbered at or below newest.
+func stackMigrationsUpTo(newest int) []int {
 	var below []int
-	for _, version := range StackMigrations {
+	for _, version := range stackMigrations {
 		if version <= newest {
 			below = append(below, version)
 		}

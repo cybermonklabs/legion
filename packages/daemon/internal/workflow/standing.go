@@ -370,14 +370,13 @@ func (e *Engine) pullRequestText(ctx context.Context, tx pgx.Tx, s TaskScope, ow
 
 // acceptancePart is the `Pull request:` line of the phase-finished notice that hands the architect
 // its acceptance of s's task (transition, dispatch://INFRA-5910 decision 21, r1): each open pull
-// request of the issue's set (record.Store.PullRequestSetsOf), each named as owner/name#number at
-// its head, so the architect accepts the code each one stands at; own, the task's own pull request
-// as the move read it, first where it is open, and a pull request the issue links marked so; then
-// each link that holds the issue's close with no row to name a head of (setHolds), its read owed
-// or Legion unable to read it, with why it holds the close (heldLink.holdsClause). "" where it
-// names none.
+// request of the issue's set (pullRequestSet), each named as owner/name#number at its head, so the
+// architect accepts the code each one stands at; own, the task's own pull request as the move read
+// it, first where it is open, and a pull request the issue links marked so; then each link that
+// holds the issue's close with no row to name a head of (setHolds), its read owed or Legion unable
+// to read it, named with why it holds the close (heldLink.named). "" where it names none.
 func (e *Engine) acceptancePart(ctx context.Context, tx pgx.Tx, s TaskScope, own *record.PullRequest) (string, error) {
-	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{s.issue.Key})
+	set, err := e.pullRequestSet(ctx, tx, s.issue.Key)
 	if err != nil {
 		return "", err
 	}
@@ -396,14 +395,14 @@ func (e *Engine) acceptancePart(ctx context.Context, tx pgx.Tx, s TaskScope, own
 	if own != nil && own.State == record.PullRequestOpen {
 		named = append(named, at(*own))
 	}
-	for _, pr := range sets[s.issue.Key] {
+	for _, pr := range set {
 		if pr.State == record.PullRequestOpen && (own == nil || !e.samePullRequest(pr, *own)) {
 			named = append(named, at(pr))
 		}
 	}
 	for _, held := range holds {
 		if held.row == nil {
-			named = append(named, fmt.Sprintf("%s (linked on the issue; %s)", prName(held.link.Repo, held.link.Number), held.holdsClause()))
+			named = append(named, held.named())
 		}
 	}
 	if len(named) == 0 {
@@ -555,7 +554,7 @@ func pullRequestPart(issue record.Issue, pr *record.PullRequest, pulls scopedPul
 		named = append(named, fmt.Sprintf("%s (%s)", prName(linked.Repo, linked.Number), clause))
 	}
 	for _, held := range pulls.holding {
-		named = append(named, fmt.Sprintf("%s (linked on the issue; %s)", prName(held.link.Repo, held.link.Number), held.holdsClause()))
+		named = append(named, held.named())
 	}
 	var text string
 	if len(named) > 0 {

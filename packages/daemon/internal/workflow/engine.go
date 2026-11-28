@@ -3544,22 +3544,17 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// (startStandingStep), and its close ends it. Every other move starts what a move into its
 	// phase starts (start): the phase's worker, and for accepting, whose role is the architect, a
 	// child's failed architect started again and the accepting step. A last merge GitHub has made
-	// while a link of the issue's set holds its close (setHolds, dispatch://INFRA-5910 decision 9)
-	// starts the merger instead, as any move into merging does (startAgent names it then): its close
-	// waits for those pull requests (closeMerged), and the merger keeps working them.
+	// while a link of the issue's set holds its close (lastMergeHeld, dispatch://INFRA-5910
+	// decision 9) starts the merger instead, as any move into merging does (startAgent names it
+	// then): its close waits for those pull requests (closeMerged), and the merger keeps working
+	// them.
 	standing := mergedAlready
 	if mergedAlready {
-		last, err := e.lastToFinish(ctx, tx, s)
+		held, err := e.lastMergeHeld(ctx, tx, s)
 		if err != nil {
 			return err
 		}
-		if last {
-			holds, err := setHolds(ctx, e.store, tx, issue.Key)
-			if err != nil {
-				return err
-			}
-			standing = len(holds) == 0
-		}
+		standing = !held
 	}
 	if standing {
 		if err := e.startStandingStep(ctx, tx, s); err != nil {
@@ -4270,6 +4265,17 @@ func (e *Engine) pullRequestRowsOnBranch(ctx context.Context, tx pgx.Tx, repo, b
 	return e.pullRequestsUnder(ctx, tx, repo, func(name string) ([]record.PullRequest, error) {
 		return e.store.OpenPullRequestRowsOnBranch(ctx, tx, name, branch)
 	})
+}
+
+// pullRequestSet is the set of issue's pull requests, as rows alone in the set's order
+// (record.Store.PullRequestSetsOf, read for issue alone): each pull request of its tasks and each
+// it links, in any repository. Every reader of one issue's set reads it here.
+func (e *Engine) pullRequestSet(ctx context.Context, tx pgx.Tx, issue string) ([]record.PullRequest, error) {
+	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue})
+	if err != nil {
+		return nil, err
+	}
+	return sets[issue], nil
 }
 
 // pullRequestUnder is the pull request read finds under repo and then, when it finds nothing,

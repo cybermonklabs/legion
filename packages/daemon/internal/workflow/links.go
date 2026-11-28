@@ -497,20 +497,24 @@ func (h heldLink) why() string {
 	return "it is open. Remove its link, or have it merged."
 }
 
-// holdsClause is what a text says of h, a link that holds the issue's close, beside the pull
-// requests it names: a step's text, whose step does not work it (pullRequestPart), and the
-// notice that hands the architect its acceptance, which names no head of it (acceptancePart):
-// that it holds the close, and why. The way out of the hold is the architect's notice's (why).
-func (h heldLink) holdsClause() string {
+// named is how a text names h, a link that holds the issue's close, beside the pull requests it
+// names: a step's text, whose step does not work it (pullRequestPart), and the notice that hands
+// the architect its acceptance, which names no head of it (acceptancePart): as owner/name#number,
+// linked on the issue, with that it holds the close, and why. The way out of the hold is the
+// architect's notice's (why).
+func (h heldLink) named() string {
+	var holds string
 	switch {
 	case h.link.Refused == record.LinkRefusedUnserved:
-		return fmt.Sprintf("it holds the issue's close, since Legion does not serve %s", h.link.Repo)
+		holds = fmt.Sprintf("it holds the issue's close, since Legion does not serve %s", h.link.Repo)
 	case h.link.Refused == record.LinkRefusedUnreadable:
-		return "it holds the issue's close, since GitHub does not show it to Legion"
+		holds = "it holds the issue's close, since GitHub does not show it to Legion"
 	case h.row == nil:
-		return "it holds the issue's close, since Legion has not read it from GitHub yet"
+		holds = "it holds the issue's close, since Legion has not read it from GitHub yet"
+	default:
+		holds = "it holds the issue's close while it is open"
 	}
-	return "it holds the issue's close while it is open"
+	return fmt.Sprintf("%s (linked on the issue; %s)", prName(h.link.Repo, h.link.Number), holds)
 }
 
 // setHolds is each link of issue that holds its close (dispatch://INFRA-5910 decision 9), in the

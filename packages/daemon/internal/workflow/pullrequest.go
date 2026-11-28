@@ -706,7 +706,7 @@ func (e *Engine) closeHeldPullRequests(ctx context.Context, tx pgx.Tx, s TaskSco
 	}
 	var open []int
 	for _, pr := range prs {
-		if pr.State == record.PullRequestOpen && !pr.Linked && stored.HoldsBranch(s.issue, pr.Repo, pr.Branch) && (last || slices.Contains(held, pr.Task)) {
+		if taskCloseReaches(s.issue, stored, pr) && (last || slices.Contains(held, pr.Task)) {
 			open = append(open, pr.Number)
 		}
 	}
@@ -757,7 +757,7 @@ func (e *Engine) queueDoneClose(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	var open []int
 	for _, pr := range prs {
-		if pr.State == record.PullRequestOpen && !pr.Linked && stored.HoldsBranch(issue, pr.Repo, pr.Branch) && !slices.Contains(queued, pr.Number) {
+		if taskCloseReaches(issue, stored, pr) && !slices.Contains(queued, pr.Number) {
 			open = append(open, pr.Number)
 		}
 	}
@@ -767,6 +767,16 @@ func (e *Engine) queueDoneClose(ctx context.Context, tx pgx.Tx, issue record.Iss
 	slices.Sort(open)
 	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Repo: issue.GitHubRepo,
 		Numbers: open, Comment: doneComment(issue.Key, merge)})
+}
+
+// taskCloseReaches says whether the close of the task pull requests (record.TaskPullRequestsClose)
+// reaches pr, a pull request of issue, whose plan is stored, by the rule both its writers close by
+// (closeHeldPullRequests, queueDoneClose): pr is open, on a branch a task of the plan holds in the
+// issue's own repository (record.StoredPlan.HoldsBranch, the rule the recorder reads,
+// issueForBranch), and the issue does not link it (record.PullRequest.Linked), since a pull request
+// the issue links is the issue's to merge or to unlink (dispatch://INFRA-5910 decision 11).
+func taskCloseReaches(issue record.Issue, stored *record.StoredPlan, pr record.PullRequest) bool {
+	return pr.State == record.PullRequestOpen && !pr.Linked && stored.HoldsBranch(issue, pr.Repo, pr.Branch)
 }
 
 // doneComment is the comment the stack's close writes on a pull request of a task where the close
@@ -1193,16 +1203,16 @@ func (e *Engine) lastClosed(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 
 // openOthers is each pull request of issue's set other than closed that is still open, as
 // owner/name#number, closed being one of the set that has just closed: each open pull request of
-// the set (record.Store.PullRequestSetsOf), in its order, and then each link that holds the issue's
-// close with no open row (setHolds), which counts as open: its read still owed, or Legion unable to
-// read it, which its name says.
+// the set (pullRequestSet), in its order, and then each link that holds the issue's close with no
+// open row (setHolds), which counts as open: its read still owed, or Legion unable to read it,
+// which its name says.
 func (e *Engine) openOthers(ctx context.Context, tx pgx.Tx, issue string, closed record.PullRequest) ([]string, error) {
-	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue})
+	set, err := e.pullRequestSet(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
 	var others []string
-	for _, pr := range sets[issue] {
+	for _, pr := range set {
 		if pr.State == record.PullRequestOpen && (pr.Number != closed.Number || !strings.EqualFold(pr.Repo, closed.Repo)) {
 			others = append(others, prName(pr.Repo, pr.Number))
 		}
@@ -1242,7 +1252,8 @@ func (e *Engine) dequeued(ctx context.Context, tx pgx.Tx, fact intake.PullReques
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
-	issue, _, why, err := MergingAt(ctx, e.store, tx, pr.Issue, pr.Repo, fact.Number, fact.HeadSHA)
+	read := record.MergeQueueRead{Repo: pr.Repo, Number: fact.Number, Head: fact.HeadSHA}
+	issue, _, why, err := MergingAt(ctx, e.store, tx, pr.Issue, read.RepoOf, read.Number, read.Head)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
@@ -1251,7 +1262,7 @@ func (e *Engine) dequeued(ctx context.Context, tx pgx.Tx, fact intake.PullReques
 			"issue", issue.Key, "pullRequest", fact.Number, "head", fact.HeadSHA, "why", why)
 		return intake.Result{}, nil
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.MergeQueueRead{Repo: pr.Repo, Number: fact.Number, Head: fact.HeadSHA}); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, read); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once",
@@ -1274,7 +1285,8 @@ func (e *Engine) dequeued(ctx context.Context, tx pgx.Tx, fact intake.PullReques
 // It moves no phase, writes no slot and wakes no claim: the message's own row wakes a released
 // merger when it runs (the daemon's merge-queue removal executor).
 func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.MergeQueueReadDone) (intake.Result, error) {
-	issue, _, why, err := MergingAt(ctx, e.store, tx, fact.Issue, fact.Repo, fact.Number, fact.Head)
+	removal := record.MergeQueueRemoval{Repo: fact.Repo, Number: fact.Number, Head: fact.Head, Unread: fact.Unread}
+	issue, _, why, err := MergingAt(ctx, e.store, tx, fact.Issue, removal.RepoOf, removal.Number, removal.Head)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
@@ -1283,7 +1295,7 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 			"issue", issue.Key, "pullRequest", fact.Number, "head", fact.Head, "unread", fact.Unread, "why", why)
 		return intake.Result{}, nil
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.MergeQueueRemoval{Repo: fact.Repo, Number: fact.Number, Head: fact.Head, Unread: fact.Unread}); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, removal); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: the merger is owed word that its pull request left the merge queue",
@@ -1292,29 +1304,31 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 }
 
 // MergingAt reads in tx what the merging rule judges issue key by: the issue, whether its tree
-// lingers (record.TreeLingers) and the pull request whose merge is judged. For an issue with plan
-// rows that is the issue's pull request of repo and number (record.Store.TaskPullRequestRows), the
-// pull request of a task, judged by the place of that task (record.PullRequest.Task,
-// record.StoredPlan.TaskOf): with several tasks the issue's phase is its least finished task's, so
-// a task stands at its merge while the issue stands in another phase. For an issue with no plan
-// rows it is the pull request of its work's merge (record.Store.MergePullRequestRow), judged by the
-// issue's phase. A pull request the issue links that is neither of those, one of another
-// repository or on a branch no task holds, is the merger's of its scope too, which merges it
-// (dispatch://INFRA-5910 decision 6): it is read by its repository and number
-// (record.Store.PullRequestRowByNumber), where the issue links it, and judged by the place of the
-// task whose scope works it (taskMergingAt), or by the issue's phase for an issue with no plan
-// rows, so a removal of it from the merge queue reaches its merger. repo is the repository of the
-// pull request number names, as a row or a fact names it, "" for the issue's own
-// (record.Issue.GitHubRepo), which a row of the release before means, compared without case as the
-// record compares it. It returns the issue and that pull request, with why the workflow no longer
-// works that merge at head of pull request number of repo (leftMergingAt), "" while it does. An
-// issue the record does not hold is a nil issue, no pull request and no reason. The facts that
-// write the read and the merger's message (dequeued, mergeQueueReadDone) and the daemon's outbox
-// rows that read the pull request and deliver the message read the issue through this one read, so
-// all four judge it from the same records. It is exported for those outbox rows (the daemon's
-// mergingAt). The pull request is read as rows alone, with none of what it remembers of its settled
-// heads: no caller writes it back, and none reads that memory.
-func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key, repo string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
+// lingers (record.TreeLingers) and the pull request whose merge is judged. repoOf names the
+// repository of the pull request number names, given the issue's own (record.Issue.GitHubRepo):
+// the RepoOf of the merge-queue row its caller writes or runs (record.MergeQueueRead.RepoOf,
+// MergeQueueRemoval.RepoOf), which names the issue's own for a row of the release before, which
+// names none; it is compared without case, as the record compares it. For an issue with plan rows
+// the pull request is the issue's pull request of that repository and number
+// (record.Store.TaskPullRequestRows), the pull request of a task, judged by the place of that task
+// (record.PullRequest.Task, record.StoredPlan.TaskOf): with several tasks the issue's phase is its
+// least finished task's, so a task stands at its merge while the issue stands in another phase. For
+// an issue with no plan rows it is the pull request of its work's merge
+// (record.Store.MergePullRequestRow), judged by the issue's phase. A pull request the issue links
+// that is neither of those, one of another repository or on a branch no task holds, is the
+// merger's of its scope too, which merges it (dispatch://INFRA-5910 decision 6): it is read by its
+// repository and number (record.Store.PullRequestRowByNumber), where the issue links it, and judged
+// by the place of the task whose scope works it (taskMergingAt), or by the issue's phase for an
+// issue with no plan rows, so a removal of it from the merge queue reaches its merger. It returns
+// the issue and that pull request, with why the workflow no longer works that merge at head of pull
+// request number of that repository (leftMergingAt), "" while it does. An issue the record does not
+// hold is a nil issue, no pull request and no reason. The facts that write the read and the
+// merger's message (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull
+// request and deliver the message read the issue through this one read, so all four judge it from
+// the same records. It is exported for those outbox rows (the daemon's mergingAt). The pull request
+// is read as rows alone, with none of what it remembers of its settled heads: no caller writes it
+// back, and none reads that memory.
+func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, repoOf func(issueRepo string) string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return nil, nil, "", err
@@ -1327,9 +1341,7 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key, repo str
 	if err != nil {
 		return nil, nil, "", err
 	}
-	if repo == "" {
-		repo = issue.GitHubRepo
-	}
+	repo := repoOf(issue.GitHubRepo)
 	names := func(pr *record.PullRequest) bool {
 		return pr != nil && pr.Number == number && strings.EqualFold(pr.Repo, repo)
 	}
@@ -1416,7 +1428,7 @@ func leftMergingAt(issue record.Issue, stands string, lingers bool, pr *record.P
 	case pr == nil:
 		return "the record holds no pull request for the issue"
 	case pr.Number != number || !strings.EqualFold(pr.Repo, repo):
-		return fmt.Sprintf("the record holds pull request %s#%d for the issue", pr.Repo, pr.Number)
+		return fmt.Sprintf("the record holds pull request %s for the issue", prName(pr.Repo, pr.Number))
 	case pr.State != record.PullRequestOpen:
 		return fmt.Sprintf("the pull request is %s", pr.State)
 	case pr.HeadSHA != head:

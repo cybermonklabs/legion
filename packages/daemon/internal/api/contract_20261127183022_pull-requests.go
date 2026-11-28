@@ -70,14 +70,10 @@ func init() {
 }
 
 // setPullRequestStates and setMergeStates are the words of `pullRequest`'s `state` and
-// `mergeState` (answers.go's pullRequestStates and mergeStates) at this entry, which
+// `mergeState` (answers.go's pullRequestStateWords and mergeStateWords) at this entry, which
 // `pullRequests` arrived at: no pull request of the set is served below it at all
 // (withoutPullRequests).
 var (
-	setPullRequestStates = valuesFrom(pullRequestsContract,
-		record.PullRequestOpen, record.PullRequestMerged, record.PullRequestClosed)
-	setMergeStates = valuesFrom(pullRequestsContract,
-		record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
-		record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
-		record.MergeStateUnknown)
+	setPullRequestStates = valuesFrom(pullRequestsContract, pullRequestStateWords...)
+	setMergeStates       = valuesFrom(pullRequestsContract, mergeStateWords...)
 )

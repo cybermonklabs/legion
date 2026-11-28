@@ -879,8 +879,9 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		return intake.Result{}, err
 	}
 	// The pull requests the round judges, pr among them as this handler holds it: pr is the round's
-	// own where it is the task's own (the same pointer), and every write of pr below is the
-	// round's.
+	// own where it is the task's own (the same pointer), so every write of pr below is the round's.
+	// Where pr is one of the others, the round takes in its place the refusal written on it below
+	// (withPull) and the decision decideEach writes on it.
 	pulls, err := e.roundPullsAt(ctx, tx, *scope, pr)
 	if err != nil {
 		return intake.Result{}, err
@@ -995,9 +996,6 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 			return intake.Result{}, err
 		}
 	}
-	if !own {
-		pulls = e.withPull(pulls, *pr)
-	}
 	// The decision belongs to the review round, not to the pull request's head: the round must
 	// still know, when the reviewer completes, what the review decided, on which head, and what
 	// it said for the next round's implementer. The round is open while the issue stands in
@@ -1047,9 +1045,11 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 // the decision names: a head two open pull requests share is one review of each (dispatch://
 // INFRA-5910 decision 7), as two pull requests on one branch of one repository can share theirs.
 // The decision of each other than the task's own is written on its own row
-// (record.PullRequest.ReviewDecision), pr's as the handler holds it whole, and each other's read
-// whole for the write, and pulls takes each as written, so the round settled next reads it. Each
-// pull request gets a decision of its own, so a told mark written on one later is no other's.
+// (record.PullRequest.ReviewDecision), each read whole for the write, and pulls takes each as
+// written, so the round settled next reads it. pr is read again too, after the handler's write of
+// it, and not taken as the handler holds it: that write may have moved its row to the spelling of
+// its issue's repository (putPullRequest), which the read names and the handler's copy does not.
+// Each pull request gets a decision of its own, so a told mark written on one later is no other's.
 func (e *Engine) decideEach(ctx context.Context, tx pgx.Tx, pulls *roundPulls, pr record.PullRequest, decision record.ReviewDecision) (bool, error) {
 	shares := func(other record.PullRequest) bool {
 		return e.samePullRequest(other, pr) || decision.Head != "" && other.HeadSHA == decision.Head
@@ -1084,18 +1084,17 @@ func (e *Engine) decideEach(ctx context.Context, tx pgx.Tx, pulls *roundPulls, p
 // (pullRequestSynchronized), or a push the record holds on its way from that head (pushedTo,
 // classify.CodeOnItsWay). Any push may change code, so the decision decides nothing of the code
 // that comes, and that pull request's part of the round waits for a review of its new head, as an
-// approval of the task's own pull request stops standing at a push (classify.ApprovalStands). A
-// push delivered late, spent by the move the record made, is on its way from no head and takes
-// nothing back. A decision that holds no head, a refusal at the head the record held, goes at any
-// push, since it stood at that head alone. The task's own pull request holds no decision of its
-// own (decideEach): its decision is the reviewer's row's, which this leaves alone. A new run clears
-// the decision too (record.Store.ClearGeneration).
+// approval of the task's own pull request stops standing at a push: the decision stays exactly
+// where an approval of the head it names stands (classify.ApprovalStands). A push delivered late,
+// spent by the move the record made, is on its way from no head and takes nothing back. A decision
+// that holds no head, a refusal at the head the record held, goes at any push, since it stood at
+// that head alone. The task's own pull request holds no decision of its own (decideEach): its
+// decision is the reviewer's row's, which this leaves alone. A new run clears the decision too
+// (record.Store.ClearGeneration).
 func takeBackPushedDecision(pr *record.PullRequest) {
-	d := pr.ReviewDecision
-	if d == nil || d.Head != "" && d.Head == pr.HeadSHA && !classify.CodeOnItsWay(*pr) {
-		return
+	if d := pr.ReviewDecision; d != nil && !classify.ApprovalStands(*pr, d.Head) {
+		pr.ReviewDecision = nil
 	}
-	pr.ReviewDecision = nil
 }
 
 // reviewedCommitStays is why review, a deciding review of the reviewer's own session (byReviewer)
@@ -1271,11 +1270,10 @@ const (
 //
 // A round judges each open pull request of its task's scope (reviewRound), so it also says of
 // which one its finding is: other is that pull request where it is not the task's own, one the
-// issue links that the scope works, nil for the task's own; decision is the decision that finding
-// is of, the reviewer's of the task's own pull request or the other's own
-// (record.PullRequest.ReviewDecision), on which the told mark of a round GitHub will not merge from
-// is kept (tellStuckMergeState); and body is the request for changes of a rejected round, which the
-// move back tells the task's first step (transition).
+// issue links that the scope works, nil for the task's own, which says the decision that finding is
+// of (decisionOf), on which the told mark of a round GitHub will not merge from is kept
+// (tellStuckMergeState); and body is the request for changes of a rejected round, which the move
+// back tells the task's first step (transition).
 type round struct {
 	outcome           roundOutcome
 	cause             stuckCause
@@ -1285,8 +1283,18 @@ type round struct {
 	reason            string
 	waitsOnMergeState bool
 	body              string
-	decision          *record.ReviewDecision
 	other             *record.PullRequest
+}
+
+// decisionOf is the decision r is stuck on, row being the reviewer's row the round was judged on:
+// row's own for a round of the task's own pull request, and for a round of another pull request
+// the round judges (round.other) the decision that pull request holds of its own
+// (record.PullRequest.ReviewDecision), on which pullRound judged it (decisionRow).
+func (r round) decisionOf(row record.PhaseRow) *record.ReviewDecision {
+	if r.other == nil {
+		return row.Decision
+	}
+	return r.other.ReviewDecision
 }
 
 // stuckAs says whether r is stuck in the same way as other: the same cause at the same head. A
@@ -1473,7 +1481,7 @@ func (e *Engine) pullRound(issue record.Issue, row record.PhaseRow, pr *record.P
 			return round{waitsOnMergeState: true}
 		}
 		return round{outcome: roundStuck, cause: stuckMergeState, head: pr.HeadSHA, state: pr.MergeState, hold: outcome.Hold(),
-			waitsOnMergeState: true, reason: stuckMergeStateReason(*pr, outcome), decision: row.Decision}
+			waitsOnMergeState: true, reason: stuckMergeStateReason(*pr, outcome)}
 	case !completed:
 		return round{}
 	case decided == "":
@@ -1516,15 +1524,21 @@ func (e *Engine) roundPullsOn(ctx context.Context, tx pgx.Tx, s TaskScope, own *
 // roundPullsAt is roundPullsOn for a fact of pr, a pull request of s's task's scope as the fact's
 // handler read it whole: pr is the round's own pull request where it is the task's own (roundsOwn;
 // the same pointer, so a write of the handler's is the round's), and takes the place of its row
-// among the others where it is one of them (withPull). The task's own is read whole otherwise
-// (taskPullRequest), since a round that ends moves the task on it.
+// among the others where it is one of them (withPull). The task's own is read as its row first
+// (taskPullRequestRow), which says whether it is pr, and read whole (taskPullRequest) only where it
+// is another, since a round that ends moves the task on it.
 func (e *Engine) roundPullsAt(ctx context.Context, tx pgx.Tx, s TaskScope, pr *record.PullRequest) (roundPulls, error) {
-	own, err := e.taskPullRequest(ctx, tx, s)
+	own, err := e.taskPullRequestRow(ctx, tx, s)
 	if err != nil {
 		return roundPulls{}, err
 	}
-	if e.roundsOwn(own, *pr) {
+	switch {
+	case e.roundsOwn(own, *pr):
 		own = pr
+	case own != nil:
+		if own, err = e.taskPullRequest(ctx, tx, s); err != nil {
+			return roundPulls{}, err
+		}
 	}
 	pulls, err := e.roundPullsOn(ctx, tx, s, own)
 	if err != nil {
@@ -1653,7 +1667,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, s TaskScope, row re
 // It is deduped against the findings already told for the head (told, toldFindings), whose rule
 // record.ReviewDecision's ToldStuck states, and it appends its own finding to those, so a decision
 // an earlier release marked keeps the finding it told. The mark is on the decision the round is
-// stuck on (round.decision): the reviewer's row's for the task's own pull request, and the pull
+// stuck on (round.decisionOf): the reviewer's row's for the task's own pull request, and the pull
 // request's own row for another one the round judges (round.other), which is read whole for the
 // write. The mark is written with the notice, so a notice linger holds (record.TreeLingers) leaves
 // none and the head is told when the tree runs again.
@@ -1664,12 +1678,8 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, s TaskScope, row re
 // is where what the notice names is answered. The architect's notice names no role topic, since
 // no decision of the reviewer's would move this round.
 func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, r round, by string) error {
-	// A round of the task's own pull request is stuck on the decision on the reviewer's row, which
-	// takes its mark.
-	if r.other == nil {
-		r.decision = row.Decision
-	}
-	if told(r) {
+	d := r.decisionOf(row)
+	if told(r, d) {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
@@ -1683,7 +1693,6 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 		Body: "The round you approved is stuck: " + r.reason + "."}); err != nil {
 		return err
 	}
-	d := r.decision
 	findings := toldFindings(d, r.head)
 	d.ToldStuckHead, d.ToldStuckState = r.head, r.state
 	d.ToldStuck = append(findings, toldFinding(r))
@@ -1694,10 +1703,10 @@ func (e *Engine) tellStuckMergeState(ctx context.Context, tx pgx.Tx, issue recor
 		Summary: by, Reason: r.reason})
 }
 
-// markStuckTold writes the told mark tellStuckMergeState has set on r.decision, the decision r is
-// stuck on: on row, the reviewer's row, where r is of the task's own pull request; on the row of
-// the other pull request r is of otherwise (round.other), read whole so the write keeps what it
-// remembers of its settled heads, and nothing where the record no longer holds it.
+// markStuckTold writes the told mark tellStuckMergeState has set on the decision r is stuck on
+// (round.decisionOf): on row, the reviewer's row, where r is of the task's own pull request; on the
+// row of the other pull request r is of otherwise (round.other), read whole so the write keeps what
+// it remembers of its settled heads, and nothing where the record no longer holds it.
 func (e *Engine) markStuckTold(ctx context.Context, tx pgx.Tx, row record.PhaseRow, r round) error {
 	if r.other == nil {
 		return e.store.PutPhase(ctx, tx, row)
@@ -1706,17 +1715,17 @@ func (e *Engine) markStuckTold(ctx context.Context, tx pgx.Tx, row record.PhaseR
 	if err != nil || pr == nil {
 		return err
 	}
-	pr.ReviewDecision = r.decision
+	pr.ReviewDecision = r.decisionOf(row)
 	return e.putPullRequest(ctx, tx, *pr)
 }
 
 // told says whether the notice a round GitHub will not merge from would write has already gone
-// out for its finding: the findings told for the head on the decision the round is stuck on
-// (toldFindings, round.decision) hold it. It answers for that cause alone, which is the only caller
-// (tellStuckMergeState); every other is deduped against the round as the fact found it (stuckAs),
-// which the record answers for them.
-func told(r round) bool {
-	return slices.Contains(toldFindings(r.decision, r.head), toldFinding(r))
+// out for its finding: the findings told for the head on d, the decision the round is stuck on
+// (toldFindings, round.decisionOf), hold it. It answers for that cause alone, which is the only
+// caller (tellStuckMergeState); every other is deduped against the round as the fact found it
+// (stuckAs), which the record answers for them.
+func told(r round, d *record.ReviewDecision) bool {
+	return slices.Contains(toldFindings(d, r.head), toldFinding(r))
 }
 
 // toldFindings is every finding d has told for head, the one rule both told and the writer in

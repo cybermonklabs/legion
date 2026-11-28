@@ -1730,6 +1730,15 @@ type PullRequest struct {
 	MergeSHA string
 }
 
+// ChangedAfter says whether GitHub changed pr after other, the order an issue's pull requests are
+// read newest first by where the record keeps no moment of its own: pr's HeadUpdatedAt is the later
+// (a pull request with none the oldest), or, at the same moment, pr's number is the higher. The
+// state's pull request of an issue (the projection's issuePullRequest) and the last merge a close
+// with no merge in hand names (the workflow's lastMerge) both pick by it.
+func (pr *PullRequest) ChangedAfter(other *PullRequest) bool {
+	return pr.HeadUpdatedAt.After(other.HeadUpdatedAt) || pr.HeadUpdatedAt.Equal(other.HeadUpdatedAt) && pr.Number > other.Number
+}
+
 // ConflictRead is a first CONFLICTING read of a pull request's head (PullRequest.ConflictRead):
 // the head GitHub answered about, the base branch it answered against, and when that read was
 // made. Base is the branch's name, the one the read named (intake.PullRequestMergeability.Base)

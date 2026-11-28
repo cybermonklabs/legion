@@ -730,28 +730,34 @@ var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
 var updateStates = valuesFrom(shapedAnswersContract,
 	UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStateAnswered)
 
+// pullRequestStateWords is every state a recorded pull request is in, and mergeStateWords every
+// value of a pull request's `mergeState`, GitHub's own merge state for the head in GitHub's own
+// lowercase spelling, each named constant by constant, as floorRoles is: the lists below record the
+// contract each field that carries them arrived at. record.MergeStateUnread is no value of
+// `mergeState`: it is the empty state the view leaves off.
+var (
+	pullRequestStateWords = []record.PullRequestState{record.PullRequestOpen, record.PullRequestMerged, record.PullRequestClosed}
+	mergeStateWords       = []record.MergeState{
+		record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
+		record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
+		record.MergeStateUnknown,
+	}
+)
+
 // pullRequestStates is every state a recorded pull request is in. The field is older than the
 // floor (version.go's 36) and the list has not moved since.
-var pullRequestStates = valuesFrom(ServingFloor,
-	record.PullRequestOpen, record.PullRequestMerged, record.PullRequestClosed)
+var pullRequestStates = valuesFrom(ServingFloor, pullRequestStateWords...)
 
-// mergeStates is every value of a pull request's `mergeState`, GitHub's own merge state for the
-// head in GitHub's own lowercase spelling. The field arrived at stateMachineContract and the
-// list is recorded there, so no caller below 86 is served a value of it: that caller is served
-// the pull request without the key at all (shaping.go's withoutStateMachineFields).
-// record.MergeStateUnread is no value of the field: it is the empty state the view leaves off.
-var mergeStates = valuesFrom(stateMachineContract,
-	record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
-	record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
-	record.MergeStateUnknown)
+// mergeStates is every value of a pull request's `mergeState`. The field arrived at
+// stateMachineContract and the list is recorded there, so no caller below 86 is served a value of
+// it: that caller is served the pull request without the key at all (shaping.go's
+// withoutStateMachineFields).
+var mergeStates = valuesFrom(stateMachineContract, mergeStateWords...)
 
 // mergeWaitStates is the same eight words at the contract `mergeWait` arrived at, which the
 // object's `mergeState` and `toldState` share: no `mergeWait` is served below that contract at
 // all (shaping.go's withoutMergeWait).
-var mergeWaitStates = valuesFrom(mergeWaitContract,
-	record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
-	record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
-	record.MergeStateUnknown)
+var mergeWaitStates = valuesFrom(mergeWaitContract, mergeStateWords...)
 
 // designSteps is every step of a deployment's design gate, recorded at gatedStepsContract, the
 // contract `gatedSteps` arrived at, and gatedStepStatuses every place an issue can stand in one.

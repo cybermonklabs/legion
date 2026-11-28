@@ -416,7 +416,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		owns := ownPullRequests(merge, taskRows)
 		set := sets[issue.Key]
 		pr := issuePullRequest(set, merge)
-		bearing := reviewerOn(reviewer, pr, pr != nil && owns[keyOf(*pr)])
+		bearing := reviewerOn(reviewer, pr, owns)
 		view.PullRequest = pullRequestView(pr, bearing)
 		view.PullRequests = setPullRequestViews(set, reviewer, owns)
 		view.MergeWait = mergeWaitView(issue, bearing, pr)
@@ -1184,17 +1184,13 @@ func ownPullRequests(merge *record.PullRequest, taskRows []record.PullRequest) m
 
 // issuePullRequest is the pull request an issue serves as its own (api.Issue.PullRequest,
 // dispatch://INFRA-5910 decision 13): of set, its set of pull requests, the newest open one, the
-// one GitHub changed last (record.PullRequest.HeadUpdatedAt, a pull request with none the oldest),
-// then the higher number; where none of set is open, merge, the issue's merge; nil for neither.
+// one GitHub changed last (record.PullRequest.ChangedAfter: the later HeadUpdatedAt, a pull request
+// with none the oldest, then the higher number); where none of set is open, merge, the issue's
+// merge; nil for neither.
 func issuePullRequest(set []record.PullRequest, merge *record.PullRequest) *record.PullRequest {
 	var newest *record.PullRequest
 	for at := range set {
-		pr := &set[at]
-		if pr.State != record.PullRequestOpen {
-			continue
-		}
-		if newest == nil || pr.HeadUpdatedAt.After(newest.HeadUpdatedAt) ||
-			pr.HeadUpdatedAt.Equal(newest.HeadUpdatedAt) && pr.Number > newest.Number {
+		if pr := &set[at]; pr.State == record.PullRequestOpen && (newest == nil || pr.ChangedAfter(newest)) {
 			newest = pr
 		}
 	}
@@ -1206,13 +1202,14 @@ func issuePullRequest(set []record.PullRequest, merge *record.PullRequest) *reco
 
 // reviewerOn is the reviewer's row as it bears on pr, a pull request of the issue's set or its
 // merge, holding the decision of pr's own review round (dispatch://INFRA-5910 decision 7), as the
-// workflow judges that round: for a task's own pull request (own) the row as reviewerOf reads it;
-// for a pull request the issue links that is no task's own the row holding the decision pr holds
-// itself (record.PullRequest.ReviewDecision, workflow's decisionRow); and for another pull request
-// of a task that the issue does not link, which no round reviews, the zero row.
-func reviewerOn(reviewer record.PhaseRow, pr *record.PullRequest, own bool) record.PhaseRow {
+// workflow judges that round, owns being the pull requests of the issue that are a task's own
+// (ownPullRequests): for a task's own pull request the row as reviewerOf reads it; for a pull
+// request the issue links that is no task's own the row holding the decision pr holds itself
+// (record.PullRequest.ReviewDecision, workflow's decisionRow); and for another pull request of a
+// task that the issue does not link, which no round reviews, the zero row.
+func reviewerOn(reviewer record.PhaseRow, pr *record.PullRequest, owns map[pullKey]bool) record.PhaseRow {
 	switch {
-	case pr == nil || own:
+	case pr == nil || owns[keyOf(*pr)]:
 		return reviewerOf(reviewer, pr)
 	case pr.Linked:
 		reviewer.Decision = pr.ReviewDecision
@@ -1232,7 +1229,7 @@ func setPullRequestViews(set []record.PullRequest, reviewer record.PhaseRow, own
 	views := make([]api.SetPullRequestView, len(set))
 	for at := range set {
 		pr := &set[at]
-		views[at] = api.SetPullRequestView{PullRequestView: *pullRequestView(pr, reviewerOn(reviewer, pr, owns[keyOf(*pr)])),
+		views[at] = api.SetPullRequestView{PullRequestView: *pullRequestView(pr, reviewerOn(reviewer, pr, owns)),
 			Task: pr.Task, Linked: pr.Linked}
 	}
 	return views

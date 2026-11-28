@@ -3,6 +3,7 @@ package githubrest
 import (
 	"context"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -73,11 +74,7 @@ func (c Client) OpenPullRequestsOn(ctx context.Context, repository ghrepo.Reposi
 	if err := c.Get(ctx, "/pulls?"+query.Encode(), &listed); err != nil {
 		return nil, err
 	}
-	pulls := listed[:0]
-	for _, pull := range listed {
-		if pull.Head.Ref == branch && pull.HeadIn(repository.String(), ghrepo.Renames{}) {
-			pulls = append(pulls, pull)
-		}
-	}
-	return pulls, nil
+	return slices.DeleteFunc(listed, func(pull PullRequest) bool {
+		return pull.Head.Ref != branch || !pull.HeadIn(repository.String(), ghrepo.Renames{})
+	}), nil
 }

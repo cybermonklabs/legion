@@ -765,8 +765,10 @@ func (r *freshSessionRig) recordedAsk() record.MergeForward {
 func (r *freshSessionRig) testerHeld(when string) {
 	r.t.Helper()
 	var left string
+	hold := owedAsk
+	hold.Role, hold.Step = claim.RoleTester, record.MergeForwardHold
 	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-		_, _, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.issue.Key, owedAsk.Repo, owedAsk.PullRequest, claim.RoleTester, record.MergeForwardHold, owedAskHead)
+		_, _, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.issue.Key, hold)
 		return err
 	}); err != nil {
 		r.t.Fatalf("read the rule of the tester's hold: %v", err)

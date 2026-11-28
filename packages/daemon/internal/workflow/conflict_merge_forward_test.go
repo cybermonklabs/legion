@@ -306,7 +306,7 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 	t.Run("the second read's row ending on unknown releases the first read", func(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
 		firstRead(t, pool)
-		applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.ConflictConfirmDone{Issue: "LEGION-208", Number: 42, Head: conflictHead, FirstReadAt: firstConflictRead})
+		applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.ConflictConfirmDone{Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Head: conflictHead, FirstReadAt: firstConflictRead})
 		if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictRead != nil || pr.ConflictingHead != "" {
 			t.Fatalf("after the second read ended the record holds first read %+v and %q conflicting, want neither", pr.ConflictRead, pr.ConflictingHead)
 		}

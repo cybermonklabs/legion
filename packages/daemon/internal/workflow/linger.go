@@ -296,13 +296,13 @@ func (e *Engine) leaveByTasks(ctx context.Context, tx pgx.Tx, written record.Iss
 // leaveMerges is the pull request of each merge of issue's run that a leave at status checks: each
 // task that has a merge, done, to come, or cut short by a park, as the plan stood
 // (record.Store.MergePullRequests), and each merged pull request the issue links that is no task's
-// own (record.Store.PullRequestSetsOf), each of which opens its own check at its merge
-// (mergedNotOwn) and is here for a merge no handler applied, as a merge the boot's read of a link
-// finds (dispatch://INFRA-5910 decision 6). Each of them at done, and none at any other status,
-// since a park suspends the claims and the pod a look would need. Its rows are the same whether
-// they are read before the leave writes the issue's tasks out of the workflow or after: that write
-// changes no task's needs or merges, and a task it writes done at its merge stood among the tasks
-// that merge. openCheck opens no second check of a merge one of the issue's checks checks.
+// own (pullRequestSet), each of which opens its own check at its merge (mergedNotOwn) and is here
+// for a merge no handler applied, as a merge the boot's read of a link finds (dispatch://INFRA-5910
+// decision 6). Each of them at done, and none at any other status, since a park suspends the claims
+// and the pod a look would need. Its rows are the same whether they are read before the leave
+// writes the issue's tasks out of the workflow or after: that write changes no task's needs or
+// merges, and a task it writes done at its merge stood among the tasks that merge. openCheck opens
+// no second check of a merge one of the issue's checks checks.
 func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) ([]record.PullRequest, error) {
 	if status != "done" {
 		return nil, nil
@@ -311,11 +311,11 @@ func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err != nil {
 		return nil, err
 	}
-	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue.Key})
+	set, err := e.pullRequestSet(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, err
 	}
-	for _, pr := range sets[issue.Key] {
+	for _, pr := range set {
 		if pr.Linked && pr.State == record.PullRequestMerged && !slices.ContainsFunc(merges, func(own record.PullRequest) bool { return e.samePullRequest(own, pr) }) {
 			merges = append(merges, pr)
 		}
@@ -323,10 +323,10 @@ func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return merges, nil
 }
 
-// toldPullRequests is each pull request of issue's set (record.Store.PullRequestSetsOf: each of its
-// tasks' and each it links, in any repository) that is open and that no queued close of the issue's
-// generation names (record.Store.QueuedPullRequestCloses), as owner/name#number, in the set's order
-// of repositories and numbers: what the notice of a child's leave names (leftNotice,
+// toldPullRequests is each pull request of issue's set (pullRequestSet: each of its tasks' and each
+// it links, in any repository) that is open and that no queued close of the issue's generation
+// names (record.Store.QueuedPullRequestCloses), as owner/name#number, in the set's order of
+// repositories and numbers: what the notice of a child's leave names (leftNotice,
 // dispatch://INFRA-5910 decision 21, r6). A merge that ends the issue queues the close of each
 // other open pull request of a task in its own transaction, before its leave, so that leave names
 // none of them; a close that keeps failing keeps its row, and its pull requests are not named while
@@ -335,7 +335,7 @@ func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // another repository. The pull requests are read as rows alone: their names and states are all this
 // reads, and nothing of them is written.
 func (e *Engine) toldPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]string, error) {
-	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue.Key})
+	set, err := e.pullRequestSet(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +348,7 @@ func (e *Engine) toldPullRequests(ctx context.Context, tx pgx.Tx, issue record.I
 		repo = issue.Repo
 	}
 	var open []string
-	for _, pr := range sets[issue.Key] {
+	for _, pr := range set {
 		if pr.State != record.PullRequestOpen || !pr.Linked && e.sameRepository(pr.Repo, repo) && slices.Contains(closing, pr.Number) {
 			continue
 		}
@@ -604,24 +604,21 @@ func (e *Engine) releaseHeldClose(ctx context.Context, tx pgx.Tx, issue record.I
 // lastMerge is the last merge of the set of issue's pull requests as the close of an issue with no
 // merge in hand names it (releaseHeldClose, decision 11), as owner/name#number: merge, the merge the
 // judge follows, where one is given; else, since the record keeps no moment of a merge, the merged
-// pull request of the set (record.Store.PullRequestSetsOf) that GitHub changed last
-// (record.PullRequest.HeadUpdatedAt, a row with none the oldest), then the higher number; "" where
-// none merged.
+// pull request of the set (pullRequestSet) that GitHub changed last (record.PullRequest.ChangedAfter:
+// the later HeadUpdatedAt, a row with none the oldest, then the higher number); "" where none
+// merged.
 func (e *Engine) lastMerge(ctx context.Context, tx pgx.Tx, issue string, merge *record.PullRequest) (string, error) {
 	if merge != nil {
 		return prName(merge.Repo, merge.Number), nil
 	}
-	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue})
+	set, err := e.pullRequestSet(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
 	var last *record.PullRequest
-	for at, pr := range sets[issue] {
-		if pr.State != record.PullRequestMerged {
-			continue
-		}
-		if last == nil || pr.HeadUpdatedAt.After(last.HeadUpdatedAt) || pr.HeadUpdatedAt.Equal(last.HeadUpdatedAt) && pr.Number > last.Number {
-			last = &sets[issue][at]
+	for at := range set {
+		if pr := &set[at]; pr.State == record.PullRequestMerged && (last == nil || pr.ChangedAfter(last)) {
+			last = pr
 		}
 	}
 	if last == nil {
@@ -850,32 +847,43 @@ func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record
 			continue
 		}
 		if !done {
-			if member.Phase != phase.Merging && !record.HeldFor(member, record.HoldForPullRequests) {
-				continue
-			}
-			awaited, err := mergesAwaited(ctx, e.store, tx, member)
+			toLand, err := e.mergeToLand(ctx, tx, member)
 			if err != nil {
 				return nil, err
 			}
-			if !slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return at.pr.State == record.PullRequestOpen }) {
-				// A merge in hand whose close a pull request of the set holds, or a hold for the
-				// pull requests with no merge in hand: either stands while setHolds is not empty.
-				inHand := slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return at.pr.State == record.PullRequestMerged })
-				if !inHand && !record.HeldFor(member, record.HoldForPullRequests) {
-					continue
-				}
-				holds, err := setHolds(ctx, e.store, tx, member.Key)
-				if err != nil {
-					return nil, err
-				}
-				if len(holds) == 0 {
-					continue
-				}
+			if !toLand {
+				continue
 			}
 		}
 		handed = append(handed, member)
 	}
 	return handed, nil
+}
+
+// mergeToLand says whether member, in the workflow under a root that is not done, is left awaiting
+// a merge the close of its tree would end (unfinishedHandOvers' non-done clause): it stands in
+// merging or is held for its pull requests (record.HoldForPullRequests), and either a task of it
+// awaits the merge of a pull request still open (mergesAwaited), or a link of its set holds its
+// close (setHolds) over a merge in hand, whose close waits, or over the hold for its pull requests
+// with no merge in hand. Every other member it answers false for without a read.
+func (e *Engine) mergeToLand(ctx context.Context, tx pgx.Tx, member record.Issue) (bool, error) {
+	heldForPulls := record.HeldFor(member, record.HoldForPullRequests)
+	if member.Phase != phase.Merging && !heldForPulls {
+		return false, nil
+	}
+	awaited, err := mergesAwaited(ctx, e.store, tx, member)
+	if err != nil {
+		return false, err
+	}
+	if slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return at.pr.State == record.PullRequestOpen }) {
+		return true, nil
+	}
+	inHand := slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return at.pr.State == record.PullRequestMerged })
+	if !inHand && !heldForPulls {
+		return false, nil
+	}
+	holds, err := setHolds(ctx, e.store, tx, member.Key)
+	return len(holds) > 0, err
 }
 
 // handOver writes the durable fence before queuing the one Dispatch PATCH that sets the child todo

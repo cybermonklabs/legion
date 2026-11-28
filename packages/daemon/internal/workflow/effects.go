@@ -438,11 +438,12 @@ func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role
 }
 
 // clearLinkedDecisions empties the decision of a review round each pull request issue links holds
-// of its own (record.PullRequest.ReviewDecision), read whole for the write, as the reviewer's start
-// on a new round empties the decision on its row (clearHandoff): a request for changes of an
-// earlier round would otherwise reject the new one, and an approval of it end it, at a head the
-// new round's reviewer never read. A link held refused, a pull request the record holds for
-// another issue, and one that holds no decision write nothing.
+// of its own (record.PullRequest.ReviewDecision), as the reviewer's start on a new round empties
+// the decision on its row (clearHandoff): a request for changes of an earlier round would otherwise
+// reject the new one, and an approval of it end it, at a head the new round's reviewer never read.
+// A link held refused, a pull request the record holds for another issue, and one that holds no
+// decision write nothing. Each is read as its row first (pullRequestRow), which says whether it
+// holds a decision, and read whole for the write only where it does.
 func (e *Engine) clearLinkedDecisions(ctx context.Context, tx pgx.Tx, issue string) error {
 	links, err := e.store.PullRequestLinksOf(ctx, tx, issue)
 	if err != nil {
@@ -452,11 +453,18 @@ func (e *Engine) clearLinkedDecisions(ctx context.Context, tx pgx.Tx, issue stri
 		if link.Refused != "" {
 			continue
 		}
+		row, err := e.pullRequestRow(ctx, tx, link.Repo, link.Number)
+		if err != nil {
+			return err
+		}
+		if row == nil || row.Issue != issue || row.ReviewDecision == nil {
+			continue
+		}
 		pr, err := e.pullRequest(ctx, tx, link.Repo, link.Number)
 		if err != nil {
 			return err
 		}
-		if pr == nil || pr.Issue != issue || pr.ReviewDecision == nil {
+		if pr == nil {
 			continue
 		}
 		pr.ReviewDecision = nil
