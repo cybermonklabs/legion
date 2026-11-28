@@ -294,6 +294,20 @@ check "refuses UNKNOWN naming the raw path" \
 check "asks GitHub nothing of the marketplace" "$(lacks "repos/example-org/plugins/contents/" "$calls")"
 check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
 
+# A path that is empty, as a newline alone is once the shell takes it off, names no file in the
+# repository: GitHub would answer the repository's root listing for it.
+for path in '""' '"\n"'; do
+  echo "case: --clients, a marketplace path ${path}, which names no file"
+  box_case "clients-marketplace-path-blank-${#path}"
+  marketplace_source "{\"source\": \"github\", \"repo\": \"example-org/plugins\", \"path\": ${path}}"
+  run_gate -- --clients "$commit"
+  check "exits 3" "$(is "$status" 3)"
+  check "refuses UNKNOWN naming the raw path" \
+    "$(has_line "UNKNOWN: dotfiles .claude/settings.json: the marketplace legion-plugins it names sets path ${path}, which is no plain path inside its repository")"
+  check "asks GitHub nothing of the marketplace" "$(lacks "repos/example-org/plugins/contents" "$calls")"
+  check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
+done
+
 echo "case: --clients, an npm source with a key the gate does not read"
 box_case clients-plugin-unknown-key
 plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0", "integrity": "sha512-x"}'
