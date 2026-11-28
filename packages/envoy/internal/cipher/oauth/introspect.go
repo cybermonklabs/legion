@@ -98,6 +98,13 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 		return oauthwire.Introspection{}, fmt.Errorf("oauth: the token's run: %w", err)
 	}
 	answer.CI = run
+	if answer.ProjectScope == oauthwire.ProjectScopeConsented {
+		// The sign-in the token was traded from, which its own row names as every token of the
+		// login does (oauthstore.Store stores the credential its session's extra carries), so a
+		// verifier reads the principal the exchange bound its name under
+		// (oauthwire.ConsentedPrincipal).
+		answer.SignIn, _ = session.Extra[oauthwire.ExtraCredentialID].(string)
+	}
 	if answer.Person != "" {
 		issuer, _ := session.Extra[ClaimAccountIssuer].(string)
 		subject, _ := session.Extra[ClaimAccountSubject].(string)

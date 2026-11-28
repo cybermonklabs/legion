@@ -49,8 +49,10 @@ test("a poll that fails after a list already loaded keeps showing that list, not
     .mockResolvedValueOnce({
       pending: [
         {
+          dispatch_scopes: null,
           identifiers: ["DEMO_API_KEY"],
           kind: "agent_secret",
+          reason: "",
           record_id: "req-1",
           requested_at: "2026-09-27T00:00:00Z",
           session: { enrollment: null, request: null },

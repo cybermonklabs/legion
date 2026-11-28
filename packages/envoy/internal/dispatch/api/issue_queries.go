@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -40,16 +41,21 @@ var issueStatusCase = issueStatusOrderSQL()
 // the paged text, which cuts the page in SQL and answers `total` beside it; a route_status
 // request keeps the unpaged text and listIssues' own page cut, because that filter runs in Go
 // after the Envoy roster enrichment and total must count what is left after it. pgx caches a
-// plan for each text, so neither shape replans the other's.
+// plan for each text, so neither shape replans the other's. A listing at a cut (asof) runs the
+// unpaged or the paged text written for a cut, which reads the priorities live at the cut and no
+// component member (issueSummaryQuery's atCut); a pinned listing at a cut is refused
+// (refuseListingFilterAtCut), so it has no such text.
 var (
-	listIssuesQuery           = issueSummaryQuery(false, false, true)
-	listPinnedIssuesQuery     = issueSummaryQuery(true, false, true)
-	listIssuesPageQuery       = issueSummaryQuery(false, true, true)
-	listPinnedIssuesPageQuery = issueSummaryQuery(true, true, true)
+	listIssuesQuery           = issueSummaryQuery(false, false, true, false)
+	listPinnedIssuesQuery     = issueSummaryQuery(true, false, true, false)
+	listIssuesPageQuery       = issueSummaryQuery(false, true, true, false)
+	listPinnedIssuesPageQuery = issueSummaryQuery(true, true, true, false)
+	listIssuesQueryAtCut      = issueSummaryQuery(false, false, true, true)
+	listIssuesPageQueryAtCut  = issueSummaryQuery(false, true, true, true)
 )
 
 // goingCoveredIssuePageQuery filters child issues by the run author's scope before paging.
-var goingCoveredIssuePageQuery = issueSummaryQueryFiltered(false, true, true,
+var goingCoveredIssuePageQuery = issueSummaryQueryFiltered(false, true, true, false,
 	" and "+access.ScopeCoversSQL("i.project_key", "$20"))
 
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
@@ -87,18 +93,22 @@ var goingCoveredIssuePageQuery = issueSummaryQueryFiltered(false, true, true,
 // `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
 // reason: it is read only under `?moved=true` ($14), and a request without it reads no event.
-func issueSummaryQuery(pinned, paged, readAdvances bool) string {
-	return issueSummaryQueryFiltered(pinned, paged, readAdvances, "")
+// atCut writes the text for a read at a cut: it reads which priorities were live at the cut
+// (prioritiesLiveAtCutTerm) in place of priority_nodes, which keeps only the present state, and
+// reads no component member (issueComponentsTermsAtCut).
+func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
+	return issueSummaryQueryFiltered(pinned, paged, readAdvances, atCut, "")
 }
 
-func issueSummaryQueryFiltered(pinned, paged, readAdvances bool, extraFilter string) string {
+func issueSummaryQueryFiltered(pinned, paged, readAdvances, atCut bool, extraFilter string) string {
 	parameter := 18
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
 		parameter++
 	}
-	query := `with recursive ` + issueAdvancesFilterTerms + `, matched as (
+	filterTerms, advancesTerms, componentsTerms := issueAdvancesFilterTerms, issueAdvancesTerms, issueComponentsTerms
+	filteredTerms := `matched as (
 		select i.ctid as address
 		from issues i` + pinnedJoin + `
 		` + issueListFilters + extraFilter + `
@@ -108,10 +118,23 @@ func issueSummaryQueryFiltered(pinned, paged, readAdvances bool, extraFilter str
 		cross join generate_subscripts(m.addresses, 1) as place(n)
 		join issues i on i.ctid = m.addresses[place.n]
 	)`
+	if atCut {
+		filterTerms = prioritiesLiveAtCutTerm + `, ` + issueAdvancesFilterTermsAtCut
+		advancesTerms, componentsTerms = issueAdvancesTermsAtCut, issueComponentsTermsAtCut
+		// At a cut `issues` names the issues shadow, a WITH member, which has no ctid to read the
+		// matched issues back by. So the text for a cut filters in one term, as the listing did
+		// before it read the matched issues back by their addresses.
+		filteredTerms = `filtered as (
+		select i.key, i.status, i.rank, i.created_at
+		from issues i` + pinnedJoin + `
+		` + issueListFilters + extraFilter + `
+	)`
+	}
+	query := `with recursive ` + filterTerms + `, ` + filteredTerms
 	advancesColumns := issueAdvancesColumns
-	terms := issueComponentsTerms + `, ` + refs.IssueRepoTerms
+	terms := componentsTerms + `, ` + refs.IssueRepoTerms
 	if readAdvances {
-		terms = issueAdvancesTerms + `, ` + terms
+		terms = advancesTerms + `, ` + terms
 	} else {
 		advancesColumns = issueAdvancesColumnsUnread
 	}
@@ -264,7 +287,18 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // left to the default collation an order that weighs punctuation last (glibc's en_US, which a
 // deployment's database was created with) answers `cicd` before `ci-fixes` where Go puts
 // `ci-fixes` first, and the merge then lists an id the issue holds both ways twice.
-var issueAdvancesTerms = `advances_chain as (
+var issueAdvancesTerms = issueAdvancesTermsJoining(`priority_nodes live on live.kind = '` + prioritystore.KindPriority + `' and live.id = cu.to_id
+			and live.state = '` + prioritystore.StateLive + `'`)
+
+// issueAdvancesTermsAtCut are issueAdvancesTerms for a read at a cut (asof): the priority of a
+// relation is live when it was live at the cut (prioritiesLiveAtCutTerm), which the statement
+// defines before these terms.
+var issueAdvancesTermsAtCut = issueAdvancesTermsJoining(`priorities_live_at_cut live on live.id = cu.to_id`)
+
+// issueAdvancesTermsJoining writes issueAdvancesTerms with live, the join of the priority that a
+// relation names (cu.to_id) to a live priority, aliased live.
+func issueAdvancesTermsJoining(live string) string {
+	return `advances_chain as (
 		select s.key as start, s.key as issue_key, 0 as depth
 		from subjects s
 		union all
@@ -282,9 +316,25 @@ var issueAdvancesTerms = `advances_chain as (
 		                filter (where cu.asserted and live.id is not null and c.depth > 0), '{}') as inherited
 		from advances_chain c
 		left join advances_current cu on cu.from_id = c.issue_key
-		left join priority_nodes live on live.kind = '` + prioritystore.KindPriority + `' and live.id = cu.to_id
-			and live.state = '` + prioritystore.StateLive + `'
+		left join ` + live + `
 		group by c.start
+	)`
+}
+
+// prioritiesLiveAtCutTerm is the term priorities_live_at_cut: each priority that was live at the
+// cut, for a read at a cut. priority_nodes keeps only the state that a priority has now, so a
+// priority deleted or restored after the cut would read in its present state. The state of a
+// priority is its newest state tuple (prioritystore.Create, prioritystore.SetState), and the
+// shadow of priority_tuples holds the tuples at the cut.
+const prioritiesLiveAtCutTerm = `priorities_live_at_cut as (
+		select stated.id from (
+			select distinct on (t.from_id) t.from_id as id, t.to_id as state
+			from priority_tuples t
+			where t.from_kind = '` + prioritystore.KindPriority + `' and t.kind = '` + prioritystore.AttributeState + `'
+				and t.to_kind = '` + prioritystore.KindValue + `'
+			order by t.from_id, t.seq desc
+		) stated
+		where stated.state = '` + prioritystore.StateLive + `'
 	)`
 
 // issueAdvancesJoin attaches issueAdvancesTerms' answer to the issue aliased `i`, one row per
@@ -315,13 +365,23 @@ const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 //
 // `advances_originating` is advancesOriginTerms over the issues that state a matched priority,
 // read only under `?own=true`: a request without the key climbs from no issue.
-var issueAdvancesFilterTerms = `advances_relations as (
+var issueAdvancesFilterTerms = issueAdvancesFilterTermsJoining(`priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
+			and n.state = '` + prioritystore.StateLive + `'`)
+
+// issueAdvancesFilterTermsAtCut are issueAdvancesFilterTerms for a read at a cut (asof): the
+// priority of a relation is live when it was live at the cut (prioritiesLiveAtCutTerm), which the
+// statement defines before these terms.
+var issueAdvancesFilterTermsAtCut = issueAdvancesFilterTermsJoining(`priorities_live_at_cut n on n.id = newest.to_id`)
+
+// issueAdvancesFilterTermsJoining writes issueAdvancesFilterTerms with live, the join of the
+// priority that a relation names (newest.to_id) to a live priority, aliased n.
+func issueAdvancesFilterTermsJoining(live string) string {
+	return `advances_relations as (
 		select newest.from_id as key, newest.to_id as priority
 		from (
 			` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and (cardinality($11::text[]) > 0 or $12::boolean or $13::boolean)`) + `
 		) newest
-		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
-			and n.state = '` + prioritystore.StateLive + `'
+		join ` + live + `
 		where newest.asserted
 	), advances_stated as (
 		select key, bool_or(priority = any($11::text[])) as named
@@ -342,6 +402,7 @@ var issueAdvancesFilterTerms = `advances_relations as (
 		from advances_origins
 		group by key
 	)`
+}
 
 // advancesOriginTerms are the terms that read which priorities an issue originates: the ones
 // its own row names that no issue above it carries. relations names a term of (key, priority)
@@ -684,6 +745,9 @@ func normalizeIssueLabels(values []string) ([]string, error) {
 }
 
 func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
+	if refuseListingFilterAtCut(w, r) {
+		return
+	}
 	query := r.URL.Query()
 	pinned := query.Get("pinned") == "true"
 	login := ""
@@ -782,8 +846,14 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// SQL cuts the page only when no route_status filter runs after the read: that filter needs
 	// the Envoy roster, which this read cannot reach, and total counts what is left after it.
 	inSQL := page != nil && routeStatus == ""
+	// At a cut the request carries no pinned filter (refuseListingFilterAtCut).
+	_, atCut := asof.CutFrom(r.Context())
 	listQuery := listIssuesQuery
 	switch {
+	case atCut && inSQL:
+		listQuery = listIssuesPageQueryAtCut
+	case atCut:
+		listQuery = listIssuesQueryAtCut
 	case pinned && inSQL:
 		listQuery = listPinnedIssuesPageQuery
 	case pinned:
@@ -803,7 +873,18 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
+	if atCut {
+		// At a cut the listing reads no route roster, and the request carries no route_status
+		// (refuseListingFilterAtCut), so the page is cut in SQL whenever it is paged.
+		prefix := ""
+		if inSQL {
+			prefix = "/issues"
+		}
+		if err := s.issueSummariesAtTheCut(r.Context(), issues, prefix); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	} else if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
 		judged := routeStatus != "" && routeStatus != model.RouteUnknown
 		var roster routeRoster
 		if judged {
@@ -986,14 +1067,21 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// One roster read serves both answers beside the issue: where its route reaches, and what
 	// state the session holding its claim is in. An issue with neither costs no listener call.
-	if read.Route != nil || issueClaimSession(read.Claim) != "" {
+	// At a cut the read reads no roster, which keeps no past state (issueAtTheCut).
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		if err := s.issueAtTheCut(r.Context(), &read, trees); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	} else if read.Route != nil || issueClaimSession(read.Claim) != "" {
 		roster := s.routeRosterOrUnknown(r.Context())
 		read.IssueRouteReach = roster.reach(read.Route)
 		read.IssueClaimLiveness = roster.claimLiveness(read.Claim, time.Now())
@@ -1056,6 +1144,8 @@ type issueDetail struct {
 // refs.BacklinkCounts - so the two paths answer the same bytes. trees is what the request asked
 // for (wantsDisplayTrees): the display trees of the documents' approval reasons, the open asks'
 // texts and the attachment's reason for touching no component, which only the dashboard reads.
+// At a cut it does not read the design gates or the issue's backlink count, which keep no history
+// and which the answer leaves out (issueAtTheCut).
 func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
@@ -1066,7 +1156,7 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 	missing := false
 
 	first := &pgx.Batch{}
-	first.Queue(issueRowStatement, key).QueryRow(func(row pgx.Row) error {
+	first.Queue(issueRowStatementAt(ctx), key).QueryRow(func(row pgx.Row) error {
 		issue, progress, err := scanIssueRow(row)
 		if errors.Is(err, pgx.ErrNoRows) {
 			missing = true
@@ -1098,16 +1188,18 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		read.Children = scanned
 		return err
 	})
-	first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
-		scanned, err := scanIssueDesignGates(rows)
-		read.DesignGates = scanned
-		return err
-	})
 	first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&read.CommentCount)
 	})
-	if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
-		return issueDetail{}, err
+	if _, atCut := asof.CutFrom(ctx); !atCut {
+		first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
+			scanned, err := scanIssueDesignGates(rows)
+			read.DesignGates = scanned
+			return err
+		})
+		if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
+			return issueDetail{}, err
+		}
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
 		return issueDetail{}, err
@@ -1141,8 +1233,8 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 // nothing, so it queues nothing and sends no batch.
 func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
-	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, who, asks)
+	applyArtifacts := queueArtifactDetails(ctx, batch, artifacts)
+	applyAsks := queueAskDetails(ctx, batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -1187,10 +1279,30 @@ func (s *server) loadIssue(ctx context.Context, q queryer, key string) (model.Is
 // text is built once, at start, rather than on every read: its component and repository terms
 // are package-level values of their own, so the concatenation is work a request would repeat
 // for a statement that never differs, and pgx caches a prepared plan per statement text.
-var issueRowStatement = `
+var issueRowStatement = issueRowStatementOf(issueAdvancesTerms, issueComponentsTerms)
+
+// issueRowStatementAtCut is issueRowStatement for a read at a cut (asof): it reads which
+// priorities were live at the cut (prioritiesLiveAtCutTerm) in place of priority_nodes, which
+// keeps only the present state, and reads no component member (issueComponentsTermsAtCut).
+var issueRowStatementAtCut = issueRowStatementOf(prioritiesLiveAtCutTerm+`,
+		`+issueAdvancesTermsAtCut, issueComponentsTermsAtCut)
+
+// issueRowStatementAt is the issue row's statement for a read under ctx: issueRowStatementAtCut
+// when ctx carries a cut, else issueRowStatement.
+func issueRowStatementAt(ctx context.Context) string {
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		return issueRowStatementAtCut
+	}
+	return issueRowStatement
+}
+
+// issueRowStatementOf writes the issue row's statement with advances, the terms that answer
+// `advances`, and components, the terms that answer `comp`.
+func issueRowStatementOf(advances, components string) string {
+	return `
 		with recursive subjects as (select $1::text as key),
-		` + issueAdvancesTerms + `,
-		` + issueComponentsTerms + `,
+		` + advances + `,
+		` + components + `,
 		` + refs.IssueRepoTerms + `
 		select i.key, i.project_key, i.number, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 		       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
@@ -1211,6 +1323,7 @@ var issueRowStatement = `
 		` + refs.IssueRepoJoin + `
 		where i.key = $1
 	`
+}
 
 // issueExternalLinksStatement reads an issue's external links, $1 its key, in the order the
 // response lists them; scanExternalLinks decodes them.
@@ -1294,7 +1407,7 @@ func scanExternalLinks(rows pgx.Rows) ([]model.ExternalLink, error) {
 // loadIssueWithProgress is loadIssue together with the issue's progress, which the read response
 // carries beside the issue (model.IssueProgress says why it is not a field of it).
 func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, key string) (model.Issue, model.IssueProgress, error) {
-	issue, progress, err := scanIssueRow(q.QueryRow(ctx, issueRowStatement, key))
+	issue, progress, err := scanIssueRow(q.QueryRow(ctx, issueRowStatementAt(ctx), key))
 	if err != nil {
 		return model.Issue{}, model.IssueProgress{}, err
 	}

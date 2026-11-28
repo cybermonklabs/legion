@@ -167,9 +167,17 @@ func programOf(check model.CheckBlock, deploys []model.Deploy) (string, string) 
 	}
 }
 
+// readsTheLiveDeploy reports whether the present read of check compares its results with the
+// current deploy of the program the check reads (withLiveDeploy, markNotCounted): a check of
+// production or of the graph, read after merge or on the default branch. A read at a cut makes no
+// such comparison (checksAtTheCut).
+func readsTheLiveDeploy(check model.CheckBlock) bool {
+	return (check.Subject == "production" || check.Subject == "graph") &&
+		(check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch)
+}
+
 func (c *comparisonReader) withLiveDeploy(ctx context.Context, check model.CheckBlock, compared comparison) comparison {
-	if (check.Subject != "production" && check.Subject != "graph") ||
-		(check.When != checkWhenAfterMerge && check.When != checkWhenDefaultBranch) {
+	if !readsTheLiveDeploy(check) {
 		return compared
 	}
 	compared.live = true

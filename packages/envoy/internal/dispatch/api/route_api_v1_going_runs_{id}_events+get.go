@@ -17,7 +17,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).streamGoingRunEvents,
 	ID:          &idRoute{Reason: "a going run's id, whose events the route streams to its own author alone and answers for itself"},
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesState, WriteNote: "When the run is withdrawn and has not ended, whether found so as the stream opens (readCallersGoingRun) or in any later pass over its frames (goingRunWithdrawal), the read stops it on the request's context (stopGoingRun): it updates the run's going_runs row to stopped with its lease freed (stopGoingRunIn), inserts the end frame into going_run_events with a notify on GoingRunEventsChannel (appendGoingRunFrames), appends going_plan.updated to events for a run that was waiting (appendGoingPlanEvent), and notifies GoingRunsChannel."},
+	Read:        readEntry{Writes: readWritesState, AsOf: asOfNoHistory, WriteNote: "When the run is withdrawn and has not ended, whether found so as the stream opens (readCallersGoingRun) or in any later pass over its frames (goingRunWithdrawal), the read stops it on the request's context (stopGoingRun): it updates the run's going_runs row to stopped with its lease freed (stopGoingRunIn), inserts the end frame into going_run_events with a notify on GoingRunEventsChannel (appendGoingRunFrames), appends going_plan.updated to events for a run that was waiting (appendGoingPlanEvent), and notifies GoingRunsChannel."},
 	Shape: routeShape{
 		Status:             http.StatusOK,
 		Opaque:             "the run's frames are a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",

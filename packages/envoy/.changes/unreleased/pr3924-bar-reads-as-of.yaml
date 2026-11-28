@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The command bar's agent sends the `as_of` of a read tool to the route the read calls, as the
+  `dispatch` command sends `--as-of`. `dispatch_search` sends it beside its words, `dispatch_read`
+  sends it in the query of the row it picks, and `dispatch_doc_read` sends it on the read of the
+  item's record and on the row it then reads. `dispatch_results`, `dispatch_open_asks`,
+  `dispatch_answers` and `dispatch_inbox` send it as they send each other argument. A route that
+  answers a read at a past time answers it as of that time. A route that keeps no history refuses
+  it with `400 AS_OF_NOT_SERVED`, and the agent is told that refusal.

@@ -15,7 +15,9 @@ package api
 // dispatch_doc_read, an item named by its dispatch:// reference above all - picks its row as that
 // command does (goingPickRead, goingPickDocRead). dispatch_doc_read reads the record of the item
 // it names first, as its command does, and reads an uploaded file at one of its versions
-// (goingChooseDocRead).
+// (goingChooseDocRead). A read tool's as_of, the past time it reads Dispatch at, rides in the
+// query of each request its translation builds, under its own name, as the `dispatch` command
+// sends --as-of (goingAsOfQuery).
 //
 // What the bar can never send - a picture or a file the CLI reads off the machine it runs on, which
 // the bar has no way to reach, a `ref` that names no place a write goes, and the rest
@@ -788,12 +790,37 @@ func goingDeliveryQuery(arguments map[string]any, keys []goingQueryKey) (url.Val
 	return query, nil
 }
 
+// goingAsOfQuery is the query that carries the past time a read call names in as_of, the argument
+// each read tool that reads Dispatch as it stood at a past time takes under the name its routes
+// read it by (asOfParameter), and an empty query for a call that names none. It is read as
+// goingDeliveryQuery reads a delivery read's times: a blank one is none, and one that is no text
+// is refused.
+func goingAsOfQuery(arguments map[string]any) (url.Values, error) {
+	return goingDeliveryQuery(arguments, []goingQueryKey{{argument: asOfParameter, key: asOfParameter}})
+}
+
+// goingWithAsOf is query with the as_of of asOf (goingAsOfQuery) beside its own keys, and query as
+// it is where asOf holds none. A route of kind asOfAnswers answers the read as of that time
+// (asOfGate); a route that keeps no history refuses it, 400 AS_OF_NOT_SERVED, which the model is
+// told as the route answered it.
+func goingWithAsOf(query, asOf url.Values) url.Values {
+	if len(asOf) == 0 {
+		return query
+	}
+	if query == nil {
+		query = url.Values{}
+	}
+	maps.Copy(query, asOf)
+	return query
+}
+
 // goingTranslateSearch sends dispatch_search's words as the search route's q, and its project,
-// its limit and its offset under their own names, as `dispatch search` sends them.
+// its limit, its offset and its as_of under their own names, as `dispatch search` sends them.
 func goingTranslateSearch(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	query := url.Values{}
 	for _, sent := range []goingQueryKey{
 		{argument: "query", key: "q"}, {argument: "project", key: "project"}, {argument: "limit", key: "limit"}, {argument: "offset", key: "offset"},
+		{argument: asOfParameter, key: asOfParameter},
 	} {
 		value, named := call.arguments[sent.argument]
 		if !named || value == nil {
@@ -925,10 +952,26 @@ const goingReadHistoryRule = "history reads the bodies the edits and the delete 
 
 // goingPickRead is the row of dispatch_read a call reads, and what that row's route takes of the
 // call, as `dispatch read` picks what it reads (packages/envoy-client/src/dispatch-commands/read.ts),
-// each item through the route a person reads it with: the item a reference names
-// (goingPickReadRef); else a message, on its issue where the call names one; an issue's or a
-// project's document; an issue (goingIssueRead); and a project's documents on no issue.
+// each item through the route a person reads it with (goingPickReadItem), with the call's as_of
+// beside the row's own query (goingWithAsOf).
 func goingPickRead(arguments map[string]any, serverURL string) (string, goingCall, error) {
+	asOf, err := goingAsOfQuery(arguments)
+	if err != nil {
+		return "", goingCall{}, err
+	}
+	row, call, err := goingPickReadItem(arguments, serverURL)
+	if err != nil {
+		return "", goingCall{}, err
+	}
+	call.query = goingWithAsOf(call.query, asOf)
+	return row, call, nil
+}
+
+// goingPickReadItem is the row of dispatch_read a call reads, and what that row's route takes of
+// the call: the item a reference names (goingPickReadRef); else a message, on its issue where the
+// call names one; an issue's or a project's document; an issue (goingIssueRead); and a project's
+// documents on no issue.
+func goingPickReadItem(arguments map[string]any, serverURL string) (string, goingCall, error) {
 	if value := strings.TrimSpace(goingText(arguments, "ref")); value != "" {
 		return goingPickReadRef(value, arguments, serverURL)
 	}
@@ -1036,18 +1079,24 @@ func goingIssueEvents(issue string, arguments map[string]any) (string, goingCall
 // project, by the document's id, or in an agent's conversation, which only a reference names.
 // record is the pattern of the route that reads the item's record, and path the value of each of
 // its placeholders; version is the version the call or the reference names, where versioned is
-// set; blocks is whether the call asks for the document's blocks.
+// set; blocks is whether the call asks for the document's blocks; asOf is the call's as_of
+// (goingAsOfQuery), which each read of the item carries, its record's among them.
 type goingDocRead struct {
 	record    string
 	path      map[string]string
 	version   string
 	versioned bool
 	blocks    bool
+	asOf      url.Values
 }
 
 // goingDocReadOf is the item arguments name (goingDocRead), refused where they name none, or name
-// blocks at a version.
+// blocks at a version, or name an as_of that is no text.
 func goingDocReadOf(arguments map[string]any, serverURL string) (goingDocRead, error) {
+	asOf, err := goingAsOfQuery(arguments)
+	if err != nil {
+		return goingDocRead{}, err
+	}
 	issue, project, artifact, session := goingText(arguments, "issue"), goingText(arguments, "project"), goingText(arguments, "artifact"), ""
 	version, versioned := goingArgumentText(arguments["version"])
 	if value := strings.TrimSpace(goingText(arguments, "ref")); value != "" {
@@ -1063,7 +1112,7 @@ func goingDocReadOf(arguments map[string]any, serverURL string) (goingDocRead, e
 			version, versioned = ref.version, true
 		}
 	}
-	item := goingDocRead{version: version, versioned: versioned, blocks: arguments["blocks"] == true}
+	item := goingDocRead{version: version, versioned: versioned, blocks: arguments["blocks"] == true, asOf: asOf}
 	if item.blocks && versioned {
 		return goingDocRead{}, goingUntranslatable("blocks lists the live document's blocks, and takes no version")
 	}
@@ -1095,9 +1144,9 @@ func goingPickDocRead(arguments map[string]any, serverURL string) (string, going
 }
 
 // pick is the row that reads the item where it is a document, and what that row's route takes of
-// the call: its text, with its blocks where blocks is set, or the version named. A file of an
-// agent's conversation is read at the version named, and its record, which names its versions,
-// where none is.
+// the call: its text, with its blocks where blocks is set, or the version named, each with the
+// call's as_of. A file of an agent's conversation is read at the version named, and its record,
+// which names its versions, where none is.
 func (d goingDocRead) pick() (string, goingCall) {
 	row, call := http.MethodGet+" "+d.record, goingCall{path: d.path}
 	switch {
@@ -1112,18 +1161,19 @@ func (d goingDocRead) pick() (string, goingCall) {
 			call.query = url.Values{"blocks": {"true"}}
 		}
 	}
+	call.query = goingWithAsOf(call.query, d.asOf)
 	return row, call
 }
 
 // goingChooseDocRead is the row of dispatch_doc_read a call is sent to, and what that row's route
 // takes of the call, as `dispatch doc-read` reads the item the call names (goingDocReadOf): it
-// reads the item's record through read first, as the command's resolveDocument does, and reads a
-// document as pick picks it. An uploaded file or picture, whose text route answers 400
-// NOT_DOCUMENT, is read as the command's readUploadedFile reads one: at the version the call
-// names, else at its latest, through the row of that version, whose answer the model is told in
-// the command's words (goingUploadedFile.told); a call for its blocks is refused in the command's
-// words. Where the read of the record is refused, the call keeps the row pick picks, whose route
-// answers its own refusal, as before any record was read.
+// reads the item's record through read first, as the command's resolveDocument does, at the
+// call's as_of where it names one, and reads a document as pick picks it. An uploaded file or
+// picture, whose text route answers 400 NOT_DOCUMENT, is read as the command's readUploadedFile
+// reads one: at the version the call names, else at its latest, through the row of that version,
+// whose answer the model is told in the command's words (goingUploadedFile.told); a call for its
+// blocks is refused in the command's words. Where the read of the record is refused, the call
+// keeps the row pick picks, whose route answers its own refusal, as before any record was read.
 func goingChooseDocRead(ctx context.Context, read goingReader, arguments map[string]any, serverURL string) (string, goingCall, error) {
 	item, err := goingDocReadOf(arguments, serverURL)
 	if err != nil {
@@ -1139,7 +1189,11 @@ func goingChooseDocRead(ctx context.Context, read goingReader, arguments map[str
 			Size   *int `json:"size"`
 		} `json:"versions"`
 	}
-	if err := read.get(ctx, goingPath(item.record, item.path), &record); err != nil {
+	recordPath := goingPath(item.record, item.path)
+	if len(item.asOf) > 0 {
+		recordPath += "?" + item.asOf.Encode()
+	}
+	if err := read.get(ctx, recordPath, &record); err != nil {
 		var refused goingRefusal
 		if errors.As(err, &refused) {
 			return row, call, nil
@@ -1170,7 +1224,7 @@ func goingChooseDocRead(ctx context.Context, read goingReader, arguments map[str
 		}
 	}
 	item.path["number"] = strconv.Itoa(file.version)
-	return http.MethodGet + " " + item.record + "/versions/{number}", goingCall{path: item.path, file: &file}, nil
+	return http.MethodGet + " " + item.record + "/versions/{number}", goingCall{path: item.path, query: goingWithAsOf(nil, item.asOf), file: &file}, nil
 }
 
 // goingUploadedFile is the uploaded file or picture whose version a dispatch_doc_read reads

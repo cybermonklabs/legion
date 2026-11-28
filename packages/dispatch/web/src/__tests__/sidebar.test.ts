@@ -275,8 +275,10 @@ test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox 
 test("sidebar counts a pending credential request in the Inbox count, beside the asks waiting on you", async () => {
   const sidebar = renderSidebar("/", [
     {
+      dispatch_scopes: null,
       identifiers: ["DEMO_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-1",
       requested_at: "2026-09-10T00:00:00Z",
       session: { enrollment: null, request: null },
@@ -301,17 +303,21 @@ test("sidebar counts a pending credential request in the Inbox count, beside the
 test("sidebar leaves an expired credential request out of the Inbox count", async () => {
   const sidebar = renderSidebar("/", [
     {
+      dispatch_scopes: null,
       identifiers: ["DEMO_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-1",
       requested_at: "2026-09-10T00:00:00Z",
       session: { enrollment: null, request: null },
       state: "pending",
     },
     {
+      dispatch_scopes: null,
       expires_at: "2026-09-10T01:00:00Z",
       identifiers: ["DEEL_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-2",
       requested_at: "2026-09-09T00:00:00Z",
       session: { enrollment: null, request: null },

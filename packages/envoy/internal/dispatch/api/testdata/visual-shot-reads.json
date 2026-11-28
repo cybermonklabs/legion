@@ -14,6 +14,7 @@
     "/api/v1/broadcasts/{id}",
     "/api/v1/credential-grants",
     "/api/v1/credential-requests",
+    "/api/v1/credentials/capabilities",
     "/api/v1/inbox",
     "/api/v1/issues",
     "/api/v1/issues/{key}",

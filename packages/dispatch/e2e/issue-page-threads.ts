@@ -150,6 +150,10 @@ export const KIND_WORDS = {
  *  `page-words-threads.ts` with the component that draws them. */
 export const GONE_NODE = "On text deleted in Graph";
 
+/** The words of a record's link to its node (R8), which the element `SELECTORS.nodeLink` names
+ *  holds exactly. */
+export const OPEN_IN_CONVERSATION = "Open in Conversation";
+
 /** From 1024 px up, with no record and no New thread open, the main column's one line (R2): a
  *  `p` inside `[data-thread-main]` holding exactly these words. */
 export const MAIN_LINE = "Open a thread from the list, or start one with New thread.";
@@ -241,8 +245,10 @@ export const SELECTORS = {
   box: "[data-thread-box]",
   /** New thread, in the main column, with its chooser and its box. */
   newThread: "[data-new-thread]",
-  /** A record on text's link to its node where a view draws that node. Owed until
-   *  dispatch://INFRA-1253's node anchor is on the base. */
+  /** A record on text's link to its node where a view draws it, holding the words of
+   *  `OPEN_IN_CONVERSATION`: for a quoting reply's record, its quoted post in Conversation. The
+   *  link of a comment anchored on text is owed until dispatch://INFRA-1253's node anchor is on
+   *  the base. */
   nodeLink: "[data-thread-node-link]",
 } as const;
 

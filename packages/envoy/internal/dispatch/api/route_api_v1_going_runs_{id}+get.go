@@ -16,6 +16,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getGoingRun,
 	ID:          &idRoute{Reason: "a going run's id, which the route reads for its own author alone and answers for itself"},
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesState, WriteNote: "When the run is withdrawn (a post it read was deleted) and has not finished, the read stops it on the request's context before answering (readCallersGoingRun, stopGoingRun): it updates the run's going_runs row to stopped with its lease freed (stopGoingRunIn), inserts the run's end frame into going_run_events with a notify on GoingRunEventsChannel (appendGoingRunFrames), appends going_plan.updated to events for a run that was waiting (appendGoingPlanEvent), and notifies GoingRunsChannel."},
+	Read:        readEntry{Writes: readWritesState, AsOf: asOfNoHistory, WriteNote: "When the run is withdrawn (a post it read was deleted) and has not finished, the read stops it on the request's context before answering (readCallersGoingRun, stopGoingRun): it updates the run's going_runs row to stopped with its lease freed (stopGoingRunIn), inserts the run's end frame into going_run_events with a notify on GoingRunEventsChannel (appendGoingRunFrames), appends going_plan.updated to events for a run that was waiting (appendGoingPlanEvent), and notifies GoingRunsChannel."},
 	Shape:       routeShape{Status: http.StatusOK, Response: goingRun{}},
 })
