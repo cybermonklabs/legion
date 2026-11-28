@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -177,12 +178,13 @@ func closeWorkHold(t *testing.T, store *Store, records record.Store) record.Work
 }
 
 // waitingOnALock is whether a backend of the store's database other than the caller's waits for
-// a lock another transaction holds.
+// a lock another transaction holds, read from pg_locks (lockwaittest.Waiting, whose package
+// comment says why not from pg_stat_activity's wait event).
 func waitingOnALock(t *testing.T, store *Store) bool {
 	t.Helper()
 	var waiting bool
 	if err := store.Pool().QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
-		where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock')`).Scan(&waiting); err != nil {
+		where datname = current_database() and pid <> pg_backend_pid() and `+lockwaittest.Waiting+`)`).Scan(&waiting); err != nil {
 		t.Fatalf("read pg_stat_activity: %v", err)
 	}
 	return waiting
