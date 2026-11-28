@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1309,7 +1310,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		handler http.Handler
 		stop    func()
 	}
-	start := func(database *store.Store) *process {
+	start := func(database *store.Store, stoodBy func()) *process {
 		t.Helper()
 		client, err := bus.ConnectOwningStream([]string{url})
 		if err != nil {
@@ -1322,6 +1323,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		}
 		publisher := outbox.New(outbox.Deps{
 			Store: &store.Store{Pool: pool}, Publisher: client, Broker: events.NewBroker(), Listen: database.Pool.Listener,
+			StoodBy: stoodBy,
 		})
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -1348,16 +1350,16 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		return publishing
 	}
 
-	first := start(database)
-	deadline := time.Now().Add(10 * time.Second)
-	for !probe(first) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the only outbox publishing")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	second := start(storetest.SecondProcess(t, database))
-	time.Sleep(time.Second)
+	first := start(database, nil)
+	testwait.Until(t, "healthz to report the only outbox publishing", func() (bool, bool) {
+		publishing := probe(first)
+		return publishing, publishing
+	})
+
+	stoodBy := make(chan struct{})
+	var once sync.Once
+	second := start(storetest.SecondProcess(t, database), func() { once.Do(func() { close(stoodBy) }) })
+	testwait.Receive(t, "the second outbox to try the publisher hold and find it held", stoodBy)
 	if probe(second) || !probe(first) {
 		t.Fatalf("outbox_publisher: first %t, second %t, want only the first, which holds the publisher hold", probe(first), probe(second))
 	}
@@ -1366,13 +1368,12 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	if probe(first) {
 		t.Fatal("healthz reported a stopped outbox publishing")
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for !probe(second) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the standby publishing once the holder stopped")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// TestOneProcessPublishesTheOutboxAtATime (multiprocess) checks the take-over bound.
+	// Here only the publishing state after the hand-off decides the result.
+	testwait.Until(t, "healthz to report the standby publishing once the holder stops", func() (bool, bool) {
+		publishing := probe(second)
+		return publishing, publishing
+	})
 }
 
 // /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the deploy check

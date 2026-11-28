@@ -93,6 +93,9 @@ type Deps struct {
 	// Listen dials the outbox's LISTEN connection (pglisten.Listener.Dial): cmd/dispatch passes
 	// store.Pool.Listener.
 	Listen func(ctx context.Context) (*pgx.Conn, error)
+	// StoodBy runs each time a standby tries to take the publisher hold and finds it
+	// held by another process. Nil calls nothing.
+	StoodBy func()
 	// RoleClaims and Sessions are where a role route's holder is resolved (roles.ResolveHolder,
 	// resolveRoleHolders): role claims read from the role bucket and holders read from the
 	// session bucket, neither of which the resolution writes to. cmd/dispatch passes one
