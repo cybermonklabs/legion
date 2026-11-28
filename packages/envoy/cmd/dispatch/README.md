@@ -4982,7 +4982,7 @@ the docs site's HTTP API reference is generated from both, one page per version,
 and `packages/contracts/schemas/dispatch-openapi-v2.json` for `/api/v2`, from each `/api/v2` row's declared query, body and answer types.
 `--check` writes nothing: it compares both committed documents with a fresh render, printing a unified diff for each that differs and exiting 1.
 `--version 1` or `--version 2` takes that version's document alone, and `--out <path>`, which needs `--version`, writes it to that file instead (`-` for standard output), or with `--check` compares that file.
-The `/api/v2` document lists, for the operation of each `/api/v2` row, the refusal codes it can answer with their statuses (`x-refusal-codes`), and every code `/api/v2` can answer, once, under `components.x-refusal-codes`; the operations of the test hooks (`/api/v2/_test/…`) list none.
+The `/api/v2` document lists, for the operation of each `/api/v2` row, the refusal codes it can answer with their statuses (`x-refusal-codes`), but four that no layer of the mount writes (the router guards' `ORIGIN_REFUSED` and `HOST_MISMATCH`, the slow-write test hook's `SLOW_WRITE_CUT_OFF`, and `DATABASE_UNAVAILABLE`, which only a server built with no store answers), and every code `/api/v2` can answer, once, under `components.x-refusal-codes`; the operations of the test hooks (`/api/v2/_test/…`) list none.
 The nine delivery and Legion rows of the INFRA-979 tree are the exception (`GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`, `GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`, `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and `DELETE /api/v2/projects/{key}/legion/daemon`): they keep their `/api/v1` shape, so their operations list no refusal codes, a query key they do not declare is not refused, and their `PUT` and `DELETE` take no `Idempotency-Key`.
 The test hooks keep their `/api/v1` rules the same way: a query key they do not declare is not refused, and their `PUT` and `DELETE` take no `Idempotency-Key`.
 The clients' TypeScript types are rendered from the committed documents (`@legion/contracts` from the `/api/v1` one, `@legion/contracts/dispatch-api-v2` from the `/api/v2` one), so a route added to the table reaches them with no type hand-written for it.
@@ -5026,7 +5026,7 @@ Each item below names a rule, then what a caller meets.
 
   A path that names an object Dispatch stores, which does not exist, answers `404` with that object's code (`ISSUE_NOT_FOUND`, `PROJECT_NOT_FOUND`, `ASK_NOT_FOUND`, `VERSION_NOT_FOUND`, `BLOCK_NOT_FOUND`, …);
   a `{session_id}` and a repository's app installation keep `/api/v1`'s answer, since Dispatch cannot tell a session that never existed from one that has gone, and GitHub answers alike for a missing repository and one the App cannot see;
-  and the `PUT` of a plan (`/api/v2/issues/{key}/plans/{id}`) and of an architecture source (`/api/v2/projects/{key}/architecture-sources/{owner}/{repo}`) makes the object its path names.
+  and the `PUT` of a plan (`/api/v2/issues/{key}/plans/{id}`), of an architecture source (`/api/v2/projects/{key}/architecture-sources/{owner}/{repo}`) and of a step run that names the run's identity (`/api/v2/issues/{key}/steps/{id}`, its `/rating` and its `/experiment`) makes the object its path names.
 
 - An unknown path
 
@@ -5052,7 +5052,7 @@ The dashboard's pages (`index.html` and the shell served for a browser route) ca
 In this list, header identity means only the test/local harness mode described above.
 Production Dispatch uses cookie identity through the sign-in pool.
 The `/api/v1` routes in it are as `/api/v1` serves them, which the web app, the `dispatch` command, the plugins, the daemon and the broker still call (the web app sets no `User-Agent` of its own, so the access log shows its browser's and does not name it):
-`GET /api/v2` and the docs site's reference describe each `/api/v2` route, and an `/api/v1` answer's `Link` header names the one that answers for it, or `GET /api/v2` for a route awaiting its `/api/v2` route (`testdata/v1-awaiting-v2-routes.txt`).
+`GET /api/v2` and the docs site's reference describe each `/api/v2` route, and an `/api/v1` answer's `Link` header names the one that answers for it, or `GET /api/v2` for a route awaiting its `/api/v2` route (`testdata/v1-awaiting-v2-routes.txt`), for an unknown path, for the cookie-origin guard's refusal, for the `410` after the end and for a refusal sent before the handler resolves a value the successor's path needs.
 
 Each item below names a path with its method and identity, then its purpose.
 
@@ -5088,7 +5088,7 @@ Each item below names a path with its method and identity, then its purpose.
   Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400 AUTH_STATE_INVALID` ("invalid or expired state") when the state cookie is missing, does not verify, has lapsed or names another state;
-  `400 AUTH_PARAMS_INVALID` ("sign-in callback <error>: <description>", "missing code or state in callback", or "the callback's code is longer than 2048 bytes"), before any request to the issuer, when the callback carries the issuer's `error` (such as `access_denied`), no code or state, or a code longer than 2048 bytes;
+  `400 AUTH_PARAMS_INVALID` ("sign-in callback <error>: <description>", or "sign-in callback: <error>" when the issuer sent no description, "missing code or state in callback", or "the callback's code is longer than 2048 bytes"), before any request to the issuer, when the callback carries the issuer's `error` (such as `access_denied`), no code or state, or a code longer than 2048 bytes;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer;
   `502 SIGNIN_FAILED` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
   `500 SIGNIN_RECORD_FAILED` or `500 SESSION_FAILED` when the person or the session generation cannot be recorded;

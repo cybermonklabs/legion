@@ -13,8 +13,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"person its enrollment acts for, ends it whatever project it touches, and a revoke has no way back. 204. " +
 			"A grant revoked by someone it does not name is 404 CREDENTIAL_GRANT_NOT_FOUND when it belongs to a " +
 			"private project the caller may not see, as is an id the broker holds no grant of, and 503 " +
-			"PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch and keeps no answer from within the hour " +
-			"that showed the caller the project; of the grants they may see, they end one " +
+			"PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch: for a grant of a secret tagged with a " +
+			"project whatever the broker kept, and for any other unless it keeps an answer from within the hour that " +
+			"showed the caller each project the grant's session names or whose issue its reason names; of the grants they may see, they end one " +
 			"whose approver is anyone or a group that lists them, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box " +
 			"each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke " +
 			"succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the " +

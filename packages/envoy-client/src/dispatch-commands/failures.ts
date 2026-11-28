@@ -179,8 +179,9 @@ function nextSteps(
  * decided. A write Dispatch answered with its own 5xx is no refusal but a
  * `DispatchWriteUnsettledError` (the write may have committed first), so a caller that reads such
  * a 5xx asks this of that error's `last`; but for Dispatch's 503 BROKER_UNAVAILABLE, which checked
- * no token and ran nothing (`tokenNotChecked`), and a keyed write's 5xx text refusal while no
- * attempt of it may have landed, each thrown as the refusal it is.
+ * no token and ran nothing (`tokenNotChecked`), and a keyed write's 5xx text refusal, each thrown
+ * as the refusal it is while no attempt of the write may have landed (a `#send` write's 503
+ * always), and after one may have the `last` of the write's `DispatchWriteUnsettledError`.
  */
 export function dispatchAnswered(error: unknown, status: number): error is DispatchServiceError {
   return error instanceof DispatchServiceError && error.fromDispatch && error.status === status;
@@ -272,9 +273,10 @@ export function refuseMissingPost(
  * can send after it committed, or a 408) the client throws as a `DispatchWriteUnsettledError`, as
  * it does a transport failure and a deadline after an attempt may have reached Dispatch; that
  * error, and a timeout or a transport error thrown as it came, says nothing either way. The 5xx
- * refusals the client throws as they came - Dispatch's 503 BROKER_UNAVAILABLE (`tokenNotChecked`),
- * and a keyed write's 5xx text refusal while nothing of it may have landed - this reads by their
- * status as possibly landed too, though nothing ran.
+ * refusals the client throws as they came while nothing of the write may have landed - Dispatch's
+ * 503 BROKER_UNAVAILABLE (`tokenNotChecked`), a keyed write's 5xx text refusal, and the
+ * `DispatchProxyRefusalError` of a 5xx Cipher's proxy wrote before anything of a review left it -
+ * this reads by their status as possibly landed too, though nothing ran.
  */
 export function writeMayHaveLanded(error: unknown): boolean {
   if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;

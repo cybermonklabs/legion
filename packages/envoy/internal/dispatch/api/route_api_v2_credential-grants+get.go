@@ -18,8 +18,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer " +
 			"maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any " +
 			"other grant of a private project the caller may not see is left out, and one the broker cannot ask " +
-			"Dispatch about is left out while it cannot, unless the broker kept an answer from within the hour that " +
-			"showed the caller its project. Dispatch names the caller from its own session, so nobody " +
+			"Dispatch about is left out while it cannot: a grant of a secret tagged with a project whatever the " +
+			"broker kept, and any other unless the broker kept an answer from within the hour that showed the caller " +
+			"each project the grant's session names or whose issue its reason names. Dispatch names the caller from its own session, so nobody " +
 			"lists another person's. A caller Dispatch calls a restricted member is listed the grants of the " +
 			"sessions that act for them alone; while the broker cannot ask Dispatch what kind of member the caller " +
 			"is, the list holds no other grant either, unless the broker kept the caller as a full member within the " +

@@ -1007,9 +1007,10 @@ would read as nothing written. A fleet commit that names `b1c42d1d7d` while a ro
 going does not prove that every replica runs it. Do not roll Dispatch back below that build while
 sessions use this client; fix forward instead.
 
-A non-2xx answer is thrown as `DispatchServiceError`, unless it leaves a write unsettled or is a
+A non-2xx answer is thrown as `DispatchServiceError`, unless it leaves a write unsettled, is a
 `409 KEY_COMMITTED` (a `DispatchWriteLandedError`, or a `DispatchAnswerMissingError` for a call
-that stores nothing; below).
+that stores nothing; below), or is an answer the airlock proxy wrote itself before anything of the
+write left it (`Cipher-Proxy-Forwarded: false`), which is an `AirlockRefusedError`.
 Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —

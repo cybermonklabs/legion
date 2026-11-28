@@ -10,9 +10,11 @@ var _ = declareRow(func(s *server) routeRow {
 		Description: "Send an issue-less targeted message to a session {body, delivery, in_reply_to?, in_reply_to_block?, " +
 			"quote?, occurrence?, connected_only?}, which needs the person scope: delivery is btw, aside or steer, and a reply names a message " +
 			"of this session's conversation in in_reply_to. It is answered 201 once its own " +
-			"attempt has settled. A session the Envoy listener knows and that is not running is a recipient: the listener " +
+			"attempt has settled. A session the Envoy listener knows and that is not running, but one its registry calls " +
+			"gone, is a recipient: the listener " +
 			"stores the message and hands it over when that session runs again, and the attempt is recorded queued; one " +
-			"the listener knows nothing about is queued by Dispatch itself on that session's own subject, the attempt " +
+			"the listener knows nothing about or its registry calls gone is queued by Dispatch itself on that session's " +
+			"own subject, the attempt " +
 			"recorded queued too, and its attempt fails with \"no live session <id>\" only where Dispatch cannot publish " +
 			"that copy or the send asks for a session running now. connected_only asks for a " +
 			"session running now and fails the attempt with \"the session is stopped\", nothing stored, as a person's own " +

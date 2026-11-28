@@ -1,10 +1,11 @@
 package apicode
 
 // Condition names one condition a request can be refused for. A v2 route but a row of the
-// INFRA-979 tree, which keeps its /api/v1 answers, declares each refusal it answers as a Refusal, a
-// (condition, code) pair, so one condition gets one code on every route that declares it
-// (dispatch://INFRA-4071/spec R7). Like a Code it is a struct with an unexported field, so no
-// package but this one names a condition and a string does not convert to one.
+// INFRA-979 tree, which keeps its /api/v1 answers, and a test hook, which no rule of /api/v2 binds,
+// declares each refusal it answers as a Refusal, a (condition, code) pair, so one condition gets
+// one code on every route that declares it (dispatch://INFRA-4071/spec R7). Like a Code it is a
+// struct with an unexported field, so no package but this one names a condition and a string does
+// not convert to one.
 type Condition struct {
 	name string
 }

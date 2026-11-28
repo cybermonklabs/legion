@@ -14,7 +14,11 @@ var _ = declareRow(func(s *server) routeRow {
 			"group that lists the caller, a shared secret's request that names the caller as the person responsible " +
 			"for the agent that made it, names no such person, or names one who may not see it, and a service's " +
 			"machine login, which anyone signed in decides (one an older broker opened naming a person is listed for " +
-			"that person alone); each {record_id, kind, identifiers, requested_at, session, approve_url?, state?, " +
+			"that person alone). From each case, a secret request of a private project the caller may not see is " +
+			"left out, and one the broker cannot ask Dispatch about is left out while it cannot: a request for a " +
+			"secret tagged with a project whatever the broker kept, and any other unless the broker kept an answer " +
+			"from within the hour that showed the caller each project the request's session names or whose issue " +
+			"its reason names. Each row is {record_id, kind, identifiers, requested_at, session, approve_url?, state?, " +
 			"expires_at?, dispatch_scopes, reason}, a secret request's approve_url " +
 			"the broker's own page where it is decided. The caller is the approver; no query names another. A " +
 			"caller Dispatch calls a restricted member is no approver of a secret or of a service's machine login, " +

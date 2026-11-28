@@ -41,8 +41,10 @@ var _ = declareRow(func(s *server) routeRow {
 			"of a secret request or of a service's machine login, is 503 MEMBER_KIND_UNCHECKABLE, writing nothing. " +
 			"Whichever the state, a secret request " +
 			"of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as is an id the broker " +
-			"holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch and keeps " +
-			"no answer from within the hour that showed the caller the project. Deciding " +
+			"holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch: for a " +
+			"request for a secret tagged with a project whatever the broker kept, and for any other unless it keeps " +
+			"an answer from within the hour that showed the caller each project the request's session names or whose " +
+			"issue its reason names. Deciding " +
 			"needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is " +
 			"refused. An approve-only token (the secrets broker's proxy for a person's approvals) may decide, and " +
 			"may dismiss nothing: state dismissed is 403 APPROVE_ONLY_TOKEN. " + brokerRelayText + ".",

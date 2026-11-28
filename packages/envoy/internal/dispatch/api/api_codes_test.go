@@ -102,11 +102,11 @@ func v1CodeMismatches(codes []apicode.Code, listed map[string]bool) []string {
 	return mismatches
 }
 
-// /api/v1 answers every code and status it answered at c8a44f97 and no other but the named
-// exceptions (R3): every constant that renders under /api/v1 renders a pair c8a44f97 wrote, or a
-// later merge on main added, or one of the named exceptions, and every such pair is still some
-// constant's. A v2-only code renders nothing under /api/v1, so a new code reaches a v1 client only
-// as a named exception (v1CodeExceptions).
+// /api/v1 answers every code and status it answered at c8a44f97 and no other but those later
+// merges on main added and the named exceptions (R3): every constant that renders under /api/v1
+// renders a pair c8a44f97 wrote, or a later merge on main added, or one of the named exceptions,
+// and every such pair is still some constant's. A v2-only code renders nothing under /api/v1, so a
+// new code reaches a v1 client only as a named exception (v1CodeExceptions).
 func TestV1CodesAreTheCodesOfC8a44f97(t *testing.T) {
 	listed := readV1Codes(t)
 	for _, mismatch := range v1CodeMismatches(apicode.All(), listed) {

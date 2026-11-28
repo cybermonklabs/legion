@@ -5,14 +5,14 @@ package api
 // one node, and the caller's Inbox threads; a post's corrections, the other two, are
 // v2_threads.go's (correctionPosition). Each is a list with one position field, which its row
 // names (routeRow.Position) and its index entry and description carry: after and before read that
-// field (the references are in created_at order, newest first by default, and in source_seq order
-// only where sort names it; the caller's threads take a position under state=dismissed alone), and
-// a value that is no position of it, or an after above the last one the log has written, is 400
-// POSITION_INVALID naming the parameter and the field. Each takes limit and offset beside them,
-// and answers the envelope with its exact total - but the global event log and the caller's
-// dismissed threads, whose total is null (logPage): counting the global log costs about ten times
-// its page for a reader near the oldest event, and counting the dismissed threads is a count of
-// every thread the caller has ever dismissed.
+// field (the references are in created_at order, newest first, unless sort names another order or,
+// with no sort, an after reads up source_seq and a before alone down it; the caller's threads take
+// a position under state=dismissed alone), and a value that is no position of it, or an after
+// above the last one the log has written, is 400 POSITION_INVALID naming the parameter and the
+// field. Each takes limit and offset beside them, and answers the envelope with its exact total -
+// but the global event log and the caller's dismissed threads, whose total is null (logPage):
+// counting the global log costs about ten times its page for a reader near the oldest event, and
+// counting the dismissed threads is a count of every thread the caller has ever dismissed.
 
 import (
 	"cmp"

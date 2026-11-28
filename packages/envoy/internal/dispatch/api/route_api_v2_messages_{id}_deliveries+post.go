@@ -13,7 +13,8 @@ var _ = declareRow(func(s *server) routeRow {
 		Description: "Retry delivering a targeted message {delivery}: btw, aside or steer (400 MESSAGE_INPUT otherwise); a " +
 			"bearer names its session in actor. It resumes the attempt a stopped send left owed, carrying that attempt's " +
 			"urgency: in the same mode, or in any mode where no session had been resolved for it. An owed attempt already " +
-			"sent to a session in another mode is failed, and the retry opens an attempt of its own, carrying none, as it " +
+			"resolved to a session in another mode is failed, whether or not its send went out, and the retry opens an " +
+			"attempt of its own, carrying none, as it " +
 			"does when none is owed. Answers 201 the attempt as " +
 			"its send settled. A message that targets nobody is 404 MESSAGE_NOT_FOUND, as is an id no message has.",
 		Handler:  s.createMessageDeliveryV2,

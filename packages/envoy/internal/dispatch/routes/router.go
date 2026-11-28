@@ -1069,8 +1069,10 @@ const (
 	// codeAuthStateInvalid is an /auth/callback with no state cookie, or one that does not
 	// verify, has lapsed, or names another sign-in's state.
 	codeAuthStateInvalid = "AUTH_STATE_INVALID"
-	// codeSigninFailed is a code exchange the issuer refused or answered with no usable token;
-	// one it did not answer is SIGNIN_UNAVAILABLE.
+	// codeSigninFailed is a code exchange the token endpoint answered with a 4xx, a 3xx, or a 2xx
+	// that names an error or holds no usable token; one that meets an issuer this process has not
+	// discovered, or that the endpoint could not answer (a 5xx, a 408 or a 429, a cut-off answer,
+	// or no answer), is SIGNIN_UNAVAILABLE (authCallback).
 	codeSigninFailed = "SIGNIN_FAILED"
 	// codeSigninRecordFailed is a sign-in whose person could not be recorded or read back.
 	codeSigninRecordFailed = "SIGNIN_RECORD_FAILED"

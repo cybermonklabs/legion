@@ -44,7 +44,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and "+
 			"the progress of a keyed attempt. A dry run returns the plan without writing. This form answers "+
 			"{issue, changed}; a refusal of the status change carries the changes that committed before it, but a "+
-			"404 ISSUE_NOT_FOUND, and a 401 to a request with no Idempotency-Key, are answered before the options "+
+			"404 ISSUE_NOT_FOUND, a 500 where the issue cannot be read and, to a request with no Idempotency-Key, "+
+			"the 401, 429, 500 or 503 of a credential that does not resolve are answered before the options "+
 			"are read and carry no changed. Closing with include_children "+
 			"requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that "+
 			"takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a "+
@@ -99,8 +100,9 @@ var _ = declareRow(func(s *server) routeRow {
 				// writeStatusChangeRefusal): the keyed layer resolves the caller of a keyed
 				// request, so a credential that does not resolve is refused there at 401, 429 or
 				// 503, and a close's or a reopen's document work refuses at 503. patchIssueV2's
-				// own 404 for a missing issue, and its 401 to a request with no Idempotency-Key,
-				// come before it reads the options and carry none.
+				// own refusals before it reads the options carry none: its 404 for a missing issue,
+				// its 500 where that read fails, and, to a request with no Idempotency-Key, the 401,
+				// 429, 500 or 503 of a credential that does not resolve (requireAuthenticated).
 				{Status: http.StatusConflict, Body: statusChangeRefusal{}},
 				{Status: http.StatusBadRequest, Body: statusChangeRefusal{}},
 				{Status: http.StatusUnauthorized, Body: statusChangeRefusal{}},

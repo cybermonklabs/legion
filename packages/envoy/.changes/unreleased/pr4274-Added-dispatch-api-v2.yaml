@@ -8,9 +8,12 @@ body: |-
   one declared list; a query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`,
   naming the key and every key the route declares; every `POST`, `PATCH`, `PUT` and `DELETE` takes
   an `Idempotency-Key`, and a `PUT` whose whole body equals the object's present state, sent by the
-  caller the object records as having set it (by anyone, for an object that records no setter),
-  answers `200` and writes nothing; a path that names a missing object answers `404` with that
-  object's code; and an unknown path answers `404 NO_ROUTE`. The delivery and Legion routes are
+  caller the object records as having set it (by anyone, for an object that records no setter; for a
+  credential request, by any caller the secrets broker would let decide it), answers `200` and
+  writes nothing; a path that names a missing object answers `404` with that object's code, but a
+  `{session_id}` and a repository's app installation keep `/api/v1`'s answer, and the `PUT` of a
+  plan, of an architecture source and of a step run that names the run's identity makes the object
+  its path names; and an unknown path answers `404 NO_ROUTE`. The delivery and Legion routes are
   the exception:
   `GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`,
   `GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`,

@@ -20,8 +20,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"(https://github.com/<owner>/<repo>/pull/<n>) in a repository it does not resolve to, a linked one's head " +
 			"carrying that repository as repo (owner/name); for an after_merge check {kind: branch, branch, " +
 			"merge_commit?}, merge_commit where Dispatch holds the work's merge on that branch, for the branch the " +
-			"issue's newest merged pull request merged into and the repository's default branch once the work has " +
-			"reached it (with no merged pull request in that repository, its default branch alone; where Dispatch " +
+			"issue's newest merged pull request merged into and the repository's default branch unless Dispatch knows " +
+			"the work has not reached it (with no merged pull request in that repository, its default branch alone; where Dispatch " +
 			"cannot tell which merged last, every merged one's branch and the default branch); for a default_branch " +
 			"check the repository's default branch; each repository in which the issue links a merged pull request " +
 			"adds its own such branches after them, each carrying repo. Where that list is empty the check carries " +
@@ -40,7 +40,7 @@ var _ = declareRow(func(s *server) routeRow {
 			"repo} (at_basis, other_commit, or unknown). A result whose commit the record took to be of a linked " +
 			"repository is decided by that repository: a before_merge one by the pull request heads compared with, and " +
 			"an after_merge or default_branch one by that repository's branches (for after_merge the branch its merged " +
-			"linked pull request merged into, then its default branch once the work has reached it). A basis in a linked repository carries it as " +
+			"linked pull request merged into, then its default branch unless Dispatch knows the work has not reached it). A basis in a linked repository carries it as " +
 			"repo, and an other_commit or unknown answer that repository decided names it as repo, so a reader can " +
 			"tell it from the issue's own repository, which carries none. Each result also carries check_words_moved, " +
 			"and retracted {reason, actor, created_at} where a " +

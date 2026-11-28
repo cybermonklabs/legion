@@ -480,7 +480,8 @@ no refusal codes for them, a query key they do not declare is not refused, and t
 only with `DISPATCH_TEST_HOOKS=1`, keep their `/api/v1` rules the same way.
 
 `/api/v1` is deprecated. Its routes keep their answers but for a few fixes of this release (the
-`unsettled` member a document's text read adds among them), each answer carries a `Link` header
+`unsettled` member a document's text read adds among them), each answer but dev sign-in's
+`421 HOST_MISMATCH` and the redirect of a path that is not clean carries a `Link` header
 (`rel="successor-version"`) naming the `/api/v2` route that answers for it (or `GET /api/v2` for a
 post-freeze `/api/v1` route awaiting its `/api/v2` route, an unknown path, the cookie-origin
 guard's refusal and the `410` after its end), and a deployment ends it on a date it

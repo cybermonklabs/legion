@@ -781,9 +781,10 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	}
 }
 
-// Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
-// and no other route of the /api/v1 table declares a scope: the routes that declare one are
-// exactly those, read from the declarations alone with nothing mounted. The one exception is
+// Every route Dispatch refused a bearer token on before INFRA-1017, and each later row the list
+// below names with its reason, names the `person` scope now, and no other route of the /api/v1
+// table declares a scope: the routes that declare one are exactly the list's, read from the
+// declarations alone with nothing mounted. The one exception is
 // `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's comment has an
 // author of kind session, so a person scope would shut every author of one out of its own edit, and
 // the route holds the caller to that author instead (editComment).

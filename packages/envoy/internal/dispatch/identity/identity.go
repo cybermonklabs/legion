@@ -115,7 +115,7 @@ const signInUnavailableMessage = "the sign-in issuer cannot be reached; try agai
 // person stays signed in, and the first request after the issuer answers is served); and 500
 // IDENTITY_ERROR for anything else. The API's routes answer its NO_IDENTITY and
 // SIGNIN_UNAVAILABLE through their own error writer, in their version, and any other identity
-// error as their 500 INTERNAL_ERROR (writeAuthenticationError); WriteError answers each on the
+// error as their 500 INTERNAL (writeAuthenticationError); WriteError answers each on the
 // /auth routes and the GitHub proxy, and a document socket answers SIGNIN_UNAVAILABLE through it
 // and every other identity error as a plain 401.
 func Refusal(err error) (apicode.Code, string) {

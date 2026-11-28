@@ -1,6 +1,7 @@
 package api
 
 //ci:reads packages/contracts/src/dispatch-api*.ts declaredShapesUnchanged reads each version's module (contractsOf: dispatch-api.ts and dispatch-api-v2.ts), runtime-relative to the repository root (repositoryRoot)
+//ci:reads packages/contracts/schemas/dispatch-openapi*.json committedDocument reads each version's committed OpenAPI document (openAPIDocumentPathOf: dispatch-openapi.json and dispatch-openapi-v2.json), runtime-relative to the repository root (repositoryRoot)
 
 import (
 	"bytes"

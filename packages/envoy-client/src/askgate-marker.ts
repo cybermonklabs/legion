@@ -121,8 +121,8 @@ const MARKDOWN_PATH = /\.(md|markdown)$/i;
  * `notes.md/.`, `notes.md/x/..` and `.md` all do. The path is read only as resolved, so a caller
  * gives the directory the CLI resolves it against. With no name, the path alone decides. A call
  * with neither text nor a path makes an empty document from its name alone, which writes no
- * text, so it is none: pi's gate, which reviews no upload that has neither inline text nor
- * `--path`, reads it the same way.
+ * text, so it is none: pi's gate, which reviews no upload that has neither inline text nor a path
+ * (`--path`, or `--path-file` as its dry run resolves it), reads it the same way.
  *
  * `dispatch artifact` declares an upload `text/markdown` exactly when this answers true
  * (uploadedFile, dispatch-commands/stored-text.ts), so Dispatch stores as a document every upload
