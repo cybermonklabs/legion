@@ -309,6 +309,76 @@ test("a block written in the room anchors in the issue's tree, and a criterion w
   );
 });
 
+// R5 (G2, G3a): a finding is the block whose read id names its lens (`lens/<uuid>#<block>`), as
+// the server reads it (`nodeKind` in `api/issue_tree_kinds.go`, `decodeNodeAddress` in
+// `api/node_address.go`), whatever its supertag: a typed block written as a finding takes the
+// finding's node anchor. A paragraph moved under a lens keeps its own id, so it is no finding: the
+// server refuses a node anchor on it ("names no lens, finding, risk, constraint or result"), and
+// it anchors in the issue's `tree` or in its document by its block. Read on a preview of
+// 45d57282343f: the page sent a node anchor on a moved paragraph (400 INVALID_ANCHOR), a block
+// anchor in the issue's `tree` on a callout finding (400 INVALID_ANCHOR), and drew no control on a
+// requirement finding, while the server took a node anchor on both findings (201).
+test("a finding is read by its lens id, and a paragraph moved under a lens by its own", () => {
+  const words = { block: null, occurrence: 0, quote: "words" } as const;
+  const lens = { first_line: "Verdict", id: "lens-uuid", kind: "lens", supertag: "lens" };
+  const findings = ["callout", "requirement", "plan_task", "reading"].map((supertag) => ({
+    block_id: `f-${supertag}`,
+    id: `lens/lens-uuid#f-${supertag}`,
+    kind: "block",
+    parent: lens,
+    supertag,
+    visibility: "project" as const,
+  }));
+  for (const finding of findings) {
+    const write = writeFor(subjectOf(finding, "CORE-1"));
+    expect(write, `a finding written as a ${finding.supertag} takes the finding's write`).toEqual({
+      gate: "NODE_ANCHOR",
+      issue: "CORE-1",
+      place: "item",
+      request: "node",
+    });
+    if (write === null) continue;
+    expect(
+      composerAddressOf(write, { ...finding, tree: "tree-1" }, words),
+      `a finding written as a ${finding.supertag} is anchored on its node`
+    ).toEqual({ anchor: { node: finding.id, occurrence: 0, quote: "words" }, replyTo: null });
+  }
+  const moved = {
+    block_id: "p9",
+    id: "CORE-1/tree#p9",
+    kind: "block",
+    parent: lens,
+    supertag: "block",
+    visibility: "project" as const,
+  };
+  const movedWrite = writeFor(subjectOf(moved, "CORE-1"));
+  expect(movedWrite, "a room's paragraph moved under a lens takes the room's write").toEqual({
+    gate: "TREE_ARTIFACT_ANCHOR",
+    issue: "CORE-1",
+    place: "room",
+    request: "tree_block",
+  });
+  if (movedWrite !== null) {
+    expect(
+      composerAddressOf(movedWrite, { ...moved, tree: "tree-1" }, words),
+      "a room's paragraph moved under a lens anchors in the issue's tree by its block"
+    ).toEqual({
+      anchor: { artifact: "tree-1", block_id: "p9", occurrence: 0, quote: "words" },
+      replyTo: null,
+    });
+  }
+  const movedInDocument = {
+    ...moved,
+    block_id: "p8",
+    document: { artifact_id: "spec-1", position: 4, slug: "spec" },
+    id: "CORE-1/spec#p8",
+  };
+  expect(
+    writeFor(subjectOf(movedInDocument, "CORE-1")),
+    "a document's paragraph moved under a lens takes the document's write"
+  ).toEqual({ gate: "COMPOSER", issue: "CORE-1", place: "document", request: "block" });
+});
+
 interface RecordedNodeQuote {
   readonly item: string;
   readonly text: string;
