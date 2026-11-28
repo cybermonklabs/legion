@@ -155,34 +155,37 @@ const returnTo = z
   .int({ error: RETURN_TO_REFUSAL })
   .min(1, { error: RETURN_TO_REFUSAL });
 
-/** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
- * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
- * tool refuses an unknown field in, a phase op's and pi-legion's own operations' alike. */
-export const unknownFieldsRefusal = (
+/**
+ * The line a `legion` tool's answer starts with where the call named fields its operation `op`
+ * does not take: each such field of `input`, then once the fields `op` takes (`takes`), so the
+ * agent's next call can leave the rest out. Undefined for a call that names no such field. The
+ * operation runs with the fields it takes alone and sends no other, so this line is how the agent
+ * learns of each field it sent that the operation did not use. A host starts the answer of every
+ * call that ran with it, a phase op's and pi-legion's own operations' alike; a refused call ran
+ * nothing, and its refusal is the answer.
+ */
+export function unusedFieldsLine(
   op: string,
-  refused: readonly string[],
+  input: Readonly<Record<string, unknown>>,
   takes: readonly string[]
-): string =>
-  [
-    ...refused.map((field) => `${op} does not accept field "${field}"`),
-    `it takes ${takes.length === 0 ? "none" : takes.join(", ")}`,
-  ].join("; ");
+): string | undefined {
+  const unused = Object.keys(input).filter((field) => field !== "op" && !takes.includes(field));
+  if (unused.length === 0) return undefined;
+  const named = unused.map((field) => `"${field}"`).join(", ");
+  const kind = unused.length === 1 ? "field" : "fields";
+  return `${op} did not use ${kind} ${named}, which it does not take; it takes ${takes.length === 0 ? "none" : takes.join(", ")}`;
+}
 
-/** One operation's arguments: `op` and `shape`, and nothing else. */
+/** One operation's arguments: `op` and `shape`. A field outside them is left out of what it
+ * parses, so no operation reads or sends one, and the host's answer names it
+ * (`unusedFieldsLine`). */
 const operation = <Op extends PhaseOp, Shape extends z.ZodRawShape>(op: Op, shape: Shape) =>
-  z.strictObject(
-    { op: z.literal(op), ...shape },
-    {
-      error: (issue) =>
-        issue.code === "unrecognized_keys"
-          ? unknownFieldsRefusal(op, issue.keys, Object.keys(shape))
-          : undefined,
-    }
-  );
+  z.object({ op: z.literal(op), ...shape });
 
 /**
  * The phase ops' arguments, `op` choosing the operation: what `executePhaseOp` accepts on every
- * host, refusing a call whole before any daemon request, each problem named in the tool's error.
+ * host, refusing a call whole before any daemon request, each problem named in the tool's error,
+ * and leaving out each field its operation does not take.
  */
 export const PhaseOpArguments = z.discriminatedUnion(
   "op",
@@ -262,6 +265,16 @@ export const PhaseOpArguments = z.discriminatedUnion(
       issue.code === "invalid_union" ? `op is one of ${PHASE_OPS.join(", ")}` : undefined,
   }
 );
+
+const fieldsByOp: Partial<Record<PhaseOp, readonly string[]>> = {};
+for (const option of PhaseOpArguments.options) {
+  fieldsByOp[option.shape.op.value] = Object.keys(option.shape).filter((field) => field !== "op");
+}
+
+/** The fields each phase op takes, its `PhaseOpArguments` member's own but `op`, in the order the
+ * member declares them: what a host names a call's other fields against (`unusedFieldsLine`).
+ * Built from the members, one for each op of `PHASE_OPS`. */
+export const PHASE_OP_FIELDS = fieldsByOp as Readonly<Record<PhaseOp, readonly string[]>>;
 
 /** Every key a member of a union has. */
 type KeysOf<T> = T extends unknown ? keyof T : never;
@@ -358,7 +371,8 @@ export const STALE_ENTRY_INSTRUCTION =
   "record, commit or verdict";
 
 /**
- * The `legion` tool's description on every host, one template: what the tool is, then `before`,
+ * The `legion` tool's description on every host, one template: what the tool is and what it does
+ * with a field an operation does not take (`unusedFieldsLine`), then `before`,
  * then `handoff_complete`'s contract, then `after`, then where a question for another role goes,
  * `envoyPublish` being the host's name for Envoy's publish tool. `before` and `after` are whole
  * sentences, each ending in a space: the host's sentences on its other operations, and on
@@ -372,6 +386,8 @@ export function legionToolDescription(host: {
 }): string {
   return (
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
+    "An operation runs with the fields it takes and sends no other field: when a call that names another runs, its answer starts " +
+    "with a line naming each field the operation did not use and the fields it takes. " +
     (host.before ?? "") +
     "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
     "the daemon accepts a completion only from the role working the issue's current phase, " +
@@ -570,12 +586,13 @@ export async function readBuild(runtime: {
  * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
  * `request_backward_move`, this process's build and the daemon's stated contract for
  * `read_build`, and `{}` for `ready_for_update`, or `{ note }` when its branch-head lookup
- * failed. A refusal throws before any write, minting nothing and posting nothing: each problem
- * `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named first,
- * then a root architect's completion,
- * then each problem with the operation's own fields, a lone plan rating or reason, an invalid
+ * failed. A refusal throws before any write, minting nothing and posting nothing: a root
+ * architect's completion, then each problem `PhaseOpArguments` finds with the operation's own
+ * fields, joined by `; `, then a lone plan rating or reason, an invalid
  * verdict, a phase call's pending or wake_at without check_opened_at, a named
  * report's return_to, the issue a completion or move names, or a refused handoff report.
+ * A field the operation does not take is left out, read nowhere and sent nowhere: the host's
+ * answer names it (`unusedFieldsLine`), and the call runs as it would without it.
  * A daemon refusal throws its code and sentence. Only check_opened_at selects a look report:
  * it goes straight to the daemon with no record or commit lookup. A step completion reads the
  * issue's phase to find its handoff, never to decide the call's meaning. The daemon decides
@@ -586,10 +603,6 @@ export async function executePhaseOp(
   input: unknown
 ): Promise<Readonly<Record<string, unknown>>> {
   const { daemon, claim } = runtime;
-  const parsed = PhaseOpArguments.safeParse(input);
-  const issues = parsed.success ? [] : parsed.error.issues;
-  const unknownFields = issues.filter((issue) => issue.code === "unrecognized_keys");
-  const fieldProblems = issues.filter((issue) => issue.code !== "unrecognized_keys");
   const rootCompletion =
     typeof input === "object" &&
     input !== null &&
@@ -597,13 +610,10 @@ export async function executePhaseOp(
     input.op === "handoff_complete" &&
     claim.role === "architect" &&
     claim.issue === claim.tree;
-  if (rootCompletion) {
-    throw new Error(
-      [...unknownFields.map((issue) => issue.message), ROOT_COMPLETION_REFUSAL].join("; ")
-    );
-  }
+  if (rootCompletion) throw new Error(ROOT_COMPLETION_REFUSAL);
+  const parsed = PhaseOpArguments.safeParse(input);
   if (!parsed.success) {
-    throw new Error([...unknownFields, ...fieldProblems].map((issue) => issue.message).join("; "));
+    throw new Error(parsed.error.issues.map((issue) => issue.message).join("; "));
   }
   const args = parsed.data;
   switch (args.op) {

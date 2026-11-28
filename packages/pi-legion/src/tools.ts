@@ -31,11 +31,12 @@ import {
   isPhaseOp,
   legionToolDescription,
   mintClaimGrant,
+  PHASE_OP_FIELDS,
   PHASE_OP_SENTENCES,
   phaseOpParameters,
   pluginBuildOf,
   readBuild,
-  unknownFieldsRefusal,
+  unusedFieldsLine,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
@@ -133,10 +134,9 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   ],
 };
 
-/** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'.
- * `read_build` is a phase op and has a line here too: a controller session runs it on this
- * file's own branch rather than through `executePhaseOp`, so this is where its one check that
- * it takes no field stands. */
+/** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'
+ * (`PHASE_OP_FIELDS`) on every session, the controller's `read_build` among them, which it runs on
+ * this file's own branch rather than through `executePhaseOp`. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step", "basis", "basisVersion", "reason"],
   register_plan: ["issue", "artifactId", "version"],
@@ -146,7 +146,6 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
   rerun_child: ["issue"],
-  read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
   replace_pod: ["issue"],
@@ -682,20 +681,38 @@ function giveUpSelection(
   return { consumer, throughSeq };
 }
 
-/** Refuses every field `operation` does not take, in the phase ops' wording
- * (`unknownFieldsRefusal`). A `reason` refused on rerun_child also says where its why goes:
- * agents send one there, and the daemon keeps no why for it. */
-function assertOperationInput(parameters: Record<string, unknown>, operation: string): void {
-  const fields = OPERATION_FIELDS[operation];
+/** The fields `operation` takes: a phase op's `PHASE_OP_FIELDS` on every session, and every other
+ * operation's `OPERATION_FIELDS`. */
+function fieldsOf(operation: string): readonly string[] {
+  const fields = isPhaseOp(operation) ? PHASE_OP_FIELDS[operation] : OPERATION_FIELDS[operation];
   if (fields === undefined) throw new Error(`Unsupported legion operation: ${operation}`);
-  const refused = Object.keys(parameters).filter((name) => name !== "op" && !fields.includes(name));
-  if (refused.length === 0) return;
-  const refusal = unknownFieldsRefusal(operation, refused, fields);
-  throw new Error(
-    operation === "rerun_child" && refused.includes("reason")
-      ? `${refusal}. Say why in a dispatch comment on the child`
-      : refusal
-  );
+  return fields;
+}
+
+/** The first line of the answer of a call that names a field `operation` does not take, in the
+ * phase ops' wording (`unusedFieldsLine`), or undefined for a call that names none. A `reason`
+ * sent to rerun_child also says where its why goes: agents send one there, and the daemon keeps
+ * no why for it. */
+function unusedLine(
+  parameters: Record<string, unknown>,
+  operation: string,
+  takes: readonly string[]
+): string | undefined {
+  const line = unusedFieldsLine(operation, parameters, takes);
+  if (line === undefined) return undefined;
+  return operation === "rerun_child" && "reason" in parameters
+    ? `${line}. Say why in a dispatch comment on the child`
+    : line;
+}
+
+/** `result` with `line` as the first line of its text. */
+function startingWith(line: string, result: ToolResult): ToolResult {
+  const [first, ...rest] = result.content;
+  const content =
+    first?.type === "text"
+      ? [{ ...first, text: `${line}\n${first.text}` }, ...rest]
+      : [{ type: "text" as const, text: line }, ...result.content];
+  return { ...result, content };
 }
 
 /** The ancestor's document a register_gate basis names: its artifact id, which the daemon takes as
@@ -823,7 +840,9 @@ const OPEN_BLOCKS_UNDER_A_BASIS = {
  * `handoff_complete` is refused here only for the root architect's session, and finds what it
  * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
  * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
- * operation. The operations of `OPERATIONS.controller` belong to the controller. */
+ * operation. The operations of `OPERATIONS.controller` belong to the controller. Every operation
+ * runs with the fields it takes alone (`fieldsOf`), and the answer of a call that named another
+ * starts with a line naming each one (`unusedFieldsLine`). */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -868,6 +887,299 @@ export function createLegionTool(deps: {
     dispatch,
     restartClock,
   } = deps;
+  /** Runs `operation` for `active` with `parameters`, the fields the operation takes and no
+   * other, and answers its result; a refusal throws. */
+  async function runOperation(
+    active: LegionToolSession,
+    operation: string,
+    parameters: Record<string, unknown>,
+    restart: DaemonRestartRetry,
+    context: SessionContext
+  ): Promise<ToolResult> {
+    if (active.kind !== "controller" && isPhaseOp(operation)) {
+      const answer = await executePhaseOp(
+        { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
+        parameters
+      );
+      // `ready_for_update` answers the pod's update message, and the worker then waits for its
+      // process to be replaced rather than working, so the turn it ends after answering earns
+      // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
+      if (operation === "ready_for_update") onUpdateAnswered(context);
+      return jsonSuccess(answer);
+    }
+    const client = daemon();
+    if (active.kind === "controller") {
+      // A controller session holds no claim, so it cannot reach `executePhaseOp`, which
+      // mints from one. It answers the same values here: this build's package, version and
+      // contract, and the contract the daemon states on the health route.
+      if (operation === "read_build") {
+        return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
+      }
+      if (operation === "read_state") return readState(await client.state(), parameters);
+      if (isAgentAction(operation)) {
+        // Validated whole before its grant is minted with the registration's secret. The
+        // daemon decides which agents it reaches.
+        const issue = requiredString(parameters, operation, "issue");
+        const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
+        if (role === undefined) {
+          throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
+        }
+        const { grantId } = await controllerGrant(active.sessionID);
+        return await agentAction(client, operation, { grantId, issue, role });
+      }
+      // The project's pause and its resume name no issue: the daemon acts on its own project.
+      // Each is validated whole before its grant is minted, and each answer is the daemon's
+      // own: the pause it began, or the pause it ended with how many held rows it let out.
+      if (operation === "pause") {
+        const reason = requiredString(parameters, operation, "reason");
+        const { grantId } = await controllerGrant(active.sessionID);
+        return jsonSuccess(await client.projectPause({ grantId, reason }));
+      }
+      if (operation === "resume") {
+        const { grantId } = await controllerGrant(active.sessionID);
+        return jsonSuccess(await client.projectResume({ grantId }));
+      }
+      // The P0 bound's set and clear name no issue either, and are validated whole before the
+      // grant is minted; each answer is the daemon's own: the bound in force after the change.
+      if (operation === "set_p0_bound" || operation === "clear_p0_bound") {
+        const reason = requiredString(parameters, operation, "reason");
+        if (operation === "clear_p0_bound") {
+          const { grantId } = await controllerGrant(active.sessionID);
+          return jsonSuccess(await client.p0BoundClear({ grantId, reason }));
+        }
+        const { bound, unbounded } = parameters;
+        if ((bound === undefined) === (unbounded !== true)) {
+          throw new Error(
+            "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both"
+          );
+        }
+        const checked = bound === undefined ? undefined : LegionP0BoundNumber.safeParse(bound);
+        if (checked !== undefined && !checked.success) {
+          throw new Error("set_p0_bound's bound is a whole number from 1 to 2147483647");
+        }
+        const { grantId } = await controllerGrant(active.sessionID);
+        return jsonSuccess(
+          await client.p0Bound(
+            checked === undefined
+              ? { grantId, unbounded: true, reason }
+              : { grantId, bound: checked.data, reason }
+          )
+        );
+      }
+      // The replay and the discard of the intake's give-ups name no issue either. Each is
+      // validated whole, its selection and the discard's reason, before its grant is minted,
+      // and each answer is the daemon's own: each record the replay took with how it ended and
+      // how many are left, or the ids the discard closed.
+      if (operation === "replay_give_up") {
+        const selection = giveUpSelection(parameters, operation);
+        const { grantId } = await controllerGrant(active.sessionID);
+        return jsonSuccess(await client.intakeReplay({ grantId, ...selection }));
+      }
+      if (operation === "discard_give_up") {
+        const selection = giveUpSelection(parameters, operation);
+        const reason = requiredString(parameters, operation, "reason");
+        const { grantId } = await controllerGrant(active.sessionID);
+        return jsonSuccess(await client.intakeDiscard({ grantId, ...selection, reason }));
+      }
+      // replace_pod and set_status, each validated whole before its grant is minted. Every
+      // other operation of the controller's is answered above, so one that reaches here is
+      // named, never run as either.
+      if (operation === "replace_pod") {
+        // The daemon decides whose pod it opens a round over, and answers the round whole.
+        const issue = requiredString(parameters, operation, "issue");
+        const { grantId } = await controllerGrant(active.sessionID);
+        return jsonSuccess(await client.issuePodUpdate({ grantId, issue }));
+      }
+      if (operation !== "set_status") throw new Error(`Unsupported legion operation: ${operation}`);
+      const issue = requiredString(parameters, operation, "issue");
+      const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
+      if (status === undefined) {
+        throw new Error(`set_status requires status ${ISSUE_STATUSES.join(", ")}`);
+      }
+      const { grantId } = await controllerGrant(active.sessionID);
+      await client.issueStatus({ grantId, issue, status });
+      return jsonSuccess({});
+    }
+    switch (operation) {
+      case "register_gate": {
+        const parsedVersion = LegionGateRegisterRequest.shape.version.safeParse(parameters.version);
+        if (!parsedVersion.success) {
+          throw new Error("register_gate requires a positive integer version");
+        }
+        const version = parsedVersion.data;
+        // The gate is the tree root's, registered by the root's own architect, as the daemon
+        // requires: anyone else is refused before a lookup could answer for the wrong issue.
+        const issue = requiredString(parameters, operation, "issue");
+        if (active.issue !== active.tree) {
+          throw new Error(
+            `the design gate belongs to the tree root ${active.tree}; its root architect registers it`
+          );
+        }
+        if (issue !== active.issue) {
+          throw new Error(
+            `the design gate belongs to the tree root ${active.tree}; register it there`
+          );
+        }
+        const reference = requiredString(parameters, operation, "artifactId");
+        // The step the document is for; a deployment that gates one step takes the
+        // registration without it, and one that gates several refuses it.
+        const named = LegionGateRegisterRequest.shape.step.safeParse(parameters.step);
+        if (!named.success) {
+          throw new Error(`register_gate's step is one of ${GATED_STEPS.join(", ")}`);
+        }
+        const step = named.data;
+        // A basis is checked whole before anything is read, Dispatch or the daemon.
+        const basis = registrationBasis(parameters);
+        let artifactId: string;
+        let basisFields: { basisArtifactId?: string; basisVersion?: number; reason?: string } = {};
+        if (basis === undefined) {
+          artifactId = await documentIdOf("register_gate", dispatch, issue, reference);
+        } else {
+          const board = await dispatch();
+          if (board === undefined) {
+            throw new Error(
+              `register_gate cannot register ${issue} on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open decision block`
+            );
+          }
+          // A basis opens the step with no person's review of the root's own document, so a
+          // question that document still puts to a person refuses the call here, with the
+          // test `dispatch request-approval` makes, and the daemon is asked nothing.
+          const own = await lookUpDocument("register_gate", issue, reference, () =>
+            resolveIssueDocument(board, issue, reference)
+          );
+          await refuseOpenDecisionBlocks(board, own, OPEN_BLOCKS_UNDER_A_BASIS);
+          artifactId = own.artifact.id;
+          // A reference names its own issue, the ancestor's, which is where it is looked up, an
+          // artifact id it carries as well as a slug: a document of another issue is refused,
+          // naming the reference and the issue. A bare artifact id names no issue, and goes to
+          // the daemon as it is.
+          const ancestor = basis.document;
+          const basisArtifactId =
+            "id" in ancestor
+              ? ancestor.id
+              : await lookUpDocument("register_gate", ancestor.issue, ancestor.document, () =>
+                  resolveIssueDocumentId(board, ancestor.issue, ancestor.document)
+                );
+          basisFields = { basisArtifactId, basisVersion: basis.version, reason: basis.reason };
+        }
+        // The fact is keyed by the gate's issue, generation, step, document, version and
+        // Dispatch sequence, and by its basis document, version and pending state; a repeat
+        // after the sequence moved is a re-registration the gate absorbs.
+        await retryWhileDaemonRestarts(
+          "register_gate",
+          async () =>
+            client.gateRegister({
+              grantId: await mintClaimGrant(client, active),
+              issue,
+              artifactId,
+              version,
+              ...(step === undefined ? {} : { step }),
+              ...basisFields,
+            }),
+          restart
+        );
+        return jsonSuccess({});
+      }
+      case "register_plan": {
+        // The owner gives the plan of any issue of its tree, a child the daemon has not
+        // recorded yet included; which issues those are is the daemon's to hold
+        // (ISSUE_OUTSIDE_TREE), so the call is checked whole here and nothing more.
+        const issue = requiredString(parameters, operation, "issue");
+        const reference = requiredString(parameters, operation, "artifactId");
+        const version = parameters.version;
+        if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
+          throw new Error("register_plan requires a positive integer version");
+        }
+        const artifactId = await documentIdOf("register_plan", dispatch, issue, reference);
+        // The daemon judges every give against its store: a repeat of a registration it
+        // applied is answered as taken while that version is in force, and writes nothing.
+        const taken = await retryWhileDaemonRestarts(
+          "register_plan",
+          async () =>
+            client.planRegister({
+              grantId: await mintClaimGrant(client, active),
+              issue,
+              artifactId,
+              version,
+            }),
+          restart
+        );
+        return jsonSuccess(taken);
+      }
+      case "stop_task": {
+        const issue = requiredString(parameters, operation, "issue");
+        const task = requiredString(parameters, operation, "task");
+        // A repeat after a stop that landed finds the task stopped and changes nothing.
+        await retryWhileDaemonRestarts(
+          "stop_task",
+          async () =>
+            client.taskStop({ grantId: await mintClaimGrant(client, active), issue, task }),
+          restart
+        );
+        return jsonSuccess({});
+      }
+      case "release_children": {
+        const issues = parameters.issues;
+        if (!Array.isArray(issues) || !issues.every((issue) => typeof issue === "string")) {
+          throw new Error("release_children requires issues");
+        }
+        const grantId = await mintClaimGrant(client, active);
+        return jsonSuccess(await client.waveRelease({ grantId, issues }));
+      }
+      case "retry_or_escalate": {
+        const decision = parameters.decision;
+        if (decision !== "retry" && decision !== "escalate") {
+          throw new Error("retry_or_escalate requires decision retry or escalate");
+        }
+        // The reason is optional: one given is written into the task the restarted role is
+        // given and into the daemon's own log line for the release, and a call that names
+        // none is unchanged.
+        const reason =
+          parameters.reason === undefined
+            ? {}
+            : { reason: requiredString(parameters, operation, "reason") };
+        const grantId = await mintClaimGrant(client, active);
+        await client.phaseRetry({
+          grantId,
+          issue: requiredString(parameters, operation, "issue"),
+          decision,
+          ...reason,
+        });
+        return jsonSuccess({});
+      }
+      case "sign_off": {
+        // A repeat after a sign-off that landed finds the issue out of accepting, at its task's next
+        // step or in retro, and changes nothing.
+        const issue = requiredString(parameters, operation, "issue");
+        await retryWhileDaemonRestarts(
+          "sign_off",
+          async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+          restart
+        );
+        return jsonSuccess({});
+      }
+      case "close_root": {
+        const grantId = await mintClaimGrant(client, active);
+        await client.rootClose({
+          grantId,
+          issue: requiredString(parameters, operation, "issue"),
+          reason: requiredString(parameters, operation, "reason"),
+        });
+        return jsonSuccess({});
+      }
+      case "rerun_child": {
+        const grantId = await mintClaimGrant(client, active);
+        await client.childRerun({
+          grantId,
+          issue: requiredString(parameters, operation, "issue"),
+        });
+        return jsonSuccess({});
+      }
+      default:
+        throw new Error(`Unsupported legion operation: ${operation}`);
+    }
+  }
+
   return {
     name: "legion",
     label: "legion",
@@ -1180,293 +1492,21 @@ export function createLegionTool(deps: {
             `${operation} is not available to ${active.kind === "architect" ? "an" : "a"} ${active.kind} session`
           );
         }
-        if (active.kind !== "controller" && isPhaseOp(operation)) {
-          const answer = await executePhaseOp(
-            { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
-            parameters
-          );
-          // `ready_for_update` answers the pod's update message, and the worker then waits for its
-          // process to be replaced rather than working, so the turn it ends after answering earns
-          // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
-          if (operation === "ready_for_update") onUpdateAnswered(context);
-          return jsonSuccess(answer);
-        }
-        assertOperationInput(parameters, operation);
-        const client = daemon();
-        if (active.kind === "controller") {
-          // A controller session holds no claim, so it cannot reach `executePhaseOp`, which
-          // mints from one. It answers the same values here: this build's package, version and
-          // contract, and the contract the daemon states on the health route.
-          if (operation === "read_build") {
-            return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
-          }
-          if (operation === "read_state") return readState(await client.state(), parameters);
-          if (isAgentAction(operation)) {
-            // Validated whole before its grant is minted with the registration's secret. The
-            // daemon decides which agents it reaches.
-            const issue = requiredString(parameters, operation, "issue");
-            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
-            if (role === undefined) {
-              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
-            }
-            const { grantId } = await controllerGrant(active.sessionID);
-            return await agentAction(client, operation, { grantId, issue, role });
-          }
-          // The project's pause and its resume name no issue: the daemon acts on its own project.
-          // Each is validated whole before its grant is minted, and each answer is the daemon's
-          // own: the pause it began, or the pause it ended with how many held rows it let out.
-          if (operation === "pause") {
-            const reason = requiredString(parameters, operation, "reason");
-            const { grantId } = await controllerGrant(active.sessionID);
-            return jsonSuccess(await client.projectPause({ grantId, reason }));
-          }
-          if (operation === "resume") {
-            const { grantId } = await controllerGrant(active.sessionID);
-            return jsonSuccess(await client.projectResume({ grantId }));
-          }
-          // The P0 bound's set and clear name no issue either, and are validated whole before the
-          // grant is minted; each answer is the daemon's own: the bound in force after the change.
-          if (operation === "set_p0_bound" || operation === "clear_p0_bound") {
-            const reason = requiredString(parameters, operation, "reason");
-            if (operation === "clear_p0_bound") {
-              const { grantId } = await controllerGrant(active.sessionID);
-              return jsonSuccess(await client.p0BoundClear({ grantId, reason }));
-            }
-            const { bound, unbounded } = parameters;
-            if ((bound === undefined) === (unbounded !== true)) {
-              throw new Error(
-                "set_p0_bound requires bound, a whole number from 1 to 2147483647, or unbounded true, not both"
-              );
-            }
-            const checked = bound === undefined ? undefined : LegionP0BoundNumber.safeParse(bound);
-            if (checked !== undefined && !checked.success) {
-              throw new Error("set_p0_bound's bound is a whole number from 1 to 2147483647");
-            }
-            const { grantId } = await controllerGrant(active.sessionID);
-            return jsonSuccess(
-              await client.p0Bound(
-                checked === undefined
-                  ? { grantId, unbounded: true, reason }
-                  : { grantId, bound: checked.data, reason }
-              )
-            );
-          }
-          // The replay and the discard of the intake's give-ups name no issue either. Each is
-          // validated whole, its selection and the discard's reason, before its grant is minted,
-          // and each answer is the daemon's own: each record the replay took with how it ended and
-          // how many are left, or the ids the discard closed.
-          if (operation === "replay_give_up") {
-            const selection = giveUpSelection(parameters, operation);
-            const { grantId } = await controllerGrant(active.sessionID);
-            return jsonSuccess(await client.intakeReplay({ grantId, ...selection }));
-          }
-          if (operation === "discard_give_up") {
-            const selection = giveUpSelection(parameters, operation);
-            const reason = requiredString(parameters, operation, "reason");
-            const { grantId } = await controllerGrant(active.sessionID);
-            return jsonSuccess(await client.intakeDiscard({ grantId, ...selection, reason }));
-          }
-          // replace_pod and set_status, each validated whole before its grant is minted. Every
-          // other operation of the controller's is answered above, so one that reaches here is
-          // named, never run as either.
-          if (operation === "replace_pod") {
-            // The daemon decides whose pod it opens a round over, and answers the round whole.
-            const issue = requiredString(parameters, operation, "issue");
-            const { grantId } = await controllerGrant(active.sessionID);
-            return jsonSuccess(await client.issuePodUpdate({ grantId, issue }));
-          }
-          if (operation !== "set_status")
-            throw new Error(`Unsupported legion operation: ${operation}`);
-          const issue = requiredString(parameters, operation, "issue");
-          const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
-          if (status === undefined) {
-            throw new Error(`set_status requires status ${ISSUE_STATUSES.join(", ")}`);
-          }
-          const { grantId } = await controllerGrant(active.sessionID);
-          await client.issueStatus({ grantId, issue, status });
-          return jsonSuccess({});
-        }
-        switch (operation) {
-          case "register_gate": {
-            const parsedVersion = LegionGateRegisterRequest.shape.version.safeParse(
-              parameters.version
-            );
-            if (!parsedVersion.success) {
-              throw new Error("register_gate requires a positive integer version");
-            }
-            const version = parsedVersion.data;
-            // The gate is the tree root's, registered by the root's own architect, as the daemon
-            // requires: anyone else is refused before a lookup could answer for the wrong issue.
-            const issue = requiredString(parameters, operation, "issue");
-            if (active.issue !== active.tree) {
-              throw new Error(
-                `the design gate belongs to the tree root ${active.tree}; its root architect registers it`
-              );
-            }
-            if (issue !== active.issue) {
-              throw new Error(
-                `the design gate belongs to the tree root ${active.tree}; register it there`
-              );
-            }
-            const reference = requiredString(parameters, operation, "artifactId");
-            // The step the document is for; a deployment that gates one step takes the
-            // registration without it, and one that gates several refuses it.
-            const named = LegionGateRegisterRequest.shape.step.safeParse(parameters.step);
-            if (!named.success) {
-              throw new Error(`register_gate's step is one of ${GATED_STEPS.join(", ")}`);
-            }
-            const step = named.data;
-            // A basis is checked whole before anything is read, Dispatch or the daemon.
-            const basis = registrationBasis(parameters);
-            let artifactId: string;
-            let basisFields: { basisArtifactId?: string; basisVersion?: number; reason?: string } =
-              {};
-            if (basis === undefined) {
-              artifactId = await documentIdOf("register_gate", dispatch, issue, reference);
-            } else {
-              const board = await dispatch();
-              if (board === undefined) {
-                throw new Error(
-                  `register_gate cannot register ${issue} on a basis: this pane has no Dispatch configured, where the tool reads the root's document for an open decision block`
-                );
-              }
-              // A basis opens the step with no person's review of the root's own document, so a
-              // question that document still puts to a person refuses the call here, with the
-              // test `dispatch request-approval` makes, and the daemon is asked nothing.
-              const own = await lookUpDocument("register_gate", issue, reference, () =>
-                resolveIssueDocument(board, issue, reference)
-              );
-              await refuseOpenDecisionBlocks(board, own, OPEN_BLOCKS_UNDER_A_BASIS);
-              artifactId = own.artifact.id;
-              // A reference names its own issue, the ancestor's, which is where it is looked up, an
-              // artifact id it carries as well as a slug: a document of another issue is refused,
-              // naming the reference and the issue. A bare artifact id names no issue, and goes to
-              // the daemon as it is.
-              const ancestor = basis.document;
-              const basisArtifactId =
-                "id" in ancestor
-                  ? ancestor.id
-                  : await lookUpDocument("register_gate", ancestor.issue, ancestor.document, () =>
-                      resolveIssueDocumentId(board, ancestor.issue, ancestor.document)
-                    );
-              basisFields = { basisArtifactId, basisVersion: basis.version, reason: basis.reason };
-            }
-            // The fact is keyed by the gate's issue, generation, step, document, version and
-            // Dispatch sequence, and by its basis document, version and pending state; a repeat
-            // after the sequence moved is a re-registration the gate absorbs.
-            await retryWhileDaemonRestarts(
-              "register_gate",
-              async () =>
-                client.gateRegister({
-                  grantId: await mintClaimGrant(client, active),
-                  issue,
-                  artifactId,
-                  version,
-                  ...(step === undefined ? {} : { step }),
-                  ...basisFields,
-                }),
-              restart
-            );
-            return jsonSuccess({});
-          }
-          case "register_plan": {
-            // The owner gives the plan of any issue of its tree, a child the daemon has not
-            // recorded yet included; which issues those are is the daemon's to hold
-            // (ISSUE_OUTSIDE_TREE), so the call is checked whole here and nothing more.
-            const issue = requiredString(parameters, operation, "issue");
-            const reference = requiredString(parameters, operation, "artifactId");
-            const version = parameters.version;
-            if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
-              throw new Error("register_plan requires a positive integer version");
-            }
-            const artifactId = await documentIdOf("register_plan", dispatch, issue, reference);
-            // The daemon judges every give against its store: a repeat of a registration it
-            // applied is answered as taken while that version is in force, and writes nothing.
-            const taken = await retryWhileDaemonRestarts(
-              "register_plan",
-              async () =>
-                client.planRegister({
-                  grantId: await mintClaimGrant(client, active),
-                  issue,
-                  artifactId,
-                  version,
-                }),
-              restart
-            );
-            return jsonSuccess(taken);
-          }
-          case "stop_task": {
-            const issue = requiredString(parameters, operation, "issue");
-            const task = requiredString(parameters, operation, "task");
-            // A repeat after a stop that landed finds the task stopped and changes nothing.
-            await retryWhileDaemonRestarts(
-              "stop_task",
-              async () =>
-                client.taskStop({ grantId: await mintClaimGrant(client, active), issue, task }),
-              restart
-            );
-            return jsonSuccess({});
-          }
-          case "release_children": {
-            const issues = parameters.issues;
-            if (!Array.isArray(issues) || !issues.every((issue) => typeof issue === "string")) {
-              throw new Error("release_children requires issues");
-            }
-            const grantId = await mintClaimGrant(client, active);
-            return jsonSuccess(await client.waveRelease({ grantId, issues }));
-          }
-          case "retry_or_escalate": {
-            const decision = parameters.decision;
-            if (decision !== "retry" && decision !== "escalate") {
-              throw new Error("retry_or_escalate requires decision retry or escalate");
-            }
-            // The reason is optional: one given is written into the task the restarted role is
-            // given and into the daemon's own log line for the release, and a call that names
-            // none is unchanged.
-            const reason =
-              parameters.reason === undefined
-                ? {}
-                : { reason: requiredString(parameters, operation, "reason") };
-            const grantId = await mintClaimGrant(client, active);
-            await client.phaseRetry({
-              grantId,
-              issue: requiredString(parameters, operation, "issue"),
-              decision,
-              ...reason,
-            });
-            return jsonSuccess({});
-          }
-          case "sign_off": {
-            // A repeat after a sign-off that landed finds the issue out of accepting, at its task's next
-            // step or in retro, and changes nothing.
-            const issue = requiredString(parameters, operation, "issue");
-            await retryWhileDaemonRestarts(
-              "sign_off",
-              async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
-              restart
-            );
-            return jsonSuccess({});
-          }
-          case "close_root": {
-            const grantId = await mintClaimGrant(client, active);
-            await client.rootClose({
-              grantId,
-              issue: requiredString(parameters, operation, "issue"),
-              reason: requiredString(parameters, operation, "reason"),
-            });
-            return jsonSuccess({});
-          }
-          case "rerun_child": {
-            const grantId = await mintClaimGrant(client, active);
-            await client.childRerun({
-              grantId,
-              issue: requiredString(parameters, operation, "issue"),
-            });
-            return jsonSuccess({});
-          }
-          default:
-            throw new Error(`Unsupported legion operation: ${operation}`);
-        }
+        // The operation runs with the fields it takes and no other, and the answer of a call that
+        // named another starts with a line naming each one, so nothing the call sent is dropped
+        // in silence. A refusal, the tool's or the daemon's, is answered as it is, with no line.
+        const takes = fieldsOf(operation);
+        const answer = await runOperation(
+          active,
+          operation,
+          Object.fromEntries(
+            Object.entries(parameters).filter(([name]) => name === "op" || takes.includes(name))
+          ),
+          restart,
+          context
+        );
+        const line = unusedLine(parameters, operation, takes);
+        return line === undefined ? answer : startingWith(line, answer);
       } catch (error) {
         return toolFailure(error);
       }
