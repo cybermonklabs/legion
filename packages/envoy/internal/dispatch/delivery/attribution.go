@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -630,6 +632,15 @@ type ResolvedCandidate struct {
 // rows hold it, at read time, to the default the evals refresher publishes, so a move of a default
 // moves the pull requests it holds without a day row rewritten. One statement, whatever the
 // number of pull requests: one walk resolves every candidate's issue together, as the batch's does.
+//
+// The statement is planned with its values each time it runs (pgx.QueryExecModeDescribeExec), as
+// refs' read of several blocks is: a connection's prepared statement takes a generic plan from its
+// sixth run where Postgres prices it no dearer, and that plan, which knows neither array's length,
+// takes the batch for 10 rows and loops each candidate over the repository walk's aggregate again.
+// The project timeline reads every pull request of its window here on each recompute: on INFRA's
+// stated-rate seed, 3,873 of them for 84 days, the generic plan took 2,093 ms where the plan made
+// for the arrays took 96 ms, and a live recompute of the timeline 1.5 to 1.6 s where it otherwise
+// takes 0.2 to 0.4 (dispatch://INFRA-2918, T33).
 func (a *Attributor) ResolvedCandidates(ctx context.Context, q Querier, pulls []PullRequestKey) (map[PullRequestKey][]ResolvedCandidate, error) {
 	resolved := map[PullRequestKey][]ResolvedCandidate{}
 	if len(pulls) == 0 {
@@ -643,7 +654,7 @@ func (a *Attributor) ResolvedCandidates(ctx context.Context, q Querier, pulls []
 			repos, numbers = append(repos, pull.Repo), append(numbers, int32(pull.Number))
 		}
 	}
-	rows, err := q.Query(ctx, a.resolvedQuery, repos, numbers)
+	rows, err := q.Query(ctx, a.resolvedQuery, pgx.QueryExecModeDescribeExec, repos, numbers)
 	if err != nil {
 		return nil, fmt.Errorf("read the candidates of %d stored pull requests: %w", len(repos), err)
 	}

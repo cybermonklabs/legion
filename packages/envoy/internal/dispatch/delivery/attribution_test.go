@@ -474,6 +474,57 @@ func TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStore
 	}
 }
 
+// TestTheCandidatesReadIsPlannedWithItsValuesEveryRun: ResolvedCandidates sends its statement
+// unnamed, planned with its two arrays every time it runs, so no connection keeps a prepared
+// statement of it that Postgres may serve by its generic plan from the sixth run. That plan knows
+// neither array's length: it takes the batch for 10 rows and loops every candidate over the
+// repository walk again, which read the project timeline's 3,873 pull requests in 2,093 ms where
+// the plan made for them took 96 ms (dispatch://INFRA-2918, T33). The read runs seven times on one
+// connection, past the five runs after which Postgres may settle on the generic plan.
+func TestTheCandidatesReadIsPlannedWithItsValuesEveryRun(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	seedAttributionIssues(t, ctx, pool, []string{"ATTR-261"}, nil)
+	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	pulls := []PullRequestKey{{Repo: "acme/widgets", Number: 260}, {Repo: "acme/widgets", Number: 262}}
+	for _, pull := range pulls {
+		if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+			Repo: pull.Repo, Number: pull.Number, Title: "feat: ATTR-261", URL: "https://github.com/acme/widgets/pull/" + strconv.Itoa(pull.Number),
+			Author: "octocat", CreatedAt: &merged, MergedAt: &merged, Attribution: &AttributionInputs{TitleKeys: []string{"ATTR-261"}},
+		}); err != nil {
+			t.Fatalf("seed #%d: %v", pull.Number, err)
+		}
+	}
+	connection, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("take one connection: %v", err)
+	}
+	defer connection.Release()
+	attributor := unrenamed()
+	const runs = 7
+	for run := range runs {
+		resolved, err := attributor.ResolvedCandidates(ctx, connection, pulls)
+		if err != nil {
+			t.Fatalf("run %d of the candidates read: %v", run+1, err)
+		}
+		for _, pull := range pulls {
+			if len(resolved[pull]) != 1 || resolved[pull][0].Key != "ATTR-261" {
+				t.Fatalf("run %d: #%d's candidates read %v, want ATTR-261 alone", run+1, pull.Number, resolved[pull])
+			}
+		}
+	}
+	var kept, generic, custom int64
+	if err := connection.QueryRow(ctx, `
+		select count(*), coalesce(sum(generic_plans), 0), coalesce(sum(custom_plans), 0)
+		from pg_prepared_statements where statement = $1`, attributor.resolvedQuery).Scan(&kept, &generic, &custom); err != nil {
+		t.Fatalf("read the connection's prepared statements: %v", err)
+	}
+	if kept != 0 {
+		t.Errorf("after %d runs the connection keeps %d prepared statement(s) of the candidates read, planned %d time(s) by the generic plan and %d by plans made for their values; want none, so that no run can take the generic plan",
+			runs, kept, generic, custom)
+	}
+}
+
 // TestAttributionRefusesAKeyDispatchDoesNotHave: a key-shaped string in every source that names
 // no stored issue credits nothing.
 func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {
