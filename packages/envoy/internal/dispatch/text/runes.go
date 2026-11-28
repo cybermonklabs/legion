@@ -14,22 +14,16 @@ import (
 )
 
 // HeadRunes returns value cut to its first limit runes; a value at or under the
-// limit is returned unchanged. The cut is a slice of value, so it copies nothing,
-// unless the part it keeps holds a byte that is not UTF-8: that part is converted
-// through []rune, which writes each such byte as U+FFFD.
+// limit is returned unchanged. It walks only as far as the limit, rather than
+// converting the whole value, and a cut value reads as a []rune conversion of it
+// would: each byte that is no UTF-8 is one rune, written back as U+FFFD.
 func HeadRunes(value string, limit int) string {
-	invalid := false
-	for offset, r := range value {
-		if limit <= 0 {
-			if invalid {
-				return string([]rune(value[:offset]))
-			}
-			return value[:offset]
+	count := 0
+	for index := range value {
+		if count == limit {
+			return string([]rune(value[:index]))
 		}
-		if r == utf8.RuneError && !strings.HasPrefix(value[offset:], "\uFFFD") {
-			invalid = true
-		}
-		limit--
+		count++
 	}
 	return value
 }

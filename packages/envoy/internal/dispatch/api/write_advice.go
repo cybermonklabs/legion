@@ -664,12 +664,10 @@ func (s *server) supersededApprovalAdvice(
 // rows and no others. Two things decide that.
 //
 // The issue must not be done, since the approved requirement says "A gate is live for this
-// sentence while the issue holding it is not `done` in Dispatch", so a gate of an issue in
-// `triage`, `icebox` or `backlog` is named too. Nothing clears a parked issue's gate rows - the
-// daemon suspends its claims and deletes none, and its boot republishes them for as long as it
-// stays parked - so its rows stand until the re-admission that brings the tree back clears them,
-// and the clause names them until then. A done issue's rows can stand too, and it is the one
-// status whose gate is not live.
+// sentence while the issue holding it is not `done` in Dispatch". Nothing clears a parked
+// issue's gate rows - the daemon suspends its claims and deletes none, and its boot republishes
+// them for as long as it stays parked - so its rows stand until the re-admission that brings the
+// tree back clears them, and the clause names them until then.
 //
 // The row must hold its tree, and the daemon that published it says whether it does
 // (design_gates.holds): which steps a tree is gated on is the daemon's rule, and the project's

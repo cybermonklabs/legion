@@ -4750,8 +4750,7 @@ var (
 // OutOfWorkflow): the two are separate values in separate Go modules that have to be changed
 // together, not one shared list, as the `legion` label already is (api/issue_parent.go). It is
 // named here because an issue's status write reads it, to say which statuses the owning
-// architect may write (api.statusChangeOptions.architectWrites). A write's advice does not: a
-// design gate is live while its issue is not done (api.supersededApprovalGates).
+// architect may write (api.statusChangeOptions.architectWrites).
 var IssueStatusesOutOfWorkflow = []string{IssueStatusTriage, "icebox", "backlog", "done"}
 
 var issueStatusSet = func() map[string]struct{} {

@@ -81,9 +81,10 @@ var priorityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // its own page and row list the work the keyword reads, and no filter could ask for the work
 // under it.
 func priorityIDRefusal(id string) string {
+	characters := utf8.RuneCountInString(id)
 	switch {
-	case utf8.RuneCountInString(id) > priorityIDMax:
-		return fmt.Sprintf("an id is at most %d characters, and this one is %d", priorityIDMax, utf8.RuneCountInString(id))
+	case characters > priorityIDMax:
+		return fmt.Sprintf("an id is at most %d characters, and this one is %d", priorityIDMax, characters)
 	case !priorityIDPattern.MatchString(id):
 		return fmt.Sprintf("%q is no priority id: an id is lowercase letters and digits in groups joined by single hyphens", id)
 	case id == noAdvancesFilter:
