@@ -41,9 +41,9 @@
 # CI jobs that run this script count in their time budgets. The copies of go.mod and go.sum, or of
 # go.work and go.work.sum, may gain the checksums the build needs; the repository's own files are
 # never written. scripts/forced-order.test.sh holds it to these refusals.
-# gotestsum prints Go's verbose output for the verdict below and keeps the test2json events in
-# $RUNNER_TEMP/go-test-events/forced-order-*.jsonl for the job's artifact, or in the script's
-# temporary directory, removed on exit.
+# The log shows Go's verbose output. The script keeps stdout from go test -json in
+# $RUNNER_TEMP/go-test-events/forced-order-*.jsonl for the job's artifact, or in its temporary
+# directory, removed on exit.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -92,10 +92,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ $# -ge 1 ] || usage
-if ! command -v gotestsum >/dev/null; then
-  echo 'forced-order.sh: gotestsum is not on PATH; use .github/actions/install-gotestsum or run GOWORK=off go -C .github/actions/install-gotestsum build -o <dir>/gotestsum gotest.tools/gotestsum' >&2
-  exit 127
-fi
 command -v patch >/dev/null || die "patch(1) is not installed, and the hooks are a patch"
 command -v jq >/dev/null || die "jq is not installed, and the script reads go's JSON with it"
 
@@ -240,11 +236,8 @@ empty="$(awk '
 ' "$work/list")"
 [ -z "$empty" ] || die "no TestForcedOrder test in: $empty"
 
-# Every package named must also run one. gotestsum prints the verbose Output fields, including
-# `--- PASS:` or `--- FAIL:` for top-level tests and each package's final `ok` or `FAIL` line.
-# A package whose every forced-order test skipped would end in `ok`: its line is printed as a
-# FAIL line instead, and the run fails. Keep the summary headings but omit its copies of test
-# output.
+# Every package named must also run one. A package whose forced-order tests all skip would end
+# in `ok`: the script prints a FAIL line instead and fails the run.
 events_dir="$work"
 if [ -n "${RUNNER_TEMP:-}" ]; then
   events_dir="$RUNNER_TEMP/go-test-events"
@@ -253,20 +246,18 @@ fi
 events=$(mktemp --suffix=.jsonl "$events_dir/forced-order-XXXXXX")
 run_forced_order_tests() {
   # Keep the command on one line for ci_job_reads.py's FORCED_ORDER_GO_TEST pin.
-  "${go_env[@]}" gotestsum --hide-summary output --jsonfile "$events" --format standard-verbose --raw-command -- go test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
+  "${go_cmd[@]}" test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
 }
 
-# Plain go test -v holds each package's output together. With -json, even a package's last test
-# line can reach gotestsum before another package's `ok` line. Use the package on the events
-# instead of counting all test lines since the last `ok`. gotestsum writes each event to the file
-# before printing its Output, so the package's result is already there when we read its `ok`.
+# Plain go test -v holds each package's output together. With -json, the lines can interleave.
+# Use the package on the events instead of counting all test lines since the last `ok`.
 check_test_output() {
   local line package skipped_all skipped=()
   while IFS= read -r line || [ -n "$line" ]; do
     if [[ "$line" =~ ^ok[[:blank:]]+([^[:blank:]]+) ]]; then
       package=${BASH_REMATCH[1]}
       skipped_all=$(jq -nRr --arg package "$package" --arg line "$line"$'\n' '
-        reduce (inputs | fromjson? | select(.Package == $package)) as $event
+        reduce (inputs | fromjson? | objects | select(.Package == $package)) as $event
           ({result: false, ran: false};
             if $event.Action == "output" and $event.Test == null and $event.Output == $line then
               .result = true
@@ -289,4 +280,21 @@ check_test_output() {
     return 1
   fi
 }
-run_forced_order_tests "$@" 2>&1 | check_test_output
+# GNU tee writes each chunk to stdout first. Make the events file its stdout and send its second
+# copy to jq, so the checker can read an event as soon as jq prints its Output.
+# Merge stderr into the log outside the inner pipeline. It must not enter the events file.
+{
+  run_forced_order_tests "$@" |
+    tee --output-error=exit /dev/fd/3 3>&1 >"$events" |
+    jq --unbuffered -Rrj '
+      . as $line | (try fromjson catch null)
+      | if type == "object" then .Output // empty else $line + "\n" end
+    '
+} 2>&1 | check_test_output || {
+  statuses=("${PIPESTATUS[@]}")
+  # Preserve a failed Go run (or tee/jq failure) even if the checker also found a skip-only package.
+  if [ "${statuses[0]}" -ne 0 ]; then
+    exit "${statuses[0]}"
+  fi
+  exit "${statuses[1]}"
+}

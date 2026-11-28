@@ -5741,17 +5741,17 @@ GO
 echo "case: the plain step's -run lists are what the lane's packages hold"
 root=$(race_tree)
 out=$(derived "$root" "lane/a/... lane/b")
+lane_a_run='gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/race-impossible-lane-a.jsonl" --format standard-quiet --raw-command -- go test -json'" -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a"
+lane_a_sub_run='gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/race-impossible-lane-a-sub.jsonl" --format standard-quiet --raw-command -- go test -json'" -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub"
 check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones" \
-  "$(is "$out" "$(printf '%s\n%s' \
-    "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
-    "go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
+  "$(is "$out" "$(printf '%s\n%s' "$lane_a_run" "$lane_a_sub_run")")"
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \
-  "$(is "$out" "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+  "$(is "$out" "$lane_a_run")"
 
 echo "case: a raceEnabled no top-level function encloses"
 root="$work/race-unattributable"

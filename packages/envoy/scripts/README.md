@@ -792,8 +792,8 @@ line).
 
 `GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` checks seven cases:
 five refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
-an empty `-C`, and a module that replaces nats-server), a gotestsum summary that does not repeat
-test output, and two packages whose interleaved output keeps both verdicts.
+an empty `-C`, and a module that replaces nats-server), verbose test output with no appended
+summary, and two packages whose interleaved output keeps both verdicts.
 `ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
 the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
 forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`
@@ -803,10 +803,7 @@ skipped. Its
 nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
 the 10 minutes in its time budget.
 
-This script requires `gotestsum` on `PATH`. CI uses `.github/actions/install-gotestsum`.
-To build the same version locally, run `GOWORK=off go -C .github/actions/install-gotestsum
-build -o <dir>/gotestsum gotest.tools/gotestsum` and add `<dir>` to `PATH`.
-The log keeps Go's verbose output and appends the gotestsum summary without repeating test output.
+The log shows Go's verbose output. Only `go test -json` stdout goes into the events file.
 CI keeps the events in `$RUNNER_TEMP/go-test-events/forced-order-*.jsonl`. A local run deletes
 the temporary events file on exit.
 

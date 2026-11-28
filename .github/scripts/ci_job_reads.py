@@ -831,8 +831,7 @@ def service_settings_reads(job, workflow="", step=SERVICE_SETTINGS_STEP):
 FORCED_ORDER = f"{ENVOY}/scripts/forced-order.sh"
 FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
 FORCED_ORDER_GO_TEST = (
-    '"${go_env[@]}" gotestsum --hide-summary output --jsonfile "$events" --format standard-verbose '
-    '--raw-command -- go test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
+    '"${go_cmd[@]}" test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
     "-run '^TestForcedOrder' \"$@\"")
 # The envoy steps, one per key, each with the packages it runs: one on the nats-server the
 # workspace links ("", no -server, so a go.mod that moves to a version with no hooks fails the

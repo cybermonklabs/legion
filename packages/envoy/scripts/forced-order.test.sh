@@ -2,7 +2,7 @@
 # packages/envoy/scripts/forced-order.test.sh: refusals, events and verdicts of forced-order.sh.
 # Each refusal case requires a non-zero exit and its own message, with nothing printed past the
 # refusal. A stand-in that fails earlier must fail each refusal case. The summary and cleanup
-# cases use a temporary Go module. Needs gotestsum and internal/testnats/hooktest/skiponly/.
+# cases use a temporary Go module. Needs internal/testnats/hooktest/skiponly/.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 envoy="$(dirname "$here")"
@@ -85,8 +85,8 @@ printf 'module example.com/replaced\n\ngo 1.21\n\nrequire github.com/nats-io/nat
 GOWORK=off refused replaced 'replaces github.com/nats-io/nats-server/v2 with ./fork' \
   '^forced-order.sh: nats-server v[0-9]' -C "$out/replacing-module" .
 
-# The failing fixture test prints a line shaped like a package's `ok` line.
-# --hide-summary output must keep gotestsum's summary from printing it a second time.
+# The failing fixture prints a line shaped like a package's `ok` line.
+# The log must show it once, alongside Go's verdict lines and without an appended summary.
 fixture="$out/summary-module"
 mkdir -p "$fixture/mixed" "$fixture/pass" "$out/summary-runner" "$out/local"
 printf 'module example.com/summary\n\ngo 1.21\n\nrequire github.com/nats-io/nats-server/v2 v2.15.1\n' >"$fixture/go.mod"
@@ -109,15 +109,18 @@ printf 'package pass\n\nimport "testing"\n\nfunc TestForcedOrderPasses(t *testin
 status=0
 RUNNER_TEMP="$out/summary-runner" GOWORK=off "$here/forced-order.sh" -C "$fixture" ./mixed \
   >"$out/summary.log" 2>&1 || status=$?
+sed 's/\x1b\[[0-9;]*m//g' "$out/summary.log" >"$out/summary.no-color.log"
 events=("$out/summary-runner/go-test-events"/forced-order-*.jsonl)
 if [ "$status" -eq 1 ] && [ "${#events[@]}" -eq 1 ] && [ -s "${events[0]}" ] &&
   jq -es 'map(select(.Test and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | .Action) == ["pass", "fail", "skip"]' "${events[0]}" >/dev/null &&
   [ "$(grep -cxF $'ok\tfixture-output' "$out/summary.log")" -eq 1 ] &&
-  grep -qF '=== Skipped' "$out/summary.log" && grep -qF '=== Failed' "$out/summary.log" &&
-  grep -qF '=== FAIL:' "$out/summary.log" && grep -q '^DONE ' "$out/summary.log" &&
+  grep -q '^--- PASS: TestForcedOrderPasses ' "$out/summary.log" &&
+  grep -q '^--- FAIL: TestForcedOrderFails ' "$out/summary.log" &&
+  grep -q '^--- SKIP: TestForcedOrderSkips ' "$out/summary.log" &&
+  ! grep -qE '^(DONE |=== (Skipped|Failed|(SKIP|FAIL):))' "$out/summary.no-color.log" &&
   grep -q '^FAIL[[:space:]]\+example.com/summary/mixed' "$out/summary.log" &&
   ! grep -qF 'no TestForcedOrder test ran in:' "$out/summary.log"; then
-  echo "PASS summary: one events file, and the summary does not change the verdict"
+  echo "PASS summary: Go's verbose verdict and one events file, with no appended summary"
 else
   echo "FAIL summary: exit $status"
   cat "$out/summary.log"
