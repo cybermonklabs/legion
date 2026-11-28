@@ -3,6 +3,8 @@ package legionfacts
 import (
 	"slices"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
 // TestATreeObservationMovesAChildAndRecomputesBothRoots: a pass over a `tree` observation that
@@ -76,7 +78,11 @@ func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 	// which are the rows the two reads of leftTrees add to it.
 	moves := map[string]bool{child: true}
 	stated := statedSet(t, run, []string{child}, moves)
-	leaving, err := leftTrees(t.Context(), run.database.Pool, run.fixture.Project, []string{child}, moves)
+	above, err := metrics.TreeLinks(t.Context(), run.database.Pool, run.fixture.Project)
+	if err != nil {
+		t.Fatalf("read the links above the project's issues: %v", err)
+	}
+	leaving, err := leftTrees(t.Context(), run.database.Pool, run.fixture.Project, []string{child}, moves, above)
 	if err != nil {
 		t.Fatalf("read the rows of the tree %s leaves: %v", child, err)
 	}

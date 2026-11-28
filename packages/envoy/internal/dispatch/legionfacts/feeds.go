@@ -169,15 +169,21 @@ type filing struct {
 }
 
 // touch is one issue a feed named: the project it belongs to, the issue itself, whether the row
-// that named it moves the issue between trees, and whether the row is the project's admission
-// block. Two rows of two feeds move an issue between trees, and they are one kind of change:
-// Dispatch's parent link, which an event's `changed` names (readEventPage), and the `tree` the
-// daemon reports, which is the field of an observation (readObservationPage). The rule that places
-// an issue in a tree reads the `tree` first and the parent link only where no daemon reported one
-// (legion.TreeChain), so either row can take the issue out of one tree and put it in another.
+// that named it moves the issue between trees, whether it moves the repository the issue resolves
+// to, and whether the row is the project's admission block. Two rows of two feeds move an issue
+// between trees, and they are one kind of change: Dispatch's parent link, which an event's
+// `changed` names (readEventPage), and the `tree` the daemon reports, which is the field of an
+// observation (readObservationPage). The rule that places an issue in a tree reads the `tree`
+// first and the parent link only where no daemon reported one (legion.TreeChain), so either row
+// can take the issue out of one tree and put it in another.
 //
 // A move states two trees: the tree the issue joined, which the links now give (rowsTouchedBy),
-// and the tree it left, which is read from the issue's stored root_key (leftTrees).
+// and the tree it left, which is read from the stored root_key of the issue and of the issues
+// below it (leftTrees).
+//
+// A repository move is an event whose `changed` names `repo` (readEventPage). Every issue below
+// the issue by the parent link that names no repository of its own resolves to the same
+// repository (ReadRepos), so the move states the issues below it by that link (repoDescendants).
 //
 // The admission block is an observation of the project under legion.AdmissionKey, which is no
 // issue's key and holds no stored row. Where it moved what a waiting reason reads of it, it moves
@@ -187,6 +193,7 @@ type touch struct {
 	project   string
 	issue     string
 	moved     bool
+	repo      bool
 	admission bool
 }
 
@@ -209,6 +216,14 @@ type touch struct {
 // trees (touch), and a move widens the set a change touches by the tree the issue left
 // (leftTrees). The issues below the issue are in that set whatever the event was
 // (rowsTouchedBy).
+//
+// An event naming `repo` is the repository the issue resolves to moving: its own, or the one its
+// parent chain names, which a reparent can move alone (api's issueChangedFields). A row's repo is
+// that resolution (ReadRepos, refs.IssueRepoTerms), so the move reaches every issue below the
+// issue by the parent link that names no repository of its own. Those need not be among the
+// issues below it in the set a change touches, whose links take the daemon's `tree` before the
+// parent link. The event is marked (touch.repo) as a parent move is, and the pass states the
+// issues below it by the parent link (repoDescendants).
 //
 // An event that is on no issue at all is kept where its actor is a session, because such an
 // event carries that session's title as much as an event on an issue does, and a session's
@@ -235,6 +250,7 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	rows, err := q.Query(ctx, `
 		select event.id, coalesce(issue.project_key, ''), coalesce(event.issue_key, ''),
 		       coalesce(event.payload -> 'changed' @> '["parent"]', false),
+		       coalesce(event.payload -> 'changed' @> '["repo"]', false),
 		       case when event.actor ->> 'kind' = 'session' then coalesce(event.actor ->> 'id', '') else '' end,
 		       case when event.actor ->> 'kind' = 'session'
 		            then coalesce(event.actor -> 'origin' ->> 'session_title', '') else '' end
@@ -255,7 +271,7 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	for rows.Next() {
 		var touched touch
 		var session, title string
-		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &session, &title); err != nil {
+		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &touched.repo, &session, &title); err != nil {
 			return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 		}
 		count++

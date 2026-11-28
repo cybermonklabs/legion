@@ -130,3 +130,70 @@ func TestADefaultRepositoryChangeRewritesNoStoredRepository(t *testing.T) {
 	t.Logf("the pass after the default repository's write read %s whole and changed no row; its %d rows, %d of them closed, still store %s",
 		project, len(before), closed, DefaultRepo)
 }
+
+// TestARepositoryChangeMovesTheStoredRepositoryOfTheIssuesBelow (k1): a stored row's repo is the
+// repository its issue resolves to by its parent chain (ReadRepos, refs.IssueRepoTerms), so a
+// repository change of an issue moves the stored repo of each issue below it by that chain that
+// names no repository of its own. The tree a pass descends is another walk: it takes the `tree`
+// the daemon reports before the parent link (metrics.TreeLinks), so an issue the daemon reports
+// under a root above its parent stands below the root there and not below the parent.
+//
+// The history is the rig's with one issue added: a middle issue under the first tree's root,
+// filed by a person, with the root's implemented child moved beneath it and reported by the
+// daemon under the root. The root names a repository of its own and the middle issue none, so
+// the child stores the root's. The first pass reads the project whole, so every stored row is
+// right before the change. The change gives the middle issue a repository of its own as the API
+// writes one: the issue's row and its issue.updated event, whose `changed` names `repo`, in one
+// statement. It names the middle issue alone, and the child is closed, so no input of its own
+// brings it into the pass.
+func TestARepositoryChangeMovesTheStoredRepositoryOfTheIssuesBelow(t *testing.T) {
+	t.Parallel()
+	run := newConsumer(t, 3)
+	project := run.fixture.Project
+	root, child := run.fixture.Roots[0], run.fixture.Keys[1]
+	middle := run.fileIssue(t, project, 901, root, `{"kind":"user","id":"alice"}`, run.at.Add(-time.Hour))
+	run.exec(t, "move "+child+" under "+middle, `update issues set parent_key = $1 where key = $2`, middle, child)
+	run.exec(t, "give "+root+" a repository of its own", `update issues set repo = 'acme/roots' where key = $1`, root)
+	seedTree(t, run.history, child, root)
+
+	run.pass(t)
+	readWhole := computedWholeAt(t, run)[project]
+	before := run.rows(t)
+	if row := before[child]; row.ClosedAt == nil || row.Repo != "acme/roots" || row.Tree != root {
+		t.Fatalf("%s stores %s before the change, want a closed row under %s storing acme/roots", child, show(row), root)
+	}
+
+	run.exec(t, "give "+middle+" a repository of its own, as the API writes it", `
+		with written as (update issues set repo = 'acme/middle' where key = $1 returning key, parent_key, repo)
+		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+		select key, (select coalesce(max(seq), 0) + 1 from events where issue_key = $1), 'issue.updated',
+		       '{"kind":"user","id":"alice"}'::jsonb,
+		       jsonb_build_object('key', key, 'parent', parent_key, 'repo', repo, 'resolved_repo', repo,
+		                          'changed', jsonb_build_array('repo'), 'ancestors', jsonb_build_array(parent_key)),
+		       true, $2
+		from written
+	`, middle, run.at)
+	resolved, err := refs.IssueRepository(t.Context(), run.database.Pool, child)
+	if err != nil {
+		t.Fatalf("resolve the repository of %s: %v", child, err)
+	}
+	if resolved == nil || *resolved != "acme/middle" {
+		t.Fatalf("the issue page resolves %s to %v after %s took acme/middle, so the change moved no repository below it and this test examined nothing",
+			child, resolved, middle)
+	}
+	run.at = run.at.Add(time.Minute)
+	changed := run.pass(t)
+
+	if at := computedWholeAt(t, run)[project]; !at.Equal(readWhole) {
+		t.Fatalf("the pass after the change read %s whole (its record went from %s to %s), so it computed every row and this test examined nothing",
+			project, readWhole.UTC(), at.UTC())
+	}
+	after := run.rows(t)
+	if after[child].Repo != "acme/middle" {
+		t.Errorf("%s stands below %s by its parent chain and stores %q after %s took acme/middle, which the issue page resolves it to",
+			child, middle, after[child].Repo, middle)
+	}
+	storedRowsAreTheWholeComputation(t, run, computedWhole(t, run), "the repository change of "+middle)
+	t.Logf("%s took acme/middle; %s, below it by its parent chain and reported under %s, stored %q before the pass and %q after; the pass changed %d rows (%v)",
+		middle, child, root, before[child].Repo, after[child].Repo, len(changed), changed)
+}

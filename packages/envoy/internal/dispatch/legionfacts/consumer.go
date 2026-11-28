@@ -73,13 +73,14 @@ const Freshness = time.Minute
 //
 // A page that reads a `tree` observation marks that issue moved, as it marks an issue whose
 // parent link moved (touch), so it makes the two reads of leftTrees over that issue's project:
-// one row of issue_facts for the moved issue's stored root, and the rows of that project held
-// under that root. Over the rig's eight-tree history the second read answers five rows, which
-// is a root and the four issues of its tree that carry Legion phase work, and the set the pass
-// states is six keys where it would be two without them: the issue, the root it joined, and
-// those five. A `tree` observation is written only where the tree the daemon reports differs
-// from the newest one recorded (legion.RecordObservations), so a daemon that goes on reporting
-// one tree costs a pass nothing.
+// the rows of issue_facts of the moved issue and of the issues below it, for their stored roots,
+// and the rows of that project held under those roots. Over the rig's eight-tree history, where
+// the moved issue has no issue below it, the second read answers five rows, which is a root and
+// the four issues of its tree that carry Legion phase work, and the set the pass states is six
+// keys where it would be two without them: the issue, the root it joined, and those five. A
+// `tree` observation is written only where the tree the daemon reports differs from the newest
+// one recorded (legion.RecordObservations), so a daemon that goes on reporting one tree costs a
+// pass nothing.
 //
 // Every pass also states the issues below each key it computes, because an input that names one
 // issue can move where every issue under that issue stands (rowsTouchedBy). Over the rig's 252
@@ -420,7 +421,7 @@ func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		}
 		if work[project] == nil {
 			work[project] = &projectWork{
-				keys: map[string]bool{}, moved: map[string]bool{}, filed: map[string]bool{},
+				keys: map[string]bool{}, moved: map[string]bool{}, repos: map[string]bool{}, filed: map[string]bool{},
 				yielded: projects[project].yielded, taken: projects[project].taken,
 			}
 		}
@@ -440,6 +441,9 @@ func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 				project.keys[touched.issue] = true
 				if touched.moved {
 					project.moved[touched.issue] = true
+				}
+				if touched.repo {
+					project.repos[touched.issue] = true
 				}
 			}
 		}
@@ -552,16 +556,18 @@ func writePage(ctx context.Context, deps Deps, sched schedule, page pageRead) ([
 }
 
 // projectWork is what one page owes one project: the issues its feeds named and the rows another
-// build wrote (keys), those of the feeds' issues a row moved between trees (touch), whether the
-// page read a move of the project's admission block, which owes every open row of the project
-// (openRows), the filings its events moved that the project owes, the ones it joined and the ones
-// it left (feed.filings), whether the project is to be computed whole (a backfill), whether its
-// record names a newer build this process yields to (projectStanding.yielded), which the write of
-// its rows carries (ProjectWrite.Yielded), and the build of a record whose build no live process
-// serves, which the whole read takes the record from (projectStanding.taken).
+// build wrote (keys), those of the feeds' issues a row moved between trees (touch), those whose
+// repository an event moved (touch.repo), whether the page read a move of the project's admission
+// block, which owes every open row of the project (openRows), the filings its events moved that
+// the project owes, the ones it joined and the ones it left (feed.filings), whether the project
+// is to be computed whole (a backfill), whether its record names a newer build this process
+// yields to (projectStanding.yielded), which the write of its rows carries
+// (ProjectWrite.Yielded), and the build of a record whose build no live process serves, which
+// the whole read takes the record from (projectStanding.taken).
 type projectWork struct {
 	keys      map[string]bool
 	moved     map[string]bool
+	repos     map[string]bool
 	admission bool
 	filed     map[string]bool
 	backfill  bool
@@ -602,7 +608,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 	if err != nil {
 		return projectPass{}, err
 	}
-	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, work.admission, above)
+	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, work.repos, work.admission, above)
 	if err != nil {
 		return projectPass{}, err
 	}

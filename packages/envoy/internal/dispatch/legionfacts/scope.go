@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // scope.go holds the scope of one page: the projects this loop computes and which of them are
@@ -306,24 +307,33 @@ func readOtherBuilds(ctx context.Context, q Querier, what, query, build string) 
 
 // rowsToCompute is the whole set one pass computes for a project, sorted: the rows the changes
 // touch through the issues' links now (rowsTouchedBy), the rows of the tree a moved issue left
-// (leftTrees) and, where admission says the page read a move of the project's admission block,
-// the project's open rows (openRows). It is the set the pass states before it writes, and it
-// writes no row outside it. keys is the issues the feeds named and the rows another build wrote
-// (otherBuildsRows).
+// (leftTrees), the issues below an issue whose repository moved by the parent link
+// (repoDescendants) and, where admission says the page read a move of the project's admission
+// block, the project's open rows (openRows). It is the set the pass states before it writes, and
+// it writes no row outside it. keys is the issues the feeds named and the rows another build
+// wrote (otherBuildsRows).
 //
-// moved names the issues a row of a feed took out of one tree and into another (touch). Only
-// the tree such an issue left is read from it: the links as they stand now answer for every
-// other issue a change can move, the issues below a key among them (rowsTouchedBy).
+// moved names the issues a row of a feed took out of one tree and into another (touch), and
+// repos the issues whose repository an event moved (touch.repo). Only the tree a moved issue left
+// is read from the stored rows: the links as they stand now answer for every other issue a change
+// can move, the issues below a key (rowsTouchedBy) and below a repository move (repoDescendants)
+// among them.
 //
-// The open rows are added as they are, with no climb and no descent: the block moves a row's
-// waiting reason and no other fact (rowsOf), and each row's reason is computed from the block,
-// its own observations and the tree above it, which the population of its key reads whole
-// (metrics.ReadIssues).
-func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, admission bool, above map[string]string) ([]string, error) {
-	stored, err := leftTrees(ctx, q, project, keys, moved)
+// The issues below a repository move and the open rows are added as they are, with no climb and
+// no descent. A repository moves a row's repo and no other fact (rowsOf, ReadRepos). The block
+// moves a row's waiting reason and no other fact (rowsOf), and each row's reason is computed
+// from the block, its own observations and the tree above it, which the population of its key
+// reads whole (metrics.ReadIssues).
+func rowsToCompute(ctx context.Context, q Querier, project string, keys []string, moved, repos map[string]bool, admission bool, above map[string]string) ([]string, error) {
+	stored, err := leftTrees(ctx, q, project, keys, moved, above)
 	if err != nil {
 		return nil, err
 	}
+	inherited, err := repoDescendants(ctx, q, project, keys, repos)
+	if err != nil {
+		return nil, err
+	}
+	stored = append(stored, inherited...)
 	if admission {
 		open, err := openRows(ctx, q, project)
 		if err != nil {
@@ -422,32 +432,39 @@ const storedFilingsOfQuery = `
 `
 
 // leftTrees is every stored row of the tree a moved issue left, sorted. An issue a move took
-// out of one tree and into another takes its own hours with it, so the old tree's root goes on
-// counting the time it waited while that issue worked until its row is computed again. No pass
-// computes a row its inputs did not name, so a pass that left the old tree out would leave that
-// row wrong for good.
+// out of one tree and into another takes its own hours with it, and the hours of every issue
+// below it, so the old tree's root goes on counting the time it waited while those issues worked
+// until its row is computed again. No pass computes a row its inputs did not name, so a pass
+// that left the old tree out would leave that row wrong for good.
 //
 // Two rows move an issue that way and both are marked the same (touch): an event whose
 // `changed` names `parent`, and an observation of legion.FieldTree. This reads the tree left
 // for either of them, because the tree rule reads the daemon's `tree` before the parent link
 // (legion.TreeChain) and an issue leaves a tree whichever of the two moved it.
 //
-// The old tree is the tree as the last computation recorded it: the moved issue's stored
-// root_key, and every issue the table holds under that root. Nothing else can name it, because
-// the links the pass reads are the links after the move. It is two queries, and only where an
-// issue moved. A move is uncommon: a parent link is moved by hand, and the Legion state intake
-// writes a `tree` observation only where the tree the daemon reports differs from the newest one
-// recorded (legion's recordObservations and recordEvents), so a daemon that goes on reporting one
-// tree writes one row.
+// The old tree is the tree as the last computation recorded it: the stored root_key of the moved
+// issue and of every issue below it (issuesBelow, the descent rowsTouchedBy states for the moved
+// issues), and every issue the table holds under those roots. The stored rows are the one record
+// of it, because the links the pass reads are the links after the move. The moved issue's own row
+// is not enough: an issue the daemon reports and no Legion role worked holds no row
+// (computeKeys), and the tree rule climbs through it all the same, so the rows below it can be
+// all that records the tree it left. The issues below a moved issue are read from the links after
+// the move, and they are the issues the move carried, because a move changes what stands above
+// the moved issue and not what stands below it.
 //
-// The stored root is taken whether or not the links now give another one. There is one root
-// rule, legion.TreeChain, which is what wrote that root_key, and a walk of the raw parent links
-// is a second rule that can answer differently: it reads neither the daemon's tree nor the stop
-// at a parent with no Legion work. Taking the stored root always states a superset of the rows
-// a comparison of the two would state, which the scope rule allows: the set is stated before
+// It is two queries, and only where an issue moved. A move is uncommon: a parent link is moved
+// by hand, and the Legion state intake writes a `tree` observation only where the tree the daemon
+// reports differs from the newest one recorded (legion's recordObservations and recordEvents), so
+// a daemon that goes on reporting one tree writes one row.
+//
+// The stored roots are taken whether or not the links now give others. There is one root rule,
+// legion.TreeChain, which is what wrote each root_key, and a walk of the raw parent links is a
+// second rule that can answer differently: it reads neither the daemon's tree nor the stop at a
+// parent with no Legion work. Taking the stored roots always states a superset of the rows a
+// comparison of the two would state, which the scope rule allows: the set is stated before
 // anything is written, and a row inside it is written or deleted only because the computation
 // of that issue said so.
-func leftTrees(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool) ([]string, error) {
+func leftTrees(ctx context.Context, q Querier, project string, keys []string, moved map[string]bool, above map[string]string) ([]string, error) {
 	wasMoved := make([]string, 0, len(moved))
 	for _, key := range keys {
 		if moved[key] {
@@ -457,16 +474,17 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 	if len(wasMoved) == 0 {
 		return nil, nil
 	}
+	carried := slices.Sorted(maps.Keys(issuesBelow(wasMoved, above)))
 	stored, err := q.Query(ctx, `
-		select root_key from issue_facts
+		select distinct root_key from issue_facts
 		where project_key = $1 and issue_key = any($2::text[]) and root_key <> ''
-	`, project, wasMoved)
+	`, project, carried)
 	if err != nil {
-		return nil, fmt.Errorf("read the stored roots of %d moved issues of %s: %w", len(wasMoved), project, err)
+		return nil, fmt.Errorf("read the stored roots of %d moved issues of %s and the issues below them: %w", len(wasMoved), project, err)
 	}
 	roots, err := pgx.CollectRows(stored, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("read the stored roots of %d moved issues of %s: %w", len(wasMoved), project, err)
+		return nil, fmt.Errorf("read the stored roots of %d moved issues of %s and the issues below them: %w", len(wasMoved), project, err)
 	}
 	if len(roots) == 0 {
 		return nil, nil
@@ -508,6 +526,13 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 //     retitle that takes an issue's phase work away (legion.TreeNode's Legion field holds the
 //     rule). Each of those names the parent alone.
 //
+// A repository an event's `changed` names moves the issues below the issue too, by a walk of its
+// own and not by this rule. A row's repo is the repository its issue resolves to up the parent
+// link alone (ReadRepos, refs.IssueRepoTerms), and the links this set descends take the daemon's
+// `tree` before that link, so an issue the daemon reports under a root above its parent stands
+// below the root here and not below the parent. Those issues are read by the parent link
+// (repoDescendants), and rowsToCompute states them beside this set.
+//
 // A narrower descent would start from the keys whose Legion standing moved, and the stored
 // rows cannot answer which keys those are. A row is held for an issue that carries Legion
 // phase work (computeKeys), and the parent whose standing moves commonly carries none and holds
@@ -524,17 +549,17 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 // parent link does.
 //
 // It reads the links as they stand now, so it cannot name the tree a moved issue left: that one
-// is read from the stored rows beside it (leftTrees), and rowsToCompute is the two together.
+// is read from the stored roots of the moved issue and of the issues this descent puts below it
+// (leftTrees, issuesBelow), and rowsToCompute states the two together.
 //
 // Each walk keeps the keys it has already visited, so a chain that loops stops rather than
 // running for ever, which is the stop every tree walk holds (legion.TreeChain). What the
 // descent costs a pass is measured over the rig's histories and recorded with the pass's other
 // costs (PassRetry).
 func rowsTouchedBy(keys []string, above map[string]string) []string {
-	touched := make(map[string]bool, len(keys))
+	touched := issuesBelow(keys, above)
 	climbed := map[string]bool{}
 	for _, key := range keys {
-		touched[key] = true
 		clear(climbed)
 		climbed[key] = true
 		for up := above[key]; up != "" && !climbed[up]; up = above[up] {
@@ -542,25 +567,84 @@ func rowsTouchedBy(keys []string, above map[string]string) []string {
 			touched[up] = true
 		}
 	}
+	return slices.Sorted(maps.Keys(touched))
+}
+
+// issuesBelow is keys and every issue below them by the links above holds (metrics.TreeLinks):
+// the descent rowsTouchedBy states, and the issues a move carried, whose stored roots leftTrees
+// reads. The walk keeps the keys it has already visited, so a chain that loops stops.
+func issuesBelow(keys []string, above map[string]string) map[string]bool {
 	children := map[string][]string{}
 	for key, up := range above {
 		if up != "" {
 			children[up] = append(children[up], key)
 		}
 	}
+	below := make(map[string]bool, len(keys))
 	descending := slices.Clone(keys)
-	walked := make(map[string]bool, len(keys))
 	for len(descending) > 0 {
 		key := descending[len(descending)-1]
 		descending = descending[:len(descending)-1]
-		if walked[key] {
+		if below[key] {
 			continue
 		}
-		walked[key] = true
-		for _, below := range children[key] {
-			touched[below] = true
-			descending = append(descending, below)
+		below[key] = true
+		descending = append(descending, children[key]...)
+	}
+	return below
+}
+
+// repoDescendants is every issue of the project below an issue of keys whose repository moved
+// (repos, touch.repo), by the parent link alone, sorted. A row's repo is the repository its
+// issue resolves to by the server's one rule (ReadRepos, refs.IssueRepoTerms): the nearest one
+// its parent chain names inside its own project. A move of an issue's own repository, or of the
+// one it resolves to, therefore moves the stored repo of every issue below it by that chain that
+// names none of its own, while the event names that issue alone. The links rowsTouchedBy descends
+// need not hold those issues: they take the daemon's `tree` before the parent link, so a child
+// the daemon reports under a root above its parent stands below that root there.
+//
+// It walks the parent link inside the project, as the repository rule climbs it: an issue of
+// another project takes no repository from a parent here, and passes on none to an issue below
+// it. It answers every issue below, an issue that names a repository of its own and the issues
+// below that one among them, whose repo the move left where it was. That is a superset, which the
+// scope rule allows, and a walk that stopped at an issue's own repository would be a second copy
+// of the repository rule; a row whose repo did not move computes to the row the table holds and
+// is written by nothing (upsert).
+//
+// It is one recursive read of issues through issues_parent_key (migration 0032), and only where
+// an event named `repo`. The walk stops at refs.IssueDepthCap links, the bound of every recursive
+// issue walk, so a parent chain that loops ends.
+func repoDescendants(ctx context.Context, q Querier, project string, keys []string, repos map[string]bool) ([]string, error) {
+	moved := make([]string, 0, len(repos))
+	for _, key := range keys {
+		if repos[key] {
+			moved = append(moved, key)
 		}
 	}
-	return slices.Sorted(maps.Keys(touched))
+	if len(moved) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, repoDescendantsQuery, project, moved, refs.IssueDepthCap)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues below %d issues of %s whose repository moved: %w", len(moved), project, err)
+	}
+	below, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the issues below %d issues of %s whose repository moved: %w", len(moved), project, err)
+	}
+	return below, nil
 }
+
+// repoDescendantsQuery is repoDescendants' read: every issue of project $1 below one of the
+// issues $2 by the parent link, to $3 links down.
+const repoDescendantsQuery = `
+	with recursive below as (
+		select child.key, 1 as depth
+		from issues child
+		where child.project_key = $1 and child.parent_key = any($2::text[])
+		union
+		select child.key, below.depth + 1
+		from issues child join below on child.parent_key = below.key
+		where child.project_key = $1 and below.depth < $3
+	)
+	select distinct key from below order by key`

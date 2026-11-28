@@ -180,15 +180,15 @@ func (c *consumer) feedHeads(t *testing.T) map[string]int64 {
 
 // statedSet is the set the pass about to run states for the project: the rows its changes touch
 // through the links as they stand (rowsTouchedBy) and the rows of the tree a moved issue left
-// (leftTrees), which is rowsToCompute of a page that read no move of the admission block, read
-// here from the same database at the same moment.
+// (leftTrees), which is rowsToCompute of a page that read no repository move and no move of the
+// admission block, read here from the same database at the same moment.
 func statedSet(t *testing.T, run *consumer, keys []string, moved map[string]bool) []string {
 	t.Helper()
 	above, err := metrics.TreeLinks(t.Context(), run.database.Pool, run.fixture.Project)
 	if err != nil {
 		t.Fatalf("read the links above the project's issues: %v", err)
 	}
-	stated, err := rowsToCompute(t.Context(), run.database.Pool, run.fixture.Project, keys, moved, false, above)
+	stated, err := rowsToCompute(t.Context(), run.database.Pool, run.fixture.Project, keys, moved, nil, false, above)
 	if err != nil {
 		t.Fatalf("read the set the pass states: %v", err)
 	}
