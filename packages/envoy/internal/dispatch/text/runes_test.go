@@ -115,16 +115,17 @@ import (
 // then 5,000 letters), or on a count of letters beside one run or the character once at a length
 // that no row cuts at every place, where the length rows put it at a few places only (say, the
 // character once after exactly 100 letters, in values of 4,999 bytes only, or of 32,001); a copy
-// keyed both on a character and on a value of 14 bytes or more, since the fourth row, the one row
-// that holds every code point, puts each in values of 13 bytes at most: of longer values the fifth
-// row holds only a linker's consonant, the linker, the code points of joined and the letters of the
-// linker's script, up to 17 bytes, and the other rows only é, 界, U+1F54C, U+FFFD, U+20000, U+0301,
-// the 140 characters of prose and, up to 64 bytes, 81 of the 259 characters the alphabet's bytes
-// make (say, a copy of each value of 14 bytes or more that holds ź, 漢, U+1F680 or 畟), or keyed on a
-// place of a character of prose that no value of the thirteenth row puts it at, since the row
-// starts each of its values at one place of prose; a copy keyed both on a character that no row but
-// the fourth holds and on a cut of three characters or more, since the fourth row cuts each code
-// point's values to two characters at most (say, a copy of each cut of three characters or more of
+// keyed both on a character and on a value of 14 bytes or more, since the fourth and fifth rows,
+// the two that hold every code point (the fifth before the first pictograph after each code point
+// and a joiner), put each in values of 13 bytes at most: of longer values the fifth row holds only
+// a linker's consonant, the linker, the code points of joined and the letters of the linker's
+// script, up to 17 bytes, and the other rows only é, 界, U+1F54C, U+FFFD, U+20000, U+0301, the 140
+// characters of prose and, up to 64 bytes, 81 of the 259 characters the alphabet's bytes make (say,
+// a copy of each value of 14 bytes or more that holds ź, 漢, U+1F680 or 畟), or keyed on a place of
+// a character of prose that no value of the thirteenth row puts it at, since the row starts each of
+// its values at one place of prose; a copy keyed both on a character that no rows but those two
+// hold and on a cut of three characters or more, since those two rows cut each code point's values
+// to two characters at most (say, a copy of each cut of three characters or more of
 // a value that holds ź); an allocation HeadRunes makes and does not return, keyed on a character
 // that only the fourth, fifth and sixth rows hold, since those rows want each answer at the value's
 // address but count no allocation (say, a []rune of each value that holds ź); a copy of a cut below
