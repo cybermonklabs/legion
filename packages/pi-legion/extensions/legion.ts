@@ -964,6 +964,12 @@ export default function legionExtension(pi: PiApi): void {
     return undefined;
   });
   pi.on("agent_end", async (event, context) => {
+    // With the line session_stop logs, this tells a turn the host closed with no session_stop
+    // pass, which sends no activity report, from one whose pass ran.
+    logger.debug("legion: a turn ended", {
+      willContinue: event.willContinue === true,
+      awaitingAsyncWork: event.awaitingAsyncWork === true,
+    });
     await turnOutcomes.report(context.sessionManager.getSessionId(), event);
   });
 
@@ -973,6 +979,7 @@ export default function legionExtension(pi: PiApi): void {
   // own continuation, one more turn of this same session; every one after it is a timer, so the
   // run settles and the daemon sees the turn end (src/phase-reminder.ts).
   pi.on("session_stop", async (event, context) => {
+    logger.debug("legion: session_stop ran", { aborted: event.signal.aborted });
     if (event.signal.aborted) return undefined;
     // A cyber_policy refusal climbs the ladder's next rung inside this same turn
     // (src/cyber-policy-ladder.ts), and only a refusal of its last rung settles the turn, which
