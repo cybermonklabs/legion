@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -163,8 +164,9 @@ func reasonLines(reasons []record.Defect) []string {
 
 // tellChangeCount tells the owning architect and the project's controller once at each multiple
 // of the deployment's review round cap (Config.ReviewRoundCap) next changes of one issue, naming
-// the count, each reason and the issue's pull requests (D7). No count stops a change: the issue
-// goes on, and the controller can move it to backlog or icebox as it can any root.
+// the count, each reason and each change's pull request (D7, changePullRequests). No count stops a
+// change: the issue goes on, and the controller can move it to backlog or icebox as it can any
+// root.
 func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Issue, reasons []record.Defect) error {
 	every := e.cfg.ReviewRoundCap
 	if every <= 0 || issue.NextChanges%every != 0 {
@@ -176,8 +178,12 @@ func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Is
 	} else {
 		text += " "
 	}
-	if issue.Merge.Number != 0 {
-		text += fmt.Sprintf("Its newest merged pull request is #%d. ", issue.Merge.Number)
+	pulls, err := e.changePullRequests(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	if len(pulls) > 0 {
+		text += "Its pull requests:" + bulleted(pulls) + "\n"
 	}
 	text += "Move the issue to backlog or icebox where the work should stop."
 	notice := record.Notice{Kind: "next-change-count", Role: claim.RoleArchitect, Reason: text}
@@ -185,6 +191,35 @@ func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{Kind: "next-change-count", Reason: text}))
+}
+
+// changePullRequests is each pull request of key's generations, as #<number> in number order,
+// each once: every one a new generation's clear kept a clock of (cleared_pull_requests), the one
+// its pull_requests row holds, and the merge snapshot's, which the evidence projection reads
+// together (record.Store.MergeHistoryOf). A change that ended with no pull request names none.
+func (e *Engine) changePullRequests(ctx context.Context, tx pgx.Tx, key string) ([]string, error) {
+	history, err := e.store.MergeHistoryOf(ctx, tx, key)
+	if err != nil {
+		return nil, err
+	}
+	evidence := history.Evidence
+	numbers := make([]int, 0, len(evidence.Clocks)+2)
+	for _, clock := range evidence.Clocks {
+		numbers = append(numbers, clock.Number)
+	}
+	if evidence.PullRequest != nil {
+		numbers = append(numbers, evidence.PullRequest.Number)
+	}
+	numbers = append(numbers, evidence.Merge.Number)
+	slices.Sort(numbers)
+	numbers = slices.Compact(numbers)
+	pulls := make([]string, 0, len(numbers))
+	for _, number := range numbers {
+		if number > 0 {
+			pulls = append(pulls, fmt.Sprintf("#%d", number))
+		}
+	}
+	return pulls, nil
 }
 
 // changeReasons is the reasons a next change of issue would carry now: its open defects that no
@@ -293,9 +328,11 @@ func checkFailedText(failed record.CheckWait) string {
 // changeDue says whether the next change of issue may start now (D7): never before the merge of
 // the reviewed work, so the change starts at the later of the first read of the checks that
 // counts after the entry into verifying and the merger's completion of the generation that
-// merged, whose fallback is MergerCompletionBound after the merge. It answers the moment the
-// fallback comes due where the completion is what holds the change, so the judge reads the checks
-// again then.
+// merged, whose fallback is MergerCompletionBound after the merge. The merge's moment is GitHub's
+// merged_at, or the entry into verifying where the snapshot holds none (an older listener's
+// merge fact), which is the moment the daemon took the merge (mergedEntry): counted from the
+// zero time, the bound would have passed already. It answers the moment the fallback comes due
+// where the completion is what holds the change, so the judge reads the checks again then.
 func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool) {
 	if view.wait.Unread {
 		return time.Time{}, false
@@ -303,7 +340,11 @@ func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool)
 	if !issue.MergerCompletionOwed {
 		return time.Time{}, true
 	}
-	fallback := issue.Merge.MergedAt.UTC().Add(MergerCompletionBound)
+	merged := issue.Merge.MergedAt
+	if merged.IsZero() {
+		merged = view.facts.Entered
+	}
+	fallback := merged.UTC().Add(MergerCompletionBound)
 	if !e.now().Before(fallback) {
 		return time.Time{}, true
 	}
