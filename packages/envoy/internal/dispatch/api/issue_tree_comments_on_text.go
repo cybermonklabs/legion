@@ -123,29 +123,75 @@ var textCommentsStatement = `
 // first column of every row is how many comments it chose, and one row answers that alone where
 // none was chosen.
 //
-// The newest are read off the issue's comments newest first (comments_issue_created), each with
-// its thread's first comment where that is one on text (textThreadHeadSQL), until $8 are read: a
-// comment of a thread is a comment of its first comment's issue, since a reply's reply_to is a
-// comment of the owner it is written on (threadHeadFrom). So the read of an issue of 9,252 comments
-// on text reads about the page's few, where finding every thread first read every comment of the
-// issue and sorted them all, 33 ms a read. Each comment chosen past the newest climbs to its
-// thread's first comment the same way. Every other comment it reads, it reads by its key in a
-// lateral subquery Postgres keeps (`offset 0`), and what a row answers of a comment is carried
-// from where the comment was read: joined plainly, Postgres reckoned 40,000 rows of the 401 chosen
-// and read each of them, and each first comment's thread, out of a hash of every comment in the
-// store, three scans of its 10,012 comments for a read of an issue of 600.
+// It reads the newest one of two ways, chosen by how many first comments of threads on text the
+// issue holds (heads), each as textThreadHeadSQL tests one, read through
+// comments_anchor_artifact and comments_issue_node_anchor as textCommentsStatement reads them and
+// counted up to $8 + 1 (few). Where they are at most $8, or $8 is null, it reads every comment of
+// their threads, down at most $5 links as textCommentsStatement reads a thread, and keeps the $8
+// newest (headed): on an issue of 9,252 comments, none of them on text, it reads no comment,
+// where reading the issue's comments newest first read every one and climbed each to its
+// thread's first comment, 15.02 ms of the 17.01 ms of database time of each view read. Otherwise
+// it reads the issue's comments newest first (comments_issue_created), each with its thread's
+// first comment where that is one on text (textThreadHeadSQL), until $8 are read: on an issue of
+// 9,252 threads on text it reads about the page's few, where reading every thread first read
+// every comment of the issue and sorted them all, 33 ms a read. Reading the issue's comments finds
+// every comment of its threads, since a reply's reply_to is a comment of the owner it is written
+// on (threadHeadFrom), and the first way tests each comment's issue, its time and the position as
+// the second does, so both answer the same comments. Each way's condition names no column of the
+// rows it keeps, so Postgres tests it once, before the way reads a row (a one-time filter), and
+// the way not taken reads nothing. The heads' arm over node anchors leaves out a comment their arm
+// over document anchors reads, so a comment holding both is one head: Postgres reads both arms of
+// a union whole before it answers a row of it, so a union would have the count read every head of
+// the issue.
+//
+// Each comment chosen past the newest climbs to its thread's first comment as the second way does
+// (textThreadHeadSQL). Every other comment it reads, it reads by its key in a lateral subquery
+// Postgres keeps (`offset 0`), and what a row answers of a comment is carried from where the
+// comment was read: joined plainly, Postgres reckoned 40,000 rows of the 401 chosen and read each
+// of them, and each first comment's thread, out of a hash of every comment in the store, three
+// scans of its 10,012 comments for a read of an issue of 600.
 var viewTextCommentsStatement = `
 	with recursive documents as (
 		select a.id from artifacts a where a.issue_key = $1
 	),
+	heads (id, created_at) as (
+		select c.id, c.created_at
+		from artifacts a
+		join comments c on (c.anchor->>'artifact_id')::uuid = a.id
+		where a.issue_key = $1 and c.issue_key = $1 and c.created_at <= $2
+		  and c.reply_to is null and c.answers is null and c.ask_id is null
+		union all
+		select c.id, c.created_at
+		from comments c
+		where c.issue_key = $1 and c.node_anchor is not null and c.created_at <= $2
+		  and c.reply_to is null and c.answers is null and c.ask_id is null
+		  and not exists (select 1 from documents where documents.id = (c.anchor->>'artifact_id')::uuid)
+	),
+	few (heads_first) as (
+		select $8 is null or count(*) <= $8 from (select 1 from heads limit $8::bigint + 1) counted
+	),
+	headed (head, id, created_at, answers, issue_key, depth) as (
+		select heads.id, heads.id, heads.created_at, null::uuid, $1::text, 0 from heads
+		union all
+		select headed.head, c.id, c.created_at, coalesce(c.answers, c.reply_to), c.issue_key, headed.depth + 1
+		from headed join comments c on c.reply_to = headed.id
+		where headed.depth < $5 and c.created_at <= $2
+	),
 	newest as (
-		select head.id as head, c.id, c.created_at, coalesce(c.answers, c.reply_to) as answers
+		(select headed.head, headed.id, headed.created_at, headed.answers
+		from headed
+		where (select few.heads_first from few) and headed.issue_key = $1
+		  and ($6::timestamptz is null or (headed.created_at, headed.id) < ($6::timestamptz, $7::uuid))
+		order by headed.created_at desc, headed.id desc
+		limit $8)
+		union all
+		(select head.id, c.id, c.created_at, coalesce(c.answers, c.reply_to)
 		from comments c
 		cross join lateral (` + textThreadHeadSQL("c") + `) head
-		where c.issue_key = $1 and c.created_at <= $2
+		where not (select few.heads_first from few) and c.issue_key = $1 and c.created_at <= $2
 		  and ($6::timestamptz is null or (c.created_at, c.id) < ($6::timestamptz, $7::uuid))
 		order by c.created_at desc, c.id desc
-		limit $8
+		limit $8)
 	),
 	chosen (id) as (
 		select newest.id from newest
@@ -365,9 +411,14 @@ var errViewTextShort = errors.New("the comments on text a view's read chose hold
 // (refs.HeadView), into textChosen: of those older than the read's position, the newest
 // viewTextChoice, or every one where the read is everyText, and whether that is all of them
 // (textWhole), which it is not where more remain than readViewTextChoice read (textMore). It
-// answers their ids and, once for each of their threads, the node the thread is on, whose rows and
-// those above it the read reads too, so the node each thread stands with is a node of its walk
-// where it is one of the walk of the whole tree.
+// answers their ids, then the id of each comment one of them answers, and so on up to its thread's
+// first comment, and, once for each of their threads, the node the thread is on, whose rows and
+// those above it the read reads too, so each comment it chose stands where the walk of the whole
+// tree puts it, and the node each thread stands with is a node of its walk where it is one of the
+// walk of the whole tree. The rows above a comment do not hold the comment it answers: without
+// those, the 60 newest comments of an issue, replies in a thread whose first comment was older
+// than the 400 chosen, came with no view, and the spec view, which carried 340 of the others,
+// answered a page of 200 of those 340.
 func (b *issueTreeBuilder) chooseViewText() ([]string, []refs.Target) {
 	b.textChosen, b.textWhole = map[refs.Target]bool{}, !b.textMore
 	var comments []string
@@ -388,6 +439,19 @@ func (b *issueTreeBuilder) chooseViewText() ([]string, []refs.Target) {
 		if !on[text.head] {
 			on[text.head] = true
 			nodes = append(nodes, b.textThreads[text.head].on)
+		}
+	}
+	above := map[refs.Target]bool{}
+	for _, id := range comments[:len(b.textChosen)] {
+		at := b.textComments[refs.Target{Kind: graphstore.KindComment, ID: id}].answers
+		for at != (refs.Target{}) && !b.textChosen[at] && !above[at] {
+			text, held := b.textComments[at]
+			if !held {
+				break
+			}
+			above[at] = true
+			comments = append(comments, at.ID)
+			at = text.answers
 		}
 	}
 	return comments, nodes
