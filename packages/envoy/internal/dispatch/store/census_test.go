@@ -1632,15 +1632,23 @@ func TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit(t *testi
 // census's first copy, the holder showed "idle" with no transaction start and refused as hidden
 // from the census's role, naming pg_read_all_stats, which changes nothing for its own role.
 //
-// It runs alone because the census pauses inside its one transaction only by waiting for a lock,
-// and every lock wait of the census ends at its lock_timeout: its read-only transaction takes no
-// row lock, and lock_timeout ends a wait for any heavyweight lock. So the census's 5 s wait on
-// blocker is the only window for the holder's begin, its lock of things and the release of
-// blocker, and the load of the parallel tests could make them miss it.
+// The census pauses inside its one transaction only by waiting for a lock, and every lock wait of
+// the census ends at its lock_timeout: its read-only transaction takes no row lock, and
+// lock_timeout ends a wait for any heavyweight lock. So the census's wait on blocker is the only
+// window for the holder's begin, its lock of things and the release of blocker. The census reads
+// under the store's lock discipline (censusUnder) with a Timeout that does not end before the
+// test's shared waits give up (lockTimeoutPastTheGiveUp), so its lock_timeout does not close that
+// window while the test can still act: a step slowed past it fails the test where testwait gives
+// up, naming the wait. The census's wait on blocker is a statement of the census, the migration's
+// own census, so pgmigrate.CensusStatementTimeout bounds it too: production's minute, which bounds
+// every statement of every deployment's census and which the three steps, a statement each, do not
+// outlast. The load of the parallel tests can slow the steps but not make them miss the window,
+// so the test runs beside them.
 func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCensus(t *testing.T) {
-	// Not parallel: the holder's begin, its lock of things and the release of blocker must land within the census's 5 s lock wait on blocker (pgmigrate.LockTimeout), a wall-clock bound the parallel tests' load could make them miss.
+	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
+	store.lockTimeout = lockTimeoutPastTheGiveUp(t)
 	if _, err := store.Pool.Exec(ctx, "create table others (id integer); create table blocker (id integer)"); err != nil {
 		t.Fatal(err)
 	}
@@ -1673,7 +1681,7 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	}
 	done := make(chan result, 1)
 	go func() {
-		report, err := census(ctx, url, set, pgmigrate.CensusOptions{})
+		report, err := censusUnder(ctx, store.locking(), url, set, pgmigrate.CensusOptions{})
 		done <- result{report, err}
 	}()
 	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
@@ -1695,7 +1703,7 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	if err := blocked.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got := <-done
+	got := testwait.Receive(t, "the census to return once blocker was released", done)
 	if got.err != nil {
 		t.Fatalf("census: %v", got.err)
 	}
@@ -2151,21 +2159,25 @@ func TestCensusFollowsAForeignKeyAnEarlierPendingMigrationAdds(t *testing.T) {
 // EXCLUSIVE on it, which every read of its size or rows waits behind - refuses naming the table,
 // the SQLSTATE and the holder, and the census still finishes its report: the wait gave up inside a
 // savepoint, so it left the transaction usable.
+//
+// The census reads under the store's lock discipline (censusUnder) at shortLockTimeout. The test
+// holds the one lock the census waits for until the census has returned, so the refusal is the
+// server's 55P03 at that bound however slowly the server runs, and the refusal names the bound.
 func TestCensusRefusesATouchedTableItCannotReadWithinTheLockTimeout(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
+	store.lockTimeout = shortLockTimeout
 	pid := holdLock(t, store, "things", "access exclusive")
-	started := time.Now()
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{})
+	report, err := censusUnder(ctx, store.locking(), url, withCheck("select 0"), pgmigrate.CensusOptions{})
 	if err != nil {
-		t.Fatalf("census: %v (after %s)", err, time.Since(started).Round(time.Millisecond))
+		t.Fatalf("census: %v", err)
 	}
-	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "could not read things within 5s (SQLSTATE 55P03)") || !strings.Contains(got[0], "pid "+strconv.FormatUint(uint64(pid), 10)) {
+	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "could not read things within "+shortLockTimeout.String()+" (SQLSTATE 55P03)") || !strings.Contains(got[0], "pid "+strconv.FormatUint(uint64(pid), 10)) {
 		t.Errorf("refusals = %v, want one naming the table, 55P03 and pid %d", got, pid)
 	}
 	out := reportText(report)
-	if !strings.Contains(out, "touches things: not read, its lock was not granted within 5s") || !strings.Contains(out, "census: transactions open longer than 1m0s, or of an age the census cannot see: none") {
+	if !strings.Contains(out, "touches things: not read, its lock was not granted within "+shortLockTimeout.String()) || !strings.Contains(out, "census: transactions open longer than 1m0s, or of an age the census cannot see: none") {
 		t.Errorf("report:\n%s", out)
 	}
 }
@@ -2227,12 +2239,18 @@ func TestCensusChecksTheTablesAForeignKeyReachesFromARowTheMigrationWrites(t *te
 		t.Fatal(err)
 	}
 
+	// The second census waits for the lock the test holds on ask_followers: it reads under the
+	// store's lock discipline at shortLockTimeout (censusUnder), and the test holds that one lock
+	// until the census has returned, so the refusal is the server's 55P03 at that bound however
+	// slowly the server runs. The first census waited for no lock: the row lock the old
+	// transaction held leaves every read of the census through.
+	store.lockTimeout = shortLockTimeout
 	exclusive := "pid " + strconv.FormatUint(uint64(holdLock(t, store, "ask_followers", "access exclusive")), 10)
-	report, err = census(ctx, url, set, pgmigrate.CensusOptions{})
+	report, err = censusUnder(ctx, store.locking(), url, set, pgmigrate.CensusOptions{})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
-	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "could not read ask_followers within 5s (SQLSTATE 55P03)") || !strings.Contains(got[0], exclusive) {
+	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "could not read ask_followers within "+shortLockTimeout.String()+" (SQLSTATE 55P03)") || !strings.Contains(got[0], exclusive) {
 		t.Errorf("refusals = %v, want one naming ask_followers, 55P03 and %s", got, exclusive)
 	}
 }

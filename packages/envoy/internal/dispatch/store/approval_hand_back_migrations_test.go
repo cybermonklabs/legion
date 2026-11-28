@@ -168,10 +168,15 @@ func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
 // while 0066 waits for comments closes a cycle with it, and 0066 gives up first, applying nothing,
 // before Postgres's deadlock check runs on either side: the write commits, and the runner's next
 // attempt applies 0066. Under the runner's five-second bound that cycle aborts one side with 40P01.
+//
+// The store runs under production's Timeout on a fake clock: 0066 sets its own 500 ms, and the
+// runner's pause before its next attempt runs on the store's clock, which the test moves past once
+// the runner has armed it (movePastThePause) and the write has committed.
 func TestMigrate0066GivesUpBeforeACommentWriteThatWritesAsksDeadlocks(t *testing.T) {
 	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the line pgmigrate logs when 0066 gives up its first attempt.
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 65)
+	fake := underLocking(store, 0)
 	logs := captureLogs(t)
 	var askID string
 	if _, err := store.Pool.Exec(ctx, `
@@ -215,7 +220,8 @@ func TestMigrate0066GivesUpBeforeACommentWriteThatWritesAsksDeadlocks(t *testing
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the comment write: %v", err)
 	}
-	if err := <-migrated; err != nil {
+	movePastThePause(t, fake, 1)
+	if err := testwait.Receive(t, "the runner to return once the comment write ended", migrated); err != nil {
 		t.Fatalf("the runner should have applied 0066 on a later attempt once the comment write ended, got: %v", err)
 	}
 	if out := logs.String(); !strings.Contains(out, "the runner tries it again") || !strings.Contains(out, "migration=0066_asks_handed_back_reply_fkey.up.sql") || !strings.Contains(out, "attempt=1") {

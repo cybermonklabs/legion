@@ -484,10 +484,18 @@ func TestWindowOwnerMigrationBuildsAValidPartialIndex(t *testing.T) {
 // INFRA-1973's own sequence at the layer that records a version: a concurrent build cancelled at
 // the runner's lock_timeout leaves an INVALID index of the migration's own name, and the retry
 // drops that leftover, builds the index again and records the migration's version.
+//
+// The store runs under shortLockTimeout on a fake clock. No verdict reads the lock watch, which on
+// a clock the test never moves to its tick never dials, so it holds no snapshot the build would
+// wait for; and the writer holds the one snapshot the build waits for until the runner has paused
+// after the first attempt, which is the fact the test waits for (awaitThePause), so the attempt
+// gives up at the server's lock_timeout however slowly the server runs. The writer commits in that
+// pause, and the test then moves the store's clock past it.
 func TestMigrateRecordsTheVersionAfterATimedOutConcurrentBuild(t *testing.T) {
-	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the runner's attempt and INVALID-index lines, and orders the writer's commit into the runner's pause by a sleep.
+	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the runner's attempt and INVALID-index lines.
 	ctx := context.Background()
 	store, _ := migratedToOne(t)
+	fake := underLocking(store, shortLockTimeout)
 	logs := captureLogs(t)
 	set := fstest.MapFS{
 		"migrations/0001_things.up.sql": censusBase["migrations/0001_things.up.sql"],
@@ -502,11 +510,12 @@ func TestMigrateRecordsTheVersionAfterATimedOutConcurrentBuild(t *testing.T) {
 	go func() { migrated <- store.migrate(ctx, set) }()
 	leftover := waitForInvalidIndex(t, store, "things_kind")
 	// Past the first attempt's lock_timeout and into the pause, then let the writer go.
-	time.Sleep(pgmigrate.LockTimeout + pgmigrate.LockTimeoutRetryPause/2)
+	awaitThePause(t, fake, 1)
 	if err := held.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-migrated; err != nil {
+	fake.Advance(pgmigrate.LockTimeoutRetryPause)
+	if err := testwait.Receive(t, "migrate to return once the writer committed", migrated); err != nil {
 		t.Fatalf("migrate after the timed-out concurrent build: %v", err)
 	}
 	if got := schemaVersion(t, store); got != 2 {

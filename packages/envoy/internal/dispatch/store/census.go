@@ -17,12 +17,23 @@ const censusApplicationName = "envoy-dispatch census"
 // Census takes the pre-deploy census (pgmigrate.Census) of the database databaseURL names against
 // the migrations this binary embeds, on one connection of its own: a deployment runs it before it
 // rolls the service, so it uses no pool and migrates nothing. It refuses and names a DSN as Open
-// does (pgdsn).
+// does (pgdsn). It reads under the zero pgmigrate.Locking, the lock discipline of every Store Open
+// returns (Store.locking), so it waits for each lock under the lock_timeout the deployment's runner
+// then waits under.
 func Census(ctx context.Context, databaseURL string) (*pgmigrate.Report, error) {
 	return census(ctx, databaseURL, migrationFiles, pgmigrate.CensusOptions{})
 }
 
+// census is Census of the migrations in fsys, under the zero Locking, production's (censusUnder).
 func census(ctx context.Context, databaseURL string, fsys fs.FS, options pgmigrate.CensusOptions) (*pgmigrate.Report, error) {
+	return censusUnder(ctx, pgmigrate.Locking{}, databaseURL, fsys, options)
+}
+
+// censusUnder is census under locking, whose Timeout is the lock_timeout each of its lock waits
+// runs under. A test that gives its store a shorter Timeout, or a longer one, passes that store's
+// Locking (Store.locking), so the census of the store's database reads under the bound the store's
+// runner waits under.
+func censusUnder(ctx context.Context, locking pgmigrate.Locking, databaseURL string, fsys fs.FS, options pgmigrate.CensusOptions) (*pgmigrate.Report, error) {
 	migrations, err := pgmigrate.Load(fsys, "migrations")
 	if err != nil {
 		return nil, fmt.Errorf("migrations refused: %w", err)
@@ -44,7 +55,7 @@ func census(ctx context.Context, databaseURL string, fsys fs.FS, options pgmigra
 		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	defer conn.Close(ctx)
-	return pgmigrate.Census(ctx, conn, migrations, "schema_migrations", options)
+	return locking.Census(ctx, conn, migrations, "schema_migrations", options)
 }
 
 // CheckVersions reads what schema_migrations, on the database databaseURL names, records of each

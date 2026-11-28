@@ -2,6 +2,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"embed"
 	"errors"
@@ -38,6 +39,12 @@ type Store struct {
 	// test sets it, to a clocktest.Fake that it moves past the timer it waits out, so how long the
 	// machine takes decides nothing.
 	clock clock.Clock
+	// lockTimeout is the Timeout of the store's lock discipline (locking): the lock_timeout each
+	// lock wait of the runner and of the store's census runs under. Zero, which every Store Open
+	// makes leaves it, is pgmigrate.LockTimeout, production's five seconds. Only a test sets it, on
+	// the one store it runs, to a Timeout pgmigrate.Locking takes, and only where no verdict of the
+	// test depends on how short it is: the test waits for the lock timeout the server reports.
+	lockTimeout time.Duration
 }
 
 // clk is the clock the store's own timers run on: the clock a test set, or clock.Real where none
@@ -47,6 +54,17 @@ func (s *Store) clk() clock.Clock {
 		return clock.Real()
 	}
 	return s.clock
+}
+
+// locking is the store's one lock discipline: lockTimeout as its Timeout and the store's clock
+// (clk) as its Clock, on which the runner's pause between two attempts, its lock watch and the
+// bounds of a holder's diagnosis run. Every step of the runner reads it (prepareVersionTable,
+// applyMigration, applyMigrationOnce, applyNonTransactionalMigration), and so do the bound on the
+// close of a connection the runner ends (closeBounded) and a test's census of the store's database
+// (censusUnder), so none of them runs under another timeout. A Store Open returns runs the zero
+// Locking's discipline, production's: pgmigrate.LockTimeout on clock.Real().
+func (s *Store) locking() pgmigrate.Locking {
+	return pgmigrate.Locking{Timeout: s.lockTimeout, Clock: s.clk()}
 }
 
 // Every file in migrations, so the store's tests judge each one with pgmigrate.Load
@@ -166,9 +184,10 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 // reason lockMigrations gives. It refuses a set pgmigrate.LoadBuilt refuses before touching the
 // database, refuses a database whose schema_migrations records a version under another file's
 // identity before applying anything (prepareVersionTable), and bounds every migration's lock
-// waits by LockTimeout. A marked migration whose statement is not one idempotent concurrent index
-// build is refused at its turn, after the pending migrations before it have been applied
-// (pgmigrate.LoadBuilt says why the start reads the set that way).
+// waits by the store's lock discipline (locking), pgmigrate.LockTimeout in every deployment. A
+// marked migration whose statement is not one idempotent concurrent index build is refused at its
+// turn, after the pending migrations before it have been applied (pgmigrate.LoadBuilt says why the
+// start reads the set that way).
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
@@ -349,7 +368,7 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 		// ends the session and the key with it, and costs one connection on a path whose boot has
 		// failed anyway. (A cancelled Go context needs none of this - pgx closes the socket - but
 		// it cannot be told apart from the rest here either.)
-		closeBounded(ctx, conn.Hijack())
+		s.closeBounded(ctx, conn.Hijack())
 		return err
 	}
 	defer unlockMigrations(conn)
@@ -389,12 +408,15 @@ func unlockMigrations(conn *pgxpool.Conn) {
 	}
 }
 
-// closeBounded closes conn on a context a cancelled ctx does not cancel, bounded like the rest of
-// this runner's waits (pgmigrate.LockTimeout). Its two callers are this runner's own: the failed
-// lock, which hands over the connection it hijacks out of the pool, and the concurrent build,
-// which owns its connection.
-func closeBounded(ctx context.Context, conn *pgx.Conn) {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
+// closeBounded closes conn on a context a cancelled ctx does not cancel, bounded like each lock
+// wait of this runner: by its lock discipline's Timeout (locking), pgmigrate.LockTimeout where the
+// store sets none, as in every deployment. The bound runs on the wall clock, not on the store's
+// clock: it guards a transport that has failed, which no test waits out, and on a fake clock that a
+// test never moves it would bound nothing, as pgmigrate's lock watch says of the bound on the close
+// of its own connection. Its two callers are this runner's own: the failed lock, which hands over
+// the connection it hijacks out of the pool, and the concurrent build, which owns its connection.
+func (s *Store) closeBounded(ctx context.Context, conn *pgx.Conn) {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(s.locking().Timeout, pgmigrate.LockTimeout))
 	defer cancel()
 	_ = conn.Close(cleanup)
 }
@@ -411,13 +433,13 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // On a table an earlier runner created, it adds the identity columns the table lacks and, when
 // widen is set, widens the version column of a table from before the versions became timestamps,
 // in one ALTER TABLE (pgmigrate.EnsureIdentityColumns), so the table's ACCESS EXCLUSIVE lock is
-// taken once, and only where a column is owed. Pin's lock_timeout bounds that lock's wait at
-// pgmigrate.LockTimeout (5 s), and the lock is held to the commit of this short transaction:
-// adding a nullable column with no default writes the catalog alone, and widening rewrites a table
-// of a few hundred rows. Every statement an earlier runner sends on the table names its columns,
-// so its prepared statements keep their result types when the columns are added, and a release
-// before this one rolls beside it, its rows recording no name until this runner's next boot fills
-// them.
+// taken once, and only where a column is owed. Pin's lock_timeout bounds that lock's wait at the
+// store's lock discipline's Timeout (locking), pgmigrate.LockTimeout (5 s) in every deployment, and
+// the lock is held to the commit of this short transaction: adding a nullable column with no
+// default writes the catalog alone, and widening rewrites a table of a few hundred rows. Every
+// statement an earlier runner sends on the table names its columns, so its prepared statements
+// keep their result types when the columns are added, and a release before this one rolls beside
+// it, its rows recording no name until this runner's next boot fills them.
 //
 // The column is a bigint because a migration added since the set stopped being numbered is named
 // for the UTC moment it was created, 14 digits, which is past the 2147483647 an integer column
@@ -436,22 +458,23 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // commit the table holds every identity column, which each migration's recheck relies on: it
 // selects them by name rather than read the table's columns again (pgmigrate.RecheckRecorded).
 //
-// The callback pins its transaction first (pgmigrate.Pin), as applyMigrationOnce's does, so every
-// statement the runner sends on its version table runs under one set of values:
+// The callback pins its transaction first (the store's Locking's Pin), as applyMigrationOnce's
+// does, so every statement the runner sends on its version table runs under one set of values:
 // session_authorization, role and search_path at the values that RESET gives them, under which
 // schema_migrations and information_schema.columns resolve as the version check and the census
-// resolve them, and lock_timeout at LockTimeout. A lock wait that outlasts it rolls the
-// transaction back and tries it again, as a migration is tried
-// (pgmigrate.RetryVersionTableLockTimeouts), so a boot that starts while a pg_dump or a census
-// holds the table waits it out within that bound rather than fail on its first wait.
+// resolve them, and lock_timeout at the store's Timeout. A lock wait that outlasts it rolls the
+// transaction back and tries it again after a pause on the store's clock, as a migration is tried
+// (pgmigrate.Locking.RetryVersionTableLockTimeouts), so a boot that starts while a pg_dump or a
+// census holds the table waits it out within that bound rather than fail on its first wait.
 func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) (map[int]bool, error) {
 	widen := slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version > math.MaxInt32 })
 	applied := map[int]bool{}
 	var fixes []pgmigrate.Fix
-	err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
+	locking := s.locking()
+	err := locking.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
 		fixes = nil
 		return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-			if err := pgmigrate.Pin(ctx, tx); err != nil {
+			if err := locking.Pin(ctx, tx); err != nil {
 				return fmt.Errorf("pin the runner's settings: %w", err)
 			}
 			if _, err := tx.Exec(ctx, `
@@ -492,11 +515,12 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 
 // applyMigration applies one migration of migrations, the boot's whole set, trying it again while
 // its lock wait outlasts lock_timeout, up to pgmigrate.LockTimeoutAttempts times, holding nothing
-// between attempts. A concurrent build's retry first drops an INVALID index of the migration's own
-// name the previous attempt left on the migration's own table, then builds the index again.
-// A migration that times out on every attempt fails the runner and boot with it.
+// between attempts, each pause between them on the store's clock (locking). A concurrent build's
+// retry first drops an INVALID index of the migration's own name the previous attempt left on the
+// migration's own table, then builds the index again. A migration that times out on every attempt
+// fails the runner and boot with it.
 func (s *Store) applyMigration(ctx context.Context, migrations []pgmigrate.Migration, migration pgmigrate.Migration) error {
-	return pgmigrate.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
+	return s.locking().RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
 		return s.applyMigrationOnce(ctx, migrations, migration)
 	})
 }
@@ -510,15 +534,17 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migrations []pgmigrate.M
 	// connection the transaction then runs on (inMigrationLockTx), so the migration and its
 	// version record still commit together, and it is released before RetryLockTimeouts pauses
 	// between attempts.
+	locking := s.locking()
 	var fixes []pgmigrate.Fix
 	err := s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		// The check below and the insert of the version name schema_migrations without its
 		// schema. Pin gives the transaction the values that RESET gives session_authorization,
 		// role and search_path, under which the census reads, whatever session the pooled
 		// connection brings, so the check reads the version table that the census read, and bounds
-		// it by LockTimeout. Exec pins the transaction again after the migration's statements, so
-		// the insert runs under the same values whatever the migration's own stored code set.
-		if err := pgmigrate.Pin(ctx, tx); err != nil {
+		// it by the store's Timeout. Exec pins the transaction again after the migration's
+		// statements, so the insert runs under the same values whatever the migration's own stored
+		// code set.
+		if err := locking.Pin(ctx, tx); err != nil {
 			return fmt.Errorf("pin the runner's settings: %w", err)
 		}
 		// The key was released after prepareVersionTable judged the table, so another process may
@@ -533,7 +559,7 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migrations []pgmigrate.M
 		if applied {
 			return nil
 		}
-		if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
+		if err := locking.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
 			return fmt.Errorf("execute migration: %w", err)
 		}
 		return pgmigrate.Record(ctx, tx, versionTable, migration)
@@ -564,19 +590,20 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations [
 		return err
 	}
 	conn := pooled.Hijack()
-	defer closeBounded(ctx, conn)
+	defer s.closeBounded(ctx, conn)
 	if err := lockMigrations(ctx, conn); err != nil {
 		return err
 	}
 	// The check below and the version insert name schema_migrations without its schema.
 	// PinSession gives the session the values that RESET gives session_authorization, role and
 	// search_path, under which the census reads, whatever session the pooled connection this one
-	// was hijacked from brings, and bounds the check and the insert by LockTimeout, as Pin bounds
-	// the transactional runner's. No restore follows: closeBounded closes the connection once the
-	// migration is recorded, so no later caller meets the pinned session. ExecNonTransactional
-	// gives the session back the values it found on return, which are these, so the insert after
-	// it runs under them too, whatever the build's own code set.
-	if err := pgmigrate.PinSession(ctx, conn); err != nil {
+	// was hijacked from brings, and bounds the check and the insert by the store's Timeout, as Pin
+	// bounds the transactional runner's. No restore follows: closeBounded closes the connection
+	// once the migration is recorded, so no later caller meets the pinned session.
+	// ExecNonTransactional gives the session back the values it found on return, which are these,
+	// so the insert after it runs under them too, whatever the build's own code set.
+	locking := s.locking()
+	if err := locking.PinSession(ctx, conn); err != nil {
 		return fmt.Errorf("pin the runner's settings: %w", err)
 	}
 	// As in applyMigrationOnce. Each fill commits as its own statement here, so it is logged at
@@ -589,7 +616,7 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations [
 	if applied {
 		return nil
 	}
-	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
+	if err := locking.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
 	}
 	if s.afterNonTransactionalStatement != nil {

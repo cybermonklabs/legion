@@ -914,25 +914,30 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	}
 }
 
-// prepareVersionTable pins its transaction (pgmigrate.Pin), so the ALTER TABLE that gives an
-// earlier runner's schema_migrations the identity columns, and widens an integer version, takes
-// its ACCESS EXCLUSIVE lock within LockTimeout, and tries it again on a timeout, as a migration is
-// tried (pgmigrate.RetryVersionTableLockTimeouts). Here another connection holds ACCESS SHARE on
+// prepareVersionTable pins its transaction (the store's Locking's Pin), so the ALTER TABLE that
+// gives an earlier runner's schema_migrations the identity columns, and widens an integer version,
+// waits for its ACCESS EXCLUSIVE lock within the store's lock_timeout, and tries it again after a
+// timeout, pausing on the store's clock in between, as a migration is tried
+// (pgmigrate.Locking.RetryVersionTableLockTimeouts). Here another connection holds ACCESS SHARE on
 // such a table in an open transaction, so the alter must wait for it. A holder that stays gives
-// every attempt up after LockTimeout, and the boot fails with a lock-timeout error (SQLSTATE 55P03)
-// after LockTimeoutAttempts of them rather than waiting without limit; a holder that ends after the
-// first attempt, as a pg_dump does, lets the next attempt through, and the boot goes on. The first
-// two rows are tables an earlier runner left: an integer version from before the timestamps,
-// under a set that holds one, which the alter widens and gives the columns; and a bigint version,
-// which it gives the columns alone.
+// every attempt up at the lock_timeout, and the boot fails with a lock-timeout error (SQLSTATE
+// 55P03) after LockTimeoutAttempts of them rather than waiting without limit; a holder that ends
+// after the first attempt, as a pg_dump does, lets the next attempt through, and the boot goes on.
+// The first two rows are tables an earlier runner left: an integer version from before the
+// timestamps, under a set that holds one, which the alter widens and gives the columns; and a
+// bigint version, which it gives the columns alone.
 //
-// Control: remove the pgmigrate.Pin call from prepareVersionTable's callback and the alter waits
-// without limit; the context deadline below fires and the error is not a lock timeout. Remove the
-// retry, and the third row fails on the first attempt's timeout.
+// The store runs under shortLockTimeout on a fake clock. The test holds the lock until it has read
+// the outcome, so no verdict depends on how short the bound is, and each give-up is a fact the
+// runner reports: the pause it arms on the store's clock once an attempt has timed out
+// (awaitThePause), which the test then moves past, and the 55P03 it returns after the last.
+//
+// Control: remove the Pin call from prepareVersionTable's callback and the alter waits without
+// limit: the wait for the runner's first pause gives up at the test binary's deadline less
+// testwait's margin, naming it. Remove the retry, and the third row fails on the first attempt's
+// timeout, and the first two find no pause armed.
 func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
-	// Not parallel: it times prepareVersionTable's give-up against 3 attempts of pgmigrate.LockTimeout and the pauses between, and orders the holder's end into the pause by a sleep.
-	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
-	bound := attempts*pgmigrate.LockTimeout + (attempts-1)*pgmigrate.LockTimeoutRetryPause
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		versionType string
 		set         []pgmigrate.Migration
@@ -943,51 +948,48 @@ func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
 		"a holder that ends after the first attempt": {"bigint", nil, true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
 			store := openIsolatedStoreWithPool(t, poolOf(4))
-			setup := context.Background()
-			if _, err := store.Pool.Exec(setup, "create table schema_migrations (version "+tc.versionType+" primary key, applied_at timestamptz not null default now())"); err != nil {
+			fake := underLocking(store, shortLockTimeout)
+			if _, err := store.Pool.Exec(ctx, "create table schema_migrations (version "+tc.versionType+" primary key, applied_at timestamptz not null default now())"); err != nil {
 				t.Fatalf("seed an earlier runner's schema_migrations: %v", err)
 			}
-			holder := connectForTest(t, setup, store)
-			if _, err := holder.Exec(setup, "begin; lock table schema_migrations in access share mode"); err != nil {
+			holder := connectForTest(t, ctx, store)
+			if _, err := holder.Exec(ctx, "begin; lock table schema_migrations in access share mode"); err != nil {
 				t.Fatalf("hold a lock on schema_migrations: %v", err)
 			}
-			released := make(chan struct{})
-			if tc.release {
-				go func() {
-					defer close(released)
-					time.Sleep(pgmigrate.LockTimeout + pgmigrate.LockTimeoutRetryPause/2)
-					_, _ = holder.Exec(context.Background(), "rollback")
-				}()
-			} else {
-				close(released)
-				t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
-			}
-			t.Cleanup(func() { <-released })
+			t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
 
-			ctx, cancel := context.WithTimeout(setup, bound+10*time.Second)
-			defer cancel()
-			started := time.Now()
-			_, err := store.prepareVersionTable(ctx, tc.set)
-			elapsed := time.Since(started)
+			prepared := make(chan error, 1)
+			go func() {
+				_, err := store.prepareVersionTable(ctx, tc.set)
+				prepared <- err
+			}()
 			if tc.release {
-				if err != nil {
-					t.Fatalf("prepareVersionTable returned %v after %v; want the attempt after the holder ended to go through", err, elapsed)
+				// The first attempt gave up on the holder's lock, and the runner holds nothing while
+				// it pauses: the holder ends there, as a pg_dump that finishes does, and the runner
+				// tries again.
+				awaitThePause(t, fake, 1)
+				if _, err := holder.Exec(ctx, "rollback"); err != nil {
+					t.Fatalf("end the holder: %v", err)
 				}
-				if elapsed < pgmigrate.LockTimeout {
-					t.Errorf("prepareVersionTable returned after %v; want it to have waited out the first attempt (%v)", elapsed, pgmigrate.LockTimeout)
+				fake.Advance(pgmigrate.LockTimeoutRetryPause)
+				if err := testwait.Receive(t, "prepareVersionTable to return once the holder ended", prepared); err != nil {
+					t.Fatalf("prepareVersionTable returned %v; want the attempt after the holder ended to go through", err)
 				}
 				return
 			}
+			for attempt := 1; attempt < pgmigrate.LockTimeoutAttempts; attempt++ {
+				movePastThePause(t, fake, attempt)
+			}
+			err := testwait.Receive(t, "prepareVersionTable to give up after its last attempt", prepared)
 			var pgErr *pgconn.PgError
 			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts", pgmigrate.LockTimeoutAttempts)) {
-				t.Fatalf("prepareVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03) after %d attempts: the alter was not bounded", err, elapsed, pgmigrate.LockTimeoutAttempts)
+				t.Fatalf("prepareVersionTable returned %v; want a lock-timeout error (SQLSTATE 55P03) after %d attempts: the alter was not bounded", err, pgmigrate.LockTimeoutAttempts)
 			}
 			if pgmigrate.IsRefusal(err) {
 				t.Errorf("prepareVersionTable = %v; a lock timeout reads as a refusal of the recorded rows", err)
-			}
-			if elapsed < attempts*pgmigrate.LockTimeout || elapsed > bound+5*time.Second {
-				t.Errorf("prepareVersionTable returned after %v; want about %v, every attempt's LockTimeout and the pauses between", elapsed, bound)
 			}
 		})
 	}
