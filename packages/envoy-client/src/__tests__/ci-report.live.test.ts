@@ -3,6 +3,15 @@ import { cpSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } fro
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
+  commitSpec,
+  DISPATCH_CLI,
+  DISPATCH_ENTRY,
+  git,
+  outcomes,
+  type Reported,
+  runStep,
+} from "../../test/ci-report-step";
+import {
   type CIResultsStack,
   DISPATCH_HOST,
   type JobRun,
@@ -23,24 +32,22 @@ import { routeAnswer } from "../../test/route-answers";
 // place, to the real Dispatch server of the CI results stack (test/ci-results-stack.ts). Each row
 // reads the stored rows back as a person reads them.
 //
-// The reports in test/fixtures/ci-report are what `go test -json -count=1 -trimpath ./...` wrote
-// for a module example.com/acme/probe of two tests, TestProbe and TestSecondProbe:
-// go-test-all-pass.jsonl with both passing, go-test-first-fails.jsonl with TestProbe failing,
-// go-test-second-fails.jsonl with TestSecondProbe failing. go-test-job-passed.jsonl is
+// The reports in test/fixtures/ci-report are what `go test -json -count=1 -trimpath` wrote for a
+// module example.com/acme/probe of four tests, TestProbe, TestSecondProbe, TestThirdProbe and
+// TestFourthProbe: go-test-all-pass.jsonl with the first two passing, go-test-first-fails.jsonl
+// with TestProbe failing, go-test-second-fails.jsonl with TestSecondProbe failing, and
+// go-test-four-pass.jsonl with all four passing. go-test-job-passed.jsonl is
 // go-test-first-fails.jsonl with its three package events, and those alone, changed to a passing
 // package ("PASS", "ok", "pass"): a job whose own outcome is success while its named test failed,
-// which go test itself never writes. test/fixtures/ci-report/spec holds the two checks of job
-// go-checks that name those tests, and spec-without-the-second-check the first alone, each as
-// one spec file, probe.yaml, in the form `spec-check print` writes.
+// which go test itself never writes. test/fixtures/ci-report/make-reports.sh makes each again from
+// the package of test/fixtures/ci-report/cases. test/fixtures/ci-report/spec holds the two checks
+// of job go-checks that name the first two tests, and spec-without-the-second-check the first
+// alone, each as one spec file, probe.yaml, in the form `spec-check print` writes.
 
 // Destructured: claude-envoy's typecheck, which compiles this package's test files, forbids
 // `process.env.X`.
 const { PATH: SHELL_PATH = "" } = process.env;
 
-/** The CLI entry ci-report runs, as a CI job's shell reaches it: this checkout's own `dispatch`. */
-const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
-/** The step's `--dispatch-cli`: this checkout's CLI, run by this Bun. */
-const DISPATCH_CLI = `${process.execPath} ${ENTRY}`;
 /** The fixtures, outside src/: each job that compiles envoy-client reads src/, and none of those
  *  jobs reads these. */
 const FIXTURES = join(import.meta.dir, "..", "..", "test", "fixtures", "ci-report");
@@ -96,23 +103,6 @@ jobs:
 const stackDirectory = useCIResultsStackDirectory();
 const work = temporaryDirectory("ci-report-live");
 
-/** One JSON line that ci-report prints. */
-interface ReportLine {
-  readonly check: string;
-  readonly test: string;
-  readonly outcome: string;
-  readonly exit: number | null;
-  readonly result_id: string;
-  readonly why: string;
-}
-
-/** What one run of ci-report did. */
-interface Reported {
-  readonly code: number;
-  readonly lines: ReportLine[];
-  readonly stderr: string;
-}
-
 /** A row of `GET /api/v1/projects/{key}/results`, as these rows read it. */
 interface Row {
   readonly id: string;
@@ -139,57 +129,6 @@ interface Checkout {
   readonly sha: string;
 }
 
-/** Runs git with `args` in `cwd`, with no configuration of this machine's, and answers stdout. */
-function git(cwd: string, ...args: string[]): string {
-  const ran = Bun.spawnSync(
-    [
-      "git",
-      "-c",
-      "user.name=ACME CI",
-      "-c",
-      "user.email=ci@example.com",
-      "-c",
-      "commit.gpgsign=false",
-      ...args,
-    ],
-    {
-      cwd,
-      env: {
-        PATH: SHELL_PATH,
-        HOME: work,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-      },
-    }
-  );
-  if (ran.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${ran.stderr.toString()}`);
-  return ran.stdout.toString();
-}
-
-/** What a reader of the results makes of `check` at a commit whose rows are `rows`, for the run
- *  `runId` that tested it: the newest result's verdict, or UNKNOWN when Dispatch holds none. A
- *  job that left no result is never a pass. */
-function readCheck(rows: readonly Row[], check: string, runId: string): string {
-  const newest = rows.find((row) => row.attestation.predicate.check === check);
-  return newest === undefined
-    ? `UNKNOWN: Dispatch recorded nothing for run ${runId}`
-    : newest.attestation.predicate.verdict;
-}
-
-/** The run id GitHub's token for the job `env` names, read from a token its runner mints. */
-async function runIdOf(env: Readonly<Record<string, string>>): Promise<string> {
-  const url = new URL(env.ACTIONS_ID_TOKEN_REQUEST_URL ?? "");
-  url.searchParams.set("audience", env.AGENT_SECRETS_MACHINE_AUDIENCE ?? "");
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${env.ACTIONS_ID_TOKEN_REQUEST_TOKEN ?? ""}` },
-  });
-  const { value } = (await response.json()) as { value: string };
-  const payload = JSON.parse(Buffer.from(value.split(".")[1] ?? "", "base64url").toString()) as {
-    run_id: string;
-  };
-  return payload.run_id;
-}
-
 describe.skipIf(!dispatchStackEnabled)(
   "the last step of a CI job writes one result for each check whose test ran",
   () => {
@@ -208,11 +147,7 @@ describe.skipIf(!dispatchStackEnabled)(
      *  workflow file there, or `workflow` in its place. */
     function checkoutOf(name: string, spec: string, workflow?: string): Checkout {
       const dir = join(work, "checkouts", name);
-      cpSync(spec, join(dir, ".dispatch", "spec"), { recursive: true });
-      git(dir, "init", "-q");
-      git(dir, "add", "-A");
-      git(dir, "commit", "-q", "-m", name);
-      const sha = git(dir, "rev-parse", "HEAD").trim();
+      const sha = commitSpec(work, dir, spec, name);
       running().setFiles(sha, join(dir, ".dispatch", "spec"));
       if (workflow !== undefined) {
         running().github.setFile(running().repository, sha, WORKFLOW_PATH, workflow);
@@ -240,72 +175,34 @@ describe.skipIf(!dispatchStackEnabled)(
       return jobOf(checkout, checkRunId, { job: `${JOB} (${leg})`, ...overrides });
     }
 
-    /** What a row may change of the job's last step. */
+    /** What a row may change of the job's last step: its `--job`, JOB by default, its
+     *  `--dispatch-cli`, DISPATCH_CLI by default, a DISPATCH_URL of its own, and more variables. */
     interface StepOptions {
-      /** The step's `--job`, JOB by default. */
       readonly job?: string;
-      /** The step's `--dispatch-cli`, DISPATCH_CLI by default. */
       readonly dispatchCli?: string;
-      /** A DISPATCH_URL of the step's own, set inside the grant (`env DISPATCH_URL=<url>`
-       *  ci-report): `agent-secrets result-grant` runs nothing when the DISPATCH_URL it is given
-       *  names a host the airlock does not bind. */
       readonly dispatchUrl?: string;
-      /** More variables of the job's, for `agent-secrets result-grant` and its child. */
       readonly env?: Readonly<Record<string, string>>;
     }
 
-    /** The job's last step, as the action runs it: ci-report under `agent-secrets result-grant`
-     *  in the checkout, over the report `fixture`, with the job's variables and nothing of this
-     *  process's own but PATH. */
-    async function lastStep(
+    /** The job's last step, as the action runs it (runStep), in the checkout, over the report
+     *  `fixture`. */
+    function lastStep(
       checkout: Checkout,
       run: JobRun,
       fixture: string,
       options: StepOptions = {}
     ): Promise<Reported> {
-      const step = [
+      return runStep(running(), {
         ciReport,
-        "--dir",
-        ".dispatch/spec",
-        "--job",
-        options.job ?? JOB,
-        "--report",
-        join(FIXTURES, fixture),
-        "--project",
-        running().project,
-        "--dispatch-cli",
-        options.dispatchCli ?? DISPATCH_CLI,
-      ];
-      const child = Bun.spawn(
-        running().jobCommand(
-          options.dispatchUrl === undefined
-            ? step
-            : ["env", `DISPATCH_URL=${options.dispatchUrl}`, ...step]
-        ),
-        {
-          cwd: checkout.dir,
-          env: {
-            PATH: SHELL_PATH,
-            HOME: cliState,
-            DISPATCH_STATE_DIR: cliState,
-            GITHUB_SHA: run.sha,
-            ...running().jobEnv(run),
-            ...options.env,
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-        }
-      );
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
-      const lines = stdout
-        .split("\n")
-        .filter((text) => text !== "")
-        .map((text) => JSON.parse(text) as ReportLine);
-      return { code, lines, stderr };
+        dir: checkout.dir,
+        run,
+        report: join(FIXTURES, fixture),
+        job: options.job ?? JOB,
+        dispatchCli: options.dispatchCli ?? DISPATCH_CLI,
+        cliState,
+        ...(options.dispatchUrl === undefined ? {} : { dispatchUrl: options.dispatchUrl }),
+        ...(options.env === undefined ? {} : { env: options.env }),
+      });
     }
 
     /** Every stored row at `commit`, as a person reads them, newest first. */
@@ -323,7 +220,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const written = Bun.spawn(
         running().jobCommand([
           process.execPath,
-          ENTRY,
+          DISPATCH_ENTRY,
           "result",
           "--project",
           running().project,
@@ -351,11 +248,6 @@ describe.skipIf(!dispatchStackEnabled)(
         written.exited,
       ]);
       return { code, printed: `${stderr}${stdout}` };
-    }
-
-    /** Each line as its check, outcome and exit. */
-    function outcomes(reported: Reported): string[] {
-      return reported.lines.map((line) => `${line.check} ${line.outcome} exit ${line.exit}`);
     }
 
     /** Each row as its check, verdict, job, leg, attempt and commit, oldest first. */
@@ -479,7 +371,9 @@ describe.skipIf(!dispatchStackEnabled)(
       );
       expect(changed).not.toBe(committed);
       writeFileSync(file, changed);
-      expect(git(checkout.dir, "status", "--porcelain")).toBe(" M .dispatch/spec/probe.yaml\n");
+      expect(git(work, checkout.dir, "status", "--porcelain")).toBe(
+        " M .dispatch/spec/probe.yaml\n"
+      );
 
       const reported = await lastStep(checkout, jobOf(checkout, 851), "go-test-second-fails.jsonl");
 
@@ -634,28 +528,6 @@ describe.skipIf(!dispatchStackEnabled)(
       ]);
     }, 180_000);
 
-    // This row cannot fail for a fault of the reporter: it reads no rows at a commit where no step
-    // ran, and the UNKNOWN text comes from this file's own readCheck. No product code decides
-    // "unknown" yet; the graph logic owns that. So nobody may count this row as evidence that "a
-    // step that left no result reads as unknown".
-    test("a job cancelled before its last step leaves no row at its commit, which reads as unknown and never as a pass", async () => {
-      // Another push, whose job did report, holds a pass of the same check at its own commit.
-      const reported = checkoutOf("cancelled-sibling", SPEC);
-      const sibling = await lastStep(reported, jobOf(reported, 701), "go-test-all-pass.jsonl");
-      expect(sibling.code).toBe(0);
-
-      const cancelled = checkoutOf("cancelled", SPEC);
-      const runId = await runIdOf(running().jobEnv(jobOf(cancelled, 702)));
-
-      const rows = await rowsAt(cancelled.sha);
-      const read = readCheck(rows, PROBE, runId);
-      console.log(read);
-      expect({ rows: rows.length, read }).toEqual({
-        rows: 0,
-        read: `UNKNOWN: Dispatch recorded nothing for run ${runId}`,
-      });
-    }, 120_000);
-
     // v-recorder: a build that records a result for another commit than the one that the job
     // tested fails. The job's token and GITHUB_SHA name the commit that the job tested; the
     // checkout then moves to a commit of its own, and the step reads that commit with git, so
@@ -663,8 +535,8 @@ describe.skipIf(!dispatchStackEnabled)(
     test("a checkout whose HEAD moved after the job's commit writes no result for either commit, and each write is refused", async () => {
       const checkout = checkoutOf("moved-head", SPEC);
       const run = jobOf(checkout, 901);
-      git(checkout.dir, "commit", "--allow-empty", "-q", "-m", "the checkout moves");
-      const moved = git(checkout.dir, "rev-parse", "HEAD").trim();
+      git(work, checkout.dir, "commit", "--allow-empty", "-q", "-m", "the checkout moves");
+      const moved = git(work, checkout.dir, "rev-parse", "HEAD").trim();
       expect(moved).not.toBe(checkout.sha);
 
       const reported = await lastStep(checkout, run, "go-test-all-pass.jsonl");
@@ -942,12 +814,21 @@ describe.skipIf(!dispatchStackEnabled)(
         }
         return readFileSync(path, "utf8").trim();
       };
-      const firstExit = await gateFile("1.exit");
-      await gateFile("2.waiting");
-      const storedFirst = described(await rowsAt(checkout.sha));
-      const mark = running().logMark();
-      const grantsEnded = endGrant ? await running().endResultGrants(checkRunId) : 0;
-      writeFileSync(join(gates, "release"), "");
+      // The reads between the first call and the release run in one promise whose finally writes
+      // `release` and waits for the step's end: a read that throws still lets each later call run
+      // and end, so ci-report, the CLI and agent-secrets end with the row, and the throw is the
+      // row's failure.
+      const { firstExit, storedFirst, mark, grantsEnded } = await (async () => {
+        const firstExit = await gateFile("1.exit");
+        await gateFile("2.waiting");
+        const storedFirst = described(await rowsAt(checkout.sha));
+        const mark = running().logMark();
+        const grantsEnded = endGrant ? await running().endResultGrants(checkRunId) : 0;
+        return { firstExit, storedFirst, mark, grantsEnded };
+      })().finally(async () => {
+        writeFileSync(join(gates, "release"), "");
+        await stepEnded;
+      });
       const reported = await step;
 
       // Each later call was refused at the CONNECT, which a broker logs, or written, which

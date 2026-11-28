@@ -1,24 +1,24 @@
-{"Time":"2026-11-27T23:19:48.712863313Z","Action":"start","Package":"example.com/acme/probe"}
-{"Time":"2026-11-27T23:19:48.727941649Z","Action":"run","Package":"example.com/acme/probe","Test":"TestProbe"}
-{"Time":"2026-11-27T23:19:48.728029229Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"=== RUN   TestProbe\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.728061156Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"    probe_test.go:6: the probe read 1 claim\n"}
-{"Time":"2026-11-27T23:19:48.728068986Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"--- PASS: TestProbe (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.728071582Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestProbe","Elapsed":0}
-{"Time":"2026-11-27T23:19:48.728082382Z","Action":"run","Package":"example.com/acme/probe","Test":"TestSecondProbe"}
-{"Time":"2026-11-27T23:19:48.728084885Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"=== RUN   TestSecondProbe\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.728088193Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"    probe_test.go:10: the second probe read 1 claim\n"}
-{"Time":"2026-11-27T23:19:48.728091981Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"--- PASS: TestSecondProbe (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.728094652Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestSecondProbe","Elapsed":0}
-{"Time":"2026-11-27T23:19:48.728096943Z","Action":"run","Package":"example.com/acme/probe","Test":"TestThirdProbe"}
-{"Time":"2026-11-27T23:19:48.728099117Z","Action":"output","Package":"example.com/acme/probe","Test":"TestThirdProbe","Output":"=== RUN   TestThirdProbe\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.728101129Z","Action":"output","Package":"example.com/acme/probe","Test":"TestThirdProbe","Output":"    probe_test.go:14: the third probe read 1 claim\n"}
-{"Time":"2026-11-27T23:19:48.728103229Z","Action":"output","Package":"example.com/acme/probe","Test":"TestThirdProbe","Output":"--- PASS: TestThirdProbe (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.728104972Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestThirdProbe","Elapsed":0}
-{"Time":"2026-11-27T23:19:48.728107416Z","Action":"run","Package":"example.com/acme/probe","Test":"TestFourthProbe"}
-{"Time":"2026-11-27T23:19:48.728109061Z","Action":"output","Package":"example.com/acme/probe","Test":"TestFourthProbe","Output":"=== RUN   TestFourthProbe\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.728110784Z","Action":"output","Package":"example.com/acme/probe","Test":"TestFourthProbe","Output":"    probe_test.go:18: the fourth probe read 1 claim\n"}
-{"Time":"2026-11-27T23:19:48.728112762Z","Action":"output","Package":"example.com/acme/probe","Test":"TestFourthProbe","Output":"--- PASS: TestFourthProbe (0.00s)\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.728114415Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestFourthProbe","Elapsed":0}
-{"Time":"2026-11-27T23:19:48.728116308Z","Action":"output","Package":"example.com/acme/probe","Output":"PASS\n","OutputType":"frame"}
-{"Time":"2026-11-27T23:19:48.729959947Z","Action":"output","Package":"example.com/acme/probe","Output":"ok  \texample.com/acme/probe\t0.017s\n"}
-{"Time":"2026-11-27T23:19:48.730012983Z","Action":"pass","Package":"example.com/acme/probe","Elapsed":0.017}
+{"Time":"2026-11-28T02:34:46.239725302Z","Action":"start","Package":"example.com/acme/probe"}
+{"Time":"2026-11-28T02:34:46.262876751Z","Action":"run","Package":"example.com/acme/probe","Test":"TestProbe"}
+{"Time":"2026-11-28T02:34:46.262932263Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"=== RUN   TestProbe\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.262955143Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"    probe_test.go:24: the probe read 1 claim\n"}
+{"Time":"2026-11-28T02:34:46.262960799Z","Action":"output","Package":"example.com/acme/probe","Test":"TestProbe","Output":"--- PASS: TestProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.262967166Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestProbe","Elapsed":0}
+{"Time":"2026-11-28T02:34:46.26297345Z","Action":"run","Package":"example.com/acme/probe","Test":"TestSecondProbe"}
+{"Time":"2026-11-28T02:34:46.262974994Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"=== RUN   TestSecondProbe\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.262977496Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"    probe_test.go:26: the second probe read 1 claim\n"}
+{"Time":"2026-11-28T02:34:46.262980649Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"--- PASS: TestSecondProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.262982184Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestSecondProbe","Elapsed":0}
+{"Time":"2026-11-28T02:34:46.262984133Z","Action":"run","Package":"example.com/acme/probe","Test":"TestThirdProbe"}
+{"Time":"2026-11-28T02:34:46.262985808Z","Action":"output","Package":"example.com/acme/probe","Test":"TestThirdProbe","Output":"=== RUN   TestThirdProbe\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.262987295Z","Action":"output","Package":"example.com/acme/probe","Test":"TestThirdProbe","Output":"    probe_test.go:28: the third probe read 1 claim\n"}
+{"Time":"2026-11-28T02:34:46.262988943Z","Action":"output","Package":"example.com/acme/probe","Test":"TestThirdProbe","Output":"--- PASS: TestThirdProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.262990327Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestThirdProbe","Elapsed":0}
+{"Time":"2026-11-28T02:34:46.262992953Z","Action":"run","Package":"example.com/acme/probe","Test":"TestFourthProbe"}
+{"Time":"2026-11-28T02:34:46.26299428Z","Action":"output","Package":"example.com/acme/probe","Test":"TestFourthProbe","Output":"=== RUN   TestFourthProbe\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.262997943Z","Action":"output","Package":"example.com/acme/probe","Test":"TestFourthProbe","Output":"    probe_test.go:30: the fourth probe read 1 claim\n"}
+{"Time":"2026-11-28T02:34:46.262999598Z","Action":"output","Package":"example.com/acme/probe","Test":"TestFourthProbe","Output":"--- PASS: TestFourthProbe (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.263000957Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestFourthProbe","Elapsed":0}
+{"Time":"2026-11-28T02:34:46.263002215Z","Action":"output","Package":"example.com/acme/probe","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:46.26897891Z","Action":"output","Package":"example.com/acme/probe","Output":"ok  \texample.com/acme/probe\t0.026s\n"}
+{"Time":"2026-11-28T02:34:46.269026526Z","Action":"pass","Package":"example.com/acme/probe","Elapsed":0.029}
