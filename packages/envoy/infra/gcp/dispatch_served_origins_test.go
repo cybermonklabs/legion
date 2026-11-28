@@ -385,6 +385,7 @@ func TestDispatchWithNoNewInputRendersTheBaseGoldens(t *testing.T) {
 		{dispatchPasskeyGolden, dispatchPasskeyArgs},
 		{dispatchPublicOriginGolden, dispatchPublicOriginArgs},
 		{dispatchIAPGolden, dispatchIAPArgs},
+		{dispatchServiceIdentityGolden, dispatchServiceIdentityArgs},
 	}
 	committed, err := filepath.Glob("testdata/dispatch-pod*.golden")
 	require.NoError(t, err)
