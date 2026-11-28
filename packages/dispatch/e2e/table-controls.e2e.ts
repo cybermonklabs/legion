@@ -5478,6 +5478,12 @@ test("with the agent list refilling from the start, the project List still says 
 // for the bar, so the floor it writes is not the height the box keeps, and the foot's pass then has
 // `measure` write 430. At 53f87411 nothing writes the box's style and it stands at 306 to 736
 // throughout (infra-3135-l-b5-v65cm, infra-3135-l-b1b-9zdsr).
+// Round 31 (the tester's), from the finding of INFRA-6245's implementer
+// (dispatch://INFRA-6245/comment/1825cbc1-b36c-43a9-93a5-47da1a940997): the row must also fail when
+// nothing lands. Rows below the marked ones stand in sight, so the design's place rule ("else the
+// nearest after it in sight", bar-return-design-md "Landed") lands the focus on a checkbox of the
+// table; a run whose focus never stands on one once the bar has gone fails here, as one whose box
+// moves after the landing does.
 // Its engines: the clause of the `webkit` and `firefox` projects that names the rows
 // INFRA-3135's round-29 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): ninety issues of an epic seeded, and one Take out of epic read for a second after it lands.
@@ -5591,11 +5597,11 @@ test("after Take out of epic with the rows marked last far above the view lands,
       ? "the focus never stood on a checkbox of the table once the bar had gone"
       : `at the landing the box stood at ${Math.round(topAt)} to ${Math.round(bottomAt)}, a second later at ` +
         `${Math.round(topNow)} to ${Math.round(bottomNow)}, and the landed checkbox moved ${Math.round(markNow - markAt)} px`;
+  expect(seen.first, text).not.toBeNull();
   expect(
-    seen.first === null ||
-      (Math.abs(topNow - topAt) <= 1 &&
-        Math.abs(bottomNow - bottomAt) <= 1 &&
-        Math.abs(markNow - markAt) <= 1),
+    Math.abs(topNow - topAt) <= 1 &&
+      Math.abs(bottomNow - bottomAt) <= 1 &&
+      Math.abs(markNow - markAt) <= 1,
     text
   ).toBe(true);
 });
