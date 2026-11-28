@@ -5,7 +5,7 @@ Read this on a delivery on a `default_branch.workflow` topic, on a `legion:` not
 ## Which runs count
 
 1. Your session hears the topics of each entry by itself while it holds the controller role. Never `envoy_subscribe` such a topic: a relaunch drops a topic that you subscribe.
-2. A delivery on `notifications.github.<owner>.<repo>.default_branch.workflow.<file>.completed.<event>` is a completed run of a watched workflow on its repository's default branch, whether or not the prompt names its entry: the plugin subscribes no topic that the daemon did not name for this controller. The topic names its owner, repository and event. Its payload gives `run_id`, `url`, `conclusion`, `event`, `path`, `branch` (the default branch), `run_started_at` and `updated_at` (the run's end). The topic writes each `.` of a file name as `_`, so two file names can share one topic (`a.b.yaml` and `a_b.yaml`): when the prompt names a file whose topic is the delivery's topic, the delivery's `path` must end in `/<file>` of one of those files, and a delivery whose `path` names none of them is a run of another file: drop it. Its entry's file is the one its `path` ends in.
+2. A delivery on `notifications.github.<owner>.<repo>.default_branch.workflow.<file>.completed.<event>` is a completed run of a watched workflow on its repository's default branch, whether or not the prompt names its entry: the plugin subscribes no topic that the daemon did not name for this controller. The topic names the run's event. Its payload gives `repo` (`<owner>/<repo>`, as GitHub spells it), `run_id`, `url`, `conclusion`, `event`, `path`, `branch` (the default branch), `run_started_at` and `updated_at` (the run's end). Take `<owner>/<repo>` for every step below from the payload's `repo`, never from the topic: the topic writes each `.` of the owner and the repository as `_` as well (`acme/my.repo` is `…github.acme.my_repo…`). The topic also writes each `.` of a file name as `_`, so two file names can share one topic (`a.b.yaml` and `a_b.yaml`): when the prompt names a file whose topic is the delivery's topic, the delivery's `path` must end in `/<file>` of one of those files, and a delivery whose `path` names none of them is a run of another file: drop it. Its entry's file is the one its `path` ends in.
 3. A run counts when its `conclusion` is `failure`, `timed_out`, `startup_failure` or `cancelled`. No other conclusion counts.
 4. A `cancelled` run does not count only when a newer run of the same workflow on the default branch, from an event the entry names (for an entry the prompt does not name, the cancelled run's own event), started before the cancelled run ended. Read the runs:
 
@@ -38,7 +38,7 @@ A counted run is a clear defect.
    ```
 
    Its `databaseId` is the run id, and its `updatedAt` is the run's end. When that run counts by step 3, take it by steps 4 to 7, as a delivered run.
-9. When a `gh` read of step 4, 8 or 10 fails, name the entry and `gh`'s first line in your summary. Act on nothing that read would decide.
+9. When a `gh` read of step 4, 8 or 10 fails, name the entry and `gh`'s first line in your summary. Act on nothing that read would decide. When a value for a placeholder of those commands holds `'` (a branch name can), run nothing with it: name the entry and the value in your summary.
 
 ## After a late subscription
 
