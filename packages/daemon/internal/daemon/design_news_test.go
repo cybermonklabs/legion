@@ -200,12 +200,13 @@ func (r *newsReconcileRig) holder(issue string, role claim.Role, state supervise
 }
 
 // machine is the claim of issue's role as its machine holds it: in state, suspended by by, and
-// given entry given, with a session to resume.
+// given entry given, with a session to resume, carrying what its start read on the Dispatch chain
+// (startMarked).
 func (r *newsReconcileRig) machine(issue string, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource, given int64) *supervise.Machine {
 	r.t.Helper()
-	machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: mustClaimToken(r.t, issue, role), Project: "legion", Tree: reconcileRoot,
-		Issue: issue, Role: role, State: state, Generation: 1, Session: "ses-" + string(role), SessionFile: "/tmp/" + string(role) + ".jsonl",
-		SuspendedBy: by, GivenEntry: given}, "")
+	machine, _, err := r.sup.Create(r.ctx, startMarked(r.t, r.pool, r.records, supervise.Claim{Token: mustClaimToken(r.t, issue, role), Project: "legion",
+		Tree: reconcileRoot, Issue: issue, Role: role, State: state, Generation: 1, Session: "ses-" + string(role), SessionFile: "/tmp/" + string(role) + ".jsonl",
+		SuspendedBy: by, GivenEntry: given}), "")
 	if err != nil {
 		r.t.Fatalf("create the %s claim of %s: %v", role, issue, err)
 	}

@@ -94,12 +94,13 @@ func (r *heldTaskRig) put(issue record.Issue) {
 	putOutboxIssue(r.t, r.pool, r.records, issue)
 }
 
-// launchArchitect creates the root architect's claim, launches it and brings its agent up: the one
-// session that goes on running across the root's park and its next run.
+// launchArchitect creates the root architect's claim, as its first start marks it (startMarked),
+// launches it and brings its agent up: the one session that goes on running across the root's park
+// and its next run.
 func (r *heldTaskRig) launchArchitect() {
 	r.t.Helper()
-	machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: heldTaskRoot,
-		Issue: heldTaskRoot, Role: claim.RoleArchitect, State: supervise.StateQueued}, "")
+	machine, _, err := r.sup.Create(r.ctx, startMarked(r.t, r.pool, r.records, supervise.Claim{Token: r.token, Project: "legion",
+		Tree: heldTaskRoot, Issue: heldTaskRoot, Role: claim.RoleArchitect, State: supervise.StateQueued}), "")
 	if err != nil {
 		r.t.Fatalf("create the architect claim: %v", err)
 	}

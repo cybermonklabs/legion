@@ -310,11 +310,12 @@ func (r *mainPathRig) machine() *supervise.Machine {
 }
 
 // launchArchitect creates the root architect's claim and launches it, as its first start does: the
-// session that goes on running across the root's waits and parks.
+// claim carries what that start reads on the Dispatch chain (startMarked), and the session goes on
+// running across the root's waits and parks.
 func (r *mainPathRig) launchArchitect() {
 	r.t.Helper()
-	machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: r.key, Issue: r.key,
-		Role: claim.RoleArchitect, State: supervise.StateQueued}, "")
+	machine, _, err := r.sup.Create(r.ctx, startMarked(r.t, r.pool, r.records, supervise.Claim{Token: r.token, Project: "legion", Tree: r.key,
+		Issue: r.key, Role: claim.RoleArchitect, State: supervise.StateQueued}), "")
 	if err != nil {
 		r.t.Fatalf("create the architect claim: %v", err)
 	}

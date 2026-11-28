@@ -2050,6 +2050,31 @@ func putRecordOnly(t *testing.T, pool *store.Pool, records record.Store, issue r
 	}
 }
 
+// startMarked is c with the two facts the outbox's start writes on a claim it makes or marks
+// (launchOf, supervise.Machine.MarkLaunch): the gate root its issue stands under on the Dispatch
+// chain (Claim.LaunchTree) and whether that issue holds its own design gate (Claim.HoldsGate). A
+// fixture that makes a claim without running that start uses it, so the claim stands as a start
+// would have left it, and a later start of it finds nothing to relaunch (supervise.GateRootMoved).
+// A chain the copy cannot show to its top fails the test, since no start makes a claim on one.
+func startMarked(t *testing.T, pool *store.Pool, records record.Store, c supervise.Claim) supervise.Claim {
+	t.Helper()
+	launch, err := store.ReadOnly(context.Background(), pool, "read the chain of "+c.Issue, func(ctx context.Context, tx pgx.Tx) (issueLaunch, error) {
+		chains, err := record.ReadChainsOf(ctx, tx, records, projectOf(c.Issue), []string{c.Issue})
+		if err != nil {
+			return issueLaunch{}, err
+		}
+		return launchOn(chains, c.Issue), nil
+	})
+	if err != nil {
+		t.Fatalf("read what the start of %s reads: %v", c.Token, err)
+	}
+	if launch.tree == "" {
+		t.Fatalf("the Dispatch chain of %s is unknown: no start makes %s on it", c.Issue, c.Token)
+	}
+	c.LaunchTree, c.HoldsGate = launch.tree, launch.holdsGate
+	return c
+}
+
 // holdSlot gives each of issues the admission slot its promotion grants it (admit's promoteHolds).
 // A start of a phase worker now queues the row that carries the task with NeedsSlot set, and that
 // row stays unclaimable while no slots row names its issue (record.Store's outboxInOrder), so a
@@ -2486,8 +2511,12 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsIssue(t *testing.T) {
 	if err := runner.execute(ctx, start); err != nil {
 		t.Fatalf("start the running architect for generation 2: %v", err)
 	}
+	// LEGION-208 has no parent on the Dispatch chain, so it is a root that holds its own gate (R15
+	// of dispatch://INFRA-3320): its architect is told its tree and the gate step the deployment
+	// gates that it has registered nothing for, as its ready would tell it.
 	told := catchUpReasons()
-	want := fmt.Sprintf("the issues under LEGION-208, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says launch=%d", launch)
+	want := fmt.Sprintf("the tree of LEGION-208 at generation 2 as the daemon records it now; start or resume it as your role says"+
+		"; no document is registered for the spec step of LEGION-208: register the document of that step with register_gate and request the person's approval launch=%d", launch)
 	if len(told) != 1 || told[0] != want || machine.Claim().State != supervise.StateReady {
 		t.Fatalf("after the generation 2 start, catch-ups %q with the architect %s; want one, %q, and the architect left running", told, machine.Claim().State, want)
 	}
