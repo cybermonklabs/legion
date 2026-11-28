@@ -82,7 +82,7 @@ func TestAReparentSeedOfAnIssueItsCloseTookToDoneHasItsParentRead(t *testing.T) 
 // A person moves CAPTURE-500, at work, under CAPTURE-700, whose row the copy lacks: the seed of
 // the move waits on CAPTURE-700's chain. Before R16's re-read turns, the person stops the issue
 // (backlog) and then, stopped, moves it under CAPTURE-300: out of Legion's work that move queues
-// no seed and leaves told_parent at CAPTURE-700, while the copy shows the issue under CAPTURE-300,
+// no seed and clears told_parent, while the copy shows the issue under CAPTURE-300,
 // and its own chain, which every pass and the re-read of the issue read, runs through CAPTURE-300
 // and is known. The move made while stopped supersedes the seed (the architect's ruling,
 // dispatch://INFRA-4730/comment/bbb67a10-0a36-4728-8470-74b10fa88cd8, item 1): the issue no
@@ -119,11 +119,11 @@ func TestAReparentSeedOfAnIssueMovedAgainOutOfWorkWaitsOnNoChain(t *testing.T) {
 			}
 			client.serve(dispatch.Issue{Key: seedWaitIssue, Project: "CAPTURE", Title: seedWaitIssue, Status: "backlog", Parent: new(seedWaitAbove),
 				Rank: "B", LastSeq: 4, ResolvedRepo: "acme/widgets"})
-			// The case's premise: the parent told is still CAPTURE-700, while the copy shows the
-			// issue under CAPTURE-300, its own chain known through it, and CAPTURE-700's unknown.
+			// The case's premise: no parent is told any more, while the copy shows the issue under
+			// CAPTURE-300, its own chain known through it, and CAPTURE-700's unknown.
 			got := readIssue(t, pool, seedWaitIssue)
-			if got == nil || got.ToldParent != seedWaitParent || record.InLegionsWork(*got) || got.Parent == nil || *got.Parent != seedWaitAbove {
-				t.Fatalf("premise: %s after the moves is %+v, want it out of Legion's work under %s with told_parent %s", seedWaitIssue, got, seedWaitAbove, seedWaitParent)
+			if got == nil || got.ToldParent != "" || record.InLegionsWork(*got) || got.Parent == nil || *got.Parent != seedWaitAbove {
+				t.Fatalf("premise: %s after the moves is %+v, want it out of Legion's work under %s with no told_parent", seedWaitIssue, got, seedWaitAbove)
 			}
 			if row := tickMirrored(t, pool)[seedWaitIssue]; row.Parent != seedWaitAbove {
 				t.Fatalf("premise: the copy holds %s under %q, want %s", seedWaitIssue, row.Parent, seedWaitAbove)

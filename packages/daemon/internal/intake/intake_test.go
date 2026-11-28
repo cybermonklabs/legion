@@ -502,7 +502,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/issue-updated-resolved-only.json",
 			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "f",
 				Resolved: record.Resolved{Priority: record.P0, From: "OTHER-5", Known: true}, ResolvedOnly: true, Labels: []string{}, ResolvedRepo: "sjawhar/legion",
-				Blockers: []string{}, ClaimKnown: true, At: mark(3, "2026-09-23T00:46:40Z").At},
+				Blockers: []string{}, ClaimKnown: true, At: mark(3, "2026-11-27T19:11:37.151461Z").At},
 		},
 		{
 			name:    "pull request opened",
