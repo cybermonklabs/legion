@@ -63,7 +63,7 @@ PROGRAMS = [
     ("tooling_checks", "scripts/approval-eval",
      at("tooling-checks", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)", "test")),
     ("tooling_checks", "scripts/e2e/lib",
-     at("tooling-checks", "Typecheck the plan ratings read test (bunx tsc --noEmit -p scripts/e2e/lib)", "test")),
+     at("tooling-checks", "Typecheck the e2e scripts and their tests (bunx tsc --noEmit -p scripts/e2e/lib)", "test")),
     ("tooling_checks", "scripts/e2e",
      at("tooling-checks", "Typecheck the e2e drivers (bunx tsc --noEmit -p scripts/e2e)", "test")),
 ]

@@ -6,16 +6,16 @@
 # that the program compiles, which check-ts-filters.sh holds this filter to.
 GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + reads(
     (CONTRACTS_SRC, f"`scripts/dispatch/ask-census.ts#ArtifactReviewEventPayload` ({at(TOOLING_JOB, 'Typecheck the Dispatch census script')}); "
-                    f"`scripts/e2e/lib/envoy-bridge.ts#EnvelopeSchema` and `scripts/e2e/lib/envoy-bridge.ts#githubSubject` ({at(TOOLING_JOB, 'Typecheck the plan ratings read test')})"),
+                    f"`scripts/e2e/lib/envoy-bridge.ts#EnvelopeSchema` and `scripts/e2e/lib/envoy-bridge.ts#githubSubject` ({at(TOOLING_JOB, 'Typecheck the e2e scripts and their tests')})"),
     (TEST_FIXTURES_SRC, f"{at(TOOLING_JOB, 'Typecheck the Dispatch census script')} and "
-                        f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compile tests that import "
+                        f"{at(TOOLING_JOB, 'Typecheck the e2e scripts and their tests')} compile tests that import "
                         "@legion/test-fixtures"),
     ("scripts/dispatch/**", f"{at(TOOLING_JOB, 'Lint the Dispatch census script')} and typecheck"),
     ("scripts/github-apps/**", f"{at(TOOLING_JOB, 'Lint the GitHub App registration script')} and typecheck"),
     ("scripts/sessions/**", f"{at(TOOLING_JOB, 'Lint the session message-wait script')} and typecheck; the suite "
                             f"itself is {SESSIONS_JOB}'s"),
     ("scripts/approval-eval/**", f"{at(TOOLING_JOB, 'Lint the approval-eval statistics')} and typecheck"),
-    ("scripts/e2e/lib/**", f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')}: scripts/e2e/lib/tsconfig.json"),
+    ("scripts/e2e/lib/**", f"{at(TOOLING_JOB, 'Typecheck the e2e scripts and their tests')}: scripts/e2e/lib/tsconfig.json"),
     ("scripts/e2e/*.ts", f"{at(TOOLING_JOB, 'Typecheck the e2e drivers')}: scripts/e2e/tsconfig.json includes every *.ts of the directory"),
     ("scripts/e2e/tsconfig.json", f"{at(TOOLING_JOB, 'Typecheck the e2e drivers')}: the program it typechecks"),
     # The files outside scripts/e2e that the drivers' program compiles, each with the import that
@@ -39,7 +39,7 @@ GATE = gate("tooling_checks", TOOLING_JOB, reads=CLAUDE_ENVOY_BUILD + reads(
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`scripts/e2e/plan-pointer-drive.ts#workerPane` imports it, and "
                                                                   f"{at(TOOLING_JOB, 'Typecheck the e2e drivers')} compiles that driver"),
     ("packages/envoy-client/test/fake-dispatch.ts", f"`scripts/e2e/lib/agent-replay.test.ts#startFakeDispatch` imports it by path, and "
-                                                    f"{at(TOOLING_JOB, 'Typecheck the plan ratings read test')} compiles that test"),
+                                                    f"{at(TOOLING_JOB, 'Typecheck the e2e scripts and their tests')} compiles that test"),
     ("packages/envoy-client/test/keyed-layer.ts", "`scripts/dispatch/__tests__/moved-approval-production-check.test.ts#keyedLayer` "
                                                   f"imports it by path, and {at(TOOLING_JOB, 'Typecheck the Dispatch census script')} "
                                                   "compiles that test"),

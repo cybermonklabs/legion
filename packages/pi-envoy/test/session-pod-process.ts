@@ -19,6 +19,7 @@
  * environment Oh My Pi's shell is built from. Their reports are part of its own.
  */
 import { roleTopic } from "@legion/contracts";
+import { exitProcess } from "@legion/envoy-client/process-exit";
 import type { PiApi } from "@legion/pi-shared/pi-types";
 import { logger } from "@oh-my-pi/pi-utils";
 import envoyExtension, { setNatsConnectForTests } from "../extensions/envoy";
@@ -119,9 +120,9 @@ if (start === undefined) throw new Error("the extension registered no session_st
 await start({}, context);
 
 /**
- * This script for `session`, started the way `spawn` names, and what it reported. A child that
- * hangs is killed at 20 s, before the test's own bound on this process, so none is left running
- * and its stderr comes back in the error.
+ * This script for `session`, started the way `spawn` names, and what it reported. The wait for a
+ * child ends at the deadline this process was handed (`runSessionPod`), which kills a child that
+ * hangs, so none is left running, and this process then reports that wait's failure.
  */
 async function child(
   spawn: "no env" | "process.env",
@@ -129,7 +130,6 @@ async function child(
 ): Promise<Report & { readonly spawn: string }> {
   const report = await runSessionPod({
     session,
-    timeoutMs: 20_000,
     ...(spawn === "process.env" ? { env: process.env } : {}),
   });
   return { spawn, ...report };
@@ -150,5 +150,6 @@ const report: Report = {
   ...(children === undefined ? {} : { children }),
 };
 console.log(`${REPORT_MARKER}${JSON.stringify(report)}`);
-// The extension's own timers would keep the process up; its report is all it is for.
-process.exit(0);
+// The extension's own timers would keep the process up; its report is all it is for, so it ends
+// once the report has reached the pipe (`exitProcess`).
+await exitProcess(0);

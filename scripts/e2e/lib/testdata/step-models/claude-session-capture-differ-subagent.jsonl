@@ -1,0 +1,15 @@
+{"type":"user","isSidechain":true,"agentId":"a653ec4b9c392e659","timestamp":"2026-11-25T07:19:13.831Z"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
+{"type":"api-request-shape","agentId":"a653ec4b9c392e659"}
+{"type":"api-request-blob","agentId":"a653ec4b9c392e659"}
+{"type":"api-request-blob","agentId":"a653ec4b9c392e659"}
+{"type":"api-request","agentId":"a653ec4b9c392e659"}
+{"type":"assistant","message":{"id":"msg_standin_84","role":"assistant","model":"claude-served-model","content":[{"type":"text"}]},"isSidechain":true,"agentId":"a653ec4b9c392e659","requestedModel":"claude-model","timestamp":"2026-11-25T07:19:16.884Z"}
+{"type":"attachment","isSidechain":true,"agentId":"a653ec4b9c392e659"}
