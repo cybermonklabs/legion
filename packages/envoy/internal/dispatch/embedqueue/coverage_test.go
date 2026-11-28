@@ -282,7 +282,7 @@ func coverage(t *testing.T, database *store.Store, identity string) (items, curr
 // written once the counts are filled, under session_replication_role = replica, which fires no
 // counting trigger either, and the counts follow such a write at the counts loop's next recount,
 // not at once: they are read after one recount
-// (recountCoverage). Run's own writes fire their triggers, so the counts follow them at once.
+// (CountsDeps.recount). Run's own writes fire their triggers, so the counts follow them at once.
 func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -296,7 +296,7 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	if rows != 0 {
 		t.Fatalf("%d embeddings rows after writing with the triggers off, want 0", rows)
 	}
-	if err := recountCoverage(context.Background(), database); err != nil {
+	if err := (CountsDeps{Store: database}).recount(context.Background()); err != nil {
 		t.Fatalf("recount after writing with the triggers off: %v", err)
 	}
 	if items, current, lacking, _, oldest := coverage(t, database, configuredIdentity); items != int64(seeded) || current != 0 || lacking != int64(seeded) || oldest == nil {
