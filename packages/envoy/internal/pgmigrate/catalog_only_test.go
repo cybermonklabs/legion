@@ -108,14 +108,30 @@ func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn 
 
 // fixtureDatabase connects to a database of the test's own, made under name on the server
 // DISPATCH_TEST_DATABASE_URL names and loaded with fixture, and skips the test when that variable
-// is unset, as the store's tests do, saying which of the census's tests (tests) need it. It does
-// not call testpg.URL, which starts a container when the variable is unset. The database is
-// dropped when the test ends.
+// is unset, as the store's tests do, saying which of the census's tests (tests) need it. The
+// database is dropped when the test ends.
 func fixtureDatabase(t *testing.T, ctx context.Context, name, tests, fixture string) *pgx.Conn {
+	t.Helper()
+	server := fixtureServer(t, "DISPATCH_TEST_DATABASE_URL must be set to run the census's "+tests)
+	conn := connect(t, ctx, testdb.DatabaseOn(t, server, name))
+	if _, err := conn.Exec(ctx, fixture); err != nil {
+		t.Fatalf("load the fixture: %v", err)
+	}
+	return conn
+}
+
+// fixtureServer is the URL of the server DISPATCH_TEST_DATABASE_URL names, at its postgres
+// database, which testdb.DatabaseOn makes a test's own database from, and skips the test with
+// skip when that variable is unset. It does not call testpg.URL, which starts a container when
+// the variable is unset. It makes nothing and connects to nothing, so a test that splits into
+// subtests skips at its start and makes its database in the subtest that uses it
+// (TestRedactionAgainstServerOutcomes), where a test that holds one connection to the database
+// takes it from fixtureDatabase.
+func fixtureServer(t *testing.T, skip string) string {
 	t.Helper()
 	raw := os.Getenv("DISPATCH_TEST_DATABASE_URL")
 	if raw == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's " + tests)
+		t.Skip(skip)
 	}
 	adminURL, err := url.Parse(raw)
 	if err != nil {
@@ -123,11 +139,7 @@ func fixtureDatabase(t *testing.T, ctx context.Context, name, tests, fixture str
 		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
 	}
 	adminURL.Path = "/postgres"
-	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), name))
-	if _, err := conn.Exec(ctx, fixture); err != nil {
-		t.Fatalf("load the fixture: %v", err)
-	}
-	return conn
+	return adminURL.String()
 }
 
 // addColumn is the admitted row "bigint column". A row whose form touches no table the census
