@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // writtenState is one state the store wrote to a record, at the revision the write created.
@@ -145,15 +146,11 @@ func (k *writeKV) holdNextWrite() (entered <-chan struct{}, release func()) {
 	return reached, func() { close(gate) }
 }
 
-// recv waits up to 10 s for ch, failing the test when it never comes, so a regression in the
-// hand-over fails the test instead of hanging it.
+// recv waits for ch (testwait.Receive), failing the test when it never comes, so a regression in
+// the hand-over fails the test instead of hanging it.
 func recv(t *testing.T, ch <-chan struct{}, what string) {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s never happened", what)
-	}
+	testwait.Receive(t, what, ch)
 }
 
 // storedRecord is a record as the bucket holds it.
@@ -199,7 +196,7 @@ func wrapStore(t testing.TB, conn *natsgo.Conn, delay time.Duration) (*Store, *w
 }
 
 // record records one observation of a head as the webhook handler does, a check when CheckName is
-// set and a suite otherwise, failing after 10 s rather than hanging (within).
+// set and a suite otherwise, failing once testwait's wait gives up rather than hanging (within).
 func record(s *Store, observation contracts.CIObservation) error {
 	return within(func() error {
 		if observation.CheckName == "" {
@@ -249,7 +246,7 @@ func waitQueued(t *testing.T, s *Store, key string, n int) {
 	}
 }
 
-// waitAll waits up to 10 s for every call started on wg, failing the test if one hangs.
+// waitAll waits for every call started on wg (testwait.Receive), failing the test if one hangs.
 func waitAll(t testing.TB, wg *sync.WaitGroup, what string) {
 	t.Helper()
 	done := make(chan struct{})
@@ -257,11 +254,7 @@ func waitAll(t testing.TB, wg *sync.WaitGroup, what string) {
 		wg.Wait()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s: a caller never returned", what)
-	}
+	testwait.Receive(t, what+": every caller to return", done)
 }
 
 // calls runs numbered calls against one record, each in its own goroutine, and keeps each one's
@@ -306,7 +299,7 @@ func (c *calls) behind(entered <-chan struct{}, to int) {
 	c.queue(1, to)
 }
 
-// wait waits up to 10 s for every call started and returns their errors.
+// wait waits for every call started (waitAll) and returns their errors.
 func (c *calls) wait(what string) []error {
 	c.t.Helper()
 	waitAll(c.t, &c.wg, what)
@@ -513,8 +506,8 @@ func TestBatchedObservationsSettleAsSerialWritesInArrivalOrder(t *testing.T) {
 }
 
 // recordBurst records n distinct completed checks of h concurrently, released together, as a
-// check_run burst delivers them, and returns each call's error; a call still waiting after 10 s
-// fails the test.
+// check_run burst delivers them, and returns each call's error; a call that never returns fails
+// the test (waitAll).
 func recordBurst(t testing.TB, s *Store, h head, n int) []error {
 	t.Helper()
 	errs := make([]error, n)
