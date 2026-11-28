@@ -21,6 +21,7 @@ import {
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
+import type { Reading } from "./as-of";
 import { linkBaseOf } from "./links";
 
 /**
@@ -382,6 +383,12 @@ export interface CommandContext extends SessionContext {
    */
   readonly shown: Set<string> | undefined;
 }
+
+/**
+ * What a read command is handed (`reads` in the command table): its context, and whoami's answer
+ * with the cut it reads at, read before any other request (`readAtCut`).
+ */
+export type ReadingContext<C extends SessionContext> = C & { readonly reading: Reading };
 
 /** One Dispatch command: the whole of what `dispatch <command>` does, after the check passed. */
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
