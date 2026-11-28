@@ -413,12 +413,13 @@ func footnoteReferenceShapes() []countedShape {
 	return withLinearReadings(shapes, footnoteReferenceReadings)
 }
 
-// footnoteReferenceReadings keeps the prior counts (2026-11-28, pod legion-infra-infra-6314,
-// Go 1.27.3) until a build-cluster Job reads the new sizes. The largest body exceeds a mebibyte.
+// footnoteReferenceReadings were read at these sizes in build-cluster Job
+// infra6314-pf-footnote-readings-3524-96v7h at 35246ebc (2026-11-28, Go 1.27.3, 4 CPUs): the largest
+// body exceeds a mebibyte, so the pod does not run this row.
 var footnoteReferenceReadings = map[string]linearReading{
-	"many paragraphs that each refer to their own definition/ParseRendering": {3616, countedReading{past: 7477.022756005057, most: 7451.804203539823, scanMost: 35.52433628318584}},
-	"one paragraph that refers to each definition/ParseRendering":            {2512, countedReading{past: 5671.787079162876, most: 5651.548566878981, scanMost: 26.35748407643312}},
-	"references that match their definitions up to case/ParseRendering":      {1168, countedReading{past: 6462.86301369863, most: 6437.9375, scanMost: 28.158390410958905}},
+	"many paragraphs that each refer to their own definition/ParseRendering": {3616, countedReading{past: 7887.762760745892, most: 7856.891765763275, scanMost: 42.46439435840708}},
+	"one paragraph that refers to each definition/ParseRendering":            {2512, countedReading{past: 5939.858905823476, most: 5914.661823248408, scanMost: 30.342157643312103}},
+	"references that match their definitions up to case/ParseRendering":      {1168, countedReading{past: 6669.015655577299, most: 6640.130886130137, scanMost: 30.644798801369863}},
 }
 
 // TestBareURLShapesParseAndRenderLinearly counts a read and its render as one operation.
