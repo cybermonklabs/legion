@@ -20,7 +20,8 @@ description: >-
   The calling step runs after the job's go test step with `if: ${{ !cancelled() }}`: under a
   step's default `if: success()`, a go test step whose test failed skips this one, and none of
   the job's results is written, its passes among them. A failed test is a result to write, so it
-  fails no call: the step fails only when a call fails, or when it cannot read its inputs.
+  fails no call: the step fails when a call fails, when it cannot read its inputs, when `go build`
+  of its two commands fails, or when agent-secrets' exchange is refused.
 
 inputs:
   report:

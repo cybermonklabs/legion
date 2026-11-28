@@ -46,11 +46,12 @@ run go-test-all-pass.jsonl "" 0 "$two"
 run go-test-first-fails.jsonl TestProbe 1 "$two"
 run go-test-second-fails.jsonl TestSecondProbe 1 "$two"
 run go-test-four-pass.jsonl "" 0 "$four"
-# The package's three events of go-test-first-fails.jsonl, as a passing package writes them.
+# The package's three events of go-test-first-fails.jsonl, as a passing package writes them: its
+# "ok" line carries no OutputType, as go-test-all-pass.jsonl's does not.
 jq -c 'if .Test == null and .Action == "fail" then .Action = "pass"
   elif .Test == null and .Action == "output" and .Output == "FAIL\n" then .Output = "PASS\n"
   elif .Test == null and .Action == "output" and (.Output | startswith("FAIL\texample.com/acme/probe\t"))
-    then .Output = "ok  " + (.Output | ltrimstr("FAIL"))
+    then .Output = "ok  " + (.Output | ltrimstr("FAIL")) | del(.OutputType)
   else . end' "$scratch/go-test-first-fails.jsonl" >"$scratch/go-test-job-passed.jsonl"
 changed=$(diff <(jq -c . "$scratch/go-test-first-fails.jsonl") "$scratch/go-test-job-passed.jsonl" | grep -c '^>' || true)
 if [ "$changed" -ne 3 ]; then

@@ -10,5 +10,5 @@
 {"Time":"2026-11-28T02:34:45.409751815Z","Action":"output","Package":"example.com/acme/probe","Test":"TestSecondProbe","Output":"--- PASS: TestSecondProbe (0.00s)\n","OutputType":"frame"}
 {"Time":"2026-11-28T02:34:45.409756153Z","Action":"pass","Package":"example.com/acme/probe","Test":"TestSecondProbe","Elapsed":0}
 {"Time":"2026-11-28T02:34:45.409759084Z","Action":"output","Package":"example.com/acme/probe","Output":"PASS\n","OutputType":"frame"}
-{"Time":"2026-11-28T02:34:45.418169386Z","Action":"output","Package":"example.com/acme/probe","Output":"ok  \texample.com/acme/probe\t0.038s\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:34:45.418169386Z","Action":"output","Package":"example.com/acme/probe","Output":"ok  \texample.com/acme/probe\t0.038s\n"}
 {"Time":"2026-11-28T02:34:45.418209317Z","Action":"pass","Package":"example.com/acme/probe","Elapsed":0.038}
