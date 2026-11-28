@@ -766,6 +766,8 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     title: `Work ${key}`,
     status: "todo",
     priority: null,
+    resolved_priority: overrides.priority ?? null,
+    priority_from: null,
     rank: key,
     labels: [],
     parent: null,
