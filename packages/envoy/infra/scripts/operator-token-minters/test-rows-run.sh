@@ -61,6 +61,11 @@
 #        a grep that stops early (-q or -m), which pipefail and SIGPIPE can read as no match;
 #   (db) a pick of the reviews to judge that stops part way (its awk under a 2 KiB file size limit)
 #        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass;
+#   (df) want_recorded reads the check's last line and its FINDING and UNKNOWN lines as ten whole
+#        outputs of real check runs hold them (testdata/operator-token-minters-runs/): the counts
+#        stand on each output that reaches the exit block, a deleted or added line is named, and an
+#        output that ends elsewhere is named by its last line; want_line_with and
+#        want_own_principals each fail their control and pass the case beside it;
 #   (dg) each runs at most min(8, OPERATOR_MINTERS_TEST_SLOTS) of a row's items at once, so one at
 #        a time under one slot.
 
@@ -677,6 +682,80 @@ if row db; then
   want_rbac_unknown "the reviews to judge could not be picked out of the API server's answer (awk exited " \
     "a pick of the reviews to judge stopped by a file size limit"
   passed "(db) a pick of the reviews to judge that stops part way reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
+fi
+
+# --- (df) want_recorded's reading, held to ten whole outputs of real check runs captured at
+# 98caff1b, in testdata/operator-token-minters-runs/ (its README names each run and the commands
+# that captured it). Each is read into output as run_only holds it. recorded_differ prints nothing
+# for each of the six that reach the exit block; the counts text for each of those with its first
+# FINDING or UNKNOWN line deleted, and for the clean one with a FINDING line added; and, for each of
+# the four that end elsewhere (the crash report, a copy missing a part, a --report that cannot be
+# written, a usage error), the text naming its last line. The row holds want_line_with and
+# want_own_principals to their controls too: each, in a subshell, fails a case it must refuse, and
+# passes the case beside it. The row runs no check. ---
+df_runs="$script_dir/testdata/operator-token-minters-runs"
+# df_differ FIXTURE EDIT TEXT WANT: recorded_differ on TEXT, which is FIXTURE as EDIT leaves it, must
+# print WANT; a wrong answer is added to df_wrong, one a line.
+df_differ() {
+  local output="$3" gave
+  gave="$(recorded_differ)"
+  [ "$gave" = "$4" ] || df_wrong+=$'\n'"  $1 $2 gave '$gave'; it should give '$4'"
+}
+# df_without TEXT PREFIX: TEXT less its first line that starts with PREFIX.
+df_without() { awk -v prefix="$2" '!cut && index($0, prefix) == 1 { cut = 1; next } { print }' <<<"$1"; }
+if row df; then
+  df_wrong=""
+  # Each output that reaches the exit block, with the FINDING and UNKNOWN lines it holds, as its
+  # README's table counts them.
+  for df_run in "exit0-row-a.txt 0 0" "exit1-one-finding-row-u.txt 1 0" "exit1-53-findings-row-b.txt 53 0" \
+    "exit1-findings-and-unknowns-row-fb.txt 6 2" "exit2-one-unknown-row-h.txt 0 1" "exit2-ten-unknowns-row-ba.txt 0 10"; do
+    read -r df_file df_findings df_unknowns <<<"$df_run"
+    df_text="$(<"$df_runs/$df_file")"
+    df_differ "$df_file" "as captured" "$df_text" ""
+    [ "$df_findings" -eq 0 ] || df_differ "$df_file" "with its first FINDING line deleted" "$(df_without "$df_text" 'FINDING ')" \
+      "the last line counts $df_findings finding(s) and $df_unknowns unknown; the run printed $((df_findings - 1)) FINDING and $df_unknowns UNKNOWN lines"
+    [ "$df_unknowns" -eq 0 ] || df_differ "$df_file" "with its first UNKNOWN line deleted" "$(df_without "$df_text" 'UNKNOWN ')" \
+      "the last line counts $df_findings finding(s) and $df_unknowns unknown; the run printed $df_findings FINDING and $((df_unknowns - 1)) UNKNOWN lines"
+  done
+  df_text="$(<"$df_runs/exit0-row-a.txt")"
+  df_differ exit0-row-a.txt "with a line 'FINDING x: y' added before its last line" "${df_text%$'\n'*}"$'\n'"FINDING x: y"$'\n'"${df_text##*$'\n'}" \
+    "the last line counts 0 finding(s) and 0 unknown; the run printed 1 FINDING and 0 UNKNOWN lines"
+  # Each output that ends elsewhere, with its last line.
+  for df_run in "stopped-before-end-row-al.txt=operator-token-minters: stopped before its end, 1 unknown: exit 2" \
+    "no-step-ran-row-bc.txt=operator-token-minters: no step ran, 1 unknown: exit 2" \
+    "report-unwritable-row-co.txt=operator-token-minters: --report cannot be written" \
+    "usage-error-row-al.txt=  --report FILE              also write the result as JSON"; do
+    df_text="$(<"$df_runs/${df_run%%=*}")"
+    df_differ "${df_run%%=*}" "as captured" "$df_text" "the run did not reach the exit block; its last line is '${df_run#*=}'"
+  done
+  # want_line_with's control: one line starting with the prefix and another ending with the suffix
+  # fail it; a line holding both passes.
+  df_prefix="FINDING serviceAccount:perm-1@$project.iam.gserviceaccount.com: "
+  df_suffix=" on $gsa_res through roles/iam.serviceAccountUser, granted at $gsa_res"
+  df_apart="${df_prefix}iam.serviceAccountKeys.create on $gsa_res through roles/iam.serviceAccountKeyAdmin, granted at $gsa_res"
+  df_apart+=$'\n'"FINDING serviceAccount:perm-2@$project.iam.gserviceaccount.com: iam.serviceAccounts.actAs$df_suffix"
+  if df_said="$(output="$df_apart" && want_line_with "$df_prefix" "$df_suffix" "the control" 2>&1)"; then
+    df_wrong+=$'\n'"  want_line_with passed an output with the prefix on one line and the suffix on another"
+  elif [[ $df_said != *"FAIL: the control: no line starting '$df_prefix' and ending '$df_suffix'"* ]]; then
+    df_wrong+=$'\n'"  want_line_with failed the prefix and the suffix on two lines, saying: $df_said"
+  fi
+  df_said="$(output="$df_apart"$'\n'"${df_prefix}iam.serviceAccounts.actAs$df_suffix" &&
+    want_line_with "$df_prefix" "$df_suffix" "the control" 2>&1)" ||
+    df_wrong+=$'\n'"  want_line_with failed a line holding both its prefix and its suffix, saying: $df_said"
+  # want_own_principals' control: two entries on one principal fail it; two on two pass.
+  df_member="serviceAccount:perm-1@$project.iam.gserviceaccount.com"
+  df_signjwt="iam.serviceAccounts.signJwt on $gsa_res through projects/$project/roles/only.iam.serviceAccounts.signJwt, granted at $gsa_res"
+  df_signblob="iam.serviceAccounts.signBlob on $gsa_res through projects/$project/roles/only.iam.serviceAccounts.signBlob, granted at $gsa_res"
+  if df_said="$(OWN_FINDINGS=("$df_member"$'\t'"$df_signjwt" "$df_member"$'\t'"$df_signblob") && want_own_principals "the control" 2>&1)"; then
+    df_wrong+=$'\n'"  want_own_principals passed two entries on $df_member"
+  elif [[ $df_said != *"FAIL: the control: two entries of OWN_FINDINGS share the principal $df_member"$'\n'* ]]; then
+    df_wrong+=$'\n'"  want_own_principals failed two entries on one principal, saying: $df_said"
+  fi
+  df_said="$(OWN_FINDINGS=("$df_member"$'\t'"$df_signjwt" "serviceAccount:perm-2@$project.iam.gserviceaccount.com"$'\t'"$df_signblob") &&
+    want_own_principals "the control" 2>&1)" ||
+    df_wrong+=$'\n'"  want_own_principals failed two entries on two principals, saying: $df_said"
+  [ -z "$df_wrong" ] || fail "(df) want_recorded's reading of the ten outputs, or a helper's control, went wrong:$df_wrong"
+  passed "(df) want_recorded reads the check's last line and its FINDING and UNKNOWN lines as ten real outputs hold them: the counts stand on each output that reaches the exit block, a deleted or added line is named, and an output that ends elsewhere is named by its last line"
 fi
 
 # --- (dg) each's bound. OPERATOR_MINTERS_TEST_SLOTS bounds a row's items as it bounds the row files:

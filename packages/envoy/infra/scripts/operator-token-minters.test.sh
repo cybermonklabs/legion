@@ -583,6 +583,16 @@ count_prefix() { grep -c "^$1" <<<"$output" || true; }
 want_status() { [ "$status" -eq "$1" ] || fail "$2: exit $status, want $1"; }
 want_line() { has_line "$1" || fail "$2: no line '$1'"; }
 want_text() { has_prefix "$1" || fail "$2: no line holding '$1'"; }
+# want_line_with PREFIX SUFFIX WHAT: one line of the output both starts with PREFIX and ends with
+# SUFFIX, read as text by one awk (index and substr, no regex of either), so one line holding an
+# item's own text and another ending with another item's resource and role do not pass as one.
+want_line_with() {
+  line_prefix="$1" line_suffix="$2" awk '
+    BEGIN { prefix = ENVIRON["line_prefix"]; suffix = ENVIRON["line_suffix"] }
+    index($0, prefix) == 1 && substr($0, length($0) - length(suffix) + 1) == suffix { found = 1; exit }
+    END { exit !found }' <<<"$output" ||
+    fail "$3: no line starting '$1' and ending '$2'"
+}
 # want_step_unknown STEP TEXT WHAT: the step STEP (as its lines name it: `RBAC on operator-cluster`)
 # read UNKNOWN holding TEXT, the run reached its end with no finding (its last line says so, which a
 # run that stopped mid-way does not), exit 2, and the step did not pass. The rows that break a read
@@ -625,14 +635,19 @@ plant_rights() {
 }
 # plant_permissions ATTACHED MEMBER PERMISSION...: each PERMISSION held by MEMBER on ATTACHED through
 # a role of its own that grants nothing else, projects/<project>/roles/only.<permission>; adds to
-# OWN_FINDINGS the finding each must print.
+# OWN_FINDINGS the finding each must print. The jq that writes each role refuses a name roles.json
+# already holds, so a row that plants a role its world (or another of its items) wrote stops there,
+# under set -e, naming the role, rather than replace it; role writes over a name, for the rows that
+# change an existing role on purpose.
 plant_permissions() {
-  local attached="$1" member="$2" permission
+  local attached="$1" member="$2" permission only
   shift 2
   for permission in "$@"; do
-    role "projects/$project/roles/only.$permission" "$permission"
-    iam "$attached" "projects/$project/roles/only.$permission" "$member"
-    OWN_FINDINGS+=("$member"$'\t'"$permission on $attached through projects/$project/roles/only.$permission, granted at $attached")
+    only="projects/$project/roles/only.$permission"
+    edit "$world/roles.json" 'if has($r) then error("the role \($r) is already in roles.json") else . + {($r): $ARGS.positional} end' \
+      --arg r "$only" --args "$permission"
+    iam "$attached" "$only" "$member"
+    OWN_FINDINGS+=("$member"$'\t'"$permission on $attached through $only, granted at $attached")
   done
 }
 # planted_problems MODE: each way the run's output departs from OWN_FINDINGS, one a line:
@@ -660,6 +675,18 @@ planted_problems() {
     }
     END { for (k in want) if (!(k in seen)) { sub(/\t/, ": ", k); print "missing: FINDING " k } }' "$planted" - <<<"$output"
 }
+# want_own_principals WHAT: no two entries of OWN_FINDINGS are on one principal (the text before an
+# entry's tab), as items that share a world must not be: the check prints one principal's sentence
+# once, and the fake answers each review by subject. Fails naming the principal two entries share.
+want_own_principals() {
+  local entry principal
+  local -A seen=()
+  for entry in "${OWN_FINDINGS[@]}"; do
+    principal="${entry%%$'\t'*}"
+    [ -z "${seen["p$principal"]:-}" ] || fail "$1: two entries of OWN_FINDINGS share the principal $principal"
+    seen["p$principal"]=1
+  done
+}
 # want_planted WHAT MODE: the run printed each finding OWN_FINDINGS holds and, with MODE own or only,
 # nothing planted_problems names, and exited 1; it fails once, listing every problem, before it
 # reads the exit. With MODE own or only it holds itself to its control: the output with the last
@@ -679,6 +706,41 @@ want_planted() {
       fail "$1: the control, the finding of ${last%%$'\t'*} moved onto $first, read as: ${problems:-nothing}"
   fi
   OWN_FINDINGS=()
+}
+# recorded_differ: why the counts of the check's last line do not stand, one line, or nothing when
+# they do. A run that reaches the exit block (operator-token-minters.sh's result) ends on one of its
+# three lines, since nothing prints after it; any other last line (the crash report's, a copy
+# missing a part's, a --report that cannot be written, a usage error's text) is named. Otherwise its
+# finding and unknown counts (no finding and nothing unknown are 0) must equal the lines the run
+# printed that start `FINDING ` and `UNKNOWN `, which finding() and unknown() alone print, so a line
+# printed and not recorded is named. The last line is the shell's own tail -n 1 of the output.
+recorded_differ() {
+  local last="${output##*$'\n'}" findings unknowns printed_findings printed_unknowns
+  local exit1='^operator-token-minters: ([1-9][0-9]*) finding\(s\), (0|[1-9][0-9]*) unknown: exit 1$'
+  local exit2='^operator-token-minters: no finding, ([1-9][0-9]*) unknown: exit 2$'
+  if [[ $last =~ $exit1 ]]; then
+    findings="${BASH_REMATCH[1]}" unknowns="${BASH_REMATCH[2]}"
+  elif [[ $last =~ $exit2 ]]; then
+    findings=0 unknowns="${BASH_REMATCH[1]}"
+  elif [ "$last" = "operator-token-minters: no finding and nothing unknown: exit 0" ]; then
+    findings=0 unknowns=0
+  else
+    printf "the run did not reach the exit block; its last line is '%s'\n" "$last"
+    return 0
+  fi
+  printed_findings="$(count_prefix 'FINDING ')"
+  printed_unknowns="$(count_prefix 'UNKNOWN ')"
+  if [ "$findings" -ne "$printed_findings" ] || [ "$unknowns" -ne "$printed_unknowns" ]; then
+    printf 'the last line counts %s finding(s) and %s unknown; the run printed %s FINDING and %s UNKNOWN lines\n' \
+      "$findings" "$unknowns" "$printed_findings" "$printed_unknowns"
+  fi
+}
+# want_recorded WHAT: the counts of the check's last line stand (recorded_differ prints nothing), else
+# the row fails with WHAT and why.
+want_recorded() {
+  local differ
+  differ="$(recorded_differ)"
+  [ -z "$differ" ] || fail "$1: $differ"
 }
 rows=0
 passed() {

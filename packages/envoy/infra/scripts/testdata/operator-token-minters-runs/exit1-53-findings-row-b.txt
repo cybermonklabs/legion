@@ -1,0 +1,71 @@
+PASS permission names: each of the 76 permission names the IAM steps ask about is in the role that grants it (roles/cloudsql.admin, roles/container.admin, roles/deploymentmanager.editor, roles/gkehub.admin, roles/iam.roleAdmin, roles/iam.serviceAccountAdmin, roles/iam.serviceAccountKeyAdmin, roles/iam.serviceAccountTokenCreator, roles/iam.serviceAccountUser, roles/resourcemanager.folderIamAdmin, roles/resourcemanager.organizationAdmin, roles/resourcemanager.projectIamAdmin, roles/secretmanager.admin, roles/secretmanager.secretAccessor, roles/storage.objectViewer)
+PASS code: RBAC: the renders give the rights, the guard rights, the certificate chain and the admission rights, outright or by name, to no one but people, system namespaces and components, and the operator's own account (3 grants read; custom resources are read live)
+PASS code: IAM: the previews grant the checked permissions to no one but people, Google's service agents and the accounts allowed by name (7 grants read; a group they name is judged by its members in the live steps)
+PASS live: clusters: the project runs operator-cluster (us-central1); the operator's is operator-cluster in us-central1
+PASS live: GKE IAM on project example-project: 4 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 1 impersonation chains, each from such a principal or by design
+PASS live: Deployment Manager on project example-project: 1 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 0 impersonation chains, each from such a principal or by design
+PASS live: minters of envoy-operator@example-project.iam.gserviceaccount.com: 3 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 2 impersonation chains, each from such a principal or by design
+PASS live: minters of the broker account secrets-broker@example-project.iam.gserviceaccount.com: 2 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 0 impersonation chains, each from such a principal or by design
+FINDING system:serviceaccount:legion:right-1: create serviceaccounts/token envoy-operator in envoy-operator
+FINDING system:serviceaccount:legion:right-2: impersonate serviceaccounts envoy-operator in envoy-operator
+FINDING system:serviceaccount:legion:right-3: impersonate users cluster-wide
+FINDING system:serviceaccount:legion:right-4: impersonate groups cluster-wide
+FINDING system:serviceaccount:legion:right-5: escalate roles.rbac.authorization.k8s.io in envoy-operator
+FINDING system:serviceaccount:legion:right-6: bind roles.rbac.authorization.k8s.io in envoy-operator
+FINDING system:serviceaccount:legion:right-7: escalate clusterroles.rbac.authorization.k8s.io cluster-wide
+FINDING system:serviceaccount:legion:right-8: bind clusterroles.rbac.authorization.k8s.io in envoy-operator
+FINDING system:serviceaccount:legion:right-9: create rolebindings.rbac.authorization.k8s.io in envoy-operator
+FINDING system:serviceaccount:legion:right-10: patch rolebindings.rbac.authorization.k8s.io in envoy-operator
+FINDING system:serviceaccount:legion:right-11: update rolebindings.rbac.authorization.k8s.io in envoy-operator
+FINDING system:serviceaccount:legion:right-12: create clusterrolebindings.rbac.authorization.k8s.io cluster-wide
+FINDING system:serviceaccount:legion:right-13: patch clusterrolebindings.rbac.authorization.k8s.io cluster-wide
+FINDING system:serviceaccount:legion:right-14: update clusterrolebindings.rbac.authorization.k8s.io cluster-wide
+FINDING system:serviceaccount:legion:right-15: create pods/exec in envoy-operator
+FINDING system:serviceaccount:legion:right-16: create pods/attach in envoy-operator
+FINDING system:serviceaccount:legion:right-17: create pods/portforward in envoy-operator
+FINDING system:serviceaccount:legion:right-18: get pods/exec in envoy-operator
+FINDING system:serviceaccount:legion:right-19: get pods/attach in envoy-operator
+FINDING system:serviceaccount:legion:right-20: get pods/portforward in envoy-operator
+FINDING system:serviceaccount:legion:right-21: create pods in envoy-operator
+FINDING system:serviceaccount:legion:right-22: patch pods in envoy-operator
+FINDING system:serviceaccount:legion:right-23: update pods in envoy-operator
+FINDING system:serviceaccount:legion:right-24: patch pods/ephemeralcontainers in envoy-operator
+FINDING system:serviceaccount:legion:right-25: update pods/ephemeralcontainers in envoy-operator
+FINDING system:serviceaccount:legion:right-26: create deployments.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-27: patch deployments.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-28: update deployments.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-29: create replicasets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-30: patch replicasets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-31: update replicasets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-32: create statefulsets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-33: patch statefulsets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-34: update statefulsets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-35: create daemonsets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-36: patch daemonsets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-37: update daemonsets.apps in envoy-operator
+FINDING system:serviceaccount:legion:right-38: create jobs.batch in envoy-operator
+FINDING system:serviceaccount:legion:right-39: patch jobs.batch in envoy-operator
+FINDING system:serviceaccount:legion:right-40: update jobs.batch in envoy-operator
+FINDING system:serviceaccount:legion:right-41: create cronjobs.batch in envoy-operator
+FINDING system:serviceaccount:legion:right-42: patch cronjobs.batch in envoy-operator
+FINDING system:serviceaccount:legion:right-43: update cronjobs.batch in envoy-operator
+FINDING system:serviceaccount:legion:right-44: get secrets in envoy-operator
+FINDING system:serviceaccount:legion:right-45: list secrets in envoy-operator
+FINDING system:serviceaccount:legion:right-46: watch secrets in envoy-operator
+FINDING system:serviceaccount:legion:right-47: create secrets in envoy-operator
+FINDING system:serviceaccount:legion:right-48: patch secrets in envoy-operator
+FINDING system:serviceaccount:legion:right-49: create replicationcontrollers in envoy-operator
+FINDING system:serviceaccount:legion:right-50: patch replicationcontrollers in envoy-operator
+FINDING system:serviceaccount:legion:right-51: update replicationcontrollers in envoy-operator
+FINDING system:serviceaccount:legion:right-52: create nodes/proxy cluster-wide
+FINDING system:serviceaccount:legion:right-53: get nodes/proxy cluster-wide
+PASS live: Workload Identity: the project runs the operator's cluster operator-cluster alone
+PASS live: Workload Identity: the fleet of project example-project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here, and the fleet holds no scope
+PASS live: who can set IAM on organizations/100: 1 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 0 impersonation chains, each from such a principal or by design
+PASS live: who can register a cluster to, or write namespaces and RBAC on, the fleet of project example-project: 1 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 0 impersonation chains, each from such a principal or by design
+PASS live: hold writers: Cloud SQL users of example-instance: 2 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 0 impersonation chains, each from such a principal or by design
+PASS live: hold writers: Secret example-db/broker-db-login: 4 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 1 impersonation chains, each from such a principal or by design; the RBAC step's principals' get on it is in that step
+PASS live: hold writers: the broker program's state in gs://example-state: 2 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 0 impersonation chains, each from such a principal or by design
+PASS live: hold writers: the signing key hold-signing-example: 2 holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and 5 impersonation chains, each from such a principal or by design
+PASS admin tag of ENVOY_OPERATOR: admin is "true" and tier is "human": each release waits on a person's approval
+operator-token-minters: 53 finding(s), 0 unknown: exit 1

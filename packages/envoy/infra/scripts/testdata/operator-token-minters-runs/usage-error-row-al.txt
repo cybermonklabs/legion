@@ -1,0 +1,46 @@
+operator-token-minters: unknown flag --no-such-flag
+usage: operator-token-minters.sh [flags]
+  --project ID               the project that runs the operator's cluster
+  --cluster NAME             the operator's cluster, one of the project's
+  --location LOCATION        the operator's cluster's location (a region or a zone); needed when the
+                             project holds more than one cluster named --cluster
+  --pool-project ID          the project whose workload pool (ID.svc.id.goog) the operator's and
+                             the broker's ServiceAccounts are in, and whose fleet's member clusters
+                             share it (default --project)
+  --fleet none               the pool project has no fleet: an empty membership listing passes, and
+                             each membership listed is a finding (without it, an empty listing is
+                             UNKNOWN, since it cannot be told from one that saw nothing)
+  --rbac-only-member ID      a member of the pool project's fleet that is no GKE cluster and whose
+                             cloud grants nothing beside its RBAC; repeatable (without it, such a
+                             member is UNKNOWN)
+  --service-agent EMAIL      another Google service agent the deployment needs, allowed in the IAM
+                             steps and written into --report; EMAIL is
+                             service-<number>@gcp-sa-<product>.iam.gserviceaccount.com and nothing
+                             else (GKE's, GKE Hub's and Compute Engine's agents of the projects
+                             read are allowed without it); repeatable
+  --namespace NS             the operator's namespace (default envoy-operator)
+  --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
+  --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
+                             to a Google service account, guarded as the operator's pair is, which is
+                             always guarded, as the broker's (--broker-workload) is when it is named;
+                             repeatable
+  --gsa EMAIL                the Google service account the operator's ServiceAccount acts as
+  --agent-namespace NS|GLOB  a namespace whose ServiceAccounts agents run as, or a glob of such
+                             names with * and ?; repeatable. Every ServiceAccount outside the system
+                             namespaces is reviewed; these name the groups reviewed alone, and one
+                             must hold a ServiceAccount
+  --broker-account EMAIL     the secrets broker's Google service account, which mints the
+                             operator's token for the secret ENVOY_OPERATOR
+  --broker-workload NS/NAME  the broker's Kubernetes ServiceAccount, bound to --broker-account
+  --sql-instance NAME        the Cloud SQL instance of the broker's database, in --project
+  --db-secret NS/NAME        the Secret holding the broker's database login
+  --broker-state gs://BUCKET[/PATH]  where the broker program's Pulumi state is kept
+  --signing-secret NAME      the Secret Manager secret of the writer hold's signing key
+  --secret NAME              the broker secret of the operator's credential (default ENVOY_OPERATOR)
+  --rbac-render FILE         a JSON render of the cluster's RBAC program; repeatable
+  --iam-preview FILE         `pulumi preview --json --show-sames` of an IAM program; repeatable
+  --analysis-scope organizations/N|folders/N|projects/ID
+                             Policy Analyzer's scope (default: the project's top ancestor)
+  --credentials-arg ARG      one gcloud flag, --name or --name=value, passed to each
+                             `gcloud container clusters get-credentials`; repeatable
+  --report FILE              also write the result as JSON

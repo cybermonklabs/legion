@@ -1,0 +1,19 @@
+PASS permission names: each of the 76 permission names the IAM steps ask about is in the role that grants it (roles/cloudsql.admin, roles/container.admin, roles/deploymentmanager.editor, roles/gkehub.admin, roles/iam.roleAdmin, roles/iam.serviceAccountAdmin, roles/iam.serviceAccountKeyAdmin, roles/iam.serviceAccountTokenCreator, roles/iam.serviceAccountUser, roles/resourcemanager.folderIamAdmin, roles/resourcemanager.organizationAdmin, roles/resourcemanager.projectIamAdmin, roles/secretmanager.admin, roles/secretmanager.secretAccessor, roles/storage.objectViewer)
+PASS code: RBAC: the renders give the rights, the guard rights, the certificate chain and the admission rights, outright or by name, to no one but people, system namespaces and components, and the operator's own account (3 grants read; custom resources are read live)
+PASS code: IAM: the previews grant the checked permissions to no one but people, Google's service agents and the accounts allowed by name (7 grants read; a group they name is judged by its members in the live steps)
+PASS live: clusters: the project runs operator-cluster (us-central1); the operator's is operator-cluster in us-central1
+UNKNOWN live: GKE IAM on project example-project: gcloud projects get-ancestors example-project answered no ancestor
+UNKNOWN live: Deployment Manager on project example-project: gcloud projects get-ancestors example-project answered no ancestor
+UNKNOWN live: minters of envoy-operator@example-project.iam.gserviceaccount.com: gcloud projects get-ancestors example-project answered no ancestor
+UNKNOWN live: minters of the broker account secrets-broker@example-project.iam.gserviceaccount.com: gcloud projects get-ancestors example-project answered no ancestor
+PASS live: RBAC on operator-cluster: 16 principals (6 ServiceAccounts outside the system namespaces, 4 of them in the agent namespaces, 2 Google service accounts, 7 of Kubernetes' own groups, 0 binding subjects, and anyone unauthenticated), 140 rights each reviewed, and every rule of the cluster's roles that limits one of them by name read: none allowed
+PASS live: Workload Identity: the project runs the operator's cluster operator-cluster alone
+PASS live: Workload Identity: the fleet of project example-project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here, and the fleet holds no scope
+UNKNOWN live: who can set IAM on the ancestors of project example-project: gcloud projects get-ancestors example-project answered no ancestor holding the project itself, though a real answer always does, so it saw nothing
+UNKNOWN live: who can register a cluster to, or write namespaces and RBAC on, the fleet of project example-project: gcloud projects get-ancestors example-project answered no ancestor
+UNKNOWN live: hold writers: Cloud SQL users of example-instance: gcloud projects get-ancestors example-project answered no ancestor
+UNKNOWN live: hold writers: Secret example-db/broker-db-login: gcloud projects get-ancestors example-project answered no ancestor
+UNKNOWN live: hold writers: the broker program's state in gs://example-state: gcloud projects get-ancestors example-project answered no ancestor
+UNKNOWN live: hold writers: the signing key hold-signing-example: gcloud projects get-ancestors example-project answered no ancestor
+PASS admin tag of ENVOY_OPERATOR: admin is "true" and tier is "human": each release waits on a person's approval
+operator-token-minters: no finding, 10 unknown: exit 2

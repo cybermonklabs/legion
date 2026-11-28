@@ -1,0 +1,2 @@
+UNKNOWN run: the parts output.sh of /tmp/operator-token-minters-test.KOAJNB/rows-run/copy-bc-output.sh/operator-token-minters cannot be read, so no step runs
+operator-token-minters: no step ran, 1 unknown: exit 2
