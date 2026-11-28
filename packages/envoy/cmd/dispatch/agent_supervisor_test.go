@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -79,7 +80,7 @@ func (e *recordingAgentEnd) Stop() {
 	}
 }
 
-func (e *recordingAgentEnd) Close(time.Time) { e.Stop() }
+func (e *recordingAgentEnd) Close(clock.Clock, time.Time) { e.Stop() }
 
 // requireTheRestartWaits runs the supervisor over the real agent binary, which exits at once each
 // time, and holds the wait before each start again: 1 s after the first exit, then twice as long
@@ -97,7 +98,7 @@ func requireTheRestartWaits(t *testing.T) {
 		return now
 	}
 	go supervisor.run()
-	t.Cleanup(func() { supervisor.Close(time.Now()) })
+	t.Cleanup(func() { supervisor.Close(clock.Real(), time.Now()) })
 	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second}
 	var got []time.Duration
 	for range want {

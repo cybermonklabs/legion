@@ -44,6 +44,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -314,21 +315,22 @@ func (a *AgentListener) stopped() bool {
 }
 
 // Close is the second half of the shutdown: it stops the agent if Stop has not, waits for the
-// calls in flight until by, then closes the socket and every connection still open, and removes
-// the socket's directory where it is this listener's own. A call still running at by goes on to
-// its own end, and either commits with its landing or does not, so the next agent makes it once.
-func (a *AgentListener) Close(by time.Time) {
+// calls in flight until by on c, the clock the server's shutdown runs on, then closes the socket
+// and every connection still open, and removes the socket's directory where it is this listener's
+// own. A call still running at by goes on to its own end, and either commits with its landing or
+// does not, so the next agent makes it once.
+func (a *AgentListener) Close(c clock.Clock, by time.Time) {
 	a.Stop()
 	ran := make(chan struct{})
 	go func() {
 		a.calls.wait()
 		close(ran)
 	}()
-	timer := time.NewTimer(time.Until(by))
+	timer := c.NewTimer(by.Sub(c.Now()))
 	defer timer.Stop()
 	select {
 	case <-ran:
-	case <-timer.C:
+	case <-timer.C():
 		slog.Warn("dispatch: the agent's calls in flight did not end before the shutdown's bound; the socket closes with them running")
 	}
 	_ = a.listener.Close()

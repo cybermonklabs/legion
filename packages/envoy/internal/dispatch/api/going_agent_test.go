@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -98,7 +99,7 @@ func newGoingAgentRigOver(t *testing.T, rig goingWritesRig, adjust func(*AgentLi
 		adjust(agent)
 	}
 	agent.start()
-	t.Cleanup(func() { agent.Close(time.Now().Add(time.Minute)) })
+	t.Cleanup(func() { agent.Close(clock.Real(), time.Now().Add(time.Minute)) })
 	return goingAgentRig{goingWritesRig: rig, hooks: hooks, agent: agent,
 		client: agentwire.Client{Path: agent.Path(), Secret: agent.Secret()}, rows: &sync.Map{}}
 }

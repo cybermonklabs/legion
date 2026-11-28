@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -31,7 +32,11 @@ const stopGrace = 30 * time.Second
 // 4.5 s at load 90 against a 5 s budget, a 3.4 s overrun past it - is what the reserve is sized to
 // outlast; a worker still running once this whole timeout ends makes Shutdown return the
 // settlements-unconfirmed error instead of reading back what committed.
-const documentShutdownTimeout = docs.ShutdownDrainBudget + 5*time.Second
+const documentShutdownTimeout = docs.ShutdownDrainBudget + documentShutdownReserve
+
+// documentShutdownReserve is how far past its drain budget the document service's own budget
+// runs (documentShutdownTimeout says what it is for).
+const documentShutdownReserve = 5 * time.Second
 
 // httpDrainBeforeDocuments is how long the document service waits for the requests in flight to
 // finish before it settles the documents owed with requests still running, so that its budget ends
@@ -65,11 +70,12 @@ const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
 // agentShutdown is the server's end of its agent process (api.AgentListener), which shutdown
 // stops after the HTTP drain: Stop refuses claims, answers every waiting renew and closes the
-// agent's standard input, and Close waits for the agent's calls in flight until its bound, then
-// closes the socket. A nil agentShutdown is a process that listens for no agent.
+// agent's standard input, and Close waits for the agent's calls in flight until its bound, by on
+// c, the clock the rest of the shutdown runs on, then closes the socket. A nil agentShutdown is a
+// process that listens for no agent.
 type agentShutdown interface {
 	Stop()
-	Close(by time.Time)
+	Close(c clock.Clock, by time.Time)
 }
 
 // processStarted is when this process started, as near as its Go code can say: the moment the
@@ -110,7 +116,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 		cancel()
 	}
 	slog.Info("dispatch: shutting down")
-	shutdown(server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain, agent)
+	shutdown(clock.Real(), server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain, agent)
 	select {
 	case err := <-serveErr:
 		return err
@@ -169,10 +175,14 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // that has stopped answering (silentProbes) holds its connections forever, so Dispatch exits
 // without them, and the database rolls back whatever they held open; it deregisters nothing then,
 // since the delete would wait on that database too, and its row's heartbeat stops with the process
-// instead.
-func shutdown(server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(),
+// instead. The HTTP drain's share (httpDrain), the document service's timeout, the agent's share
+// (agentShutdown.Close) and the wait for the outbox run on c, the wall clock in production
+// (serveUntilStopped), so a test moves a fake clock through them
+// (TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget); the health probes and the pauses
+// between them (waitUntilIdle, closePool) run on the wall clock.
+func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(),
 	outboxStopped <-chan struct{}, httpDrain time.Duration, agent agentShutdown) {
-	started := time.Now()
+	started := c.Now()
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
@@ -182,40 +192,40 @@ func shutdown(server *http.Server, documentService *docs.Service, pool *store.Po
 	}()
 	select {
 	case <-drained:
-	case <-time.After(httpDrain):
+	case <-c.After(httpDrain):
 		slog.Warn("dispatch: settle documents with requests still in flight")
 	}
 	if agent != nil {
 		agent.Stop()
 	}
-	documentCtx, cancelDocuments := context.WithTimeout(context.Background(), documentShutdownTimeout)
+	documentCtx, cancelDocuments := c.WithTimeout(context.Background(), documentShutdownTimeout)
 	defer cancelDocuments()
 	if err := documentService.Shutdown(documentCtx); err != nil {
 		slog.Warn("dispatch: shutdown document service", "error", err)
 	}
 	if agent != nil {
-		agent.Close(started.Add(outboxStopBudget))
+		agent.Close(c, started.Add(outboxStopBudget))
 	}
 	waitBackground()
 	waitIntakes()
 	if waitUntilIdle(drained, pool) {
-		waitForOutbox(outboxStopped, started.Add(outboxStopBudget))
+		waitForOutbox(c, outboxStopped, started.Add(outboxStopBudget))
 		deregister()
 		closePool(pool)
 	}
 }
 
-// waitForOutbox waits until outboxStopped closes or by passes, whichever comes first; a nil
+// waitForOutbox waits until outboxStopped closes or by passes on c, whichever comes first; a nil
 // outboxStopped is no outbox, and nothing to wait for.
-func waitForOutbox(outboxStopped <-chan struct{}, by time.Time) {
+func waitForOutbox(c clock.Clock, outboxStopped <-chan struct{}, by time.Time) {
 	if outboxStopped == nil {
 		return
 	}
-	timer := time.NewTimer(time.Until(by))
+	timer := c.NewTimer(by.Sub(c.Now()))
 	defer timer.Stop()
 	select {
 	case <-outboxStopped:
-	case <-timer.C:
+	case <-timer.C():
 		slog.Warn("dispatch: close the pool with the events outbox still stopping", "budget", outboxStopBudget)
 	}
 }

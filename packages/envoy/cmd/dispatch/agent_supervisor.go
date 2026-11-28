@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // The supervisor's bounds (section 5 of the background-runs design).
@@ -74,7 +75,7 @@ type agentEnd interface {
 	SetRunSlots(slots int)
 	AgentExited(ctx context.Context, stopping bool) (bool, error)
 	Stop()
-	Close(by time.Time)
+	Close(c clock.Clock, by time.Time)
 }
 
 // agentSupervisor runs the command bar's agent process (envoy-dispatch agent) for the server: it
@@ -467,11 +468,12 @@ func (s *agentSupervisor) Stop() {
 // write that frees the runs it held, is waited for agentExitRecordWait, then cancelled, so the
 // runs keep their leases, which run out. After the calls in flight, then, the agent's part of the
 // shutdown is the agent's exit and at most agentExitRecordWait, whether the database answers or
-// not.
-func (s *agentSupervisor) Close(by time.Time) {
+// not. Every one of those waits, by included, runs on c, the clock of the shutdown it is part of
+// (shutdown), so a test moves a fake clock through them as it moves the rest of the shutdown.
+func (s *agentSupervisor) Close(c clock.Clock, by time.Time) {
 	defer s.cancelRecords()
-	s.end.Close(by)
-	if !closedWithin(s.gone, agentExitGrace) {
+	s.end.Close(c, by)
+	if !closedWithin(c, s.gone, agentExitGrace) {
 		s.mu.Lock()
 		process := s.process
 		s.mu.Unlock()
@@ -479,14 +481,14 @@ func (s *agentSupervisor) Close(by time.Time) {
 			slog.Warn("dispatch: the agent did not exit when its standard input closed; it is killed", "pid", process.Pid)
 			_ = process.Kill()
 		}
-		if !closedWithin(s.gone, agentExitGrace) {
+		if !closedWithin(c, s.gone, agentExitGrace) {
 			slog.Warn("dispatch: the agent process had not exited when the shutdown went on")
 		}
 	}
-	if !closedWithin(s.done, agentExitRecordWait) {
+	if !closedWithin(c, s.done, agentExitRecordWait) {
 		// The record's own error says the runs keep their leases (exited).
 		s.cancelRecords()
-		if !closedWithin(s.done, agentExitGrace) {
+		if !closedWithin(c, s.done, agentExitGrace) {
 			slog.Warn("dispatch: the record of the agent's exit had not ended when the shutdown went on")
 		}
 	}
@@ -497,14 +499,14 @@ func (s *agentSupervisor) Close(by time.Time) {
 	s.mu.Unlock()
 }
 
-// closedWithin waits up to within for ch to close, and reports whether it did.
-func closedWithin(ch <-chan struct{}, within time.Duration) bool {
-	timer := time.NewTimer(within)
+// closedWithin waits up to within on c for ch to close, and reports whether it did.
+func closedWithin(c clock.Clock, ch <-chan struct{}, within time.Duration) bool {
+	timer := c.NewTimer(within)
 	defer timer.Stop()
 	select {
 	case <-ch:
 		return true
-	case <-timer.C:
+	case <-timer.C():
 		return false
 	}
 }
