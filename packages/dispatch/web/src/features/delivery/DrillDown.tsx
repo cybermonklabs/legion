@@ -28,12 +28,11 @@ import {
   ISSUE_NOT_KNOWN,
   issuePlaceholder,
   NO_COMPONENT,
-  NO_PRIORITY,
   NO_SESSION,
   PLACEHOLDER_LABELS,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
-import { leadTimeMinutes } from "./lib/prList";
+import { issuePriorityLabel, leadTimeMinutes } from "./lib/prList";
 import { storedSessionTitle } from "./lib/sessionTitles";
 import type { TimelineSelection } from "./Timeline";
 
@@ -101,11 +100,8 @@ function PRDetail({
           )}
         </dd>
         <dt className={textMutedOnSurface}>Priority</dt>
-        <dd>
-          {pr.issue === null
-            ? PLACEHOLDER_LABELS[noIssue]
-            : (pr.priority ?? PLACEHOLDER_LABELS[NO_PRIORITY])}
-        </dd>
+        {/* The words the list's Issue cell says, the source of an inherited one as text. */}
+        <dd>{issuePriorityLabel(pr)}</dd>
         <dt className={textMutedOnSurface}>Components</dt>
         <dd>{componentText}</dd>
         <dt className={textMutedOnSurface}>Parent agent(s)</dt>

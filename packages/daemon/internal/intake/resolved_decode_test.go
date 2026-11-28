@@ -38,23 +38,38 @@ import (
 // Then, in every string, the project's key became the neutral ACME, as AGENTS.md asks, so each
 // issue keeps its number, and the two sessions that wrote the events became
 // 00000000-0000-7000-8000-000000000001 and 00000000-0000-7000-8000-000000000002; every other value
-// is as the filter left it, and the file was then formatted with `bunx biome format --write`. The
-// other files there are written by hand in the shape dispatch://INFRA-5793/spec#b-j-inherit and
-// #b-j-events give, which testdata/dispatch-resolved/README quotes, and so are the HTTP bodies of
-// internal/dispatch/testdata/resolved named resolved-<v> (its README), whose two captures, of the
-// same issue's listing row and detail read, have their commands in internal/dispatch's
-// resolved_test.go.
+// is as the filter left it, and the file was then formatted with `bunx biome format --write`.
+//
+// The other files there were captured on 2026-11-27 from a Dispatch stack of
+// dispatch://INFRA-5793, which sends `resolved_priority` and `priority_from` beside `priority` on
+// the issue of every issue event: packages/dispatch's `bun e2e/harness-up.ts`, read with the
+// command above, DISPATCH_URL being its server and DISPATCH_TOKEN_FILE holding its shared token.
+// resolved-<v>.json is the log of ACME-12, the issue whose listing row, detail read and status
+// write's answer are internal/dispatch's testdata/resolved files named resolved-<v> (the projects,
+// the issues and the writes are in the header of internal/dispatch's resolved_test.go), read at
+// after=0&limit=4 once its four writes were made and before any other write: the stack's alice
+// filed it and moved it to todo, the daemon's own write under the shared token, naming the
+// session legion-daemon:<P>, moved it to in_progress, and a write under the shared token naming
+// the session 00000000-0000-7000-8000-000000000003 closed it. resolved-only.json is the two
+// updates J3 appended on ACME-13, filed after ACME-12 under ACME-7 and moved to todo by alice, in
+// a pair of projects where OTHER-5 stood at its own priority 2: alice set OTHER-5's priority to 0,
+// then detached ACME-7 from OTHER-5, and the two updates were read at after=2&limit=2. Each answer
+// went through the filter above; then, in every string, the stack's two project keys became ACME
+// and OTHER as in internal/dispatch's resolved_test.go (CAPTURE became ACME for
+// resolved-only.json, whose other project was OTHER), so each issue keeps its number; every other
+// value is as the stack sent it, alice and the two sessions included, and the files were then
+// formatted with `bunx biome format --write`.
 const dispatchResolvedDir = "testdata/dispatch-resolved"
 
 // resolvedHTTPDir holds the HTTP bodies of the listing and the detail read (internal/dispatch's
 // testdata/resolved).
 const resolvedHTTPDir = "../dispatch/testdata/resolved"
 
-// fromAbove is the issue an inherited priority of the hand-written files comes from: an issue above
+// fromAbove is the issue an inherited priority of the captured files comes from: an issue above
 // the child in another project.
 const fromAbove = "OTHER-5"
 
-// resolvedLogs is each hand-written issue log of testdata/dispatch-resolved but the resolved-only
+// resolvedLogs is each captured issue log of testdata/dispatch-resolved but the resolved-only
 // updates (resolved-only.json), with the priority every event of it carries: the issue's own and
 // the one Dispatch resolves it to.
 var resolvedLogs = []struct {
@@ -246,7 +261,7 @@ func detailFact(t *testing.T, body []byte) DispatchIssue {
 // priority of 0 to 3, null and missing. A missing `resolved_priority` is unknown and a present null
 // a known none, never the other way round, and a present `priority_from` is kept. A resolved level
 // Dispatch never writes, 9, on the listing and the detail read is a known none. Each row is a
-// hand-written file of the resolved shape with its priority fields written as the row says. The
+// captured file of the resolved shape with its priority fields written as the row says. The
 // older capture, whose own priority is unset, makes from each read a fact whose record would not
 // start outside the cap.
 func TestEveryDispatchReadDecodesEachPriorityField(t *testing.T) {
@@ -353,7 +368,7 @@ func TestEveryDispatchReadDecodesEachPriorityField(t *testing.T) {
 }
 
 // Every type of issue event the decoder takes (issueEventTypes) carries the resolved shape in
-// each hand-written log: each log holds an event of each type, and each such event decodes to the
+// each captured log: each log holds an event of each type, and each such event decodes to the
 // log's own and resolved priority. A type added to the list fails here until each log holds one.
 // The updates Dispatch appends on an issue whose resolved priority an issue above it changed (J3),
 // which it sends with notify false, decode the same way and as an update of the resolved priority

@@ -177,11 +177,43 @@ a reload.
 Dragging a card across lanes sets its priority, in the same drop that a drag across columns sets
 its status. Keyboard roving (`j`/`k`, the arrow keys) stays within the focused lane.
 
+A card sits in the lane of the priority its issue works at: its own, or the one it inherits (see
+[Priority](#priority)). A drag within that lane keeps an inherited priority. A drag to another
+lane sets the issue's own priority. A card that inherits its priority does not move to
+**No priority**, because it has no priority of its own to clear.
+
 ### Priority
 
 Priority runs from P0, the highest, to P3. An issue with no priority shows a muted **Priority**
 tag. The badge is a picker wherever it appears: the issue header, a Board card, a List row, and an
 Inbox row. Choose it and pick a value. Closed issues cannot change priority.
+
+An issue with no priority of its own takes the priority of the nearest issue above it that has
+one, in any project. Its badge shows that priority and the issue it comes from, such as
+**P0 · from ACME-1**, and the key is a link to that issue. The picker sets the issue's own
+priority, so for an inherited priority it reads **Unset**. A pick of **Unset** clears the issue's
+own priority, and the issue then takes the priority of the nearest issue above it that has one.
+
+These use the priority an issue works at, its own or the inherited one:
+
+- the Board's lanes
+- the List's **Priority** column, its sort and its filter
+- the Inbox's grouping and its priority tag
+- the `dispatch` command, which prints an inherited priority as `P0 (from ACME-1)`
+
+Setting an issue's own priority to P0 needs the `p0` scope. A browser sign-in holds it. A personal
+token holds it only when its maker gave it. A write that needs `p0` and comes without it gets
+`403 OAUTH_SCOPE_REQUIRED`, and Dispatch writes nothing of it.
+
+Each of these writes needs `p0` too when the issue, or an issue under it that takes its priority
+from it, would then work at P0:
+
+- a move of an issue under another parent
+- a clear of an issue's own priority
+- a new child with no priority of its own under a P0 issue, unless the writer's session is the
+  parent's own architect
+
+A move or a clear that makes no issue P0 needs no scope. A move to no parent never needs `p0`.
 
 ### Assignee
 

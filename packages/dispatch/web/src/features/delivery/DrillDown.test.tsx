@@ -25,6 +25,7 @@ const pr: DeliveryPR = {
   parent_agent: "Planner one",
   partial: false,
   priority: null,
+  priority_from: null,
   repo: "acme/widgets",
   rework: false,
   sessions: ["sess-planner-1", "sess-helper-2", "sess-untitled-3"],
@@ -60,7 +61,7 @@ function renderDrillDown(sessions: readonly string[], fields: Partial<DeliveryPR
             onClose={() => {}}
             prs={[{ ...pr, ...fields, sessions: [...sessions] }]}
             runs={[]}
-            selection={{ id: pr.id, kind: "pr" }}
+            selection={{ id: fields.id ?? pr.id, kind: "pr" }}
             sessionGroups={[]}
             sessionTitles={{
               "sess-planner-1": "Planner one",
@@ -132,6 +133,22 @@ test("a pull request whose issue is not known reads Not known yet on each line o
     expect(detail("Priority").textContent).toBe("Not known yet");
     expect(detail("Components").textContent).toBe("Not known yet");
     expect(within(detail("Dispatch issue")).queryByRole("link")).toBeNull();
+  } finally {
+    cleanup();
+  }
+});
+
+test("the PR drill-down names the issue, its resolved P0, and its source as text", () => {
+  renderDrillDown([], { issue: "ACME-2", priority: "P0", priority_from: "ACME-1" });
+  try {
+    const dialog = screen.getByRole("dialog", { name: "Details" });
+    expect(dialog, "PR drill-down issue and priority").toHaveTextContent(
+      "ACME-2 · P0 · from ACME-1"
+    );
+    expect(
+      within(dialog).queryByRole("link", { name: "ACME-1" }),
+      "PR drill-down priority source is text"
+    ).toBeNull();
   } finally {
     cleanup();
   }

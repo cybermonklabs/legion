@@ -481,6 +481,7 @@ packages/envoy:
       - internal/dispatch/delivery/deliverytest
       - internal/dispatch/store/cmd/connections
       - internal/dispatch/store/searchtest
+      - internal/dispatch/store/storetest/collabtest
       - internal/dispatch/store/storetest/lockstep
     # The Dispatch store, in two legs, a group of its tests each
     # (.github/go-legs/packages/envoy/internal/dispatch/store.yaml, modelled 295 s a group): whole,

@@ -24,6 +24,7 @@ const base: DeliveryPR = {
   parent_agent: null,
   partial: false,
   priority: null,
+  priority_from: null,
   repo: "acme/widgets",
   rework: false,
   sessions: [],
