@@ -9,8 +9,8 @@ package legion
 // whole read leaves (cursor.afterRead) and the one a write of the setting resets it to
 // (cursor.reset, resetCursor), with the helpers of the row's arrays (with, marked, without,
 // owedSince); and the row's columns, its reads and its writes (cursorColumns, cursorQuery,
-// scanCursor, writeCursor and the narrow writes beside it, endHold, writeSkipped and
-// writeReadStart; readPosition, Intake.position, lockPosition, lockCursor).
+// lockedCursorQuery, scanCursor, writeCursor and the narrow writes beside it, endHold,
+// writeSkipped and writeReadStart; readPosition, Intake.position, lockPosition, lockCursor).
 
 import (
 	"context"
@@ -581,8 +581,13 @@ const cursorColumns = `state_url, run, last_seq, read_reasons, last_read_started
 	schema_version, previous_state_id, previous_state_url, foreign_state_ids, released_holders, skipped_state_ids, skipped_seqs`
 
 // cursorQuery selects project's legion_event_cursors row as scanCursor reads it (cursorColumns),
-// with no lock: readPosition and resetCursor add the lock they take.
+// with no lock: readPosition's read outside any transaction (position).
 const cursorQuery = "select " + cursorColumns + " from legion_event_cursors where project = $1"
+
+// lockedCursorQuery is cursorQuery with the row's lock (`for update`), which a transaction that may
+// write the cursor takes as it reads it: resetCursor, and readPosition where locked is set
+// (lockPosition, lockCursor).
+const lockedCursorQuery = cursorQuery + " for update"
 
 // scanCursor decodes one cursorColumns row, or no row as a cursor that does not exist
 // (emptyCursor). The array columns are not null, so a row's arrays are never nil either. So no
@@ -713,7 +718,7 @@ func writeReadStart(ctx context.Context, db Execer, project string, started time
 //     write after it is a new setting (before ""), which resets the cursor as a write of another
 //     URL does.
 func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL string) error {
-	current, err := scanCursor(tx.QueryRow(ctx, cursorQuery+" for update", project))
+	current, err := scanCursor(tx.QueryRow(ctx, lockedCursorQuery, project))
 	if err != nil || !current.exists || (before == stateURL && current.readHolder != nil) {
 		return err
 	}
@@ -777,9 +782,9 @@ func (c cursor) reset(stateURL string) cursor {
 // cursor `for update` where locked is set (lockPosition), and outside any transaction with no lock
 // otherwise (position). found is false for a project with no setting.
 func readPosition(ctx context.Context, db RowQueryer, project string, locked bool) (stateURL string, current cursor, found bool, err error) {
-	settingLock, cursorLock := "", ""
+	settingLock, query := "", cursorQuery
 	if locked {
-		settingLock, cursorLock = " for share", " for update"
+		settingLock, query = " for share", lockedCursorQuery
 	}
 	switch err := db.QueryRow(ctx, `select state_url from legion_settings where project = $1`+settingLock, project).Scan(&stateURL); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -787,7 +792,7 @@ func readPosition(ctx context.Context, db RowQueryer, project string, locked boo
 	case err != nil:
 		return "", cursor{}, false, fmt.Errorf("read the Legion setting of %s: %w", project, err)
 	}
-	current, err = scanCursor(db.QueryRow(ctx, cursorQuery+cursorLock, project))
+	current, err = scanCursor(db.QueryRow(ctx, query, project))
 	if err != nil {
 		return "", cursor{}, false, fmt.Errorf("read where the Legion events of %s stand: %w", project, err)
 	}

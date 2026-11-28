@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // lastSeqOf is project's cursor's last_seq, 0 for none.
@@ -446,24 +446,24 @@ func readsLockWaiters(t *testing.T, rig *intakeRig) int {
 }
 
 // cursorWaitersBehindARecord counts the statements of the rig's database that wait for a lock
-// (wait_event_type 'Lock') as lockCursor's select of a project's cursor row for update, each
-// blocked (pg_blocking_pids) by a statement that waits for a lock on legion_reads: a message past
-// the cap whose judgeCrowded waits on its project's cursor row behind a whole read's record, which
-// holds that row (recordWhole, lockCursor) while its insert of the read's row waits
-// (readsLockWaiters).
+// (lockwaittest.Waiting) as lockCursor's select of a project's cursor row for update
+// (lockedCursorQuery), each blocked (pg_blocking_pids) by a statement that waits for a lock on
+// legion_reads: a message past the cap whose judgeCrowded waits on its project's cursor row behind
+// a whole read's record, which holds that row (recordWhole, lockCursor) while its insert of the
+// read's row waits (readsLockWaiters).
 func cursorWaitersBehindARecord(t *testing.T, rig *intakeRig) int {
 	t.Helper()
 	var waiters int
 	if err := rig.database.Pool.QueryRow(t.Context(), `
 		select count(*) from pg_stat_activity waiter
-		where waiter.datname = current_database() and waiter.wait_event_type = 'Lock' and waiter.query = $1
+		where waiter.datname = current_database() and `+lockwaittest.Waiting+` and waiter.query = $1
 			and exists (
 				select from pg_locks record
 				where not record.granted and record.relation = 'legion_reads'::regclass
 					and record.database = (select oid from pg_database where datname = current_database())
 					and record.pid = any(pg_blocking_pids(waiter.pid))
 			)
-	`, cursorQuery+" for update").Scan(&waiters); err != nil {
+	`, lockedCursorQuery).Scan(&waiters); err != nil {
 		t.Fatalf("count the waits for a cursor row behind a whole read's record: %v", err)
 	}
 	return waiters
@@ -781,7 +781,7 @@ func TestAReplacedConnectionKeepsTheCountsAndTheCallOfTheSubscriptionItBindsAgai
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
 	var takeOvers atomic.Int32
 	var calls *atomic.Int32
-	rig.startHeld(func(in *Intake) {
+	rig.startWith(func(in *Intake) {
 		calls = queuedCalls(in)
 		in.takeOverHook = func(body func()) {
 			takeOvers.Add(1)
@@ -856,43 +856,25 @@ func TestAReplacedConnectionKeepsTheCountsAndTheCallOfTheSubscriptionItBindsAgai
 
 // takeOverAgain stops the running intake (intakeRig.stop), which hands back each message that
 // waits on a runner and drops each call queued there, moves the rig's clock by move, and runs the
-// same Intake again, as a process does that lost the durable's hold and takes it again: the
-// durable's bound callback (takenOver) runs at each take-over by the process, its first creation
-// and every one after it (delivery.NewHeldDurable), and the intake keeps what it counted before. It
-// returns once the second take-over has run that callback with the durable bound at a deliver
-// subject other than the first. The intake hands its messages back on the rig's clock (park) as
-// before, and stops at rig.stop or at the test's end. The test sets the rig's stop budget below 0,
-// so the stop gives up the work that holds a runner at once.
+// same Intake again (intakeRig.runIntake), as a process does that lost the durable's hold and takes
+// it again: the durable's bound callback (takenOver) runs at each take-over by the process, its
+// first creation and every one after it (delivery.NewHeldDurable), and the intake keeps what it
+// counted before. It returns once the second take-over has run that callback's body with the
+// durable bound at a deliver subject other than the first. The run hands the intake's messages
+// back on the rig's clock (park) and wraps the take-over hook the test set, as the first run did,
+// and stops at rig.stop or at the test's end. The test sets the rig's stop budget below 0, so the
+// stop gives up the work that holds a runner at once.
 func takeOverAgain(t *testing.T, rig *intakeRig, move time.Duration) {
 	t.Helper()
 	in, first := rig.intake, rig.subject
 	rig.stop()
 	rig.clock.advance(move)
-	again := &intakeRun{tookOver: make(chan struct{})}
-	in.handBackAfter = func(m delivery.HeldMessage, back time.Duration) bool { return rig.park(again, m, back) }
-	in.takeOverHook = func(body func()) {
-		body()
-		again.once.Do(func() { close(again.tookOver) })
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		in.Run(ctx)
-	}()
-	stop := sync.OnceFunc(func() {
-		rig.stopping(again)
-		cancel()
-		<-done
-	})
-	t.Cleanup(stop)
-	testwait.Receive(t, "the same intake's second take-over to run its callback", again.tookOver)
-	info := rig.consumerInfo()
-	if !info.PushBound || info.Config.DeliverSubject == first {
+	rig.runIntake(in, rig.client)
+	testwait.Receive(t, "the same intake's second take-over to run its callback", rig.current.tookOver)
+	if info := rig.consumerInfo(); !info.PushBound || info.Config.DeliverSubject == first {
 		t.Fatalf("control: the durable after the same intake's second take-over is bound %t at %q, want it bound at a deliver subject other than its first, %q",
 			info.PushBound, info.Config.DeliverSubject, first)
 	}
-	rig.stop, rig.subject, rig.current = stop, info.Config.DeliverSubject, again
 }
 
 // TestATakeOverByTheSameIntakeStartsTheCountsOfItsNewSubscriptionAgain: a process that takes the
@@ -924,6 +906,19 @@ func TestATakeOverByTheSameIntakeStartsTheCountsOfItsNewSubscriptionAgain(t *tes
 
 	takeOverAgain(t, rig, ReadRetryAfter+time.Second)
 	daemon.awaitServed(t, "the second take-over to make INFRA's starting read again", 2)
+	// The second take-over's subscription delivers the 16 messages again from the durable's ack
+	// floor, before a message published now, so once that message is dropped each of them has been
+	// keyed (keyedThrough), and the first of them started the new deliver subject's counts
+	// (messageKey). Until then waitingOn answered the counts of the subject before, which counted
+	// INFRA's 16 messages before the stop, so the wait below could have passed on those.
+	keyedThrough(t, rig, "QUIET")
+	rig.intake.mu.Lock()
+	countedAt := rig.intake.waiting.subject
+	rig.intake.mu.Unlock()
+	if countedAt != rig.subject {
+		t.Fatalf("control: once the 16 messages came back, the intake counts the messages of the deliver subject %q, want the second take-over's, %q: it started no counts of the new subscription's own",
+			countedAt, rig.subject)
+	}
 	awaitWaiting(t, rig, "INFRA", stateMaxWaiting)
 	rig.publish("INFRA", change(31, "INFRA-1", moved("phase", "testing")))
 	past := rig.lastStreamSeq()
@@ -951,10 +946,23 @@ func TestATakeOverByTheSameIntakeStartsTheCountsOfItsNewSubscriptionAgain(t *tes
 // project's owed read that the stop of a subscription drops never runs, so the project waits on no
 // call of the new subscription. INFRA's setting names a second daemon, whose starting read fails,
 // so the read is owed for retry and due, with the store INFRA followed before recorded. A message
-// of that store queues the call for the owed read behind work the test holds on INFRA's runner, and
-// the same intake stops, which drops the call, and runs again (takeOverAgain). Its take-over's
-// settings read makes the owed read, which fails again; once its minute has passed, a message of
-// the store recorded calls for the read, and the call makes it.
+// of that store, 11, queues the call for the owed read behind work the test holds on INFRA's runner
+// in front of 12, a message of the same store, and the same intake stops, which drops the call and
+// hands 12 back, and runs again (takeOverAgain). The take-over creates the durable before its
+// callback queues the settings read (delivery's finishTakeOver), so the redelivered 12 and the
+// take-over's starting point both reach INFRA's runner, and the owed read, which fails again, is
+// made in one of three orders:
+//   - the starting point is queued before 12 and makes the read, and 12 finds it made and calls
+//     for none;
+//   - 12 is judged first and calls for the read, and the starting point, queued while 12 was
+//     judged, runs before 12's call and makes the read, and 12's call finds it made;
+//   - 12's call is queued before the starting point and makes the read, and the starting point
+//     finds it made and defers no call: the owed read is the retry, and a starting point defers a
+//     call only for the starting read (readAnswer.later).
+//
+// Once INFRA's runner has run them all and the minute has passed, 13, a message of the store
+// recorded, calls for the read in each order, and its call makes it: callRead queues that one
+// call once the minute has passed, and one or two, 12's included, under the new subscription.
 //
 // A record of the dropped call that went on across the take-over (calling) would have callRead take
 // the call for one still waiting, and queue none: the owed read would wait for another way to be
@@ -966,9 +974,7 @@ func TestACallTheStopDroppedIsCalledAgainOnceTheSameIntakeTakesTheDurableOverAga
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
 	var calls *atomic.Int32
-	rig.startHeld(func(in *Intake) { calls = queuedCalls(in) })
-	rig.awaitTakeOver()
-	rig.drained(settingsKey)
+	rig.startWith(func(in *Intake) { calls = queuedCalls(in) })
 	named := oweTheReadForRetry(t, rig)
 	letFirst, _ := holdTwoMessages(t, rig)
 	letFirst()
@@ -976,15 +982,27 @@ func TestACallTheStopDroppedIsCalledAgainOnceTheSameIntakeTakesTheDurableOverAga
 		queued := calls.Load()
 		return queued, queued >= 1
 	})
-	failed := named.served()
+	failed, called := named.served(), calls.Load()
 
 	takeOverAgain(t, rig, 0)
 	named.awaitServed(t, "the second take-over's settings read to make INFRA's owed read, which is due", failed+1)
 	rig.settled()
+	// The take-over's settings read, queued once takeOverAgain returns, has queued its starting
+	// point on INFRA's runner, and that starting point and 12's call, where 12 queued one, have run
+	// by then, so none of them reads after the move.
+	rig.drained(settingsKey)
+	rig.drained("INFRA")
 	made := named.served()
+	queued := calls.Load()
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	rig.publish("INFRA", change(13, "INFRA-1", moved("phase", "merging")))
 	named.awaitServed(t, "a message of the store INFRA followed before to call for the owed read once its minute has passed, and the call to make it", made+1)
+	// callRead counts each call it queues (Intake.callQueued) before that call runs, so the count
+	// is final once the call's read is served.
+	if after := calls.Load() - queued; after != 1 {
+		t.Errorf("once INFRA's minute had passed, callRead queued %d calls for its owed read, want 1: 13's, whose call makes the read (callRead queued %d before the minute under the new subscription, 12's included where 12 was judged before the take-over's starting point made the read)",
+			after, queued-called)
+	}
 	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID != nil || c.readHolder != nil {
 		t.Errorf("INFRA's cursor after the read the call made is %s, want the read owed for retry, no store and no holder: the daemon the setting names refuses every read", c)
 	}

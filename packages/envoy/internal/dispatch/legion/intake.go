@@ -251,17 +251,10 @@ type Intake struct {
 	reported map[reportKey]time.Time
 	// pruned is when this process last pruned legion_reads.
 	pruned time.Time
-	// calling is each project for which a message of a store its cursor drops has queued a call for
-	// the owed read on the project's runner (callRead), until that call has run, so a burst of such
-	// messages queues one call. It holds the calls of the deliver subject the counts are for
-	// (waiting), and the first message of a new deliver subject empties it with them (messageKey):
-	// the delivery before a take-over dropped each call that still waited when it stopped
-	// (delivery.HeldDurable.Queue). A connection the bus client replaces keeps it, since the calls
-	// still wait on the same runners.
-	calling map[string]bool
-	// waiting counts the messages that wait on each project's runner, for the deliver subject the
-	// durable delivers at now (waitingCounts): the first message of a new deliver subject starts it
-	// again (messageKey).
+	// waiting counts the messages that wait on each project's runner, and marks each project whose
+	// call for the owed read waits there (callRead), for the deliver subject the durable delivers at
+	// now (waitingCounts): the first message of a new deliver subject starts both again in one
+	// assignment (messageKey).
 	waiting waitingCounts
 	// reading is the whole read in flight on each project's runner (readWhole, readInFlight).
 	reading map[string]readInFlight
@@ -289,7 +282,7 @@ func NewIntake(natsClient *bus.Client, pool *store.Pool, leases delivery.Durable
 func newIntake(pool *store.Pool, settingsWake <-chan struct{}) *Intake {
 	return &Intake{pool: pool, settingsWake: settingsWake, clock: clock.Real(),
 		handBackAfter: delivery.HeldMessage.HandBackAfter, firstRetry: applyFirstRetry, lastRetry: applyLastRetry,
-		reported: map[reportKey]time.Time{}, calling: map[string]bool{}, waiting: newWaitingCounts(""), reading: map[string]readInFlight{}}
+		reported: map[reportKey]time.Time{}, waiting: newWaitingCounts(""), reading: map[string]readInFlight{}}
 }
 
 // timeSource is the part of clock.Clock the intake reads (Intake.clock): Now, and AfterFunc for the
@@ -388,10 +381,10 @@ func (in *Intake) SettingsChanged(ctx context.Context) {
 // bound the durable, its first creation included, it queues SettingsChanged on settingsKey's
 // runner. The callback runs on the durable's run loop, which waits for it, so it only queues the
 // settings read and does not make it. It leaves the counts of the messages that wait on each
-// runner (waiting) and the projects whose call for the owed read is queued (calling) as they are:
-// the take-over's subscription is delivered messages and keys them before the callback runs, and
-// the first of them starts both again (messageKey). Where a test set takeOverHook, takenOver hands
-// it that body to run instead of running it.
+// runner and the marks of the projects whose call for the owed read is queued (waiting) as they
+// are: the take-over's subscription is delivered messages and keys them before the callback runs,
+// and the first of them starts both again (messageKey). Where a test set takeOverHook, takenOver
+// hands it that body to run instead of running it.
 func (in *Intake) takenOver() {
 	body := func() { in.durable.Queue(settingsKey, in.SettingsChanged) }
 	if in.takeOverHook != nil {
@@ -489,7 +482,7 @@ func (in *Intake) startBlocked(ctx context.Context, reason string) (bool, error)
 // (waiting). A message that arrives while stateMaxWaiting of its project's messages wait is keyed
 // by the project's crowded key instead (crowdedKey), and is not counted: it waits on no read of the
 // project (judgeCrowded). The first message of a new deliver subject (msg.Sub.Subject), which only
-// a take-over's subscription delivers at, starts the counts again at 0 and empties calling before
+// a take-over's subscription delivers at, starts the counts again at 0, with no call marked, before
 // it is counted (waitingCounts). A message whose envelope or payload does not decode, or that names
 // no project, is keyed by its subject, and deliver reports it.
 func (in *Intake) messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
@@ -507,7 +500,6 @@ func (in *Intake) messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool
 	defer in.mu.Unlock()
 	if subject := msg.Sub.Subject; subject != in.waiting.subject {
 		in.waiting = newWaitingCounts(subject)
-		clear(in.calling)
 	}
 	if in.waiting.projects[head.Project] >= stateMaxWaiting {
 		return crowdedKey(head.Project), &envelope, true

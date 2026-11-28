@@ -1134,7 +1134,8 @@ func (m *readRuleModel) awaitCaughtUp(index int) {
 }
 
 // intakeIdle reports whether the running intake has no whole read of INFRA in flight, no call that
-// callRead queued for INFRA's owed read (calling) and no message of INFRA waiting on its runner.
+// callRead queued for INFRA's owed read (waitingCounts.calling) and no message of INFRA waiting on
+// its runner.
 func (m *readRuleModel) intakeIdle() bool {
 	in := m.rig.intake
 	if in.readsNow("INFRA") {
@@ -1142,7 +1143,7 @@ func (m *readRuleModel) intakeIdle() bool {
 	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	return !in.calling["INFRA"] && in.waiting.projects["INFRA"] == 0
+	return !in.waiting.calling["INFRA"] && in.waiting.projects["INFRA"] == 0
 }
 
 // checkIdleCursor is invariant 2's cheap form, checked after each step once the rig is quiet
