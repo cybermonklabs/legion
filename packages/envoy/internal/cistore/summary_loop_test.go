@@ -3,6 +3,7 @@ package cistore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -12,10 +13,12 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // verdictNames names a verdict in a failure message.
@@ -370,18 +373,21 @@ func TestARecordPastTheGraceIsCountedWithNoOtherChange(t *testing.T) {
 // With nothing changed and nothing falling due, the loop runs no pass: not on its ticks, and not
 // when a Rewatch replays every record at the revision the cache holds. A change wakes it again.
 // Every pass sets the held gauge, so a value the test writes there survives only while no pass
-// runs.
+// runs. The loop runs on a fake clock the test moves a tick at a time, and a pass runs only once a
+// move reaches an instant the loop armed: after a move that reached none the gauge is read as the
+// loop left it, and after one that reached one, once that pass has set it.
 func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	fake := clocktest.New(now)
+	store := openStore(t, conn, WithClock(fake))
 	const (
 		debounce = time.Hour
 		tick     = 10 * time.Millisecond
 		gauge    = "envoy_ci_legacy_records_held"
 		noPass   = -1
 	)
-	now := time.Now()
 	settled := func(st *State) { st.SettledEmitted = true; st.EmittedCount = 1 }
 	putHeadGatedRecord(t, store, head{"example-org", "example-repo", "60", "5e7713000000000000000000000000000000beef"}, now.Add(-time.Minute).UnixMilli(), settled)
 	putHeadGatedRecord(t, store, head{"example-org", "example-repo", "61", "5e7714000000000000000000000000000000beef"}, now.Add(-2*time.Minute).UnixMilli(), settled)
@@ -397,21 +403,46 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 	StartSummaryLoop(ctx, store, &recPub{}, debounce, tick, held, logging.New("test"))
 	waitGauge := func(want int64, what string) {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for gaugeReads(t, met, gauge) != want {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: the gauge reads %d, want %d", what, gaugeReads(t, met, gauge), want)
-			}
-			time.Sleep(time.Millisecond)
-		}
+		testwait.Until(t, fmt.Sprintf("%s: the gauge to read %d", what, want), func() (int64, bool) {
+			got := gaugeReads(t, met, gauge)
+			return got, got == want
+		})
 	}
+	// The loop's grid runs from where the fake stands; its first pass is at the grid's first instant.
+	fake.AwaitArmedAt(t, "the loop's first pass", now.Add(tick))
+	fake.Set(now.Add(tick))
 	waitGauge(0, "the first pass")
 
 	held.Set(noPass)
-	time.Sleep(50 * tick)
-	if got := gaugeReads(t, met, gauge); got != noPass {
-		t.Fatalf("a pass ran (gauge %d) during 50 ticks with nothing changed", got)
+	// The first pass ends by arming the loop's timer for the waiting records' debounce.
+	fake.AwaitArmed(t, "the loop's next pass, after its first", 1)
+	// quiet moves the fake 50 ticks, one at a time, reading the gauge after each, and then reads the
+	// change feed: a change the loop had not armed for by the last move still waits there.
+	quiet := func(what string) {
+		t.Helper()
+		for range 50 {
+			target := fake.Now().Add(tick)
+			armed, _ := fake.SetWhen(func(time.Time, []time.Time) (time.Time, bool) { return target, true })
+			if len(armed) > 0 && !armed[0].After(target) {
+				// The move reached the instant the loop armed, so a pass runs: the read below is
+				// made once it has set the gauge.
+				testwait.Until(t, fmt.Sprintf("the pass the move to %v fired to set the gauge", target.Sub(now)), func() (int64, bool) {
+					got := gaugeReads(t, met, gauge)
+					return got, got != noPass
+				})
+			}
+			if got := gaugeReads(t, met, gauge); got != noPass {
+				t.Fatalf("a pass ran (gauge %d) %s", got, what)
+			}
+		}
+		store.mu.RLock()
+		changed := len(store.changed)
+		store.mu.RUnlock()
+		if changed != 0 {
+			t.Fatalf("the change feed holds %d records %s, each of which wakes a pass", changed, what)
+		}
 	}
+	quiet("during 50 ticks with nothing changed")
 
 	if err := store.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
@@ -424,39 +455,38 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store the marker: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the rewatched cache to apply the marker at revision %d", revision), func() (uint64, bool) {
 		store.mu.RLock()
-		applied := store.cache.FenceFor(store.watcher.Epoch(), marker) == revision
+		fence := store.cache.FenceFor(store.watcher.Epoch(), marker)
 		store.mu.RUnlock()
-		if applied {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the rewatched cache never applied the marker")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(50 * tick)
-	if got := gaugeReads(t, met, gauge); got != noPass {
-		t.Fatalf("a pass ran (gauge %d) after a Rewatch replayed the records unchanged", got)
-	}
+		return fence, fence == revision
+	})
+	quiet("after a Rewatch replayed the records unchanged")
 
-	setLastEventAt(t, store, waiting.owner, waiting.repo, waiting.number, waiting.sha, time.Now().UnixMilli())
+	setLastEventAt(t, store, waiting.owner, waiting.repo, waiting.number, waiting.sha, fake.Now().UnixMilli())
+	// The change wakes the loop for the next instant of its grid; the fake stands on one.
+	next := fake.Now().Add(tick)
+	fake.AwaitArmedAt(t, "the loop's pass after one record changed", next)
+	fake.Set(next)
 	waitGauge(0, "the pass after one record changed")
 }
 
 // A settlement whose publication fails is retried at the next tick, not at once: each attempt
 // writes the record (its claim, then its release), and a loop that ran a pass for each such change
-// would retry as fast as the store writes.
+// would retry as fast as the store writes. The loop runs on a fake clock the test moves a tick at a
+// time, each once the loop has armed it.
 func TestAFailingPublisherIsRetriedOncePerTick(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	store := openStore(t, conn)
+	start := time.Date(2026, 9, 7, 4, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	store := openStore(t, conn, WithClock(fake))
 	// NATS fails every publication while it is unreachable.
 	pub := &failingPub{err: errors.New("nats unavailable")}
 	const (
-		tick   = 50 * time.Millisecond
+		tick = 50 * time.Millisecond
+		// ticks is how many ticks of the loop's grid the fake is moved through.
+		ticks  = 5
 		owner  = "example-org"
 		repo   = "example-repo"
 		number = "42"
@@ -469,10 +499,18 @@ func TestAFailingPublisherIsRetriedOncePerTick(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	began := time.Now()
 	StartSummaryLoop(ctx, store, pub, 0, tick, metrics.New().NewGauge("held", ""), logging.New("test"))
-	time.Sleep(time.Second)
-	attempts, elapsed := pub.count(), time.Since(began)
+	// The loop's grid runs from start, where the fake stands. The loop arms each instant once the
+	// pass before it has ended, and the instant after the last move once the pass that move fired
+	// has.
+	for k := 1; k <= ticks+1; k++ {
+		at := start.Add(time.Duration(k) * tick)
+		fake.AwaitArmedAt(t, fmt.Sprintf("the loop's grid instant %d", k), at)
+		if k <= ticks {
+			fake.Set(at)
+		}
+	}
+	attempts, elapsed := pub.count(), fake.Now().Sub(start)
 	cancel()
 
 	// Passes run only at the ticks after the loop started, one attempt each at most.

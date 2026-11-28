@@ -424,6 +424,11 @@ type Store struct {
 	// its compare-and-swap (write): a test makes another write land there, so the attempt loses
 	// its compare-and-swap and retries. Nil in every store but a test's.
 	casHook func(key string)
+	// queueHook, when set, runs with a record's key each time a caller joins or leaves that
+	// record's queue of callers waiting to be written (update, leave, writeBatch), once the queue
+	// has changed and combineMu is let go: a test waits on it for a caller to have queued rather
+	// than asking the queue at a pace. Nil in every store but a test's.
+	queueHook func(key string)
 }
 
 type openOpts struct {

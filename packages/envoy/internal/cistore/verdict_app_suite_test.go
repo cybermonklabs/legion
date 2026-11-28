@@ -1,13 +1,13 @@
 package cistore_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,10 +15,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -30,27 +33,32 @@ const (
 
 	verdictSecret = "s"
 	verdictHead   = "abcdef1234567890abcdef1234567890abcdef12"
+
+	// verdictSubject carries acme/widgets#42's settlements, which each listener subscribes to.
+	verdictSubject = "notifications.github.acme.widgets.pr.42.checks"
+	// verdictDebounce and verdictTick are the debounce and the tick of each listener's summary loop.
+	verdictDebounce = 100 * time.Millisecond
+	verdictTick     = 20 * time.Millisecond
+	// verdictMarker is what settledByDebounce publishes on verdictSubject once the passes it waited
+	// for have ended.
+	verdictMarker = "marker: published once the summary passes ended"
 )
 
-// verdictListener is the listener's real webhook handler over its real CI store and summary loop,
-// configured with a verdict App id (ENVOY_VERDICT_APP_ID) or none, with a subscription to
-// acme/widgets#42's settlements and the standard logger's lines.
-type verdictListener struct {
-	t       *testing.T
-	handler func(event, body string)
-	store   *cistore.Store
-	sub     *nats.Subscription
-	logged  *bytes.Buffer
+// verdictDeployment is a NATS server of the test's own, whose client owns the stream, the
+// listeners on it, and the clock their CI stores and summary loops run on: a fake that stands until
+// the test moves it. Two listeners on one deployment are one deployment before and after the
+// setting changed, on one clock.
+type verdictDeployment struct {
+	t         *testing.T
+	client    *bus.Client
+	fake      *clocktest.Fake
+	listeners []*verdictListener
 }
 
-// newVerdictListener is a listener configured with the verdict App, on a NATS server of its own.
-func newVerdictListener(t *testing.T) *verdictListener {
-	t.Helper()
-	return verdictListenerOn(t, verdictBus(t), fmt.Sprint(verdictApp))
-}
-
-// verdictBus is a bus client of a NATS server of the test's own, which owns the stream.
-func verdictBus(t *testing.T) *bus.Client {
+// newVerdictDeployment is a deployment with no listener yet. Its clock stands at a whole second,
+// so the millisecond a record's last event is stamped at and the instants of a loop's grid are
+// moments of the fake.
+func newVerdictDeployment(t *testing.T) *verdictDeployment {
 	t.Helper()
 	_, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -58,40 +66,85 @@ func verdictBus(t *testing.T) *bus.Client {
 		t.Fatalf("bus connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	return client
+	return &verdictDeployment{t: t, client: client, fake: clocktest.New(time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC))}
 }
 
-// verdictListenerOn is a listener on client whose ENVOY_VERDICT_APP_ID is verdictAppID, "" for
-// unset, as cmd/listener builds one: the setting goes to the webhook handler. Two of them on one
-// client are one deployment before and after the setting changed.
-func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *verdictListener {
+// verdictListener is the listener's real webhook handler over its real CI store and summary loop,
+// configured with a verdict App id (ENVOY_VERDICT_APP_ID) or none, with a subscription to
+// acme/widgets#42's settlements and the standard logger's lines. Its store, and so its loop, run on
+// its deployment's fake clock.
+type verdictListener struct {
+	t          *testing.T
+	deployment *verdictDeployment
+	handler    func(event, body string)
+	store      *cistore.Store
+	// passes counts the passes its summary loop ended.
+	passes *summaryPasses
+	// messages is what the subscription receives.
+	messages chan *nats.Msg
+	logged   *logtest.Buffer
+}
+
+// newVerdictListener is a listener configured with the verdict App, on a deployment of its own.
+func newVerdictListener(t *testing.T) *verdictListener {
 	t.Helper()
-	var logged bytes.Buffer
+	return verdictListenerOn(newVerdictDeployment(t), fmt.Sprint(verdictApp))
+}
+
+// summaryPasses counts the passes a summary loop ended (cistore.SummaryObserver), so a test that
+// moved the loop's clock waits for the passes the move fired to end.
+type summaryPasses struct {
+	mu    sync.Mutex
+	ended int
+}
+
+func (p *summaryPasses) SummaryScheduled(string, cistore.State, string) {}
+
+func (p *summaryPasses) SummaryPassEnded() {
+	p.mu.Lock()
+	p.ended++
+	p.mu.Unlock()
+}
+
+func (p *summaryPasses) count() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.ended
+}
+
+// verdictListenerOn is a listener on d whose ENVOY_VERDICT_APP_ID is verdictAppID, "" for unset, as
+// cmd/listener builds one: the setting goes to the webhook handler.
+func verdictListenerOn(d *verdictDeployment, verdictAppID string) *verdictListener {
+	t := d.t
+	t.Helper()
+	// The standard logger is written by goroutines this test does not end, an earlier test's
+	// watcher reporting a repair among them, while the test reads its lines: the buffer locks.
+	logged := &logtest.Buffer{}
 	previous, flags := log.Writer(), log.Flags()
-	log.SetOutput(&logged)
+	log.SetOutput(logged)
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"),
-		cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	passes := &summaryPasses{}
+	store, err := cistore.Open(t.Context(), d.client.Conn, logging.New("test"),
+		cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(d.fake), cistore.WithSummaryObserver(passes))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	ready, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	if err := store.WaitForCacheReady(ready); err != nil {
+	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 	loop, endLoop := context.WithCancel(t.Context())
 	t.Cleanup(endLoop)
-	cistore.StartSummaryLoop(loop, store, client, 100*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("e2e"))
-	sub, err := client.Conn.SubscribeSync("notifications.github.acme.widgets.pr.42.checks")
+	cistore.StartSummaryLoop(loop, store, d.client, verdictDebounce, verdictTick, metrics.New().NewGauge("held", ""), logging.New("e2e"))
+	messages := make(chan *nats.Msg, 64)
+	sub, err := d.client.Conn.ChanSubscribe(verdictSubject, messages)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	handler := webhook.GitHubHandler(verdictSecret, "@legion", "", verdictAppID, client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	handler := webhook.GitHubHandler(verdictSecret, "@legion", "", verdictAppID, d.client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	deliveries := 0
-	return &verdictListener{t: t, store: store, sub: sub, logged: &logged, handler: func(event, body string) {
+	l := &verdictListener{t: t, deployment: d, store: store, passes: passes, messages: messages, logged: logged, handler: func(event, body string) {
 		t.Helper()
 		deliveries++
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(body))
@@ -104,6 +157,56 @@ func verdictListenerOn(t *testing.T, client *bus.Client, verdictAppID string) *v
 			t.Fatalf("handler status = %d, body=%s", rr.Code, rr.Body.String())
 		}
 	}}
+	d.listeners = append(d.listeners, l)
+	return l
+}
+
+// passesEnded is how many passes the summary loops of d's listeners have ended.
+func (d *verdictDeployment) passesEnded() int {
+	ended := 0
+	for _, l := range d.listeners {
+		ended += l.passes.count()
+	}
+	return ended
+}
+
+// pastDebounce is the head's debounce and a tick past the fake's present, where the head's last
+// write was stamped, since the fake stands until the test moves it: a loop settles a ready head at
+// the first instant of its grid past the debounce, which is no later than that.
+func (d *verdictDeployment) pastDebounce() time.Time {
+	return d.fake.Now().Add(verdictDebounce + verdictTick)
+}
+
+// cached waits until the cache of each of d's listeners holds the head's record as the bucket
+// holds it, so each loop's change feed names the head's last write before the fake moves: a pass
+// that ran before its cache had the write would judge the record the write replaced.
+func (d *verdictDeployment) cached() {
+	t := d.t
+	t.Helper()
+	kv, err := d.client.JS().KeyValue(bus.CIStateBucket)
+	if err != nil {
+		t.Fatalf("bind the CI bucket: %v", err)
+	}
+	key := cistore.Key("acme", "widgets", "42", verdictHead)
+	entry, err := kv.Get(key)
+	if err != nil {
+		t.Fatalf("read the head's record: %v", err)
+	}
+	var stored cistore.State
+	if err := json.Unmarshal(entry.Value(), &stored); err != nil {
+		t.Fatalf("decode the head's record: %v", err)
+	}
+	for i, l := range d.listeners {
+		testwait.Until(t, fmt.Sprintf("listener %d's cache to hold the head's record at generation %d, last event %d", i, stored.Generation, stored.LastEventAt), func() (string, bool) {
+			for _, st := range l.store.List() {
+				if cistore.Key(st.Owner, st.Repo, st.Number, st.SHA) == key {
+					return fmt.Sprintf("generation %d, last event %d", st.Generation, st.LastEventAt),
+						st.Hash() == stored.Hash() && st.Generation == stored.Generation && st.LastEventAt == stored.LastEventAt
+				}
+			}
+			return "no record of the head", false
+		})
+	}
 }
 
 // run delivers a completed check run of name on the head, created by app.
@@ -165,25 +268,100 @@ func TestASuiteWithNoAppIDStillHoldsTheHead(t *testing.T) {
 	l.recorded(820, "queued", "")
 	l.suite(900, "completed", "completed", "success", actionsApp)
 	l.run(1, "build", "success", actionsApp)
-	if settled, ok := l.settlement(2 * time.Second); ok {
+	if settled, ok := l.settledByDebounce(); ok {
 		t.Fatalf("the head settled as %+v while a suite naming no App was queued, want it held", settled)
 	}
 	if strings.Contains(l.logged.String(), "ci: left out the verdict App's own check suite") {
 		t.Fatalf("the listener left a suite naming no App out:\n%s", l.logged.String())
 	}
 	l.suiteWithoutApp(820, "completed", "completed", "success")
-	if _, ok := l.settlement(3 * time.Second); !ok {
-		t.Fatal("no settlement was published once the suite naming no App completed")
-	}
+	l.settlement("a settlement once the suite naming no App completed")
 }
 
-// settlement is the head's next settlement within wait, and false when none arrives.
-func (l *verdictListener) settlement(wait time.Duration) (cistore.Summary, bool) {
-	l.t.Helper()
-	msg, err := l.sub.NextMsg(wait)
-	if err != nil {
+// settledByDebounce reports the settlement a summary loop of the deployment published on what its
+// listeners have recorded, and false when none did. It moves the fake to each moment a loop armed,
+// up to the head's debounce and a tick past its last write (pastDebounce), and then there, once
+// every cache holds that write (cached); after each move it waits for every pass the move fired to
+// end. While the head is held, each loop's one timer, at the next instant of its grid, is all
+// there is armed; a ready head would be attempted at the first instant past its debounce. Then it
+// publishes verdictMarker on the subscription's subject over the connection the loops publish on,
+// and reads the subscription's first message: NATS hands a subscriber one connection's messages in
+// the order they were published, so a settlement any of those passes published comes before it.
+func (l *verdictListener) settledByDebounce() (cistore.Summary, bool) {
+	t, d := l.t, l.deployment
+	t.Helper()
+	d.cached()
+	until := d.pastDebounce()
+	for there := false; !there && len(l.messages) == 0; {
+		ended := d.passesEnded()
+		var at time.Time
+		fired := 0
+		d.fake.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 || armed[0].After(until) {
+				there = true
+				return until, until.After(now)
+			}
+			at = armed[0]
+			for _, deadline := range armed {
+				if deadline.Equal(at) {
+					fired++
+				}
+			}
+			return at, true
+		})
+		if fired == 0 {
+			continue
+		}
+		testwait.Until(t, fmt.Sprintf("the %d summary passes the move to %s fired to end", fired, at.Format(time.RFC3339Nano)), func() (string, bool) {
+			if len(l.messages) > 0 {
+				// A pass published: the read below reports what.
+				return "a message reached the subscription", true
+			}
+			got := d.passesEnded() - ended
+			return fmt.Sprintf("%d of them ended", got), got >= fired
+		})
+	}
+	if err := d.client.Conn.Publish(verdictSubject, []byte(verdictMarker)); err != nil {
+		t.Fatalf("publish the marker: %v", err)
+	}
+	msg := testwait.Receive(t, "the marker published once the summary passes ended", l.messages)
+	if string(msg.Data) == verdictMarker {
 		return cistore.Summary{}, false
 	}
+	return l.decode(msg), true
+}
+
+// settlement waits for the head's next settlement through the shared wait (testwait.Until), whose
+// give-up names what, and returns it. Between two reads it moves the fake to the earliest moment a
+// loop armed, up to the head's debounce and a tick past its last write (pastDebounce): a loop
+// settles a ready head at the first instant of its grid past the debounce, so one that has not by
+// then does not on that clock.
+func (l *verdictListener) settlement(what string) cistore.Summary {
+	t, d := l.t, l.deployment
+	t.Helper()
+	until := d.pastDebounce()
+	var msg *nats.Msg
+	testwait.Until(t, what, func() (string, bool) {
+		select {
+		case msg = <-l.messages:
+			return "a settlement", true
+		default:
+		}
+		armed, _ := d.fake.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 || armed[0].After(until) {
+				return now, false
+			}
+			return armed[0], true
+		})
+		return fmt.Sprintf("no settlement with the fake at %s, timers armed at %v, moved up to %s",
+			d.fake.Now().Format(time.RFC3339Nano), armed, until.Format(time.RFC3339Nano)), false
+	})
+	return l.decode(msg)
+}
+
+// decode is the settlement msg carries, failing the test when it carries none.
+func (l *verdictListener) decode(msg *nats.Msg) cistore.Summary {
+	l.t.Helper()
 	var env contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &env); err != nil {
 		l.t.Fatalf("checks envelope not JSON: %v", err)
@@ -192,7 +370,7 @@ func (l *verdictListener) settlement(wait time.Duration) (cistore.Summary, bool)
 	if err := json.Unmarshal([]byte(env.Payload), &sum); err != nil {
 		l.t.Fatalf("checks payload not JSON: %v\n%s", err, env.Payload)
 	}
-	return sum, true
+	return sum
 }
 
 // GitHub makes an empty check suite for the verdict App on each push, queued until the App writes
@@ -208,10 +386,7 @@ func TestVerdictAppSuiteLeavesTheHeadToSettle(t *testing.T) {
 			}
 			l.suite(900, "completed", "completed", "success", actionsApp)
 			l.run(1, "build", "success", actionsApp)
-			settled, ok := l.settlement(3 * time.Second)
-			if !ok {
-				t.Fatal("no settlement was published with the verdict App's queued suite at the head")
-			}
+			settled := l.settlement("a settlement with the verdict App's queued suite at the head")
 			if settled.SHA != verdictHead || settled.Passed.Count != 1 || settled.Failed.Count != 0 {
 				t.Fatalf("settlement = %+v, want the head settled on its one passing check", settled)
 			}
@@ -231,16 +406,14 @@ func TestAnotherAppsIncompleteSuiteHoldsSettlement(t *testing.T) {
 	l.suite(811, "requested", "queued", "", otherApp)
 	l.suite(900, "completed", "completed", "success", actionsApp)
 	l.run(1, "build", "success", actionsApp)
-	if settled, ok := l.settlement(2 * time.Second); ok {
+	if settled, ok := l.settledByDebounce(); ok {
 		t.Fatalf("the head settled as %+v while GitHub Actions' suite was queued, want it held", settled)
 	}
 	if strings.Contains(l.logged.String(), "ci: left out the verdict App's own check suite") {
 		t.Fatalf("the listener left another App's suite out:\n%s", l.logged.String())
 	}
 	l.suite(810, "completed", "completed", "success", actionsApp)
-	if _, ok := l.settlement(3 * time.Second); !ok {
-		t.Fatal("no settlement was published once GitHub Actions' suite completed")
-	}
+	l.settlement("a settlement once GitHub Actions' suite completed")
 }
 
 // A listener without ENVOY_VERDICT_APP_ID recorded the verdict App's queued suite like any other
@@ -249,21 +422,18 @@ func TestAnotherAppsIncompleteSuiteHoldsSettlement(t *testing.T) {
 // queued suite of GitHub Actions or of no App (cistore's suiteHolds), and the head settles on its
 // CI.
 func TestAVerdictAppSuiteRecordedBeforeTheSettingDoesNotHoldTheHead(t *testing.T) {
-	client := verdictBus(t)
-	before := verdictListenerOn(t, client, "")
+	d := newVerdictDeployment(t)
+	before := verdictListenerOn(d, "")
 	before.recorded(800, "queued", fmt.Sprint(verdictApp))
 
-	after := verdictListenerOn(t, client, fmt.Sprint(verdictApp))
+	after := verdictListenerOn(d, fmt.Sprint(verdictApp))
 	after.suite(800, "completed", "completed", "success", verdictApp)
 	if !strings.Contains(after.logged.String(), "ci: left out the verdict App's own check suite suite=800") {
 		t.Fatalf("the listener with the setting logged\n%s\nwant the verdict App's completed suite left out", after.logged.String())
 	}
 	after.suite(900, "completed", "completed", "success", actionsApp)
 	after.run(1, "build", "success", actionsApp)
-	settled, ok := after.settlement(3 * time.Second)
-	if !ok {
-		t.Fatal("no settlement was published: the verdict App's suite recorded before the setting holds the head")
-	}
+	settled := after.settlement("a settlement, which the verdict App's suite recorded before the setting must not hold")
 	if settled.SHA != verdictHead || settled.Passed.Count != 1 || settled.Failed.Count != 0 {
 		t.Fatalf("settlement = %+v, want the head settled on its one passing check", settled)
 	}
@@ -272,18 +442,16 @@ func TestAVerdictAppSuiteRecordedBeforeTheSettingDoesNotHoldTheHead(t *testing.T
 // GitHub Actions' queued suite recorded before the setting still holds the head once the setting
 // names the verdict App, and the head settles once that suite completes.
 func TestAnotherAppsSuiteRecordedBeforeTheSettingStillHoldsTheHead(t *testing.T) {
-	client := verdictBus(t)
-	before := verdictListenerOn(t, client, "")
+	d := newVerdictDeployment(t)
+	before := verdictListenerOn(d, "")
 	before.recorded(810, "queued", fmt.Sprint(actionsApp))
 
-	after := verdictListenerOn(t, client, fmt.Sprint(verdictApp))
+	after := verdictListenerOn(d, fmt.Sprint(verdictApp))
 	after.suite(900, "completed", "completed", "success", actionsApp)
 	after.run(1, "build", "success", actionsApp)
-	if settled, ok := after.settlement(2 * time.Second); ok {
+	if settled, ok := after.settledByDebounce(); ok {
 		t.Fatalf("the head settled as %+v while GitHub Actions' suite recorded before the setting was queued, want it held", settled)
 	}
 	after.suite(810, "completed", "completed", "success", actionsApp)
-	if _, ok := after.settlement(3 * time.Second); !ok {
-		t.Fatal("no settlement was published once GitHub Actions' suite completed")
-	}
+	after.settlement("a settlement once GitHub Actions' suite completed")
 }

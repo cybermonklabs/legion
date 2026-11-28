@@ -73,6 +73,7 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 	}
 	c.queue = append(c.queue, own)
 	s.combineMu.Unlock()
+	s.queueChanged(key)
 	if !writer {
 		var outcome combineOutcome
 		select {
@@ -88,6 +89,7 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 			s.combineMu.Lock()
 			s.passLeadLocked(key, c, own)
 			s.combineMu.Unlock()
+			s.queueChanged(key)
 			return false, err
 		}
 	}
@@ -103,6 +105,13 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 // now, which may still land it after cause is returned (write says why that is safe); a caller
 // answered cause changed nothing it can report, so it reports none.
 func (s *Store) leave(key string, c *keyCombiner, own *pendingMutation, cause error) (bool, error) {
+	// left says the caller left the queue, which queueHook hears of once combineMu is let go.
+	left := false
+	defer func() {
+		if left {
+			s.queueChanged(key)
+		}
+	}()
 	s.combineMu.Lock()
 	defer s.combineMu.Unlock()
 	select {
@@ -111,10 +120,12 @@ func (s *Store) leave(key string, c *keyCombiner, own *pendingMutation, cause er
 			return outcome.changed, outcome.err
 		}
 		s.passLeadLocked(key, c, own)
+		left = true
 		return false, cause
 	default:
 	}
 	c.queue = slices.DeleteFunc(c.queue, func(p *pendingMutation) bool { return p == own })
+	left = true
 	return false, cause
 }
 
@@ -135,6 +146,14 @@ func (s *Store) handOverLocked(key string, c *keyCombiner) {
 	delete(s.combiners, key)
 }
 
+// queueChanged runs queueHook, when a test set one, with key, whose queue a caller just joined or
+// left. Its callers do not hold combineMu.
+func (s *Store) queueChanged(key string) {
+	if s.queueHook != nil {
+		s.queueHook(key)
+	}
+}
+
 // writeBatch writes every mutation queued for the record in one compare-and-swap within ctx, tells
 // each queued caller the outcome, and hands the writer's role to the first caller that queued
 // since. It reports and hands over even when the write panics, so no queued caller waits forever.
@@ -145,6 +164,7 @@ func (s *Store) writeBatch(ctx context.Context, key string, c *keyCombiner, own 
 	b := batch{pending: c.queue, changed: make([]bool, len(c.queue))}
 	c.queue = nil
 	s.combineMu.Unlock()
+	s.queueChanged(key)
 	// written is the write's own outcome, which every caller's answer is taken from.
 	var written error
 	defer func() {
