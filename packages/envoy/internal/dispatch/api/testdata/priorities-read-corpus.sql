@@ -333,6 +333,38 @@ left join (select key, jsonb_agg(above order by depth) as keys from chain group 
 left join (select key, jsonb_agg(jsonb_build_object('id', id, 'inherited', inherited) order by id collate "C") as entries
            from entries group by key) advanced on advanced.key = i.key;
 
+-- What every issue.created, issue.updated and issue.closed event of an issue says of it alike:
+-- each key of api's IssueEventPayload but the five each event says of itself (status, updated_at,
+-- closed_at, last_seq and changed), and the issue's closed_at as that key writes it. It is built
+-- once for each issue rather than once for each event, because a payload costs about the same to
+-- build for each of its keys, whether or not the key differs between events: the 460,316 issue
+-- events' payloads took 9.2 seconds built whole in a pod, and 6.5 built from these rows with each
+-- event adding its five keys (2026-11-28).
+create temp table corpus_issue_payloads as
+select i.key, jsonb_build_object(
+         'key', i.key, 'project', i.project, 'number', stored.number, 'title', stored.title,
+         'priority', stored.priority, 'rank', stored.rank, 'labels', to_jsonb(stored.labels), 'parent', stored.parent_key,
+         'needs', '[]'::jsonb, 'duplicate_of', null, 'filed_from', null, 'advances', terms.advances,
+         'advances_revision', terms.revision, 'assignee', stored.assignee,
+         'claim', case when stored.claimed_by is not null then jsonb_build_object('actor', stored.claimed_by,
+                    'at', to_char(stored.claimed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) end,
+         'components', '{"mode": "inherit", "ids": [], "unknown": [], "reason": null, "inherited_from": null}'::jsonb,
+         'external_links', '[]'::jsonb, 'route', null, 'repo', null, 'resolved_repo', null,
+         'created_by', stored.created_by,
+         'created_at', to_char(stored.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+         'primary_artifact_id', '', 'verification_artifact_id', '', 'plan_artifact_id', '',
+         'ancestors', terms.ancestors) as payload,
+       to_char(stored.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as closed_at
+from corpus_issues i
+join issues stored on stored.key = i.key
+join corpus_issue_terms terms on terms.key = i.key;
+
+-- No autovacuum reaches a temp table, so this one is analyzed for the events' insert to plan on:
+-- unanalyzed, the planner took its 13,294 rows for 91,520 and probed a hash of them with each of
+-- the 678,939 events rather than joining them to the issues, and the insert's select took 14.5
+-- seconds against 13.6 and 14.2 analyzed in a pod (2026-11-28).
+analyze corpus_issue_payloads;
+
 -- The events of each issue, as events.Broker's append writes them: seq 1 to the issue's count,
 -- each at its share of the issue's life from created_at to updated_at, all of them in the order of
 -- their moments across the issues. Seq 1 is the issue.created, written by the issue's creator in
@@ -345,6 +377,11 @@ left join (select key, jsonb_agg(jsonb_build_object('id', id, 'inherited', inher
 -- api's IssueEventPayload, last_seq the event's own seq, and CommentEventPayload. notify is what
 -- events.Broker.Notify answers, true for a person's write. Each event is published to its issue's
 -- topic a second after it is written, so the outbox owes it nothing.
+--
+-- The sort the order by asks for holds each event's built payload, about 1.1 KB, and spills 761
+-- MB to disk. A subquery that sorted the events before their payloads were built spilled 98 MB,
+-- but building each payload between the inserts made the statement slower: 49.6 and 46.6 seconds
+-- against this one's 45.3 and 46.2, run in turn in a pod (2026-11-28).
 insert into events (issue_key, seq, type, actor, payload, notify, published_at, published_destinations, created_at)
 select i.key, k, step.type, step.actor,
        case when step.type = 'comment.created' then jsonb_build_object(
@@ -359,28 +396,16 @@ select i.key, k, step.type, step.actor,
          'resolved_by', null, 'resolved_at', null, 'edited_at', null, 'suggestion', null, 'created_at', step.stamp,
          'mentions', '[]'::jsonb, 'deliveries', '[]'::jsonb, 'reply_block', null, 'artifact_name', '',
          'suppress_route', false, 'thread_logins', '[]'::jsonb)
-       else jsonb_build_object(
-         'key', i.key, 'project', i.project, 'number', stored.number, 'title', stored.title, 'status', step.status,
-         'priority', stored.priority, 'rank', stored.rank, 'labels', to_jsonb(stored.labels), 'parent', stored.parent_key,
-         'needs', '[]'::jsonb, 'duplicate_of', null, 'filed_from', null, 'advances', terms.advances,
-         'advances_revision', terms.revision, 'assignee', stored.assignee,
-         'claim', case when stored.claimed_by is not null then jsonb_build_object('actor', stored.claimed_by,
-                    'at', to_char(stored.claimed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) end,
-         'components', '{"mode": "inherit", "ids": [], "unknown": [], "reason": null, "inherited_from": null}'::jsonb,
-         'external_links', '[]'::jsonb, 'route', null, 'repo', null, 'resolved_repo', null,
-         'created_by', stored.created_by,
-         'created_at', to_char(stored.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-         'updated_at', step.stamp,
-         'closed_at', case when step.type = 'issue.closed' then to_char(stored.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') end,
-         'primary_artifact_id', '', 'verification_artifact_id', '', 'plan_artifact_id', '', 'last_seq', k,
-         'changed', step.changed, 'ancestors', terms.ancestors)
-         || case when k > 1 and step.changed ? 'status' then '{"thread_logins": []}'::jsonb else '{}'::jsonb end
+       else issue.payload || (jsonb_build_object('status', step.status, 'updated_at', step.stamp,
+              'closed_at', case when step.type = 'issue.closed' then issue.closed_at end, 'last_seq', k,
+              'changed', step.changed)
+            || case when k > 1 and step.changed ? 'status' then '{"thread_logins": []}'::jsonb else '{}'::jsonb end)
        end,
        step.actor->>'kind' = 'user', moment.at + interval '1 second',
        array['notifications.dispatch.issue.' || i.key || '.' || step.type], moment.at
 from corpus_issues i
 join issues stored on stored.key = i.key
-join corpus_issue_terms terms on terms.key = i.key
+join corpus_issue_payloads issue on issue.key = i.key
 cross join lateral generate_series(1, i.events) k
 cross join lateral (
   select case
@@ -426,4 +451,4 @@ join issues stored on stored.key = i.key
 where i.asked
 order by i.updated_at, i.key;
 
-drop table corpus_counts, corpus_projects, corpus_roles, corpus_tree, corpus_issues, corpus_issue_terms;
+drop table corpus_counts, corpus_projects, corpus_roles, corpus_tree, corpus_issues, corpus_issue_terms, corpus_issue_payloads;
