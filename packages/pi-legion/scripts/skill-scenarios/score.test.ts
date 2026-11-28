@@ -647,7 +647,11 @@ for (const [n, argv, junit] of [
   [6, ["test", "--reporter=junit", "limits.test.ts"], c1Junit(1)],
   [8, ["test", "--timeout=4294967296", "limits.test.ts"], null],
   [11, ["test", "limits.test.ts"], c1Junit(1).replaceAll('tests="1"', 'tests="0"')],
-  [12, ["test", "limits.test.ts"], c1Junit(1).replaceAll('file="limits.test.ts"', 'file="other.test.ts"')],
+  [
+    12,
+    ["test", "limits.test.ts"],
+    c1Junit(1).replaceAll('file="limits.test.ts"', 'file="other.test.ts"'),
+  ],
 ] as const)
   rerunsRun(
     "implementer-pass-broken",
@@ -3684,9 +3688,7 @@ test("a test handoff that holds a field of an older prompt, previousHandoff, com
 // testerProof unchecked.
 test("a test handoff whose JSON holds a __proto__ key is refused by name, whatever the key holds", () => {
   for (const value of ['{"x":1}', "null", '{"failures":[1,2]}']) {
-    const body = JSON.parse(
-      `{"head":"${head}","__proto__":${value}}`
-    );
+    const body = JSON.parse(`{"head":"${head}","__proto__":${value}}`);
     expect(Object.keys(body)).toContain("__proto__");
     expect(handoffRefusals(body)).toEqual([
       { path: ["__proto__"], message: "a test handoff holds no __proto__" },

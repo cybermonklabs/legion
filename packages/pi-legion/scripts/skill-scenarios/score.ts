@@ -174,7 +174,6 @@ const DaemonLine = z.looseObject({
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
 });
-const nonEmpty = z.string().min(1);
 /** The keys a test handoff holds, as the tester role's prompt gives them, each with the shape the
  * score reads (TestHandoff): `head` and a `note` where the tester has one. What the tester ran, and
  * each failure it found, is a result on the issue's check (`dispatch result`), never a key of the

@@ -391,7 +391,9 @@ describe("tester-reruns", () => {
         );
       expect(reports).toHaveLength(variants.length);
       expect(reports[0]).toContain('<testsuites name="bun test" tests="1"');
-      expect(reports[0]).toContain('<testsuite name="limits.test.ts" file="limits.test.ts" tests="1"');
+      expect(reports[0]).toContain(
+        '<testsuite name="limits.test.ts" file="limits.test.ts" tests="1"'
+      );
       expect(reports).toEqual(reports.map(() => reports[0]));
     },
     REPOSITORY_ROW_MS
@@ -467,12 +469,7 @@ describe("tester-reruns", () => {
       `tester-reruns ${name}: c1 passes at H0, and at H1 ${expected.passes ? "passes" : "fails"} with the output only H1 prints`,
       () => {
         const dir = freshDir(name);
-        const { base, h0, h1 } = world.rerunsRepository(
-          dir,
-          name,
-          "ACME-1",
-          1_800_000_000
-        );
+        const { base, h0, h1 } = world.rerunsRepository(dir, name, "ACME-1", 1_800_000_000);
         expect(git(dir, "rev-parse", `${h1}~1`)).toBe(h0);
         expect(git(dir, "rev-parse", `${h0}~1`)).toBe(base);
         expect(git(dir, "diff", "--name-only", h0, h1)).toBe(expected.file);
