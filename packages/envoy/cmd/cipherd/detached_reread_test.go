@@ -11,7 +11,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -28,11 +30,10 @@ const thePeersTold = "the other pods were told to reread"
 //
 // The named revert: drop the WaitDetached call from stop.
 func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
+	local := memory.New(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
 	entered := make(chan string, 1)
 	release := make(chan struct{})
-	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, policytest.HeldDescriber{SecretsManagerAPI: local, Entered: entered, Release: release})
+	loader := policytest.Loader(secretstoretest.Held{Store: local, Entered: entered, Release: release})
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +41,7 @@ func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
 	var ran steps
 	detached := &api.Detached{}
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+	api.Register(mux, api.Deps{Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,
 		Detached: detached, NotifyReread: func(context.Context, string, []string) { ran.record(thePeersTold) }})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

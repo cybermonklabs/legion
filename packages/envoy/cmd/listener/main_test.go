@@ -966,7 +966,7 @@ func TestSendHandler_RejectsUnknownTarget(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
 		t.Fatalf("decode error response: %v", err)
 	}
-	const want = "no live session ses_missing; this listener does not know when it last registered"
+	const want = contracts.NoLiveSession + " ses_missing; this listener does not know when it last registered"
 	if response.Error != want {
 		t.Fatalf("error = %q, want %q", response.Error, want)
 	}
@@ -4067,6 +4067,9 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 		// The takeover copy's seams, which a row forces a fault through (setTakeoverFaults):
 		// this listener's own, shared by every copy of this configuration.
 		takeoverFaults: &takeoverFaultHooks{},
+		// The bound of an agent-subject hand-off, main.go's, for a test that puts a hand-off on
+		// a copy of this configuration; a test that runs a give-up out to its window shortens it.
+		handoffGiveUpWindow: legionHandoffGiveUpWindow,
 		// Whether the test's NATS user holds the session consumers' calls, asked of the server
 		// at each call: the harness opens no session delivery, whose answer main.go wires. A rig
 		// that opens one sets its answer instead (crashRig).

@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A merger whose merge-forward ask ended undelivered while its issue stood outside `merging`, in `retro` or in an `accepting` that the merge comes next after, where no role owes the merge, is told that ask when the issue moves back into `merging` at the same launch. At the move the daemon reads the merger''s launch from the claim store and sends the ask to it where no row of the ask reached that launch and none is queued, and logs `workflow: a merge forward still owed is asked again at the move into merging` with the launch. Before, nothing told that launch: the move asked nothing, and no new launch brought a ready. A failed, retired or absent merger claim is still asked at the ready of its next launch.'
+time: 2026-11-28T07:53:07.689088903Z
+custom:
+    Issue: merger-ask-at-move-into-merging

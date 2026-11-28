@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // A build before this one writes no node, so a document it removes leaves the node this build
@@ -376,7 +377,7 @@ func removeBesideASettlement(t *testing.T, database *store.Store, issue, artifac
 	var waitingAt string
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		if err := database.Pool.QueryRow(ctx, `
-			select coalesce((select query from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'), '')
+			select coalesce((select query from pg_stat_activity where pid = $1 and `+lockwaittest.Waiting+`), '')
 		`, pid).Scan(&waitingAt); err != nil {
 			t.Fatalf("read where the removal waits: %v", err)
 		}

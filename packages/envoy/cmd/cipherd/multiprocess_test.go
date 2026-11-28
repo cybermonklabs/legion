@@ -63,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -91,29 +92,29 @@ const (
 	multiprocessNewOwner = "grace@example.com"
 )
 
-// fakeSecretsJSON is the secret store every broker here is started over: BROKER_FAKE_SECRETS_FILE's
-// shape (cmd/cipherd/main.go's own note on it) holding the one agent-tier secret, owned by owner.
-// A row that retags the secret writes this same function's output with another owner, so what it
-// writes differs from what the processes booted on in the owner tag and nothing else — which is
-// what a retag in the real store is.
+// memorySecretsJSON is the secret store every broker here is started over: the memory store's file
+// (BROKER_MEMORY_SECRETS_FILE) holding the one agent-tier secret, owned by owner. A row that
+// retags the secret writes this same function's output with another owner, so what it writes
+// differs from what the processes booted on in the owner tag and nothing else — which is what a
+// retag in the real store is.
 //
-// Its prefix and its key are main_test.go's own constants, the ones productionEnv starts every
-// broker here with: the policy loader refuses a secret under another prefix or on another key, a
-// refusal that would show up as nothing but this one secret never being served, so the fixture
-// and the configuration name one value rather than two that must agree.
-func fakeSecretsJSON(owner string) string {
+// Its prefix is main_test.go's own constant, the one productionEnv starts every broker here with:
+// the policy loader refuses a secret under another prefix, a refusal that would show up as nothing
+// but this one secret never being served, so the fixture and the configuration name one value
+// rather than two that must agree.
+func memorySecretsJSON(owner string) string {
 	return `{"secrets": [
-		{"name": "` + testSecretsPrefix + multiprocessSecretSlug + `", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"owner": "` + owner + `", "tier": "agent"}, "value": "` + multiprocessSecretValue + `"}
+		{"name": "` + testSecretsPrefix + multiprocessSecretSlug + `", "tags": {"owner": "` + owner + `", "tier": "agent"}, "value": "` + multiprocessSecretValue + `"}
 	]}`
 }
 
-// writeFakeSecrets writes the store's content to path, as a write to the real store would land:
+// writeMemorySecrets writes the store's content to path, as a write to the real store would land:
 // the brokers read the file again on every list and every describe, so this is the only kind of
 // "the store changed" these rows can stage.
-func writeFakeSecrets(t *testing.T, path, owner string) {
+func writeMemorySecrets(t *testing.T, path, owner string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(fakeSecretsJSON(owner)), 0o600); err != nil {
-		t.Fatalf("write the fake secrets file %s: %v", path, err)
+	if err := os.WriteFile(path, []byte(memorySecretsJSON(owner)), 0o600); err != nil {
+		t.Fatalf("write the memory secrets file %s: %v", path, err)
 	}
 }
 
@@ -194,7 +195,7 @@ func newListedCaller(t *testing.T) listedCaller {
 }
 
 // brokerFleet is the cmd/cipherd processes of one Deployment: as many as a row asks for, serving
-// one database, one fake secrets file and one BROKER_PUBLIC_URL, with a client pinned to each.
+// one database, one memory secrets file and one BROKER_PUBLIC_URL, with a client pinned to each.
 //
 // The count is a row's own input rather than the two this file was fixed at, because what each
 // pod derives from the pods it counts — its share of the fleet's reread budget, which the rows
@@ -204,10 +205,9 @@ type brokerFleet struct {
 	// DatabaseURL is the DSN every process was started with, which a row connects to directly
 	// to read a table no broker route exposes.
 	DatabaseURL string
-	// FakeSecretsFile is the file standing in for the secret store, which every process reads
-	// again on every call, so rewriting it is the write the reread row needs the store to have
-	// taken.
-	FakeSecretsFile string
+	// MemorySecretsFile is the memory store's file, which every process reads again on every
+	// call, so rewriting it is the write the reread row needs the store to have taken.
+	MemorySecretsFile string
 	// Processes and Clients are index-matched: Clients[i] drives Processes[i] and nothing else.
 	// Start appends to both and Stop drops one of each, so a row that adds a pod or stops one
 	// reads the fleet that is serving now rather than keeping a count of its own.
@@ -243,15 +243,15 @@ func startBrokerPair(t *testing.T, binary string) *brokerFleet {
 func startBrokerFleet(t *testing.T, binary string, drains []time.Duration, env ...string) *brokerFleet {
 	t.Helper()
 	fleet := &brokerFleet{
-		DatabaseURL:     storetest.DatabaseURL(t),
-		FakeSecretsFile: filepath.Join(t.TempDir(), "fake-secrets.json"),
-		binary:          binary,
+		DatabaseURL:       storetest.DatabaseURL(t),
+		MemorySecretsFile: filepath.Join(t.TempDir(), "memory-secrets.json"),
+		binary:            binary,
 		// One issuer and one listed caller for every process, as every pod of a Deployment
 		// trusts the one cluster's issuer and lists the one Dispatch.
 		caller: newListedCaller(t),
 		env:    env,
 	}
-	writeFakeSecrets(t, fleet.FakeSecretsFile, multiprocessPerson)
+	writeMemorySecrets(t, fleet.MemorySecretsFile, multiprocessPerson)
 	for _, drain := range drains {
 		fleet.Processes = append(fleet.Processes, fleet.launch(t, drain))
 	}
@@ -276,7 +276,8 @@ func (f *brokerFleet) launch(t *testing.T, drain time.Duration) *brokerProcess {
 			"BROKER_DATABASE_URL=" + f.DatabaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=" + multiprocessPublicURL,
-			"BROKER_FAKE_SECRETS_FILE=" + f.FakeSecretsFile,
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + f.MemorySecretsFile,
 			"BROKER_DRAIN_SECONDS=" + strconv.Itoa(int(drain/time.Second)),
 		}, f.caller.Env...), f.env...),
 	})
@@ -513,7 +514,7 @@ type soloBroker struct {
 }
 
 // startSoloBroker starts one broker from binary with drain as its BROKER_DRAIN_SECONDS, on a
-// database and a fake secrets file of its own, and returns once it has logged the address it
+// database and a memory secrets file of its own, and returns once it has logged the address it
 // bound.
 //
 // Its BROKER_PUBLIC_URL is dev-broker.sh's derive-from-bind convention (http://127.0.0.1:0,
@@ -523,8 +524,8 @@ type soloBroker struct {
 func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBroker {
 	t.Helper()
 	solo := &soloBroker{DatabaseURL: storetest.DatabaseURL(t)}
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	writeFakeSecrets(t, fakeSecretsFile, multiprocessPerson)
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	writeMemorySecrets(t, memorySecretsFile, multiprocessPerson)
 	caller := newListedCaller(t)
 	solo.Process = startBroker(t, brokerOptions{
 		Binary: binary,
@@ -534,7 +535,8 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 			"BROKER_DATABASE_URL=" + solo.DatabaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 			"BROKER_DRAIN_SECONDS=" + strconv.Itoa(int(drain/time.Second)),
 		}, caller.Env...),
 	})
@@ -831,7 +833,7 @@ func TestTwoBrokers(t *testing.T) {
 				b.Addr, multiprocessSecret, baseline.Status, baseline.Body)
 		}
 
-		writeFakeSecrets(t, pair.FakeSecretsFile, multiprocessNewOwner)
+		writeMemorySecrets(t, pair.MemorySecretsFile, multiprocessNewOwner)
 
 		if control := ask(); control.State != "granted" {
 			t.Fatalf("with the store retagged but nothing reread, B (%s) already answered %d %s; want it still granted — a write to the store changes what a pod serves only once something makes that pod read it again",
@@ -1182,9 +1184,9 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 	//
 	// The budget it holds them to is the one the issue states: "two pods together cannot send
 	// more metadata traffic than one pod was allowed to". One pod was allowed four rereads a
-	// second against a store where a reread is one read (api.DefaultRereadFleetBudget, Every
-	// 250ms), and one a second against Google Secret Manager (api.GCPRereadFleetBudget), where
-	// api.GCPRereadOverallLimit's own comment turns that figure into the 120 metadata reads a
+	// second against a store where a reread is one read (secretstore.DefaultRereadBudget, Every
+	// 250ms), and one a second against Google Secret Manager (gcp.RereadBudget), where
+	// gcp.RereadBudget's own comment turns that figure into the 120 metadata reads a
 	// minute the public route may spend of the project's shared 600. Those two figures are the
 	// product budget — the share of someone else's quota this route is allowed — not an
 	// implementation detail, which is why they are written here rather than read from the
@@ -1247,7 +1249,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 					// process, in internal/cipher/api's reread_replicas_test.go. What this row
 					// adds to that arithmetic is the one thing only real processes can measure:
 					// what a single accepted reread costs the fleet.
-					{"the Secret Manager bucket api.RereadOverallFor derives", api.RereadOverallFor(api.GCPRereadFleetBudget, replicas).Every, onePodGCPRereadsPerSecond},
+					{"the Secret Manager bucket api.RereadOverallFor derives", api.RereadOverallFor(gcp.RereadBudget, replicas).Every, onePodGCPRereadsPerSecond},
 				} {
 					perPod := float64(time.Second) / float64(bucket.every)
 					fleetReads := float64(replicas) * perPod * float64(reads)
