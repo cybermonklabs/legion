@@ -507,7 +507,7 @@ function InboxCardRow({
         >
           <RowUrgencyMark urgency={askUrgency(ask.urgency)} />
           {ask.issue_key === null ? null : (
-            <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
+            <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask)} />
           )}
           {ask.issue_key !== null && (isUnassigned(row) || assignLive) ? (
             <AssignToMe

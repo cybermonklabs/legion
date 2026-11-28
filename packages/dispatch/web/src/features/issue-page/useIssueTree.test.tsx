@@ -1,4 +1,4 @@
-import { beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -46,6 +46,12 @@ function useKnownReferenceName(reference: string): string | undefined {
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+// A row that pins the clock (`setSystemTime`) and is ended by the command's guard never reaches
+// its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  setSystemTime();
 });
 
 /**
@@ -113,6 +119,8 @@ const issue: IssueDetails = {
   plan_artifact_id: plan.id,
   primary_artifact_id: "",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   progress: { children: null, tasks: null },
   project: "CORE",
   rank: "U",
@@ -1626,13 +1634,12 @@ test("a tree mounted again past 30 s reads nothing, and a comment event reads th
     setSystemTime(Date.now() + 31_000);
     const again = renderHook(() => useIssueTree(issue).root, { wrapper });
     expect(taskWords(again.result.current)).toBe(TASK_WORDS);
-    // Long enough for a read the mount started to have been sent.
-    await act(async () => {
-      const waited = Promise.withResolvers<void>();
-      setTimeout(waited.resolve, 50);
-      await waited.promise;
-    });
-    expect(client.isFetching()).toBe(0);
+    // What a read the mount started would change: React Query starts a read the mount calls for
+    // in the mount's own effect, which `act` flushes, and calls its function as it starts it, so
+    // the state and the count read here are the ones such a read would have changed; no clock
+    // decides it.
+    await act(async () => {});
+    expect(client.isFetching(), "a read the mount started").toBe(0);
     expect(requests(), "no read is sent for a slot mounted again").toBe(loaded);
 
     // The comment is edited, and the feed refreshes what that event names.

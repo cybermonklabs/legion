@@ -257,8 +257,8 @@ var tokenWords = append(slices.Clip(model.Scopes), model.ScopeRead)
 // p0 that names p0 is refused, also where the token it changes holds p0 already, since a change
 // sends the token's whole set. read is the one word the caller need not hold, since it gives the
 // token nothing: it narrows the token to reading. A read-only token holds read alone or beside
-// person, never beside approve or p0, since settling what a person settles and setting an issue's
-// priority to P0 are writes. A scope named twice is stored once.
+// person, never beside approve or p0, since settling what a person settles and making work P0 are
+// writes. A scope named twice is stored once.
 func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string) ([]string, bool) {
 	if requested == nil {
 		return callerScopes(actor), true
@@ -293,7 +293,7 @@ func tokenScopes(w http.ResponseWriter, actor model.Actor, requested *[]string) 
 	if slices.Contains(scopes, model.ScopeRead) &&
 		(slices.Contains(scopes, model.ScopeApprove) || slices.Contains(scopes, model.ScopeP0)) {
 		writeError(w, codeTokenScopesInput, http.StatusBadRequest, fmt.Sprintf(
-			"a token holding %s holds it alone or beside %s, never beside %s or %s: settling what a person settles and setting an issue's priority to P0 are writes",
+			"a token holding %s holds it alone or beside %s, never beside %s or %s: settling what a person settles and making work P0 are writes",
 			model.ScopeRead, model.ScopePerson, model.ScopeApprove, model.ScopeP0))
 		return nil, false
 	}

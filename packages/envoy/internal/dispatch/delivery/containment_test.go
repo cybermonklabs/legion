@@ -334,6 +334,36 @@ func TestFirstShippingApply(t *testing.T) {
 	})
 }
 
+// TestAShippingIndexShipsEveryPullRequestAsContainingRunDoes: over applies created and completing
+// in the same few seconds, in a shuffled order, so creations and completions tie with each other
+// and with the merges, the index answers for every merge from before the first creation to after
+// the last the apply ContainingRun answers, and nothing for a pull request of another repository
+// or one not merged.
+func TestAShippingIndexShipsEveryPullRequestAsContainingRunDoes(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	second := func(n int) time.Time { return base.Add(time.Duration(n) * time.Second) }
+	var applies []Apply
+	for id := range 40 {
+		created := (id * 7) % 13
+		applies = append(applies, Apply{RunID: int64(100 + (id*11)%40), CreatedAt: second(created), CompletedAt: second(created + (id*5)%9)})
+	}
+	index := NewShippingIndex(applies)
+	const repo = "acme/widgets"
+	for merged := -1; merged <= 14; merged++ {
+		pr := DeliveryPullRequest{Repo: repo, Number: merged + 2, MergedAt: new(second(merged))}
+		want, got := ContainingRun(pr, repo, applies), index.Containing(pr, repo)
+		if (want == nil) != (got == nil) || (want != nil && *want != *got) {
+			t.Errorf("a pull request merged at second %d ships with %+v, want %+v", merged, got, want)
+		}
+		if other := index.Containing(pr, "acme/elsewhere"); other != nil {
+			t.Errorf("a pull request of another repository ships with %+v, want none", other)
+		}
+	}
+	if got := index.Containing(DeliveryPullRequest{Repo: repo, Number: 1}, repo); got != nil {
+		t.Errorf("a pull request not merged ships with %+v, want none", got)
+	}
+}
+
 // TestAppliesCompletingTogetherShipTheSameInEveryOrder: two production applies whose jobs completed
 // in the same second are ordered by run id, and the lower run id ships a pull request both could,
 // in every order the runs are listed in and every order the applies are handed over in. The live

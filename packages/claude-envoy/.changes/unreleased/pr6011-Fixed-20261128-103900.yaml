@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+    The Legion plugin's worker and architect skills no longer say that the merge queue runs every
+    held-back slow suite before a change merges. They say that the merge queue runs a slow suite
+    when the queue's own selection, against the queue's base, picks it, and that on
+    cybermonklabs/legion ci-ok's `not run at this head:` line names each held-back suite that a pull
+    request's paths select and that it did not run. A suite's lane label still comes off when no
+    check of the issue names its job, because the label acts on the pull request's runs alone and
+    changes nothing the queue runs.
+time: 2026-11-28T10:39:00.000000000Z
+custom:
+    Issue: pr6011

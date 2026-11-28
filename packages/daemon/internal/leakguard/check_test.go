@@ -202,45 +202,85 @@ func TestThePrivateCopyIsMadeUnderTheRolesOwnDirectory(t *testing.T) {
 	}
 }
 
-// A file of the private copy is written only where nothing is (writeCopyFile): a link at its path
-// is neither followed nor written through, and a file already there is left as it is. A file it
-// writes has its mode exactly, whatever the umask took off the create's: under a umask that leaves
-// only the owner's read, the launcher is still 0500, so it runs.
+// A file of the private copy is written only where nothing is: a link at its path is neither
+// followed nor written through, and a file already there is neither opened nor written. Each is
+// planted at the copy's first file once the copy has made its directory and before it writes
+// (beforeTheFirstWrite), and the file already there is a hard link to one outside the copy, so
+// what it holds is read after the failed copy has removed its directory. A file the copy writes
+// has its mode exactly, whatever the umask took off the create's: under a umask that takes the
+// owner's read off, the launcher is still 0500, so it runs, and each file it reads 0400.
 func TestACopyFileIsWrittenOnlyWhereNothingIsAndOfItsModeExactly(t *testing.T) {
-	dir := t.TempDir()
-	target, link, held := filepath.Join(dir, "target"), filepath.Join(dir, "link"), filepath.Join(dir, "held")
-	for path, body := range map[string]string{target: "the link's target\n", held: "a file already there\n"} {
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	held := aHeldCheck()
+	const kept = "a file outside the copy\n"
+	for _, tc := range []struct {
+		name  string
+		plant func(outside, path string) error
+	}{
+		{"a link", func(outside, path string) error { return os.Symlink(outside, path) }},
+		{"a file already there", func(outside, path string) error { return os.Link(outside, path) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			base, outside := filepath.Join(root, "private"), filepath.Join(root, "outside")
+			if err := os.Mkdir(base, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(outside, []byte(kept), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			copies := filepath.Join(base, "leak-check-*")
+			err := beforeTheFirstWrite(t, copies, func(dir string) (string, error) {
+				path := filepath.Join(dir, ManifestFiles[0])
+				return path, tc.plant(outside, path)
+			}, "the private copy beside "+tc.name, func() error {
+				_, err := held.privateCopy(base, base)
+				return err
+			})
+			if !errors.Is(err, fs.ErrExist) {
+				t.Errorf("the private copy over %s answered %v, want its first file refused as existing", tc.name, err)
+			}
+			if got, err := os.ReadFile(outside); err != nil || string(got) != kept {
+				t.Errorf("%s holds %q (%v) after the refused copy, want %q", outside, got, err, kept)
+			}
+			if left, _ := filepath.Glob(copies); left != nil {
+				t.Errorf("the refused copy left %v", left)
+			}
+		})
+	}
+	t.Run("under a umask that takes the owner's read off", func(t *testing.T) {
+		base := t.TempDir()
+		umask := syscall.Umask(0o400)
+		dir, err := held.privateCopy(base, base)
+		syscall.Umask(umask)
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{link, held} {
-		if err := writeCopyFile(path, []byte("the copy\n"), 0o400); err == nil {
-			t.Errorf("writeCopyFile(%s) wrote where something is", path)
+		// The umask took the owner's read off the copy's directory too (0300), and the removal of
+		// the test's directory must list it.
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		for _, name := range ManifestFiles {
+			want := os.FileMode(0o400)
+			if name == checkName {
+				want = 0o500
+			}
+			info, err := os.Lstat(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body, _ := os.ReadFile(filepath.Join(dir, name)); info.Mode() != want || string(body) != string(held.files[name]) {
+				t.Errorf("the copy's %s is %s holding %q, want a regular file of mode %s holding %q", name, info.Mode(), body, want, held.files[name])
+			}
 		}
+	})
+}
+
+// aHeldCheck is a held check whose every manifest file holds the copy of its name.
+func aHeldCheck() heldCheck {
+	held := heldCheck{files: map[string][]byte{}}
+	for _, name := range ManifestFiles {
+		held.files[name] = []byte("the copy of " + name + "\n")
 	}
-	for path, want := range map[string]string{target: "the link's target\n", held: "a file already there\n"} {
-		if got, err := os.ReadFile(path); err != nil || string(got) != want {
-			t.Errorf("%s holds %q (%v) after the refused write, want %q", path, got, err, want)
-		}
-	}
-	fresh := filepath.Join(dir, "fresh")
-	umask := syscall.Umask(0o377)
-	err := writeCopyFile(fresh, []byte("the copy\n"), 0o500)
-	syscall.Umask(umask)
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Lstat(fresh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if body, _ := os.ReadFile(fresh); info.Mode() != 0o500 || string(body) != "the copy\n" {
-		t.Fatalf("the copy file is %s holding %q, want a regular file of mode 0500 holding the copy", info.Mode(), body)
-	}
+	return held
 }
 
 // The visibility read is the one the shared check itself makes, argv for argv and variable for

@@ -43,9 +43,11 @@
 # dispatch_references filter matches. A script's go command is read under every step of each job
 # that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller
 # under that caller alone and reads its other jobs under every caller whose filter is not
-# EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
-# workflows, generate's output and its .inputs file), fails naming each, as one does that cannot
-# read the tree through git, and the header's run recipe runs the check, or says why it stops.
+# EXCLUDED, every gated step that names a declared script must have a Run that cites it in a gate
+# of each filter that gates the step, a run that changes a file of the tree, but those its mode
+# writes (the PUSH_WORKFLOWS workflows, generate's output and its .inputs file), fails naming each,
+# as one does that cannot read the tree through git, and the header's run recipe runs the check,
+# or says why it stops.
 # The tie entry that go-test-reads.sh writes for each read (tie_entry) holds every path that the
 # read's glob selects.
 #
@@ -3786,11 +3788,32 @@ check "and the filter takes every Go file" "$(widened app)"
 # the script is nothing this check can prove: a step can start it through another script, from
 # another directory or by a test it compiles, and a step that only names its path (to chmod or
 # lint it) starts nothing. So a write anywhere in such a job may reach the script's commands.
-# script_job <root>: script-line's Run of build.sh, its line the text alone.
+# write_build_script <root> <script>: write the common fixture script under its declared path.
+write_build_script() {
+  mkdir -p "$(dirname "$1/$2")"
+  printf '#!/bin/sh\ngo build ./cmd/app\n' > "$1/$2"
+}
+
+# script_run <source> [at() expression ...]: a Run of the fixture's build, with its citations.
+script_run() {
+  local script=$1 ref why="\"$1\""
+  shift
+  for ref in "$@"; do why+=" + \", run by \" + $ref"; done
+  printf 'run("mod", ["./cmd/app"], %s + ": go build ./cmd/app", mode="build", source="%s", text="go build ./cmd/app")' \
+    "$why" "$script"
+}
+
+# script_job <root> <script> [step...]: script-line's Run of <script>, a path from the root whose
+# file it writes, its line the text alone, its why citing each step of job app given, which rule 4
+# holds every gated step that names the script to.
 script_job() {
-  printf '#!/bin/sh\ngo build ./cmd/app\n' > "$1/build.sh"
-  replace "$1/.github/ci-gates/app.py" 'text="go test ./cmd/app ./lib"),' \
-    'text="go test ./cmd/app ./lib"), run("mod", ["./cmd/app"], "build.sh: go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
+  local root=$1 script=$2 step
+  local -a refs=()
+  shift 2
+  for step in "$@"; do refs+=("at(\"app\", \"$step\")"); done
+  write_build_script "$root" "$script"
+  replace "$root/.github/ci-gates/app.py" 'text="go test ./cmd/app ./lib"),' \
+    'text="go test ./cmd/app ./lib"), '"$(script_run "$script" "${refs[@]}")"','
 }
 path_write=$'      - name: Put a tool on the path of the steps after\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n'
 build_step=$'      - name: Build the app\n        run: sh build.sh\n'
@@ -3799,7 +3822,7 @@ widened_by='build.sh, which job app runs, runs `go build ./cmd/app`, which this 
 
 echo "case: a write before the step that runs a script widens the script's commands"
 root=$(fixture script-write-before)
-script_job "$root"
+script_job "$root" build.sh "Build the app"
 replace "$root/.github/workflows/ci.yaml" "$report_step" "$path_write$build_step$report_step"
 run_check "$root"
 check "passes" "$(is "$status" 0)"
@@ -3807,7 +3830,7 @@ check "the report names the script's command and the write" "$(contains "$out" "
 
 echo "case: a write after the step that runs a script widens the script's commands too"
 root=$(fixture script-write-after)
-script_job "$root"
+script_job "$root" build.sh "Build the app"
 replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$report_step"
 run_check "$root"
 check "passes" "$(is "$status" 0)"
@@ -3816,23 +3839,23 @@ check "the report names the script's command and the write, since a later step m
 
 echo "case: a write anywhere in a job no step of which names the script widens the script's commands"
 root=$(fixture script-write-unnamed)
-script_job "$root"
+script_job "$root" build.sh
 replace "$root/.github/workflows/ci.yaml" "$report_step" "$path_write$report_step"
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "the report names the script's command and the write" "$(contains "$out" "$widened_by")"
 
-# Jobs that start the script again after a write, in a form no step's text shows as a start of it:
-# through a wrapper script that runs it, or by a cd into its directory and a start by its name
-# there. The write comes after the job's plain start of the script, or after a step that only
-# names its path. The check reads neither the wrapper nor the cd: it widens because it reads every
-# step of the job, which is the only reading that does not miss such a start.
+# Jobs that start the script again after a write: through a wrapper script that runs it, or by a
+# cd into its directory and a start by its name there. The write comes after the job's plain
+# start of the script, or after a step that only names its path. The check reads neither the
+# wrapper nor the cd: it widens because it reads every step of the job, which is the only reading
+# that does not miss such a start.
 wrap_step=$'      - name: Build through the wrapper\n        run: sh wrap.sh\n'
 chmod_step=$'      - name: Make the script executable\n        run: chmod +x build.sh\n'
 
 echo "case: a write after the script's start, then a start through a wrapper script, widens the script's commands"
 root=$(fixture script-start-wrapper)
-script_job "$root"
+script_job "$root" build.sh "Build the app"
 printf '#!/bin/sh\nsh build.sh\n' > "$root/wrap.sh"
 replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$wrap_step$report_step"
 run_check "$root"
@@ -3840,10 +3863,7 @@ check "the report names the script's command and the write" "$(contains "$out" "
 
 echo "case: a write after the script's start, then a start from the script's own directory, widens the script's commands"
 root=$(fixture script-start-cd)
-mkdir -p "$root/scripts"
-printf '#!/bin/sh\ngo build ./cmd/app\n' > "$root/scripts/build.sh"
-replace "$root/.github/ci-gates/app.py" 'text="go test ./cmd/app ./lib"),' \
-  'text="go test ./cmd/app ./lib"), run("mod", ["./cmd/app"], "scripts/build.sh: go build ./cmd/app", mode="build", source="scripts/build.sh", text="go build ./cmd/app"),'
+script_job "$root" scripts/build.sh "Build the app" "Build the app from its directory"
 replace "$root/.github/workflows/ci.yaml" "$report_step" \
   $'      - name: Build the app\n        run: sh scripts/build.sh\n'"$path_write"$'      - name: Build the app from its directory\n        run: cd scripts && ./build.sh\n'"$report_step"
 run_check "$root"
@@ -3852,7 +3872,7 @@ check "the report names the script's command and the write" \
 
 echo "case: a write after a step that only names the script, then a start through a wrapper script, widens the script's commands"
 root=$(fixture script-mention-wrapper)
-script_job "$root"
+script_job "$root" build.sh "Make the script executable"
 printf '#!/bin/sh\nsh build.sh\n' > "$root/wrap.sh"
 replace "$root/.github/workflows/ci.yaml" "$report_step" "$chmod_step$path_write$wrap_step$report_step"
 run_check "$root"
@@ -3863,7 +3883,7 @@ check "the report names the script's command and the write" "$(contains "$out" "
 # file, so the filter selects mod/other/other.go with the rest.
 echo "case: a GOFLAGS write after a step that only names the script widens the job's filter to the file it compiles"
 root=$(fixture script-mention-goflags)
-script_job "$root"
+script_job "$root" build.sh "Make the script executable"
 printf '#!/bin/sh\nsh build.sh\n' > "$root/wrap.sh"
 printf '//go:build probe\n\npackage main\n\nimport _ "example.com/m/other"\n' > "$root/mod/cmd/app/probe.go"
 replace "$root/.github/workflows/ci.yaml" "$report_step" \
@@ -3878,9 +3898,13 @@ check "and the filter selects the file the tagged build compiles" "$(contains "$
 echo "case: every job of the called workflow is read whole, one that runs nothing of the script's among them"
 root=$(fixture called-script-other-job)
 called_input_gate "$root"
-printf '#!/bin/sh\ngo build ./cmd/app\n' > "$root/build.sh"
-replace "$root/.github/ci-gates/called.app.py" 'text="go test ./lib"),' \
-  'text="go test ./lib"), run("mod", ["./cmd/app"], "build.sh: go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
+write_build_script "$root" build.sh
+cat > "$root/.github/ci-gates/called.py" <<PY
+CALLED = ".github/workflows/called.yaml"
+GATE = gate("app", "called", runs=[
+    $(script_run build.sh 'at("called", "Build the app", CALLED)'),
+], workflow=CALLED)
+PY
 replace "$root/.github/workflows/called.yaml" "$report_step" "$build_step$report_step"
 run_check "$root"
 check "passes while no job of the file writes the path" "$(is "$status" 0)"
@@ -3890,6 +3914,583 @@ replace "$root/.github/workflows/called.yaml" "  called:" \
 run_check "$root"
 check "and widens it once another job of the file writes the path" \
   "$(contains "$out" 'build.sh, which job called runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+
+# Each filter that can skip a step must cover what the step's declared script compiles.
+# A Run of that script in a gate of that filter must cite the step.
+again_step=$'      - name: Build the app again\n        run: sh build.sh -v\n'
+script_refusal='a script a Run of .github/ci-gates lists go commands of'
+
+# script_step_address <workflow> <job> <step> <script> [caller]: the start of a rule 4 error.
+script_step_address() {
+  local path=$1 job=$2 step=$3 script=$4 caller=${5:-}
+  if [ -n "$caller" ] && [ "$job" != "$caller" ]; then
+    job="$job of $path, which job $caller calls"
+  fi
+  printf '::error file=%s::job %s step "%s" runs %s' "$path" "$job" "$step" "$script"
+}
+
+# uncited_refusal <workflow> <job> <step> <script> <filter> [caller]: a gate lacks the step's citation.
+uncited_refusal() {
+  local path=$1 job=$2 step=$3 script=$4 filter=$5 caller=${6:-}
+  printf '%s, %s, but no Run of it in gate %s on job %s, which gates this step, cites the step' \
+    "$(script_step_address "$path" "$job" "$step" "$script" "$caller")" "$script_refusal" "$filter" "${caller:-$job}"
+}
+
+ci_path=.github/workflows/ci.yaml
+called_path=.github/workflows/called.yaml
+called_build_address=$(script_step_address "$called_path" called "Build the app" build.sh)
+undeclared="^$(uncited_refusal "$ci_path" app "Build the app again" build.sh app)"
+
+echo "case: a second step starts a script the table declares for one step"
+root=$(fixture script-step-undeclared)
+script_job "$root" build.sh "Build the app"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$again_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the job, the step and the script" "$(contains "$out" "$undeclared")"
+check "and not the step the Run cites" "$(is "$(contains "$out" 'step "Build the app" runs build.sh, a script')" false)"
+replace "$root/.github/ci-gates/app.py" "$(script_run build.sh 'at("app", "Build the app")')" \
+  "$(script_run build.sh 'at("app", "Build the app")' 'at("app", "Build the app again")')"
+run_check "$root"
+check "passes once the Run cites it too" "$(is "$status" 0)"
+
+# Both a longer word ending in the script path and a shorter word after a cd name the script.
+# The working directory is not part of the name test.
+echo "case: a step names the script from its working directory, or by its name after a cd"
+root=$(fixture script-step-forms)
+script_job "$root" scripts/build.sh "Build the app"
+replace "$root/.github/workflows/ci.yaml" "$report_step" \
+  $'      - name: Build the app\n        run: sh scripts/build.sh\n      - name: Build the app from mod\n        run: sh ../scripts/build.sh\n        working-directory: mod\n      - name: Build the app from its directory\n        run: cd scripts && ./build.sh\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step that runs it from its working directory" \
+  "$(contains "$out" "$(uncited_refusal "$ci_path" app "Build the app from mod" scripts/build.sh app)")"
+check "and the step that runs it by its name after a cd" \
+  "$(contains "$out" "$(uncited_refusal "$ci_path" app "Build the app from its directory" scripts/build.sh app)")"
+
+# The text is never parsed, so a step that names the script only to chmod it is held like a start.
+echo "case: a step that only names the script is held to a citation too"
+root=$(fixture script-step-chmod)
+script_job "$root" build.sh "Build the app"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$chmod_step$build_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step" \
+  "$(contains "$out" "$(uncited_refusal "$ci_path" app "Make the script executable" build.sh app)")"
+
+# A Run of the script in another job's gate holds that gate's filter, not the one that can skip
+# this step, so it does not declare the step though its why cites it.
+echo "case: the only Run that cites the step is in a gate on another job"
+root=$(fixture script-step-other-gate)
+called_input_gate "$root"
+write_build_script "$root" build.sh
+replace "$root/.github/ci-gates/called.app.py" 'text="go test ./lib"),' \
+  'text="go test ./lib"), '"$(script_run build.sh 'at("app", "Build the app")')"','
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the gate that gates it" \
+  "$(contains "$out" "$(uncited_refusal "$ci_path" app "Build the app" build.sh app)")"
+
+# Which filters gate a step is read off the workflow: called.yaml's build step has no if: of its
+# own and runs under the calling job's if: on app. A Run of the script in a gate of app on that
+# job declares it, whichever step that gate names, since that gate's reads are what filter app is
+# held to.
+echo "case: a step a filter gates through its caller alone"
+root=$(fixture script-step-caller-gated)
+called_input_gate "$root"
+write_build_script "$root" build.sh
+replace "$root/.github/workflows/called.yaml" "$report_step" "$build_step$report_step"
+replace "$root/.github/ci-gates/called.app.py" 'text="go test ./lib"),' \
+  'text="go test ./lib"), '"$(script_run build.sh 'at("called", "Build the app again", CALLED)')"','
+add_called_step "$root" $'      - name: Build the app again\n        run: echo again'
+run_check "$root"
+check "fails while the Run cites another step" "$(is "$status" 1)"
+check "names the step and the gate of app on its job" \
+  "$(contains "$out" "^$(uncited_refusal "$called_path" called "Build the app" build.sh app)")"
+replace "$root/.github/ci-gates/called.app.py" 'at("called", "Build the app again", CALLED)' 'at("called", "Build the app", CALLED)'
+run_check "$root"
+check "passes once a Run of app's gate on that job cites it" "$(is "$status" 0)"
+
+# A citation counts whole: long+ci.yaml's step of the same job and name is another step, and a
+# `+` can stand before a file name's end as any other character can.
+echo "case: the Run cites a step of the same name in another workflow whose name ends in the step's"
+root=$(fixture script-step-longer-file)
+cat > "$root/.github/workflows/long+ci.yaml" <<'YAML'
+name: Long
+on: workflow_dispatch
+jobs:
+  app:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build the app
+        run: echo build
+YAML
+write_build_script "$root" build.sh
+replace "$root/.github/ci-gates/app.py" 'text="go test ./cmd/app ./lib"),' \
+  'text="go test ./cmd/app ./lib"), '"$(script_run build.sh 'at("app", "Build the app", ".github/workflows/long+ci.yaml")')"','
+replace "$root/.github/ci-gates/app.py" 'Read(".github/workflows/ci.yaml", "a job reads its own definition")' \
+  'Read(".github/workflows/ci.yaml", "a job reads its own definition, " + at("app", "Build the app") + " among it")'
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step of ci.yaml" \
+  "$(contains "$out" "^$(uncited_refusal "$ci_path" app "Build the app" build.sh app)")"
+
+# shared_callers <root> <a filter> <b filter>: shared.yaml, whose work job runs build.sh behind
+# `if: inputs.enabled == 'true'`, called by ci.yaml's called-a and called-b; each caller's if:
+# tests the filter given ("" for none: the job runs on every change), and passes 'true' for
+# enabled. Each also has the job of shared.yaml named for it, which a file two jobs call needs.
+shared_callers() {
+  local root=$1 caller filter if
+  write_build_script "$root" build.sh
+  {
+    printf 'name: Shared\non:\n  workflow_call:\n    inputs:\n      job:\n        type: string\n        required: true\n      enabled:\n        type: string\n        required: true\n      ci-ok-changes:\n        type: string\n        required: true\njobs:\n'
+    for caller in called-a called-b; do
+      printf '  %s:\n    if: inputs.job == '"'"'%s'"'"'\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Say which caller\n        run: echo %s\n' "$caller" "$caller" "$caller"
+      printf '      - name: Report ci-ok when this job decides a merge-group run\n        if: always()\n        uses: ./.github/actions/ci-ok-report\n        with:\n          job: %s\n          changes: ${{ inputs.ci-ok-changes }}\n          job-status: ${{ job.status }}\n' "$caller"
+    done
+    printf '  work:\n    if: inputs.enabled == '"'"'true'"'"'\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Build the app\n        run: sh build.sh\n'
+  } > "$root/.github/workflows/shared.yaml"
+  local selected="" always=""
+  for caller in called-a called-b; do
+    [ "$caller" = called-a ] && filter=$2 || filter=$3
+    if [ -n "$filter" ]; then
+      if="needs.changes.outputs.$filter == 'true' && "
+      selected+=", \"$caller\": \"$filter\""
+    else
+      if=""
+      always+=", \"$caller\""
+    fi
+    printf '  %s:\n    needs: changes\n    if: %s(github.event_name != '"'"'merge_group'"'"' || github.run_attempt == '"'"'1'"'"')\n    uses: ./.github/workflows/shared.yaml\n    with:\n      job: %s\n      enabled: '"'"'true'"'"'\n      ci-ok-changes: ${{ toJSON(needs.changes) }}\n' \
+      "$caller" "$if" "$caller" >> "$root/.github/workflows/ci.yaml"
+  done
+  replace "$root/.github/workflows/ci.yaml" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
+    "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"$selected}'"
+  replace "$root/.github/workflows/ci.yaml" "CI_OK_ALWAYS_RUN: '[\"changes\", \"lint\"]'" \
+    "CI_OK_ALWAYS_RUN: '[\"changes\", \"lint\"$always]'"
+  replace "$root/.github/workflows/ci.yaml" "needs: [changes, app, image, lint]" "needs: [changes, app, image, lint, called-a, called-b]"
+}
+
+# shared_gate <root> <job> <runs>: a gate of filter app on ci.yaml's <job>, holding <runs>, in a
+# gate file of its own, which a later call replaces.
+shared_gate() {
+  printf 'GATE = gate("app", "%s", runs=[%s], workflow=".github/workflows/shared.yaml")\n' "$2" "$3" \
+    > "$1/.github/ci-gates/$2.py"
+}
+shared_run=$(script_run build.sh 'at("work", "Build the app", ".github/workflows/shared.yaml")')
+shared_refusal="^$(script_step_address .github/workflows/shared.yaml work "Build the app" build.sh called-a), $script_refusal"
+
+# A job of a workflow two ci.yaml jobs call runs under each, gated by what that caller passes:
+# shared.yaml's work job runs build.sh under called-a, which runs on every change and passes
+# 'true', and under called-b, which passes the app output and whose gate declares the step.
+echo "case: a job two callers run is gated under each by that caller's own value"
+root=$(fixture script-step-two-callers)
+shared_callers "$root" "" app
+replace "$root/.github/workflows/ci.yaml" $'      job: called-b\n      enabled: \'true\'' \
+  $'      job: called-b\n      enabled: ${{ needs.changes.outputs.app }}'
+# The ordinary app job does not select cmd/app in this fixture. Only the caller's script does.
+replace "$root/.github/ci-gates/app.py" \
+  $'["./cmd/app", "./lib"], at("app", "Test the app") + ": go test ./cmd/app ./lib", step="Test the app",\n        text="go test ./cmd/app ./lib"' \
+  $'["./lib"], at("app", "Test the app") + ": go test ./lib", step="Test the app",\n        text="go test ./lib"'
+replace "$root/.github/workflows/ci.yaml" 'run: go test ./cmd/app ./lib' 'run: go test ./lib'
+shared_gate "$root" called-b "$shared_run"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and reports the gated caller under filter app" \
+  "$(contains "$out" '^report: called-b: [0-9][0-9]* files (filter app)$')"
+run_generate "$root"
+check "generates filters" "$(is "$status" 0)"
+check "and holds the gated caller's filter to what the script compiles" \
+  "$(contains "$(filter_of app)" '^mod/cmd/\*\*$')"
+replace "$root/.github/workflows/ci.yaml" $'      job: called-a\n      enabled: \'true\'' \
+  $'      job: called-a\n      enabled: ${{ needs.changes.outputs.app }}'
+run_check "$root"
+check "fails once the always-run caller passes the app output too" "$(is "$status" 1)"
+check "naming the step under that caller" \
+  "$(contains "$out" "$shared_refusal, and filter app gates the step, but no gate of .github/ci-gates covers it")"
+
+# The other way round: called-b's if: tests image, which EXCLUDED leaves to another check, and it
+# passes the image output for enabled, so the work job's own if: names image too; called-a's
+# if: tests app, and it passes 'true'. The work job is that other check's under called-b alone;
+# under called-a the app filter gates it, and the app gate on called-a cites no Run of build.sh.
+echo "case: a job two callers run, one of them gated on an EXCLUDED filter"
+root=$(fixture script-step-excluded-caller)
+shared_callers "$root" app image
+replace "$root/.github/workflows/ci.yaml" $'      job: called-b\n      enabled: \'true\'' \
+  $'      job: called-b\n      enabled: ${{ needs.changes.outputs.image }}'
+shared_gate "$root" called-a ""
+script_job "$root" build.sh "Build the app"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the step under the caller the app filter gates" \
+  "$(contains "$out" "^$(uncited_refusal .github/workflows/shared.yaml work "Build the app" build.sh app called-a)")"
+check "and not under the EXCLUDED one" "$(is "$(contains "$out" 'which job called-b calls step "Build the app" runs build.sh')" false)"
+shared_gate "$root" called-a "$shared_run"
+run_check "$root"
+check "passes once that gate's Run cites the step" "$(is "$status" 0)"
+
+# lint is gated by no filter: it runs on every change, so what its step compiles is held to none.
+echo "case: a step of a job no gate gates starts the script undeclared"
+root=$(fixture script-step-ungated)
+script_job "$root" build.sh
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: sh build.sh"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+# Action inputs can contain commands even when the step itself has no run: text.
+echo "case: a step names a script in an action's with: value"
+root=$(fixture script-step-with)
+script_job "$root" build.sh "Build the app"
+replace "$root/.github/workflows/ci.yaml" "$report_step" \
+  "$build_step"$'      - name: Build the app again\n        uses: example/retry@v1\n        with:\n          command: sh build.sh -v\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step that passes the value" "$(contains "$out" "$undeclared")"
+
+# Match path endings in both directions, without resolving variables or directories.
+forced_script=packages/envoy/scripts/forced-order.sh
+for word in scripts/forced-order.sh ./forced-order.sh '$GITHUB_WORKSPACE/packages/envoy/scripts/forced-order.sh'; do
+  echo "case: $word names $forced_script"
+  root=$(fixture "script-word-forced-${word//\//_}")
+  script_job "$root" "$forced_script"
+  replace "$root/.github/workflows/ci.yaml" "$report_step" \
+    $'      - name: Run the forced-order tests\n        run: |\n          "'"$word"$'"\n'"$report_step"
+  run_check "$root"
+  check "fails for an undeclared step (exit $status, expected 1)" "$(is "$status" 1)"
+  check "names the workflow, job, step, script and filter" \
+    "$(has "$out" "$(uncited_refusal "$ci_path" app "Run the forced-order tests" "$forced_script" app)")"
+done
+
+# Neither a shared basename in another directory nor a suffix inside a basename is a match.
+rig_script=packages/pi-legion/scripts/skill-scenarios/rig.sh
+for word in scripts/e2e/lib/rig.sh namespace-rig.sh; do
+  echo "case: $word does not name $rig_script"
+  root=$(fixture "script-word-rig-${word//\//_}")
+  script_job "$root" "$rig_script"
+  replace "$root/.github/workflows/ci.yaml" "$report_step" \
+    $'      - name: Run the other rig\n        run: '"$word"$'\n'"$report_step"
+  run_check "$root"
+  check "passes because the word names no declared script" "$(is "$status" 0)"
+done
+
+for script_and_word in 'scripts/build.sh ts/build.sh' 'build.sh rebuild.sh'; do
+  read -r script word <<<"$script_and_word"
+  echo "case: $word does not name $script without a / boundary"
+  root=$(fixture "script-word-boundary-${word//\//_}")
+  script_job "$root" "$script"
+  replace "$root/.github/workflows/ci.yaml" "$report_step" \
+    $'      - name: Name another build script\n        run: sh '"$word"$'\n'"$report_step"
+  run_check "$root"
+  check "passes because the word names no declared script" "$(is "$status" 0)"
+done
+
+separator_case=0
+for command in 'X=build.sh' 'true;build.sh' 'true&&build.sh' 'true|build.sh' \
+    '(build.sh)' 'cat<build.sh' 'echo>build.sh' "sh 'build.sh'"; do
+  echo "case: a separator exposes build.sh in $command"
+  separator_case=$((separator_case + 1))
+  root=$(fixture "script-word-separator-$separator_case")
+  script_job "$root" build.sh "Build the app"
+  replace "$root/.github/workflows/ci.yaml" "$report_step" \
+    "$build_step"$'      - name: Name the script after splitting\n        run: |\n          '"$command"$'\n'"$report_step"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the workflow, job, step, script and filter" \
+    "$(has "$out" "$(uncited_refusal "$ci_path" app "Name the script after splitting" build.sh app)")"
+done
+
+# script_output <ci.yaml> <filter>: a changes output in the same form as the existing outputs.
+script_output() {
+  local line
+  line=$(every_job_output image)
+  replace "$1" "$line" "$(every_job_output "$2")"$'\n'"$line"
+}
+
+# script_caller <root> <caller> <filter> <script>: mirror ci.yaml's reusable job gate.
+# A Run declares the script for one step only, so a second step needs its own citation.
+script_caller() {
+  local root=$1 caller=$2 filter=$3 script=$4
+  local ci="$root/.github/workflows/ci.yaml" path=".github/workflows/ci-job-$2.yaml"
+  script_output "$ci" "$filter"
+  replace "$ci" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
+    "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\", \"$caller\": \"$filter\"}'"
+  replace "$ci" "needs: [changes, app, image, lint]" "needs: [changes, app, image, lint, $caller]"
+  cat >> "$ci" <<YAML
+  $caller:
+    needs: changes
+    if: needs.changes.outputs.$filter == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./$path
+    with:
+      ci-ok-changes: \${{ toJSON(needs.changes) }}
+YAML
+  cat > "$root/$path" <<YAML
+name: $caller
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        type: string
+        required: true
+jobs:
+  $caller:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the declared script
+        run: sh $script
+$report_step
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: $caller
+          changes: \${{ inputs.ci-ok-changes }}
+          job-status: \${{ job.status }}
+YAML
+  write_build_script "$root" "$script"
+  cat > "$root/.github/ci-gates/$caller.py" <<PY
+CALLED = "$path"
+GATE = gate("$filter", "$caller", runs=[
+    $(script_run "$script" "at(\"$caller\", \"Run the declared script\", CALLED)"),
+], workflow=CALLED)
+PY
+}
+
+# Check the complete address of a step in a reusable workflow, including its caller and filter.
+check_undeclared_script() {
+  local caller=$1 job=$2 step=$3 script=$4 filter=$5
+  local path=".github/workflows/ci-job-$caller.yaml"
+  check "names $job, its workflow, step, script and filter $filter" \
+    "$(has "$out" "$(uncited_refusal "$path" "$job" "$step" "$script" "$filter" "$caller")")"
+}
+
+ceiling_script=.github/scripts/pg-connection-ceiling.sh
+ceiling_step="Check the service allows this lane's Dispatch processes"
+# Each Envoy Go lane has an unconditional ceiling step inside the reusable workflow.
+# Only the envoy-go caller's condition gates these steps.
+for job in envoy-go-alone envoy-go-race-impossible envoy-go-skips envoy-go-natslive; do
+  echo "case: $job has an undeclared pg-connection-ceiling.sh step"
+  root=$(fixture "script-step-$job")
+  script_caller "$root" envoy-go envoy_go "$ceiling_script"
+  cat >> "$root/.github/workflows/ci-job-envoy-go.yaml" <<YAML
+  $job:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: $ceiling_step
+        run: $ceiling_script "\${{ job.services.postgres.id }}"
+YAML
+  run_check "$root"
+  check "fails for an undeclared step (exit $status, expected 1)" "$(is "$status" 1)"
+  check_undeclared_script envoy-go "$job" "$ceiling_step" "$ceiling_script" envoy_go
+done
+
+# The same-build job's condition reads the second changes output through the caller's input.
+# Both filters must have a Run that cites its ceiling step.
+echo "case: dispatch-two-builds-same has an undeclared pg-connection-ceiling.sh step"
+root=$(fixture script-step-dispatch-two-builds-same)
+script_caller "$root" dispatch-two-builds dispatch_two_builds "$ceiling_script"
+script_output "$root/.github/workflows/ci.yaml" dispatch_two_builds_go
+cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+      dispatch_two_builds_go: ${{ needs.changes.outputs.dispatch_two_builds_go }}
+YAML
+path=.github/workflows/ci-job-dispatch-two-builds.yaml
+replace "$root/$path" '    inputs:' $'    inputs:\n      dispatch_two_builds_go:\n        type: string\n        required: true'
+replace "$root/$path" "$report_step" \
+  $'      - name: Run the two-build Go tests\n        if: inputs.dispatch_two_builds_go == \'true\'\n        run: echo testing\n'"$report_step"
+cat > "$root/.github/ci-gates/dispatch-two-builds.dispatch_two_builds_go.py" <<'PY'
+GATE = gate("dispatch_two_builds_go", "dispatch-two-builds", step="Run the two-build Go tests",
+            workflow=".github/workflows/ci-job-dispatch-two-builds.yaml")
+PY
+cat >> "$root/$path" <<YAML
+  dispatch-two-builds-same:
+    if: github.event_name == 'merge_group' && inputs.dispatch_two_builds_go == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: $ceiling_step
+        run: $ceiling_script "\${{ job.services.postgres.id }}"
+YAML
+run_check "$root"
+check "fails for an undeclared step (exit $status, expected 1)" "$(is "$status" 1)"
+check_undeclared_script dispatch-two-builds dispatch-two-builds-same "$ceiling_step" "$ceiling_script" dispatch_two_builds
+check_undeclared_script dispatch-two-builds dispatch-two-builds-same "$ceiling_step" "$ceiling_script" dispatch_two_builds_go
+
+# The extra version is a new step even though a Run already cites another use of the same script.
+echo "case: envoy-go-race-legs has an undeclared forced-order.sh step for NATS 2.15.3"
+root=$(fixture script-step-forced-order-nats)
+script_caller "$root" envoy-go-race envoy_go_race "$forced_script"
+forced_step="Forced-order tests on the hooked nats-server v2.15.3"
+cat >> "$root/.github/workflows/ci-job-envoy-go-race.yaml" <<YAML
+  envoy-go-race-legs:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      matrix:
+        leg: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: $forced_step
+        if: matrix.leg == 6
+        run: scripts/forced-order.sh -server 2.15.3 ./internal/testnats/hooktest/
+        working-directory: packages/envoy
+YAML
+run_check "$root"
+check "fails for an undeclared step (exit $status, expected 1)" "$(is "$status" 1)"
+check_undeclared_script envoy-go-race envoy-go-race-legs "$forced_step" "$forced_script" envoy_go_race
+
+# Read through nested composite steps. A missing action contributes no text, and a cycle must
+# not prevent the reader from reaching the following run: step.
+echo "case: a step starts the script through a composite action of the repository"
+root=$(fixture script-step-action)
+script_job "$root" build.sh "Build the app"
+mkdir -p "$root/.github/actions/build" "$root/.github/actions/inner"
+cat > "$root/.github/actions/build/action.yml" <<'YAML'
+name: Build
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/missing
+    - uses: ./.github/actions/inner
+YAML
+cat > "$root/.github/actions/inner/action.yaml" <<'YAML'
+name: Inner build
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/build/
+    - shell: bash
+      run: sh build.sh -v
+YAML
+replace "$root/.github/workflows/ci.yaml" "$report_step" \
+  "$build_step"$'      - name: Build through the action\n        uses: ./.github/actions/build\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step that uses the action" \
+  "$(contains "$out" "^$(uncited_refusal "$ci_path" app "Build through the action" build.sh app)")"
+replace "$root/.github/ci-gates/app.py" "$(script_run build.sh 'at("app", "Build the app")')" \
+  "$(script_run build.sh 'at("app", "Build the app")' 'at("app", "Build through the action")')"
+run_check "$root"
+check "passes once the Run cites that step" "$(is "$status" 0)"
+
+# A step's walk reads each local action once: in a chain of 30 actions that each use the next
+# twice, a walk that read an action again on each path would read the last one 2^29 times.
+echo "case: a chain of 30 composite actions each uses the next twice"
+root=$(fixture script-step-action-chain)
+script_job "$root" build.sh "Build the app"
+for ((action=1; action<=30; action++)); do
+  action_dir="$root/.github/actions/build-$action"
+  mkdir -p "$action_dir"
+  {
+    printf 'name: Build %s\nruns:\n  using: composite\n  steps:\n' "$action"
+    if ((action < 30)); then
+      printf '    - uses: ./.github/actions/build-%s\n    - uses: ./.github/actions/build-%s\n' \
+        "$((action + 1))" "$((action + 1))"
+    else
+      printf '    - shell: bash\n      run: sh build.sh -v\n'
+    fi
+  } > "$action_dir/action.yml"
+done
+replace "$root/.github/workflows/ci.yaml" "$report_step" \
+  "$build_step"$'      - name: Build through the action chain\n        uses: ./.github/actions/build-1\n'"$report_step"
+# The bound leaves the check its ordinary time many times over, and a walk of 2^29 paths none.
+set +e
+out=$(timeout 120s "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+status=$?
+set -e
+check "fails before the 120s timeout (exit $status, expected 1)" "$(is "$status" 1)"
+check "names the step that uses the first action" \
+  "$(contains "$out" "^$(uncited_refusal "$ci_path" app "Build through the action chain" build.sh app)")"
+
+echo "case: a step uses an action outside the repository"
+root=$(fixture script-step-action-outside)
+script_job "$root" build.sh "Build the app"
+mkdir "$work/outside-action"
+cat > "$work/outside-action/action.yml" <<'YAML'
+name: Outside build
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: sh build.sh
+YAML
+replace "$root/.github/workflows/ci.yaml" "$report_step" \
+  "$build_step"$'      - name: Use an action outside the repository\n        uses: ./../outside-action\n'"$report_step"
+run_check "$root"
+check "passes without reading the outside action" "$(is "$status" 0)"
+
+# A step two filters gate - its caller's on app and its own on build - must be cited by a Run in a
+# gate of each, since either can skip it: dispatch-two-builds-same's ceiling step is one.
+echo "case: a step two filters gate, cited by a Run of one gate alone"
+root=$(fixture script-step-two-filters)
+called_input_gate "$root"
+write_build_script "$root" build.sh
+script_output "$root/.github/workflows/ci.yaml" build
+replace "$root/.github/workflows/called.yaml" $'    inputs:\n      app:' $'    inputs:\n      build:\n        type: string\n        required: true\n      app:'
+replace "$root/.github/workflows/called.yaml" "$report_step" \
+  $'      - name: Build the app\n        if: inputs.build == \'true\'\n        run: sh build.sh\n'"$report_step"
+replace "$root/.github/workflows/ci.yaml" '      app: ${{ needs.changes.outputs.app }}' \
+  $'      app: ${{ needs.changes.outputs.app }}\n      build: ${{ needs.changes.outputs.build }}'
+called_build_run=$(script_run build.sh 'at("called", "Build the app", CALLED)')
+printf 'CALLED = ".github/workflows/called.yaml"\nGATE = gate("build", "called", runs=[%s], step="Build the app", workflow=CALLED)\n' \
+  "$called_build_run" > "$root/.github/ci-gates/called.build.py"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the filter whose gate cites it nowhere" \
+  "$(contains "$out" "^$(uncited_refusal "$called_path" called "Build the app" build.sh app), so filter app, which can skip the step")"
+check "and not the filter whose gate does" "$(is "$(contains "$out" 'in gate build on job called')" false)"
+replace "$root/.github/ci-gates/called.app.py" $'        text="go test ./lib"),\n], step="Test the library"' \
+  $'        text="go test ./lib"),\n    '"$called_build_run"$',\n], step="Test the library"'
+run_check "$root"
+check "passes once a Run of each gate cites it" "$(is "$status" 0)"
+
+# A citation names a step by its name, id, uses: or run: text; one that two steps of the job
+# answer to declares neither.
+echo "case: two steps of a job share the name the Run cites"
+root=$(fixture script-step-shared-name)
+script_job "$root" build.sh "Build the app"
+replace "$root/.github/workflows/ci.yaml" "$report_step" \
+  $'      - name: Build the app\n        id: build-one\n        run: sh build.sh\n      - name: Build the app\n        id: build-two\n        run: sh build.sh -v\n'"$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the shared citation" \
+  "$(contains "$out" 'step "Build the app" runs build.sh, and a Run of it in gate app on job app cites the step only as "Build the app", which more than one step of the job answers to')"
+replace "$root/.github/ci-gates/app.py" "$(script_run build.sh 'at("app", "Build the app")')" \
+  "$(script_run build.sh 'at("app", "build-one")' 'at("app", "build-two")')"
+run_check "$root"
+check "passes once the Run cites each by its id" "$(is "$status" 0)"
+
+# Which filter a step's if: names is read in both shapes a gate takes: an output tested as
+# `== 'true'`, and the changes job's list of matched filters read with contains(). The image
+# filter gates the step, but its gate belongs to a different job.
+for shape in output list; do
+  echo "case: a step gated on a filter its gate reads as an $shape"
+  root=$(fixture "script-step-gate-$shape")
+  called_input_gate "$root"
+  write_build_script "$root" build.sh
+  # image becomes a gated filter, of the image job alone, so no gate of it is on job called.
+  replace "$root/.github/workflows/ci.yaml" "        run: go build ./..." "        run: echo build"
+  printf 'GATE = gate("image", "image", reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")])\n' \
+    > "$root/.github/ci-gates/image.py"
+  if [ "$shape" = output ]; then
+    condition="inputs.image == 'true'"
+    passed='      image: ${{ needs.changes.outputs.image }}'
+  else
+    condition="inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '\"image\"')"
+    passed=$'      changes-result: ${{ needs.changes.result }}\n      matched-filters: ${{ needs.changes.outputs.matched_filters }}'
+  fi
+  replace "$root/.github/workflows/called.yaml" $'    inputs:\n      app:' \
+    $'    inputs:\n      image:\n        type: string\n        required: false\n        default: ""\n      matched-filters:\n        type: string\n        required: false\n        default: ""\n      app:'
+  replace "$root/.github/workflows/called.yaml" "$report_step" \
+    "      - name: Build the app"$'\n'"        if: $condition"$'\n        run: sh build.sh\n'"$report_step"
+  replace "$root/.github/workflows/ci.yaml" '      app: ${{ needs.changes.outputs.app }}' $'      app: ${{ needs.changes.outputs.app }}\n'"$passed"
+  replace "$root/.github/ci-gates/called.app.py" $'        text="go test ./lib"),\n], step="Test the library"' \
+    $'        text="go test ./lib"),\n    '"$called_build_run"$',\n], step="Test the library"'
+  run_check "$root"
+  # The fixture can draw refusals of other rules besides, so the status alone says nothing of
+  # rule 4: count rule 4's own refusals of the step.
+  check "fails with one refusal of rule 4" \
+    "$(is "$(grep -c "^$called_build_address, a script" <<<"$out" || true)" 1)"
+  check "names the filter the condition reads" \
+    "$(contains "$out" "^$called_build_address, $script_refusal, and filter image gates the step, but no gate of .github/ci-gates covers it (a gate of image on job called)")"
+  check "and never the list's own name" "$(is "$(contains "$out" 'filter matched_filters gates the step')" false)"
+done
 
 echo "case: a claimed simple go command whose step runs it in another directory"
 root=$(fixture moved-working-directory)
@@ -5357,11 +5958,8 @@ COMPILERS = (
     ("pi-shared", "pi_shared"),
 )
 
-# A file of another package that the job's own tests compile, read by relative path, or run as a
-# program, with the test that reaches it. The last class is the one no derivation sees: a spawn
-# carries no import, so `bunx tsc --listFilesOnly` of the job's own program lists none of it
-# (measured: zero claude-envoy files in packages/pi-legion's program), and check-ts-filters.sh
-# cannot hold the filter to it.
+# A file of another package that the job's own tests compile or read by relative path, with the
+# test that reaches it.
 READS = (
     ("broker_client", "packages/envoy/internal/cipherclient/testdata/wire.json",
      "`packages/cipher-client/src/__tests__/wire.test.ts#CORPUS_PATH`"),
@@ -5377,14 +5975,6 @@ READS = (
     ("pi_legion", "packages/dispatch/e2e/harness-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-signin.ts", "packages/pi-legion's tsc program"),
-    ("pi_legion", "packages/claude-envoy/scripts/build.ts",
-     "`packages/pi-legion/src/skills-guard.test.ts#PLUGIN_BUILDER`, which spawns that builder and asserts an "
-     "exact file list over what it writes"),
-    ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's `packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS`, bundled into "
-     "the tree the same test asserts over"),
-    ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
-     "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
     ("test", "packages/dispatch/web/src/fonts/inter/package.json",
      "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "
      "(thirdPartyNotices over the font file's path)"),

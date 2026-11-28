@@ -70,15 +70,16 @@ func TestTheBootHoldsEveryDPoPBlockToItsOwnDestinationsHost(t *testing.T) {
 // of the private destination's one host start, and the broker logs its airlock's DPoP key by its
 // thumbprint alone and goes on to serve.
 func TestTheBootTakesDPoPBlocksOfTheDestinationsHost(t *testing.T) {
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	broker := startBroker(t, brokerOptions{Env: append(airlockEnv(t),
 		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE="+memorySecretsFile,
 		"BROKER_PROFILES_FILE="+profilesFile(t, mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN", "SECOND_TOKEN"})),
 		mintedDestination,
 	)})

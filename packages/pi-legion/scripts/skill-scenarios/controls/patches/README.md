@@ -73,9 +73,9 @@ label that carries the trim, and the Job stops building E's tree. Its drop is go
 replaces it: at #5564's head `e42a6ceaf799`, `git grep -i -E 'fresh agent|agent of an earlier|fresh
 or an earlier|earlier agent'` over `packages/daemon/internal/prompts`, `skills`,
 `packages/pi-legion/src` and `packages/pi-shared/src` finds the two texts E drops and no other. At a
-label without the trim, E's tree keeps the bullet. `rig.test.ts`'s row "E's manifest applies to this
-checkout's own two files" holds E to the texts a label of this checkout carries, so a change that
-deletes one of E's two texts fails that row before it reaches a Job.
+label without the trim, E's tree keeps the bullet. No unit test holds E to the texts a label of this
+checkout carries: a change that deletes one of E's two texts stops the Job's build of E's tree,
+since `label_tree` refuses a drop it finds other than once.
 
 | Drop text | Its file | What it takes out | Count at #4902's head | Count at `main` `d27405712c7c` |
 | --- | --- | --- | --- | --- |

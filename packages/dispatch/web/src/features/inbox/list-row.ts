@@ -11,16 +11,9 @@
 
 import { inboxThreadRow } from "@legion/contracts";
 
-import type {
-  Ask,
-  AskUrgency,
-  InboxRow,
-  IssuePriority,
-  MyReplyRow,
-  OpenAskOwner,
-} from "../../api/types";
+import type { Ask, AskUrgency, InboxRow, MyReplyRow, OpenAskOwner } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
-import { issuePriority } from "../issue/issue-priority";
+import { issuePriority, type PriorityView } from "../issue/issue-priority";
 import type { DispatchReferenceRoute } from "../refs/routes";
 import { isDecisionAsk } from "./ask-decision";
 import { askUrgency } from "./ask-urgency";
@@ -48,12 +41,13 @@ export function rowLastActivityAt(row: InboxListRow): string {
   return row.ask.last_reply?.created_at ?? row.ask.created_at;
 }
 
-/** The owning issue's coarse priority, or null where there is none to show: a thread with no
- *  issue, an issue with no priority set, and every Agent row. */
-export function rowPriority(row: InboxListRow): IssuePriority | null {
-  if (row.kind === "ask") return issuePriority(row.ask.priority);
+/** The owning issue's priority as the row shows it: the one the issue works at, with the issue
+ *  it comes from where it inherits it (`issuePriority`), or none where there is none to show: a
+ *  thread with no issue, an issue with no priority, and every Agent row. */
+export function rowPriority(row: InboxListRow): PriorityView {
+  if (row.kind === "ask") return issuePriority(row.ask);
   const thread = inboxThreadRow(row.thread);
-  return thread.kind === "agent" ? null : issuePriority(thread.priority);
+  return issuePriority(thread.kind === "agent" ? { priority: null } : thread);
 }
 
 /** The ask's urgency. A thread has none at all - urgency is a property of a question - so the

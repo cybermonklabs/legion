@@ -23,6 +23,7 @@ const clientStream = "CONNECT {\"verbose\":false,\"headers\":true}\r\nPING\r\n" 
 // message, and a PING counted from a payload would leave the relay waiting for a PONG the server
 // never sends.
 func TestTheRelaysRecordOfAClientsStreamFindsItsOperationsWhereverTheStreamIsCut(t *testing.T) {
+	t.Parallel()
 	for _, cut := range []int{1, 2, 3, 7, 64, len(clientStream)} {
 		var stream protocolStream
 		for start := 0; start < len(clientStream); start += cut {
@@ -60,6 +61,7 @@ func TestTheRelaysRecordOfAClientsStreamFindsItsOperationsWhereverTheStreamIsCut
 // asked about in order however the stream is cut, and a PONG in a message's payload is the
 // message's, not a PONG.
 func TestTheRelayDropsOnlyThePongsItIsToldToWhereverTheServersStreamIsCut(t *testing.T) {
+	t.Parallel()
 	const info = "INFO {\"server_id\":\"a\",\"headers\":true}\r\n"
 	const served = info +
 		"PONG\r\n" +
@@ -94,6 +96,7 @@ func TestTheRelayDropsOnlyThePongsItIsToldToWhereverTheServersStreamIsCut(t *tes
 // operations: a client's stays off every boundary, so a hold fails on it rather than put a PING
 // inside it, and the server's is passed on as it comes.
 func TestTheRelayRefusesAStreamItCannotRead(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, stream, says string
 		fromServer         bool

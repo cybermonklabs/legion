@@ -111,9 +111,9 @@ type airlockRereadRig struct {
 	databaseURL         string
 	db                  *pgx.Conn
 	certFile, proxyAddr string
-	// fakeSecretsFile is the broker's fake store, which writeSecrets writes and the broker reads
-	// again at each call it makes of the store.
-	fakeSecretsFile string
+	// memorySecretsFile is the broker's memory store, which writeSecrets writes and the broker
+	// reads again at each call it makes of the store.
+	memorySecretsFile string
 }
 
 // startAirlockReread starts the rig's broker serving profiles, each one entry's JSON, in a
@@ -136,7 +136,7 @@ func rereadKinds(t *testing.T, hosts []string) string {
 	return `[{"name": "` + rereadKind + `", "hosts": ` + string(bound) + `, "headers": ["authorization"], "ways": ["swap", "mint"], "allow": []}]`
 }
 
-// airlockRereadExtras is what a row adds to the rig's broker: entries of its fake store beside
+// airlockRereadExtras is what a row adds to the rig's broker: entries of its memory store beside
 // AIRLOCK_TOKEN's, each one entry's JSON, and settings beside the rig's own.
 type airlockRereadExtras struct {
 	secrets []string
@@ -149,7 +149,7 @@ func startAirlockRereadWith(t *testing.T, extras airlockRereadExtras, hosts []st
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	r := &airlockRereadRig{t: t, databaseURL: databaseURL, fakeSecretsFile: filepath.Join(t.TempDir(), "fake-secrets.json")}
+	r := &airlockRereadRig{t: t, databaseURL: databaseURL, memorySecretsFile: filepath.Join(t.TempDir(), "memory-secrets.json")}
 	r.writeSecrets(extras.secrets...)
 	resolve := make([]string, len(hosts))
 	for i, host := range hosts {
@@ -160,7 +160,8 @@ func startAirlockRereadWith(t *testing.T, extras airlockRereadExtras, hosts []st
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + r.fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + r.memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + rereadPodAudience,
 		"BROKER_SERVICE_LOGINS=" + rereadService + "=" + rereadLoginAccount,
@@ -180,14 +181,14 @@ func startAirlockRereadWith(t *testing.T, extras airlockRereadExtras, hosts []st
 	return r
 }
 
-// writeSecrets writes the rig's fake store whole: AIRLOCK_TOKEN, behind rereadKind, and each of
+// writeSecrets writes the rig's memory store whole: AIRLOCK_TOKEN, behind rereadKind, and each of
 // extra, one entry's JSON. A value of other bytes than the one before it is a new version of that
 // secret.
 func (r *airlockRereadRig) writeSecrets(extra ...string) {
 	r.t.Helper()
-	entries := append([]string{`{"name": "` + testSecretsPrefix + `airlock-token", "kms_key_id": "` + testSecretsKMSKeyARN + `",
+	entries := append([]string{`{"name": "` + testSecretsPrefix + `airlock-token",
 		 "tags": {"owner": "` + rereadService + `", "tier": "agent", "` + policy.TagProxy + `": "` + rereadKind + `"}, "value": "the-real-airlock-token"}`}, extra...)
-	writeWhole(r.t, r.fakeSecretsFile, `{"secrets": [`+strings.Join(entries, ",\n")+`]}`)
+	writeWhole(r.t, r.memorySecretsFile, `{"secrets": [`+strings.Join(entries, ",\n")+`]}`)
 }
 
 // proxied is a grant of name the rig's pod is granted at once, and a command's own client of it:
@@ -329,7 +330,7 @@ func TestARereadOfASourceReachesTheProxysValuesOfEachProfileOfIt(t *testing.T) {
 	r.requireReads(second, 3, "after a reread of its sibling profile, which rereads their one source")
 }
 
-// rereadAppSecret is the fake store's entry of AIRLOCK_APP, a github-app secret of the rig's
+// rereadAppSecret is the memory store's entry of AIRLOCK_APP, a github-app secret of the rig's
 // service at agent tier, behind rereadKind, whose github-owners tag names acme-org, holding value.
 func rereadAppSecret(t *testing.T, value string) string {
 	t.Helper()
@@ -337,7 +338,7 @@ func rereadAppSecret(t *testing.T, value string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return `{"name": "` + testSecretsPrefix + `airlock-app", "kms_key_id": "` + testSecretsKMSKeyARN + `",
+	return `{"name": "` + testSecretsPrefix + `airlock-app",
 		 "tags": {"owner": "` + rereadService + `", "tier": "agent", "` + policy.TagType + `": "` + policy.TypeGitHubApp + `", "` + policy.TagGitHubOwners + `": "acme-org", "` + policy.TagProxy + `": "` + rereadKind + `"},
 		 "value": ` + string(quoted) + `}`
 }

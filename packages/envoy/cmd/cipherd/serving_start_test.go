@@ -38,8 +38,8 @@ func TestABrokerThatDiesBeforeServingRecordsNoServingBeat(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(issuer.Close)
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,7 +60,8 @@ func TestABrokerThatDiesBeforeServingRecordsNoServingBeat(t *testing.T) {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_EXCHANGE_GITHUB_ISSUER=" + issuer.URL,
 		"BROKER_EXCHANGE_GITHUB_AUDIENCE=example-broker-exchange",
 		"BROKER_SWEEP_SECONDS=1",

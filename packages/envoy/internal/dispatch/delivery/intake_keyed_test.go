@@ -1044,6 +1044,13 @@ func TestIntakeKeyWantsOnlyTheSubjectOfTheRepositoryThePayloadNames(t *testing.T
 			subject: "notifications.github.sjawhar.legion.workflow.deploy_yml.completed", payload: workflowPayload,
 		},
 		{
+			// A run of the default branch is published on its default-branch topic too, beside the
+			// workflow topic above, with the same payload and dedupe key: its fifth token is no
+			// subject the intake keys, so the run is handled once, under its workflow topic.
+			name:    "the default-branch copy of a workflow run",
+			subject: "notifications.github.cybermonklabs.legion.default_branch.workflow.deploy_yml.completed.push", payload: workflowPayload,
+		},
+		{
 			name:    "a repository name holding a dot, which the subject sanitizes",
 			subject: "notifications.github.acme.site_io.pr.7", payload: `{"kind":"pr","repo":"acme/site.io","number":"7"}`,
 			key: "pr acme/site_io#7", wanted: true, envelope: true,

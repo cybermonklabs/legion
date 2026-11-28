@@ -127,7 +127,13 @@ type pluginGate struct {
 	prefix []string
 	// timeout is each probe attempt's budget, `slow_command_timeout_seconds`.
 	timeout time.Duration
-	retry   bootprobe.Retry
+	// expire, when set, ends each probe attempt in the clock's place: the attempt runs under the
+	// context expire derives from its parent, and run judges that context's end as it judges the
+	// budget's, a cut-off attempt. Only a test sets it, to end an attempt's budget at a fact of the
+	// probe's run, which no load can move (imageprobe_test.go's hangsUnderFacts); nil is timeout's
+	// clock.
+	expire func(ctx context.Context) (context.Context, context.CancelFunc)
+	retry  bootprobe.Retry
 	// contract is the daemon API contract the plugin must declare: the daemon's own
 	// DaemonAPIVersion, or the one `legion probe-image` is asked for.
 	contract int
@@ -928,7 +934,7 @@ func (r ran) killed(launch string, budget time.Duration) string {
 // is no error: it is judged as a run that exited -1, which each probe reads as its doc says, and
 // its messages name the signal (ran.end, ran.ended).
 func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran, error) {
-	attempt, cancel := context.WithTimeout(ctx, g.timeout)
+	attempt, cancel := g.budget(ctx)
 	defer cancel()
 	job := foregroundOf(g.stdin, g.echo)
 	cmd := exec.CommandContext(attempt, "sh", append([]string{"-c", job.script(script), "sh"}, args...)...)
@@ -975,6 +981,15 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 		timedOut: timedOut,
 		elapsed:  time.Since(started),
 	}, nil
+}
+
+// budget is the context one probe attempt runs under: ctx, ended once the attempt has spent the
+// gate's budget (timeout), or by expire where a test set it.
+func (g pluginGate) budget(ctx context.Context) (context.Context, context.CancelFunc) {
+	if g.expire != nil {
+		return g.expire(ctx)
+	}
+	return context.WithTimeout(ctx, g.timeout)
 }
 
 // ImageProbe is `legion probe-image`, run inside the worker image: by its build's final step, and
