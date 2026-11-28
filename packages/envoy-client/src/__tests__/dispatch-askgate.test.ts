@@ -14,6 +14,7 @@ import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import { keyedLayer } from "../../test/keyed-layer";
 import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
@@ -797,12 +798,12 @@ describe("AskGate at the dispatch entry, across processes", () => {
     PATH: path,
     BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
   });
-  // The 30 s limit is a hang guard, not a budget: the row spawns two child processes that each
-  // start the dispatch entry, and bun's unwritten 5,000 ms per-test default is a limit on that
-  // work rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out,
-  // 3 runs of 3, at 5,104 to 5,202 ms with this file alone. Measured there: 0.71 s idle in a
-  // whole-suite run and 3.00 s with this file alone; under those loops, 8.78 s at most in a
-  // whole-suite run and 5.20 s with this file alone. It fires only if a child never exits.
+  // The row spawns two child processes that each start the dispatch entry, and bun's unwritten
+  // 5,000 ms per-test default is a limit on that work rather than on a hang: under 16 busy loops
+  // (8 x nproc) in a 2-CPU pod it timed out, 3 runs of 3, at 5,104 to 5,202 ms with this file
+  // alone. Measured there: 0.71 s idle in a whole-suite run and 3.00 s with this file alone; under
+  // those loops, 8.78 s at most in a whole-suite run and 5.20 s with this file alone. A child that
+  // never exits fails the wait for the two exits by name.
   test("one marker and two concurrent calls of its argv: exactly one posts", async () => {
     writeRecord();
     mint(MESSAGE, null);
@@ -813,17 +814,20 @@ describe("AskGate at the dispatch entry, across processes", () => {
         stderr: "pipe",
       });
     const children = [spawnOne(), spawnOne()];
-    const results = await Promise.all(
-      children.map(async (child) => ({
-        code: await child.exited,
-        stdout: await new Response(child.stdout).text(),
-      }))
+    const results = await settled(
+      "both children's exits and output",
+      Promise.all(
+        children.map(async (child) => ({
+          code: await child.exited,
+          stdout: await new Response(child.stdout).text(),
+        }))
+      )
     );
     expect(results.map((r) => r.code).sort()).toEqual([0, 1]);
     expect(results.find((r) => r.code === 1)?.stdout).toStartWith(REFUSAL);
     expect(messagePosts()).toHaveLength(1);
     expect(readdirSync(markers())).toEqual([]);
-  }, 30_000);
+  });
 
   // The row's folder is each child's HOME, and the file's afterEach removes it under Bun's 5 s hook
   // limit, which no row's own limit covers: what the children leave there is all that removal reads.
@@ -837,19 +841,18 @@ describe("AskGate at the dispatch entry, across processes", () => {
       code: 0,
       cache: false,
     });
-  }, 30_000);
+  });
 
   // Every form AskGate's gate does not read, run as an agent would run it: each reaches the CLI as
   // the session, finds the live record and no marker, and is refused before any request. With no
   // record the same form posts: the check is inert outside a gated Oh My Pi session.
   //
-  // The 240 s limit is a hang guard, not a budget, and sits above the suite's 30 s default. The row
-  // runs twelve child process trees, six caller forms twice, and none of that is spare: each form
-  // is a caller kind the row covers, and the second pass is the inertness claim, so the work cannot
-  // shrink without dropping an assertion. Measured in a 2-CPU pod: 3.67 s idle in a whole-suite run
-  // and 23.90 s with this file alone; under 16 busy loops (8 x nproc), 58.37 s at most in a
-  // whole-suite run and 56.71 s with this file alone, which left its old 60 s limit 1.03x in hand.
-  // It fires only if a child never exits.
+  // The row runs twelve child process trees, six caller forms twice, and none of that is spare:
+  // each form is a caller kind the row covers, and the second pass is the inertness claim, so the
+  // work cannot shrink without dropping an assertion. Measured in a 2-CPU pod: 3.67 s idle in a
+  // whole-suite run and 23.90 s with this file alone; under 16 busy loops (8 x nproc), 58.37 s at
+  // most in a whole-suite run and 56.71 s with this file alone. A form whose child never exits
+  // fails the wait for that exit by name.
   test("a gated write from xargs, python3 -c, node -e, bun -e, an alias or a script is refused; with no record it posts", async () => {
     requireHostTools("node", "python3");
     const bin = join(stateDir, "bin");
@@ -887,24 +890,24 @@ describe("AskGate at the dispatch entry, across processes", () => {
       ],
       ["a script", ["bash", script]],
     ];
-    const runForm = async (command: string[]) => {
+    const runForm = async (form: string, command: string[]) => {
       const child = Bun.spawn(command, {
         cwd: stateDir,
         env: childEnvironment(`${bin}:${process.env.PATH ?? ""}`),
         stdout: "pipe",
         stderr: "pipe",
       });
-      await child.exited;
+      await settled(`the ${form} caller's exit`, child.exited);
       return new Response(child.stdout).text();
     };
     writeRecord();
     for (const [form, command] of forms) {
-      const stdout = await runForm(command);
+      const stdout = await runForm(form, command);
       expect({ form, refused: stdout.includes(REFUSAL) }).toEqual({ form, refused: true });
     }
     expect(messagePosts()).toHaveLength(0);
     rmSync(join(stateDir, "sessions", "ses-1", "askgate"), { recursive: true });
-    for (const [, command] of forms) await runForm(command);
+    for (const [form, command] of forms) await runForm(form, command);
     expect(messagePosts()).toHaveLength(forms.length);
-  }, 240_000);
+  });
 });

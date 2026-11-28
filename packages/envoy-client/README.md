@@ -10,22 +10,39 @@ history before that and stops where the fragments begin.
 
 ## Running the suite
 
-`bun run test` runs the suite with `--timeout 30000`, because Bun's own per-test default is
-5,000 ms and nothing here wrote it, sized it or explained it. On a busy machine that default is a
-limit on a row's work rather than on a hang: measured in a 2-CPU pod under 16 busy loops
-(8 x nproc), `dispatch-cwd.test.ts`'s row that kills a child ignoring SIGTERM reached 5,000.89 ms
-and failed, where it costs 0.14 s idle and 0.31 s with its own file alone. A row that hangs still
-fails the suite; it takes 30 s to say so rather than 5 s.
+`bun run test` runs two `bun test` commands, each with the row-deadline preload
+(`--preload @legion/test-fixtures/row-deadline`, beside the one `bunfig.toml` names) and one
+`--timeout`, the command's guard: 45000 ms for the first, and 120000 ms for the second, which runs
+the four files whose rows take far longer than the rest once they set no guard of their own
+(`dispatch-askgate.test.ts`, `askgate-record.test.ts`, `broker-credential-signins.test.ts` and
+`dispatch-write-outcomes.test.ts`); the first runs every other file. A wait of
+`@legion/test-fixtures/wait` (`until`, `settled`, `span`) ends before the guard of the command
+that runs it, with a failure that names what it waited for, and it cannot read a row's own number.
+A wait on Bun's fake clock (`turnsUntil`) gives up after 30 s of real time unless its row says
+otherwise, so each guard is longer than that, and the first is 45000 ms rather than twice its
+slowest row. `package.json`'s `"//"` note gives the readings each guard was sized on, and names the
+rows that keep a guard of their own: those of the files the envoy-session-stall job runs with a
+bare `bun test <file>`, a row whose `turnsUntil` waits together outlast the command's guard, the
+files whose `setDefaultTimeout(HANG_GUARD_MS)` sets Bun's kill for a bare run, and the rows that
+keep the guard they had before #4437 and hold no shared wait. No row's own guard is shorter than
+a shared wait inside it. Each says why beside its number.
 
-Bun reads that number from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
+Bun reads the guard from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
 preload that calls `jest.setTimeout` governs the first test file of a run only, and
-`BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test` here
-still runs under Bun's 5,000 ms, and every row whose own work reaches half of that carries its own
-limit as the third argument to `test`, with what can hang and the two costs that sized it written
-beside it. Each row's comment is the record of its own number.
+`BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test`
+here runs under Bun's 5,000 ms default and without the row-deadline preload: run the package's
+script.
 
-A row whose limit is a bound on work rather than a hang guard says so beside its number, and a row
-whose limit must stay below something the row must not wait out says that too.
+A row that reads one of the client's own timers without reading a clock takes one of three ways:
+Bun's fake clock (`jest.useFakeTimers()`, which holds `AbortSignal.timeout` as well), which the row
+moves; a hold of the timer (`@legion/test-fixtures/held-deadlines`,
+`DispatchWriteRetry.armSilence`), which the row ends; or, for the NATS dial, whose real sockets do
+not fit the fake clock, a clock the row drives (`NatsDialClock`,
+`src/__tests__/driven-dial-clock.ts`), which holds each wait and bound of `connectNats` until the
+row ends it, with nats.js's own timers held until the row runs them
+(`src/__tests__/held-nats-timers.ts`) and the timers nats.js's own code armed and ran read from
+`@legion/test-fixtures/timer-record`. A row that bounds the work of a scan reads the scan's own
+count of what it read (`fenceColonsReads`, `trailingPunctuationReads`).
 
 ## Inbound delivery
 
@@ -230,9 +247,11 @@ waits on the broker-token backoff instead, 2-4 s, 4-8 s, 8-16 s, then 10-20 s, a
 refuses twice is dropped and another trade started at once, once for the session until a dial is
 admitted, on the count the credential keeps and its keeper shares
 (`BrokerNatsCredential.refused`); the host logs each drop as it is made, whether or not another
-dial follows (`hooks.onTokenDropped`, `NATS_DIAL_TOKEN_DROPPED`). A server that closes a dial
-during its
-handshake, as
+dial follows (`hooks.onTokenDropped`, `NATS_DIAL_TOKEN_DROPPED`). The bounds and the budget's
+reading are those of `hooks.clock` (`NatsDialClock`), the process's own unless a test hands it a
+clock it drives, and so are the waits, the broker-token backoff's included, unless a test sets
+`hooks.delay`, which then waits each of them in place of the clock's `sleep`. A server that
+closes a dial during its handshake, as
 nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
 (`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
@@ -1150,9 +1169,11 @@ its run (`DISPATCH_RESULTS_TOKEN`, [`docs/ci-results.md`](docs/ci-results.md)).
 the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credential_id` and
 `expires_at`, its `refresh_token`, the `broker` it was made at, and the last `access_token` with
 its `access_expires_at` and `access_life_seconds`, the life in whole seconds that token had when it
-landed. The file is refused when its group or anyone else may read it, when its directory lets
-them write to it, or when another user owns either. A trade presents that access token as the
-subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with no actor, and
+landed, and for a Dispatch sign-in its `dispatch_scopes` (absent for a machine login, so a file an
+earlier build wrote reads as one). The file is refused when its group or anyone else may read it,
+when its directory lets them write to it, or when another user owns either. A trade presents that
+access token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`,
+with no actor, and
 every trade's DPoP proof is signed with the login's key; a read trade adds a holder proof (below).
 A login made at another broker than `AGENT_SECRETS_URL` names is refused, and so is a broker on
 `http` off this machine's loopback: the login's tokens cross that connection. It names the projects
@@ -1254,12 +1275,13 @@ person, as the Go client does:
 Dispatch gives the token that names a person the `person` scope, so the session writes as that
 person. Dispatch gives `approve` to one broker-issued token only: the approve-only token that the
 secrets broker spends through Cipher's proxy and never releases to the box, which this client
-sends only a review with (`dispatch review`, below). Dispatch gives `p0` to no broker-issued
-token. So an answer to an approval request, a machine login's decision and a personal token's
-mint need the person's browser, or a personal token (`DISPATCH_TOKEN`) the person gave `approve`,
-and a write that makes an issue's own priority `0` (P0) needs the person's browser, or a personal
-token the person gave `p0`. A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds
-`person` too, and writes nothing.
+sends only a review with (`dispatch review`, below). Dispatch gives `p0` to one broker-issued
+token only: a Dispatch sign-in's whose person ticked `p0` (`dispatch login --device --scope`,
+below), never this trade's. So an answer to an approval request, a machine login's decision and a
+personal token's mint need the person's browser, or a personal token (`DISPATCH_TOKEN`) the person
+gave `approve`, and a write that makes an issue's own priority `0` (P0) needs the person's
+browser, a personal token the person gave `p0`, or a Dispatch sign-in the person ticked `p0` for.
+A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds `person` too, and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -1582,11 +1604,11 @@ socket that the proxy would use, and starts nothing. Every other dry run reads n
 runs with Dispatch off too. A call that a dry
 run passed can still stop on what Dispatch answers or on this session's state.
 
-`dispatch login --device [--person <address>]` logs the machine in at the secrets broker
-(`dispatch-commands/login.ts`; its help is `src/dispatch-login-command.ts`'s). It is no Dispatch
-call, and takes no `--dry-run`. A person runs it once per machine, in a terminal of their own: it
-waits for the approval until the code lapses, which a command timeout of an agent's shell can cut
-short. The command is each plugin's
+`dispatch login --device [--person <address>] [--scope <list>] [--reason <text>]` logs the machine
+in at the secrets broker (`dispatch-commands/login.ts`; its help is
+`src/dispatch-login-command.ts`'s). It is no Dispatch call, and takes no `--dry-run`. A person runs
+it once per machine, in a terminal of their own: it waits for the approval until the code lapses,
+which a command timeout of an agent's shell can cut short. The command is each plugin's
 `bin/dispatch`, under the directory the host installed the plugin in (claude-envoy's or
 pi-envoy's), or `bun packages/envoy-client/bin/dispatch.ts` from a checkout of this repository.
 It reads no host, no session and no envoy.json. It reads `AGENT_SECRETS_URL`, and the person who
@@ -1656,6 +1678,28 @@ the command names that credential and says to revoke it in Machine logins on the
 typed into. The earlier login is the one the file holds just before the save, read under the lock
 the save holds, so of two logins made at once the one kept second names the other. On a machine
 whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
+
+With `--scope`, a comma-separated list of the scopes a Dispatch sign-in may hold (contracts'
+`DISPATCH_SIGN_IN_SCOPES`: `person` and `p0`) or `none`, the login is a Dispatch sign-in: the
+device request asks for the scope `dispatch` and names those scopes, sorted and distinct, as the
+actions of its `launcher_credential` detail, beside `--reason` as the request's reason. A scope no
+sign-in may ask for, or a reason over `BROKER_REQUEST_REASON_MAX` (400) characters, is a usage
+error before any request (`startDeviceLogin`'s `RangeError`). The person ticks some or all of the
+scopes on Dispatch's machine-login page, which starts `person` ticked and `p0` unticked; whatever
+is ticked, the session writes in Dispatch and works on Envoy as its own session within its
+person's projects, `person` adds acting as the person, and `p0` adds making an issue's own
+priority 0. A broker whose `BROKER_DISPATCH_SIGNIN` is off answers the request
+`400 invalid_scope` in its own words, which the command prints as it got them:
+"DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off". A
+broker that predates sign-ins answers `400 invalid_scope` in its OAuth library's words, which
+this client does not know, and the command prints its own sentence in their place: "this broker
+serves no Dispatch sign-in: it predates them, or BROKER_DISPATCH_SIGNIN is off". The
+command prints the scopes the broker answered, and keeps no login whose answer lacks scope
+`dispatch`, or whose `dispatch_scopes` names a scope it did not ask for, saying where to revoke
+the sign-in; each refresh must answer the same scopes, or the refresh is refused, naming where to
+revoke it, and the file kept. Its tokens hold those scopes alone, never `approve`, and its
+credential enrolls no session and reads no secret. A new login replaces the one the file held, so
+a machine that keeps a machine login and a Dispatch sign-in names another file for one of them.
 
 `dispatch api --path <route> [--method POST|PUT|PATCH|DELETE] [--body-file <file>|-]` sends one
 request of a route under `/api/v1` that no other command sends (`apiCommand`,

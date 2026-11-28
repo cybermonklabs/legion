@@ -64,6 +64,8 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 		return got
 	}
 	service := serviceAnswer("ses_service", "example-fleet", caller.JKT())
+	consented := answer("ses_consented", ciphertoken.ProjectScopeConsented, "PRIV")
+	consented.Scope, consented.SignIn = "person", "6f1f9d5e-3c2a-4b7e-9d1a-0b5e2a9c7d11"
 	for _, tc := range []struct {
 		name   string
 		answer *ciphertoken.Introspection
@@ -75,6 +77,7 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	}{
 		{name: "a named token of the project it serves", answer: new(answer("ses_named", ciphertoken.ProjectScopeNamed, "PRIV")), admit: true},
 		{name: "a person token listing only that project", answer: new(answer("ses_person", ciphertoken.ProjectScopePerson, "PRIV")), admit: true},
+		{name: "a consented token listing only that project", answer: &consented, admit: true},
 		{name: "a person token listing a project it does not serve beside it", answer: new(answer("ses_two", ciphertoken.ProjectScopePerson, "INFRA", "PRIV")), status: http.StatusForbidden},
 		{name: "a named token of another project", answer: new(answer("ses_other", ciphertoken.ProjectScopeNamed, "INFRA")), status: http.StatusForbidden},
 		{name: "a person token listing no project", answer: new(answer("ses_none", ciphertoken.ProjectScopePerson)), status: http.StatusForbidden},

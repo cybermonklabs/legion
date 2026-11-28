@@ -2,7 +2,7 @@ import type { UseMutationResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { apiErrorMessage } from "../../api/client";
-import type { DecisionResponse, StateResponse } from "../../api/types";
+import type { StateResponse } from "../../api/types";
 import type { SubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -14,6 +14,15 @@ import {
   secondaryButtonText,
 } from "../../theme/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+
+/** What the buttons read of an approval, and the press that makes one: `MachineLoginPage` builds
+ *  the press, so it carries what the page showed when Approve was pressed. */
+export interface ApprovalButton {
+  readonly error: Error | null;
+  readonly isError: boolean;
+  readonly isPending: boolean;
+  readonly mutate: () => void;
+}
 
 /**
  * The Approve/Deny button pair `MachineLoginPage` renders for a pending machine login: that page
@@ -27,7 +36,7 @@ export function CredentialDecisionButtons({
   deny,
   submitGuard,
 }: {
-  approve?: UseMutationResult<DecisionResponse | null, Error, void>;
+  approve?: ApprovalButton;
   deny: UseMutationResult<StateResponse | null, Error, void>;
   submitGuard: SubmitGuard;
 }): ReactNode {
