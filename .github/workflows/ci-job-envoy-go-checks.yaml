@@ -90,11 +90,6 @@ jobs:
       # each other, no more at once than the runner has cores, in the order queued (the longest
       # first, so the shorter ones fill the other cores around them), and "Wait for the script
       # harnesses and judge them" is their verdict and prints each one's log.
-      # The operator-token-minters check's harness is queued first: it is the longest, 706 s in its
-      # last whole run on a developer box (2026-11-25), so the shorter ones fill the other cores.
-      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
-        run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
-        working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         # The suite's own bound, --minutes 15, which its waits end 30 s before: the pool hands the
         # harness HARNESS_POOL_DEADLINE_MS, its start plus the bound less 30 s, and the command passes
@@ -109,6 +104,22 @@ jobs:
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
         run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
+        working-directory: packages/envoy
+      # The operator-token-minters check's harness is queued after the two suites above, one pool
+      # entry for each of its parts (its row files, which the harness lists with --parts): the pool
+      # admits entries in queue order, and vm.test.sh and cluster.test.sh each hold a slot for 361 to
+      # 587 s at main (merge-group jobs 140883927377 to 140901259898, 2026-11-27/28), so queued after
+      # a dozen short minter entries they would start a minute or more later and end the job later;
+      # queued first, they run beside the minter parts on the other two slots. Each minter part is
+      # one pool entry of one process (OPERATOR_MINTERS_TEST_SLOTS=1), so the pool's one slot for it
+      # is true.
+      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud), one pool entry for each row file
+        run: |
+          parts=$(bash infra/scripts/operator-token-minters.test.sh --parts)
+          for part in $parts; do
+            ../../.github/scripts/harness-pool.sh start "infra/scripts/operator-token-minters.test.sh $part" \
+              env OPERATOR_MINTERS_TEST_SLOTS=1 bash infra/scripts/operator-token-minters.test.sh "$part"
+          done
         working-directory: packages/envoy
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh

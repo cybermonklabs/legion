@@ -58,17 +58,72 @@
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
 # OPERATOR_MINTERS_TEST_ROWS="b p" runs those rows alone, as a control run by hand does, and
 # OPERATOR_MINTERS_SCRIPT names another copy of the script to run them against; a copy keeps the
-# directory operator-token-minters/ beside it, whose parts it sources (the rows files are this
-# test's own, beside it). A row of one plant per item runs up to 8 items at a time, each in a world
-# of its own (each). Up to one row file a core runs at a time, longest first;
-# OPERATOR_MINTERS_TEST_SLOTS names another count. Each file's rows print in the order of the list
-# above once every file has ended, with the seconds the file took.
-# CI runs it in envoy-go-checks (.github/workflows/ci-job-envoy-go-checks.yaml).
+# directory operator-token-minters/ beside it, whose files it sources (the rows files are this
+# test's own, beside it). Each row file is a part, test-rows-<part>.sh, and the test runs in three
+# forms. With --parts it prints the parts, one a line, longest first, and runs nothing else. With a
+# part's name it runs the setup and that part's rows alone, printing each row as it passes, then the
+# part's count and seconds and `all <n> rows passed`; any other argument, or more than one, exits 2
+# before the setup, naming the parts. With no argument it runs every part, up to one row file a
+# core at a time, longest first, and prints each file's rows in the order of the list above once
+# every file has ended, with the seconds the file took. OPERATOR_MINTERS_TEST_SLOTS names another
+# count, and bounds a row's items too: a row of one plant per item runs its items each in a world
+# of its own (each), up to 8 at a time and never more than the slots, so under
+# OPERATOR_MINTERS_TEST_SLOTS=1 a part runs one process at a time. CI runs each part as a pool
+# entry of its own, one process at a time, in envoy-go-checks
+# (.github/workflows/ci-job-envoy-go-checks.yaml).
 set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly check="${OPERATOR_MINTERS_SCRIPT:-$script_dir/operator-token-minters.sh}"
+
+# The row files of operator-token-minters/, test-rows-<name>.sh, in the header's reading order, which
+# is the order their rows print in. Each is a part, which the command line below names.
+readonly row_files=(run code rbac iam pool admission become fence)
+# The same files longest first, the order their processes start in, so a file started last is not
+# the one the run waits for, and the order --parts prints them in. The seconds are what each file's
+# rows took in envoy-go-checks job 140612446150 (artifact harness-times-140612446150), where the
+# whole test took 475.0 s in one process: rbac 109, run 101, iam 88, pool 58, fence 47, admission
+# 45, code 17, become 9.
+readonly row_file_schedule=(rbac run iam pool fence admission code become)
+# The two lists and the files on disk must hold the same names, so that a row file on disk is a
+# part and every part is listed; the test stops before anything else when they do not.
+on_disk=("$script_dir"/operator-token-minters/test-rows-*.sh)
+on_disk=("${on_disk[@]##*/test-rows-}")
+on_disk=("${on_disk[@]%.sh}")
+if [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${row_file_schedule[@]}" | sort)" ] ||
+  [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${on_disk[@]}" | sort)" ]; then
+  echo "FAIL: the row files in reading order (${row_files[*]}), in start order (${row_file_schedule[*]}) and on disk (${on_disk[*]}) differ" >&2
+  exit 1
+fi
+# The command line, read before the setup, so that --parts and a refused argument make nothing.
+# --parts prints the parts in their start order and exits; a part's name runs that part alone
+# (part); no argument runs every part; any other argument, or more than one, exits 2 naming them.
+part=""
+if [ "$#" -gt 1 ]; then
+  echo "usage: operator-token-minters.test.sh [--parts | PART]" >&2
+  echo "operator-token-minters.test.sh: $# arguments, where it takes one at most; the parts are: ${row_file_schedule[*]}" >&2
+  exit 2
+elif [ "${1-}" = --parts ]; then
+  printf '%s\n' "${row_file_schedule[@]}"
+  exit 0
+elif [ "$#" -eq 1 ]; then
+  for name in "${row_file_schedule[@]}"; do
+    [ "$1" != "$name" ] || part="$1"
+  done
+  [ -n "$part" ] || {
+    echo "operator-token-minters.test.sh: no part $1; the parts are: ${row_file_schedule[*]}" >&2
+    exit 2
+  }
+fi
+# slots: how many row files run at a time, and the bound on a row's items (each runs at most
+# min(8, slots) at once), held to a count before the setup.
+slots="${OPERATOR_MINTERS_TEST_SLOTS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+[[ $slots =~ ^[1-9][0-9]*$ ]] || {
+  echo "FAIL: OPERATOR_MINTERS_TEST_SLOTS is $slots, which is no count of row files to run at a time" >&2
+  exit 2
+}
+
 # test_root holds what every row reads (the fakes, the world each row starts from, the fence's copy
 # of the check) and a directory for each row file's process. temporary_dir is where the running rows
 # write: test_root until the rows start, then each row file's own (run_row_file).
@@ -633,9 +688,11 @@ passed() {
 # row LETTER: whether a row runs: every row, or those OPERATOR_MINTERS_TEST_ROWS names.
 row() { [ -z "${OPERATOR_MINTERS_TEST_ROWS:-}" ] || [[ " $OPERATOR_MINTERS_TEST_ROWS " == *" $1 "* ]]; }
 # each FUNCTION ITEM...: FUNCTION ITEM for each item, each in a subshell with a world of its own,
-# up to 8 at a time; fails naming each item whose run failed, with what it printed.
+# up to min(8, slots) at a time, so that OPERATOR_MINTERS_TEST_SLOTS bounds the items as it bounds
+# the row files (one at a time under one slot); fails naming each item whose run failed, with what
+# it printed.
 each() {
-  local fn="$1" i=0 running=0 failed=0
+  local fn="$1" i=0 running=0 failed=0 each_slots=$((slots < 8 ? slots : 8))
   shift
   for item in "$@"; do
     i=$((i + 1))
@@ -648,7 +705,7 @@ each() {
       echo "$?" >"$temporary_dir/$fn-$i.status"
     } &
     running=$((running + 1))
-    if [ "$running" -ge 8 ]; then
+    if [ "$running" -ge "$each_slots" ]; then
       wait -n
       running=$((running - 1))
     fi
@@ -662,30 +719,13 @@ each() {
   done
   [ "$failed" -eq 0 ] || { echo "FAIL: $failed of the $# items of $fn failed" >&2; exit 1; }
 }
+# cpus_first LIST: the first CPU of LIST, a Cpus_allowed_list value of /proc/<pid>/status (`0-3,8`
+# or `3`); cpus_one LIST: whether LIST is one CPU. Each is the shell alone, no process. Rows (cy) and
+# (cz) pin their items with them, and row (de) holds them to lists Linux printed.
+cpus_first() { printf '%s\n' "${1%%[,-]*}"; }
+cpus_one() { [[ $1 =~ ^[0-9]+$ ]]; }
 
 # --- The rows. ---
-
-# The row files of operator-token-minters/, test-rows-<name>.sh, in the header's reading order, which
-# is the order their rows print in.
-readonly row_files=(run code rbac iam pool admission become fence)
-# The same files longest first, the order their processes start in, so a file started last is not
-# the one the run waits for. The seconds are what each file's rows took in envoy-go-checks job
-# 140612446150 (artifact harness-times-140612446150), where the whole test took 475.0 s in one
-# process: rbac 109, run 101, iam 88, pool 58, fence 47, admission 45, code 17, become 9.
-readonly row_file_schedule=(rbac run iam pool fence admission code become)
-on_disk=("$script_dir"/operator-token-minters/test-rows-*.sh)
-on_disk=("${on_disk[@]##*/test-rows-}")
-on_disk=("${on_disk[@]%.sh}")
-if [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${row_file_schedule[@]}" | sort)" ] ||
-  [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${on_disk[@]}" | sort)" ]; then
-  echo "FAIL: the row files in reading order (${row_files[*]}), in start order (${row_file_schedule[*]}) and on disk (${on_disk[*]}) differ" >&2
-  exit 1
-fi
-slots="${OPERATOR_MINTERS_TEST_SLOTS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
-[[ $slots =~ ^[1-9][0-9]*$ ]] || {
-  echo "FAIL: OPERATOR_MINTERS_TEST_SLOTS is $slots, which is no count of row files to run at a time" >&2
-  exit 2
-}
 
 # now_ms: the clock in milliseconds. A `date` with no %N, which is BSD's, gives whole seconds, so a
 # file's time is read in seconds there rather than failing the arithmetic below.
@@ -697,11 +737,11 @@ now_ms() {
 }
 # run_row_file NAME: test-rows-NAME.sh's rows in a process of their own, which writes only under a
 # directory of its own (its temporary_dir, holding its world), so no row reads a file another
-# file's rows wrote; what they print, how many passed, the process's exit and its milliseconds go to
-# files of its own under test_root. The process runs under set -e, as `each` runs an item: a
-# subshell an `||` tested would run with it off. A row file's rows set variables of any name at its
-# top level (test-rows-rbac.sh reads a `name` there), so the file the count goes to is named, and
-# made readonly, before they run.
+# file's rows wrote; what they print goes to the function's own stdout and stderr, which its caller
+# names, and how many passed, the process's exit and its milliseconds go to files of its own under
+# test_root. The process runs under set -e, as `each` runs an item: a subshell an `||` tested would
+# run with it off. A row file's rows set variables of any name at its top level (test-rows-rbac.sh
+# reads a `name` there), so the file the count goes to is named, and made readonly, before they run.
 run_row_file() {
   local name="$1" started
   started=$(now_ms)
@@ -716,27 +756,40 @@ run_row_file() {
     # shellcheck source=/dev/null # operator-token-minters/test-rows-NAME.sh, one of row_files
     . "$script_dir/operator-token-minters/test-rows-$name.sh"
     echo "$rows" >"$passed_file"
-  ) >"$test_root/rows-$name.out" 2>"$test_root/rows-$name.err"
+  )
   echo "$?" >"$test_root/rows-$name.status"
   echo "$(($(now_ms) - started))" >"$test_root/rows-$name.ms"
 }
+# With no argument, every part, up to slots row files at a time, longest first, each file's output
+# held in files of its own under test_root until every file has ended. With a part, that part's file
+# alone, its output printed as its rows pass, never held, so that a reader of the log (the CI pool
+# stamps each line with the time it was written) sees when each row passed.
 running=0
 for name in "${row_file_schedule[@]}"; do
+  [ -z "$part" ] || [ "$name" = "$part" ] || continue
   if [ "$running" -ge "$slots" ]; then
     wait -n || true
     running=$((running - 1))
   fi
-  run_row_file "$name" &
+  if [ -n "$part" ]; then
+    run_row_file "$name" &
+  else
+    run_row_file "$name" >"$test_root/rows-$name.out" 2>"$test_root/rows-$name.err" &
+  fi
   running=$((running + 1))
 done
 wait
 
-# Each file's output whole, in reading order. A file's process that did not exit 0 with its count
-# of passed rows written as its last act failed, whatever it printed.
+# Each file's output whole, in reading order (a part run alone printed its own as it ran). A file's
+# process that did not exit 0 with its count of passed rows written as its last act failed, whatever
+# it printed.
 failed=()
 for name in "${row_files[@]}"; do
-  cat "$test_root/rows-$name.out"
-  cat "$test_root/rows-$name.err" >&2
+  [ -z "$part" ] || [ "$name" = "$part" ] || continue
+  if [ -z "$part" ]; then
+    cat "$test_root/rows-$name.out"
+    cat "$test_root/rows-$name.err" >&2
+  fi
   exited="$(cat "$test_root/rows-$name.status" 2>/dev/null || echo none)"
   file_rows="$(cat "$test_root/rows-$name.passed" 2>/dev/null || true)"
   milliseconds="$(cat "$test_root/rows-$name.ms" 2>/dev/null || echo 0)"

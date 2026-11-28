@@ -5056,7 +5056,8 @@ value of the flag's form that is not so shaped is used, and may be printed, as g
 `ghp_abc` is. A file flag's file is named by the flag and its place (`--rbac-render entry 2`), never
 its path.
 `scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
-`gcloud`, `curl` and `agent-secrets`.
+`gcloud`, `curl` and `agent-secrets`. It runs whole, or one part (one of its row files) given the
+part's name, and `--parts` lists the parts; CI runs each part as a pool entry of its own.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by

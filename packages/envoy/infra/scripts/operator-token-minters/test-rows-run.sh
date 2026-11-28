@@ -60,7 +60,9 @@
 #   (da) no line of the check, its parts or this test's own files reads a status from a pipe into
 #        a grep that stops early (-q or -m), which pipefail and SIGPIPE can read as no match;
 #   (db) a pick of the reviews to judge that stops part way (its awk under a 2 KiB file size limit)
-#        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass.
+#        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass;
+#   (dg) each runs at most min(8, OPERATOR_MINTERS_TEST_SLOTS) of a row's items at once, so one at
+#        a time under one slot.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -675,4 +677,48 @@ if row db; then
   want_rbac_unknown "the reviews to judge could not be picked out of the API server's answer (awk exited " \
     "a pick of the reviews to judge stopped by a file size limit"
   passed "(db) a pick of the reviews to judge that stops part way reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
+fi
+
+# --- (dg) each's bound. OPERATOR_MINTERS_TEST_SLOTS bounds a row's items as it bounds the row files:
+# each runs at most min(8, slots) of them at once, so under one slot, as CI runs each part (a pool
+# entry the pool counts as one slot), a part is one process at a time. Three probe items each mark
+# themselves running, look five times, 0.1 s apart, for the other items' marks, write down the ones
+# each look found, and take their own mark away; an item that found as many others at once as the
+# bound, or more, ran beside more items than the bound lets run. The bound is read from the
+# harness's own slots, its default where OPERATOR_MINTERS_TEST_SLOTS is unset. The row runs no
+# check. Run by hand, the control is each with a fixed bound of 8, whatever the slots, as it was
+# before the parts: under OPERATOR_MINTERS_TEST_SLOTS=1, p1 found p2 and p3. ---
+# each_probe ITEM: marks ITEM running, writes the other items it finds running once a look, five
+# looks 0.1 s apart, one line a look, and takes its mark away.
+each_probe() {
+  local dir="$temporary_dir/dg" look mark found
+  : >"$dir/running-$1"
+  for look in 1 2 3 4 5; do
+    [ "$look" -eq 1 ] || sleep 0.1
+    found=""
+    for mark in "$dir"/running-*; do
+      [ "$mark" = "$dir/running-$1" ] || [ ! -e "$mark" ] || found+=" ${mark##*/running-}"
+    done
+    printf '%s\n' "${found# }" >>"$dir/saw-$1"
+  done
+  rm "$dir/running-$1"
+}
+if row dg; then
+  dg_bound=$((slots < 8 ? slots : 8))
+  mkdir "$temporary_dir/dg"
+  each each_probe p1 p2 p3
+  dg_over=""
+  for dg_item in p1 p2 p3; do
+    dg_most=""
+    while IFS= read -r dg_look; do
+      read -ra dg_names <<<"$dg_look"
+      read -ra dg_most_names <<<"$dg_most"
+      [ "${#dg_names[@]}" -le "${#dg_most_names[@]}" ] || dg_most="$dg_look"
+    done <"$temporary_dir/dg/saw-$dg_item"
+    read -ra dg_most_names <<<"$dg_most"
+    [ "${#dg_most_names[@]}" -lt "$dg_bound" ] || dg_over+="; $dg_item saw ${dg_most// / and } running at once"
+  done
+  [ -z "$dg_over" ] ||
+    fail "each ran more of a row's items at once than min(8, OPERATOR_MINTERS_TEST_SLOTS), $dg_bound, lets run: ${dg_over#; }"
+  passed "(dg) each runs at most min(8, OPERATOR_MINTERS_TEST_SLOTS) items at once, one at a time under one slot"
 fi

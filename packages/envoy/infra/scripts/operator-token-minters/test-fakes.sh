@@ -249,7 +249,7 @@ case "${args[*]}" in
     # (REVIEW_WORKERS): two calls that took the same number would write one file over the other.
     # With one worker (the harness's default) the first call is the step's reviews and each later
     # one a follow_becomes round, which is what the markers below name; a row that sets
-    # REVIEW_WORKERS itself uses no marker.
+    # REVIEW_WORKERS itself uses none of them (its items mark review-record-cpus, below).
     # A world marked
     #   review-answers-reversed answers the reviews in the reverse of the order asked (row ct);
     #   review-follow-refused answers every review of a follow round refused, the witness's too, and
@@ -260,6 +260,19 @@ case "${args[*]}" in
     calls=$(( $(cat "$dir/review-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$calls" >"$dir/review-calls"
     rmdir "$dir/review-calls.lock"
+    # A world marked review-record-cpus (rows cy and cz, whose items run review's four calls at once
+    # with their process pinned to one CPU: the pool counts one slot for each part, and the pin keeps
+    # the four calls on one core while they still overlap) gets this call's own Cpus_allowed_list in
+    # review-call-<n>.cpus, beside its request, for the row to hold each call to one CPU. The shell
+    # reads it from /proc/self/status, so no process starts; it is written before any answer or
+    # refusal, so every call has one; and the fake prints, and exits, as it does without it.
+    if [ -e "$dir/review-record-cpus" ]; then
+      cpus=""
+      while read -r key value; do
+        [ "$key" != Cpus_allowed_list: ] || cpus="$value"
+      done </proc/self/status
+      printf '%s\n' "$cpus" >"$dir/review-call-$calls.cpus"
+    fi
     # Each review asked, one a line (verb, group, resource, subresource, namespace, name, and the
     # subject), in this call's own file, which a row reads as review-requests-*.tsv: calls that run
     # at once must not write one file between them. A row that holds the check to what it reviewed
