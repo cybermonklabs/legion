@@ -20,7 +20,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -40,12 +39,7 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
-	natsURL := testnats.URL(t)
-	natsClient, err := bus.ConnectOwningStream([]string{natsURL})
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(func() { bustest.Close(t, natsClient) })
+	natsClient := intakeTestClient(t)
 
 	// The durable an earlier release left: its filter subjects, and the server's own flow control.
 	legacy := natsgo.ConsumerConfig{
@@ -282,8 +276,8 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 		t.Helper()
 		got := drain(t, natsClient, consumer, subject, want)
 		t.Logf("%s: %d of %d arrived", name, got, stored)
-		if got != want {
-			t.Errorf("%s: %d of %d arrived, want %d", name, got, stored, want)
+		if got > want {
+			t.Errorf("%s: %d of %d arrived, want %d: a message was delivered more than once", name, got, stored, want)
 		}
 	}
 	pushed("bound to the old config with an empty subject", "probe-old-config", "", stored)
@@ -345,7 +339,11 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 }
 
 // drain binds a push subscription to consumer on subject, the way this package's bind does, waits
-// through the shared wait for want messages to reach its handler, and reports how many have.
+// through the shared wait for want messages to reach its handler, and then for the consumer to
+// have nothing left to deliver and nothing unacknowledged, and reports how many reached the
+// handler. That count is final by then: the handler counts each message before it acknowledges it,
+// so no delivery is still on its way, and a message delivered twice is in it. A shortfall fails the
+// row at the first wait's give-up, which names how many arrived.
 func drain(t *testing.T, natsClient *bus.Client, consumer, subject string, want int) int {
 	t.Helper()
 	var mu sync.Mutex
@@ -367,11 +365,21 @@ func drain(t *testing.T, natsClient *bus.Client, consumer, subject string, want 
 			t.Logf("unsubscribe from %s: %v", consumer, err)
 		}
 	}()
-	return testwait.Until(t, fmt.Sprintf("%d messages to reach the subscription bound to %s on subject %q", want, consumer, subject), func() (int, bool) {
+	testwait.Until(t, fmt.Sprintf("%d messages to reach the subscription bound to %s on subject %q", want, consumer, subject), func() (int, bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		return arrived, arrived >= want
 	})
+	testwait.Until(t, fmt.Sprintf("the consumer %s to have nothing left to deliver and nothing unacknowledged", consumer), func() (string, bool) {
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, consumer)
+		if err != nil {
+			return err.Error(), false
+		}
+		return fmt.Sprintf("%d pending, %d unacknowledged", info.NumPending, info.NumAckPending), info.NumPending == 0 && info.NumAckPending == 0
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	return arrived
 }
 
 // TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor holds the cutover from the durable
@@ -617,14 +625,12 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 	publisher := intakeTestClient(t, bus.WithLogger(logger))
 
 	var holderTried <-chan struct{}
-	holder := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { holderTried = firstTryEnded(p.intake) }, bus.WithLogger(logger))
+	holder := startIntakeProcessWith(t, pool, natsURL, nil, func(intake *Intake) { holderTried = firstTryEnded(intake) }, bus.WithLogger(logger))
 	held := awaitPushBound(t, publisher, "", "the first process did not bind the durable")
 	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
 	tries := newHoldTries()
-	startIntakeProcessWith(t, pool, natsURL, nil, tries.before, bus.WithLogger(logger))
-	if tries.first(t, "the standby's try for the hold as it starts") {
-		t.Fatal("control: the standby took the durable over at its start, while the first process held it")
-	}
+	startIntakeProcessWith(t, pool, natsURL, nil, tries.on, bus.WithLogger(logger))
+	tries.standBy(t, "the standby, while the first process held the durable", 0)
 	standingBy := "dispatch delivery: NATS consumer held by another process; standing by"
 	waitFor(t, func() bool {
 		for _, record := range logs() {
@@ -705,7 +711,7 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	// those tries rather than before them. A try that takes the durable over ends the tries (the
 	// intake then delivers and tries no more), and the checks below say what changed.
 	tries := newHoldTries()
-	startIntakeProcessWith(t, pool, natsURL, nil, tries.before, bus.WithLogger(logger))
+	startIntakeProcessWith(t, pool, natsURL, nil, tries.on, bus.WithLogger(logger))
 	delivers := tries.first(t, "the intake's try for the hold as it starts")
 	standingBy := "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go"
 	waitFor(t, func() bool {

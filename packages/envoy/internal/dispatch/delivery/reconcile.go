@@ -57,11 +57,12 @@ type Reconcile struct {
 	// goes through it, and nil records nothing.
 	gitHubReads githubreads.Recorder
 	// clock is what a pass reads its moment from (runOnce, and Run's first pass at its start),
-	// the moment every row the pass stamps carries and every window it reads ends at, and what
-	// every GitHub page read of a pass waits on between its tries (readGitHubPage): clock.Real,
-	// which NewReconcile gives it, and a test's clocktest.Fake, set before the pass, which names
-	// the pass's moment and on which a page GitHub answered its own timeout is asked again only
-	// once the test moves the fake past the wait before it.
+	// the moment the pass stamps on its success (RecordReconcileSuccess) and on each head row it
+	// refreshes or marks checked, and every window it reads ends at, and what every GitHub page
+	// read of a pass waits on between its tries (readGitHubPage): clock.Real, which NewReconcile
+	// gives it, and a test's clocktest.Fake, set before the pass, which names the pass's moment and
+	// on which a page GitHub answered its own timeout is asked again only once the test moves the
+	// fake past the wait before it.
 	clock reconcileClock
 }
 

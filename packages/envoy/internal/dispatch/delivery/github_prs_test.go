@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -185,6 +186,16 @@ func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Clien
 	return newAppClient(f.t, githubtest.Spec{Handle: f.mux.ServeHTTP}, options...)
 }
 
+// newHoldingClient is newTestClient for a row whose fake holds a call while the row takes its next
+// step: each call the client sends ends only at the test's give-up
+// (githubapptest.RequestDeadlineAtTheGiveUp), or at the row's release or the caller's own end. At
+// githubapp.RequestTimeout (20 s), the client's own bound on a call, it would give a held call up on
+// its own, and ask again or fail it, while the row stages a step that needs the call held.
+func (f *fakeGitHub) newHoldingClient() *githubapp.Client {
+	f.t.Helper()
+	return f.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(f.t)))
+}
+
 // fixtureAppKey is the one App key every App client of this package's tests signs with
 // (newAppClient), made once per test binary: no stand-in for GitHub here checks a signature, so no
 // verdict reads which key signed, and a 2048-bit key made for each client cost each test that
@@ -219,9 +230,9 @@ func mustEncode(t *testing.T, w http.ResponseWriter, v any) {
 }
 
 // refuseRequest answers a request a fake GitHub's handler cannot serve: it fails the test with
-// t.Error, naming what the handler could not read, and answers 400, githubtest.Unexpected's form.
-// A handler runs on the fake server's goroutine, where t.Fatal would end that goroutine alone, so
-// the handler returns after it, and the product's call then fails on the 400.
+// t.Error, naming what the handler could not read, and answers 400. A handler runs on the fake
+// server's goroutine, where t.Fatal would end that goroutine alone, so the handler returns after
+// it, and the product's call then fails on the 400.
 func refuseRequest(t *testing.T, w http.ResponseWriter, format string, args ...any) {
 	t.Helper()
 	message := fmt.Sprintf(format, args...)
@@ -370,20 +381,19 @@ func TestFetchPullRequestUpstream500IsWrapped(t *testing.T) {
 	}
 }
 
-// decodeGraphQLRequest reads a POST /graphql request's {query, variables} body, the shape every
-// search test below asserts against instead of REST search's URL query parameters. A body it
-// cannot decode is refused (refuseRequest), and ok is false: the handler returns.
-func decodeGraphQLRequest(t *testing.T, w http.ResponseWriter, r *http.Request) (query string, variables map[string]any, ok bool) {
+// decodeGraphQLRequest reads the variables of a POST /graphql request's {query, variables} body,
+// the shape every search test asserts against instead of REST search's URL query parameters. A body
+// it cannot decode is refused (refuseRequest), and ok is false: the handler returns.
+func decodeGraphQLRequest(t *testing.T, w http.ResponseWriter, r *http.Request) (variables map[string]any, ok bool) {
 	t.Helper()
 	var decoded struct {
-		Query     string         `json:"query"`
 		Variables map[string]any `json:"variables"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&decoded); err != nil {
 		refuseRequest(t, w, "decode GraphQL request body: %v", err)
-		return "", nil, false
+		return nil, false
 	}
-	return decoded.Query, decoded.Variables, true
+	return decoded.Variables, true
 }
 
 func searchNodeJSON(number int, title, author string, createdAt, mergedAt string) map[string]any {
@@ -417,7 +427,7 @@ func TestSearchMergedPullRequestsBuildsTheQuery(t *testing.T) {
 	fake := newFakeGitHub(t)
 	var gotQuery string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
 		if !ok {
 			return
 		}
@@ -444,7 +454,7 @@ func TestSearchMergedPullRequestsAcrossInstallationScopesToInstallationRepos(t *
 	fake.installationRepos = []string{"acme/widgets", "acme/other-widgets"}
 	var gotQuery string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
 		if !ok {
 			return
 		}
@@ -484,7 +494,7 @@ func TestSearchMergedPullRequestsAcrossInstallationSearchesEveryInstallation(t *
 	var mu sync.Mutex
 	var queriesSeen []string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
 		if !ok {
 			return
 		}
@@ -521,7 +531,7 @@ func TestSearchMergedPullRequestsPaginatesAcrossPages(t *testing.T) {
 	fake := newFakeGitHub(t)
 	var cursorsSeen []string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
 		if !ok {
 			return
 		}
@@ -601,7 +611,7 @@ func TestSearchMergedPullRequestsAcrossInstallationAsksForATokenPerPage(t *testi
 		if refuse(w, r) {
 			return
 		}
-		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
 		if !ok {
 			return
 		}
@@ -637,7 +647,7 @@ func TestSearchMergedPullRequestsHalvesOnOverflowWithoutGapOrOverlap(t *testing.
 	type window struct{ since, until string }
 	var windows []window
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		variables, ok := decodeGraphQLRequest(t, w, r)
 		if !ok {
 			return
 		}

@@ -57,7 +57,6 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -194,9 +193,9 @@ const (
 // writes the pull request's row and, with a shipping deploy stored, its issue.deployed event.
 // The counting fakes of this file's other rows answer 500, which writes nothing and so says
 // nothing about what a person sees. It counts every fetch of that pull request and, when hold is
-// set, holds the first one until the row releases it or the handler making it is abandoned. The
-// client's own bound on a fetch is the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp),
-// so that bound is not what abandons the held fetch while the row stages its next step.
+// set, holds the first one until the row releases it or the handler making it is abandoned. Its
+// client holds its calls to the test's give-up (newHoldingClient), so the client's own bound is not
+// what abandons the held fetch while the row stages its next step.
 func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func(), github *githubapp.Client) {
 	t.Helper()
 	fetches = &atomic.Int64{}
@@ -233,7 +232,7 @@ func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func
 			"message": "feat: a widget", "author": map[string]any{"date": "2024-01-01T00:00:00Z"},
 		}}})
 	})
-	return fetches, release, fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
+	return fetches, release, fake.newHoldingClient()
 }
 
 // A handler that finishes while its process is cut off from NATS has its work redone by the
@@ -321,9 +320,7 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	keeperTries := newHoldTries()
 	keeperTries.on(keeper)
 	runIntake(t, keeper)
-	if keeperTries.first(t, "the keeper's try for the hold as it starts") {
-		t.Fatal("control: the keeper took the durable over at its start, while the holder held it")
-	}
+	keeperTries.standBy(t, "the keeper, while the holder held the durable", 0)
 	// Registered after the intakes are started, so it runs before their stops do: a row that
 	// fails before its own release leaves no request held.
 	t.Cleanup(releaseHolder)
@@ -349,12 +346,8 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	// The holder's client reads the cut before its hold is lost, so the checks of the durable its
 	// clock's move brings fail at once; then the hold is lost, its row lapses, and the keeper takes
 	// the durable over.
-	waitFor(t, func() bool { return !holderClient.Connected() }, func() string {
-		return "the holder's client still reads connected after its link was cut"
-	})
-	loseHold(t, holderClock, holder)
-	lapseHoldRow(t, pool, holder.holder)
-	awaitDurableTakenOver(t, holder, keeper, keeperClient, keeperTries.clock)
+	lapseCutOffHold(t, pool, holderClient, holderClock, holder, false)
+	awaitDurableTakenOver(t, holder, keeper, keeperClient, keeperTries)
 	if replaceConnection {
 		holderClient.Connection().Close()
 	}
@@ -461,8 +454,8 @@ func holderBackFromALostHold(t *testing.T, afterTakeOver func(*connectionEventPr
 	deliverSubject := deliveryConsumerInfo(t, keeperClient).Config.DeliverSubject
 	subscribers := deliverSubjectSubscribers(t, server, deliverSubject)
 
-	// The fan-out first, so it is reported before anything else can stop the row: it is the
-	// negative control of this whole change.
+	// The fan-out first among the verdicts, so it is reported before any other of them can stop
+	// the row: it is the negative control of this whole change.
 	holderHandled, keeperHandled := holderFetches.Load(), keeperFetches.Load()
 	switch {
 	case holderHandled == 1 && keeperHandled == 1:
@@ -595,9 +588,7 @@ func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *c
 	keeperTries := newHoldTries()
 	keeperTries.on(keeper)
 	runIntake(t, keeper)
-	if keeperTries.first(t, "the keeper's try for the hold as it starts") {
-		t.Fatal("control: the keeper took the durable over at its start, while the holder held it")
-	}
+	keeperTries.standBy(t, "the keeper, while the holder held the durable", 0)
 	if !loggedMessage(logs(), heldElsewhere) {
 		t.Fatalf("the second process never stood by for the durable the first holds (%q); the messages logged were %q",
 			heldElsewhere, loggedMessages(logs()))
@@ -633,22 +624,30 @@ func (p *connectionEventProcesses) cutHolderOff() {
 	p.holderLeases.cut.Store(true)
 }
 
-// lapseHolderHold ends the cut-off holder's hold as its own clock and the database's would: once
-// the holder's client reads the cut, so that the checks of the durable the move brings fail at once
-// rather than wait for an answer, it moves the holder's hold clock to the loss deadline (loseHold),
-// where the holder stops delivering; for a row whose holder's handler holds its message through the
-// loss, past the margin its stop gives that handler (passLossMargin); and then it lapses the hold's
-// row on the database's clock (lapseHoldRow).
+// lapseHolderHold ends the cut-off holder's hold as its own clock and the database's would
+// (lapseCutOffHold), past the margin its stop gives a handler for a row whose holder's handler holds
+// its message through the loss.
 func (p *connectionEventProcesses) lapseHolderHold(t *testing.T) {
 	t.Helper()
-	waitFor(t, func() bool { return !p.holderClient.Connected() }, func() string {
+	lapseCutOffHold(t, p.pool, p.holderClient, p.holderClock, p.holder, p.holderHeld != nil)
+}
+
+// lapseCutOffHold ends the hold of holder, cut off its link and its lease pool, as its own clock and
+// the database's would: once the holder's client reads the cut, so that the checks of the durable
+// the move brings fail at once rather than wait for an answer, it moves the holder's hold clock to
+// the loss deadline (loseHold), where the holder stops delivering; with pastMargin, for a holder
+// whose handler holds its message through the loss, past the margin its stop gives that handler
+// (passLossMargin); and then it lapses the hold's row on the database's clock (lapseHoldRow).
+func lapseCutOffHold(t *testing.T, pool *store.Pool, holderClient *bus.Client, holdClock *clocktest.Fake, holder *Intake, pastMargin bool) {
+	t.Helper()
+	waitFor(t, func() bool { return !holderClient.Connected() }, func() string {
 		return "the holder's client still reads connected after its link was cut"
 	})
-	deadline := loseHold(t, p.holderClock, p.holder)
-	if p.holderHeld != nil {
-		passLossMargin(t, p.holderClock, p.holder, deadline)
+	deadline := loseHold(t, holdClock, holder)
+	if pastMargin {
+		passLossMargin(t, holdClock, holder, deadline)
 	}
-	lapseHoldRow(t, p.pool, p.holder.holder)
+	lapseHoldRow(t, pool, holder.holder)
 }
 
 // restoreHolder lets the holder reach both again, as the row's own restore of the link does: a
@@ -663,7 +662,7 @@ func (p *connectionEventProcesses) restoreHolder() {
 // of its tries for the hold (awaitDurableTakenOver).
 func (p *connectionEventProcesses) awaitKeeper(t *testing.T) {
 	t.Helper()
-	awaitDurableTakenOver(t, p.holder, p.keeper, p.keeperClient, p.keeperTries.clock)
+	awaitDurableTakenOver(t, p.holder, p.keeper, p.keeperClient, p.keeperTries)
 }
 
 // fetchCount is how many pull request fetches one process has made, read the same way whichever
@@ -682,9 +681,9 @@ func (count fetchCount) Load() int64 { return count() }
 // That hold's wait on the request's own context, and not on the release alone, is what a row
 // holding a handler through a lost hold needs: the stop a lost hold runs abandons a handler by
 // cancelling it, waits for every handler to return before it hands the messages back, and a
-// handler returns only once the fetch it is inside does. The holding fake's client ends a call only
-// at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp), so it is that stop, and not the
-// client's own bound, that abandons the held fetch.
+// handler returns only once the fetch it is inside does. The holding fake's client holds its calls
+// to the test's give-up (newHoldingClient), so it is that stop, and not the client's own bound, that
+// abandons the held fetch.
 func holderFakeGitHub(t *testing.T, which holderGitHubFake) (fetchCount, *heldPullRequests, *githubapp.Client) {
 	t.Helper()
 	if which == holderCountsItsFetches {
@@ -693,7 +692,7 @@ func holderFakeGitHub(t *testing.T, which holderGitHubFake) (fetchCount, *heldPu
 	}
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	return func() int64 { return heldFetches(held, "1") }, held, fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
+	return func() int64 { return heldFetches(held, "1") }, held, fake.newHoldingClient()
 }
 
 // heldFetches is how many fetches of pull request number a holding fake GitHub was asked for: one
@@ -712,21 +711,21 @@ func heldFetches(held *heldPullRequests, number string) int64 {
 // awaitDurableTakenOver waits for the process standing by to hold the delivery durable while the
 // other process is cut off, and names what each of the two is when it never does. What it reads is
 // the standby's own subscription, live from the take-over's subscribe, which comes after its delete
-// of the durable and before its create (finishTakeOver). The standby tries for the hold on tries, a
-// fake only the row moves (heldDurable.holdClock): each reading that finds the durable not yet
-// taken moves it one durableBindInterval to the standby's next try once the standby has armed it
-// (moveTicks), so the wait runs the standby's tries, however many it takes, and no poll is waited
-// out. It reads the standby's clock rather than counting its tries (holdTries) because the holder,
+// of the durable and before its create (finishTakeOver). The standby tries for the hold on its
+// tries' clock, a fake only the row moves (heldDurable.holdClock): each reading that finds the
+// durable not yet taken moves it one durableBindInterval to the standby's next try once the standby
+// has armed it (moveTicks), so the wait runs the standby's tries, however many it takes, and no poll
+// is waited out. It reads the standby's clock rather than counting its tries because the holder,
 // whose hold is lost, can try for the hold too, through the attempted hook both share. Its steps
 // under the consumer lease are each a loaded machine's to slow, so it waits as waitFor does, with no
 // bound of its own.
-func awaitDurableTakenOver(t *testing.T, holder, keeper *Intake, keeperClient *bus.Client, tries *clocktest.Fake) {
+func awaitDurableTakenOver(t *testing.T, holder, keeper *Intake, keeperClient *bus.Client, tries *holdTries) {
 	t.Helper()
-	moveTicks(t, tries, durableBindInterval, func() bool {
+	moveTicks(t, tries.clock, durableBindInterval, func() bool {
 		return intakeHoldsSubscription(keeper)
 	}, func() string {
 		return fmt.Sprintf("the standby process never took the delivery durable over while the holder was cut off: the holder's subscription is live = %t, the standby's = %t, and the server reports the durable bound = %t; the standby's clock stands at %s, with %v armed",
-			intakeHoldsSubscription(holder), intakeHoldsSubscription(keeper), deliveryDurableBound(keeperClient), tries.Now(), tries.Armed())
+			intakeHoldsSubscription(holder), intakeHoldsSubscription(keeper), deliveryDurableBound(keeperClient), tries.clock.Now(), tries.clock.Armed())
 	})
 }
 
@@ -826,11 +825,11 @@ func countingGitHub(t *testing.T) (*atomic.Int64, *githubapp.Client) {
 	return fetches, fake.newTestClient()
 }
 
-// reconnectTestClient connects one NATS client at uri for one process of a row of this file, under
-// options, and closes it with the test through the shared wait (bustest.Close), whose give-up names
-// a stream keeper that never ends. intakeTestClient connects to the package's shared server, which
-// no row here can cut a link to. A row whose client comes back from a cut gives it
-// bus.WithPromptReconnect, so it redials at once rather than a ReconnectWait after the cut.
+// reconnectTestClient connects one NATS client at uri, under options, and closes it with the test
+// through the shared wait (bustest.Close), whose give-up names a stream keeper that never ends: at
+// the package's shared server for intakeTestClient, which no row can cut a link to, and at a server
+// or a link of a row's own for a row of this file. A row whose client comes back from a cut gives
+// it bus.WithPromptReconnect, so it redials at once rather than a ReconnectWait after the cut.
 func reconnectTestClient(t *testing.T, uri string, options ...bus.ConnectOption) *bus.Client {
 	t.Helper()
 	natsClient, err := bus.ConnectOwningStream([]string{uri}, options...)

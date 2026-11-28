@@ -183,8 +183,8 @@ func TestTheWaitingSQLAgreesWithTheShippingRuleForProductionJobNamesAndStepData(
 // and some are rows stored before created_at. Each round's seed is in its failure. The 60 seeds run
 // in shards of waitingSeedShard consecutive seeds, each shard a subtest of its own on a database of
 // its own (deliveryTestPool), so the shards run beside each other; within a shard each seed replaces
-// the history the seed before it stored (seedWaitingHistory), as the rounds did on the one database,
-// and every seed is checked, a difference failing the shard without ending it.
+// the history the seed before it stored (seedWaitingHistory), and every seed is checked, a
+// difference failing the shard without ending it.
 func TestTheWaitingSQLAgreesWithTheShippingRuleOverMergeQueueHistories(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)

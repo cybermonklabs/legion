@@ -21,7 +21,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -385,7 +385,7 @@ const messageTimeoutPastTheRun = 6 * time.Hour
 // ack floor, calls it before its intakes start:
 // the server's own redelivery once the ack wait expires then never comes inside the run, so a
 // wait the row leaves to the shared bound fails on a broken hand-back rather than passing on that
-// redelivery, as a short bound of the row's own once failed it.
+// redelivery.
 func ackWaitPastTheRun(t *testing.T) {
 	t.Helper()
 	tuningFor(t).messageTimeout = messageTimeoutPastTheRun
@@ -459,6 +459,16 @@ func startIntake(t *testing.T, intake *Intake) {
 	})
 }
 
+// fakeIntakeClock is a clocktest fake that stands at one moment until the row moves it, for any of
+// the clocks a row gives the code under test: an intake's own (heldDurable.clock, or
+// intakeTuning.clock for the intakes startIntakes builds), its hold's (heldDurable.holdClock,
+// duty.HoldOptions.Clock), or the job intake's. A deadline or a wait armed on it passes only where
+// the row moves it, so a row that never moves an intake's own clock has that intake's stop wait for
+// a handler for as long as the row holds the handler at GitHub.
+func fakeIntakeClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
+}
+
 // stopDeliveringJoined stops intake's delivery under ctx (Intake.StopDelivering), which returns once
 // the handlers it waits for have, through the shared wait (testwait.Returns), whose give-up names a
 // stop that never returns rather than hanging the binary to its timeout.
@@ -467,17 +477,11 @@ func stopDeliveringJoined(t testing.TB, ctx context.Context, intake *Intake) {
 	testwait.Returns(t, "the intake's stop to return once its handlers have", func() { intake.StopDelivering(ctx) })
 }
 
-// intakeTestClient connects one NATS client for an intake test, under options, and closes it with
-// the test through the shared wait (bustest.Close), whose give-up names a stream keeper that never
-// ends.
+// intakeTestClient connects one NATS client for an intake test to the package's shared server,
+// under options, as reconnectTestClient connects one, and closes it with the test.
 func intakeTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Client {
 	t.Helper()
-	natsClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, options...)
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(func() { bustest.Close(t, natsClient) })
-	return natsClient
+	return reconnectTestClient(t, testnats.URL(t), options...)
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a

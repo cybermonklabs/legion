@@ -15,10 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/clock"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -170,10 +167,10 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 // stops delivering by draining its subscription and waits for the message in its handler before
 // Run returns and stop closes the client. A client closed as Run returned took the acknowledgement
 // down with it, and the message stayed outstanding until the ack wait handed it to the next
-// process. The held fetch does not watch the request's context, so the client's own bound on a call
-// is the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp): at githubapp.RequestTimeout
-// (20 s) the client would give the held fetch up on its own while the row waits for the durable to
-// lose its subscriber, and the row would read a handler ended by that bound, not by its release.
+// process. The held fetch does not watch the request's context, so the client holds its calls to
+// the test's give-up (newHoldingClient): at its own bound the client would give the held fetch up
+// while the row waits for the durable to lose its subscriber, and the row would read a handler
+// ended by that bound, not by its release.
 func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	t.Parallel()
 	// The row requires that no component logged a line about an acknowledgement: both intakes, the
@@ -192,7 +189,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 		<-held
 		w.WriteHeader(http.StatusInternalServerError)
 	})
-	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
+	github := fake.newHoldingClient()
 	release := sync.OnceFunc(func() { close(held) })
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
@@ -265,9 +262,8 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // redoes it within seconds instead of after the ack wait. The intakes run on a fake clock the row
 // sets on their tuning and moves (intakeTuning.clock, which startIntakes gives both): each arms its
 // stop deadline its tuning's stopBudget from ctx's end, and once the fake reaches them the stop
-// gives the held handler up (its WARN line says so) and returns. The GitHub client's own bound is
-// the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp), so only the stop gives the held
-// fetch up.
+// gives the held handler up (its WARN line says so) and returns. The GitHub client holds its calls
+// to the test's give-up (newHoldingClient), so only the stop gives the held fetch up.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -284,9 +280,9 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	publisher := intakeTestClient(t)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
+	github := fake.newHoldingClient()
 
-	stopClock := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
+	stopClock := fakeIntakeClock()
 	tuning.clock = stopClock
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := startIntakes(runCtx, tuning, func(string) (*bus.Client, error) {
@@ -441,6 +437,11 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	})
 	holdClock.AwaitArmedAt(t, "the delivery intake's take-over bound, takeOverFinishWithin past its start", start.Add(takeOverFinishWithin))
 	holdClock.Set(start.Add(takeOverFinishWithin))
+	// The move ends the take-over at its bound, and the loop begins it again at once (its tick came
+	// due during the move), with a bound takeOverFinishWithin past then. The cleanup's move ends that
+	// one, so it waits here for the bound to be armed: a move made before the take-over armed it would
+	// push the bound past anything the cleanup reaches.
+	holdClock.AwaitArmedAt(t, "the delivery intake's next take-over bound, takeOverFinishWithin past the first one's", start.Add(2*takeOverFinishWithin))
 	var refusal map[string]any
 	waitFor(t, func() bool {
 		for _, record := range logs() {

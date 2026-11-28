@@ -6,6 +6,7 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,6 +83,44 @@ func countedDeliveryPool(t *testing.T, pool *store.Pool) (*store.Pool, *settings
 	return storetest.Traced(t, pool, counter, nil), counter
 }
 
+// settingsWait is one block of a settings cache in its wait (SettingsCache.Run, the
+// settingsWaiting hook), read as it blocked: whether a retry was armed there, how many of the
+// wake's signals were already pending, and what the row reads beside them (seen).
+type settingsWait[S any] struct {
+	retrying bool
+	pending  int
+	seen     S
+}
+
+// settingsWaits is every block in its wait of each settings cache built with t's tuning, in order,
+// as recordSettingsWaits records them.
+type settingsWaits[S any] struct {
+	mu    sync.Mutex
+	waits []settingsWait[S]
+}
+
+// recordSettingsWaits has each settings cache built with t's tuning from here on record each block
+// in its wait, with the signals pending on wake and what read answers then.
+func recordSettingsWaits[S any](t *testing.T, wake <-chan struct{}, read func() S) *settingsWaits[S] {
+	t.Helper()
+	r := &settingsWaits[S]{}
+	waiting := func(retrying bool) {
+		seen := read()
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.waits = append(r.waits, settingsWait[S]{retrying: retrying, pending: len(wake), seen: seen})
+	}
+	tuningFor(t).settingsWaiting.Store(&waiting)
+	return r
+}
+
+// all is every block recorded so far, in order.
+func (r *settingsWaits[S]) all() []settingsWait[S] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.waits)
+}
+
 // With both intakes running and bound, and nothing written, delivery_settings is read twice in
 // all -- at the cache's start and on the hub's signal after its LISTEN -- and then the cache waits
 // for its wake with no retry armed and no signal pending: nothing but a write's notification, or
@@ -95,23 +134,9 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 
-	// settingsWait is one block of the cache in its wait (SettingsCache.Run, the settingsWaiting
-	// hook): whether a retry was armed there, the reads made by then, and the wake's signals
-	// already pending, each read as it blocked.
-	type settingsWait struct {
-		retrying bool
-		reads    int64
-		pending  int
-	}
-	var waitsMu sync.Mutex
-	var waits []settingsWait
-	waiting := func(retrying bool) {
-		waitsMu.Lock()
-		defer waitsMu.Unlock()
-		waits = append(waits, settingsWait{retrying: retrying, reads: counter.reads.Load(), pending: len(wake)})
-	}
+	// Each block of the cache in its wait, with the reads made by then.
+	waits := recordSettingsWaits(t, wake, counter.reads.Load)
 	tuning := tuningFor(t)
-	tuning.settingsWaiting.Store(&waiting)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	// startIntakes rather than StartIntakes, whose cache runs production's tuning, which has no
@@ -142,17 +167,16 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 	// blocked, only a notification on SettingsChannel, which nothing here writes, or a LISTEN of
 	// the hub's on a new connection can end its wait, and the cache is the intakes' one reader of
 	// delivery_settings.
-	idle := testwait.Until(t, "the settings cache to block in its wait with no retry armed and no wake pending", func() (settingsWait, bool) {
-		waitsMu.Lock()
-		defer waitsMu.Unlock()
-		if len(waits) == 0 {
-			return settingsWait{}, false
+	idle := testwait.Until(t, "the settings cache to block in its wait with no retry armed and no wake pending", func() (settingsWait[int64], bool) {
+		seen := waits.all()
+		if len(seen) == 0 {
+			return settingsWait[int64]{}, false
 		}
-		last := waits[len(waits)-1]
-		return last, !last.retrying && last.pending == 0 && last.reads == counter.reads.Load()
+		last := seen[len(seen)-1]
+		return last, !last.retrying && last.pending == 0 && last.seen == counter.reads.Load()
 	})
-	if read := counter.reads.Load(); idle.reads != 2 || read != 2 {
-		t.Fatalf("delivery_settings read %d times as the cache went idle and %d times by now; want 2 and 2", idle.reads, read)
+	if read := counter.reads.Load(); idle.seen != 2 || read != 2 {
+		t.Fatalf("delivery_settings read %d times as the cache went idle and %d times by now; want 2 and 2", idle.seen, read)
 	}
 }
 
@@ -164,7 +188,7 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
-	clock := newFakeJobClock()
+	clock := fakeIntakeClock()
 	jobs := newJobIntake(tuningFor(t), nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
 
 	before := counter.reads.Load()

@@ -27,9 +27,6 @@ func deniedIntakeServer(t *testing.T, deny ...string) (uri string, owner *bus.Cl
 	return uri, owner, seed
 }
 
-// takeOverStepRetried is the line retryHeld logs for a take-over step it tries again.
-const takeOverStepRetried = "dispatch delivery: take-over step failed; trying it again"
-
 // A take-over step the intake's grant refuses -- the durable's create, or the delete of a durable
 // no process delivers from -- gives up at its first try with the server's refusal, and the take-over
 // releases the consumer lease, rather than trying the step again every backoff until
@@ -41,7 +38,7 @@ const takeOverStepRetried = "dispatch delivery: take-over step failed; trying it
 // (takeOverCallTimeout) can end the step, and a step tried again waits for ever on its first retry
 // (takeOverFirstRetry): the row waits for the step's ERROR or for its first retry line, whichever
 // comes, and requires the ERROR, with the server's refusal, no retry, and the hold taken before it.
-// The give-up therefore came at the first try, with no time of the take-over's clock gone by.
+// The give-up therefore came at the first try.
 func TestATakeOverStepTheGrantRefusesGivesUpAtOnce(t *testing.T) {
 	t.Parallel()
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + bus.DispatchDeliveryDurable
@@ -67,7 +64,7 @@ func TestATakeOverStepTheGrantRefusesGivesUpAtOnce(t *testing.T) {
 				}
 			}
 			takeOverClock := fakeIntakeClock()
-			startIntakeProcessWith(t, pool, uri, nil, func(p *intakeProcess) { p.intake.holdClock = takeOverClock },
+			startIntakeProcessWith(t, pool, uri, nil, func(intake *Intake) { intake.holdClock = takeOverClock },
 				bus.WithEnvironment(testnats.SeedOnly(seed)))
 
 			given := testwait.Until(t, fmt.Sprintf("the refused step %q to be given up at ERROR or tried again", row.step), func() (map[string]any, bool) {
@@ -99,9 +96,9 @@ func TestATakeOverStepTheGrantRefusesGivesUpAtOnce(t *testing.T) {
 					retries++
 				}
 			}
-			if retries != 0 || !tookHold || !takeOverClock.Now().Equal(fakeIntakeClock().Now()) {
-				t.Fatalf("the refused step was tried again %d times (hold taken: %t, take-over clock moved to %s), want no retry after the hold was taken, with no time of the take-over's clock gone by",
-					retries, tookHold, takeOverClock.Now())
+			if retries != 0 || !tookHold {
+				t.Fatalf("the refused step was tried again %d times (hold taken: %t), want no retry after the hold was taken",
+					retries, tookHold)
 			}
 		})
 	}

@@ -251,9 +251,9 @@ type heldDurable struct {
 	// deadline (stopContext), each message's handling deadline (Intake.deliver), the stop's wait for
 	// its drain (intakeDelivery.clock), the job intake's bursts and reads (JobIntake.schedule,
 	// JobIntake.fire), and the waits between the tries of the GitHub page reads its handlers make
-	// (readGitHubPage). clock.Real, which newHeldDurable gives it, or the clock of the intakes'
-	// tuning (intakeTuning.clock, which startIntakes gives it) or a test's clocktest.Fake, set before
-	// Run (startIntakes, newJobIntake), on which each of them ends only where the test moves it.
+	// (readGitHubPage). The clock of the intakes' tuning (intakeTuning.clock), which newHeldDurable
+	// gives it: clock.Real in production, or a test's clocktest.Fake, set on the tuning or here
+	// before Run, on which each of them ends only where the test moves it.
 	clock intakeClock
 	// holdClock is the time this intake reads and bounds its hold on: its tries for the hold every
 	// durableBindInterval and its checks of the durable every intakeHoldRenew (run), the bound of each call
@@ -286,14 +286,14 @@ type heldDurable struct {
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
 // consumer lease on leases, routing each message by key and handing it to handle, timed by tuning,
-// with both its clocks the real one (clock, holdClock).
+// with its own deadlines on tuning's clock (clock) and its hold on the real one (holdClock).
 func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases DurableLeases, config func(*intakeTuning) natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
 		config: config, name: config(tuning).Durable, tuning: tuning, key: key, handle: handle,
-		clock: clock.Real(), holdClock: clock.Real(),
+		clock: tuning.clock, holdClock: clock.Real(),
 	}
 }
 
@@ -304,15 +304,18 @@ func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases Durable
 // the waits between a page read's tries (pageClock), so a test moves time past each rather than
 // waiting it out.
 type intakeClock interface {
+	pageClock
 	Now() time.Time
 	AfterFunc(d time.Duration, f func()) clock.Timer
 	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
-	Sleep(ctx context.Context, d time.Duration) error
 }
 
 // intakeHoldLost is the line of an intake whose durable's hold is no longer its own, so it stops
 // delivering (run).
 const intakeHoldLost = "dispatch delivery: the intake's hold is lost; it stops delivering"
+
+// takeOverStepRetried is the line of a take-over step retryHeld tries again.
+const takeOverStepRetried = "dispatch delivery: take-over step failed; trying it again"
 
 // run delivers from the durable while this intake holds its hold, and stands by for it otherwise,
 // until ctx ends; then it stops delivering and releases the hold (stop), under the one stop
@@ -686,13 +689,9 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 		if errors.Is(err, bus.ErrPublishDenied) {
 			return d.failedStep(doing, err, attributes)
 		}
-		d.tuning.log.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", wait, "error", err)
-		timer := d.holdClock.NewTimer(wait)
-		select {
-		case <-finish.Done():
-			timer.Stop()
+		d.tuning.log.Warn(takeOverStepRetried, "name", d.name, "step", doing, "retry_in", wait, "error", err)
+		if d.holdClock.Sleep(finish, wait) != nil {
 			return d.failedStep(doing, err, attributes)
-		case <-timer.C():
 		}
 		wait = min(2*wait, takeOverLastRetry)
 	}

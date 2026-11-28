@@ -24,13 +24,14 @@ import (
 //     least reach that keeps it;
 //   - citesGitHubIssue answers the same over the reach as over the whole body;
 //
-// and, for every body, that citedIssues answers what the whole-body reading answers
-// (citedIssuesOverTheWholeBody), and reads exactly: one pass for each finder, the reach before
-// each path (or the body before it, where the path stands nearer the start) and the path, the
-// owner, repository and number of each path it credits, and the number of each bare reference.
+// and, for every body, that citedIssues answers what the whole-body reading answers (the citations
+// the paths' whole-body decisions credit, and the bare references), and reads exactly: one pass for
+// each finder, the reach before each path (or the body before it, where the path stands nearer the
+// start) and the path, the owner, repository and number of each path it credits, and the number of
+// each bare reference.
 //
 // Every body is read, and in subtests of the corpus group that run beside each other: the bodies
-// in shards of consecutive bodies (reachShards), and the 1 MiB body's 80,659 paths in shards of
+// in shards of consecutive bodies (reachShards), and the 1 MiB body's paths in shards of
 // consecutive paths (reachPathShard), beside one subtest that reads its bare references and has
 // citedIssues read it whole. Once the group has ended, the 1 MiB body's whole-body reading is the
 // citations its path shards credited and its bare references, and the counts the last check reads
@@ -56,7 +57,7 @@ func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
 			return func(format string, args ...any) {
 				t.Helper()
 				t.Errorf(format, args...)
-				if failures.Add(1) == 20 {
+				if failures.Add(1) >= 20 {
 					t.Fatalf("stopped after %d differences", 20)
 				}
 			}
@@ -91,9 +92,7 @@ func TestEveryCitationIsDecidedWithinItsReachAsOverTheWholeBody(t *testing.T) {
 	wantReads := citebody.Reads{Passes: 2}
 	var credited []wholeBodyCitation
 	for _, part := range append(bigParts, reachPart{reads: bigBareReads}) {
-		wantReads.Spans += part.reads.Spans
-		wantReads.Handed += part.reads.Handed
-		wantReads.Longest = max(wantReads.Longest, part.reads.Longest)
+		addReads(&wantReads, part.reads)
 		credited = append(credited, part.credited...)
 	}
 	reading := citationBigBodyReading()
@@ -160,15 +159,14 @@ func checkReachOfBody(i int, repo, body string, counts *reachCounts, fail func(f
 	counts.bodies.Add(1)
 	var reads citebody.Reads
 	got := citedIssues(refs.Renames{}, repo, citebody.New(body, &reads))
-	if want := citedIssuesOverTheWholeBody(repo, body); !slices.Equal(got, want) {
+	part := checkReachOfPaths(i, body, githubIssuePath.FindAllStringSubmatchIndex(body, -1), counts, fail)
+	bare, bareReads := bareOverTheWholeBody(repo, body)
+	if want := wholeBodyURLs(append(part.credited, bare...)); !slices.Equal(got, want) {
 		fail("body %d (%d bytes) cites %v within the reach and %v over the whole body: %.300q", i, len(body), got, want, body)
 	}
-	part := checkReachOfPaths(i, body, githubIssuePath.FindAllStringSubmatchIndex(body, -1), counts, fail)
-	_, bare := bareOverTheWholeBody(repo, body)
-	wantReads := citebody.Reads{
-		Passes: 2, Spans: part.reads.Spans + bare.Spans, Handed: part.reads.Handed + bare.Handed,
-		Longest: max(part.reads.Longest, bare.Longest),
-	}
+	wantReads := citebody.Reads{Passes: 2}
+	addReads(&wantReads, part.reads)
+	addReads(&wantReads, bareReads)
 	if reads != wantReads {
 		fail("body %d: citedIssues read %+v, want %+v: the reach before each path or the body before it where that is shorter, the path, and each credited citation's parts", i, reads, wantReads)
 	}
@@ -181,16 +179,11 @@ func checkReachOfBody(i int, repo, body string, counts *reachCounts, fail func(f
 // number of each it credits, and the citations the whole-body reading credits among them.
 func checkReachOfPaths(i int, body string, matches [][]int, counts *reachCounts, fail func(format string, args ...any)) reachPart {
 	var part reachPart
-	span := func(n int) {
-		part.reads.Spans++
-		part.reads.Handed += n
-		part.reads.Longest = max(part.reads.Longest, n)
-	}
 	for _, match := range matches {
 		counts.paths.Add(1)
 		pathAt, end := match[0], match[1]
 		from := max(0, pathAt-citationReach)
-		span(end - from)
+		addSpan(&part.reads, end-from)
 		whole := authorityBefore(body[:end], pathAt)
 		if within := offsetAuthority(authorityBefore(body[from:end], pathAt-from), from); within != whole {
 			fail("body %d, the path at %d: authorityBefore finds %d within the reach and %d over the whole body: %.300q", i, pathAt, within, whole, body[from:end])
@@ -207,9 +200,9 @@ func checkReachOfPaths(i int, body string, matches [][]int, counts *reachCounts,
 		}
 		if cites {
 			counts.credited.Add(1)
-			span(match[3] - match[2])
-			span(match[5] - match[4])
-			span(match[7] - match[6])
+			addSpan(&part.reads, match[3]-match[2])
+			addSpan(&part.reads, match[5]-match[4])
+			addSpan(&part.reads, match[7]-match[6])
 			part.credited = append(part.credited, citation)
 		} else {
 			counts.refused.Add(1)
@@ -281,10 +274,7 @@ func bareOverTheWholeBody(repo, body string) ([]wholeBodyCitation, citebody.Read
 	var reads citebody.Reads
 	for _, match := range githubBareReference.FindAllStringSubmatchIndex(body, -1) {
 		citations = append(citations, wholeBodyCitation{match[2], "https://github.com/" + repo + "/issues/" + body[match[2]:match[3]]})
-		n := match[3] - match[2]
-		reads.Spans++
-		reads.Handed += n
-		reads.Longest = max(reads.Longest, n)
+		addSpan(&reads, match[3]-match[2])
 	}
 	return citations, reads
 }
@@ -300,18 +290,18 @@ func wholeBodyURLs(citations []wholeBodyCitation) []string {
 	return urls
 }
 
-// citedIssuesOverTheWholeBody is citedIssues as it read before each decision was handed only
-// citationReach bytes before its path: every path is decided over the body from its start. The
-// differential row holds citedIssues to its answers.
-func citedIssuesOverTheWholeBody(repo, body string) []string {
-	citations := []wholeBodyCitation{}
-	for _, match := range githubIssuePath.FindAllStringSubmatchIndex(body, -1) {
-		if citation, ok := creditedOverTheWholeBody(body, match); ok {
-			citations = append(citations, citation)
-		}
-	}
-	bare, _ := bareOverTheWholeBody(repo, body)
-	return wholeBodyURLs(append(citations, bare...))
+// addSpan adds to reads one span of n bytes that citedIssues hands a finder.
+func addSpan(reads *citebody.Reads, n int) {
+	reads.Spans++
+	reads.Handed += n
+	reads.Longest = max(reads.Longest, n)
+}
+
+// addReads adds to reads the spans part counts.
+func addReads(reads *citebody.Reads, part citebody.Reads) {
+	reads.Spans += part.Spans
+	reads.Handed += part.Handed
+	reads.Longest = max(reads.Longest, part.Longest)
 }
 
 // reachCorpus is the differential row's bodies:

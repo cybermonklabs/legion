@@ -16,12 +16,12 @@ import (
 // builds both intakes with. Each intake holds its tuning (heldDurable.tuning) and every delivery
 // it makes holds the same one (intakeDelivery.tuning), so a test that shortens a timer, hooks a
 // step or reads the lines of its own intakes runs beside tests that do not: no test changes a
-// value another test's intake reads. The durations, the clock, createDurable and log are read once the
-// intake runs, so a test sets them before it starts its intakes; the waits and hooks a test
-// changes while its intakes run are atomic. The clock startIntakes gives both intakes for their own
-// deadlines and waits is the tuning's (clock); the hold's clock is the intake's own
-// (heldDurable.holdClock), beside it. A test of this package moves a fake past such a span rather
-// than shortening it.
+// value another test's intake reads. The durations, createDurable and log are read once the intake
+// runs, and the clock as it is built, so a test sets them before it builds its intakes; the waits
+// and hooks a test changes while its intakes run are atomic. The clock every intake built with the
+// tuning runs its own deadlines and waits on (newHeldDurable) is the tuning's (clock); the hold's
+// clock is the intake's own (heldDurable.holdClock), beside it. A test of this package moves a fake
+// past such a span rather than shortening it.
 type intakeTuning struct {
 	// messageTimeout bounds one handler's own work (Intake.deliver) and one job read
 	// (JobIntake.fire) on the intake's clock (heldDurable.clock): intakeMessageTimeout.
@@ -38,9 +38,9 @@ type intakeTuning struct {
 	// stopBudget is the one deadline of the intake's stop, counted on the intake's clock from the
 	// moment Run's context ends (stopContext): intakeStopBudget.
 	stopBudget time.Duration
-	// clock is the time startIntakes gives both intakes for their own deadlines and waits
-	// (heldDurable.clock): clock.Real, unless a test sets a clocktest.Fake it moves before it starts
-	// its intakes.
+	// clock is the time every intake built with this tuning runs its own deadlines and waits on
+	// (heldDurable.clock, which newHeldDurable sets to it): clock.Real, unless a test sets a
+	// clocktest.Fake it moves before it builds its intakes.
 	clock intakeClock
 	// headWriteMaxDeliveries is how many deliveries an envelope whose head row could not be stored
 	// gets before deliver acknowledges it (headWriteDeliveriesSpent): headWriteMaxDeliveries.

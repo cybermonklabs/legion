@@ -245,7 +245,9 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 // all-visible in the visibility map, which an index-only scan reads in place of the heap. One
 // vacuum can leave a page unmarked while another test's transaction on the same server is still
 // open (it then cannot judge the page's rows visible to every transaction), so the vacuum runs
-// again until pg_class counts every page all-visible.
+// again until pg_class counts every page all-visible. Only the vacuum can change that count, so
+// each poll vacuums, but a vacuum after the first visits only the pages still unmarked, and the
+// table is analyzed, for the planner, once, after the wait.
 //
 // A vacuum marks a page all-visible only where each row's committed hint is set, and the hint of a
 // row whose transaction committed asynchronously waits for that commit to be flushed, as the test
@@ -268,7 +270,7 @@ func requireTheNamedJobsReadIsIndexOnly(t *testing.T, ctx context.Context, pool 
 		t.Fatalf("commit synchronously: %v", err)
 	}
 	testwait.Until(t, "every page of delivery_run_jobs all-visible", func() (int, bool) {
-		if _, err := pool.Exec(ctx, `vacuum (freeze, analyze) delivery_run_jobs`); err != nil {
+		if _, err := pool.Exec(ctx, `vacuum (freeze) delivery_run_jobs`); err != nil {
 			t.Fatalf("vacuum delivery_run_jobs: %v", err)
 		}
 		var pages, visible int
@@ -277,6 +279,9 @@ func requireTheNamedJobsReadIsIndexOnly(t *testing.T, ctx context.Context, pool 
 		}
 		return pages - visible, pages > 0 && pages == visible
 	})
+	if _, err := pool.Exec(ctx, `analyze delivery_run_jobs`); err != nil {
+		t.Fatalf("analyze delivery_run_jobs: %v", err)
+	}
 	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsNamedForRunsQuery, "acme/widgets", runs, names)
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_run_jobs"}) {
 		t.Fatalf("the run jobs read by name reads %v; want delivery_run_jobs alone:\n%s", read, raw)

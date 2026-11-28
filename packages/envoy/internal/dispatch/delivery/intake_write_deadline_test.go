@@ -44,8 +44,7 @@ const (
 // write of nats.go's own stalled in the holder's socket (HoldStalledWrite), and a third message is
 // published while it is frozen: the server pushes it to the frozen socket, which never hands it to
 // the holder. The row waits for the write to end, so the connection is no longer connected, and
-// requires that it ended within the write deadline and as long again of the freeze, the ratio the
-// row kept when it wrote with production's deadline (IntakeWriteDeadline and 5 s). Then it thaws the
+// requires that it ended within the write deadline and as long again of the freeze. Then it thaws the
 // link, requires the same connection to reconnect (its reconnect count grown by one), and publishes
 // a fourth message. It requires that each of the four messages is handled once and acknowledged: the
 // third comes back to the reconnected holder after the durable's ack wait (frozenWriteMessageTimeout
@@ -58,7 +57,9 @@ const (
 // holds the lock for a minute, the connection is still connected twice frozenWriteDeadline after
 // the freeze, and the row fails at that check.
 func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its verdict is a wall-clock window close to what it waits for -- the frozen
+	// write must end within twice frozenWriteDeadline of the freeze, one deadline of slack, which
+	// the package's other tests running beside it would eat into.
 	testnats.RequireSocketQueues(t)
 	tuning := tuningFor(t)
 	tuning.messageTimeout, tuning.ackLanding = frozenWriteMessageTimeout, frozenWriteAckLanding
@@ -68,7 +69,7 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 	link := testnats.StartHandshakeHold(t, natsURL)
 	t.Cleanup(link.Restore)
 	publisher := intakeTestClient(t)
-	holder := startIntakeProcessWith(t, pool, link.URL(), nil, func(p *intakeProcess) { p.intake.clock = fakeIntakeClock() },
+	holder := startIntakeProcessWith(t, pool, link.URL(), nil, func(intake *Intake) { intake.clock = fakeIntakeClock() },
 		bus.WithWriteDeadline(frozenWriteDeadline))
 	awaitBoundDurable(t, publisher)
 	conn := holder.client.Connection()

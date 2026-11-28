@@ -111,10 +111,8 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	t.Cleanup(func() { durable.stop(cancelled()) })
 
 	tries := newHoldTries()
-	standby := startIntakeProcessWith(t, pool, natsURL, func(int) bool { return true }, tries.before)
-	if tries.first(t, "the standby's try for the hold as it starts") {
-		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
-	}
+	standby := startIntakeProcessWith(t, pool, natsURL, func(int) bool { return true }, tries.on)
+	tries.standBy(t, "the standby, while the holder held the durable", 0)
 	from := recorded.count()
 	sequences := []uint64{publishMergedPullRequest(t, client, number)}
 	testwait.Receive(t, "the holder's callback to begin keying the message (control)", keying)

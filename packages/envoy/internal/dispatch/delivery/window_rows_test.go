@@ -40,28 +40,33 @@ import (
 // The comparison fails where no window's apply runs stopped short of every apply run, and where no
 // pull request of any window or of its earlier rows is first shipped by a run created after the
 // window's end: the bound that keeps those runs, which a cut at the window's end would get wrong,
-// was then never tested. Each round's seed is in its failure. The windowReadSeeds histories are
-// independent of each other, so each is a subtest of its own on a database of its own
-// (deliveryTestPool), and they run beside each other; those two counts are over every seed's
-// windows, read once every seed's subtest has ended.
+// was then never tested. Each round's seed is in its failure. The windowReadSeeds histories run in
+// shards of windowReadShard consecutive seeds, each shard a subtest of its own on a database of its
+// own (deliveryTestPool), so the shards run beside each other; within a shard each seed replaces the
+// history the seed before it stored (seedWindowHistory). Those two counts are over every seed's
+// windows, read once every shard has ended.
 func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 	t.Parallel()
 	var bounded, windows, shippedAfterEnd, read atomic.Int64
 	t.Run("seeds", func(t *testing.T) {
-		for seed := range uint64(windowReadSeeds) {
-			t.Run(fmt.Sprintf("seed %d", seed), func(t *testing.T) {
+		for first := uint64(0); first < windowReadSeeds; first += windowReadShard {
+			last := min(first+windowReadShard, windowReadSeeds) - 1
+			t.Run(fmt.Sprintf("seeds %d to %d", first, last), func(t *testing.T) {
 				t.Parallel()
-				counts := checkWindowReadsOverAHistory(t, seed)
-				windows.Add(counts.windows)
-				bounded.Add(counts.bounded)
-				shippedAfterEnd.Add(counts.shippedAfterEnd)
-				read.Add(1)
+				pool, ctx := deliveryTestPool(t)
+				for seed := first; seed <= last; seed++ {
+					counts := checkWindowReadsOverAHistory(t, ctx, pool, seed)
+					windows.Add(counts.windows)
+					bounded.Add(counts.bounded)
+					shippedAfterEnd.Add(counts.shippedAfterEnd)
+					read.Add(1)
+				}
 			})
 		}
 	})
 	if read.Load() != windowReadSeeds {
-		// A seed that did not read every window has failed the test, naming itself, or was
-		// skipped with no database to write: the counts are over every seed or not judged.
+		// A seed that did not read every window has failed the test, naming itself, or its shard
+		// was skipped with no database to write: the counts are over every seed or not judged.
 		return
 	}
 	if bounded.Load() == 0 {
@@ -75,8 +80,14 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 }
 
 // windowReadSeeds is how many generated histories TestAWindowsReadAnswersWhatItsTwoReadsAnswer
-// reads, each in a subtest of its own.
+// reads.
 const windowReadSeeds = 24
+
+// windowReadShard is how many seeds of TestAWindowsReadAnswersWhatItsTwoReadsAnswer one subtest
+// checks on its database: eight shards of the 24, which fill the package's parallelism
+// (deliveryTestParallelism), so the row makes eight clones of the template rather than one for each
+// seed, each clone forcing checkpoints on the shared server (storetest).
+const windowReadShard = 3
 
 // windowReadCounts is what one history's windows add to the counts
 // TestAWindowsReadAnswersWhatItsTwoReadsAnswer judges over every seed: the windows read, those
@@ -86,13 +97,12 @@ type windowReadCounts struct {
 	windows, bounded, shippedAfterEnd int64
 }
 
-// checkWindowReadsOverAHistory stores the history seed generates (seedWindowHistory) on a database
-// of its own, holds each of its windows' reads to the two reads they stand for and to the history
-// read whole (TestAWindowsReadAnswersWhatItsTwoReadsAnswer says what each must answer), and fails
-// t, naming the seed and the window, where one differs.
-func checkWindowReadsOverAHistory(t *testing.T, seed uint64) windowReadCounts {
+// checkWindowReadsOverAHistory stores the history seed generates (seedWindowHistory) on pool's
+// database, replacing what it held, holds each of its windows' reads to the two reads they stand
+// for and to the history read whole (TestAWindowsReadAnswersWhatItsTwoReadsAnswer says what each
+// must answer), and fails t, naming the seed and the window, where one differs.
+func checkWindowReadsOverAHistory(t *testing.T, ctx context.Context, pool *store.Pool, seed uint64) windowReadCounts {
 	t.Helper()
-	pool, ctx := deliveryTestPool(t)
 	base := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	settings := DeliverySettings{DeployRepo: waitingRepo, ProductionJobNames: []string{waitingJob}, ProductionApplyStepName: new(waitingStep)}
 	production := settings.Production()

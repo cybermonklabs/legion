@@ -14,7 +14,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -71,7 +70,7 @@ func TestTakingTheDurableAgainUnderOneHoldLeavesNoLossWatcherPerAttempt(t *testi
 			// The stream the durable is on; the holder creates no stream of its own.
 			publisher := intakeTestClient(t)
 			tries := newHoldTries()
-			holder := startIntakeProcessWith(t, pool, testnats.URL(t), nil, tries.before)
+			holder := startIntakeProcessWith(t, pool, testnats.URL(t), nil, tries.on)
 			watchers := func() int { return lossWatchers(&holder.intake.heldDurable) }
 			if !tc.refuse {
 				awaitBoundDurable(t, publisher)
@@ -111,11 +110,11 @@ func TestTakingTheDurableAgainUnderOneHoldLeavesNoLossWatcherPerAttempt(t *testi
 // unconfirmedHandBack is a holder's stop whose hand-back went into the holder's socket's own kernel
 // send queue on a stalled link, unconfirmed (stopWithAnUnconfirmedHandBack): stopped closes once the
 // holder's Run has returned; from is the first durable event of the stop, and sequences the stream
-// sequences of the row's two messages. stopClock and holdClock are the holder's two clocks
-// (heldDurable.clock, heldDurable.holdClock), fakes only the row moves (passStop, finalize), and
-// standby the standby's tries for the hold, on a fake of its own.
+// sequences of the row's two messages. The holder, its two clocks, fakes only the row moves
+// (passStop, finalize), and the standby's tries for the hold, on a fake of its own, are the embedded
+// holderAndStandby's.
 type unconfirmedHandBack struct {
-	holder    *intakeProcess
+	holderAndStandby
 	pool      *store.Pool
 	relay     *testnats.StallRelay
 	recorded  *durableEvents
@@ -124,9 +123,6 @@ type unconfirmedHandBack struct {
 	sequences []uint64
 	stopped   <-chan struct{}
 	logs      func() []map[string]any
-	stopClock *clocktest.Fake
-	holdClock *clocktest.Fake
-	standby   *holdTries
 }
 
 // stopWithAnUnconfirmedHandBack starts a holder whose NATS client, with options, goes through a
@@ -160,21 +156,8 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 	row.recorded = watchDurableEvents(t, natsURL)
 
 	const inFlight = 100
-	row.stopClock, row.holdClock = fakeIntakeClock(), fakeIntakeClock()
-	var holderTried <-chan struct{}
-	holder := startIntakeProcessWith(t, pool, row.relay.URL(), func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
-		p.intake.clock, p.intake.holdClock = row.stopClock, row.holdClock
-		holderTried = firstTryEnded(p.intake)
-	}, options...)
-	row.holder = holder
-	awaitBoundDurable(t, row.publisher)
-	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
-	keepHoldRowLive(t, pool, holder.intake.holder)
-	row.standby = newHoldTries()
-	startIntakeProcessWith(t, pool, natsURL, nil, row.standby.before)
-	if row.standby.first(t, "the standby's try for the hold as it starts") {
-		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
-	}
+	row.holderAndStandby = startHolderAndStandby(t, pool, row.publisher, row.relay.URL(), natsURL, inFlight, options...)
+	holder := row.holder
 	holderConn := holder.client.Connection()
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, row.publisher, inFlight))
 	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
@@ -475,10 +458,8 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	})
 
 	standby := newHoldTries()
-	startIntakeProcessWith(t, pool, natsURL, nil, standby.before)
-	if standby.first(t, "the standby's try for the hold as it starts") {
-		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
-	}
+	startIntakeProcessWith(t, pool, natsURL, nil, standby.on)
+	standby.standBy(t, "the standby, while the holder held the durable", 0)
 	from := recorded.count()
 	sequences := []uint64{publishMergedPullRequest(t, publisher, 100)}
 	msg := testwait.Receive(t, "the holder's first delivery to be handed the message (control)", handed)
@@ -621,10 +602,8 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	t.Cleanup(func() { durable.stop(cancelled()) })
 
 	tries := newHoldTries()
-	standby := startIntakeProcessWith(t, pool, natsURL, func(int) bool { return true }, tries.before)
-	if tries.first(t, "the standby's try for the hold as it starts") {
-		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
-	}
+	standby := startIntakeProcessWith(t, pool, natsURL, func(int) bool { return true }, tries.on)
+	tries.standBy(t, "the standby, while the holder held the durable", 0)
 	from := recorded.count()
 	sequences := []uint64{publishMergedPullRequest(t, client, number)}
 	testwait.Receive(t, "the first delivery's callback to begin keying the message (control)", keying)
@@ -793,12 +772,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	waitFor(t, func() bool { return watchers() == 2 }, func() string {
 		return fmt.Sprintf("control: %d loss watchers run, want 2: the first delivery's, flushing on the frozen link, and the second's", watchers())
 	})
-	stopped := make(chan struct{})
-	go func() {
-		durable.stop(cancelled())
-		close(stopped)
-	}()
-	testwait.Receive(t, "the holder's stop to return", stopped)
+	testwait.Returns(t, "the holder's stop to return", func() { durable.stop(cancelled()) })
 	if holdLive(t, pool, durable.holder) {
 		t.Fatalf("control: the stop did not release its hold, with nothing unconfirmed on the connection; logged %q", loggedMessages(logs()))
 	}

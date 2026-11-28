@@ -105,24 +105,54 @@ func (r *durableEvents) barrier(t *testing.T) {
 	})
 }
 
-// stopWithAHeldHandBack starts a holder and a standby, has the holder's handler hold one pull
-// request with a second message of it waiting behind, stops the holder, and holds a write on the
-// holder's link from inside the stop's hand-back of the waiting message, after the connected read
-// has answered and before the publish (beforeHandBackPublish), so that publish waits for nats.go's
-// lock. It returns once the write is held, with the stop under way.
+// holderAndStandby is a holder process whose two clocks are fakes only the row moves -- its own
+// deadlines' (stopClock, heldDurable.clock) and its hold's (holdClock, heldDurable.holdClock) --
+// and the tries for the hold of a standby process beside it (standby, holdTries).
+type holderAndStandby struct {
+	holder    *intakeProcess
+	stopClock *clocktest.Fake
+	holdClock *clocktest.Fake
+	standby   *holdTries
+}
+
+// startHolderAndStandby starts a holder on holderURL, its NATS client given options, whose GitHub
+// holds the fetch of pull request inFlight (startIntakeProcessWith) and whose clocks are fakes only
+// the row moves; waits until it has bound the durable, which publisher reads, and its first try for
+// the hold has ended (firstTryEnded: a standby's hook set before then would count that try as the
+// standby's); keeps the hold's row live on the database's clock as the renewals a hold clock the row
+// does not move never make would (keepHoldRowLive), past anything the row waits for; and starts a
+// standby on natsURL, whose try as it starts must leave it standing by (holdTries.standBy).
+func startHolderAndStandby(t *testing.T, pool *store.Pool, publisher *bus.Client, holderURL, natsURL string, inFlight int, options ...bus.ConnectOption) holderAndStandby {
+	t.Helper()
+	started := holderAndStandby{stopClock: fakeIntakeClock(), holdClock: fakeIntakeClock(), standby: newHoldTries()}
+	var holderTried <-chan struct{}
+	started.holder = startIntakeProcessWith(t, pool, holderURL, func(number int) bool { return number == inFlight }, func(intake *Intake) {
+		intake.clock, intake.holdClock = started.stopClock, started.holdClock
+		holderTried = firstTryEnded(intake)
+	}, options...)
+	awaitBoundDurable(t, publisher)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	keepHoldRowLive(t, pool, started.holder.intake.holder)
+	startIntakeProcessWith(t, pool, natsURL, nil, started.standby.on)
+	started.standby.standBy(t, "the standby, while the holder held the durable", 0)
+	return started
+}
+
+// stopWithAHeldHandBack starts a holder and a standby (startHolderAndStandby), has the holder's
+// handler hold one pull request with a second message of it waiting behind, stops the holder, and
+// holds a write on the holder's link from inside the stop's hand-back of the waiting message, after
+// the connected read has answered and before the publish (beforeHandBackPublish), so that publish
+// waits for nats.go's lock. It returns once the write is held, with the stop under way.
 //
-// The holder's stop deadline and its hold run on its two clocks (heldDurable.clock,
-// heldDurable.holdClock), fakes only the row moves: the stop's deadline, the intakes' stopBudget
-// from its Run's end, passes only where the row moves the stop clock (passStop), and the hold renews,
-// or is lost, only where the row moves the hold clock (renewHoldOnItsClock, loseHold). A hold clock
-// the row does not move renews nothing, so once the take has ended the row keeps the hold's row live
-// on the database's clock as the renewals would (keepHoldRowLive), past anything it waits for, and
-// no span of the wall clock lapses it while the row stages its steps. The standby tries
-// for the hold only where the row moves its own fake (holdTries). Both intakes' ack wait is past the
-// run (ackWaitPastTheRun): the hand-back is what must bring the message to the standby, so the
-// server's own redelivery at the ack wait never comes inside the run, and the holder's handler holds
-// the first message until the row releases it or the stop gives it up, never until a deadline of
-// its own, so the second message queues behind it.
+// The holder's stop deadline and its hold run on its two clocks, fakes only the row moves: the
+// stop's deadline, the intakes' stopBudget from its Run's end, passes only where the row moves the
+// stop clock (passStop), and the hold renews, or is lost, only where the row moves the hold clock
+// (renewHoldOnItsClock, loseHold), the hold's row kept live meanwhile. The standby tries for the hold
+// only where the row moves its own fake (holdTries). Both intakes' ack wait is past the run
+// (ackWaitPastTheRun): the hand-back is what must bring the message to the standby, so the server's
+// own redelivery at the ack wait never comes inside the run, and the holder's handler holds the first
+// message until the row releases it or the stop gives it up, never until a deadline of its own, so
+// the second message queues behind it.
 func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	t.Helper()
 	ackWaitPastTheRun(t)
@@ -139,22 +169,9 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 	row.recorded = watchDurableEvents(t, natsURL)
 
 	const inFlight = 100
-	row.stopClock, row.holdClock = fakeIntakeClock(), fakeIntakeClock()
+	row.holderAndStandby = startHolderAndStandby(t, pool, publisher, link.URL(), natsURL, inFlight)
 	row.take = row.holdClock.Now()
-	var holderTried <-chan struct{}
-	holder := startIntakeProcessWith(t, pool, link.URL(), func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
-		p.intake.clock, p.intake.holdClock = row.stopClock, row.holdClock
-		holderTried = firstTryEnded(p.intake)
-	})
-	row.holder = holder
-	awaitBoundDurable(t, publisher)
-	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
-	keepHoldRowLive(t, pool, holder.intake.holder)
-	row.standby = newHoldTries()
-	startIntakeProcessWith(t, pool, natsURL, nil, row.standby.before)
-	if row.standby.first(t, "the standby's try for the hold as it starts") {
-		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
-	}
+	holder := row.holder
 	holderConn := holder.client.Connection()
 	row.conn = holderConn
 
@@ -234,11 +251,10 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 // lets the holder's link move and ends the held write; stopped closes when the holder's Run has
 // returned; conn is the holder's connection, delivery the subscription its stop stopped, from
 // the first durable event of the stop, and sequences the stream sequences of the row's two
-// messages. stopClock and holdClock are the holder's two clocks (heldDurable.clock,
-// heldDurable.holdClock), take the hold clock's moment as the holder took its hold, and standby
-// the standby's tries for the hold on a fake of its own, all moved only by the row.
+// messages. The holder, its two clocks and the standby's tries are the embedded holderAndStandby's,
+// all moved only by the row, and take is the hold clock's moment as the holder took its hold.
 type heldHandBack struct {
-	holder    *intakeProcess
+	holderAndStandby
 	pool      *store.Pool
 	thaw      func()
 	recorded  *durableEvents
@@ -248,10 +264,7 @@ type heldHandBack struct {
 	conn      *natsgo.Conn
 	delivery  *intakeDelivery
 	sequences []uint64
-	stopClock *clocktest.Fake
-	holdClock *clocktest.Fake
 	take      time.Time
-	standby   *holdTries
 }
 
 // handBackPending reports whether a hand-back publish of the stopped delivery is still waiting for
@@ -581,8 +594,6 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		finalizing := make(chan struct{})
 		releaseFinalizer := make(chan struct{})
 		release := sync.OnceFunc(func() { close(releaseFinalizer) })
-		// A failure before the release leaves the finalizer held in the hook; the test's end lets it go.
-		t.Cleanup(release)
 		hook := func() {
 			close(finalizing)
 			<-releaseFinalizer

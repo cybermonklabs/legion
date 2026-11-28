@@ -85,7 +85,8 @@ const (
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
 // scheduling and bounding its reads, and stopping, by c (heldDurable.clock), checking each job event
 // against settings, and holding its durable and taking it over under a hold and a lease it takes on
-// leases, timed by tuning. A test hands c a clocktest.Fake it moves itself.
+// leases, timed by tuning. startIntakes hands c tuning's clock; a test hands it a clocktest.Fake it
+// moves itself.
 func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, c intakeClock, settings *SettingsCache) *JobIntake {
 	j := &JobIntake{
 		pool: pool, github: github, settings: settings,

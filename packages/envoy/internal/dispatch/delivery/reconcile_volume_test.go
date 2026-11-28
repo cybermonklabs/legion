@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -378,14 +377,11 @@ func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *t
 	var mu sync.Mutex
 	timedOut := false
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Variables map[string]any `json:"variables"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			refuseRequest(t, w, "decode GraphQL request: %v", err)
+		variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
 			return
 		}
-		after, _ := body.Variables["after"].(string)
+		after, _ := variables["after"].(string)
 		mu.Lock()
 		first := after != "" && !timedOut
 		if first {

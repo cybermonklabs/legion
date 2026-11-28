@@ -53,21 +53,8 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	row.recorded = watchDurableEvents(t, natsURL)
 
 	const inFlight = 100
-	row.stopClock, row.holdClock = fakeIntakeClock(), fakeIntakeClock()
-	var holderTried <-chan struct{}
-	holder := startIntakeProcessWith(t, pool, link.URL(), func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
-		p.intake.clock, p.intake.holdClock = row.stopClock, row.holdClock
-		holderTried = firstTryEnded(p.intake)
-	})
-	row.holder = holder
-	awaitBoundDurable(t, publisher)
-	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
-	keepHoldRowLive(t, pool, holder.intake.holder)
-	row.standby = newHoldTries()
-	startIntakeProcessWith(t, pool, natsURL, nil, row.standby.before)
-	if row.standby.first(t, "the standby's try for the hold as it starts") {
-		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
-	}
+	row.holderAndStandby = startHolderAndStandby(t, pool, publisher, link.URL(), natsURL, inFlight)
+	holder := row.holder
 	holderConn := holder.client.Connection()
 	row.conn = holderConn
 
@@ -180,20 +167,8 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	recorded := watchDurableEvents(t, natsURL)
 
 	const inFlight = 100
-	stopClock, holdClock := fakeIntakeClock(), fakeIntakeClock()
-	var holderTried <-chan struct{}
-	holder := startIntakeProcessWith(t, pool, link.URL(), func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
-		p.intake.clock, p.intake.holdClock = stopClock, holdClock
-		holderTried = firstTryEnded(p.intake)
-	})
-	awaitBoundDurable(t, publisher)
-	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
-	keepHoldRowLive(t, pool, holder.intake.holder)
-	standby := newHoldTries()
-	startIntakeProcessWith(t, pool, natsURL, nil, standby.before)
-	if standby.first(t, "the standby's try for the hold as it starts") {
-		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
-	}
+	started := startHolderAndStandby(t, pool, publisher, link.URL(), natsURL, inFlight)
+	holder, stopClock, holdClock, standby := started.holder, started.stopClock, started.holdClock, started.standby
 	holderConn := holder.client.Connection()
 	publishMergedPullRequest(t, publisher, inFlight)
 	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {

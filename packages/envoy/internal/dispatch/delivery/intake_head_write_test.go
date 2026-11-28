@@ -17,8 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -103,12 +101,11 @@ type headWriteProcess struct {
 // GitHub answers the pull request's commit read with no commits, after counting it, and holds
 // the first one when hold is set until the row releases it or the handler making it is
 // abandoned. That read is where a handler can be held for this row: everything after it is the
-// head write, which is the failure under test. The client's own bound on that read is the test's
-// give-up (githubapptest.RequestDeadlineAtTheGiveUp), so only the row's release or the handler's
-// own end ends it while the row stages its next step. before runs on the intake once it is built
-// and before it runs, for a row that gives it a hold clock of its own (heldDurable.holdClock) or
-// tries for the hold it reads (holdTries.on). The process's stop is runIntake's, which waits for
-// Run through the shared wait.
+// head write, which is the failure under test. Its client holds its calls to the test's give-up
+// (newHoldingClient), so only the row's release or the handler's own end ends that read while the
+// row stages its next step. before runs on the intake once it is built and before it runs, for a
+// row that gives it a hold clock of its own (heldDurable.holdClock) or tries for the hold it reads
+// (holdTries.on). The process's stop is runIntake's, which waits for Run through the shared wait.
 func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold bool, before func(*Intake)) *headWriteProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
@@ -137,7 +134,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 		}
 		mustEncode(t, w, []any{})
 	})
-	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
+	github := fake.newHoldingClient()
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
 	process.release = sync.OnceFunc(func() { close(held) })
@@ -179,6 +176,26 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 		defer mu.Unlock()
 		return slices.Clone(answers)
 	}
+}
+
+// answersOnceAcknowledged is what durableAnswers has recorded once the record holds acks
+// acknowledgements, read through the shared wait. The recorder is handed each answer on its
+// subscription's own goroutine, after the server has had it, so a row that has read the durable's
+// ack floor reach every message reads the record once it holds the acknowledgements behind that
+// floor, the last answers the server had of the row: a hand-back published before them is in the
+// record by then, and a recorder that saw nothing gives up here rather than passing on silence.
+func answersOnceAcknowledged(t *testing.T, answers func() []string, acks int) []string {
+	t.Helper()
+	return testwait.Until(t, fmt.Sprintf("%d acknowledgement(s), which the durable shows, to reach the record of its answers", acks), func() ([]string, bool) {
+		recorded := answers()
+		got := 0
+		for _, answer := range recorded {
+			if answer == "+ACK" {
+				got++
+			}
+		}
+		return recorded, got >= acks
+	})
 }
 
 // A holder whose hold has lapsed publishes no hand-back of its own, and the envelope it could
@@ -243,9 +260,7 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	keepHoldRowLive(t, pool, holder.intake.holder)
 	tries := newHoldTries()
 	keeper := startHeadWriteProcess(t, pool, natsURL, false, tries.on)
-	if tries.first(t, "the keeper's try for the hold as it starts") {
-		t.Fatal("control: the keeper took the durable over at its start, while the holder held it")
-	}
+	tries.standBy(t, "the keeper, while the holder held the durable", 0)
 
 	// A merge, so the head row and its branch seed are written together and the write is the
 	// one that fails; its own head repository and a branch naming no issue, so the attribution
@@ -281,20 +296,15 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	restoreBranchCommits()
 
 	lapseHoldRow(t, pool, holder.intake.holder)
-	awaitDurableTakenOver(t, holder.intake, keeper.intake, publisher, tries.clock)
+	awaitDurableTakenOver(t, holder.intake, keeper.intake, publisher, tries)
 	waitFor(t, func() bool { return keeper.reads.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the keeper was never handed the envelope the holder left unanswered: holder %d read(s), keeper %d; %s",
 			holder.reads.Load(), keeper.reads.Load(), consumerState(publisher))
 	})
 	awaitEverythingAcknowledged(t, publisher)
-	// The recorder is handed each answer on its subscription's own goroutine, after the server has
-	// had it: the keeper's acknowledgement, which the durable's ack floor above shows the server
-	// has had, is recorded last of them, so the record is read once it holds that.
-	waitFor(t, func() bool { return slices.Contains(answers(), "+ACK") }, func() string {
-		return fmt.Sprintf("the keeper's acknowledgement, which the durable shows, never reached the record of its answers: %q", answers())
-	})
-
-	published := answers()
+	// The keeper's one acknowledgement, which the durable's ack floor above shows the server has
+	// had, is the last answer of the row.
+	published := answersOnceAcknowledged(t, answers, 1)
 	var handedBack []string
 	for _, answer := range published {
 		if strings.HasPrefix(answer, "-NAK") {
@@ -304,9 +314,6 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	if len(handedBack) > 0 {
 		t.Errorf("hand-backs published to the delivery durable = %q, want none: the holder's hold had lapsed, so its hand-back lands on the durable the keeper's take-over recreated",
 			handedBack)
-	}
-	if len(published) == 0 {
-		t.Fatal("no answer to the delivery durable was recorded at all, so the row measured nothing: the keeper's acknowledgement is one of them")
 	}
 	if read := keeper.reads.Load(); read != 1 {
 		t.Errorf("the keeper handled the envelope %d time(s), want the one the take-over hands it: %s", read, consumerState(publisher))

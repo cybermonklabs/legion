@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,12 +16,10 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -51,12 +48,7 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	natsURL := testnats.URL(t)
-	natsClient, err := bus.ConnectOwningStream([]string{natsURL})
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(func() { bustest.Close(t, natsClient) })
+	natsClient := intakeTestClient(t)
 
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, intake)
@@ -433,20 +425,12 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 
 	natsClient := intakeTestClient(t)
 	wake := settingsWake(t, pool)
-	// cacheWait is one block of the settings cache in its wait (SettingsCache.Run, the
-	// settingsWaiting hook): whether a retry was armed there, whether a signal was already
-	// pending on its wake, and whether the cache held the new path by then.
-	type cacheWait struct{ retrying, pending, newPath bool }
-	var waitsMu sync.Mutex
-	var waits []cacheWait
+	// Each block of the settings cache in its wait, with whether the cache held the new path by then.
 	var settingsCache *SettingsCache
-	waiting := func(retrying bool) {
+	waits := recordSettingsWaits(t, wake, func() bool {
 		held := settingsCache.Load()
-		waitsMu.Lock()
-		defer waitsMu.Unlock()
-		waits = append(waits, cacheWait{retrying: retrying, pending: len(wake) > 0, newPath: held != nil && held.DeployWorkflowPath == newPath})
-	}
-	tuningFor(t).settingsWaiting.Store(&waiting)
+		return held != nil && held.DeployWorkflowPath == newPath
+	})
 	settingsCache = newSettingsCache(pool, wake, tuningFor(t))
 	runSettingsCache(t, settingsCache)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settingsCache, unrenamed())
@@ -455,15 +439,13 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	// Before the write the cache has made its start's read and the read on the hub's signal after
 	// its LISTEN, and waits with no retry armed and no signal pending: the next wake it takes is
 	// the write's notification.
-	testwait.Until(t, "the settings cache to wait after its first two reads with no retry armed and no wake pending", func() ([]cacheWait, bool) {
-		waitsMu.Lock()
-		defer waitsMu.Unlock()
-		seen := slices.Clone(waits)
+	testwait.Until(t, "the settings cache to wait after its first two reads with no retry armed and no wake pending", func() ([]settingsWait[bool], bool) {
+		seen := waits.all()
 		if len(seen) < 2 {
 			return seen, false
 		}
 		last := seen[len(seen)-1]
-		return seen, !last.retrying && !last.pending
+		return seen, !last.retrying && last.pending == 0
 	})
 
 	settings.DeployWorkflowPath = newPath
@@ -479,11 +461,9 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	// The cause: no wait of the cache before the read that took the new path had a retry armed,
 	// so the wait that read ended could end only on its wake, which the write's notification
 	// signals; a cache that took a change by its retry timer, or by a poll, fails here.
-	waitsMu.Lock()
-	seen := slices.Clone(waits)
-	waitsMu.Unlock()
+	seen := waits.all()
 	for i, wait := range seen {
-		if wait.newPath {
+		if wait.seen {
 			break
 		}
 		if wait.retrying {
@@ -499,17 +479,9 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	// The old-path envelope is acknowledged without being fetched. A publish's ack says the stream
 	// stored it, and the server counts it toward a consumer only once the stream has signalled the
 	// consumer, after that ack, so pending counts of 0 can be read before the consumer has it at
-	// all. So the wait is for the consumer's ack floor to reach the envelope's own stream sequence.
-	oldEnvelope, err := natsClient.JS().GetLastMsg(bus.Stream, contracts.GithubWorkflowSubject("acme", "widgets", pathBaseForTest(oldPath), "in_progress"))
-	if err != nil {
-		t.Fatalf("read the old path's envelope from the stream: %v", err)
-	}
-	waitFor(t, func() bool {
-		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.AckFloor.Stream >= oldEnvelope.Sequence && info.NumAckPending == 0
-	}, func() string {
-		return fmt.Sprintf("the intake did not acknowledge the old path's envelope\n%s", intakeStateReport(t, natsClient))
-	})
+	// all. So the wait is for the consumer's ack floor to reach the stream's last sequence, which is
+	// that envelope's: the stream is the test's own account's, and nothing is published after it.
+	awaitAcknowledged(t, natsClient)
 	mu.Lock()
 	defer mu.Unlock()
 	if !fetched[onNewPath] {

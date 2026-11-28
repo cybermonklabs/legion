@@ -10,19 +10,13 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// reservationHeld is the span a read that must wait is read after (testwait.Idle), and
-// reservationHeldWhy is why: callBudget arms no timer, and the reservation a read waits behind is
-// held across the other read's whole attribution read (readAttributionInputs reserves before
-// fetchAttributionFacts and settles after it), so the span is the longest that read can take on
-// the bounds the product puts on it. Its token asks make at most attributionTokenCalls calls, one
-// attempt each, and each of its maxAttributionCalls pages (the pull request, then up to
-// maxCommitPages commit pages) is read through readGitHubPage, whose githubPageAttempts attempts
-// take up to pageHeld. Each attempt and each token call is bounded by githubapp.RequestTimeout,
-// the client's own bound on a call, which cmd/dispatch leaves at that. After a call GitHub answers
-// with a rate limit, githubapp's client writes that limit to the shared ledger, for up to
-// limitRecordWait, before the call returns; such an answer ends the read, so a read makes that
-// write at most once, and the span counts it once.
-var reservationHeld = attributionTokenCalls*githubapp.RequestTimeout + maxAttributionCalls*pageHeld() + limitRecordWait
+// reservationHeld is the span a read that must wait is read after (testwait.Idle): the longest the
+// read it waits behind holds its reservation (readAttributionInputs reserves before
+// fetchAttributionFacts and settles after it) on the bounds the product puts on that read, for the
+// reason reservationHeldWhy gives. Its pages are the pull request, then up to maxCommitPages commit
+// pages, and githubapp.RequestTimeout is the client's own bound on a call, which cmd/dispatch leaves
+// at that.
+var reservationHeld = attributionTokenCalls*githubapp.RequestTimeout + maxAttributionCalls*pageHeld() + githubapp.LimitRecordTimeout
 
 // pageHeld is the longest readGitHubPage takes on one page: githubPageAttempts attempts of up to
 // githubapp.RequestTimeout each, and after every attempt but the last a wait of
@@ -39,16 +33,13 @@ const (
 	// is cached, and each stays cached far longer than reservationHeld, so a read that asks for a
 	// token before each page makes each of the two calls at most once.
 	attributionTokenCalls = 2
-	// limitRecordWait is the bound githubapp's client puts on one write of a limit GitHub answered
-	// to the shared ledger (its limitRecordTimeout, which it does not export).
-	limitRecordWait = 5 * time.Second
 	// reservationHeldWhy is reservationHeld's reason, as testwait.Idle asks for one.
 	reservationHeldWhy = "callBudget arms no timer, and the read a reserve waits behind holds its reservation across its " +
 		"whole fetchAttributionFacts: attributionTokenCalls token calls (the installation lookup and the mint) and " +
 		"maxAttributionCalls pages, each read through readGitHubPage in up to githubPageAttempts attempts with " +
 		"githubPageRetryWait times the attempt just made between them, each call and attempt bounded by " +
 		"githubapp.RequestTimeout, and at most one write of a rate limit GitHub answered to the shared ledger, " +
-		"bounded by limitRecordWait, since such an answer ends the read: a reserve that gave up at a bound of its " +
+		"bounded by githubapp.LimitRecordTimeout, since such an answer ends the read: a reserve that gave up at a bound of its " +
 		"own shorter than that would give up while that read is still inside its calls"
 )
 
@@ -63,6 +54,16 @@ func TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		budget := newCallBudget(10)
+		// A row that failed while a read still waited in reserve would leave it blocked in the bubble
+		// once the test goroutine had ended, which synctest.Test ends in a panic rather than in the
+		// row's failure: with nothing reserved, a waiting read answers at once. On the passing path
+		// nothing is reserved by then and no read waits.
+		defer func() {
+			budget.mu.Lock()
+			budget.reserved = 0
+			budget.changed.Broadcast()
+			budget.mu.Unlock()
+		}()
 		if !budget.reserve(6) {
 			t.Fatal("the first reservation of 6 from 10 was refused")
 		}

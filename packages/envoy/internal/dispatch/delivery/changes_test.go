@@ -61,7 +61,8 @@ func sameTime(a *time.Time, b time.Time) bool { return a != nil && a.Equal(b) }
 // clock, as a database server's clock may run behind a server process's: a schema of the test's
 // own, dropped after it, holds a now() answering pg_catalog.now() - lag, and the pool's search_path
 // names that schema ahead of pg_catalog, so every unqualified now() a statement on the pool runs
-// reads the lagging clock.
+// reads the lagging clock. The pool is storetest's reopened one, closed as the test ends, before the
+// schema is dropped.
 func laggingDatabaseClock(t *testing.T, ctx context.Context, pool *store.Pool, lag time.Duration) *store.Pool {
 	t.Helper()
 	schema := fmt.Sprintf("lagging_clock_%d", testSerials.Add(1))
@@ -76,17 +77,9 @@ func laggingDatabaseClock(t *testing.T, ctx context.Context, pool *store.Pool, l
 			t.Errorf("drop the lagging clock's schema %s: %v", schema, err)
 		}
 	})
-	config := pool.Config()
-	config.ConnConfig.RuntimeParams["search_path"] = schema + ", public, pg_catalog"
-	opened, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("open a pool on the lagging clock: %v", err)
-	}
-	lagging := store.NewPool(opened)
-	t.Cleanup(func() {
-		testwait.Returns(t, "every connection of the pool on the lagging clock to come back, so the pool closes", lagging.Close)
-	})
-	return lagging
+	return storetest.Reopened(t, &store.Store{Pool: pool}, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["search_path"] = schema + ", public, pg_catalog"
+	}).Pool
 }
 
 // databaseAge is how long before the database's now() the timestamp query reads was, as the

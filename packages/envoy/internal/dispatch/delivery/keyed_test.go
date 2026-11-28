@@ -69,6 +69,14 @@ func awaitStart(t testing.TB, starts <-chan keyedItem) keyedItem {
 	}
 }
 
+// releaseOnEnd closes the recorder's gate for item n once, where the row calls it and, deferred, as
+// the row ends: a row that failed while the item waited on its gate would otherwise leave its handler
+// blocked in the synctest bubble once the test goroutine had ended, which synctest.Test ends in a
+// panic rather than in the row's failure.
+func releaseOnEnd(r *keyedRecorder, n int) func() {
+	return sync.OnceFunc(func() { close(r.gates[n]) })
+}
+
 // Items of one key run in the order they were given, each once the one before it has ended, while
 // an item of another key runs as soon as it is given; once every key's queue is empty no goroutine
 // is left behind. The runner does no I/O, so the test runs in a synctest bubble (awaitStart).
@@ -76,6 +84,8 @@ func TestAKeyedRunnerRunsOneKeyInOrderAndKeysAtOnce(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		recorder := &keyedRecorder{gates: map[int]chan struct{}{1: make(chan struct{})}, start: make(chan keyedItem, 8)}
+		release := releaseOnEnd(recorder, 1)
+		defer release()
 		runner := newKeyedRunner(recorder.handle)
 
 		runner.run("a", keyedItem{"a", 1})
@@ -100,7 +110,7 @@ func TestAKeyedRunnerRunsOneKeyInOrderAndKeysAtOnce(t *testing.T) {
 		default:
 		}
 
-		close(recorder.gates[1])
+		release()
 		if item := awaitStart(t, recorder.start); item.n != 2 {
 			t.Fatalf("start after a1 ended = %+v, want a2", item)
 		}
@@ -122,6 +132,8 @@ func TestAStoppedKeyedRunnerHandsBackWhatWaits(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		recorder := &keyedRecorder{gates: map[int]chan struct{}{1: make(chan struct{})}, start: make(chan keyedItem, 8)}
+		release := releaseOnEnd(recorder, 1)
+		defer release()
 		runner := newKeyedRunner(recorder.handle)
 		runner.run("a", keyedItem{"a", 1})
 		awaitStart(t, recorder.start)
@@ -135,7 +147,7 @@ func TestAStoppedKeyedRunnerHandsBackWhatWaits(t *testing.T) {
 		if runner.run("b", keyedItem{"b", 4}) {
 			t.Fatal("a stopped runner took an item")
 		}
-		close(recorder.gates[1])
+		release()
 		runner.wait()
 		if events, want := recorder.recorded("a"), []string{"start a1", "end a1"}; !slices.Equal(events, want) {
 			t.Fatalf("events = %q, want %q: only the item in its handler runs after stop", events, want)
