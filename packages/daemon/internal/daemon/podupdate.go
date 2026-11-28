@@ -355,16 +355,16 @@ func heldUntil(hold store.PausePodHold, now time.Time) time.Time {
 //   - c is still the pause's now. It is suspended released, since its held start has not run
 //     (supervise.Claim.Released). Or it records no process and it is not suspended, failed or
 //     retired (supervise.Claim.Gone). That is the launch the pause still owes the role, in each
-//     state the launch can be in. The wake pacing or the pause's gate parks it, or its launch
+//     state the launch can be in. The wake pacing delays it, or the pause's gate holds it, or its launch
 //     decision runs (supervise's waitOnMachine). A daemon restart restored it launch_uncertain,
 //     and the release of that launch made it queued (supervisor.restore,
 //     supervise.Claim.ReleasedLaunch). Or the launch forgot the role's lost session, so the claim
 //     records no session until its new agent registers (supervise's startFresh).
 //
 // All three are read from the claim, the round and the store's list of owed roles, and nothing
-// else. The decision that parks a launch writes the claim launching in that same decision
+// else. The decision that delays or holds a launch writes the claim launching in that same decision
 // (waitOnMachine). So no reading waits for a write that comes later, such as the let-out that the
-// daemon writes on a goroutine of its own after the park (pause.go). A role that came up in the pod
+// daemon writes on a goroutine of its own after the delay (pause.go). A role that came up in the pod
 // is owed nothing. A claim suspended by any other source than a release (the daemon's own rule, a
 // root's exit, an unknown source, the operator or the controller) is gone and not released, and
 // so is a failed or a retired claim. None of them is the pause's, whatever another role of the
@@ -2024,7 +2024,7 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 //     pod for the work on its disk (decision 12 of dispatch://INFRA-3759,
 //     roundClock.passesOver). This holds whether or not an ask of the round reached the claim. No
 //     round opens while a hold stands, so a round that opened after the hold ended never asked a
-//     role the pause stopped. A launch the wake pacing parked is launching, not suspended, and its
+//     role the pause stopped. A launch the wake pacing delayed is launching, not suspended, and its
 //     machine is in no decision (supervise's waitOnMachine). Neither is the machine of a launch
 //     that a daemon restart left launch_uncertain, or released to queued (supervisor.restore). So
 //     only this reading keeps the pod for such a launch: no suspension of the claim does, and no
@@ -2235,7 +2235,7 @@ func (s *supervision) issueReplacementDue(issue, round string, readAt time.Time,
 //     decision is no process in the pod: it waits for this launch turn and asks this hook itself
 //     when it gets it, or it went into a pod that replaced this one. Counted as a process, it would
 //     keep the round's pod for two launches at once, and neither would replace it. A launch the
-//     wake pacing parked is in no decision, so this reading keeps nothing for it; the next one
+//     wake pacing delayed is in no decision, so this reading keeps nothing for it; the next one
 //     keeps the pod for it by the one exception (podHolds.owes).
 //   - Something holds the pod (roundPodEnds, which launchRoundPodEnds reads). The launching claim
 //     is in the group, launching with no process recorded, and roundPodEnds reads every claim of
@@ -4301,7 +4301,7 @@ func unansweredMembers(group []supervise.Claim, round string) []supervise.Claim 
 //     store marks such a pod (store.PodHoldsEarlierWork). So the work of any role an agent of which
 //     had run can be on that pod's disk, whether or not an agent of it registered there, whatever
 //     suspended it since and whatever it runs now: a role the daemon or the operator took over or
-//     suspended, a woken role whose launch the wake pacing parks, a role whose own launch replaced
+//     suspended, a woken role whose launch the wake pacing delays, a role whose own launch replaced
 //     the pod, and a role that was suspended already when the earlier pod went, whose work was in
 //     the shared workspace all the same. The store holds the record, so a daemon restart between
 //     the write of the mark and the end keeps it. An end over such a pod may name a role whose

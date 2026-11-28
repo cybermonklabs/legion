@@ -132,7 +132,7 @@ const PodUpdateContract = 46
 // was asked for (RefreshGate, dispatch://INFRA-2712 R1): the daemon's pass takes one for each
 // claim it posts and hands it over on the event (StalePlugin.Credit). The machine holds it from
 // here while the launch of the relaunch this raises is owed on the claim — its wake in the
-// pacing, held by the pause's gate or parked at its issue pod's start gate, or its retry on
+// pacing, held by the pause's gate or waiting at its issue pod's start gate, or its retry on
 // TimerRelaunch — and the end of the first decision that leaves none owed gives it back, which
 // is where every credit of this lane goes back (refreshCredit, laneLaunchOwed, endRefreshLane).
 // Every return below that raises no relaunch is such an end, because the lane gave up nothing by
@@ -142,8 +142,8 @@ const PodUpdateContract = 46
 //
 // A post that arrives carrying a credit over a machine that already holds one gives the new
 // credit straight back to the gate, keeping the one held for the launch it was taken for. The pass
-// reads the views the machines last published, so a wake parked a moment before it counted is
-// one its reading misses (internal/daemon's parkedWakes), and the post that reading raises
+// reads the views the machines last published, so a wake delayed a moment before it counted is
+// one its reading misses (internal/daemon's delayedWakes), and the post that reading raises
 // reaches a machine whose refresh is already waiting. A machine holds one credit, so taking the
 // second in place of the first would leave the first held by nothing: the decision would return
 // at the guard below over the wake already waiting, that wake's turn would give back one credit
@@ -246,7 +246,7 @@ func (m *Machine) holdStaleRelaunch(trigger string) {
 // ran from being relaunched again for free (staleRegistration). A registration of the old
 // process that arrives while that launch still waits its turn meets no mark of this relaunch,
 // because none is written until the launch starts; staleRegistration's own guard is what answers
-// it, and stops a second relaunch being raised over the wake the first one parked.
+// it, and stops a second relaunch being raised over the wake the first one delayed.
 func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger string) error {
 	if m.held == nil {
 		if err := m.checkLaunch(ctx); err != nil {
@@ -286,7 +286,7 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 //
 // The intent names one launch and no other: a later launch of this machine, raised by something
 // else, marks nothing for this relaunch. The launch that took it holds it by then — the gate
-// takes it onto the wake it parks, and launchNow consumes it where no gate held it
+// takes it onto the wake it delays, and launchNow consumes it where no gate held it
 // (takePluginRelaunch) — and an intent no launch took is dropped where every decision ends, so
 // this function drops none of its own (endRefreshLane).
 //
@@ -300,7 +300,7 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 //
 // The launch it raises lets the stale process go as one that ran an older plugin
 // (endStalePlugin), and records what that process ended where it lets it go: here, or at the
-// turn of the wake the pacing parks it on, which is when a process the park left running is let
+// turn of the wake the pacing delays it on, which is when a process the delay left running is let
 // go (launchNow, runWake, letGo).
 func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruption string) error {
 	m.markPluginRelaunch(kind)
@@ -321,7 +321,7 @@ func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruptio
 //
 // The two are one value rather than two fields of the machine because they are one fact — this
 // launch is a stale-plugin relaunch of this lane, for this contract — and because they travel
-// the same road together: both are taken onto the wake the gate parks, handed back at its turn
+// the same road together: both are taken onto the wake the gate delays, handed back at its turn
 // and dropped with a relaunch that is abandoned (wake.pluginMark, holdPluginRelaunch). Two
 // fields could be left half-set by a path that remembered one of them, and a launch half-marked
 // is either a refresh the daemon's state reports as ordinary work or a mark naming no contract.
@@ -353,13 +353,13 @@ func (i *pluginIntent) waitsUnder() WakeKind {
 // with (launchNow, commitPluginRelaunch), so the mark names a relaunch that has run rather than
 // one that was decided. That is what leaves nothing to put back when a relaunch is abandoned —
 // by a refusal at its turn, by a take-back the store refused, by a suspension that ended it, or
-// by a second relaunch raised over the wake it parked.
+// by a second relaunch raised over the wake it delayed.
 func (m *Machine) markPluginRelaunch(kind WakeKind) {
 	m.pluginRelaunch = &pluginIntent{contract: m.deps.PluginContract, kind: kind}
 }
 
 // takePluginRelaunch hands the intent on and leaves the machine none, so that exactly one launch
-// can commit one relaunch's mark: the wake gate takes it onto the wake it parks (reserveWake),
+// can commit one relaunch's mark: the wake gate takes it onto the wake it delays (reserveWake),
 // and the launch commits it as it starts (commitPluginRelaunch). It answers nil for every launch
 // no stale-plugin relaunch raised. The gate reads the kind off the intent before this, without
 // taking it, since a launch that runs where it is raised leaves the intent standing for launchNow
@@ -370,7 +370,7 @@ func (m *Machine) takePluginRelaunch() *pluginIntent {
 	return intent
 }
 
-// holdPluginRelaunch puts the intent a parked wake carries back on the machine, for the launch
+// holdPluginRelaunch puts the intent a delayed wake carries back on the machine, for the launch
 // that turn is about to run to commit (runWake, commitPluginRelaunch). intent is nil for every
 // wake no stale-plugin relaunch raised, and the machine is then left holding none, which is what
 // it held before the turn.
@@ -474,13 +474,13 @@ func (m *Machine) refreshOverturned() bool {
 // waiting, replaces its wake and takes a second place at the back of the pacing's queue for the
 // launch that wake was already going to make (reserveWake). The same guard keeps a claim already
 // marked by a relaunch that ran from being charged twice: when that relaunch's process registers
-// stale, the charged relaunch parks a wake with the mark still set, and a re-registration of that
+// stale, the charged relaunch delays a wake with the mark still set, and a re-registration of that
 // process inside the wait would otherwise meet the mark and be charged a second launch failure for
 // the one registration the claim was already charged for. The registration is still refused, as
 // every stale one is, so the agent exits rather than take work on a contract this daemon does not
 // speak, and the launch's turn replaces its process (wakeNow). It is the guard judge makes of
 // every observation of that same process, for the one report that reaches a decision of its own
-// instead. The guard reads whether a wake that starts a process waits, whichever lane parked it
+// instead. The guard reads whether a wake that starts a process waits, whichever lane delayed it
 // (launchWaits, StartsProcess): the refresh lane's relaunch of this same claim is exactly the
 // launch this registration must not raise a second one over.
 //

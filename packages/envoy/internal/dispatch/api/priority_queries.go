@@ -39,12 +39,13 @@ import (
 // issue above it carries and stands in either is work in backlog or icebox, whichever way it got
 // there.
 //
-// Both are the lifecycle's own groupings (model.IssueStatusesInFlight, model.IssueStatusesParked)
-// rather than a list of this file's own, because the seeded corpus reports the same two faults
-// over the same two groupings (cmd/dispatch-seed) and the two readings have to ask one thing.
+// Both are the lifecycle's own groupings (model.IssueStatusesInFlight,
+// model.IssueStatusesBacklogOrIcebox) rather than a list of this file's own, because the seeded
+// corpus reports the same two faults over the same two groupings (cmd/dispatch-seed) and the two
+// readings have to ask one thing.
 var (
 	priorityInFlightStatuses = model.IssueStatusesInFlight
-	priorityBacklogStatuses  = model.IssueStatusesParked
+	priorityBacklogStatuses  = model.IssueStatusesBacklogOrIcebox
 )
 
 // priorityFaultRows is how many rows each fault list carries beside its whole count. The count is
@@ -366,7 +367,7 @@ var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, ` + priorit
 			           'advances', jsonb_build_array(` + issueAdvancesColumns + `),
 			           'moved_at', i.moved_at, 'moved_by', i.moved_by)), '[]'::jsonb)
 			         from backlog_listed i
-			         ` + issueAdvancesJoin + `)) as parked`
+			         ` + issueAdvancesJoin + `)) as in_backlog`
 
 // prioritySummaryQuery is the whole summary: the two fault counts the navigation rail reads, after
 // the one walk of the member issues (priorityMemberTerms). The first is from one scan of the open
@@ -430,7 +431,9 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 	body := model.Priorities{
 		Priorities:          make([]model.PriorityRow, 0, len(nodes)),
 		WorkUnderNoPriority: model.WorkUnderNoPriority{ByProject: map[string]int{}, Issues: []model.PriorityIssue{}},
-		PriorityWorkParked:  model.PriorityWorkParked{ByPriority: map[string]int{}, Issues: []model.PriorityIssue{}},
+		PriorityWorkInBacklogOrIcebox: model.PriorityWorkInBacklogOrIcebox{
+			ByPriority: map[string]int{}, Issues: []model.PriorityIssue{},
+		},
 	}
 	if len(nodes) == 0 {
 		body.Empty = priorityNoneWritten
@@ -442,7 +445,7 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 
 	if summary {
 		if err := s.deps.Store.Pool.QueryRow(ctx, prioritySummaryQuery, ids, projects).
-			Scan(&body.WorkUnderNoPriority.Count, &body.PriorityWorkParked.Count); err != nil {
+			Scan(&body.WorkUnderNoPriority.Count, &body.PriorityWorkInBacklogOrIcebox.Count); err != nil {
 			return model.Priorities{}, fmt.Errorf("count the work under no priority and the work in backlog or icebox: %w", err)
 		}
 		return body, nil
@@ -479,15 +482,15 @@ func zeroPriorityStatusCounts() map[string]int {
 // priorityReadAnswer is priorityReadQuery's one row: its four jsonb columns, each decoded as the
 // statement wrote it.
 type priorityReadAnswer struct {
-	counts   []priorityStatusCount
-	newest   []priorityNewestEvent
-	unplaced priorityFault
-	parked   priorityFault
+	counts    []priorityStatusCount
+	newest    []priorityNewestEvent
+	unplaced  priorityFault
+	inBacklog priorityFault
 }
 
 // targets are the row's scan targets, in the statement's column order.
 func (a *priorityReadAnswer) targets() []any {
-	return []any{&a.counts, &a.newest, &a.unplaced, &a.parked}
+	return []any{&a.counts, &a.newest, &a.unplaced, &a.inBacklog}
 }
 
 // priorityStatusCount is one row of the counts: the work under one priority that stands in one
@@ -532,8 +535,8 @@ func (a priorityReadAnswer) fill(body *model.Priorities, at map[string]int) {
 	}
 	count, counts, issues := a.unplaced.resolve(false)
 	body.WorkUnderNoPriority = model.WorkUnderNoPriority{Count: count, ByProject: counts, Issues: issues}
-	count, counts, issues = a.parked.resolve(true)
-	body.PriorityWorkParked = model.PriorityWorkParked{Count: count, ByPriority: counts, Issues: issues}
+	count, counts, issues = a.inBacklog.resolve(true)
+	body.PriorityWorkInBacklogOrIcebox = model.PriorityWorkInBacklogOrIcebox{Count: count, ByPriority: counts, Issues: issues}
 }
 
 // inUTC is the time t names, in UTC, and nil for none.
@@ -623,13 +626,13 @@ func (r priorityFaultRow) resolve() model.PriorityIssue {
 // punctuation last, the cut and this sort would be two orders, and where a tie straddles the cut
 // (the issues in backlog or icebox whose move no event records all tie) the list would draw a row
 // the order it answers puts after one it leaves out.
-func (f priorityFault) resolve(parked bool) (int, map[string]int, []model.PriorityIssue) {
+func (f priorityFault) resolve(inBacklog bool) (int, map[string]int, []model.PriorityIssue) {
 	issues := make([]model.PriorityIssue, 0, len(f.Rows))
 	for _, row := range f.Rows {
 		issues = append(issues, row.resolve())
 	}
 	slices.SortFunc(issues, func(a, b model.PriorityIssue) int {
-		if parked {
+		if inBacklog {
 			if order := comparePriorityTimes(a.MovedAt, b.MovedAt); order != 0 {
 				return order
 			}

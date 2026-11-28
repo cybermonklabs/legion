@@ -15,7 +15,9 @@ package supervise
 // (relaunchRefused). Path 4 is a let-out of the project pause's gate (letOutHeldLaunch).
 //
 // This file uses only identifiers that exist in internal/supervise on main at 8868205a18f3, so
-// that the negative control compiles and runs against main as well as against the change.
+// that the negative control compiles and runs against main as well as against the change. Since
+// INFRA-2017 three of them carry the names that change gives them: the wake's podStartWait,
+// delayWakeAgain and runDelayedLaunchNow.
 
 import (
 	"context"
@@ -29,11 +31,11 @@ import (
 
 // boundRig is a paced daemon of stale idle claims behind one RefreshGate, sharing one store,
 // clock, runtime, pacer and optional pause flag or issue-pod start gate. h.m is walked to idle to
-// spend the pacer's initial burst so that every admitted refresh parks, and is left on the current
-// plugin contract; the stale claims live in machines, each on an issue of its own so that a
-// Deps.PodStarts gate holds no claim behind another claim's pod unless the test adds a second role
-// to that claim's issue. Every claim's token is distinct from waveToken(0..n-1), which queueAhead
-// takes.
+// spend the pacer's initial burst so that every admitted refresh is delayed, and is left on the
+// current plugin contract; the stale claims live in machines, each on an issue of its own so that
+// a Deps.PodStarts gate holds no claim behind another claim's pod unless the test adds a second
+// role to that claim's issue. Every claim's token is distinct from waveToken(0..n-1), which
+// queueAhead takes.
 type boundRig struct {
 	t        *testing.T
 	h        *harness
@@ -81,8 +83,9 @@ func newBoundRig(t *testing.T, n int, opts boundRigOptions) *boundRig {
 	h := pacedHarness(t, wakeRate, tunes...)
 
 	// Walk h.m to idle on the harness's initial plugin contract to spend the limiter's burst so
-	// that every admitted refresh parks. Moving h.deps.PluginContract to refreshContract after
-	// reach leaves h.m's own copy on the initial contract, so h.m is never part of the stale set.
+	// that every admitted refresh is delayed. Moving h.deps.PluginContract to refreshContract
+	// after reach leaves h.m's own copy on the initial contract, so h.m is never part of the stale
+	// set.
 	h.reach(StateIdle)
 	h.deps.PluginContract = refreshContract
 	r := &boundRig{
@@ -259,12 +262,12 @@ func (r *boundRig) wantWithinRate(step string) {
 }
 
 // wakeSnapshot is the fields of m.wake read under m.mu that exist on main at 8868205a18f3 and
-// after the change.
+// after the change, under the names INFRA-2017 gives them (podStartWait among them).
 type wakeSnapshot struct {
-	held   bool
-	kind   WakeKind
-	pause  int64
-	parked bool
+	held         bool
+	kind         WakeKind
+	pause        int64
+	podStartWait bool
 }
 
 func readWake(m *Machine) wakeSnapshot {
@@ -274,10 +277,10 @@ func readWake(m *Machine) wakeSnapshot {
 		return wakeSnapshot{}
 	}
 	return wakeSnapshot{
-		held:   true,
-		kind:   m.wake.kind,
-		pause:  m.wake.pause,
-		parked: m.wake.park != nil,
+		held:         true,
+		kind:         m.wake.kind,
+		pause:        m.wake.pause,
+		podStartWait: m.wake.podStartWait != nil,
 	}
 }
 
@@ -325,12 +328,12 @@ func wantOthersWaiting(t *testing.T, others []*Machine, why string) {
 	}
 }
 
-// Every road that can park a plugin-refresh wake in the pacing keeps the lane within K = wakeRate
+// Every road that can delay a plugin-refresh wake in the pacing keeps the lane within K = wakeRate
 // waiting wakes, even when K+1 stale idle claims compete for the gate and a sweep runs right
 // after the step that used to drop the credit. Each subtest drives one road on the claim under
 // test (failed StateLaunching write, unanswered HoldSessions, refused lifecycle recheck on a
 // retry, resume before the pause's stop on a wake held by pauseGate, and an unanswered
-// HoldSessions after a park at the issue pod's start gate) while the other K-1 lane wakes stay
+// HoldSessions after a wait at the issue pod's start gate) while the other K-1 lane wakes stay
 // waiting: behind a queue of spawns in every subtest but path 4's, which queues none and whose
 // other wakes wait because its clock never moves. The bound is read once the road's wake has
 // entered the pacing, the one step at which an uncredited wake can lift it above K. Before it,
@@ -340,7 +343,7 @@ func wantOthersWaiting(t *testing.T, others []*Machine, why string) {
 // The negative control is main at 8868205a18f3: each subtest gives the claim's credit back when
 // its launch leaves the pacing (paths 1 to 3 and the pod gate's road) or when the pause's gate
 // takes it (path 4, whose launch never enters the pacing before the pause holds it), the sweep
-// admits the (K+1)th claim onto that credit, and the path's wake then parks with no credit,
+// admits the (K+1)th claim onto that credit, and the path's wake is then delayed with no credit,
 // reading 9 waiting plugin-refresh wakes against the bound of 8.
 func TestRefreshBoundEachPathKeepsTheLaneWithinTheRate(t *testing.T) {
 	const queueDepth = 12
@@ -509,18 +512,19 @@ func TestRefreshBoundEachPathKeepsTheLaneWithinTheRate(t *testing.T) {
 		r.h.mustPostTo(peer, RequestResume{Claim: peerToken, By: SuspendedByOperator})
 		r.h.wantStarts(peerToken, 1)
 
-		// u's lane wake runs and parks its try at its issue pod's start gate (askPod).
+		// u's lane wake runs and its try waits at its issue pod's start gate (askPod).
 		r.advanceToTurn(u)
 		ws := readWake(u)
-		if !ws.held || !ws.parked {
-			t.Fatalf("setup: after u's turn its wake = %+v, want a try parked at the pod gate", ws)
+		if !ws.held || !ws.podStartWait {
+			t.Fatalf("setup: after u's turn its wake = %+v, want a try waiting at the pod gate", ws)
 		}
 		if w := u.View().WakeWaiting; w != nil {
-			t.Fatalf("setup: u's view shows %+v while parked at the pod gate, want none", w)
+			t.Fatalf("setup: u's view shows %+v while waiting at the pod gate, want none", w)
 		}
 		r.h.wantStarts(u.View().Token, 0)
 
-		// Sweep after the pod park (where main at 8868205a18f3 has already returned u's credit).
+		// Sweep once the try waits at the pod gate (where main at 8868205a18f3 has already
+		// returned u's credit).
 		r.sweep()
 
 		// End the peer's session load (register, then settle) while HoldSessions fails, so u's
@@ -543,7 +547,7 @@ func TestRefreshBoundEachPathKeepsTheLaneWithinTheRate(t *testing.T) {
 	})
 }
 
-// A wake parked without a credit can hide behind a credit whose turn is running, so a sweep's
+// A wake delayed without a credit can hide behind a credit whose turn is running, so a sweep's
 // correction under-counts the lane and the admissions right after the turn ends lift the waiting
 // plugin-refresh wakes above K = wakeRate (dispatch://INFRA-4110/spec, Problem). Three claims
 // R1..R3 take path 1 and re-enter the pacing behind a fourth admitted claim T; while T's turn is
@@ -576,13 +580,13 @@ func TestRefreshBoundAHiddenWakeCannotLiftTheLaneOverTheRate(t *testing.T) {
 	r.h.store.fail("PutClaim", nil)
 
 	// Step 2: queue spawns ahead of T so T's turn falls after all three retries' probe timers
-	// fire, then admit T and park its lane wake behind that queue.
+	// fire, then admit T and delay its lane wake behind that queue.
 	queueAhead(r.h, 6)
 	r.postAdmitted(turnClaim)
 	wantWaitingKind(t, turnClaim, WakePluginRefresh, "after admitting T")
 
-	// Step 3: advance by testProbe so all three retries' timers fire and their wakes park in the
-	// pacing behind T's wake, while T still waits.
+	// Step 3: advance by testProbe so all three retries' timers fire and their wakes are delayed
+	// in the pacing behind T's wake, while T still waits.
 	r.advance(testProbe)
 	for _, m := range retries {
 		wantWaitingKind(t, m, WakePluginRefresh, "after R1..R3 retry fired")
@@ -627,7 +631,7 @@ func TestRefreshBoundAHiddenWakeCannotLiftTheLaneOverTheRate(t *testing.T) {
 		wantWaitingKind(t, m, WakePluginRefresh, "after T's turn ended")
 	}
 
-	// Step 5: admit until nil and post each credit to a stale idle claim, whose wake parks
+	// Step 5: admit until nil and post each credit to a stale idle claim, whose wake is delayed
 	// behind R1..R3.
 	r.admitIdle()
 	r.wantWithinRate("after post-turn admissions")
@@ -736,8 +740,8 @@ func TestRefreshBoundARetryEntersThePacingAtItsTimer(t *testing.T) {
 
 		r.advanceToTurn(u)
 		ws := readWake(u)
-		if !ws.held || !ws.parked {
-			t.Fatalf("setup: after u's turn its wake = %+v, want a try parked at the pod gate", ws)
+		if !ws.held || !ws.podStartWait {
+			t.Fatalf("setup: after u's turn its wake = %+v, want a try waiting at the pod gate", ws)
 		}
 
 		r.registerPeer(peer)
@@ -888,14 +892,14 @@ func (s *pauseOnLaunchWriteStore) PutClaim(ctx context.Context, c Claim) error {
 // of dispatch://INFRA-4110/artifact/plan-md, the inventory for dispatch://INFRA-4110/spec#b-r1)
 // holds a live credit in the refresh gate while that wake waits. Each row drives its exact road
 // on one stale claim, verifies the setup at every step, and reads everyWaitingRefreshHoldsACredit
-// once the road's wake parks in the pacing. A06 also reads the machine's own credit
-// (wantCreditHeld) while its try is parked at its issue pod's start gate, and A10 while the
+// once the road's wake is delayed in the pacing. A06 also reads the machine's own credit
+// (wantCreditHeld) while its try waits at its issue pod's start gate, and A10 while the
 // pause's gate holds its wake, since no view shows either wait as a wake waiting.
 //
 // The negative control is main at 8868205a18f3: every row fails on a credit check because main
-// returned the credit before the road parked the wake. A06 and A10 fail at wantCreditHeld, since
-// main gave the credit back as that wait began; every other row reaches its road's parked wake and
-// fails there.
+// returned the credit before the road delayed the wake. A06 and A10 fail at wantCreditHeld, since
+// main gave the credit back as that wait began; every other row reaches its road's delayed wake
+// and fails there.
 func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 	const queueDepth = 12
 
@@ -904,7 +908,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A01 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A01 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A1 after admission")
 		queueAhead(r.h, queueDepth)
 
@@ -922,7 +926,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		r := newBoundRig(t, 1, boundRigOptions{})
 		u := r.machines[0]
 
-		// Refill the pacer's token so StalePlugin is let out at once without parking first.
+		// Refill the pacer's token so StalePlugin is let out at once without being delayed first.
 		r.advance(wakeInterval + wakePart)
 		r.h.store.fail("PutClaim", errBoom)
 		c := admit(t, r.gate)
@@ -944,7 +948,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A03 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A03 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A3 after admission")
 		queueAhead(r.h, queueDepth)
 
@@ -963,7 +967,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A04 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A04 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A4 after admission")
 
 		// Path 1 arms the opening retry so the claim becomes processless.
@@ -972,14 +976,14 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		r.h.store.fail("PutClaim", nil)
 		wantRetrySetup(t, u, "A04 opening failed write")
 
-		// Park the opening retry's wake over the processless claim (credit is checked after
-		// A04's own refused turn parks the second retry, so main at 8868205a18f3 exercises
+		// Delay the opening retry's wake over the processless claim (credit is checked after
+		// A04's own refused turn delays the second retry, so main at 8868205a18f3 exercises
 		// runWake too).
 		r.queueSpawns(queueDepth)
 		r.advance(testProbe)
-		wantWaitingKind(t, u, WakePluginRefresh, "A04 opening retry parked over no process")
+		wantWaitingKind(t, u, WakePluginRefresh, "A04 opening retry delayed over no process")
 		if loc := u.View().Locator; loc != nil {
-			t.Fatalf("setup: A04 opening retry parked over process %+v, want none", loc)
+			t.Fatalf("setup: A04 opening retry delayed over process %+v, want none", loc)
 		}
 
 		// At the opening retry wake's turn, CheckLaunch fails inside runWake, arming a second retry.
@@ -1001,7 +1005,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A05 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A05 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A5 after admission")
 		queueAhead(r.h, queueDepth)
 
@@ -1029,7 +1033,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		peer := r.addPodRole(u, claim.RoleArchitect)
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A06 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A06 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A6 after admission")
 		queueAhead(r.h, queueDepth)
 
@@ -1039,11 +1043,11 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 
 		r.advanceToTurn(u)
 		ws := readWake(u)
-		if !ws.held || !ws.parked {
-			t.Fatalf("setup: A06 wake = %+v, want a try parked at the pod start gate", ws)
+		if !ws.held || !ws.podStartWait {
+			t.Fatalf("setup: A06 wake = %+v, want a try waiting at the pod start gate", ws)
 		}
 		r.h.wantStarts(u.View().Token, 0)
-		r.wantCreditHeld(u, "road A6 while parked at pod gate")
+		r.wantCreditHeld(u, "road A6 while waiting at pod gate")
 
 		r.registerPeer(peer)
 		r.h.store.fail("HoldSessions", errBoom)
@@ -1062,7 +1066,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		peer := r.addPodRole(u, claim.RoleArchitect)
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A07 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A07 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A7 after admission")
 
 		peerToken := peer.View().Token
@@ -1071,8 +1075,8 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 
 		r.advanceToTurn(u)
 		ws := readWake(u)
-		if !ws.held || !ws.parked {
-			t.Fatalf("setup: A07 wake = %+v, want a try parked at the pod start gate", ws)
+		if !ws.held || !ws.podStartWait {
+			t.Fatalf("setup: A07 wake = %+v, want a try waiting at the pod start gate", ws)
 		}
 		r.h.wantStarts(u.View().Token, 0)
 
@@ -1083,7 +1087,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		r.pause.set(7)
 		r.advance(podLoadSettle)
 		ws = readWake(u)
-		if !ws.held || ws.pause != 7 || ws.parked {
+		if !ws.held || ws.pause != 7 || ws.podStartWait {
 			t.Fatalf("setup: A07 wake after pod grant in pause = %+v, want held by pauseGate for pause 7", ws)
 		}
 		if !timerArmed(u, TimerPause) {
@@ -1129,7 +1133,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 			t.Fatal("setup: A08 PutClaim hook did not fire on u's StateLaunching write")
 		}
 		ws := readWake(u)
-		if !ws.held || ws.pause != 7 || ws.parked {
+		if !ws.held || ws.pause != 7 || ws.podStartWait {
 			t.Fatalf("setup: A08 wake after pauseHeldTry = %+v, want held by pauseGate for pause 7", ws)
 		}
 		if !timerArmed(u, TimerPause) {
@@ -1159,7 +1163,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		waiting := wantWaitingKind(t, u, WakePluginRefresh, "A09 initial park")
+		waiting := wantWaitingKind(t, u, WakePluginRefresh, "A09 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A9 after admission")
 
 		// Pause before u's turn and fail Suspend so that the immediate TimerPause fired at the
@@ -1252,12 +1256,12 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		r.wantEveryWaitingRefreshCredited("road A11")
 	})
 
-	t.Run("A12_path_4_after_repark_wake", func(t *testing.T) {
+	t.Run("A12_path_4_after_delay_wake_again", func(t *testing.T) {
 		r := newBoundRig(t, 1, boundRigOptions{withPause: true})
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A12 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A12 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A12 after admission")
 
 		// Drive u into a processless path 1 retry so that when the retry fires while paused,
@@ -1277,7 +1281,7 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		r.h.mustPostTo(u, Timer{Claim: u.View().Token, Kind: TimerRelaunch, Generation: u.View().Generation, Seq: relaunchSeq})
 
 		ws := readWake(u)
-		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 || ws.parked {
+		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 || ws.podStartWait {
 			t.Fatalf("setup: A12 wake after retry met pause = %+v, want WakePluginRefresh held by pauseGate for pause 7", ws)
 		}
 		if loc := u.View().Locator; loc != nil {
@@ -1285,38 +1289,38 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		}
 
 		// RequestForgetSession drops the processless held wake (dropWakeFor), is ignored on
-		// StateLaunching, and reparkWake puts the wake back in pauseGate.
-		const reparkLine = "supervise: the request launched nothing; the wake the pacing holds keeps its place"
+		// StateLaunching, and delayWakeAgain puts the wake back in pauseGate.
+		const delayAgainLine = "supervise: the request launched nothing; the wake the pacing holds keeps its place"
 		if err := r.h.postTo(u, RequestForgetSession{Claim: u.View().Token, Session: u.View().Session, By: SuspendedByOperator}); err == nil {
 			t.Fatal("setup: A12 RequestForgetSession over StateLaunching succeeded, want refusal")
 		}
-		if got := len(r.h.records.of(reparkLine)); got != 1 {
-			t.Fatalf("setup: A12 reparkWake logged %d times, want 1", got)
+		if got := len(r.h.records.of(delayAgainLine)); got != 1 {
+			t.Fatalf("setup: A12 delayWakeAgain logged %d times, want 1", got)
 		}
 		ws = readWake(u)
 		if !ws.held || ws.kind != WakePluginRefresh || ws.pause != 7 {
-			t.Fatalf("setup: A12 wake after reparkWake = %+v, want WakePluginRefresh held for pause 7", ws)
+			t.Fatalf("setup: A12 wake after delayWakeAgain = %+v, want WakePluginRefresh held for pause 7", ws)
 		}
 
 		// End the pause, queue spawns so the let-out waits, and send ResumePause.
 		r.pause.set(0)
 		r.queueSpawns(queueDepth)
 		r.h.mustPostTo(u, ResumePause{Claim: u.View().Token, Pause: 7})
-		wantWaitingKind(t, u, WakePluginRefresh, "A12 let-out after reparkWake entered pacing")
+		wantWaitingKind(t, u, WakePluginRefresh, "A12 let-out after delayWakeAgain entered pacing")
 		r.wantEveryWaitingRefreshCredited("road A12")
 	})
 
-	t.Run("A13_path_1_at_run_parked_launch_now", func(t *testing.T) {
+	t.Run("A13_path_1_at_run_delayed_launch_now", func(t *testing.T) {
 		r := newBoundRig(t, 1, boundRigOptions{})
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A13 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A13 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A13 after admission")
 		queueAhead(r.h, queueDepth)
 
-		// An operator's delivery (empty ID) runs the parked refresh launch immediately via
-		// runParkedLaunchNow, and its StateLaunching write fails, arming path 1's retry.
+		// An operator's delivery (empty ID) runs the delayed refresh launch immediately via
+		// runDelayedLaunchNow, and its StateLaunching write fails, arming path 1's retry.
 		r.h.store.fail("PutClaim", errBoom)
 		if err := r.h.postTo(u, RequestDeliver{Claim: u.View().Token, Task: "operator task"}); err == nil {
 			t.Fatal("setup: A13 operator RequestDeliver with failing PutClaim succeeded, want error")
@@ -1324,9 +1328,9 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		r.h.store.fail("PutClaim", nil)
 		if lines := r.h.logs.lines("an operator's task reached a claim whose paced launch waits over the process it replaces",
 			"claim="+string(u.View().Token)); len(lines) != 1 {
-			t.Fatalf("setup: A13 runParkedLaunchNow lines = %v, want 1", lines)
+			t.Fatalf("setup: A13 runDelayedLaunchNow lines = %v, want 1", lines)
 		}
-		wantRetrySetup(t, u, "A13 path 1 retry after runParkedLaunchNow")
+		wantRetrySetup(t, u, "A13 path 1 retry after runDelayedLaunchNow")
 
 		r.advance(testProbe)
 		wantWaitingKind(t, u, WakePluginRefresh, "A13 retry entered pacing")
@@ -1338,10 +1342,10 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "A14 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "A14 initial delay")
 		r.wantEveryWaitingRefreshCredited("road A14 after admission")
 
-		// Arm path 1's retry and let it park a WakePluginRefresh wake over a processless claim.
+		// Arm path 1's retry and let it delay a WakePluginRefresh wake over a processless claim.
 		r.h.store.fail("PutClaim", errBoom)
 		r.advanceToTurn(u)
 		r.h.store.fail("PutClaim", nil)
@@ -1349,9 +1353,9 @@ func TestRefreshBoundEveryRoadIntoThePacingHoldsACredit(t *testing.T) {
 
 		r.queueSpawns(queueDepth)
 		r.advance(testProbe)
-		wantWaitingKind(t, u, WakePluginRefresh, "A14 opening retry parked over no process")
+		wantWaitingKind(t, u, WakePluginRefresh, "A14 opening retry delayed over no process")
 		if loc := u.View().Locator; loc != nil {
-			t.Fatalf("setup: A14 opening retry parked over process %+v, want none", loc)
+			t.Fatalf("setup: A14 opening retry delayed over process %+v, want none", loc)
 		}
 
 		// An operator's retry drops the processless wake and runs it now (runDroppedLaunchForRetry
@@ -1388,7 +1392,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "G1 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "G1 initial delay")
 
 		r.h.store.fail("PutClaim", errBoom)
 		r.advanceToTurn(u)
@@ -1411,7 +1415,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "G2 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "G2 initial delay")
 
 		r.h.store.fail("PutClaim", errBoom)
 		r.advanceToTurn(u)
@@ -1446,7 +1450,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "G3 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "G3 initial delay")
 
 		r.h.store.fail("PutClaim", errBoom)
 		r.advanceToTurn(u)
@@ -1469,7 +1473,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "G4 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "G4 initial delay")
 
 		r.h.store.fail("PutClaim", errBoom)
 		r.advanceToTurn(u)
@@ -1515,13 +1519,13 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 		r.wantAllCreditsReturned("G5 after pauseStopDue suspended held lane wake")
 	})
 
-	t.Run("G6_suspension_cuts_pod_parked_lane_try", func(t *testing.T) {
+	t.Run("G6_suspension_cuts_lane_try_waiting_at_pod_gate", func(t *testing.T) {
 		r := newBoundRig(t, 1, boundRigOptions{withPods: true})
 		u := r.machines[0]
 		peer := r.addPodRole(u, claim.RoleArchitect)
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "G6 initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "G6 initial delay")
 
 		peerToken := peer.View().Token
 		r.h.mustPostTo(peer, RequestResume{Claim: peerToken, By: SuspendedByOperator})
@@ -1529,8 +1533,8 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 
 		r.advanceToTurn(u)
 		ws := readWake(u)
-		if !ws.held || !ws.parked {
-			t.Fatalf("setup: G6 wake = %+v, want try parked at pod start gate", ws)
+		if !ws.held || !ws.podStartWait {
+			t.Fatalf("setup: G6 wake = %+v, want try waiting at pod start gate", ws)
 		}
 		r.h.wantStarts(u.View().Token, 0)
 
@@ -1543,10 +1547,10 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 			t.Fatalf("setup: G6 wake = %+v still held after suspend, want none", ws)
 		}
 		if got := len(r.h.records.of(podLaunchCutShortLine)); got != 1 {
-			t.Fatalf("setup: G6 podLaunchCutShortLine logged %d times, want 1 (endPodPark)", got)
+			t.Fatalf("setup: G6 podLaunchCutShortLine logged %d times, want 1 (endPodStartWait)", got)
 		}
 		r.h.wantStarts(u.View().Token, 0)
-		r.wantAllCreditsReturned("G6 after suspension cut pod-parked lane try")
+		r.wantAllCreditsReturned("G6 after suspension cut lane try waiting at pod gate")
 	})
 
 	t.Run("G7_session_store_or_pod_round_retry_is_launch_kind", func(t *testing.T) {
@@ -1563,7 +1567,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 				u := r.machines[0]
 
 				r.postAdmitted(u)
-				wantWaitingKind(t, u, WakePluginRefresh, "G7 "+tc.name+" initial park")
+				wantWaitingKind(t, u, WakePluginRefresh, "G7 "+tc.name+" initial delay")
 
 				r.h.rt.OnResume = func(context.Context) error {
 					return fmt.Errorf("resume %s: %w", u.View().Token, tc.err)
@@ -1575,12 +1579,12 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 				// The credit must already be back at the end of this decision while TimerRelaunch waits.
 				r.wantAllCreditsReturned("G7 " + tc.name + " while launch-kind retry waits")
 
-				// Confirm the retry parks under WakeLaunch rather than WakePluginRefresh.
+				// Confirm the retry is delayed under WakeLaunch rather than WakePluginRefresh.
 				r.advance(tc.retry - time.Second)
 				r.queueSpawns(4)
 				r.advance(time.Second)
 				wantWaitingKind(t, u, WakeLaunch, "G7 "+tc.name+" retry waits under WakeLaunch")
-				r.wantAllCreditsReturned("G7 " + tc.name + " after launch-kind retry parked")
+				r.wantAllCreditsReturned("G7 " + tc.name + " after launch-kind retry delayed")
 			})
 		}
 	})
@@ -1591,7 +1595,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 			u := r.machines[0]
 
 			r.postAdmitted(u)
-			wantWaitingKind(t, u, WakePluginRefresh, "G8 prompt_refused initial park")
+			wantWaitingKind(t, u, WakePluginRefresh, "G8 prompt_refused initial delay")
 
 			r.h.rt.OnResume = func(context.Context) error {
 				return fmt.Errorf("resume %s: %w", u.View().Token,
@@ -1614,7 +1618,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 			u := r.machines[0]
 
 			r.postAdmitted(u)
-			wantWaitingKind(t, u, WakePluginRefresh, "G8 budget_spent initial park")
+			wantWaitingKind(t, u, WakePluginRefresh, "G8 budget_spent initial delay")
 
 			r.h.rt.OnResume = func(context.Context) error { return errBoom }
 			r.advanceToTurn(u)
@@ -1649,7 +1653,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 			t.Fatal("setup: G9 PutClaim hook did not fire on u's StateLaunching write")
 		}
 		ws := readWake(u)
-		if !ws.held || ws.pause != 7 || ws.parked {
+		if !ws.held || ws.pause != 7 || ws.podStartWait {
 			t.Fatalf("setup: G9 wake after pauseHeldTry = %+v, want held by pauseGate for pause 7", ws)
 		}
 		r.h.wantStarts(u.View().Token, 0)
@@ -1668,7 +1672,7 @@ func TestRefreshBoundEachHeldCreditComesBack(t *testing.T) {
 }
 
 // Two gate corrections (gate.Correct(0), twice) made while an admitted stale-plugin launch waits
-// outside the wake pacing — on TimerRelaunch, held by the pause's gate, or parked at its issue
+// outside the wake pacing — on TimerRelaunch, held by the pause's gate, or waiting at its issue
 // pod's start gate — keep that claim's credit out and write no creditTakenBackMessage. Once the
 // wait ends, the credit returns on its own with zero creditTakenBackMessage records.
 //
@@ -1691,7 +1695,7 @@ func TestRefreshBoundACorrectionKeepsTheCreditOfALaunchThatWaitsOutsideThePacing
 		u := r.machines[0]
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "retry_on_timer_relaunch initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "retry_on_timer_relaunch initial delay")
 
 		r.h.store.fail("PutClaim", errBoom)
 		r.advanceToTurn(u)
@@ -1728,13 +1732,13 @@ func TestRefreshBoundACorrectionKeepsTheCreditOfALaunchThatWaitsOutsideThePacing
 		r.wantAllCreditsReturned("wake_held_by_pause_gate after let-out started process")
 	})
 
-	t.Run("try_parked_at_pod_start_gate", func(t *testing.T) {
+	t.Run("try_waiting_at_pod_start_gate", func(t *testing.T) {
 		r := newBoundRig(t, 1, boundRigOptions{withPods: true})
 		u := r.machines[0]
 		peer := r.addPodRole(u, claim.RoleArchitect)
 
 		r.postAdmitted(u)
-		wantWaitingKind(t, u, WakePluginRefresh, "try_parked_at_pod_start_gate initial park")
+		wantWaitingKind(t, u, WakePluginRefresh, "try_waiting_at_pod_start_gate initial delay")
 
 		peerToken := peer.View().Token
 		r.h.mustPostTo(peer, RequestResume{Claim: peerToken, By: SuspendedByOperator})
@@ -1742,17 +1746,17 @@ func TestRefreshBoundACorrectionKeepsTheCreditOfALaunchThatWaitsOutsideThePacing
 
 		r.advanceToTurn(u)
 		ws := readWake(u)
-		if !ws.held || !ws.parked {
-			t.Fatalf("setup: try_parked_at_pod_start_gate wake = %+v, want try parked at pod start gate", ws)
+		if !ws.held || !ws.podStartWait {
+			t.Fatalf("setup: try_waiting_at_pod_start_gate wake = %+v, want try waiting at pod start gate", ws)
 		}
 		r.h.wantStarts(u.View().Token, 0)
 
-		checkTwoCorrections(t, r, u, "try_parked_at_pod_start_gate")
+		checkTwoCorrections(t, r, u, "try_waiting_at_pod_start_gate")
 
 		// End the wait: peer's load settles and the pod gate grants u's start.
 		r.registerPeer(peer)
 		r.advance(podLoadSettle)
 		r.h.wantStarts(u.View().Token, 1)
-		r.wantAllCreditsReturned("try_parked_at_pod_start_gate after pod grant started process")
+		r.wantAllCreditsReturned("try_waiting_at_pod_start_gate after pod grant started process")
 	})
 }

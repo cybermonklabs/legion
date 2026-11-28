@@ -277,7 +277,7 @@ func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.
 }
 
 // A branch row of a generation the issue has left, or of a tree that lingers, asks GitHub for
-// nothing and finishes: a refused create of a parked tree never retries forever, and the starts it
+// nothing and finishes: a refused create of a tree out of the workflow never retries forever, and the starts it
 // held back meet their own fences.
 func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
 	t.Parallel()

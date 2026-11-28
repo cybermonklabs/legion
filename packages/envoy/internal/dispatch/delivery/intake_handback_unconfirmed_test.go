@@ -191,7 +191,7 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 	case <-time.After(30 * time.Second):
 		t.Fatal("control: the stop's hand-back never reached its publish: " + consumerState(row.publisher))
 	}
-	row.relay.AwaitParked(t)
+	row.relay.AwaitStopped(t)
 	release()
 	select {
 	case <-delivery.handBacksLanded():
@@ -404,7 +404,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	if err := writeFiller(holderConn); err != nil {
 		t.Fatalf("control: the holder's connection did not write the filler into its socket: %v", err)
 	}
-	relay.AwaitParked(t)
+	relay.AwaitStopped(t)
 	earlier.handBack(msg)
 	select {
 	case <-earlier.handBacksLanded():
@@ -679,7 +679,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	if err := writeFiller(holderConn); err != nil {
 		t.Fatalf("control: the holder's connection did not write the filler into its socket: %v", err)
 	}
-	relay.AwaitParked(t)
+	relay.AwaitStopped(t)
 	durable.StopDelivering(cancelled())
 	second := durable.config(durable.tuning)
 	if _, err := durable.subscribe(second.DeliverSubject); err != nil {

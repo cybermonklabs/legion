@@ -495,8 +495,8 @@ const issueMovedColumns = `moved.created_at, moved.actor`
 // issueMovedJoin is that read for the issue aliased `i`, gated on the request asking for it ($14)
 // and on the issue standing in one of the two statuses now. A row the gate is false for reads no
 // event, so a listing without the key pays nothing for the read and one with it pays for its
-// parked rows alone. An issue standing in any other status answers null although it may once
-// have been moved there, since the cells say how the issue came to stand where it stands.
+// rows in backlog or icebox alone. An issue standing in any other status answers null although it
+// may once have been moved there, since the cells say how the issue came to stand where it stands.
 var issueMovedJoin = backlogMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityBacklogStatuses)+`)`)
 
 // issueSummaryJoins resolve the eight values a listing row carries beside the issue's own

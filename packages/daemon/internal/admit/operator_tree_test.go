@@ -17,7 +17,7 @@ import (
 // The operator can run a tree of its own under the key of a root waiting for its slot: the root's
 // promotion waits on the operator's lifetime (TestAnOperatorTreeHoldsOnlyItsOwnWorkflowRootsAdmission).
 // That tree's claims and pod carry the root's tokens and names, so when the waiting root leaves the
-// workflow — a person parks it, or someone moves it to a running tree's status and admission releases
+// workflow — a person moves it to backlog, or someone moves it to a running tree's status and admission releases
 // it — the workflow's record goes to done and nothing acts on the operator's tree: no suspend, no
 // IssueSuspend, no linger close. Set back to todo with the label, the root waits again behind the
 // operator's lifetime.

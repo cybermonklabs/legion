@@ -164,7 +164,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	}
 	// An opened or reopened older than the recorded pull request's clock is a late redelivery,
 	// whichever pull request it names: a branch can carry a newer pull request after a merge or a
-	// park and rerun, and an earlier one's late event must not replace it. The workflow keeps one
+	// move to backlog and a rerun, and an earlier one's late event must not replace it. The workflow keeps one
 	// pull request per branch and assumes one is open at a time; two open at once from one branch,
 	// on different bases, are not modelled, and this fence can then keep the earlier one, whose
 	// close still tells the architect.

@@ -208,7 +208,7 @@ func TestHandOverWritesTheStatusAndTheLabelsInOnePatch(t *testing.T) {
 }
 
 // A hand-over of an issue a person already labelled writes only the status, but on the same
-// precondition: expected_sequence, so a person's park between the daemon's read and its write is
+// precondition: expected_sequence, so a person's move to backlog between the daemon's read and its write is
 // refused (ISSUE_CHANGED) rather than overwritten. It adds no label, since the issue carries one.
 func TestHandOverOfALabelledIssueWritesTheStatusAtItsSequence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

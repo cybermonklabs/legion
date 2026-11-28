@@ -36,7 +36,7 @@ func TestADecisionToldInATurnWhoseConfirmationFailedIsToldAgain(t *testing.T) {
 	for _, statement := range []string{
 		`create function refuse_the_tell() returns trigger language plpgsql as $$
 			begin raise exception 'the confirmation''s write did not commit'; end $$`,
-		`create trigger refuse_the_tell before delete on parked_decisions for each row execute function refuse_the_tell()`,
+		`create trigger refuse_the_tell before delete on kept_decisions for each row execute function refuse_the_tell()`,
 	} {
 		if _, err := r.pool.Exec(r.ctx, statement); err != nil {
 			t.Fatalf("make the confirmation's write fail: %v", err)
@@ -55,7 +55,7 @@ func TestADecisionToldInATurnWhoseConfirmationFailedIsToldAgain(t *testing.T) {
 		machine.Wait()
 	}
 	for _, statement := range []string{
-		"drop trigger refuse_the_tell on parked_decisions",
+		"drop trigger refuse_the_tell on kept_decisions",
 		"drop function refuse_the_tell()",
 	} {
 		if _, err := r.pool.Exec(r.ctx, statement); err != nil {
@@ -68,7 +68,7 @@ func TestADecisionToldInATurnWhoseConfirmationFailedIsToldAgain(t *testing.T) {
 	var task string
 	err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		task, _, err = r.engine.ParkedDecisionTask(r.ctx, tx, r.root)
+		task, _, err = r.engine.UnclaimedKeptTask(r.ctx, tx, r.root)
 		return err
 	})
 	if err != nil {

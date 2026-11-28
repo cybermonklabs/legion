@@ -83,7 +83,7 @@ import type { StallLimits } from "./stall-limits";
  *    2026-11-08 on the same binary; the `eval` half and the plain-`bash` half driven in
  *    `legion-stall-watchdog-omp.test.ts`, the `pty: true` half by hand). A delivery sent as
  *    `pi.sendMessage(…, { deliverAs: "steer", triggerTurn: false })`, which is how an Envoy role
- *    message reaches a worker, arrives while the turn is parked in a call and leaves that call
+ *    message reaches a worker, arrives while the turn waits in a call and leaves that call
  *    the turn's: an `eval` cell and a `pty: true` shell call each ran on with no end frame of
  *    their own, and the cell was judged, told and recovered as it would have been with no
  *    delivery at all. A plain (non-`pty`) `bash` call is the exception, and one this watch never

@@ -32,7 +32,7 @@ related_issues:
 On sjawhar/legion#2226 each of these was a review finding before it was fixed:
 
 - The hold first stopped at the first recorded ancestor while `release_children` walks the whole
-  Dispatch chain (`api/architect.go` `releasableChild`), so a root under a parked root took a slot
+  Dispatch chain (`api/architect.go` `releasableChild`), so a root under a root in backlog took a slot
   the release could still have reached. The hold now stores the whole chain (`chainOf`, read in
   `daemon/repositories.go` `withAncestry`, line 770) and `record.Waiting` holds while any live root
   is on it (`record/project.go:48`).

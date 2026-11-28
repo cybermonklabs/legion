@@ -120,11 +120,11 @@ func countStart(t *testing.T, pool *pgxpool.Pool, engine intake.Handler, key str
 	})
 }
 
-// closeFinishingTree parks and closes the finishing tree's root (seedFinishingTree), a person's
+// closeFinishingTree moves the finishing tree's root to backlog and closes it (seedFinishingTree), a person's
 // close, which lingers its tree.
 func closeFinishingTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 	t.Helper()
-	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
+	apply(t, pool, admission, "root-backlog", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 	apply(t, pool, admission, "root-closed", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.closed", Status: "done", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 }
 

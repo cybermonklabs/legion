@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  Dispatch names each thing by what it is. The priorities answer's field is `priority_work_in_backlog_or_icebox`. `envoy-dispatch stored-order` prints `pending_items=` and `pending_delete_ranges=`, the test-hook answer of a paused live write names its field `paused`, and the document service, the mention sender, the cipher helper and the test hooks say "pending", "retry", "kept dormant", "paused" or "blocked" where each is meant.
+time: 2026-11-24T03:32:42.000000000Z
+custom:
+    Issue: pr5307

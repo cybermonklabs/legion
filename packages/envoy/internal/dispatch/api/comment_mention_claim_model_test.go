@@ -15,7 +15,7 @@ import (
 )
 
 // The mention sender's claim model: every interleaving, within small bounds, of the package's own
-// mention sender (newMentionSender) - its lanes, its parks and their timers, its claim refresh
+// mention sender (newMentionSender) - its lanes, its retries and their timers, its claim refresh
 // (refreshHeldClaims) and its re-reads of claims a lost refresh may have written (rereadUnsure,
 // claimKnown) - with the statements its sends, its refresh and its re-reads make on two comments'
 // attempt rows, the delivery sweep, and the outbox sending the earlier events the comments wait
@@ -34,7 +34,7 @@ import (
 // in it named by its order among the claims in play and its age, which is all the code compares
 // (model.DeliveryClaimSinceSQL, model.DeliveryClaimFreeSQL), and each attempt's lost count by
 // whether it moved since a re-read in flight began, which is all the code compares of it. A lane
-// goroutine is keyed with the lane it serves and its park's pending timer.
+// goroutine is keyed with the lane it serves and its retry's pending timer.
 //
 // What the model holds:
 //   - comments A-1 and A-2 of issue T-1, each mentioning session s1 under attempt 1, which commits
@@ -56,7 +56,7 @@ import (
 //   - time in slots of half a claim-refresh period (mentionClaimRefresh), which a step of its own
 //     ends: the sender's loop (keepClaims) starts a refresh as every period begins, a claim lapses
 //     one lease (model.DeliveryClaimLapse, cmLapsePeriods periods) after it was written, and every
-//     thing that takes milliseconds or seconds - a try and its re-read, the refresh, a park's
+//     thing that takes milliseconds or seconds - a try and its re-read, the refresh, a retry's
 //     timer, at most two seconds (mentionOrderRetryMax) - ends no later than the slot after the
 //     one it began in, so time moves on no further while one is still to end; a locked section
 //     and the sweep's hand-off take microseconds, so time moves on none while one waits, but a
@@ -71,7 +71,7 @@ import (
 // what follows from it:
 //   - stale: every claim the sender records for an attempt and trusts is the claim the attempt's
 //     row carries, whenever no refresh has written rows it has not recorded yet, no try has
-//     claimed that row for itself and not parked yet, and the sweep is not handing it over. A
+//     claimed that row for itself and not scheduled its retry yet, and the sweep is not handing it over. A
 //     claim a lost answer left unknown (mentionClaimState.unsure) is not trusted, and the sender
 //     reads its row before it acts on it. A trusted record behind its row is never written again,
 //     since the refresh writes only a row that carries the claim the sender names, so the row's
@@ -110,7 +110,7 @@ var cmComments = [2]string{"A-1", "A-2"}
 
 // cmEarlier is the earlier event both comments wait behind, and cmBetween one written between
 // them, which only A-2 waits behind: it lets A-2's first try, which claims its attempt, wait and
-// park long after a refresh began, as a send queued behind a busy lane's does.
+// schedule its retry long after a refresh began, as a send queued behind a busy lane's does.
 var (
 	cmEarlier = model.MentionCopyHolder{EventID: 1}
 	cmBetween = model.MentionCopyHolder{EventID: 2}
@@ -299,7 +299,7 @@ type cmWritten struct {
 	err    error
 }
 
-// cmTimer is the held lane's park timer the sender started, and the slot it started in.
+// cmTimer is the held lane's retry timer the sender started, and the slot it started in.
 type cmTimer struct {
 	run   func()
 	began int
@@ -318,8 +318,8 @@ type cmG struct {
 	running bool
 	// last is the comment of the send a lane goroutine last carried (-1 for none), which the trace
 	// names it by and nothing else reads; ended its last try when that try claimed the row for
-	// itself and waits, until its park records the claim; and givenUp whether its park left it no
-	// lane, the park's timer to start once it takes another (serve).
+	// itself and waits, until its scheduleRetry records the claim; and givenUp whether its retry left
+	// it no lane, the retry's timer to start once it takes another (serve).
 	last    int
 	ended   *cmTry
 	givenUp bool
@@ -333,7 +333,7 @@ type cmG struct {
 	readFailed bool
 	// tried is that the try of the send it carries has answered, from that answer until it starts
 	// another try or next hands it its next send: a sender whose serve reaches one lock site both
-	// before a try and after it, as one that reads an unknown claim again before its park does,
+	// before a try and after it, as one that reads an unknown claim again before its scheduleRetry does,
 	// acts there on which it is.
 	tried bool
 }
@@ -368,7 +368,7 @@ type cmLockArrival struct {
 // cmLock is the sender's lock under the model: the mutex that guards the sender's state, taken
 // by every caller, and, for the sender's own goroutines - those serving a lane, and the refresh -
 // a wait for the model to let it be taken, which makes each locked section a step. The model's
-// own calls into the sender (enqueue, unpark, wait) take the mutex alone, and its reads of the
+// own calls into the sender (enqueue, retryLane, wait) take the mutex alone, and its reads of the
 // sender's state take the embedded mutex directly. A lock taken from any other function of the
 // sender panics, naming it: a locked section the model does not know of would otherwise run
 // outside every step, and the search would miss each window it opens.
@@ -461,7 +461,7 @@ type cmRun struct {
 	done     chan struct{}
 	arrivals chan cmArrival
 	locks    chan cmLockArrival
-	// mu guards started, the park timers the sender started in the step being taken.
+	// mu guards started, the retry timers the sender started in the step being taken.
 	mu               sync.Mutex
 	started          []func()
 	timer            *cmTimer
@@ -477,7 +477,7 @@ type cmRun struct {
 	sweptFirst bool
 	// gs is the sender's live goroutines in the order they started, and released the one the step
 	// being taken let go on. A step lets one of them go on, or starts at most one - a commit's or a
-	// hand-off's enqueue, a timer's unpark, a period's refresh - and the sender's goroutines start
+	// hand-off's enqueue, a timer's retryLane, a period's refresh - and the sender's goroutines start
 	// none, so whatever comes to the lock or to a statement in a step is the one it let go on, or
 	// else the one it started.
 	gs       []*cmG

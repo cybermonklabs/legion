@@ -398,8 +398,8 @@ func startRegister(t *testing.T, r *rig, sessionID *string) <-chan callAnswer {
 // the session.
 //
 // It knows the call is blocked from the rig's own Server (registerWaiting), never from the
-// process: other tests' Servers park registers in registerReply too while the package runs in
-// parallel (TestARegisterWaitIsReadOnTheRigsOwnServer).
+// process: other tests' Servers hold registers waiting in registerReply too while the package
+// runs in parallel (TestARegisterWaitIsReadOnTheRigsOwnServer).
 func registerWaitBlocked(t *testing.T, r *rig, sessionID *string) <-chan callAnswer {
 	t.Helper()
 	waiting := registerWaiting(t, r.srv)
@@ -451,7 +451,7 @@ func freshEnrollment(t *testing.T, replies <-chan callAnswer, stale ...string) s
 
 // TestARegisterWaitIsReadOnTheRigsOwnServer: a register is read as waiting on the Server it was
 // sent to, and on no other. Two rigs run at once; rig a's hook is set first and rig b's second, so
-// a hook shared by the Servers would now be b's, and a register is sent to rig a alone, parked in
+// a hook shared by the Servers would now be b's, and a register is sent to rig a alone, waiting in
 // registerReply with its re-enrollment held at a's gate. a's hook must fire and b's must not: a
 // shared hook fires b's for a's register, and a reading of the whole process's goroutines reads
 // a's register as b's too.

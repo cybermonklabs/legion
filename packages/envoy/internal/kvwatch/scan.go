@@ -59,11 +59,11 @@ func (s *KeyScan) count(entry Entry) bool {
 // ctx is the caller's: the whole scan ends with it, the consumer the watch creates included, so a
 // read answering a request waits no longer than that request's own bound. A caller that answers
 // none, and holds the scan to its idle bound alone, passes context.Background(). The watch lives
-// in a context derived from it and cancelled on return, so the goroutine nats.go parks on it ends
+// in a context derived from it and cancelled on return, so the goroutine nats.go leaves waiting on it ends
 // with the scan. A scan that returns with its watcher still subscribed -- complete, timed out,
 // ended by ctx, or ended by visitLive -- stops it and has it read until it closes: nats.go's
 // delivery callback blocks holding the watcher's lock on a full 256-entry buffer, so a watcher
-// stopped and left unread would park its subscription's goroutine for good. A stop that fails is
+// stopped and left unread would block its subscription's goroutine for good. A stop that fails is
 // logged through log at WARN, except after ctx's end, which unsubscribes the watch through nats.go
 // itself.
 func ScanExistingKeys(ctx context.Context, kv bus.KeyValue, keys, what string, idle time.Duration, log *slog.Logger, visitLive func(Entry) error, opts ...jetstream.WatchOpt) (KeyScan, error) {

@@ -458,7 +458,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 // (leaveUnderOperator).
 //
 // The one shape no close reaches again is a child that left the workflow while its tree runs on
-// (leftUnderRunningTree): parked in backlog, icebox or triage, or closed as done, under a root
+// (leftUnderRunningTree): moved to backlog, icebox or triage, or closed as done, under a root
 // still in the workflow. Its departure was its one close (leave): it suspended or closed each of
 // its claims and deleted its Sandbox with the pod and the disk (record.IssueSuspend), and nothing
 // of its running tree closes it again. A claim that runs there after that close runs in a pod

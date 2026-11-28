@@ -108,4 +108,4 @@ daily report in Dispatch.
   <track kind="captions" src="/legion/media/videos/legion-controller.vtt" srclang="en" label="English" default>
 </video>
 
-![The project's Legion daily report issue, parked in Icebox, with the controller's report for the day: the issue Legion finished and its pull request, nothing running, and the free slots.](/legion/media/legion/daily-report.png)
+![The project's Legion daily report issue, in Icebox, with the controller's report for the day: the issue Legion finished and its pull request, nothing running, and the free slots.](/legion/media/legion/daily-report.png)

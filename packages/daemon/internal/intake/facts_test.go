@@ -174,7 +174,7 @@ func TestLegionEntryReadsTheEntryTheReviewSaysItIsOf(t *testing.T) {
 // decision block was the whole change since the version they approved; its reason opens with
 // CarriedApprovalReasonPrefix, mirrored from Dispatch's carryReason
 // (packages/envoy/internal/dispatch/docs/approval_carry.go). It is not a person's new act, so the
-// workflow queues no parked root for it. An approval given with no reason, and a review with any
+// workflow queues no root in backlog or icebox for it. An approval given with no reason, and a review with any
 // other reason, are not carries.
 func TestCarriedApprovalReadsTheReasonsPrefix(t *testing.T) {
 	t.Parallel()

@@ -17,8 +17,8 @@ package docs
 // database nor a ygo server nor a timer.
 //
 // Every schedule is one goroutine at a time. An operation runs on a goroutine of its own and
-// parks in the windows real goroutines interleave in (awarenessWindows); the scheduler hands one
-// thread the baton and waits for it to park or finish before it picks the next, so a seed replays
+// pauses in the windows real goroutines interleave in (awarenessWindows); the scheduler hands one
+// thread the baton and waits for it to pause or finish before it picks the next, so a seed replays
 // the same schedule. What a schedule is not is a model of the relay: the invariants it checks
 // are about the two rooms and the browsers reading them, not about what the relay did to them.
 // One of them is checked as each update lands rather than once the schedule has come to rest,
@@ -231,7 +231,7 @@ func (p *relayProcess) lists(client uint64) (uint64, bool) {
 }
 
 // relayThread is one operation's goroutine. One thread of a schedule runs at a time: the
-// scheduler hands this one the baton (relaySchedule.step) and waits for it to park (park) or
+// scheduler hands this one the baton (relaySchedule.step) and waits for it to pause (pause) or
 // finish.
 type relayThread struct {
 	what    string
@@ -341,23 +341,23 @@ func newRelaySchedule(seed uint64) *relaySchedule {
 				// first: the window between a change of the room and the relay hearing of it,
 				// where a purge, a reader's return and another path's removal each land.
 				aw.OnUpdate(func(awareness.UpdateEvent) {
-					s.park("between a change of the room and the relay hearing of it")
+					s.pause("between a change of the room and the relay hearing of it")
 				})
 			},
 			beforeSnapshot: func(string, *awareness.Awareness, []awarenessEntry) {
-				s.park("between what a change read of the relay's lists and its read of the room")
+				s.pause("between what a change read of the relay's lists and its read of the room")
 			},
 			beforeRecord: func(string, *awareness.Awareness, []awarenessEntry) {
-				s.park("between what a change touched and the record of it")
+				s.pause("between what a change touched and the record of it")
 			},
 			beforeAnswerRecord: func(string, *awareness.Awareness, []awarenessEntry) {
-				s.park("between the read an answer stands on and the record of it")
+				s.pause("between the read an answer stands on and the record of it")
 			},
 			beforeResolve: func(string, map[uint64]awarenessEntry) {
-				s.park("between a flush taking its batch and the read that resolves it")
+				s.pause("between a flush taking its batch and the read that resolves it")
 			},
 			beforeRaise: func(string, map[uint64]awarenessEntry) {
-				s.park("between a flush's read of the room and the raise of the list to it")
+				s.pause("between a flush's read of the room and the raise of the list to it")
 			},
 		}
 		process.relay = newAwarenessRelay(process)
@@ -416,7 +416,7 @@ func (s *relaySchedule) echoed(client int) int {
 }
 
 // play runs the schedule: at each step it either starts the next operation or carries one that is
-// parked a step further, picked at random, until every operation has run and no thread is left.
+// paused a step further, picked at random, until every operation has run and no thread is left.
 // It then drains and checks what the two rooms hold.
 func (s *relaySchedule) play() {
 	for len(s.ops) > 0 || len(s.threads) > 0 {
@@ -433,7 +433,7 @@ func (s *relaySchedule) play() {
 	s.check()
 }
 
-// drain finishes what the schedule left in flight: every thread still parked, every coalescing
+// drain finishes what the schedule left in flight: every thread still paused, every coalescing
 // window still armed, and every notification still waiting on a lane - and what each of those
 // starts in turn, until the two processes owe each other nothing.
 func (s *relaySchedule) drain() {
@@ -519,7 +519,7 @@ func (s *relaySchedule) begin(op relayOp) {
 			if removal == nil {
 				return
 			}
-			s.park("between a closing room's read of its local clients and the removal of them")
+			s.pause("between a closing room's read of its local clients and the removal of them")
 			s.applied(process, removal, "a closing room")
 		})
 	case opQuery:
@@ -597,12 +597,12 @@ func (s *relaySchedule) start(what string, onDone func(), body func()) {
 	s.step(thread, what)
 }
 
-// resume carries a parked thread a step further.
+// resume carries a paused thread a step further.
 func (s *relaySchedule) resume(thread *relayThread, prefix string) {
-	s.step(thread, fmt.Sprintf("%sresume %s, parked %s", prefix, thread.what, thread.where))
+	s.step(thread, fmt.Sprintf("%sresume %s, paused %s", prefix, thread.what, thread.where))
 }
 
-// step hands thread the baton and waits for it to park or finish. Nothing else of the schedule
+// step hands thread the baton and waits for it to pause or finish. Nothing else of the schedule
 // runs while it holds it, which is what makes a seed replay its schedule.
 func (s *relaySchedule) step(thread *relayThread, note string) {
 	s.note(note)
@@ -619,9 +619,9 @@ func (s *relaySchedule) step(thread *relayThread, note string) {
 	}
 }
 
-// park hands the baton back to the scheduler from inside the running thread's own code: where is
-// the window it is parked in (awarenessWindows).
-func (s *relaySchedule) park(where string) {
+// pause hands the baton back to the scheduler from inside the running thread's own code: where is
+// the window it is paused in (awarenessWindows).
+func (s *relaySchedule) pause(where string) {
 	thread := s.running
 	thread.where = where
 	thread.stopped <- struct{}{}

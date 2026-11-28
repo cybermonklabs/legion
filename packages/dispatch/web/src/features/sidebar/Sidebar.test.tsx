@@ -79,7 +79,7 @@ function renderRail({
     spyOn(api, "listPriorities").mockResolvedValue({
       empty: "No priority is live now, so the list is empty.",
       priorities: [],
-      priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+      priority_work_in_backlog_or_icebox: { by_priority: {}, count: 0, issues: [] },
       work_under_no_priority: { by_project: {}, count: 0, issues: [] },
     }),
     spyOn(api, "listIssues").mockResolvedValue([]),

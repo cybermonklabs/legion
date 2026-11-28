@@ -410,7 +410,7 @@ func (r *personHandoverRig) reopenedOnBasis(run basisRun) {
 // failing at each attempt of its backoff (record.RetryBackoff), for the rest of the run. An attempt
 // that lands while a person's move to the backlog has the tree linger finishes it undelivered
 // and keeps the approval as a decision made while nobody in the tree could hear it (the outbox's
-// stoppedWithTree, parkDecision), and the re-admission's start then names that decision
+// stoppedWithTree, relaySpecDecision), and the re-admission's start then names that decision
 // (workflow.KeptDecisionsTask): whether it did would turn on where the backoff fell.
 func (r *personHandoverRig) hear(key string, version int) {
 	t := r.t

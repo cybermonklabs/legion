@@ -74,7 +74,7 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 // The tick notice carries what the project holds: every issue the daemon's own record holds in
 // the workflow that stands in neither the active set nor the waiting line, each with the one
 // word for why, beside the open capabilities and the blocked rows the notice carries already
-// (C3 of dispatch://INFRA-3107). A member of a parked tree, a child under a shut design gate and a
+// (C3 of dispatch://INFRA-3107). A member of a tree whose root is in backlog, a child under a shut design gate and a
 // member whose tree root the live read leaves out each take a row of their own, and a project holding nothing carries no field at all, as a tick with
 // nothing blocked carries no blocked field.
 //
@@ -83,7 +83,7 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 // records. They are one judgement (record.HeldList) over two candidate reads, and the point of
 // the comparison is that the two reads agree, so neither answer is copied from the other.
 func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
-	const parked, parkedMember = "LEGION-PARKED", "LEGION-PARKED-MEMBER"
+	const backlogRoot, backlogMember = "LEGION-BACKLOG", "LEGION-BACKLOG-MEMBER"
 	const gated, gatedChild = "LEGION-GATED", "LEGION-GATED-CHILD"
 	const triaged, triagedMember = "LEGION-TRIAGED", "LEGION-TRIAGED-MEMBER"
 	const blockedRoot, blocker = "LEGION-BLOCKED", "LEGION-BLOCKER"
@@ -102,13 +102,13 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 			Status: status, Rank: "M", HandedOver: true}
 	}
 
-	// A tree a person parked: its root is out of the workflow at backlog, and the member the park
-	// left behind is in it, held by the tree rather than by anything of its own.
-	putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: parked, Tree: parked, Phase: phase.Admitted, Generation: 1,
+	// A tree a person moved to backlog: its root is out of the workflow at backlog, and the member
+	// the move left behind is in it, held by the tree rather than by anything of its own.
+	putIssue(t, pool, record.Issue{Key: backlogRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: backlogRoot, Tree: backlogRoot, Phase: phase.Admitted, Generation: 1,
 		Status: "backlog", Rank: "A", HandedOver: true})
-	seedLifecycle(t, pool, parked)
-	putIssue(t, pool, member(parkedMember, parked, phase.Admitted, "todo"))
+	seedLifecycle(t, pool, backlogRoot)
+	putIssue(t, pool, member(backlogMember, backlogRoot, phase.Admitted, "todo"))
 	// A tree whose design gate stands shut: its root holds a slot and no step of its gate is
 	// registered, so its child waits for the gate.
 	seedSlotted(t, pool, gated, "B")
@@ -122,7 +122,7 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 	// leaves behind (record.ReadTreeRoots), while the state's read holds the root itself: the
 	// two readers meet one issue over two reads, and the gates of those roots are read where the
 	// facts are built (record.ReadLineFacts), so both classify over the same gates. Nothing of
-	// the tree is closed, parked or waiting on a person and the gate is open, so no word above
+	// the tree is closed, in backlog or waiting on a person and the gate is open, so no word above
 	// `unclassified` is true of the member, in either reader.
 	putIssue(t, pool, record.Issue{Key: triaged, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: testProject, Title: triaged, Tree: triaged, Phase: phase.Done, Generation: 1,
@@ -145,8 +145,8 @@ func TestTheTickNoticeCarriesTheHeldIssues(t *testing.T) {
 		OpenCapabilities: []string{"secrets"},
 		Blocked:          []record.BlockedIssue{{Issue: blockedRoot, BlockedBy: []string{blocker}}},
 		Held: []record.HeldIssue{
+			{Issue: backlogMember, Reason: record.HeldTreeInBacklogOrIcebox, HeldBy: []string{backlogRoot}},
 			{Issue: gatedChild, Reason: record.HeldDesignGate, HeldBy: []string{gated}},
-			{Issue: parkedMember, Reason: record.HeldTreeParked, HeldBy: []string{parked}},
 			{Issue: triagedMember, Reason: record.HeldUnclassified},
 		},
 	}

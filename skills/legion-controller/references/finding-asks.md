@@ -22,7 +22,7 @@ A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Fo
 
 ## Act on its answer
 
-A park ask's answer goes to `skill://legion-controller/references/park-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4. For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these three than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
+An answer to an ask with the option `Leave it admitted` (whether to move a tree to backlog) goes to `skill://legion-controller/references/backlog-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/deferral-asks.md` step 4. For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these three than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
 
 - `Do not file`: file nothing.
 - `File an issue`: `dispatch issue --project <PROJECT> --title '<the problem>' --spec-file -` in the project where the fix belongs (this one when the answer names none). The spec states the problem and where the fix belongs, cites the ask and its evidence, and carries `Filed for <the answer's By:> at their request: dispatch://<ASK KEY>/ask/<id>`.
@@ -42,7 +42,7 @@ Nothing wakes on or follows an ask while no controller runs, so at every start:
 
    ```text
    asks=$(dispatch api --path '/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1') || { printf 'Dispatch read failed: %s\n' "$asks" >&2; exit 1; }
-   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
+   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Move it to backlog" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^((Not )?[A-Z]?[a-z]+ed( to backlog)? dispatch://|Left admitted dispatch://|Let run dispatch://|Not (filed|admitted):)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
    Exit 0 with `[]` is nothing waiting; anything else is a failed read. Act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says, and an answer whose label starts `Hand it` as step 5 says.

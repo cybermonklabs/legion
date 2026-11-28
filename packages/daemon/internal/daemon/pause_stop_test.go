@@ -771,7 +771,7 @@ func TestAStopOfAnOperatorsSpawnAfterItsPauseEndedResumesItByRule(t *testing.T) 
 // The `pause_stop` executor ends the pause's stop row by what the claim answers: a row whose
 // pause has ended finishes and asks nothing; a role with no machine ends `failed`; a queued claim,
 // which runs nothing and launches nothing while the pause holds its start, ends `stopped` with no
-// launch owed; a claim a park suspended ends `taken_over`; and a launch whose outcome is uncertain
+// launch owed; a claim a move out of the workflow suspended ends `taken_over`; and a launch whose outcome is uncertain
 // asks again after the bounded wait.
 func TestAPauseStopEndsItsStopRowByWhatTheClaimAnswers(t *testing.T) {
 	t.Parallel()
@@ -948,7 +948,7 @@ func TestANoticeThatMeetsThePausesHeldWakeAtTheResumeWarnsOfNoStuckResume(t *tes
 	}
 }
 
-// A wake's start finishes without acting once a park, a close or a moved phase took its role over
+// A wake's start finishes without acting once a move out of the workflow, a close or a moved phase took its role over
 // while the row waited — the pause holds a wake's row for as long as it stands (decision 10): the
 // claim the daemon suspended stays suspended by the daemon. The same row over a role still
 // released resumes it, which is what tells the fence from a row that starts nothing anyway.
@@ -956,10 +956,10 @@ func TestAWakeStartOfARoleTheDaemonTookOverFinishesWithoutActing(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	runner, sup, _ := hookRunner(t, &outboxPublisher{})
-	parked := releasedClaim(t, sup, claim.RoleImplementer)
-	if err := parked.Handle(ctx, supervise.RequestSuspend{Claim: parked.Claim().Token, By: supervise.SuspendedByDaemon,
-		Reason: "the tree was parked"}); err != nil {
-		t.Fatalf("park the implementer: %v", err)
+	outOfWorkflow := releasedClaim(t, sup, claim.RoleImplementer)
+	if err := outOfWorkflow.Handle(ctx, supervise.RequestSuspend{Claim: outOfWorkflow.Claim().Token, By: supervise.SuspendedByDaemon,
+		Reason: "the tree moved to backlog"}); err != nil {
+		t.Fatalf("suspend the implementer of the tree in backlog: %v", err)
 	}
 	released := releasedClaim(t, sup, claim.RoleTester)
 	issue := record.Issue{Key: pauseIssue, Tree: pauseIssue, Generation: 1}
@@ -970,8 +970,8 @@ func TestAWakeStartOfARoleTheDaemonTookOverFinishesWithoutActing(t *testing.T) {
 	if err := runner.execute(ctx, wake(claim.RoleImplementer)); err != nil {
 		t.Fatalf("the implementer's wake start: %v", err)
 	}
-	if got := parked.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon {
-		t.Fatalf("the parked implementer is %s by %s after its wake start, want it left suspended by the daemon", got.State, got.SuspendedBy)
+	if got := outOfWorkflow.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon {
+		t.Fatalf("the implementer of the tree in backlog is %s by %s after its wake start, want it left suspended by the daemon", got.State, got.SuspendedBy)
 	}
 	if err := runner.execute(ctx, wake(claim.RoleTester)); err != nil {
 		t.Fatalf("the tester's wake start: %v", err)
@@ -1018,7 +1018,7 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 	}
 
 	if err := runner.execute(ctx, mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "suspend", Tree: pauseIssue,
-		Role: claim.RoleArchitect, Generation: 1, Reason: "the tree was parked"}, time.Now())); err != nil {
+		Role: claim.RoleArchitect, Generation: 1, Reason: "the tree moved to backlog"}, time.Now())); err != nil {
 		t.Fatalf("the architect's suspend: %v", err)
 	}
 	if got := armed(); len(got) != 1 || got[0] != string(claim.RoleImplementer) {

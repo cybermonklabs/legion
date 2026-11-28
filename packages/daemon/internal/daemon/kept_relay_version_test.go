@@ -15,7 +15,7 @@ import (
 )
 
 // A person's changes request on a tree nobody in it hears is kept for the root's next start or
-// catch-up and relayed to the controller (record.RelayParkedDecision), and the two must get one
+// catch-up and relayed to the controller (record.RelayKeptDecision), and the two must get one
 // answer to whether the request is still the person's word (dispatch://INFRA-3136/spec R2: one
 // rule, asked by every sender). The request is on version 1 of the spec, at Dispatch's mark 12.
 // The gate then learns, by a registration, that the person approved version 2 at Dispatch's mark
@@ -88,7 +88,7 @@ func TestAKeptAndARelayedChangesRequestAgreeOnAnApprovalOfALaterVersionMarkedBef
 				var queued int
 				if err := pool.QueryRow(ctx, `select count(*) from outbox where kind = $1
 					and payload->>'kind' = $2 and payload->>'decision' = $3`,
-					string(record.OutboxKindControllerNotice), string(record.ParkedDecisionNotice),
+					string(record.OutboxKindControllerNotice), string(record.KeptDecisionNotice),
 					string(record.DecisionDesignChangesRequested)).Scan(&queued); err != nil {
 					t.Fatalf("count the relays of the changes request: %v", err)
 				}

@@ -1,14 +1,14 @@
 package supervise
 
 // The stops of a role whose start waits at its issue pod's gate, the cuts of a start the gate
-// granted before its machine ran it, and the stop at the park of the process a launch let go
+// granted before its machine ran it, and the stop at the gate of the process a launch let go
 // (dispatch://INFRA-5297). Each function below is the body of a subtest of
 // TestAPodStartsItsRolesOneLoadAtATime (podstart_test.go), which runs it under the subtest's name:
 // no stop of a claim waiting at the gate waits for the load it waits for, nor does a read of that
 // claim; every cut of a start names its end, in the line of the launch cut short and in the start
-// line of the start the gate grants next; and a launch that parks stops the process it let go
-// first, so a cut of the park leaves nothing running, and a stop the runtime refuses there leaves
-// the launch parked, not failed.
+// line of the start the gate grants next; and a launch that waits at the gate stops the process it
+// let go first, so a cut of that wait leaves nothing running, and a stop the runtime refuses there
+// leaves the launch waiting, not failed.
 
 import (
 	"context"
@@ -83,7 +83,7 @@ func (h *harness) waitingTrio() (first, second, third *podRole) {
 	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	h.wantStarts(first.token, 1)
 	for _, r := range []*podRole{second, third} {
-		h.parks(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
+		h.postWaitingForPod(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
 	}
 	return first, second, third
 }
@@ -240,7 +240,7 @@ func aGrantAfterTheDaemonsStop(t *testing.T) {
 	third := h.podRole(claim.RoleTester, StateSuspended)
 	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	for _, r := range []*podRole{second, third} {
-		h.parks(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
+		h.postWaitingForPod(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
 	}
 
 	// The daemon stops the second's machine while its start waits: the start stays in the
@@ -269,8 +269,8 @@ func aGrantAfterTheDaemonsStop(t *testing.T) {
 // aGrantedStartCutBeforeItRan: a start granted and cut before it ran names what cut it to the
 // next start, for every end a cut passes but the daemon's stop's (aGrantAfterTheDaemonsStop) and
 // the pause's (aGrantWhileTheProjectIsPaused), as the end of the decision that dropped its wake
-// reads it from the claim (endPodPark): a suspension's and a retirement's own, the end of the
-// process the launch was to start where its claim failed, and a failed launch where another park
+// reads it from the claim (endPodStartWait): a suspension's and a retirement's own, the end of the
+// process the launch was to start where its claim failed, and a failed launch where a pacing delay
 // replaces this one or where a decision drops the wake and names nothing.
 func aGrantedStartCutBeforeItRan(t *testing.T) {
 	for _, tc := range []struct {
@@ -298,12 +298,12 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			return h.postPromptly(r, RequestTurnOutcome{Claim: r.token, Generation: r.m.View().Claim.Generation, Sequence: 1,
 				Refused: true, Message: "400 the provider refused the turn", HTTPStatus: 400, Unprompted: true})
 		}},
-		// The wake pacing's park replaces the gate's (waitOnMachine). No event of the
+		// The wake pacing's delay replaces the gate's wait (waitOnMachine). No event of the
 		// table raises a second launch over a claim whose launch waits at the gate, so the case
-		// parks that wake where a decision would (insideDecision), on a place of a pacer of its own
+		// delays that wake where a decision would (insideDecision), on a place of a pacer of its own
 		// whose turn is an hour away, behind the one place that pacer's bucket lets out at once;
 		// the test never reaches that turn.
-		{name: "another park", state: StateLaunching, ended: "failed launch", cut: func(h *harness, r *podRole) error {
+		{name: "the wake pacing's delay", state: StateLaunching, ended: "failed launch", cut: func(h *harness, r *podRole) error {
 			return h.insideDecision(r.m, func() error {
 				pacer := NewPacer(wakepace.New(1, 1, func(time.Duration) time.Duration { return time.Hour }), h.clock)
 				pacer.Join(wakepace.Second)
@@ -315,8 +315,8 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 					run: func(context.Context) error { return nil }})
 			})
 		}},
-		// A path added later that drops the parked wake and takes nothing out of the gate: the
-		// decision's end takes the start out all the same (Machine.unlock, endPodPark), so the
+		// A path added later that drops the waiting wake and takes nothing out of the gate: the
+		// decision's end takes the start out all the same (Machine.unlock, endPodStartWait), so the
 		// pod's start goes on rather than waiting for a grant nothing will run.
 		{name: "a decision that drops the wake alone", state: StateLaunching, ended: "failed launch", cut: func(h *harness, r *podRole) error {
 			return h.insideDecision(r.m, func() error {
@@ -340,10 +340,10 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			third := h.podRole(claim.RoleTester, StateSuspended)
 			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 			for _, r := range []*podRole{second, third} {
-				h.parks(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
+				h.postWaitingForPod(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
 			}
-			// The generation the second's try wrote before it parked, which its cut-short line names.
-			parked := second.m.View().Claim.Generation
+			// The generation the second's try wrote before it waited, which its cut-short line names.
+			generation := second.m.View().Claim.Generation
 			h.loadEnds(first)
 			if waiting := h.podWaiting(); !slices.Equal(waiting, []claim.Token{third.token}) {
 				t.Fatalf("starts waiting for the pod = %v once the second's start was granted, want the third's alone", waiting)
@@ -360,7 +360,7 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 				t.Fatalf("cut-short lines of the second = %d, want 1", len(lines))
 			}
 			h.wantAttr(lines[0], "by", tc.ended)
-			h.wantAttr(lines[0], "generation", fmt.Sprint(parked))
+			h.wantAttr(lines[0], "generation", fmt.Sprint(generation))
 
 			// The grant's own decision, once it runs, finds its arming gone and starts nothing.
 			release()
@@ -374,9 +374,9 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 	}
 }
 
-// aRelaunchThatWaitsStopsAtThePark: a relaunch that waits stops the process it let go at the
-// park, so a cut of the park leaves nothing running.
-func aRelaunchThatWaitsStopsAtThePark(t *testing.T) {
+// aRelaunchThatWaitsStopsAtTheGate: a relaunch that waits stops the process it let go before it
+// waits at the gate, so a cut of that wait leaves nothing running.
+func aRelaunchThatWaitsStopsAtTheGate(t *testing.T) {
 	h := podHarness(t, "")
 	first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 	h.runs(second)
@@ -387,13 +387,13 @@ func aRelaunchThatWaitsStopsAtThePark(t *testing.T) {
 	// The runtime finds the second role's live process holding an address a process launched
 	// now is not handed: its relaunch lets it go and waits at the gate behind the first role's
 	// load, and the process is stopped there, before any grant.
-	h.parks(second, RuntimeObservation{Observation: runtime.Observation{Locator: replaced, Kind: runtime.StaleAddress, At: h.clock.Now()}}, 1)
+	h.postWaitingForPod(second, RuntimeObservation{Observation: runtime.Observation{Locator: replaced, Kind: runtime.StaleAddress, At: h.clock.Now()}}, 1)
 	if stops := h.calls("Suspend"); len(stops) != 1 || stops[0].Locator != replaced {
 		t.Fatalf("stops = %+v while the relaunch waits at the gate, want the one stop of the process it let go, %+v", stops, replaced)
 	}
 
-	// A suspension cuts the park. The one process the runtime started for the second role was
-	// stopped at the park, and the relaunch started none, so nothing of the role runs.
+	// A suspension cuts the wait. The one process the runtime started for the second role was
+	// stopped at the gate, and the relaunch started none, so nothing of the role runs.
 	if err := h.postPromptly(second, RequestSuspend{Claim: second.token, By: SuspendedByOperator, Reason: "a person stops the role"}); err != nil {
 		t.Fatalf("suspend the second, whose relaunch waits at the gate: %v", err)
 	}
@@ -401,18 +401,18 @@ func aRelaunchThatWaitsStopsAtThePark(t *testing.T) {
 		t.Fatalf("the second is %s recording %+v after the suspension, want it suspended with no process", c.State, c.Locator)
 	}
 	if stops := h.calls("Suspend"); len(stops) != 1 || stops[0].Locator != replaced {
-		t.Fatalf("stops = %+v after the suspension, want the stop the park made of the process the relaunch let go, %+v, and no other", stops, replaced)
+		t.Fatalf("stops = %+v after the suspension, want the stop made at the gate of the process the relaunch let go, %+v, and no other", stops, replaced)
 	}
 	h.wantStarts(second.token, 1)
 	h.wantNoStartsAfter(second)
 }
 
-// aResumeParkedOverARefusedStop: an operator's resume of a role whose launch parks at the gate
+// aResumeWaitingOverARefusedStop: an operator's resume of a role whose launch waits at the gate
 // while the runtime refuses the stop of the process that launch let go (askPod, stopPrevious)
 // answers no failure, since the launch has not failed: it waits at the gate to start as asked.
 // The refusal is recorded for whoever must hear that the process may run still
 // (stopUnconfirmed) and logged at Warn, and the grant starts the launch all the same.
-func aResumeParkedOverARefusedStop(t *testing.T) {
+func aResumeWaitingOverARefusedStop(t *testing.T) {
 	h := podHarness(t, "")
 	first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 	// The second role ran a process and was suspended over it: the claim keeps that process as
@@ -425,21 +425,21 @@ func aResumeParkedOverARefusedStop(t *testing.T) {
 	h.rt.FailSuspend(errors.New("the runtime refused the stop"))
 
 	if err := h.postPromptly(second, RequestResume{Claim: second.token, By: SuspendedByOperator}); err != nil {
-		t.Fatalf("the operator's resume of the second, whose launch parks over a stop the runtime refused, answered %v, want no failure", err)
+		t.Fatalf("the operator's resume of the second, whose launch waits at the gate over a stop the runtime refused, answered %v, want no failure", err)
 	}
 	h.wantWaitsForPod(second, 1)
 	if stops := h.calls("Suspend"); len(stops) != 2 || stops[1].Locator != ran {
-		t.Fatalf("stops = %+v, want the suspension's and then the park's of the process the launch let go, %+v", stops, ran)
+		t.Fatalf("stops = %+v, want the suspension's and then the one at the gate of the process the launch let go, %+v", stops, ran)
 	}
 	second.m.mu.Lock()
 	unconfirmed := second.m.stopUnconfirmed
 	second.m.mu.Unlock()
 	if !unconfirmed {
-		t.Fatal("the stop the runtime refused at the park is not recorded as unconfirmed")
+		t.Fatal("the stop the runtime refused at the gate is not recorded as unconfirmed")
 	}
 	const refusedLine = "supervise: the runtime did not confirm the stop of the process this launch let go; the launch waits for its issue pod's start all the same"
 	if lines := h.podRecords(refusedLine, second.token); len(lines) != 1 || lines[0].level != slog.LevelWarn {
-		t.Fatalf("the lines saying the runtime refused the park's stop = %+v, want one at Warn", lines)
+		t.Fatalf("the lines saying the runtime refused the stop at the gate = %+v, want one at Warn", lines)
 	}
 
 	h.rt.FailSuspend(nil)
@@ -463,7 +463,7 @@ func pausedPodWithAWaitingStart(t *testing.T, secondWorker func(context.Context)
 	h.deps.Worker = nil
 	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	h.wantStarts(first.token, 1)
-	h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+	h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 	flag.set(7)
 	return h, first, second, flag, stops
 }
@@ -523,25 +523,25 @@ func aGrantWhileTheProjectIsPaused(t *testing.T) {
 
 // aGrantWhoseLaunchThePauseLetsOut: a start granted during a pause whose pause ends before the
 // gate's stop runs goes back through the pod's gate as a fresh try, not on the grant the pause took
-// (letOutHeldLaunch, the parked wake's run with no hold): its process starts as the pod's holder,
+// (letOutHeldLaunch, the waiting wake's run with no hold): its process starts as the pod's holder,
 // so the next role's start waits for its load.
 func aGrantWhoseLaunchThePauseLetsOut(t *testing.T) {
 	h, second, flag, stops := grantedDuringAPause(t)
-	parked := second.m.View().Claim.Generation
+	generation := second.m.View().Claim.Generation
 
 	flag.set(0)
 	h.clock.Advance(0)
 	h.wantGrantedStart(second, 1)
-	if c := second.m.View().Claim; c.State != StateLaunching || c.Locator == nil || c.Generation != parked+1 {
+	if c := second.m.View().Claim; c.State != StateLaunching || c.Locator == nil || c.Generation != generation+1 {
 		t.Fatalf("the second is %s at generation %d recording %+v, want it launching a fresh try (generation %d) with its process", c.State,
-			c.Generation, c.Locator, parked+1)
+			c.Generation, c.Locator, generation+1)
 	}
 	if holder := h.podHolder(); holder != second.token {
 		t.Fatalf("the pod's start is held by %q, want the second's load to hold it", holder)
 	}
 	h.wantStartLine(second.token, podIssue, nil)
 	stops.wantStops(t)
-	// The launch passed the wake gate before it parked, so its let-out writes no second wake line
+	// The launch passed the wake gate before it waited at the pod's gate, so its let-out writes no second wake line
 	// (wake.ran).
 	if lines := h.podRecords(WakeRanMessage, second.token); len(lines) != 1 {
 		t.Fatalf("wake lines of the second = %d, want the one its resume wrote at the wake gate", len(lines))

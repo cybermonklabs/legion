@@ -41,8 +41,8 @@ const (
 // merge; here the implementer closes its own issue while it awaits its merge instead of leaving
 // that to the merge. The workflow does not react (no linger, the tree still running, the phase
 // unchanged) and the daemon re-asserts its own status through the outbox. Any other session —
-// another tree's agent, or one outside Legion that took the issue for its own — cannot end or park
-// the tree either: the daemon re-asserts its status, and the tree's architect is told who wrote what.
+// another tree's agent, or one outside Legion that took the issue for its own — cannot end the tree or move it to backlog
+// either: the daemon re-asserts its status, and the tree's architect is told who wrote what.
 // The tree's own architect is a session of the tree too. A root leaves the workflow only by the
 // architect's sign-off or close_root, so its done or backlog on its own root is set back as well.
 func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
@@ -57,10 +57,10 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 		{name: "the tree's architect moves it to backlog", actor: "ses-arch", status: "backlog", outcome: setBack},
 		{name: "another tree's session closes it", actor: "ses-other", status: "done", outcome: setBackAndTold},
 		{name: "a session outside Legion closes it", actor: "ses-outsider", status: "done", outcome: setBackAndTold},
-		{name: "a session outside Legion parks it", actor: "ses-outsider", status: "backlog", outcome: setBackAndTold},
+		{name: "a session outside Legion moves it to backlog", actor: "ses-outsider", status: "backlog", outcome: setBackAndTold},
 		{name: "a session outside Legion ices it", actor: "ses-outsider", status: "icebox", outcome: setBackAndTold},
 		{name: "a person closes it", actor: "", status: "done", outcome: takesTheTreeOut},
-		{name: "a person parks it", actor: "", status: "backlog", outcome: takesTheTreeOut},
+		{name: "a person moves it to backlog", actor: "", status: "backlog", outcome: takesTheTreeOut},
 		{name: "a person ices it", actor: "", status: "icebox", outcome: takesTheTreeOut},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,7 +134,7 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 }
 
 // Where no tree runs — on a child of a running tree, a root still waiting for its slot, or a
-// lingering root — a session with no claim there writes a status as a person does: the child parks
+// lingering root — a session with no claim there writes a status as a person does: the child leaves the workflow
 // and its architect is told, the waiting root leaves the line, the lingering root is re-admitted.
 // A session that holds a claim only in another tree, that tree's architect among them, is such a
 // session. So is an earlier session of the tree's own architect, which a fresh session replaced:
@@ -157,7 +157,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 		// taken says what the person's write did, so the comparison is not of two no-ops.
 		taken func(t *testing.T, pool *pgxpool.Pool)
 	}{
-		{name: "a running tree's child parked", key: "LEGION-2", status: "backlog",
+		{name: "a running tree's child moved to backlog", key: "LEGION-2", status: "backlog",
 			issues: []record.Issue{
 				{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-1", Tree: "LEGION-1", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1},
 				{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-2", Tree: "LEGION-1", Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1},
@@ -165,10 +165,10 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 			slots: []string{"LEGION-1"},
 			taken: func(t *testing.T, pool *pgxpool.Pool) {
 				if got := issue(t, pool, "LEGION-2"); got.Phase != phase.Done || got.Status != "backlog" {
-					t.Fatalf("child after a person's backlog = %#v, want it parked", got)
+					t.Fatalf("child after a person's backlog = %#v, want it out of the workflow", got)
 				}
 			}},
-		{name: "a root waiting for its slot parked", key: "LEGION-5", status: "backlog",
+		{name: "a root waiting for its slot moved to backlog", key: "LEGION-5", status: "backlog",
 			issues: []record.Issue{
 				{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-1", Tree: "LEGION-1", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", HandedOver: true, LastDispatchSeq: 1},
 				{Key: "LEGION-5", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-5", Tree: "LEGION-5", Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1},
@@ -259,8 +259,8 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 // made in between — a rank, title or label change — as a write by whoever made it. Compared with
 // what Dispatch showed, it is an edit: recorded with the daemon's status kept, nothing set back,
 // told or ended, whether or not the daemon's write has finished by the time the event is applied. A
-// write that does change the status is still one, whatever the daemon has queued: a person's park
-// after two outside writes were set back parks the tree, and neither set-back lands over it.
+// write that does change the status is still one, whatever the daemon has queued: a person's move
+// to backlog after two outside writes were set back takes the tree out, and neither set-back lands over it.
 func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) {
 	type step struct{ actor, status, title string }
 	inFlightWrite := record.OrdinaryStatusWrite("testing", "in_progress", "")
@@ -289,10 +289,10 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 		{name: "an outside session's backlog while the daemon's testing is on its way", queued: inFlight,
 			steps: []step{{"ses-outsider", "backlog", "renamed"}},
 			rows:  []record.StatusWrite{*inFlight, record.ReassertStatusWrite("testing", "backlog", 3)}, notices: 1},
-		{name: "a person parks the tree after two outside writes were set back",
+		{name: "a person moves the tree to backlog after two outside writes were set back",
 			steps: []step{{"ses-outsider", "backlog", "LEGION-1"}, {"ses-outsider", "icebox", "LEGION-1"}, {"", "backlog", "renamed"}},
 			ends:  true, notices: 2},
-		{name: "a person parks the tree after the set-back landed and before its row finished",
+		{name: "a person moves the tree to backlog after the set-back landed and before its row finished",
 			steps: []step{{"ses-outsider", "backlog", "LEGION-1"}, {"", "in_progress", "LEGION-1"}, {"", "backlog", "renamed"}},
 			ends:  true, notices: 1},
 	} {
@@ -356,7 +356,7 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 			}
 			if tc.ends {
 				if got.Phase != phase.Done || got.LingerUntil == nil {
-					t.Fatalf("root after the person's park = %#v, want its tree lingering", got)
+					t.Fatalf("root after the person's backlog = %#v, want its tree lingering", got)
 				}
 				assertSlots(t, pool, nil)
 				return
@@ -417,11 +417,11 @@ func TestAnEditReachesTheSameOutcomeWhetherOrNotTheSetBackHasFinished(t *testing
 	}
 }
 
-// A person parks a tree the daemon has just admitted, while the promotion's in_progress is still on
+// A person moves a tree the daemon has just admitted to backlog, while the promotion's in_progress is still on
 // its way to Dispatch, and sets it back to todo: that todo changes Dispatch's status from the backlog
 // before it, so it re-admits the tree, and the promotion's write, queued over the todo Dispatch showed
-// then, does not land over the park.
-func TestAParkAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testing.T) {
+// then, does not land over the move to backlog.
+func TestABacklogAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
@@ -437,7 +437,7 @@ func TestAParkAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testin
 	write(4, "todo")
 	got := issue(t, pool, "LEGION-1")
 	if got.Generation != 2 || got.LingerUntil != nil || got.Phase != phase.Admitted {
-		t.Fatalf("root after the park and todo = %#v, want generation 2 re-admitted and not lingering", got)
+		t.Fatalf("root after the backlog and todo = %#v, want generation 2 re-admitted and not lingering", got)
 	}
 	var writes []record.StatusWrite
 	for _, effect := range effects(t, pool) {

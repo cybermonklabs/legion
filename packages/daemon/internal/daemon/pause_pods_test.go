@@ -178,7 +178,7 @@ func (c closeAuthorizingTrees) IssueSuspension(context.Context, string, store.Is
 	return c.act, nil
 }
 
-// Decision 13 of dispatch://INFRA-3759: a close, a park, a linger or a production check's look
+// Decision 13 of dispatch://INFRA-3759: a close, a move out of the workflow, a linger or a production check's look
 // that deletes the pod ends the pause's hold of it, as deleted; a suspension the store does not
 // authorize deletes nothing and leaves the hold standing.
 func TestAPodHoldEndsWhenTheIssuesSuspensionDeletesThePod(t *testing.T) {
@@ -295,14 +295,14 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 // project's pause stopped is the pause's, not R1's, while the pause still owes that role a launch
 // (podHolds.owes). The pause stopped the tester, suspended released, held the pod, and held the
 // tester's launch. Its resume ended the hold a minute before the round opened, because the
-// implementer was live (recordPause). The tester's held start then ran, and the wake pacing parked
-// its launch until ten minutes past the round's own bound (parkPauseHeldLaunch): the tester is
+// implementer was live (recordPause). The tester's held start then ran, and the wake pacing delayed
+// its launch until ten minutes past the round's own bound (delayPauseHeldLaunch): the tester is
 // launching, and it records no process. The daemon writes that let-out (writeLetOut).
 //
 // The round asks the implementer, which answers, and the round waits for the tester while its
-// launch is parked. The pod is not replaced at the opening, or a minute past the bound the grace
+// launch is delayed. The pod is not replaced at the opening, or a minute past the bound the grace
 // alone sets: the hold moved that bound on to the let-out (heldUntil, roundClock.roundBound).
-// Nothing asks the tester while its launch is parked, so the round writes no update-ask row for
+// Nothing asks the tester while its launch is delayed, so the round writes no update-ask row for
 // it: a publish to a role with no holder wakes it. At the let-out the wake pacing runs the launch.
 // The tester comes up in the round's pod, which the implementer's process keeps live
 // (roundPodEndsAtLaunch). The round asks the tester once it is ready, and the tester answers. The
@@ -310,7 +310,7 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 // the round did not wait for.
 //
 // A bound that the hold does not move replaces the pod a minute past the bound the grace alone
-// sets, while the tester's launch is still parked, and the test fails there.
+// sets, while the tester's launch is still delayed, and the test fails there.
 func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch(t *testing.T) {
 	t.Parallel()
 	const stopped = claim.RoleTester
@@ -319,7 +319,7 @@ func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch
 		readyWorker(claim.RoleImplementer), suspendedRole(stopped, supervise.SuspendedByReleased))
 	rig.drifts(podUpdateDrift)
 	rig.recordPause(store.PausePodHoldResumed, stopped)
-	rig.parkPauseHeldLaunch(stopped, letOut)
+	rig.delayPauseHeldLaunch(stopped, letOut)
 	rig.writeLetOut(stopped, letOut)
 
 	rig.tick()
@@ -339,15 +339,15 @@ func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch
 			t.Fatalf("at %s, before the moved bound, the controller was told %+v", at, notices)
 		}
 		if c := rig.claimOf(stopped); c.State != supervise.StateLaunching || c.Locator != nil {
-			t.Fatalf("at %s the %s is %s recording %+v, want its launch still parked with no process", at, stopped, c.State, c.Locator)
+			t.Fatalf("at %s the %s is %s recording %+v, want its launch still delayed with no process", at, stopped, c.State, c.Locator)
 		}
 	}
 	if n := rig.askedOf(stopped); n != 0 {
-		t.Fatalf("the round wrote %d update-ask rows for the %s while its launch was parked, want none: a publish to a role with no holder wakes it", n, stopped)
+		t.Fatalf("the round wrote %d update-ask rows for the %s while its launch was delayed, want none: a publish to a role with no holder wakes it", n, stopped)
 	}
 
 	rig.intoRoundPod(stopped)
-	rig.runParkedLaunch(stopped, podUpdateStart, letOut)
+	rig.runDelayedLaunch(stopped, podUpdateStart, letOut)
 	rig.launchedIntoRoundPod(stopped)
 	rig.registerInto(stopped, podUpdatePod)
 	if calls := rig.replacements(); len(calls) != 0 {
@@ -491,11 +491,11 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 	})
 }
 
-// dispatch://INFRA-4109 review round 5: a daemon restart while the wake pacing parks the launch
+// dispatch://INFRA-4109 review round 5: a daemon restart while the wake pacing delays the launch
 // that a project's pause held does not let the sweep replace the pod that the pause kept. The
 // members are those of pauseKeepsThePod: the implementer, which the pause stopped and the round
 // never asked, and the tester, which answered and which the daemon then suspended. The
-// implementer's held start runs, and the pacing parks its launch (parkPauseHeldLaunch), so the
+// implementer's held start runs, and the pacing delays its launch (delayPauseHeldLaunch), so the
 // store holds the claim launching with no process. The daemon stops, and the next daemon boots
 // over the same store. Its restore puts the claim back to launch_uncertain, as it does every
 // launch with no process recorded (supervisor.restore). Its orphan reconciliation fails, so it does
@@ -513,7 +513,7 @@ func TestAPodlessRoundKeepsThePodForAHeldLaunchThatARestartLeftUncertain(t *test
 	t.Parallel()
 	const stopped = pauseStoppedRole
 	pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
-		rig.parkPauseHeldLaunch(stopped, pauseLetOut)
+		rig.delayPauseHeldLaunch(stopped, pauseLetOut)
 		restartedAt := podUpdateStart.Add(time.Minute)
 		rig.clockAt(restartedAt)
 		next := rig.restart()
@@ -543,8 +543,8 @@ func TestAPodlessRoundKeepsThePodForAHeldLaunchThatARestartLeftUncertain(t *test
 
 		next.intoRoundPod(stopped)
 		next.handle(stopped, supervise.RequestSpawn{Claim: next.tokens[stopped]})
-		next.wantLaunchParked(stopped, pauseLetOut)
-		next.runParkedLaunch(stopped, restartedAt, pauseLetOut)
+		next.wantLaunchDelayed(stopped, pauseLetOut)
+		next.runDelayedLaunch(stopped, restartedAt, pauseLetOut)
 		next.launchedIntoRoundPod(stopped)
 		next.wantLaunchKeptForOwed(stopped, stopped)
 	})

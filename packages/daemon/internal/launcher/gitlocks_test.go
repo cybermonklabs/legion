@@ -224,11 +224,11 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 		}
 		g.gates = append(g.gates, comm)
 	}
-	// A row that fails while a goroutine is parked on a gate would leave it parked for the rest
-	// of the run: through's own timeout calls t.Fatalf without unblocking the writer parked in
-	// its open, and the pass goroutine is parked on the other gate's read. Opening a fifo
-	// read-only and non-blocking returns at once, and the reader it gives a parked writer ends
-	// that writer's open, whose own writer then ends a parked reader's: both return.
+	// A row that fails while a goroutine is blocked on a gate would leave it blocked for the rest
+	// of the run: through's own timeout calls t.Fatalf without unblocking the writer blocked in
+	// its open, and the pass goroutine is blocked on the other gate's read. Opening a fifo
+	// read-only and non-blocking returns at once, and the reader it gives a blocked writer ends
+	// that writer's open, whose own writer then ends a blocked reader's: both return.
 	t.Cleanup(func() {
 		for _, gate := range g.gates {
 			if file, err := os.OpenFile(gate, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {

@@ -5156,7 +5156,7 @@ test("a send alice left behind is not resumed for bob, and is dropped", async ()
   }
 });
 
-// W21. A send pressed while the browser is offline is tried, not parked: the attempt is made,
+// W21. A send pressed while the browser is offline is tried, not paused: the attempt is made,
 // the composer says Dispatch has not confirmed it once the deadline passes and offers Stop
 // trying, and the message lands once the network is back. A mutation TanStack paused offline
 // would make no attempt, start no deadline and offer no way out.

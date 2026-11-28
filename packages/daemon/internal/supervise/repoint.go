@@ -24,9 +24,9 @@ import (
 // compaction of its session runs on with it: the end of one gives the claim back as it would have
 // without the repoint, and the task that end owes waits for the relaunch's turn rather than going
 // to a process that turn replaces (ownsCompaction, sendPending). A compaction asked for after the
-// relaunch is parked is refused before anything is sent (compactStart). The launch lets the
+// relaunch is delayed is refused before anything is sent (compactStart). The launch lets the
 // process go as one whose address changed (endRepointed), and records what it ended there:
-// in this decision, or at the turn of the wake the pacing parks it on, since the process runs
+// in this decision, or at the turn of the wake the pacing delays it on, since the process runs
 // until then (launchNow, letGo).
 func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) error {
 	// The process is read through the guard backstopStalledTurn's comment gives the reason for:
@@ -103,8 +103,8 @@ const (
 	// EndRelaunched is the process let go and stopped and the claim's session brought back on a
 	// new one, which the claim records (launchTries).
 	EndRelaunched ProcessEnd = "relaunched"
-	// EndRelaunchParked is the turn's task taken back (interrupted) and the launch that replaces
-	// the process parked by the wake pacing until its turn (reserveWake, waitOnMachine). The claim
+	// EndRelaunchDelayed is the turn's task taken back (interrupted) and the launch that replaces
+	// the process delayed by the wake pacing until its turn (reserveWake, waitOnMachine). The claim
 	// still records the process and still runs it until that turn, which is where the launch
 	// stops it and brings the session back (wakeNow, launchNow) — unless a suspension held
 	// meanwhile ends the claim there instead (endHeld), the lifecycle recheck that turn makes
@@ -112,17 +112,17 @@ const (
 	// tree's close has dropped the wake with the process (letGo). It is an end of its own because
 	// something has happened to this worker — the task it was serving is owed to it
 	// again — while nothing has been relaunched yet, and the two sentences are not the same news.
-	EndRelaunchParked ProcessEnd = "relaunch parked"
+	EndRelaunchDelayed ProcessEnd = "relaunch delayed"
 	// EndRelaunchWaitsForPod is the process let go and stopped and the launch that replaces it
 	// waiting at its issue pod's gate behind the roles of the pod that start or load their
-	// sessions before it, one load at a time (askPod, wake.park). It asks as no request's
+	// sessions before it, one load at a time (askPod, wake.podStartWait). It asks as no request's
 	// (launch), so, where no request has led the pod's run of starts, a start asked after it can
 	// go ahead of it (podQueue.next): one a request raised, or, where no such start waits, the
 	// start of the role working the issue's current phase and, unless this launch is that role's,
 	// one of a role before its own in claim.Roles. It may wait out more than one load. The claim
 	// is written launching and records no process, and the gate's grant of its start starts the
 	// replacement (podStartDue) — unless a suspension or a retirement of the claim takes the
-	// launch out of the gate first (endPodPark), the start the grant makes is refused until the
+	// launch out of the gate first (endPodStartWait), the start the grant makes is refused until the
 	// claim's launch budget runs out (launchTries, fail), a project pause holds it at the grant
 	// (pauseGate), or the daemon's stop leaves the launch
 	// to its next boot. It is an end of its own because the claim alone reads as the relaunch
@@ -149,13 +149,13 @@ const (
 // TestTheNoticeHasWordsForEveryEndThatTellsItsOwner). A fresh slice is returned so that no
 // caller can edit the one the next reads.
 func ProcessEnds() []ProcessEnd {
-	return []ProcessEnd{EndNotMade, EndRelaunched, EndRelaunchParked, EndRelaunchWaitsForPod, EndRelaunchPending, EndSuspended, EndFailed}
+	return []ProcessEnd{EndNotMade, EndRelaunched, EndRelaunchDelayed, EndRelaunchWaitsForPod, EndRelaunchPending, EndSuspended, EndFailed}
 }
 
 // TellsOwner is whether this end is news for the claim's owner, which is the one thing the
 // machine decides about the telling: the call that tells is a single one (backstopStalledTurn),
 // so an end that tells is told once per decision that reaches it. A stall can be decided twice:
-// a wake lives only in memory, so a daemon restart while a relaunch is parked forgets it, and
+// a wake lives only in memory, so a daemon restart while a relaunch is delayed forgets it, and
 // the next sweep decides the claim again and tells again.
 //
 // Every end but EndNotMade is something that happened to the worker — a relaunch committed, its
@@ -193,13 +193,13 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 	if loc := m.claim.Locator; loc != nil {
 		found = loc.Incarnation
 	}
-	parked := m.wake
+	before := m.wake
 	// Whether the runtime left a process running is this replacement's own fact, so it starts
 	// unset here: a refusal an earlier replacement of this claim met is not what the end reached
 	// now says of the process it let go (stopUnconfirmed, backstopStalledTurn).
 	m.stopUnconfirmed = false
 	err := m.replaceNow(ctx, interruption, outOfMemory, ending)
-	return m.endReached(found, parked), err
+	return m.endReached(found, before), err
 }
 
 // replaceNow is the replacement itself, whose end replaceProcess reads off the claim it leaves.
@@ -209,7 +209,7 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 // stale-plugin relaunch that ends there is raised again by the next pass, which reads the claim
 // as stale as it left it (refreshStalePlugins in internal/daemon). A take-back that lands marks
 // the task as taken from that process's turn, which the let-go that follows records
-// (Machine.cutTurnOf), here or at the parked launch's turn.
+// (Machine.cutTurnOf), here or at the delayed launch's turn.
 func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemory bool, ending string) error {
 	if err := m.interrupted(ctx, interruption, outOfMemory); err != nil {
 		return err
@@ -221,8 +221,8 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 }
 
 // endReached is the end a replacement made, read from the claim it left beside found, the
-// incarnation that claim recorded when the replacement began, and parked, the wake that claim
-// held before it. The claim says it whole: a claim whose launch the pacing has just parked waits
+// incarnation that claim recorded when the replacement began, and before, the wake that claim
+// held before it. The claim says it whole: a claim whose launch the pacing has just delayed waits
 // for that wake's turn, one whose launch waits at its issue pod's gate waits for that gate's
 // grant, one still recording that incarnation was never let go of, one recording another is
 // relaunched, and a claim recording none was let go and is where the let-go left it — suspended,
@@ -230,17 +230,17 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 // claim's state in the same step.
 //
 // The wake is read first and by identity, because it is the one end the claim alone cannot show:
-// a launch the pacing parked leaves the claim exactly as the replacement found it, process and
+// a launch the pacing delayed leaves the claim exactly as the replacement found it, process and
 // state and all (waitOnMachine), and the wake the machine holds after is this replacement's only
 // where it is not the one it began with. A launch waiting for its issue pod's start left the claim
-// launching with no process (askPod, wake.park), which alone reads as the relaunch still to make,
+// launching with no process (askPod, wake.podStartWait), which alone reads as the relaunch still to make,
 // and its wake is what tells the two apart. The caller holds mu.
-func (m *Machine) endReached(found string, parked *wake) ProcessEnd {
-	if m.wake != nil && m.wake != parked {
-		if m.wake.park != nil {
+func (m *Machine) endReached(found string, before *wake) ProcessEnd {
+	if m.wake != nil && m.wake != before {
+		if m.wake.podStartWait != nil {
 			return EndRelaunchWaitsForPod
 		}
-		return EndRelaunchParked
+		return EndRelaunchDelayed
 	}
 	if loc := m.claim.Locator; loc != nil {
 		if loc.Incarnation == found {

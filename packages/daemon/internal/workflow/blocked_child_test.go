@@ -369,7 +369,7 @@ func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
 
 // A child still waiting on an unfinished issue when its tree finishes is handed to Legion as a
 // root of its own, though it never started under its tree's design: its blockers outlive the
-// tree, and leaving it admitted inside a closed tree would park it for good. Its sibling, also
+// tree, and leaving it admitted inside a closed tree would strand it for good. Its sibling, also
 // admitted but waiting on nothing, goes with it: the expiry decides by the member's own state —
 // in the workflow and never started — and not by what held it there (unfinishedHandOvers),
 // because nothing would start either of them where they stand. The sibling was waiting for a

@@ -161,7 +161,7 @@ if (strayFiles.length > 0) {
 // listing names the rows, and `recordingFor` is the same rule the fixture writes by.
 //
 // A row the listing marks `skipped` owns nothing, because it will not run: that is a row
-// skipped where it is declared - `test.fixme`, which is how a flaky row is parked,
+// skipped where it is declared - `test.fixme`, which is how a flaky row is set aside,
 // `test.skip(title, fn)`, a `describe.skip`, or a describe-level `test.skip(true)` or
 // `test.fixme()`. Each is decided when the file is read, so the row runs no fixture at all,
 // and the replay's own guard cannot see it; this is where it is caught instead.

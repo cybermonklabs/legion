@@ -33,18 +33,18 @@ const priorityDescriptionBytes = 400
 
 // advancesPerIssue is how many priorities each issue that states a relation of its own advances.
 // Two rather than one, because a deployment holds work that serves more than one goal and the
-// reads are written for it: a parked issue's row carries every priority it advances, and the
-// issue read answers them as a list. It is far below contracts.MaxIssueAdvances, the most one
-// issue may state, which advancesLinks holds every issue to.
+// reads are written for it: a row in backlog or icebox carries every priority its issue advances,
+// and the issue read answers them as a list. It is far below contracts.MaxIssueAdvances, the most
+// one issue may state, which advancesLinks holds every issue to.
 const advancesPerIssue = 2
 
 // The two status groupings the faults of GET /api/v1/priorities read, as the SQL literal lists
 // this command's own statements splice. They are model.IssueStatusesInFlight and
-// model.IssueStatusesParked, the lists the route itself reads (api/priority_queries.go), so the
-// report's own reading of the two faults (reportDistributions) asks what the route asks.
+// model.IssueStatusesBacklogOrIcebox, the lists the route itself reads (api/priority_queries.go),
+// so the report's own reading of the two faults (reportDistributions) asks what the route asks.
 var (
 	priorityInFlightStatuses = sqlStatusList(model.IssueStatusesInFlight)
-	priorityBacklogStatuses  = sqlStatusList(model.IssueStatusesParked)
+	priorityBacklogStatuses  = sqlStatusList(model.IssueStatusesBacklogOrIcebox)
 )
 
 // sqlStatusList writes statuses as the literal list an `in` clause takes. Its callers pass the
@@ -236,7 +236,7 @@ func (p *seedPlan) advancesLinks(priorities int) [][2]int {
 	// pass, which states most of the relations, would land on the first status of the cycle and
 	// on no other. Moving the stride off the cycle spreads one pass over every status, which is
 	// what gives both faults of GET /api/v1/priorities rows to answer with — work in flight
-	// advancing no priority, and parked work advancing one.
+	// advancing no priority, and work in backlog or icebox advancing one.
 	if stride%len(issueStatuses) == 0 {
 		stride++
 	}

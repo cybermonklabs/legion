@@ -32,16 +32,16 @@ import (
 
 // noRoleRig is newLeftPodRig's child with no role process in its pod: its planner failed and
 // records no process, and its implementer is suspended by an earlier idle release, with no
-// process either. With parked false the child stands in the workflow at implementing, which is the
-// pod the release of a pod no claim owns decides (workflow.UnownedPodRelease); with parked true it
-// stands where a park leaves it under its running tree, which is the left pod's close
+// process either. With inBacklog false the child stands in the workflow at implementing, which is
+// the pod the release of a pod no claim owns decides (workflow.UnownedPodRelease); with inBacklog
+// true it stands where a move to backlog leaves it under its running tree, which is the left pod's close
 // (workflow.LeftPodClose). The tree root's architect holds its role, so a notice of the child
 // reaches that architect's role topic, which publisher records. No decline of the child's release
 // stands, so nothing on record says what the child's disk holds.
-func noRoleRig(t *testing.T, parked bool) (*idleRig, *outboxPublisher) {
+func noRoleRig(t *testing.T, inBacklog bool) (*idleRig, *outboxPublisher) {
 	t.Helper()
 	ctx := context.Background()
-	rig := newLeftPodRig(t, parked)
+	rig := newLeftPodRig(t, inBacklog)
 	publisher := &outboxPublisher{}
 	rig.runner.notices = publisher
 	if _, err := rig.pool.Exec(ctx, `update claims set state = 'failed', suspended_by = '', locator = null
@@ -258,7 +258,7 @@ func TestTheReleaseOfAPodNoClaimOwnsReadsItsDiskFirst(t *testing.T) {
 	})
 }
 
-// The close of a left pod with no live claim while its tree runs on: the child was parked under
+// The close of a left pod with no live claim while its tree runs on: the child was moved to backlog under
 // its running root, every claim of it has failed or has no process, and no decline says what its
 // disk holds. The close deletes the Sandbox with its pod and any volume, so it always reads first.
 //

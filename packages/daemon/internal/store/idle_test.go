@@ -584,23 +584,23 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 	}
 }
 
-// A cancel and a park of the same issue in flight together cannot end with a resume standing
-// above the close. The park is the act production runs: one fact transaction that takes the
+// A cancel and a move to backlog of the same issue in flight together cannot end with a resume standing
+// above the close. The move is the act production runs: one fact transaction that takes the
 // issue out of the workflow and queues the close's own row together, under the shared
 // serializer. The cancel reads the issue's standing and takes its resume's id from the same
 // outbox sequence, so with no lock of its own it can read the status from before that
 // transaction and still insert above the row it queued. The resume then supersedes the close:
 // the close's suspension finishes without acting, the issue's Sandbox is never deleted, and the
-// roles of a parked issue run on in it with their launcher tokens and `gh` credentials.
+// roles of an issue in backlog run on in it with their launcher tokens and `gh` credentials.
 //
-// The interleaving is driven, not hoped for: the park holds its transaction open with its row
+// The interleaving is driven, not hoped for: the move holds its transaction open with its row
 // already queued while the cancel runs, which is the whole window. Without
 // treelifecycle.Serialize at the head of the cancel's transaction the cancel runs straight
-// through it — nothing it reads or writes meets a row the park holds — and the close stops
-// acting; with it the cancel waits for the park's commit and reads the issue as one that left.
+// through it — nothing it reads or writes meets a row the move holds — and the close stops
+// acting; with it the cancel waits for the move's commit and reads the issue as one that left.
 // Both outcomes are read here rather than only the wait, so the failure the lock prevents is
 // reported as the end state it leaves.
-func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
+func TestACancelRacingAMoveToBacklogLeavesNoResumeAboveTheClose(t *testing.T) {
 	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
@@ -609,20 +609,20 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	releasedClaim(t, st, claim.RoleImplementer)
 	markRelease(t, st, first, boundary, last, 0, claim.RoleImplementer)
 
-	park, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
+	toBacklog, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = park.Rollback(ctx) }()
-	if err := treelifecycle.Serialize(ctx, park); err != nil {
+	defer func() { _ = toBacklog.Rollback(ctx) }()
+	if err := treelifecycle.Serialize(ctx, toBacklog); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := park.Exec(ctx, `update issues set phase = 'done', status = 'backlog',
+	if _, err := toBacklog.Exec(ctx, `update issues set phase = 'done', status = 'backlog',
 		linger_until = now() + interval '1 hour' where key = $1`, rootIssue); err != nil {
-		t.Fatalf("park the root: %v", err)
+		t.Fatalf("move the root to backlog: %v", err)
 	}
 	var closeRow int64
-	if err := park.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+	if err := toBacklog.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
 		values ('issue_suspend', $1, '{"tree":"LEGION-208","generation":1,"treeGeneration":1}', 0, now(), '', '')
 		returning id`, rootIssue).Scan(&closeRow); err != nil {
 		t.Fatalf("queue the close's own row: %v", err)
@@ -651,12 +651,12 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the cancel neither finished nor waited for the park's serializer")
+			t.Fatal("the cancel neither finished nor waited for the move's serializer")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := park.Commit(ctx); err != nil {
-		t.Fatalf("commit the park: %v", err)
+	if err := toBacklog.Commit(ctx); err != nil {
+		t.Fatalf("commit the move to backlog: %v", err)
 	}
 	if !finished {
 		got = <-done
@@ -666,7 +666,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	}
 
 	if len(got.roles) != 0 {
-		t.Fatalf("resumed = %v, want none: the claims of an issue a park took out of the workflow are its close's", got.roles)
+		t.Fatalf("resumed = %v, want none: the claims of an issue a move to backlog took out of the workflow are its close's", got.roles)
 	}
 	var above int
 	if err := st.Pool().QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise'
@@ -674,7 +674,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	if above != 0 {
-		t.Fatalf("%d resume rows stand above the close's row %d; the close is superseded, its Sandbox is never deleted, and the parked issue's roles run on in it", above, closeRow)
+		t.Fatalf("%d resume rows stand above the close's row %d; the close is superseded, its Sandbox is never deleted, and the roles of the issue in backlog run on in it", above, closeRow)
 	}
 	if releaseMarked(t, st) {
 		t.Fatal("the cancel left its mark behind; every later decision would read a release that is over")

@@ -705,12 +705,12 @@ describe("drawSlices under a read of the reserve", () => {
  * refusals stay usage errors about the flag. One policy, refusal with the offending label
  * quoted, and a wording of its own in each of the two. The third wording is the live issue
  * list's `DrawError`, which reads Dispatch rather than a file and is driven nowhere here. What
- * those labels decide is the never-decide rule's hold over a parked `legion` root, which is
+ * those labels decide is the never-decide rule's hold over a `legion` root in backlog, which is
  * driven here over the roots each reader hands back.
  */
 describe("the roots a draw is given", () => {
-  /** A root of a parked Legion tree, as a draw records one. */
-  const parked = {
+  /** The root of a Legion tree in backlog, as a draw records one. */
+  const backlogRoot = {
     key: "INFRA-7",
     parent: null,
     labels: ["legion"],
@@ -736,7 +736,7 @@ describe("the roots a draw is given", () => {
   }
 
   test("refuses a label that is no string, as a usage error naming the flag", async () => {
-    const path = await written({ ...parked, labels: ["legion", 7] });
+    const path = await written({ ...backlogRoot, labels: ["legion", 7] });
     let refused: unknown = null;
     try {
       await pinnedBacklogRoots(path);
@@ -752,7 +752,7 @@ describe("the roots a draw is given", () => {
   });
 
   test("refuses that same label through the draw, as the file being no draw", async () => {
-    const path = await written({ ...parked, labels: ["legion", 7] });
+    const path = await written({ ...backlogRoot, labels: ["legion", 7] });
     await expect(readDraw(path)).rejects.toThrow(CorpusError);
     await expect(readDraw(path)).rejects.toThrow(
       `${path} root INFRA-7 names a label that is no string: 7`
@@ -760,16 +760,16 @@ describe("the roots a draw is given", () => {
   });
 
   test("takes a well-formed root, keeping the reading time the file carries", async () => {
-    const path = await written(parked);
+    const path = await written(backlogRoot);
     const read = await pinnedBacklogRoots(path);
-    expect(read.issues).toEqual([parked]);
+    expect(read.issues).toEqual([backlogRoot]);
     expect(read.readAt).toBe("2026-11-06T09:00:00Z");
     expect(read.source).toBe(path);
-    expect((await readDraw(path))?.roots).toEqual([parked]);
+    expect((await readDraw(path))?.roots).toEqual([backlogRoot]);
   });
 
-  test("hands the rule a parked root it holds, read either way", async () => {
-    const path = await written(parked);
+  test("hands the rule a root in backlog that it holds, read either way", async () => {
+    const path = await written(backlogRoot);
     const row = caseRow("case-1", "approval", "INFRA-7");
     const text = "# An approval request\n";
     // The rule holds this root on the issue's facts alone, so a call is a test that failed.

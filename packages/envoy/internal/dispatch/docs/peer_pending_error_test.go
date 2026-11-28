@@ -9,17 +9,17 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 )
 
-type parkedErrorStore struct {
+type pendingBytesRecorder struct {
 	VersionedStore
 	rows [][]byte
 }
 
-func (p *parkedErrorStore) AppendParkedUpdate(_ context.Context, _ string, update []byte) (persistence.Version, error) {
+func (p *pendingBytesRecorder) AppendPendingBytes(_ context.Context, _ string, update []byte) (persistence.Version, error) {
 	p.rows = append(p.rows, append([]byte(nil), update...))
 	return persistence.Version(len(p.rows)), nil
 }
 
-func TestAPeerApplyErrorStillStoresWhatTheRoomParked(t *testing.T) {
+func TestAPeerApplyErrorStillStoresWhatTheRoomLeftPending(t *testing.T) {
 	t.Parallel()
 	for _, cut := range []bool{false, true} {
 		name := "valid"
@@ -38,7 +38,7 @@ func TestAPeerApplyErrorStillStoresWhatTheRoomParked(t *testing.T) {
 				update = append(append([]byte(nil), update[:len(update)-1]...), 1, 42)
 			}
 
-			store := &parkedErrorStore{}
+			store := &pendingBytesRecorder{}
 			service := &Service{srv: newRoomServer(websocket.NewServer()), persistence: store}
 			state := newRoomState()
 			state.unsettled = true
@@ -65,10 +65,10 @@ func TestAPeerApplyErrorStillStoresWhatTheRoomParked(t *testing.T) {
 				t.Fatal(err)
 			}
 			if room.PendingStats().Items == 0 {
-				t.Fatal("the fixture did not park a successor")
+				t.Fatal("the fixture did not leave a successor pending")
 			}
-			if len(state.parked) != 0 || len(store.rows) != 1 {
-				t.Fatalf("parked queue = %d, stored rows = %d, want 0 and 1", len(state.parked), len(store.rows))
+			if len(state.pendingBytes) != 0 || len(store.rows) != 1 {
+				t.Fatalf("pending bytes queue = %d, stored rows = %d, want 0 and 1", len(state.pendingBytes), len(store.rows))
 			}
 			restarted := newDocumentCopy()
 			for _, stored := range store.rows {

@@ -170,7 +170,7 @@ type podUpdateRig struct {
 	// the zero time while the issue's pods have volumes of their own. While it is set, the start of
 	// a role into a pod through startInPod, displacedInto, startsFreshInto, retriesInto or wakesInto
 	// asks the store what that pod's launcher asks (launcherStarts); intoPod,
-	// relaunchedUnregistered and runParkedLaunch ask nothing.
+	// relaunchedUnregistered and runDelayedLaunch ask nothing.
 	keptSince time.Time
 	// wakePace builds the rig's wake pacing on its clock (podUpdateRigOptions.wakePace), which a
 	// restart builds afresh, as a restarted daemon builds its one pacer anew; nil is the pacing

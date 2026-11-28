@@ -22,7 +22,7 @@ When you watch a KV bucket through nats.go's `jetstream` package (for example to
 - Pass `WatchAll` a cancellable context with **no deadline**. nats.go keeps that context for the
   subscription's whole life and unsubscribes when it is done, so a `context.WithTimeout` ends the
   live watch at its deadline instead of bounding the consumer's creation.
-- Cancel that context yourself once the watcher's updates channel closes. nats.go parks a goroutine
+- Cancel that context yourself once the watcher's updates channel closes. nats.go blocks a goroutine
   on it and cancels it only inside `Unsubscribe`, which a closed connection refuses. Without your
   cancel, each watcher whose connection closed leaves one goroutine behind for the life of the
   process.

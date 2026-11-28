@@ -81,7 +81,7 @@ const knownDrivers = [
   "scripts/e2e/claude-backend-sandbox.sh",
   "scripts/e2e/controller-start-tmux.sh",
   "scripts/e2e/dispatch-user-turns.sh",
-  "scripts/e2e/parked-decision-devbox.sh",
+  "scripts/e2e/kept-decision-devbox.sh",
   "scripts/e2e/stage2-tmux-supervision.sh",
   "scripts/e2e/verifiers-staging-token.sh",
   "docs/site/media/walkthroughs/legion-operator/record-casts.sh",

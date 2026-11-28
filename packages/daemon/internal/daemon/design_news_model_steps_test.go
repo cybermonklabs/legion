@@ -634,7 +634,7 @@ func (m *newsModel) rootTask() {
 	keep := func(marks ...record.DecisionMark) {
 		m.r.inTx(func(tx pgx.Tx) error {
 			for _, mark := range marks {
-				if err := m.r.records.AddParkedDecision(m.r.ctx, tx, record.ParkedDecision{Issue: mark.Issue, Ref: mark.Ref,
+				if err := m.r.records.KeepDecision(m.r.ctx, tx, record.KeptDecision{Issue: mark.Issue, Ref: mark.Ref,
 					Decision: mark.Decision, Actor: mark.Actor, At: mark.At}); err != nil {
 					return err
 				}
@@ -666,7 +666,7 @@ func (m *newsModel) rootTask() {
 		m.fail("the root architect's starts of entry %d run = %d, want the one queued", m.entry, len(ran))
 	}
 	// A newer decision on the same reference replaces it, which leaves this task no longer holding
-	// it (record.Store.AddParkedDecision).
+	// it (record.Store.KeepDecision).
 	newer := replaced
 	newer.At = replaced.At.Add(time.Hour)
 	keep(newer)

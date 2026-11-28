@@ -283,11 +283,11 @@ func TestASpawnWhosePlaceWasLetOutLongAgoIsPacedAgain(t *testing.T) {
 	}
 }
 
-// A parked wake runs at the turn its claim's view names, however far the clock moved between the
+// A delayed wake runs at the turn its claim's view names, however far the clock moved between the
 // decision's read of it and the arm of the timer of the turn its place waits for (Clock.At). Here
 // the pacer's arm moves the clock a second, as the test goroutine of internal/daemon's
 // TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst moved the wave clock inside
-// another goroutine's park, which failed it with "timed out waiting for the launch of … at its
+// another goroutine's delay, which failed it with "timed out waiting for the launch of … at its
 // turn" (awaitLaunchAtItsTurn).
 func TestAWakeRunsAtItsTurnWhenTheClockMovesBeforeItsTimerIsArmed(t *testing.T) {
 	const moved = time.Second
@@ -312,7 +312,7 @@ func TestAWakeRunsAtItsTurnWhenTheClockMovesBeforeItsTimerIsArmed(t *testing.T) 
 		t.Fatalf("the waiting claim names wake %+v, want its turn at %s, one interval and a part after the first", held, want)
 	}
 	if now := h.clock.Now(); !now.Equal(start.Add(moved)) {
-		t.Fatalf("the clock reads %s after the park, want %s: the pacer's arm moved it %s", now, start.Add(moved), moved)
+		t.Fatalf("the clock reads %s after the delay, want %s: the pacer's arm moved it %s", now, start.Add(moved), moved)
 	}
 	h.clock.Advance(held.At.Sub(h.clock.Now()) - time.Nanosecond)
 	second.Wait()
@@ -506,7 +506,7 @@ func TestAMessageWakeLetOutLongAfterItsMarkSaysItCameLate(t *testing.T) {
 	}
 }
 
-// An operator's forget-session of a waiting claim is decided rather than refused — parked
+// An operator's forget-session of a waiting claim is decided rather than refused — left
 // launching for its turn, the claim would answer "the claim has a live process or launch", which
 // it has not — and the wake it dropped keeps its turn, since the forget-session launched nothing:
 // the claim comes up at the moment it was given, spawning fresh rather than resuming the session
@@ -543,7 +543,7 @@ func TestAnOperatorsForgetSessionOfAWaitingClaimIsDecidedAndTheWakeKeepsItsTurn(
 
 // An operator's retry of a claim whose launch the pacing holds over no process runs that launch at
 // once, whatever state the gate found the claim in. A boot's relaunch of an unfinished launch and
-// every spawn park from queued, and the claim reads launching for the whole wait, so a person who
+// every spawn delay from queued, and the claim reads launching for the whole wait, so a person who
 // sees it stuck reaches for `legion claims retry`; answering "a queued claim is spawned, not
 // retried" left that claim waiting its turn behind a restart's whole queue (dispatch://INFRA-5482).
 // The launch is the one the wake held, so it runs once: the place it held is given up and lets
@@ -579,7 +579,7 @@ func TestAnOperatorsRetryOfAClaimWaitingFromQueuedLaunchesAtOnce(t *testing.T) {
 // The controller's retry of an agent whose launch waits its turn runs no launch at once. The wake
 // pacing lets the operator's retry alone through (exemptWake, dropsWaitingWake): the controller
 // asks its retries of as many agents at once as it decides to, so each keeps the turn the pacing
-// gave it. Its retry drops no wake, so the decision finds the claim where the park wrote it,
+// gave it. Its retry drops no wake, so the decision finds the claim where the delay wrote it,
 // launching for the whole wait (waitOnMachine), and the retry is refused naming that state, as a
 // retry of an agent whose claim's launch is under way is. The agent launches once, at its turn.
 //
@@ -618,7 +618,7 @@ func TestAControllersRetryOfAnAgentWhoseLaunchWaitsItsTurnKeepsTheTurn(t *testin
 	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
 }
 
-// The same retry of a claim the gate found suspended runs the launch the rule's resume parked —
+// The same retry of a claim the gate found suspended runs the launch the rule's resume delayed —
 // the session the claim records, resumed — rather than being refused as a retry of a suspended
 // claim: a person waiting on the claim is not made to know which state a launching claim was in
 // before the pacing took it.
@@ -649,7 +649,7 @@ func TestAnOperatorsRetryOfAClaimWaitingFromSuspendedResumesItAtOnce(t *testing.
 	h.wantStarts(secondToken, 1)
 }
 
-// The operator's retry runs no parked launch while a project pause holds the claim: the API refuses
+// The operator's retry runs no delayed launch while a project pause holds the claim: the API refuses
 // a retry while the project is paused, and a pause that opened after that refusal was read holds
 // this launch as it holds every other. The retry is refused naming the state the gate found, and
 // the wake keeps the turn it held, for that turn to hand the launch to the pause's gate.
@@ -754,7 +754,7 @@ func TestAnOperatorsRetryLetsOutATryThePauseMetAfterItsWrite(t *testing.T) {
 // An operator's request no row of the state the gate found decides, and that is no retry, is
 // refused as that state refuses it — a queued claim is spawned, not resumed — and the refusal costs
 // the claim nothing: the wake it dropped is taken up again and runs at the moment it already held.
-func TestAnOperatorsResumeRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.T) {
+func TestAnOperatorsResumeRefusedByTheDelayedClaimLeavesItsWakeItsTurn(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateQueued))
 
@@ -861,10 +861,10 @@ func TestAWakeOverARunningProcessLeavesTheClaimAlone(t *testing.T) {
 	h.wantStarts(h.token, 2)
 }
 
-// A wake of a claim with no process parks it launching with no process and writes it there: the
+// A delayed wake of a claim with no process leaves it launching with no process and writes it there: the
 // outbox's start delivers its task after the launch call, and a claim left failed would be a named
 // ignore for that task while a claim left suspended would launch a second time.
-func TestAProcesslessWakeParksTheClaimLaunchingAndWritesIt(t *testing.T) {
+func TestADelayedProcesslessWakeWritesTheClaimLaunching(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateQueued))
 
@@ -876,10 +876,10 @@ func TestAProcesslessWakeParksTheClaimLaunchingAndWritesIt(t *testing.T) {
 		t.Fatalf("the stored claim is %s recording %+v, want %s recording no process", stored.State, stored.Locator, StateLaunching)
 	}
 	if err := h.postTo(second, RequestDeliver{Claim: secondToken, Task: "implement the plan"}); err != nil {
-		t.Fatalf("a task delivered to a parked claim: %v", err)
+		t.Fatalf("a task delivered to a delayed claim: %v", err)
 	}
 	if second.Claim().Pending == nil {
-		t.Fatal("the task delivered to a parked claim was not queued")
+		t.Fatal("the task delivered to a delayed claim was not queued")
 	}
 }
 
@@ -1120,7 +1120,7 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 	h.wantStarts(thirdToken, 1)
 }
 
-// Check c-nonblocking of dispatch://INFRA-976/spec, over a claim the gate parked above a process
+// Check c-nonblocking of dispatch://INFRA-976/spec, over a claim the gate delayed above a process
 // that still runs. Such a claim is handed no task while its launch waits, because that launch
 // lets the process go at its turn (launchNow): a worker started on a task moments before its
 // process is killed loses both the turn and the work, and the task it had begun is retired as
@@ -1133,7 +1133,7 @@ func TestTheViewNamesTheWakeTheMachineHoldsUntilItHasRun(t *testing.T) {
 // stale address and a pod round's replacement open the same window. The task is the workflow's
 // own, named by the outbox row it comes from: an operator's task, which names no row, runs that
 // launch where it arrives and is queued for the process the launch starts
-// (runParkedLaunchNow, TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow).
+// (runDelayedLaunchNow, TestAnOperatorsDeliveryOverADelayedLaunchRunsThatLaunchNow).
 //
 // The negative control is the guard reverted (sendPending's launchWaits): the task is then handed
 // to the process the launch replaces, which this test reads at the prompts.
@@ -1186,9 +1186,9 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 	}
 }
 
-// The other half of that race, for the turn the gate cannot see: a process parked over by a
-// launch can take a turn on a task of its own account — a send already in flight when the wake
-// parked, a question a restart armed, or, as here, a reconnecting shim replaying the start of a
+// The other half of that race, for the turn the gate cannot see: a process a launch is delayed
+// over can take a turn on a task of its own account — a send already in flight when the wake
+// was delayed, a question a restart armed, or, as here, a reconnecting shim replaying the start of a
 // turn it already saw, which is the one start that names its delivery (turnStarted) — and a task
 // confirmed by that turn is one settle retires as served the moment the launch writes the claim
 // launching, though the turn was cut off by the launch itself (retirePending). So the launch's
@@ -1196,7 +1196,7 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 // before the relaunch it makes (interrupted): the task goes back unconfirmed under a new id,
 // marked interrupted, and the resumed agent is told to carry on from where the turn stopped.
 //
-// A prompt acknowledged before the park is not one of those turns any more: the park disarms the
+// A prompt acknowledged before the delay is not one of those turns any more: the delay disarms the
 // wait for it with the rest of the dead-or-replaced process's timers (waitOnMachine), so a bare
 // start in that window is attributed to no delivery and nothing is confirmed for the launch to
 // take back.
@@ -1258,7 +1258,7 @@ func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
 	h.must(RequestDeliver{Claim: h.token, Task: task, ID: "outbox:7", Row: 7, Generation: 7})
 	sent := h.pending().ID
 
-	// The launch parks over the process the agent is on, and that process takes a turn on the
+	// The launch is delayed over the process the agent is on, and that process takes a turn on the
 	// task it was already handed: the turn starts inside the wait and ends inside it, with Oh
 	// My Pi's result for the prompt still to come.
 	h.observe(runtime.StaleAddress)
@@ -1445,9 +1445,9 @@ func TestAClosedConnectionAfterTheSweepsDeathChargesNothingMore(t *testing.T) {
 	h.wantWakeLine(secondToken, "waitedFor="+(2*(wakeInterval+wakePart)).String())
 }
 
-// A process that dies while it is booting is the common failure of a restart wave, and the park
+// A process that dies while it is booting is the common failure of a restart wave, and the delay
 // keeps that dead process recorded until the launch's turn (waitOnMachine). Its boot interval goes
-// with the rest of that process's timers at the park, so nothing of it falls inside the wait:
+// with the rest of that process's timers at the delay, so nothing of it falls inside the wait:
 // the probe a boot interval makes would be about a process whose fate the waiting relaunch has
 // already decided, and the turn is what replaces it and arms the new process's own (armBoot).
 // The test reads the timer gone for the whole of the wait and no probe made inside it.
@@ -1476,7 +1476,7 @@ func TestTheBootIntervalOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t *testing
 	waiting := h.wantWaitingWake(WakeLaunch)
 	h.wantCalls("Probe", 0)
 	if _, armed := h.m.timers[TimerBoot]; armed {
-		t.Fatal("the boot interval of the dead process is armed, want the park to have disarmed it with the process's other timers")
+		t.Fatal("the boot interval of the dead process is armed, want the delay to have disarmed it with the process's other timers")
 	}
 
 	// The process really is gone, so that is what the runtime answers anything that probes it.
@@ -1496,11 +1496,11 @@ func TestTheBootIntervalOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t *testing
 	h.wantStarts(h.token, 2)
 }
 
-// The registration deadline is the other timer of a dead process the park takes: an agent that
+// The registration deadline is the other timer of a dead process the delay takes: an agent that
 // said hello and registered has that long to say it is ready, and a claim whose process dies in
-// the middle of it is parked over the dead process with the deadline still to run. Fired inside
+// the middle of it is delayed over the dead process with the deadline still to run. Fired inside
 // the wait it would be a deadline over a process the waiting relaunch has already decided — it
-// would read the death a second time and retire a process already gone — so the park disarms it
+// would read the death a second time and retire a process already gone — so the delay disarms it
 // with the boot interval, and the launch at the turn arms the new process's own
 // (armRegistration). The test reads the timer gone for the whole of the wait and no probe made
 // inside it.
@@ -1526,7 +1526,7 @@ func TestTheRegistrationDeadlineOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t 
 	h.wantBudgets(Budgets{LaunchFailures: 1})
 	h.wantCalls("Probe", 0)
 	if _, armed := h.m.timers[TimerRegistration]; armed {
-		t.Fatal("the registration deadline of the dead process is armed, want the park to have disarmed it with the process's other timers")
+		t.Fatal("the registration deadline of the dead process is armed, want the delay to have disarmed it with the process's other timers")
 	}
 
 	// The process really is gone, so that is what the runtime answers anything that probes it.
@@ -1626,9 +1626,9 @@ func TestARestartChargesADeathWhoseRelaunchWaitedNoSecondLaunchFailure(t *testin
 }
 
 // The boot's replay of a recorded death relaunches the claim in every live state a death can
-// leave it stored in: the park over a dead process writes nothing of the claim, so it is restored
-// in the state its process died in — shim_connected or registered for a role that died before it
-// was ready, which is where most roles of a pod killed during its relaunch stand.
+// leave it stored in: the pacing's delay over a dead process writes nothing of the claim, so it is
+// restored in the state its process died in — shim_connected or registered for a role that died
+// before it was ready, which is where most roles of a pod killed during its relaunch stand.
 func TestTheBootsReplayRelaunchesARecordedDeathInEveryStateItCanBeStoredIn(t *testing.T) {
 	for _, state := range []ClaimState{StateShimConnected, StateRegistered, StateReady, StateWorking} {
 		t.Run(string(state), func(t *testing.T) {
@@ -1759,7 +1759,7 @@ func firstAhead(pacer *wakepace.Pacer, n int) {
 }
 
 // A report of a recorded death that reaches the machine after the boot's pass placed that death's
-// relaunch and before the pass's replay parks the relaunch at a place of its own, behind every
+// relaunch and before the pass's replay delays the relaunch to a place of its own, behind every
 // place the pass took in the first queue. The replay moves that wake to the place the pass took
 // for it (takeEarlierPlace), so a report that lands after the pass costs the relaunch no place in
 // its queue, and the relaunch is charged no second launch failure and launches once, at that
@@ -1769,8 +1769,8 @@ func firstAhead(pacer *wakepace.Pacer, n int) {
 // the premise is gone.
 //
 // The negative control is the replay deciding nothing over the waiting wake, as it does for a
-// relaunch it finds parked at an earlier place: the wake stays at the report's later place.
-func TestTheBootsReplayMovesARelaunchItsReportParkedLaterToTheReplaysPlace(t *testing.T) {
+// relaunch it finds delayed to an earlier place: the wake stays at the report's later place.
+func TestTheBootsReplayMovesARelaunchItsReportDelayedLaterToTheReplaysPlace(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	queueAhead(h, 1)
@@ -1867,7 +1867,7 @@ func TestTheBootsReplayMovesNoRelaunchOutsideItsRule(t *testing.T) {
 
 // Nothing probes the process a waiting launch replaces, so no probe interval ever falls inside
 // the wait. The probe interval was the one of the four timers that could still be armed there:
-// the park disarms the others (waitOnMachine), and a closed connection whose probe the runtime
+// the delay disarms the others (waitOnMachine), and a closed connection whose probe the runtime
 // could not answer arms this one again (probe), which would ask the runtime about a process whose
 // fate the launch has already decided, every interval of a wait that is tens of minutes long in a
 // wave. So the probe makes no call and arms nothing while the launch waits, and the report that
@@ -1959,7 +1959,7 @@ func (h *harness) advanceToTurn(m *Machine) {
 // after the check that reserved it (checkLaunch, which lifecycle.go states of every launch). The
 // gap is an operator's close: it reserves the tree's cleanup before it stops the tree's claims, so
 // a wake that fires between the two would launch a process into a tree whose cleanup is reserved,
-// and a resume AdmitClaim refused leaves a re-parked wake in the same place (reparkWake). The
+// and a resume AdmitClaim refused leaves a wake delayed again in the same place (delayWakeAgain). The
 // refusal goes where launchAfter's own goes: a reserved cleanup suspends the claim for the daemon,
 // its session kept, for the tree's close to retire (relaunchRefused).
 //
@@ -1993,7 +1993,7 @@ func TestAWakeWhoseTreeCleanupWasReservedWhileItWaitedLaunchesNothing(t *testing
 // a failure that is not the tree's — the store did not answer — which is the refusal a launch's
 // turn can meet over a process the claim still records and the one that clears by itself
 // (relaunchRefused, which answers a reserved cleanup differently). A test sets it after the
-// launch it means to refuse has parked, since every launch checks the lifecycle before the gate
+// launch it means to refuse has been delayed, since every launch checks the lifecycle before the gate
 // as well (launchAfter).
 type unansweredCheckLaunchStore struct {
 	*memStore
@@ -2008,7 +2008,7 @@ func (s *unansweredCheckLaunchStore) CheckLaunch(ctx context.Context, c Claim) e
 }
 
 // A launch refused at its turn over a process the claim still records leaves that process
-// watched. The park disarmed the boot interval and the registration deadline of the process the
+// watched. The delay disarmed the boot interval and the registration deadline of the process the
 // launch was to replace (waitOnMachine), the wake is spent by the time the recheck refuses, and the
 // refusal keeps the claim exactly as it stands (runWake, relaunchRefused): without the timers
 // armed again (watchAgain) a process still booting would have nothing left to retire it, and a
@@ -2028,12 +2028,12 @@ func TestALaunchRefusedAtItsTurnLeavesItsBootingProcessWatched(t *testing.T) {
 	h.m.deps.Store = store
 
 	// The runtime reports the process at another address, which relaunches it; the launch waits
-	// its turn over the process it is to replace, and the park takes that process's timers.
+	// its turn over the process it is to replace, and the delay takes that process's timers.
 	h.observe(runtime.StaleAddress)
 	waiting := h.wantWaitingWake(WakeLaunch)
 	for _, kind := range []TimerKind{TimerBoot, TimerRegistration} {
 		if _, armed := h.m.timers[kind]; armed {
-			t.Fatalf("the park left the %s timer of the process the launch replaces armed, want it disarmed", kind)
+			t.Fatalf("the delay left the %s timer of the process the launch replaces armed, want it disarmed", kind)
 		}
 	}
 
@@ -2066,7 +2066,7 @@ func TestALaunchRefusedAtItsTurnLeavesItsBootingProcessWatched(t *testing.T) {
 }
 
 // The third timer the same refusal hands back: the bound a prompt the agent acknowledged waits
-// for its turn on (acked). The park takes it with the rest of the process's timers (waitOnMachine)
+// for its turn on (acked). The delay takes it with the rest of the process's timers (waitOnMachine)
 // because the turn would be cut off by the launch anyway, and a refusal at that turn keeps both
 // the process and the prompt — so without the bound armed again (watchAgain) an agent that
 // acknowledged a task and started no turn on it would leave that task pending for ever, where
@@ -2097,7 +2097,7 @@ func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testi
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if _, awaiting := h.m.timers[TimerTurn]; awaiting {
-		t.Fatal("the park left the turn bound of the process the launch replaces armed, want it disarmed")
+		t.Fatal("the delay left the turn bound of the process the launch replaces armed, want it disarmed")
 	}
 
 	store.failing = true
@@ -2119,7 +2119,7 @@ func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testi
 }
 
 // workingOverTheProcessItsRefusedRelaunchKept is the claim both tests below read: one working
-// for a turn whose process the runtime found gone, whose relaunch the pacing parked, and whose
+// for a turn whose process the runtime found gone, whose relaunch the pacing delayed, and whose
 // turn the store could not answer the lifecycle recheck of (unansweredCheckLaunchStore). The
 // refusal keeps the dead process and the wake is spent, so the claim stands stored working
 // over a process nothing is replacing, and what the runtime last reported of that process is
@@ -2238,16 +2238,16 @@ func TestWhatTheRuntimeLastReportedOfTheKeptProcessGoesWithEveryPathThatChangesI
 
 // A verdict the sweep gives while a launch waits its turn decides nothing, but it is still
 // what the runtime last reported of the process the claim records: the guard reads the one
-// and not the other (judge, reportedProcess). The window that turns on it is a park a stale
+// and not the other (judge, reportedProcess). The window that turns on it is a delay a stale
 // address raised — that verdict found the process alive, so it cleared the record — over a
-// process that then dies. If the park's own turn is refused, the claim is left stored working
+// process that then dies. If the delay's own turn is refused, the claim is left stored working
 // over a dead process, and this record is what the machine's own side tells it from a claim in
 // a turn by: a suspension reaching it lands where it arrives rather than being held for a turn
 // that will never end (Claim.ProcessGone, holdSuspension). The recovery doors read the process
 // itself at the request (ReadProcess), so they do not turn on this record.
 //
 // The negative control is the record put back behind the guard (judge's launchWaits): the
-// claim then reports its process running after a death the park dropped, and a suspension of
+// claim then reports its process running after a death the delay dropped, and a suspension of
 // it is held for a turn nothing is running until the next sweep reports the death again.
 func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
@@ -2257,25 +2257,25 @@ func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t
 	h.m.deps.Store = store
 
 	// The process is alive at a stale address, so its relaunch is raised over a live process
-	// and parked, and the verdict clears the record (repoint, reportedProcess).
+	// and delayed, and the verdict clears the record (repoint, reportedProcess).
 	h.observe(runtime.StaleAddress)
 	waiting := h.wantWaitingWake(WakeLaunch)
 	if h.claim().ProcessGone {
 		t.Fatal("the claim reports its process gone after a verdict that found it alive at a stale address")
 	}
 
-	// The process dies under the park. Nothing is acted on — the launch's turn replaces that
+	// The process dies under the delay. Nothing is acted on — the launch's turn replaces that
 	// process either way — and what the claim records of it is this verdict.
 	h.observe(runtime.Gone)
 
 	if !h.claim().ProcessGone {
-		t.Fatal("the claim reports nothing of the process that died under the park, want the gone verdict recorded")
+		t.Fatal("the claim reports nothing of the process that died under the delay, want the gone verdict recorded")
 	}
 	if got := h.m.View().WakeWaiting; got == nil || got.Kind != WakeLaunch {
-		t.Fatalf("the claim's waiting wake is %+v, want the parked relaunch the death did not touch", got)
+		t.Fatalf("the claim's waiting wake is %+v, want the delayed relaunch the death did not touch", got)
 	}
 
-	// The park's turn comes and the store cannot answer its lifecycle recheck, so the relaunch
+	// The delay's turn comes and the store cannot answer its lifecycle recheck, so the relaunch
 	// is refused and the claim keeps the dead process with no launch coming for it (runWake,
 	// relaunchRefused).
 	store.failing = true
@@ -2292,7 +2292,7 @@ func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t
 	}
 }
 
-// The other side of the same arming: a refusal met where no wake parked anything arms nothing.
+// The other side of the same arming: a refusal met where no wake delayed anything arms nothing.
 // A timer is deleted as it fires (fence), so the boot interval of a process the runtime then
 // reports gone is gone by the time the death's relaunch is refused (bootInterval, probe, died,
 // relaunchAfterFailure). Arming it again there would probe a dead process at every boot interval
@@ -2495,7 +2495,7 @@ func TestARefusedRetryOfAProcesslessClaimKeepsItsPluginMark(t *testing.T) {
 // (api.operator's deliver, which sends a task with no row id): a person is waiting on the task
 // they just gave a claim, as they are on the resume and the retry the same route sends. So an
 // operator's task launches the claim where it arrives and takes nothing from the rate — whether
-// the claim is suspended, or parked by a wake of the daemon's own that the request drops
+// the claim is suspended, or delayed by a wake of the daemon's own that the request drops
 // (dropsWaitingWake) — and the queue behind it takes the turn the dropped wake's place would have
 // taken, where before the place-based pacing that token stayed spent and the queue kept its
 // later turns.
@@ -2506,20 +2506,20 @@ func TestAnOperatorsDeliveryNeverWaitsForATurn(t *testing.T) {
 	const task = "look at the production check"
 	h := pacedHarness(t, wakeRate)
 	suspended := h.machineFor(wakeClaim(secondToken, StateSuspended))
-	parked := h.machineFor(wakeClaim(thirdToken, StateSuspended))
+	delayed := h.machineFor(wakeClaim(thirdToken, StateSuspended))
 	behind := h.machineFor(wakeClaim(waveToken(0), StateQueued))
 
 	h.must(RequestSpawn{Claim: h.token})
-	h.mustPostTo(parked, RequestRuleResume{Claim: thirdToken, Reason: "it owns its issue's phase"})
+	h.mustPostTo(delayed, RequestRuleResume{Claim: thirdToken, Reason: "it owns its issue's phase"})
 
 	h.mustPostTo(suspended, RequestDeliver{Claim: secondToken, Task: task})
-	h.mustPostTo(parked, RequestDeliver{Claim: thirdToken, Task: task})
+	h.mustPostTo(delayed, RequestDeliver{Claim: thirdToken, Task: task})
 
 	for _, token := range []claim.Token{secondToken, thirdToken} {
 		h.wantStarts(token, 1)
 		h.wantWakeLine(token, "kind=launch", "waited=false", "paced=false")
 	}
-	for _, m := range []*Machine{suspended, parked} {
+	for _, m := range []*Machine{suspended, delayed} {
 		got := m.Claim()
 		if got.State != StateLaunching || got.Pending == nil || got.Pending.Task != task {
 			t.Fatalf("the claim the operator's task reached is %s holding %+v, want %s holding that task: it launches where the task arrives",
@@ -2541,25 +2541,25 @@ func TestAnOperatorsDeliveryNeverWaitsForATurn(t *testing.T) {
 	h.wantWakeLine(waveToken(0), "kind=launch", "waitedFor="+(wakeInterval+wakePart).String())
 }
 
-// The other park an operator's task can reach: a claim that is ready with a launch of the
-// daemon's own parked over the process it still runs — a stale address here, and a stale-plugin
+// The other delay an operator's task can reach: a claim that is ready with a launch of the
+// daemon's own delayed over the process it still runs — a stale address here, and a stale-plugin
 // relaunch or an answered plugin round in the same place. Two things are owed at once. A person
 // is waiting on the task, so it may not wait out a paced turn tens of minutes away in a wave,
 // which R1 forbids; and the task may not reach the process that launch is about to let go, since
 // the launch would cut the turn it had just begun and settle would retire it as served
-// (sendPending's launchWaits, retirePending). Both hold when the task runs the parked launch
+// (sendPending's launchWaits, retirePending). Both hold when the task runs the delayed launch
 // where it arrives, unpaced and by that launch's own steps, and is queued for the process the
-// launch starts (runParkedLaunchNow): the claim is left where an unpaced daemon would have left
+// launch starts (runDelayedLaunchNow): the claim is left where an unpaced daemon would have left
 // it, and the task goes at that process's ready.
 //
-// The budget is spent before the park, so a turn of its own would be a wake away, and the launch
+// The budget is spent before the delay, so a turn of its own would be a wake away, and the launch
 // run here takes no turn of the pacing: its place is given up, and the claim behind takes the turn
 // that place would have taken, where before the place-based pacing it kept its own later turn.
 //
 // The negative control is the launch dropped where it is run (dropWakeFor widened to a claim
 // that records a process, with no run in its place): the task is then read by the process the
 // launch was to replace, which this test reads at the prompts, and nothing replaces it at all.
-func TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow(t *testing.T) {
+func TestAnOperatorsDeliveryOverADelayedLaunchRunsThatLaunchNow(t *testing.T) {
 	const task = "look at the production check"
 	h := pacedHarness(t, wakeRate)
 	behind := h.machineFor(wakeClaim(waveToken(0), StateQueued))
@@ -2609,26 +2609,26 @@ func TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow(t *testing.T) {
 	h.wantWakeLine(waveToken(0), "kind=launch", "waitedFor="+(wakeInterval+wakePart).String())
 }
 
-// The same park over a process that is already dead, met by a task the claim refuses. The claim
+// The same delay over a process that is already dead, met by a task the claim refuses. The claim
 // is working with a task the death took back, so the operator's own task is answered "a delivery
 // is already pending" (queue): a claim that already holds a delivery is the whole of that
 // refusal for a task sent with no id and no outbox row, which is what the operator's deliver
-// route sends. Nothing runs for a request the claim answers with nothing, so the parked launch
-// is left where it waits (runParkedLaunchNow) and the claim is left where the death alone left
+// route sends. Nothing runs for a request the claim answers with nothing, so the delayed launch
+// is left where it waits (runDelayedLaunchNow) and the claim is left where the death alone left
 // it — working, recording the dead process, with the relaunch due at the moment the queue gave
 // it.
 //
-// Leaving it parked loses nothing. The wake is what holds that process's whole fate, and while
+// Leaving it delayed loses nothing. The wake is what holds that process's whole fate, and while
 // it waits every report of the process is answered: the sweep's observation at judge's guard,
 // and the four timer and closed-connection paths at probe's, so the one death stays charged
 // once. The turn relaunches, and the task the claim is still holding goes to the process that
 // launch starts.
 //
-// The negative control is the refusal test reverted (runParkedLaunchNow's pending delivery): the
+// The negative control is the refusal test reverted (runDelayedLaunchNow's pending delivery): the
 // launch then runs for a task the row refuses, replacing a live claim's process unpaced for a
 // request that was answered with nothing, which this test reads at the state and the runtime's
 // starts.
-func TestAnOperatorsDeliveryTheClaimRefusesRunsNoParkedRelaunch(t *testing.T) {
+func TestAnOperatorsDeliveryTheClaimRefusesRunsNoDelayedRelaunch(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateWorking)
 	dead := h.locator()
@@ -2669,13 +2669,13 @@ func TestAnOperatorsDeliveryTheClaimRefusesRunsNoParkedRelaunch(t *testing.T) {
 	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: 1})
 }
 
-// The same park, over a claim that owes the task a provider error took back. Nothing works that
+// The same delay, over a claim that owes the task a provider error took back. Nothing works that
 // task, the ladder's next step can be ten minutes away and a run of errors has no end of its
 // own, so a newer task does not wait behind it: the owed task is retired and the newer one takes
 // its place (replaceable, queue, dispatch://INFRA-956 R2). A task the claim takes this way is a
 // task a person is waiting on, exactly as one it takes over no delivery at all, so the launch
-// parked above the process that task would reach runs where it arrives rather than at a paced
-// turn tens of minutes away in a wave (runParkedLaunchNow).
+// delayed above the process that task would reach runs where it arrives rather than at a paced
+// turn tens of minutes away in a wave (runDelayedLaunchNow).
 //
 // The owed task is replaced before that launch runs, because the launch takes the ladder's wait
 // with the claim's timers (letGo), and that wait is the whole of what makes the owed task
@@ -2683,10 +2683,10 @@ func TestAnOperatorsDeliveryTheClaimRefusesRunsNoParkedRelaunch(t *testing.T) {
 // replace and answer the operator "a delivery is already pending", having just replaced a live
 // process for a request that was answered with nothing.
 //
-// The negative control is the guard reverted (runParkedLaunchNow's pending delivery): the
+// The negative control is the guard reverted (runDelayedLaunchNow's pending delivery): the
 // operator's task then replaces the owed one and waits out the paced turn, which this test
 // reads at the state and the runtime's starts.
-func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *testing.T) {
+func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheDelayedLaunchNow(t *testing.T) {
 	const task = "look at the production check"
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateWorking)
@@ -2736,7 +2736,7 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 	}
 }
 
-// The same park over a dead process, reached by a claim that is ready and holds no task: the
+// The same delay over a dead process, reached by a claim that is ready and holds no task: the
 // task the operator gives it is queued for the process the relaunch starts rather than sent to
 // the connection of the process that died, which would read nothing and confirm nothing. The
 // death is charged once here too, and the claim's second launch failure is the one the sweep's
@@ -2746,7 +2746,7 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 // that records a process, with no run in its place): the task is then handed to the dead
 // process's connection, which this test reads at the prompts, and the sweep's next report of
 // that same death charges a second launch failure.
-func TestAnOperatorsDeliveryOverAParkedRelaunchNeverReachesTheDeadProcess(t *testing.T) {
+func TestAnOperatorsDeliveryOverADelayedRelaunchNeverReachesTheDeadProcess(t *testing.T) {
 	const task = "look at the production check"
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
@@ -2777,8 +2777,8 @@ func TestAnOperatorsDeliveryOverAParkedRelaunchNeverReachesTheDeadProcess(t *tes
 	}
 }
 
-// The park over a process that is still booting, which the launch at its turn would retire: the
-// park disarms that process's boot interval and registration deadline (waitOnMachine), so nothing
+// The delay over a process that is still booting, which the launch at its turn would retire: the
+// delay disarms that process's boot interval and registration deadline (waitOnMachine), so nothing
 // but the launch retires it. Running the launch where the operator's task arrives arms the new
 // process's own timers (launchTries, armBoot), and the claim goes on being watched: the agent that
 // never registers has its deadline, and the deadline retires its process and relaunches.
@@ -2787,7 +2787,7 @@ func TestAnOperatorsDeliveryOverAParkedRelaunchNeverReachesTheDeadProcess(t *tes
 // that records a process, with no run in its place): the claim then stands shim_connected over
 // a booting process with no timer armed for it and nothing charged, past the deadline and four
 // boot intervals, which this test reads at the state and the runtime's starts.
-func TestAnOperatorsDeliveryOverAParkedLaunchArmsTheNextProcessesTimers(t *testing.T) {
+func TestAnOperatorsDeliveryOverADelayedLaunchArmsTheNextProcessesTimers(t *testing.T) {
 	const task = "look at the production check"
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateShimConnected)
@@ -2797,7 +2797,7 @@ func TestAnOperatorsDeliveryOverAParkedLaunchArmsTheNextProcessesTimers(t *testi
 	h.wantWaitingWake(WakeLaunch)
 	for _, kind := range []TimerKind{TimerBoot, TimerRegistration} {
 		if _, armed := h.m.timers[kind]; armed {
-			t.Fatalf("the park left the %s timer of the process the launch replaces armed, want it disarmed", kind)
+			t.Fatalf("the delay left the %s timer of the process the launch replaces armed, want it disarmed", kind)
 		}
 	}
 
@@ -2817,7 +2817,7 @@ func TestAnOperatorsDeliveryOverAParkedLaunchArmsTheNextProcessesTimers(t *testi
 	}
 
 	// The agent of that process never registers either: its deadline retires it and relaunches,
-	// where a claim left parked over a process nothing watches would stand there for ever.
+	// where a claim left delayed over a process nothing watches would stand there for ever.
 	h.advance(deadline)
 
 	h.wantBudgets(Budgets{LaunchFailures: 1})
@@ -2830,10 +2830,10 @@ func TestAnOperatorsDeliveryOverAParkedLaunchArmsTheNextProcessesTimers(t *testi
 // resume launches onto a process the task goes to. So the task is taken where it arrives, queued
 // and held exactly as a held claim's task is (sendPending), and the launch keeps its turn.
 //
-// The negative control is the hold test reverted (runParkedLaunchNow's held): the launch is then
+// The negative control is the hold test reverted (runDelayedLaunchNow's held): the launch is then
 // run inside the hold, which relaunches the claim and drops with the process the suspension the
 // operator is waiting on (letGo), where this test reads the claim still working.
-func TestAnOperatorsDeliveryOverAHeldSuspensionLeavesTheLaunchParked(t *testing.T) {
+func TestAnOperatorsDeliveryOverAHeldSuspensionLeavesTheLaunchDelayed(t *testing.T) {
 	const task = "look at the production check"
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
@@ -2860,18 +2860,18 @@ func TestAnOperatorsDeliveryOverAHeldSuspensionLeavesTheLaunchParked(t *testing.
 	}
 }
 
-// A request the table refuses or ignores runs no launch. The claim here is parked over a process
+// A request the table refuses or ignores runs no launch. The claim here is delayed over a process
 // it records and is then put in the one live state whose deliver row is an ignore, which no
 // decision of this package reaches with a process recorded (the table's launch_uncertain row);
 // it is set here because the rule is the table's answer rather than the state, and a row that
 // becomes an ignore later must not start a launch either. The launch keeps its turn, and the
 // operator is answered the ignore's own refusal.
 //
-// The negative control is the row test reverted (runParkedLaunchNow's table lookup): the launch
+// The negative control is the row test reverted (runDelayedLaunchNow's table lookup): the launch
 // then runs for a request the table ignores, and the row of the state that launch leaves queues
 // the task, so the request is answered with no refusal at all, which this test reads at the
 // answer.
-func TestADeliveryTheTableIgnoresRunsNoParkedLaunch(t *testing.T) {
+func TestADeliveryTheTableIgnoresRunsNoDelayedLaunch(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 

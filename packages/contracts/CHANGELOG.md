@@ -582,7 +582,7 @@ This file is history: every entry after the last section below stays as a fragme
   insert, then a read back), `dispatch_artifact` (never upload a document's own name to change
   it) and `dispatch_architecture_sync` (what a failed source's line still shows, and that a
   credential or branch problem with `repo` is `409 SOURCE_ACCESS`).
-- `dispatch ask --help` says never to create an issue to park a question, and `dispatch issue
+- `dispatch ask --help` says never to create an issue to hold a question, and `dispatch issue
   --help` says to create a project only when a person asks for one, and that work across projects
   goes in the project that owns most of it.
 - `DISPATCH_HREF_REFERENCES`: a live document page's `#b-<id>` href names that block,
@@ -761,7 +761,7 @@ This file is history: every entry after the last section below stays as a fragme
   into Go as `contracts.MintedDedupeKeyPattern` for the stream's MsgId rule.
 - Added `PROJECT_KEY_PATTERN`, a whole project key as the Dispatch server creates them; `dispatch_search`'s `project` must now be empty or match it (`project must be a project key such as CORE`), where any other value was sent and answered with no results.
 - Added `maxHint` to `SchemaApi.string`'s options: text appended to the over-cap message, saying what to send instead.
-- Added `LegionGoChildRequest`, the body of the Go daemon's `POST /legion/v1/children/park` and `/rerun` (an architect's `park_child` and `rerun_child`), whose answers are `LegionGoEmptyResponse`.
+- Added `LegionGoChildRequest`, the body of the Go daemon's two child routes, whose answers are `LegionGoEmptyResponse`: the architect's operation that moves a running child of its tree to `backlog`, and `rerun_child` (`POST /legion/v1/children/rerun`).
 - Added optional `Message.broadcast_id`, the broadcast a message is one recipient's copy of: null
   for every other message, absent from a Dispatch older than the field. Added optional
   `AgentStreamMessage.dispatchMessageId`, the Dispatch message a streamed user message delivered,

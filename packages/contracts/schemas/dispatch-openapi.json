@@ -954,7 +954,7 @@
     },
     "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {
       "get": {
-        "description": "Test hook: wait until a live write parks at the armed pause. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "Test hook: wait until a live write pauses at the armed pause. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1ArtifactsByIdTestLiveWritePausesByPoint",
         "parameters": [
           {
@@ -1015,7 +1015,7 @@
         "x-test-hook": true
       },
       "put": {
-        "description": "Test hook: park the document's next live write at a point (after-first-append, after-commit).",
+        "description": "Test hook: pause the document's next live write at a point (after-first-append, after-commit).",
         "operationId": "putApiV1ArtifactsByIdTestLiveWritePausesByPoint",
         "parameters": [
           {
@@ -1063,7 +1063,7 @@
         "x-write-scope": "project"
       },
       "delete": {
-        "description": "Test hook: release the live write parked at the pause and disarm it.",
+        "description": "Test hook: release the live write paused at the pause and disarm it.",
         "operationId": "deleteApiV1ArtifactsByIdTestLiveWritePausesByPoint",
         "parameters": [
           {
@@ -10905,7 +10905,7 @@
     },
     "/api/v1/priorities": {
       "get": {
-        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the open issues in backlog or icebox whose own row names a live priority no issue above them carries (a child that only inherits a priority, or restates one an issue above it carries, is no such fault), each as a whole count, the same count by project or by each priority so named, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_in_backlog_or_icebox, the open issues in backlog or icebox whose own row names a live priority no issue above them carries (a child that only inherits a priority, or restates one an issue above it carries, is no such fault), each as a whole count, the same count by project or by each priority so named, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=\u003cKEY\u003e, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1Priorities",
         "parameters": [
           {
@@ -26860,12 +26860,12 @@
       },
       "LiveWritePauseState": {
         "properties": {
-          "parked": {
+          "paused": {
             "type": "boolean"
           }
         },
         "required": [
-          "parked"
+          "paused"
         ],
         "type": "object"
       },
@@ -28986,8 +28986,8 @@
               "null"
             ]
           },
-          "priority_work_parked": {
-            "$ref": "#/components/schemas/PriorityWorkParked"
+          "priority_work_in_backlog_or_icebox": {
+            "$ref": "#/components/schemas/PriorityWorkInBacklogOrIcebox"
           },
           "work_under_no_priority": {
             "$ref": "#/components/schemas/WorkUnderNoPriority"
@@ -28996,7 +28996,7 @@
         "required": [
           "priorities",
           "work_under_no_priority",
-          "priority_work_parked"
+          "priority_work_in_backlog_or_icebox"
         ],
         "type": "object"
       },
@@ -29262,7 +29262,7 @@
         ],
         "type": "object"
       },
-      "PriorityWorkParked": {
+      "PriorityWorkInBacklogOrIcebox": {
         "properties": {
           "by_priority": {
             "additionalProperties": {

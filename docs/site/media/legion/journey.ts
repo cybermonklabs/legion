@@ -283,7 +283,7 @@ export async function finish(issue: Tracked, example: Example): Promise<void> {
 const REPORT_SPEC =
   "## Summary\n\nLegion's controller posts one message here each day: what Legion finished, what it closed without a change and why, and what is running. This issue is not work, so it carries no `legion` label and stays in icebox.\n";
 
-/** The controller creates the project's `Legion daily report` issue, parks it in icebox through
+/** The controller creates the project's `Legion daily report` issue, moves it to icebox through
  *  the daemon, and posts the day's report, naming each issue that closed today with its pull
  *  request. Answers the report issue. */
 export async function postDailyReport(

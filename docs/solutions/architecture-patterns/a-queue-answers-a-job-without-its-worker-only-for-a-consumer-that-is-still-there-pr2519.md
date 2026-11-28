@@ -44,9 +44,9 @@ queue decides without the worker: `expire()`, the deadline (`:319-321`); `giveUp
 will run (`:333-335`); and `dropAbandoned()`, which filters the queue and stops the job in flight
 (`:352-356`).
 
-`expire()`'s comment states the defect the gate closes: "A place kept on a posted job is not one
-(`Waiter`): the deadline of a body whose element has gone would otherwise park that parse on the
-thread of a reader who left it" (`:314-318`). The consumer is the Markdown parse:
+`expire()`'s comment states the defect the gate closes: a place kept on a posted job is not one
+(`Waiter`), since the deadline of a body whose element has gone would otherwise hold that parse on
+the thread of a reader who left it (`:314-318`). The consumer is the Markdown parse:
 `withoutTheWorker` and `withoutAWorker` are both `parseOnThePage`
 (`packages/dispatch/web/src/features/refs/markdown-engine.ts:339-340`), which parses the body on
 the page's own thread (`:254-263`), and the surface that keeps a posted job is the live view's

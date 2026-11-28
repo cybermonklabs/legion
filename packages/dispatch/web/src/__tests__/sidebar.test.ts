@@ -12,7 +12,7 @@ import { Sidebar } from "../features/sidebar/Sidebar";
 
 /** The summary call the rail reads (`?summary=true`): the two fault counts, and `empty` where
  *  the deployment has written no priority at all. Neither answer carries a priority row. */
-function summary(parked: number, unplaced: number, written = true): Priorities {
+function summary(inBacklog: number, unplaced: number, written = true): Priorities {
   return {
     ...(written
       ? {}
@@ -21,7 +21,7 @@ function summary(parked: number, unplaced: number, written = true): Priorities {
             "No priority is live now, so the list is empty. Write one, then say which work advances it.",
         }),
     priorities: [],
-    priority_work_parked: { by_priority: {}, count: parked, issues: [] },
+    priority_work_in_backlog_or_icebox: { by_priority: {}, count: inBacklog, issues: [] },
     work_under_no_priority: { by_project: {}, count: unplaced, issues: [] },
   };
 }

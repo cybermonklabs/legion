@@ -217,7 +217,7 @@ func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queue
 }
 
 // A person's changes request relayed to the controller, because nobody in its tree hears it
-// (parkDecision), is told only while it is still the person's word (dispatch://INFRA-3136/spec
+// (relaySpecDecision), is told only while it is still the person's word (dispatch://INFRA-3136/spec
 // R2). The relay asks when it writes the controller's row, and the publish asks again
 // (controllerNotice), of the decision the row carries: the version, Dispatch's mark of the review
 // and the document reviewed, which the relay copied from the request's own notice. The row's
@@ -231,7 +231,7 @@ func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queue
 // one line naming the row, the issue, the root, the ref and both versions, and the approval's own
 // relay still goes. That holds whether the request's row asks before the approval's own notice is
 // relayed or after, when the decision kept on the document's reference is the approval in the
-// request's place (record.Store.AddParkedDecision): what is kept beside the row decides nothing.
+// request's place (record.Store.KeepDecision): what is kept beside the row decides nothing.
 // The controls are a request no approval followed, one Dispatch recorded after the person's
 // approval of the same version, and one on a document the step's gate has since left for another,
 // which the person approved at the version reviewed: each is told, since the review's mark and
@@ -362,7 +362,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 			}
 			// An approval's relay that finds the gate holds no approval names no version that
 			// replaced it: the line says the gate no longer holds it, and names no approved version.
-			unheld := textLines(logged.String(), `msg="outbox parked decision not relayed: the gate no longer holds the approval it reports"`)
+			unheld := textLines(logged.String(), `msg="outbox kept decision not relayed: the gate no longer holds the approval it reports"`)
 			if tc.cleared != (len(unheld) == 1) || tc.cleared && (!strings.Contains(unheld[0], "version=3") || strings.Contains(unheld[0], "approved=")) {
 				t.Fatalf("logged %q, want one line that the gate no longer holds the approval (%t), naming version 3 and no approved version",
 					unheld, tc.cleared)
@@ -576,10 +576,10 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 }
 
 // A person's changes request on a tree nobody in it hears is both kept for the root's next start
-// or catch-up and relayed to the controller (record.RelayParkedDecision), and wherever the two are
+// or catch-up and relayed to the controller (record.RelayKeptDecision), and wherever the two are
 // asked whether the request is still the person's word they answer alike
 // (dispatch://INFRA-3136/spec R2): the kept row holds the document reviewed, as the relay does
-// (record.ParkedDecision.Artifact, record.Notice.Artifact), so the approval of a document the
+// (record.KeptDecision.Artifact, record.Notice.Artifact), so the approval of a document the
 // step's gate has moved to answers no review of the one it left, for either. The request is on
 // artifact-1 at version 3, and the architect's claim failed, so the outbox relays it and the relay
 // waits for the controller's role. The gate moves to artifact-2, which the person approved at
@@ -649,7 +649,7 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 				var queued int
 				if err := pool.QueryRow(ctx, `select count(*) from outbox where kind = $1
 					and payload->>'kind' = $2 and payload->>'decision' = $3`,
-					string(record.OutboxKindControllerNotice), string(record.ParkedDecisionNotice),
+					string(record.OutboxKindControllerNotice), string(record.KeptDecisionNotice),
 					string(record.DecisionDesignChangesRequested)).Scan(&queued); err != nil {
 					t.Fatalf("count the relays of the changes request: %v", err)
 				}
@@ -701,13 +701,13 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 	}
 }
 
-// relayRow is the one parked-decision controller row of decision the outbox holds: its id and the
+// relayRow is the one kept-decision controller row of decision the outbox holds: its id and the
 // attempts it has made.
 func relayRow(t *testing.T, pool *store.Pool, decision record.DecisionKind) (int64, int) {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, attempts from outbox
 		where kind = $1 and payload->>'kind' = $2 and payload->>'decision' = $3 order by id`,
-		string(record.OutboxKindControllerNotice), string(record.ParkedDecisionNotice), string(decision))
+		string(record.OutboxKindControllerNotice), string(record.KeptDecisionNotice), string(decision))
 	if err != nil {
 		t.Fatalf("read the %s relay rows: %v", decision, err)
 	}
@@ -728,13 +728,13 @@ func relayRow(t *testing.T, pool *store.Pool, decision record.DecisionKind) (int
 	return relays[0].id, relays[0].attempts
 }
 
-// controllerDecisions is the decision of every parked-decision notice published on the
+// controllerDecisions is the decision of every kept-decision notice published on the
 // controller's role topic, in order.
 func controllerDecisions(publisher *holderPublisher) []record.DecisionKind {
 	_, delivered := publisher.snapshot()
 	var told []record.DecisionKind
 	for _, published := range delivered {
-		if notice, ok := published.payload.(record.Notice); ok && published.topic == controllerRoleTopic && notice.Kind == record.ParkedDecisionNotice {
+		if notice, ok := published.payload.(record.Notice); ok && published.topic == controllerRoleTopic && notice.Kind == record.KeptDecisionNotice {
 			told = append(told, notice.Decision)
 		}
 	}

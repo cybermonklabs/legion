@@ -28,7 +28,7 @@ questions, approve the spec, and review the pull request. Everything happens in
 
 1. Open the issue in Dispatch and add the label **`legion`** from the issue header.
 2. For a new issue (status `triage`), that is the whole handover: your label is queued by the
-   daemon, and the issue moves to `todo` itself. For a parked issue (`backlog` or `icebox`), set
+   daemon, and the issue moves to `todo` itself. For an issue in `backlog` or `icebox`, set
    its status to **`todo`**, or approve its spec: your approval queues it the same way when the
    issue has no parent. An approval that Dispatch carries in your name from an earlier one does
    not queue it. An approval that Legion applies after the issue's status changed again (it reached
@@ -46,8 +46,8 @@ and it waits in `awaiting_children` until no child under it is open; in `accepti
 and a step after `accepting` whose phase keeps a slot waits for one again
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
-decides whether to admit it or leave it for you, and parks it only when a person asked for that or
-its work is done, folded into another issue or no longer needed.
+decides whether to admit it or leave it for you, and moves it to `backlog` or `icebox` only when a
+person asked for that or its work is done, folded into another issue or no longer needed.
 
 The controller never takes an issue on its own, whatever slots are free: Legion works what a person
 hands it, and the clear defects its own agents report. You can also ask the
@@ -164,8 +164,8 @@ your behalf and changes nobody's right to merge.
 
 The merge closes the issue: it moves to `done` the moment GitHub reports the pull request merged.
 A root with work still running beneath it is the exception: its merge is recorded and the issue
-waits until the last other issue of its tree is done or parked, so no child's finished work is cut
-off, and then it closes. Where the issue's task has the architect's acceptance step, the architect
+waits until the last other issue of its tree is done or in backlog or icebox, so no child's finished
+work is cut off, and then it closes. Where the issue's task has the architect's acceptance step, the architect
 accepted the change before that (on the default steps, once the reviewer approved it), with a comment on the issue summarizing the evidence, the issue's goal and each requirement of
 its spec among it; the daemon refuses that acceptance while an issue beneath it is still being
 worked, so a parent is accepted after its children. After the close the role your project's
@@ -180,7 +180,7 @@ The tree lingers for three days (`linger_hours`, 72 by default) in case the work
 sessions are kept, and under Kubernetes its pods and their disks go at the close, and a re-admission
 makes them afresh.
 
-## Stop, park or rerun
+## Stop or rerun
 
 - **To stop Legion working an issue**, move it to `backlog` (or `icebox`) from the Dispatch
   dashboard. A person's move takes the tree out at once and the slots its issues held go to the next issues in line; its
@@ -188,8 +188,8 @@ makes them afresh.
   way finishes what it was doing. To keep Legion off it for good, also take the `legion` label off;
   taking the label off alone does not stop a tree that has started.
 - **To run it again**, set it back to `todo` with the label on, or approve its spec: a person's
-  approval of a parked labelled issue's spec is queued by the daemon when the issue has no
-  parent, and the issue moves to `todo` itself; an approval that Dispatch carries in your name from
+  approval of the spec of a labelled issue in `backlog` or `icebox` is queued by the daemon when the
+  issue has no parent, and the issue moves to `todo` itself; an approval that Dispatch carries in your name from
   an earlier one does not queue it. An approval that Legion applies after the issue's status
   changed again (it reached Legion late, or the operator replayed it) does not queue the issue
   either: set it to `todo`. The tree starts over as a new generation, from its architect.
@@ -217,8 +217,8 @@ of the phase the issue stands in, at each boot and then every `controller_wake_i
 
 | Status | Set by | What it means for a Legion issue |
 | --- | --- | --- |
-| `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and parks it only when a person asked for that or its work is done, folded into another issue or no longer needed. |
-| `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
+| `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and moves it to `backlog` or `icebox` only when a person asked for that or its work is done, folded into another issue or no longer needed. |
+| `icebox` | a person or the controller | Out of the workflow for the long term. Legion does not run it. |
 | `backlog` | a person, the controller, or the architect that owns a child | Should not run now: a person asked for that, for example while it waits on a decision or a deploy. A root also goes here when its work is done, folded into another issue or no longer needed. The architect that owns a child writes `backlog` on it only when a person asked for that, or as the first step of a restart (`backlog`, then `rerun_child`), and it closes a child whose work is done, folded or no longer needed with `done`. Legion does not run it. |
 | `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into its first step sets it to `in_progress`. |
 | `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: until every step of the task has run the implementer merges the base forward, and then the merger does when it merges, while the issue stays in its phase. |

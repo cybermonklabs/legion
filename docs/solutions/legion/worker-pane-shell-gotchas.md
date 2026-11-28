@@ -297,7 +297,7 @@ can return `no holder` for both your own role and the tree's architect. Two cons
 
 - The `legion` tool's `handoff_complete` returns `[handoff] Warning: phase recorded; no architect was live to receive
   the summary` and succeeds. The completion **is** recorded: the daemon cleared the active phase for routing, PATCHed
-  the issue's Dispatch status (`legion state` showed `LEGION-18` at `testing` right after), and parked the summary for
+  the issue's Dispatch status (`legion state` showed `LEGION-18` at `testing` right after), and kept the summary for
   the architect's catch-up (`phases[<KEY>].completed`, the API's 202 path). Do not write a second handoff record. Do call
   `handoff_complete` again once the architect holds its role again — a repeat completion by the same worker is the
   designed recovery (200, published, record cleared); a repeat while the role is still unheld just 202s again. What

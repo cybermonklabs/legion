@@ -110,7 +110,7 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
-	// Cleanups run in reverse, and Shutdown waits for the room's persistence worker this hold parks.
+	// Cleanups run in reverse, and Shutdown waits for the room's persistence worker this hold blocks.
 	testcleanup.Add(t, held.let)
 	server := newTestServer(t, service)
 	createOwedDocument(t, database, service, "CORE-1", artifactID, "spec", closedSettlementText, closedSettlementVersionOne)
@@ -473,24 +473,24 @@ func settleAReplacedHistory(t *testing.T) {
 
 // refusalWatch is what a RefusedUpdateAfterTheMargin order watches of the document's room: failed
 // is set, and failedNow closed, once the room fails (beforeFailedEviction); closes counts the closes
-// the append gate's refusals start (beforeRefusedAppendClose), and the first of them closes parked
+// the append gate's refusals start (beforeRefusedAppendClose), and the first of them closes paused
 // and waits until the test lets it go (let).
 type refusalWatch struct {
 	failed    atomic.Bool
 	failedNow chan struct{}
 	closes    atomic.Int64
-	parked    chan struct{}
+	paused    chan struct{}
 	release   chan struct{}
 	once      sync.Once
 }
 
 func (w *refusalWatch) let() { w.once.Do(func() { close(w.release) }) }
 
-// watchRefusals installs f's refusalWatch. The parked close is let go before the service shuts
+// watchRefusals installs f's refusalWatch. The paused close is let go before the service shuts
 // down: cleanups run in reverse, and Shutdown joins it (evictWG).
 func (f closedSettlementFixture) watchRefusals(t *testing.T) *refusalWatch {
 	t.Helper()
-	watch := &refusalWatch{failedNow: make(chan struct{}), parked: make(chan struct{}), release: make(chan struct{})}
+	watch := &refusalWatch{failedNow: make(chan struct{}), paused: make(chan struct{}), release: make(chan struct{})}
 	f.service.beforeFailedEviction = func(room string) {
 		if room == f.artifactID && watch.failed.CompareAndSwap(false, true) {
 			close(watch.failedNow)
@@ -498,7 +498,7 @@ func (f closedSettlementFixture) watchRefusals(t *testing.T) *refusalWatch {
 	}
 	f.service.beforeRefusedAppendClose = func(string) {
 		if watch.closes.Add(1) == 1 {
-			close(watch.parked)
+			close(watch.paused)
 			<-watch.release
 		}
 	}
@@ -580,7 +580,7 @@ func settleAfterItsStoreWriteIsRefused(t *testing.T) {
 
 	f.resume(t)
 	select {
-	case <-watch.parked:
+	case <-watch.paused:
 	case <-watch.failedNow:
 		f.requireNoSettlementFailure(t, watch, "after the settlement stored the room's updates")
 		t.Fatal("the room failed after the settlement stored the room's updates, want the refused update to fail no room")
@@ -624,7 +624,7 @@ func settleAfterTheRoomsPersistenceIsRefused(t *testing.T) {
 	alice := f.admitBeforeTheClose(t)
 	before := latestVersionNumber(t, f.service, f.artifactID)
 	typeOver(t, alice, closedSettlementParagraph, refusedKeystroke)
-	awaitRefusedAppendCloseParked(t, watch.parked)
+	awaitRefusedAppendClosePaused(t, watch.paused)
 	if markdown := residentRoomMarkdown(t, f.service, f.artifactID); !strings.Contains(markdown, refusedKeystroke) {
 		t.Fatalf("the room reads %q, want the keystroke the store refused still in it, which is what a settlement must not save", markdown)
 	}

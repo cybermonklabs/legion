@@ -25,7 +25,7 @@ func TestAReadmissionKeepsTheDocumentOfTheApprovalItKeeps(t *testing.T) {
 		Clock: func() time.Time { return fixedNow }, Steps: config.DesignGateRootIssues.Steps()}, nil)
 	admission := New(record.NewStore(), engine, 1, testProject, nil)
 	admission.now = func() time.Time { return fixedNow }
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-ROOT", ArtifactID: "artifact-root",
 			LatestVersion: 4, ApprovedVersion: new(3)}); err != nil {

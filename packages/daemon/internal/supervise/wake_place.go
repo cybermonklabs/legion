@@ -110,9 +110,9 @@ func (m *Machine) bindWake(place *wakepace.Place) (wakepace.Let, bool) {
 }
 
 // rebindWake binds TimerWake to place for a wake taken up at a place it did not join in this
-// decision (reparkWake, takeEarlierPlace). A place that still waits fires the timer at its let-out
-// (bindWake). One the pacer has let out meanwhile arms the timer at that let-out's moment, which
-// has come, so the wake runs at once through its own timer, as its let-out would have run it.
+// decision (delayWakeAgain, takeEarlierPlace). A place that still waits fires the timer at its
+// let-out (bindWake). One the pacer has let out meanwhile arms the timer at that let-out's moment,
+// which has come, so the wake runs at once through its own timer, as its let-out would have run it.
 func (m *Machine) rebindWake(place *wakepace.Place) {
 	if let, out := m.bindWake(place); out {
 		m.armAt(TimerWake, let.At, "")
@@ -138,7 +138,7 @@ func (t placeTimer) Stop() bool {
 // stopped, since stopping it would leave the place (placeTimer). A release already on its way is
 // a Timer this machine no longer records, and is ignored as a stale timer is (Machine.fence).
 // Any other TimerWake — the clock's, armed at the let-out of a place taken up again
-// (reparkWake) — is disarmed as any timer is.
+// (delayWakeAgain) — is disarmed as any timer is.
 func (m *Machine) detachWake() {
 	if a, ok := m.timers[TimerWake]; ok {
 		if waiting, binds := a.cancel.(placeTimer); binds {
@@ -154,7 +154,7 @@ func (m *Machine) detachWake() {
 // the boot took earlier in the pacing's order for the same launch (RecordedDeath.Place), and it
 // moves the wake there when it does. The boot's replay of a recorded death and the runtime's first
 // report of that death raise one relaunch, and a report that reaches the machine after the boot's
-// pass placed that relaunch, and before the replay, parks it at a place of its own behind every
+// pass placed that relaunch, and before the replay, delays it at a place of its own behind every
 // place the pass took in its queue; moved, the relaunch waits at the place the boot gave it, and
 // its own is given up (placeTimer), the turn it would have taken going to the wake behind it.
 //
@@ -167,13 +167,13 @@ func (m *Machine) detachWake() {
 // holds or one waiting for its pod's start has no place of the pacing's to move.
 //
 // Nothing is told the daemon here: the wake still waits in a queue, which it was told at the end
-// of the decision that parked it (tellWakeQueue), and its let-out is told when it comes (wakeNow).
+// of the decision that delayed it (tellWakeQueue), and its let-out is told when it comes (wakeNow).
 func (m *Machine) takeEarlierPlace(carried *wakepace.Place) bool {
 	w := m.pacedWake()
 	if carried == nil || w == nil || w.place == nil || !m.placeBefore(carried, w.place) {
 		return false
 	}
-	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the place the boot took for it",
+	m.log.Info("supervise: the relaunch a report of the recorded death delayed takes the place the boot took for it",
 		"due", carried.Estimate(), "queue", carried.Queue().String())
 	w.place = carried
 	m.rebindWake(carried)

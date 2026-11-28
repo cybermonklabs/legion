@@ -178,12 +178,13 @@ func isClosed(ch <-chan struct{}) bool {
 }
 
 // settleWithin settles room's current generation and fails the test if the settlement has not
-// returned within roomWait, naming the goroutine parked in ygo's persistence hand-off, the one a
-// commit that waits on the worker parks in. The settlement runs on the test's goroutine, because
+// returned within roomWait, naming the goroutine blocked in ygo's persistence hand-off, the one a
+// commit that waits on the worker blocks in. The settlement runs on the test's goroutine, because
 // it and the hooks it calls fail the test with t.Fatal, which ends only the goroutine it runs on. A
-// watchdog on a goroutine of its own reads the parked stack once roomWait has passed and calls
-// unwind, which breaks the cycle so the settlement returns and the test binary is not held by it.
-// The watchdog calls no t.Fatal, and settleWithin waits for it to end before it returns or fails.
+// watchdog on a goroutine of its own reads the blocked goroutine's stack once roomWait has passed
+// and calls unwind, which breaks the cycle so the settlement returns and the test binary is not
+// held by it. The watchdog calls no t.Fatal, and settleWithin waits for it to end before it
+// returns or fails.
 func settleWithin(t *testing.T, service *Service, room string, unwind func()) {
 	t.Helper()
 	wait := roomWait(t)
@@ -191,7 +192,7 @@ func settleWithin(t *testing.T, service *Service, room string, unwind func()) {
 	watched := make(chan struct{})
 	// Written by the watchdog alone, and read only once it has ended (watched).
 	fired := false
-	var parked string
+	var blocked string
 	go func() {
 		defer close(watched)
 		select {
@@ -202,7 +203,7 @@ func settleWithin(t *testing.T, service *Service, room string, unwind func()) {
 		fired = true
 		for _, stack := range goroutinetest.Traces() {
 			if strings.Contains(stack, "provider/websocket.(*Server).loadRoom") && strings.Contains(stack, "settle") {
-				parked = stack
+				blocked = stack
 			}
 		}
 		unwind()
@@ -216,6 +217,6 @@ func settleWithin(t *testing.T, service *Service, room string, unwind func()) {
 		settleCurrentGeneration(t, service, room)
 	}()
 	if fired {
-		t.Fatalf("the settlement did not return within %s: a commit into the room waited on its persistence worker\n%s", wait, parked)
+		t.Fatalf("the settlement did not return within %s: a commit into the room waited on its persistence worker\n%s", wait, blocked)
 	}
 }

@@ -310,8 +310,8 @@ type OutboxPayload interface{ OutboxKind() OutboxKind }
 
 // ClaimRelease releases the issue's Dispatch claim; the row's issue column names the issue. The
 // holder and the issue's record are read when the row runs, not when it is queued, so a
-// re-admission, a second park or a person who claims the issue meanwhile each end the row on their
-// own, with no generation or holder to fence it.
+// re-admission, a second move to backlog or a person who claims the issue meanwhile each end the
+// row on their own, with no generation or holder to fence it.
 type ClaimRelease struct {
 	// Session, when set, is the session the daemon left behind for a claim of the issue: store's
 	// putClaim queued the row in the claim write that moved the claim off it, and the row acts only
@@ -560,7 +560,7 @@ type Notice struct {
 	// gone ends undelivered. The controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
-	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
+	// carried-gate-opened notice reports, or the decision a kept-decision notice relays: the
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:
 	// gates.design off opened the gate. A basis notice (basisNoticeKinds) may carry the person
 	// whose act on the ancestor's document it reports.
@@ -573,9 +573,9 @@ type Notice struct {
 	// Review is where Dispatch recorded the review a design-approved or design-changes-requested
 	// notice reports: its event's sequence and Dispatch's time of it, each zero when the event or
 	// the read gave none. The outbox keeps it with the decision when nobody in the tree hears the
-	// notice (the daemon's parkDecision, ParkedDecision.At and Seq), so the kept decision is later
-	// judged against the gate's approval by Dispatch's order, never by the daemon's clock. The
-	// parked-decision controller notice that relays one of those two carries it as the notice did,
+	// notice (the daemon's relaySpecDecision, KeptDecision.At and Seq), so the kept decision is
+	// later judged against the gate's approval by Dispatch's order, never by the daemon's clock. The
+	// kept-decision controller notice that relays one of those two carries it as the notice did,
 	// and the publish of a relayed changes request asks again of it whether the review stands (the
 	// daemon's controllerNotice). A basis-changes-requested notice carries it of the person's
 	// changes request on the ancestor's document it reports, which its delivery asks again as it
@@ -586,7 +586,7 @@ type Notice struct {
 	// step's, and the person's approval of the new document answers no review of the old one
 	// (workflow.SupersedingApproval). A notice an earlier release queued carries none.
 	Artifact string `json:"artifact,omitempty"`
-	// Decision is what a parked-decision notice relays, and Root the root of the tree it was made
+	// Decision is what a kept-decision notice relays, and Root the root of the tree it was made
 	// on. Every other kind carries neither.
 	Decision DecisionKind `json:"decision,omitempty"`
 	Root     string       `json:"root,omitempty"`
@@ -1133,14 +1133,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // each is its rule (admit.Admission.wakeController and its callers,
 // admit.Admission.TellController).
 //
-// A parked-decision notice names a person's decision on a tree Legion is not running, which
+// A kept-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
 // tree's architect (it stopped with its finished tree, or its claim ended), or a person's answer,
 // resolution or reply (one that leaves the turn with the agent, or one under a closed ask) on an ask
 // of an issue whose tree lingers or has closed. Its issue is where the decision was made, Root the
 // tree's root, Decision what the person did, Ref where in Dispatch, Actor who; a spec decision
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
-// again (skill://legion-controller/references/parked-decisions.md).
+// again (skill://legion-controller/references/kept-decisions.md).
 //
 // The daemon tells the controller no notice its skill says to do nothing on (#4065).
 // So a root that waits on a person (workflow's enterAwaiting) and a root admission took out
@@ -1186,7 +1186,7 @@ const (
 	SlotFreeNotice         NoticeKind = "slot-free"
 	TodoNotice             NoticeKind = "todo"
 	TickNotice             NoticeKind = "tick"
-	ParkedDecisionNotice   NoticeKind = "parked-decision"
+	KeptDecisionNotice     NoticeKind = "kept-decision"
 	UpdateStalledNotice    NoticeKind = "update-stalled"
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
@@ -1323,7 +1323,7 @@ type SuperviseRequest struct {
 	Role claim.Role  `json:"role"`
 	Task string      `json:"task,omitempty"`
 	// Kept is what an architect start's Task named of the decisions its root keeps
-	// (workflow.Engine.ParkedDecisionTask). The start settles them once it has run (the outbox's
+	// (workflow.Engine.UnclaimedKeptTask). The start settles them once it has run (the outbox's
 	// settleKept): a task the root architect's claim queued forgets them
 	// (Store.ForgetKeptDecisions), and a start that reached no claim hands them over to a fresh
 	// catch-up (workflow.HandOverKept). Every other request carries none.
@@ -1546,7 +1546,7 @@ type SuperviseRequest struct {
 	Issue string `json:"issue,omitempty"`
 	// WakeKind marks a start that brings a released role back for a wake: the wake's kind, one of
 	// the pods wake kinds (validWakeKind), as the resume the wake took records it. The start
-	// finishes without acting when its claim is suspended by the daemon, since a park, a close or
+	// finishes without acting when its claim is suspended by the daemon, since a move out of the workflow, a close or
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
@@ -3215,7 +3215,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				"only a design-approved or design-changes-requested notice does, and a basis-changes-requested one", value.Kind)
 		}
 		if value.Decision != "" || value.Root != "" {
-			return fmt.Errorf("a %s notice carries a decision or a root; only a parked-decision controller notice does", value.Kind)
+			return fmt.Errorf("a %s notice carries a decision or a root; only a kept-decision controller notice does", value.Kind)
 		}
 		if catchUp := value.CatchUp; catchUp != nil && catchUp.Kept != nil {
 			if err := catchUp.Kept.validate(); err != nil {
@@ -3250,16 +3250,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if !controllerOnlyNoticeKind(value.Kind) && !validNoticeKind(value.Kind) {
 			return fmt.Errorf("unknown controller notice kind %q", value.Kind)
 		}
-		if value.Kind == ParkedDecisionNotice {
+		if value.Kind == KeptDecisionNotice {
 			if !validDecisionKind(value.Decision) || value.Root == "" || value.Ref == "" || !PersonActor(value.Actor) {
-				return fmt.Errorf("a parked-decision notice needs a known decision, its tree's root, the decision's Dispatch reference and the person who made it")
+				return fmt.Errorf("a kept-decision notice needs a known decision, its tree's root, the decision's Dispatch reference and the person who made it")
 			}
 		} else if value.Decision != "" || value.Actor != "" || value.Ref != "" || value.Root != "" {
-			return fmt.Errorf("a %s controller notice carries a decision, an actor, a ref or a root; only a parked-decision does", value.Kind)
+			return fmt.Errorf("a %s controller notice carries a decision, an actor, a ref or a root; only a kept-decision does", value.Kind)
 		}
-		if carriesReview(Notice(value)) && (value.Kind != ParkedDecisionNotice || !designReview(value.Decision)) {
+		if carriesReview(Notice(value)) && (value.Kind != KeptDecisionNotice || !designReview(value.Decision)) {
 			return fmt.Errorf("a %s controller notice carries a review's mark or document; only a "+
-				"parked-decision notice relaying a design approval or changes request does",
+				"kept-decision notice relaying a design approval or changes request does",
 				value.Kind)
 		}
 		if (value.Kind == UpdateStalledNotice) != (value.Update != nil) {
@@ -3661,7 +3661,7 @@ func designReview(decision DecisionKind) bool {
 // stepping, with the task it was serving still owed (internal/daemon's backstopStalledTurns),
 // which is a fact of that worker's issue and so the issue's architect's to read, as
 // `worker-died` is. What it did is usually the turn ended and the session brought back; where
-// the wake pacing parked the relaunch, it is the task taken back with that launch queued and
+// the wake pacing delayed the relaunch, it is the task taken back with that launch queued and
 // the stalled process still running until the launch's turn, which the notice names. The notice
 // says what became of that stalled process as well, where the end let it go: that it was
 // stopped, or that the runtime did not confirm the stop and it may be running still
@@ -3923,7 +3923,7 @@ func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, UpdateStalledNotice, TreeStalledNotice,
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, KeptDecisionNotice, UpdateStalledNotice, TreeStalledNotice,
 		ArchitectStalledNotice, MemoryGuardKillNotice, ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
 		return true
 	default:

@@ -18,7 +18,7 @@ import (
 // and steer what one process's rooms do: which rooms it holds, how often a room failed, compacted
 // waiting for the document lock or was closed by the service, what another process's
 // notifications carried to its rooms, when the settlement resumption armed a document's
-// settlement, a room's persistence held back, and an agent's open write parked at a named point.
+// settlement, a room's persistence held back, and an agent's open write paused at a named point.
 // A service built without Deps.TestHooks holds none of this: s.hooks is nil, every seam below is a
 // nil check, and every exported hook answers ErrTestHooksOff.
 
@@ -33,14 +33,14 @@ var (
 	ErrLiveWritePauseNotArmed = errors.New("no live write pause is armed for this document and point")
 )
 
-// LiveWritePausePoint names where an open live write of a document parks for a test.
+// LiveWritePausePoint names where an open live write of a document pauses for a test.
 type LiveWritePausePoint string
 
 const (
-	// PauseAfterFirstAppend parks a write right after its transaction's first append to the
+	// PauseAfterFirstAppend pauses a write right after its transaction's first append to the
 	// document, while that transaction holds the document's advisory lock (applyLive).
 	PauseAfterFirstAppend LiveWritePausePoint = "after-first-append"
-	// PauseAfterCommit parks a write once its transaction has committed, before its publish
+	// PauseAfterCommit pauses a write once its transaction has committed, before its publish
 	// applies it to the room (publishLiveWrite).
 	PauseAfterCommit LiveWritePausePoint = "after-commit"
 )
@@ -191,11 +191,11 @@ type livePauseKey struct {
 	point      LiveWritePausePoint
 }
 
-// livePause is one armed pause: the first write to reach its point parks there (parked closes)
+// livePause is one armed pause: the first write to reach its point pauses there (paused closes)
 // until the test releases it (released closes).
 type livePause struct {
 	taken    bool
-	parked   chan struct{}
+	paused   chan struct{}
 	released chan struct{}
 }
 
@@ -273,8 +273,8 @@ func (s *Service) HoldRoomPersistence(artifactID string, duration time.Duration)
 	return nil
 }
 
-// ArmLiveWritePause makes the next live write of artifactID to reach point park there until
-// ReleaseLiveWritePause. AwaitLiveWriteParked says when it has.
+// ArmLiveWritePause makes the next live write of artifactID to reach point pause there until
+// ReleaseLiveWritePause. AwaitLiveWritePaused says when it has.
 func (s *Service) ArmLiveWritePause(artifactID string, point LiveWritePausePoint) error {
 	h := s.hooks
 	if h == nil {
@@ -289,13 +289,13 @@ func (s *Service) ArmLiveWritePause(artifactID string, point LiveWritePausePoint
 	if h.pauses[key] != nil {
 		return ErrLiveWritePauseArmed
 	}
-	h.pauses[key] = &livePause{parked: make(chan struct{}), released: make(chan struct{})}
+	h.pauses[key] = &livePause{paused: make(chan struct{}), released: make(chan struct{})}
 	return nil
 }
 
-// AwaitLiveWriteParked waits until a write has parked at the pause armed for artifactID and
+// AwaitLiveWritePaused waits until a write has paused at the pause armed for artifactID and
 // point, or ctx ends.
-func (s *Service) AwaitLiveWriteParked(ctx context.Context, artifactID string, point LiveWritePausePoint) error {
+func (s *Service) AwaitLiveWritePaused(ctx context.Context, artifactID string, point LiveWritePausePoint) error {
 	h := s.hooks
 	if h == nil {
 		return ErrTestHooksOff
@@ -307,7 +307,7 @@ func (s *Service) AwaitLiveWriteParked(ctx context.Context, artifactID string, p
 		return ErrLiveWritePauseNotArmed
 	}
 	select {
-	case <-pause.parked:
+	case <-pause.paused:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -315,7 +315,7 @@ func (s *Service) AwaitLiveWriteParked(ctx context.Context, artifactID string, p
 }
 
 // ReleaseLiveWritePause disarms the pause armed for artifactID and point and lets the write
-// parked there, if one is, go on. It reports whether a write had parked.
+// paused there, if one is, go on. It reports whether a write had paused.
 func (s *Service) ReleaseLiveWritePause(artifactID string, point LiveWritePausePoint) (bool, error) {
 	h := s.hooks
 	if h == nil {
@@ -569,9 +569,9 @@ func (h *testHooks) awaitPersistenceHold(ctx context.Context, artifactID string)
 	}
 }
 
-// parkLiveWrite parks the calling write of artifactID at point when a pause is armed there and
+// pauseLiveWrite pauses the calling write of artifactID at point when a pause is armed there and
 // no write has taken it yet, until the test releases it.
-func (h *testHooks) parkLiveWrite(artifactID string, point LiveWritePausePoint) {
+func (h *testHooks) pauseLiveWrite(artifactID string, point LiveWritePausePoint) {
 	if h == nil {
 		return
 	}
@@ -583,8 +583,8 @@ func (h *testHooks) parkLiveWrite(artifactID string, point LiveWritePausePoint) 
 	}
 	pause.taken = true
 	h.mu.Unlock()
-	slog.Info("dispatch: test hook parked a live document write", "room", artifactID, "point", string(point))
-	close(pause.parked)
+	slog.Info("dispatch: test hook paused a live document write", "room", artifactID, "point", string(point))
+	close(pause.paused)
 	<-pause.released
 	slog.Info("dispatch: test hook released a live document write", "room", artifactID, "point", string(point))
 }

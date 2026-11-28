@@ -412,7 +412,7 @@ func aLookAdoptsNothing(r *adoptionRig) {
 
 // theArchitectsStartAdoptsNothing: the start admission writes for a tree's root architect names no
 // phase, since an architect works no phase of its own. That start carries a task only when the root
-// keeps a decision nobody in its tree heard (ParkedDecisionTask), so a person answers an ask of the
+// keeps a decision nobody in its tree heard (UnclaimedKeptTask), so a person answers an ask of the
 // root while it waits in `todo` for its slot; the controller's tick then admits it, the architect's
 // start launches the architect, and its ready sends the task naming that decision.
 func theArchitectsStartAdoptsNothing(r *adoptionRig) {

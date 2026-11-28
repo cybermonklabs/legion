@@ -168,7 +168,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		startedChild = "LEGION-211"
 		queuedRoot   = "LEGION-212"
 		heldChild    = "LEGION-213"
-		parked       = "LEGION-214"
+		inBacklog    = "LEGION-214"
 		atWork       = "LEGION-215"
 		treeRoot     = "LEGION-220"
 		linkBlocker  = "LEGION-300"
@@ -200,7 +200,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		{key: treeRoot, stands: phase.Implementing, status: "in_progress", tree: treeRoot, slotted: true},
 		{key: heldChild, stands: phase.Admitted, status: "in_progress", tree: treeRoot, parent: treeRoot},
 		// An issue a person moved out of the workflow, and one at work waiting on nothing.
-		{key: parked, stands: phase.Implementing, status: "backlog", tree: parked, slotted: true},
+		{key: inBacklog, stands: phase.Implementing, status: "backlog", tree: inBacklog, slotted: true},
 		{key: atWork, stands: phase.Implementing, status: "in_progress", tree: atWork, slotted: true},
 	} {
 		issue := record.Issue{Key: seed.key, Repo: waitRepo, DefaultBranch: "main", GitHubRepo: waitRepo,
@@ -212,7 +212,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		}
 		seedWaitIssue(t, st, records, issue, seed.key == seed.tree && seed.slotted)
 	}
-	for index, key := range []string{startedLink, startedChild, treeRoot, parked, atWork} {
+	for index, key := range []string{startedLink, startedChild, treeRoot, inBacklog, atWork} {
 		seedWaitSlot(t, st, records, key, index)
 	}
 	// The design gate of the started root, opened: its architect has handed the work on, so its
@@ -230,7 +230,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	seedWaitMirror(t, st, records, queuedRoot, "todo", "", rootBlocker)
 	seedWaitMirror(t, st, records, heldChild, "in_progress", treeRoot, childBlocker)
 	seedWaitMirror(t, st, records, treeRoot, "in_progress", "")
-	seedWaitMirror(t, st, records, parked, "backlog", "")
+	seedWaitMirror(t, st, records, inBacklog, "backlog", "")
 	seedWaitMirror(t, st, records, atWork, "in_progress", "")
 	for _, blocker := range []string{linkBlocker, rootBlocker, childBlocker} {
 		seedWaitMirror(t, st, records, blocker, "in_progress", "")
@@ -332,8 +332,8 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		{name: "blocked", keys: blockedKeys(admissionView.Blocked)},
 		{name: "held", keys: heldKeys(admissionView.Held)},
 	} {
-		if slices.Contains(list.keys, parked) {
-			t.Errorf("admission.%s = %v, want the parked issue %s out of it: nothing of it waits for Legion", list.name, list.keys, parked)
+		if slices.Contains(list.keys, inBacklog) {
+			t.Errorf("admission.%s = %v, want the issue in backlog %s out of it: nothing of it waits for Legion", list.name, list.keys, inBacklog)
 		}
 	}
 	if got, want := slices.Sorted(slices.Values(admissionView.Active)), []string{atWork}; !slices.Equal(got, want) {

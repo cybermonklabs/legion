@@ -511,7 +511,7 @@ func (k *heldStreams) handle(kv bus.KeyValue) bus.KeyValue {
 }
 
 // waitingInTheGate reports whether a record is held in the gate on a read of the stream already in
-// flight: a goroutine parked on a channel receive in applyCurrent itself.
+// flight: a goroutine blocked on a channel receive in applyCurrent itself.
 func waitingInTheGate() bool {
 	for _, goroutine := range goroutinetest.Traces() {
 		if strings.Contains(goroutine, "[chan receive") && strings.Contains(goroutine, "kvwatch.(*Watcher).applyCurrent(") {

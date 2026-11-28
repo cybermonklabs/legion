@@ -34,8 +34,9 @@ const (
 // variable. The two are the largest project's list as the project list sends it
 // (`?project=<p>&open=true`), and the same list with moves and no `open`, an API caller's shape
 // that reads the components of every issue of the project. The third is the priorities page's
-// parked list on the corpus of production's counts (seedListCorpus). The test writes nothing to
-// the seeded database but what a test server writes when it starts: its two people.
+// list of work in backlog or icebox on the corpus of production's counts (seedListCorpus). The
+// test writes nothing to the seeded database but what a test server writes when it starts: its two
+// people.
 //
 // Each request goes through a server whose pool holds one connection under the plan named
 // (newForcedPlan), warmed (forcedPlan.warm, within planStableWarmBudget), and then the statement it
@@ -71,7 +72,7 @@ func TestNoListingRequestReadsMoreOnTheGenericPlan(t *testing.T) {
 			planStableRequest{"the largest project's list with moves", bench, "/api/v1/issues?project=" + project + "&moved=true"})
 	}
 	t.Logf("%s; seed: %s", corpus.String(), seed)
-	requests = append(requests, planStableRequest{"the priorities page's parked list", corpus.database,
+	requests = append(requests, planStableRequest{"the priorities page's list of work in backlog or icebox", corpus.database,
 		"/api/v1/issues?advances=any&status=backlog&status=icebox&moved=true&open=true"})
 
 	for _, request := range requests {

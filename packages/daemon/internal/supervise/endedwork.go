@@ -206,7 +206,7 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // A claim stored working is in a turn, except where it is working for nothing that runs
 // (endState): while a compaction runs with no turn started under it, since compactStart puts the
 // claim in working in no turn; once a gone verdict has dropped such a compaction with its process
-// (compactionLostProcess), until the let-go, which a parked relaunch makes a wake's turn after the
+// (compactionLostProcess), until the let-go, which a delayed relaunch makes a wake's turn after the
 // death or the displacement that calls this first; and while a held suspension runs at the end of
 // the turn or the compaction the claim was working for (suspendHeldAtEnd). The let-go there cuts
 // off no turn: the record is not Turn, its task is in no turn cut off unless the let-go's own

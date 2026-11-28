@@ -85,12 +85,12 @@ type roomState struct {
 	// are zero again (countsFellLocked), or when the record is handed over with its counts
 	// (handOverFailedRoomLocked). Every place either count falls tells countsFellLocked.
 	idle wakeSignal
-	// parked are the parked bytes of commits that parked something and changed nothing, which no
-	// OnUpdate hands to the room's persistence (classifyDrained). They wait here, with the cursor
-	// of the room instance that parked them, until a drainer that holds no replica lock and no
-	// document lock stores them (storeParked): a drain can run under a settlement's document lock,
+	// pendingBytes are the pending bytes of commits that left something pending and changed nothing,
+	// which no OnUpdate hands to the room's persistence (classifyDrained). They wait here, with the
+	// room instance that took them and so its cursor, until a drainer that holds no replica lock and no
+	// document lock stores them (storePendingBytes): a drain can run under a settlement's document lock,
 	// and the store takes that lock.
-	parked []parkedBytes
+	pendingBytes []pendingCommit
 	// shadow is what the latest committed live write left the room to measure again the classes
 	// of the browser updates stored after its own (roomShadow), nil while none is left.
 	shadow     *roomShadow
@@ -408,17 +408,18 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 // open writer, a running or armed settlement, a latest edit source no settlement has read, a
 // failure being recovered from (whose eviction forgets the state itself, evictRoom), a connected
 // browser, a document socket's admission (admitting), an update the room's persistence has not
-// taken or appended, a commit's parked bytes not yet stored, an in-flight credit whose append has
+// taken or appended, a commit's pending bytes not yet stored, an in-flight credit whose append has
 // not landed, and a retirement's reservation (retiring). Its caller holds state.mu.
 func (s *Service) unusedLocked(state *roomState) bool {
 	return state.liveWriter == nil && state.settling == 0 && !s.isSettleTimerArmed(state.settle) &&
 		!state.unsettled && state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
 		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0 &&
-		len(state.parked) == 0 && state.retiring == nil
+		len(state.pendingBytes) == 0 && state.retiring == nil
 }
 
-// parkedBytes is one commit's parked bytes and the room instance that took them (storeParked).
-type parkedBytes struct {
+// pendingCommit is one commit's pending bytes and the room instance that took them
+// (storePendingBytes).
+type pendingCommit struct {
 	update   []byte
 	instance *roomInstance
 }

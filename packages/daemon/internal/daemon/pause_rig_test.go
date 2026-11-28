@@ -666,11 +666,11 @@ func (r *pauseDaemonRig) awaitState(token claim.Token, state supervise.ClaimStat
 	return c
 }
 
-// parkRelaunch leaves token, a claim seeded unfinished, with a relaunch the wake pacing has
-// parked: the boot launches it again, and the burst lets that one launch straight out; its process
+// delayRelaunch leaves token, a claim seeded unfinished, with a relaunch the wake pacing has
+// delayed: the boot launches it again, and the burst lets that one launch straight out; its process
 // then dies (the runtime's observation, posted as the sweep posts one), and the relaunch the death
 // raises waits in the pacing for the interval after the burst, since the test clock stands still.
-func (r *pauseDaemonRig) parkRelaunch(token claim.Token) {
+func (r *pauseDaemonRig) delayRelaunch(token claim.Token) {
 	r.t.Helper()
 	var c supervise.Claim
 	testwait.Eventually(r.t, fmt.Sprintf("the boot's launch of %s, which the burst lets out", token), func() bool {

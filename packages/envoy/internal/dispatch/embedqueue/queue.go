@@ -86,15 +86,15 @@ type Deps struct {
 	// test of this package has, to signal the scan loop itself and read whether a signal is still
 	// waiting there. Nil for a caller that builds Deps itself.
 	enqueued chan struct{}
-	// idle and coverageParked are the two ends of Run's work, for a test that must know the
+	// idle and coverageWaiting are the two ends of Run's work, for a test that must know the
 	// process has finished all of it: idle is called whenever the scan loop waits with nothing
-	// owed and nothing due (duty.WokenLoop.Idle), and coverageParked each time the coverage loop
-	// settles into its wait after a pass that succeeded (reportParked). The coverage loop is not
+	// owed and nothing due (duty.WokenLoop.Idle), and coverageWaiting each time the coverage loop
+	// settles into its wait after a pass that succeeded (reportWaiting). The coverage loop is not
 	// a thing that ends - it rechecks the identity for as long as the process runs - so what a
-	// test can wait for is the loop parked, not the loop returned. Nil in production and for a
+	// test can wait for is the loop waiting, not the loop returned. Nil in production and for a
 	// caller that builds Deps itself; a test of this package sets them.
-	idle           func()
-	coverageParked func(awaitingAnswer bool)
+	idle            func()
+	coverageWaiting func(awaitingAnswer bool)
 	// identityRecheck is the coverage loop's interval between runs. Run sets it to
 	// identityRecheckInterval unless a test of the recheck has set a shorter one, to run its own
 	// Run's in seconds beside tests whose Run keeps ten minutes.

@@ -27,10 +27,11 @@ import (
 //
 // Before, the interest path answered the same shape session.ErrNoSessionRecord and the
 // delivery_failed exception, for as long as the interest row stood. Measured on the live proof at
-// 0df41561 (scripts/e2e/answer-loop.sh, A1): the parked architect's ask reply logged `listener
-// agent delivery failed ... no session record for session 01a1bc71-e988-7523-8558-5cdf2bc62cf9`
-// twice, the daemon logged no question at all, and A1 failed with "no answer in ask
-// 9d743249-1da3-45d6-b18d-405b214830eb's thread within four minutes".
+// 0df41561 (scripts/e2e/answer-loop.sh, A1): the reply on the ask of the architect of a tree that
+// does not run logged `listener agent delivery failed ... no session record for session
+// 01a1bc71-e988-7523-8558-5cdf2bc62cf9` twice, the daemon logged no question at all, and A1
+// failed with "no answer in ask 9d743249-1da3-45d6-b18d-405b214830eb's thread within four
+// minutes".
 func TestAMessageToAStoppedAgentWhoseInterestNamesThisListenerIsHandedToItsDaemon(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

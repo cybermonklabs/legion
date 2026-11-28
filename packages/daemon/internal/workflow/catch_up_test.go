@@ -134,7 +134,7 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return record.NewStore().AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
+		return record.NewStore().KeepDecision(ctx, tx, record.KeptDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
 			Decision: record.DecisionDesignApproved, Actor: "user:alice", At: at})
 	}); err != nil {
 		t.Fatalf("keep a decision: %v", err)
@@ -207,17 +207,17 @@ func TestACatchUpNamesAKeptDecisionOnlyWhileNoLaterApprovalSupersededIt(t *testi
 					LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true}); err != nil {
 					return err
 				}
-				return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
+				return records.KeepDecision(ctx, tx, record.KeptDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
 					Decision: tc.decision, Actor: "user:alice", At: tc.mark.At, Seq: tc.mark.Seq})
 			}); err != nil {
 				t.Fatalf("keep the person's decision beside the gate's approval: %v", err)
 			}
 			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
 			got := lastCatchUp(t, pool)
-			var kept []record.ParkedDecision
+			var kept []record.KeptDecision
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				var err error
-				kept, err = records.ParkedDecisions(ctx, tx, "LEGION-1")
+				kept, err = records.KeptDecisionsOf(ctx, tx, "LEGION-1")
 				return err
 			}); err != nil {
 				t.Fatalf("read what is kept: %v", err)
@@ -280,7 +280,7 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 		want                    string
 	}{
 		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", awaiting("LEGION-1")},
-		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", awaiting("LEGION-1")},
+		{"the root accepting, its child moved to backlog", phase.Accepting, phase.Done, "needs_review", "backlog", awaiting("LEGION-1")},
 		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", awaiting("LEGION-1")},
 		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", awaiting("LEGION-2")},
 		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", awaiting("LEGION-1, LEGION-2")},

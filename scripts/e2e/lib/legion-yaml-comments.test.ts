@@ -6,7 +6,7 @@ import { scriptFunctions } from "./script-functions";
 
 // A proof script writes the run's legion.yaml in write_legion_config through an unquoted heredoc,
 // so that the script's variables expand in it; a command substitution in one of its comments then
-// runs too. Backticks in two comments did. parked-decision-devbox.sh's `legion` ran the first legion
+// runs too. Backticks in two comments did. kept-decision-devbox.sh's `legion` ran the first legion
 // on PATH and wrote what it printed into the file: its first line into the comment, every later line
 // as YAML. stage3-devbox-workflow.sh's `production_check: tester` ran a command of that name, so the
 // comment lost those words and bash wrote "command not found". Each row runs the function under its
@@ -17,7 +17,7 @@ const e2e = join(import.meta.dir, "..");
 const dir = temporaryDirectory("legion-yaml-comments-test");
 const cases = [
   {
-    script: "parked-decision-devbox.sh",
+    script: "kept-decision-devbox.sh",
     command: "legion",
     comment:
       '# Four: an issue holds one of the cap\'s slots as "Admission and the `legion` label" in',

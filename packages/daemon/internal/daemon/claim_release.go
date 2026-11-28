@@ -323,17 +323,22 @@ func claimContendedWait(issue string) error {
 	return routineWaiting{err: wait.Errorf("the Dispatch claim of %s was contended while it was released", issue)}
 }
 
-// releaseParkedClaims queues one Dispatch claim release (record.ClaimRelease) for each issue of
-// the boot's listing that still carries a claim while the daemon's own record says it stopped.
-// Dispatch releases a claim at a close alone (its issue PATCH), so a park leaves the claim of the
-// session the daemon stopped standing on the board.
+// releaseOutOfWorkflowClaims queues one Dispatch claim release (record.ClaimRelease) for each issue
+// of the boot's listing that still carries a claim at a status other than done while the daemon's
+// own record says it stopped. Dispatch releases a claim at a close alone (its issue PATCH), so
+// every other departure leaves the claim of the session the daemon stopped standing on the board:
+// a move to backlog, icebox or triage, and the release of a root admission found with neither a
+// slot nor a place in the line, which leaves at the status it stands at
+// (workflow.Engine.LeaveUnslotted). An issue the listing shows done is passed over: its close
+// released its claim.
 //
-// It is the boot's pass and not a periodic sweep because every park the daemon sees queues its
-// own row (workflow.Engine.leave), and every claim write that leaves a session behind queues that
-// session's (store.Store.ReleaseLeftSessionClaims), so the only claims left for this to find are
-// the ones parked before that row existed, those of a session left behind before its own row
-// existed, which the executor reaches through claim_sessions, and any row lost with a restore of
-// the database. The recovery caller passes boot false (recoverRepositories) and starts no pass.
+// It is the boot's pass and not a periodic sweep because every such departure the daemon applies
+// queues its own row (workflow.Engine.leave's releaseOutOfWorkflowClaim, which queues none at a
+// close), and every claim write that leaves a session behind queues that session's
+// (store.Store.ReleaseLeftSessionClaims), so the only claims left for this to find are those of a
+// move made before that row existed, those of a session left behind before its own row existed,
+// which the executor reaches through claim_sessions, and any row lost with a restore of the
+// database. The recovery caller passes boot false (recoverRepositories) and starts no pass.
 //
 // A summary carrying no claim is passed over before anything is read, which is the whole of the
 // pass's cost: of the 1,585 issues of the live board, 1,426 carry none. What is left is read in
@@ -353,7 +358,7 @@ func claimContendedWait(issue string) error {
 // alone and the pass makes none. The rows are drained by the outbox's own sweep rather than by a
 // commit wake: attach stores the outbox the records' wake reaches (wakeOutbox) after the reconcile
 // probe has run (daemon.go's boot stages).
-func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, scope []dispatch.IssueSummary) error {
+func (w *workflowRuntime) releaseOutOfWorkflowClaims(ctx context.Context, tx pgx.Tx, scope []dispatch.IssueSummary) error {
 	keys := make([]string, 0, len(scope))
 	for _, summary := range scope {
 		if summary.ClaimedBy == "" && !summary.ClaimUnread {

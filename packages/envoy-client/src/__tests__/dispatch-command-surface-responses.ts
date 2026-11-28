@@ -492,7 +492,7 @@ export function prioritiesBody() {
         },
       ],
     },
-    priority_work_parked: {
+    priority_work_in_backlog_or_icebox: {
       count: 1,
       by_priority: { "ship-the-daemon": 1 },
       issues: [

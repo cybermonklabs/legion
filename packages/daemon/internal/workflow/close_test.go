@@ -20,13 +20,13 @@ import (
 // A child leaving the workflow ends only the child: the shipped daemon lingers the closed issue's
 // own tree and wakes the tree's architect for a child (reducers.ts reduceIssueClosed). Here the
 // root is mid-implementation when its child's pull request merges, or a human moves the child out
-// of the workflow. The child leaves the table: its phase is parked in done, so no transition or status
+// of the workflow. The child leaves the table: its phase is set at done, so no transition or status
 // write follows. The root keeps its phase, its linger stays unarmed, none of its claims is stopped,
 // and the architect is told which child left and how. What the child's claims get is the
 // status's: a child closed as done by a human has every claim closed (issue_close); one closed at
 // its merge has five claims closed and the role that works its production check kept for the
-// check the merge opens, whose close writes the suspension (merge_close_test.go); and one parked
-// in backlog, icebox or triage has every claim suspended, and its pod goes with the Sandbox the
+// check the merge opens, whose close writes the suspension (merge_close_test.go); and one moved
+// to backlog, icebox or triage has every claim suspended, and its pod goes with the Sandbox the
 // one IssueSuspend its leave writes deletes. The merged child writes none at its close: that
 // role's claim and the pod stay for the production check's first look, and the suspension comes
 // with the check's pause or close (merge_close_test.go, which asserts zero here).
@@ -74,7 +74,7 @@ func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
 				t.Fatalf("read child: %v", err)
 			}
 			if childPhase != phase.Done {
-				t.Fatalf("child phase = %s, want parked in done", childPhase)
+				t.Fatalf("child phase = %s, want its phase at done", childPhase)
 			}
 			assertOutboxCount(t, pool, "linger_close", 0)
 			stopped := superviseRequests(t, pool, tc.op)

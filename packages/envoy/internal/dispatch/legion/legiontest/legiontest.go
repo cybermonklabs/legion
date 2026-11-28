@@ -86,7 +86,7 @@ const person = `{"kind":"user","id":"alice"}`
 // golden file of this change was recorded over, row for row. They shape the history a check of
 // the eval registry's Legion measures reads (dispatch://INFRA-2916, k6 and k17), which needs a
 // window before the project's first observation and one after it, finished issues that sat
-// parked, merged pull requests and filings of every class.
+// in backlog or icebox, merged pull requests and filings of every class.
 type Spec struct {
 	Project string
 	Trees   int
@@ -321,7 +321,7 @@ type phaseMark struct {
 // implemented, tested and sent back once, so its facts hold two review rounds. The second is
 // reviewed and merged, and a person answered an ask of it, so its hours land on waiting for a
 // person as well as on its phases. The third never closed, so its hours run to the moment of the
-// computation, and it sat parked for six of them. The fourth recorded its one handoff at the
+// computation, and it sat in backlog for six of them. The fourth recorded its one handoff at the
 // moment it closed, so its work took no measured time and its facts hold an entry with no phase
 // hours. The fifth is a follow-up a person filed and no Legion role worked, so it gets no facts
 // entry at all.
@@ -457,7 +457,7 @@ func (s *seeding) tree(index int) {
 	s.waiting(reviewed, "ask", at(28), at(31))
 
 	// The child nobody closed. Its work time runs to the moment of the computation, and the six
-	// hours it sat parked are off it. It ends in `held`, the one phase that leaves its root free
+	// hours it sat in backlog are off it. It ends in `held`, the one phase that leaves its root free
 	// to accept and to merge while the child is still open.
 	open := s.issue(number+3, "An open child", root, 2, at(8), nil)
 	s.fixture.Open = append(s.fixture.Open, open)

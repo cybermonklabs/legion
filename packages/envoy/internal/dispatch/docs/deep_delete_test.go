@@ -57,7 +57,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		// and the paragraph beside it but none of the chain, so the peer sends the same delete an
 		// ordinary client would and this test process does not walk the chain itself. The root's
 		// own update is not enough: it names the paragraph as the root's right origin, so a
-		// document holding that update alone parks the root and its delete deletes nothing.
+		// document holding that update alone keeps the root pending and its delete deletes nothing.
 		opening := crdt.EncodeStateAsUpdateV1(peer.Doc, nil)
 		deepest := root
 		for grown := 1; grown < levels; {

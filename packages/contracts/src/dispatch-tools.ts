@@ -1759,7 +1759,7 @@ export const dispatchToolSpecs = [
       "end of the section it concerns), at every phase, approved spec or not; the block reaches " +
       "the Inbox and its answer lands next to its context. Never give an ask an Approve option: a " +
       "document is approved through dispatch request-approval. Do not use this tool for a status " +
-      "update or discussion; use dispatch message instead. Never create an issue to park a " +
+      "update or discussion; use dispatch message instead. Never create an issue to hold a " +
       "question: the question is an ask on the issue it concerns. " +
       ASK_QUESTION_CONTRACT +
       " " +

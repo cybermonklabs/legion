@@ -1548,7 +1548,7 @@ const drainWatchStep = 10 * time.Millisecond
 // connection's lock, so a resend the drain is in shows as a moved count; a connection the client
 // replaced is closed, so it no longer reads CONNECTED.
 //
-// The watch ends with the drain, so it is never a goroutine parked for the life of the process.
+// The watch ends with the drain, so it is never a goroutine blocked for the life of the process.
 // The drain always ends: checkDrained opens with nc.Flush(), which carries the client's flush
 // timeout (10 s in nats.go v1.55.0) and so returns whether or not the link came back, and its loop
 // then ends at the first pass where the handler has taken what was buffered, or the subscription

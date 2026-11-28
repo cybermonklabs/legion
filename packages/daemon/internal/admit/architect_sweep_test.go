@@ -37,7 +37,7 @@ type architectSweepFixture struct {
 	// stands is the phase the issue is recorded in, and status the Dispatch status with it.
 	stands phase.Phase
 	status string
-	// lingers records the root as a park left it: a linger deadline ahead of it.
+	// lingers records the root as a move to backlog left it: a linger deadline ahead of it.
 	lingers bool
 	// carried records a hand-over row at generation, which is what says the root stands in the
 	// run a hand-over carried it into, and gateCarried marks that row as one whose hand-over

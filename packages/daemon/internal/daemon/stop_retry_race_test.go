@@ -203,7 +203,7 @@ func TestAStopRowStopsTheClaimARetryInFlightLaunches(t *testing.T) {
 		{name: "the outbox's suspend row", row: testerSuspendRow, by: supervise.SuspendedByDaemon},
 		{name: "the outbox's release row", row: testerReleaseRow, by: supervise.SuspendedByReleased},
 	} {
-		// The retry's launch parks at the pod's gate behind the load (supervise's askPod), so the
+		// The retry's launch waits at the pod's gate behind the load (supervise's askPod), so the
 		// stop takes it out of the gate.
 		t.Run(tc.name, func(t *testing.T) {
 			r := newPodStopRig(t, podIssueRecord(), true)

@@ -31,7 +31,7 @@ func TestTheBootWritesTheStatusOfAPhaseAnIssueAlreadyStoodIn(t *testing.T) {
 		Tree: "LEGION-208", Project: "LEGION", Title: "a child under test", Parent: new("LEGION-208"),
 		Phase: phase.Testing, Generation: 4, Status: "testing", DispatchStatus: "testing", Rank: "W"})
 	seedIssue(t, pool, record.Issue{Key: "LEGION-211", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-208", Project: "LEGION", Title: "a parked child", Parent: new("LEGION-208"),
+		Tree: "LEGION-208", Project: "LEGION", Title: "a child in backlog", Parent: new("LEGION-208"),
 		Phase: phase.Done, Generation: 4, Status: "backlog", DispatchStatus: "backlog", Rank: "X"})
 
 	applyMirrored(t, pool, testEngine(config.DesignGateRootIssues, nil), "boot", intake.DaemonBooted{})

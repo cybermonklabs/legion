@@ -834,12 +834,13 @@ function issueWriteTargets(
  * - every read that holds an issue advancing it, by its own relation or one it inherits
  *   (`advances` lists both): an issue read (`["issue", key]`; an issue's references or its
  *   collaborators under that prefix carry no `advances`), and a list of issue rows (every
- *   `["issues", ...]` listing and the Agents page's issue picker). That is the parked fault list
- *   (`advances=any`), whose rows under this priority alone leave it and whose other rows drop
- *   it, every other issue listing that draws the row, and above all each open issue read, whose
- *   header would otherwise keep naming the priority and send it back in the next whole-set write
- *   of its `advances`, which the server refuses (`400 ADVANCES_INPUT`, a priority that is gone).
- *   A row of `advances=any` that does not name it stays, since it still advances another.
+ *   `["issues", ...]` listing and the Agents page's issue picker). That is the fault list in
+ *   backlog or icebox (`advances=any`), whose rows under this priority alone leave it and whose
+ *   other rows drop it, every other issue listing that draws the row, and above all each open
+ *   issue read, whose header would otherwise keep naming the priority and send it back in the
+ *   next whole-set write of its `advances`, which the server refuses (`400 ADVANCES_INPUT`, a
+ *   priority that is gone). A row of `advances=any` that does not name it stays, since it still
+ *   advances another.
  */
 function priorityWriteTargets(
   event: Extract<DispatchEvent, { type: "priority.updated" }>

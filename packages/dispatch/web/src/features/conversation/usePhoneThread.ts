@@ -43,11 +43,11 @@ export interface PhoneThread {
    *  field cannot change while it is hidden, so this is what it holds; the docked composer draws
    *  it once the comment it answers is no longer listed, or is deleted, when no Reply goes on
    *  with it. */
-  readonly parked: SentDraft | undefined;
-  /** Discard my draft beside a reply put away (`parked`) whose comment is no longer listed, or is
+  readonly putAway: SentDraft | undefined;
+  /** Discard my draft beside a reply put away (`putAway`) whose comment is no longer listed, or is
    *  deleted: drops the thread composer's draft and its send as its own Discard does, which ends
    *  its reply (`endReply`) and keeps nothing for the comment as it goes. */
-  readonly dropParked: () => void;
+  readonly dropPutAway: () => void;
   /** The thread composer's send name: beneath the tab's, so every Reply holds for it as for the
    *  docked composer's, and its own, so the view can tell its send from the docked one's. */
   readonly composerKey: MutationKey;
@@ -61,7 +61,7 @@ export interface PhoneThread {
   /** The docked composer's field (`MentionComposer`'s `intake`), where the thread composer's
    *  Cancel reply puts its draft. */
   readonly dockedIntake: RefObject<DraftIntake | null>;
-  /** The thread composer's field (`MentionComposer`'s `intake`), which `dropParked` drops. */
+  /** The thread composer's field (`MentionComposer`'s `intake`), which `dropPutAway` drops. */
   readonly threadIntake: RefObject<DraftIntake | null>;
   /** The reader's own Cancel reply in the thread composer, or Escape in its field: a move to the
    *  issue's own address, where the docked composer is, so the draft goes there, as the docked
@@ -70,7 +70,7 @@ export interface PhoneThread {
    *  and its Send go from there, under a key of their own; nothing is sent until the reader
    *  presses. A docked composer holding a draft of its own - typed, a send out or refused, or a
    *  reply of its own - is never written over: the thread composer is put away as it stands
-   *  instead (`parked`), and that comment's Reply brings it back. */
+   *  instead (`putAway`), and that comment's Reply brings it back. */
   readonly cancelReply: (draft: SentDraft) => void;
   /** Ends the thread composer's reply, and the composer with it, once nothing of it is left to
    *  keep - its send landed, or the reader discarded its draft (`MentionComposer`'s `onSent` and
@@ -105,7 +105,7 @@ export function usePhoneThread({
   const [openId, setOpenId] = useState<string>();
   const composerKey = useMemo<MutationKey>(() => [...sendKey, "phone-thread"], [sendKey]);
   const [replyTo, setReplyTo] = useHeldReplyTo(composerKey);
-  const [parked, setParked] = useState<SentDraft>();
+  const [putAway, setPutAway] = useState<SentDraft>();
   const dockedIntake = useRef<DraftIntake>(null);
   const threadIntake = useRef<DraftIntake>(null);
   // Set when the viewport widened past the phone layout while a send from the view was out - its
@@ -142,7 +142,7 @@ export function usePhoneThread({
   const endReply = () => {
     store.discard(composerKey);
     setReplyTo(null);
-    setParked(undefined);
+    setPutAway(undefined);
   };
   const cancelReply = (draft: SentDraft) => {
     const to: CarriedAddress = { owner, replyTo: null };
@@ -158,7 +158,7 @@ export function usePhoneThread({
       setReplyTo(null);
       return;
     }
-    setParked(draft);
+    setPutAway(draft);
   };
   const hide = () => {
     setOpenId(undefined);
@@ -169,7 +169,7 @@ export function usePhoneThread({
       if (sendingNow()) return false;
       const reply = redirectedReplyTarget(store, composerKey, target);
       setReplyTo(reply);
-      setParked(undefined);
+      setPutAway(undefined);
       setOpenId(reply.id);
       return reply.id === target.id;
     },
@@ -177,7 +177,7 @@ export function usePhoneThread({
     cardReplySending,
     composerKey,
     dockedIntake,
-    dropParked: () => threadIntake.current?.drop(),
+    dropPutAway: () => threadIntake.current?.drop(),
     endReply,
     hide,
     holds,
@@ -187,7 +187,7 @@ export function usePhoneThread({
       hide();
     },
     open: setOpenId,
-    parked,
+    putAway,
     replyTo,
     threadIntake,
   };

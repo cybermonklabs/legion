@@ -55,10 +55,11 @@ func StatusChangeOf(raw json.RawMessage) (StatusChange, error) {
 }
 
 // NeedsEventLog says whether the fact's preparation reads the issue's Dispatch event log: a
-// person's approval that may queue its parked root (MayQueueHandover) and that carries a sequence
-// to place it by in that log (Mark.Seq). A review from a read that carries no sequence cannot be
-// placed, and reads no log. The daemon's preparation reads the log for such a fact and sets what it
-// shows (WithStatusChange), so this method is the one rule for which approvals read the log.
+// person's approval that may queue its root in backlog or icebox (MayQueueHandover) and that
+// carries a sequence to place it by in that log (Mark.Seq). A review from a read that carries no
+// sequence cannot be placed, and reads no log. The daemon's preparation reads the log for such a
+// fact and sets what it shows (WithStatusChange), so this method is the one rule for which
+// approvals read the log.
 func (a DispatchArtifact) NeedsEventLog() bool {
 	return a.MayQueueHandover() && a.Mark.Seq > 0
 }

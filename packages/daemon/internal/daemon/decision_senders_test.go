@@ -80,7 +80,7 @@ var envoyPublishes = []string{
 // workflow, which writes the notices and renders the resume and the kept-decisions tasks, the
 // daemon, which sends a held task at each send (rootTask), publishes a queued notice
 // (deliverNotice), writes a catch-up's decisions again at its delivery and asks a changes request
-// again there (readNoticeTree), relays a decision nobody in its tree hears (parkDecision) and
+// again there (readNoticeTree), relays a decision nobody in its tree hears (relaySpecDecision) and
 // asks a relayed changes request again at its publish to the controller (controllerNotice), and
 // admission, which composes a re-admitted root's start from what was kept for it.
 var senderPackages = []string{"workflow", "daemon", "admit"}
@@ -122,7 +122,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //     changesRequestKind). Each set is read from its function's own switch and checked against
 //     the function, so a kind added to either is covered here;
 //   - asks record.SpecDecision of a notice's kind, to send the decision it names on (the outbox's
-//     parkDecision relays it to the controller);
+//     relaySpecDecision relays it to the controller);
 //   - holds a review sentence (decisionReviewSentences) in a string constant, which is rendering
 //     the task that says it;
 //   - calls such a renderer that does not reach the predicate itself: the renderer is then a
@@ -171,7 +171,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // readNoticeTree writes again (workflow.KeptDecisionsTask), through the hand-over of a catch-up's
 // decisions to a fresh catch-up (workflow.HandOverKept) once a newer one superseded it
 // (supersededKept) or its re-holds are spent (the re-hold policy's spentKept), and through the
-// relay of a kept decision (parkDecision). Take the first out and the walk still passes. What
+// relay of a kept decision (relaySpecDecision). Take the first out and the walk still passes. What
 // holds that ask is its behavior, which TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished
 // drives. The publish of a relay to the controller (controllerNotice) reaches it one way alone,
 // through its ask of a relayed changes request (stillOwed, through workflow.NoticeSuperseded), so the

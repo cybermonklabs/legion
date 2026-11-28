@@ -339,8 +339,8 @@ func FoldWorkTime(parts []measures.DayPart, cut Scope) *SampleFold {
 }
 
 // FoldSlotWait is legion-slot-wait over parts, cut by cut (computed:legion/metrics.FoldSlotWait):
-// every finished issue's hours admitted with no slot of its own over its observed life, parked
-// hours left out (slotWaitHours), as series `hours` (statistics `hours` the sum, `n`, `median`,
+// every finished issue's hours admitted with no slot of its own over its observed life, hours in
+// backlog or icebox left out (slotWaitHours), as series `hours` (statistics `hours` the sum, `n`, `median`,
 // `p90`); nil when parts hold no part of the cut's series. parts are the eval's own:
 // legion-work-time's series has the same name.
 func FoldSlotWait(parts []measures.DayPart, cut Scope) *SampleFold {

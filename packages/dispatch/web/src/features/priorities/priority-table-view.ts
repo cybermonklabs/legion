@@ -28,21 +28,30 @@ const DEFAULT_PAGE_SIZE = 50;
  *  its tables in the one address, whichever tab draws it. */
 const viewKey = (prefix: string, name: string) => `${prefix}.${name}`;
 
+/** The ids a column had before, each with the id it has now, which an older link names: its sort
+ *  is read under the column's id now (`readTableView`). */
+export type FormerColumnIds = ReadonlyMap<string, string>;
+
 /** The view `params` carries for the table with this prefix, over these columns. A filter of a
  *  column the table does not have is left where it is: it is another table's, or an older
- *  link's. One of a column that has no filter (`hasFilter`), an older link's, filters nothing. */
+ *  link's. One of a column that has no filter (`hasFilter`), an older link's, filters nothing. A
+ *  sort under an id of `formerIds` is read as the column's id now. */
 export function readTableView<Row>(
   params: URLSearchParams,
   prefix: string,
   columns: readonly TableColumn<Row>[],
-  defaultSorting: SortingState
+  defaultSorting: SortingState,
+  formerIds: FormerColumnIds
 ): TableView {
   const key = (name: string) => viewKey(prefix, name);
   const ids = columns.map((column) => column.id);
   const sort = params.get(key("sort"));
   const sorting = (sort ?? "")
     .split(",")
-    .map((part) => ({ id: part.replace(/^-/, ""), desc: part.startsWith("-") }))
+    .map((part) => {
+      const id = part.replace(/^-/, "");
+      return { id: formerIds.get(id) ?? id, desc: part.startsWith("-") };
+    })
     .filter(({ id }) => ids.includes(id));
   const filters = columns.flatMap((column) => {
     const values = params.getAll(key(`f.${column.id}`));
@@ -66,18 +75,21 @@ export function readTableView<Row>(
 
 /** `params` with this table's controls rewritten to `view`, leaving every other table's and
  *  every other parameter alone. A control at its default writes nothing, so a shared link
- *  carries what the reader changed and nothing else. */
+ *  carries what the reader changed and nothing else; an older link's filter under an id of
+ *  `formerIds` goes from the address. */
 export function writeTableView<Row>(
   params: URLSearchParams,
   prefix: string,
   columns: readonly TableColumn<Row>[],
   view: TableView,
-  defaultSorting: SortingState
+  defaultSorting: SortingState,
+  formerIds: FormerColumnIds
 ): URLSearchParams {
   const key = (name: string) => viewKey(prefix, name);
   const next = new URLSearchParams(params);
   for (const name of ["sort", "group", "q", "page", "size"]) next.delete(key(name));
   for (const column of columns) next.delete(key(`f.${column.id}`));
+  for (const from of formerIds.keys()) next.delete(key(`f.${from}`));
   const sort = view.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
   const fallback = defaultSorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
   if (sort !== fallback) next.set(key("sort"), sort);
@@ -102,12 +114,13 @@ export function writeTableView<Row>(
 export function useTableView<Row>(
   prefix: string,
   columns: readonly TableColumn<Row>[],
-  defaultSorting: SortingState
+  defaultSorting: SortingState,
+  formerIds: FormerColumnIds
 ) {
   const [params, setParams] = useSearchParams();
   const view = useMemo(
-    () => readTableView(params, prefix, columns, defaultSorting),
-    [params, prefix, columns, defaultSorting]
+    () => readTableView(params, prefix, columns, defaultSorting, formerIds),
+    [params, prefix, columns, defaultSorting, formerIds]
   );
   const update = (change: (current: TableView) => TableView) =>
     setParams(
@@ -116,8 +129,9 @@ export function useTableView<Row>(
           current,
           prefix,
           columns,
-          change(readTableView(current, prefix, columns, defaultSorting)),
-          defaultSorting
+          change(readTableView(current, prefix, columns, defaultSorting, formerIds)),
+          defaultSorting,
+          formerIds
         ),
       { replace: true }
     );

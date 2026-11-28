@@ -158,7 +158,7 @@ const ancestorOpenedStep = "An ancestor's approval opened the %s step of %s."
 //
 // The notice tells a person's decision, so it is asked first whether that decision is still the
 // person's word, as every sender of one asks and as the relay of this notice asks it again
-// (NoticeSuperseded, the outbox's parkDecision): of gate as the opening leaves it, under the steps
+// (NoticeSuperseded, the outbox's relaySpecDecision): of gate as the opening leaves it, under the steps
 // the deployment gates. One that is no longer their word is told to nobody. A basis names the
 // ancestor's document, which no gate of root holds, so it is asked of no gate and stands
 // (RefSuperseded).
@@ -427,7 +427,7 @@ func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) 
 // person's approval of the ancestor's version, by the pending-basis seed's read of it, which its
 // live event queues and the boot queues for every step still waiting: the ancestor's architect
 // would hear that root rests on it again, root's issue would get the message of the basis, and
-// root's architect design-approved, which a lingering tree parks as a person's decision for its
+// root's architect design-approved, which a lingering tree keeps as a person's decision for its
 // next start, though a re-admission keeps nothing of the basis (R3). Any other act that ends a
 // wait would tell both architects of a step nobody runs, but for the check each end makes of the
 // root (openPendingBasis, tellPendingEnded), which ends a wait a release that ended none at the

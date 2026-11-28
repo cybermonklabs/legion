@@ -5,7 +5,7 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
 - The Legion plugin claims your assigned role through a daemon-minted role token, at your session's first turn or at a bound (30 s by default), whichever comes first (`packages/pi-shared/src/legion-claim-core.ts`).
   Never call `envoy_role_set` or subscribe to your role topic yourself.
 - Never build a role token from an issue number or title: only the daemon maps tokens to issues.
-- A Legion claim is last-claim-wins. It survives parking and worker re-creation, and stays through the issue's linger after close (`linger_hours`).
+- A Legion claim is last-claim-wins. It survives the issue's move to `backlog` or `icebox` and worker re-creation, and stays through the issue's linger after close (`linger_hours`).
 - `no_holder`, `holder_lapsed` and `delivery_failed` on a Legion role are the daemon's liveness signals, and the daemon acts on them: it revives or recreates the worker and delivers again.
   Never add a second subscriber, retry by hand, or forward these payloads to an architect.
   - `no_holder`: no session holds the claim. A Legion role whose agent process exits is `gone` at once, so its successor takes the role without waiting out the live window.

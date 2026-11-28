@@ -563,7 +563,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// (releaseHeldRoot). Its test is the complement of admission's own, by construction and not
 	// by a reader's care: both ask record.Issue.Readmittable, so the two can never both fire. A
 	// root that lingers or stands done is re-admitted there at a new generation, and a root held
-	// from a phase stands at neither, which keeps the park and un-park of a lingering root on
+	// from a phase stands at neither, which keeps a move to backlog and back to todo of a lingering root on
 	// its new generation. A held child is untouched, and comes back through ReenterChild below.
 	if fact.Status == "todo" && claim.IsTreeRoot(issue.Key, issue.Tree) && issue.Phase == phase.Held && issue.Hold != nil && !issue.Readmittable() {
 		return intake.Result{}, e.releaseHeldRoot(ctx, tx, *issue, fact)
@@ -665,7 +665,7 @@ const restartReason = "the issue was set to todo while its task was stopped"
 // only by the architect's sign-off. Any other session on the root of a running tree — one holding
 // its admission slot, or one waiting on a person, whose tree stays live and which keeps its slot
 // — another tree's agent, or one outside Legion that took the issue for its own, has no part
-// in the tree it would end or park, so the tree's architect is told who wrote what. Either way the
+// in the tree it would end or take out of the workflow, so the tree's architect is told who wrote what. Either way the
 // workflow does not react: the observation is recorded with the status kept (keepStatus), and the
 // daemon re-asserts its own status through the outbox. A person's move and the daemon's own write
 // carry no session (intake.DispatchIssue.ActorSession): they are the workflow's to act on.
@@ -1021,7 +1021,7 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // Its handoff gives the next phase findings a refusal would lose. Five completions remain refused:
 // one from a role whose handoff already stands, which reports a phase it finished a second time;
 // one from a role the daemon never started on this issue, which has held no phase to report;
-// any while no role works the issue's phase - on the backlog, closed, held or waiting on its
+// any while no role works the issue's phase - out of the workflow, closed, held or waiting on its
 // children - which is past recording work at all; any while it stands at admitted; and one of a
 // phase whose entry was raised before the issue last moved into awaiting_children
 // (record.Issue.ChildrenWaitedAt), which outlives the wait: the wait stopped that phase, and the
@@ -1270,10 +1270,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // worker's; it is told as a worker-died of the architect, lingering or not, and while the root is
 // not done the controller hears it from a row of its own, because every notice of the tree that no
 // child's own architect takes reaches that architect and nobody inside the tree is left to act on
-// its own. A root that is done is parked, lingers or is closed, and the controller does nothing for
-// it, so that copy is not written (#4065). That is why the architect's branch comes before the
-// lingering tree's guard. The row sent to the architect's own role finishes undelivered once its
-// claim has failed (the daemon's notice executor).
+// its own. A root that is done stands in backlog or icebox, lingers or is closed, and the
+// controller does nothing for it, so that copy is not written (#4065). That is why the architect's
+// branch comes before the lingering tree's guard. The row sent to the architect's own role
+// finishes undelivered once its claim has failed (the daemon's notice executor).
 //
 // The hold and the worker-died beside it name the failure the fact carries: the one word for
 // what failed the claim, the sentence written beside it and the four counts the failure left,
@@ -1304,7 +1304,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // is told in a worker-died of that role, its reason saying the role does not work the issue's phase,
 // and nothing is held, since the phase is not that role's. A later start of the role relaunches its
 // session (the outbox executor's retry of a failed claim). An issue that left the workflow
-// suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
+// suspended its claims (a child moved to backlog) or closed them (a child closed as done), and a lingering
 // tree holds its members where they stood, so neither tells anyone.
 //
 // The checking role of a closed issue failing inside a look of its production check ends that look

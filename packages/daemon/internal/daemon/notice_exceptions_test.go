@@ -694,7 +694,7 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 	notice := record.Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"}
 	relayed := func() int {
 		var n int
-		if err := pool.QueryRow(ctx, `select count(*) from processed_events where source = 'parked-decision' and event_id = 'legion-outbox:78'`).Scan(&n); err != nil {
+		if err := pool.QueryRow(ctx, `select count(*) from processed_events where source = 'kept-decision' and event_id = 'legion-outbox:78'`).Scan(&n); err != nil {
 			t.Fatalf("count the relays: %v", err)
 		}
 		return n
@@ -725,7 +725,7 @@ func TestAStoppedTreesSpecDecisionReportGoesToTheControllerOnce(t *testing.T) {
 		t.Fatalf("run the copy queued before the close and the controller row: %v", err)
 	}
 	if relayed() != 1 || to(controllerRoleTopic) != 1 || to(architectTopic(t, "LEGION-1")) != 0 ||
-		!strings.Contains(logged.String(), `msg="outbox parked decision handled before under this key"`) || !strings.Contains(logged.String(), "key=legion-outbox:78") {
+		!strings.Contains(logged.String(), `msg="outbox kept decision handled before under this key"`) || !strings.Contains(logged.String(), "key=legion-outbox:78") {
 		t.Fatalf("%d relays, %d to the controller, %d to the architect, log %q; want one relay told to the controller once, none to the architect, and the copy logged as handled before",
 			relayed(), to(controllerRoleTopic), to(architectTopic(t, "LEGION-1")), logged.String())
 	}

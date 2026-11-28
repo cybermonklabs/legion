@@ -19,7 +19,7 @@ import (
 // wakes or publishes. The control is a row one minute old to a held role, which is delivered once.
 // A released role whose wake is coming holds the row past its hour
 // (TestAKeptRoleMessageToAReleasedRoleWaitsPastItsHourOnlyWhileAWakeCanCome), and so does a launch
-// the wake pacing parked two hours out (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod).
+// the wake pacing delayed two hours out (TestAHookPromptWaitsOutTheDelayedWakeOfItsReleasedPod).
 func TestAHookPromptPastItsHourOrToARoleNotComingIsNeverPublished(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

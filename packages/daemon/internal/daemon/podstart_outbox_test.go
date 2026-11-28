@@ -33,10 +33,10 @@ import (
 const podStopBound = time.Second
 
 // cutShortLine is the line a launch writes when something takes its start out of the pod's gate
-// before it ran (supervise's endPodPark).
+// before it ran (supervise's endPodStartWait).
 const cutShortLine = "supervise: launch cut short while it waited for its issue pod's start"
 
-// waitsAtGateLine is the line a launch writes when its start parks at the pod's gate behind
+// waitsAtGateLine is the line a launch writes when its start waits at the pod's gate behind
 // another role's start or load (supervise's askPod).
 const waitsAtGateLine = "supervise: the launch waits for its issue pod's start"
 
@@ -93,14 +93,14 @@ func loadingPair(t *testing.T, sup *supervisor, waiting supervise.ClaimState) po
 	return p
 }
 
-// parkedBehindALoad is loadingPair with the tester suspended and its resume by rule asked of its
+// waitingBehindALoad is loadingPair with the tester suspended and its resume by rule asked of its
 // machine, as the outbox's start asks it: the tester's launch waits at the gate behind the
-// implementer's load and parks on its claim (supervise's askPod), so the resume returns with the
+// implementer's load and waits on its claim (supervise's askPod), so the resume returns with the
 // claim written launching with no process, the line that the launch waits for its pod's start
 // written once, and its process asked of no runtime. The resume is asked on a goroutine of its own
 // and answered within podStopBound (actsPromptly), so a decision that waits at the gate fails the
 // test there rather than holding it until go test's own deadline.
-func parkedBehindALoad(t *testing.T, sup *supervisor, rt *fake.Runtime, logs *testlog.Buffer) podPair {
+func waitingBehindALoad(t *testing.T, sup *supervisor, rt *fake.Runtime, logs *testlog.Buffer) podPair {
 	t.Helper()
 	p := loadingPair(t, sup, supervise.StateSuspended)
 	resumed := make(chan error, 1)
@@ -218,10 +218,10 @@ func podIssueRecord() record.Issue {
 		Tree: pauseIssue, Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 }
 
-// testerSuspendRow is the outbox's suspend row of the tester, as a park of its tree makes it.
+// testerSuspendRow is the outbox's suspend row of the tester, as a move of its tree to backlog makes it.
 func testerSuspendRow(t *testing.T, _ *podStopRig) record.OutboxRow {
 	return mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "suspend", Tree: pauseIssue, Role: claim.RoleTester,
-		Generation: 1, Reason: "the tree was parked"}, time.Now())
+		Generation: 1, Reason: "the tree moved to backlog"}, time.Now())
 }
 
 // testerReleaseRow is the tester's role stop of the idle release of the pod, marked with its rows
@@ -291,7 +291,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 				issue.Phase, issue.Status, issue.LingerUntil = phase.Done, "done", &until
 			}
 			r := newPodStopRig(t, issue, !tc.lingers)
-			pair := parkedBehindALoad(t, r.sup, r.rt, r.logs)
+			pair := waitingBehindALoad(t, r.sup, r.rt, r.logs)
 
 			if err := runsPromptly(t, r.runner, tc.name, tc.row(t, r)); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
@@ -308,7 +308,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		logs := podGated(sup)
 		// The tester's launch waits at the gate before the pause: a launch asked while the project
 		// is paused is held by the pause's own gate instead (supervise's pauseGate).
-		pair := parkedBehindALoad(t, sup, rt, logs)
+		pair := waitingBehindALoad(t, sup, rt, logs)
 		held := p.pauseLegion()
 		runner := podPauseRunner(p, sup)
 
@@ -329,7 +329,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		for _, row := range []record.OutboxRow{
 			mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "start", Tree: pauseIssue, Role: claim.RoleTester, Generation: 1}, time.Now()),
 			mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "suspend", Tree: pauseIssue, Role: claim.RoleTester, Generation: 1,
-				Reason: "the tree was parked"}, time.Now()),
+				Reason: "the tree moved to backlog"}, time.Now()),
 		} {
 			enqueueOutbox(t, r.pool, r.runner.records, row)
 		}

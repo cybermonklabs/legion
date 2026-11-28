@@ -232,8 +232,8 @@ func writeClaimLine(w io.Writer, c api.OperatorClaim) {
 // at once when a steering message reaches the turn, ending the call with no error and handing
 // the job to the agent, which is a `tool_execution_end` on
 // the stream like any other (measured 2026-11-08 in the plugin's own live proof,
-// legion-stall-watchdog-omp.test.ts). So for a working claim this column says what the agent is
-// parked in, which is what a stalled turn is read from, and never what is running on the worker's
+// legion-stall-watchdog-omp.test.ts). So for a working claim this column says what the agent
+// waits in, which is what a stalled turn is read from, and never what is running on the worker's
 // machine.
 //
 // A call still open is the one shape a stalled turn leaves behind (api.StepView), and this is

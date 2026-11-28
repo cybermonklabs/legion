@@ -165,8 +165,8 @@ const browserUpdateBlocks = 75_000
 // A browser sends, in one update, paragraphs written ahead of one the document already holds, each
 // with its block id. The room holds that paragraph and applies the update. The room's own append
 // decodes the update alone, where the first paragraph's neighbour is missing, so ygo defers it and
-// parks every later item of the update behind it; at ygo's default queue that check refused the
-// update once 100,000 were parked, which failed the room and dropped the edit. The store takes it,
+// keeps pending every later item of the update behind it; at ygo's default queue that check refused the
+// update once 100,000 were pending, which failed the room and dropped the edit. The store takes it,
 // the room keeps it, and so does the room loaded again from the store. A transaction's append takes
 // the same update and reads its item count from the update's own header, deciding it without a
 // decode at all where one client wrote it (`refuseUpdateItemCap`, sjawhar/legion#2519).
@@ -269,7 +269,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 
 // A settlement stamps a block id on every block that lacks one, in one update it broadcasts to the
 // room's peers and appends to the store. The stamp of a block the document already holds leans on
-// that block, so the update decoded alone parks one item per stamp, more than ygo's default queue
+// that block, so the update decoded alone leaves one item per stamp pending, more than ygo's default queue
 // of 100,000 here. The store's check of it reads the item count its header declares rather than
 // decoding it (refuseUpdateItemCap), and ygo's check of the broadcast takes no pending queue
 // (reearth/ygo#268, in the pinned fork); a decode of it at ygo's default queue refuses it, which
@@ -331,18 +331,18 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 }
 
 // A browser's two edits reach the room out of order: the one that leans on the other lands first
-// and parks, waiting for it, and the one it waits for lands next. The room's rendered replica is
+// and stays pending, waiting for it, and the one it waits for lands next. The room's rendered replica is
 // the copy of the room every read walks (holdLive), so after each commit it must hold what the
-// room holds, the structs and deletions that commit parked included: ygo leaves those out of the
+// room holds, the structs and deletions that commit left pending included: ygo leaves those out of the
 // update its observers are handed, as Yjs does, and carries them beside it
 // (crdt.LoggedUpdate.Parked). A replica that takes only the update is a copy of the room that has
-// lost the browser's parked edit: caught up with the edit that fills the gap, as the room is, it
+// lost the browser's pending edit: caught up with the edit that fills the gap, as the room is, it
 // shows the room's text without it.
-func TestTheRoomsRenderedReplicaHoldsWhatACommitParked(t *testing.T) {
+func TestTheRoomsRenderedReplicaHoldsWhatACommitLeftPending(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of the browser's blocks would commit into the
-	// room while the edit is parked.
+	// room while the edit is pending.
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n")
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
@@ -366,23 +366,23 @@ func TestTheRoomsRenderedReplicaHoldsWhatACommitParked(t *testing.T) {
 	filler := crdt.EncodeStateAsUpdateV1(browser, synced)
 	gap := browser.StateVector()
 	peerAppend(t, browser, "Third.\n")
-	parking := crdt.EncodeStateAsUpdateV1(browser, gap)
+	afterGap := crdt.EncodeStateAsUpdateV1(browser, gap)
 	want, err := renderDocument(browser)
 	if err != nil {
 		t.Fatalf("render the browser's document: %v", err)
 	}
 
-	if err := crdt.ApplyUpdateV1(room, parking, "peer"); err != nil {
+	if err := crdt.ApplyUpdateV1(room, afterGap, "peer"); err != nil {
 		t.Fatalf("apply the browser's second edit to the room: %v", err)
 	}
-	if parked := room.PendingStats(); parked.Items == 0 {
-		t.Fatal("the room integrated the browser's second edit whole; without the first it must park it")
+	if pending := room.PendingStats(); pending.Items == 0 {
+		t.Fatal("the room integrated the browser's second edit whole; without the first it must keep it pending")
 	}
 	if got := renderedWith(t, replicaState(t, replica), filler); got != want {
-		t.Errorf("a copy of the replica taken while the edit was parked, caught up, renders %q, want %q", got, want)
+		t.Errorf("a copy of the replica taken while the edit was pending, caught up, renders %q, want %q", got, want)
 	}
 	if got := renderedWith(t, crdt.EncodeStateAsUpdateV1(room, nil), filler); got != want {
-		t.Errorf("a copy of the room taken while the edit was parked, caught up, renders %q, want %q", got, want)
+		t.Errorf("a copy of the room taken while the edit was pending, caught up, renders %q, want %q", got, want)
 	}
 
 	if err := crdt.ApplyUpdateV1(room, filler, "peer"); err != nil {
@@ -425,7 +425,7 @@ func peerAppend(t *testing.T, peer *crdt.Doc, markdown string) {
 	})
 }
 
-// replicaState is the replica's whole state, parked structs and deletions included, taken under
+// replicaState is the replica's whole state, pending structs and deletions included, taken under
 // the lock its update observer holds, as a read served from the replica takes it.
 func replicaState(t *testing.T, replica *renderedReplica) []byte {
 	t.Helper()

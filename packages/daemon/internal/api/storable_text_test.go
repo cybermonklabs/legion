@@ -146,8 +146,9 @@ func TestACompletionHidesNoNulBehindARepeatedMember(t *testing.T) {
 // string member of its body, which carries the NUL; a body of no string member, whose strict
 // decoder refuses the member the NUL rides before it reads a string; or no body, when its answer
 // must be no decoder refusal at all, which would mean it reads the body after all. A pattern that
-// names no method (the catch-all) is sent a POST, and a route whose pattern names a claim is sent
-// a claim of its own, launched for it.
+// names no method (the catch-all) is sent a POST, a route whose pattern names a claim is sent
+// a claim of its own, launched for it, and the pattern of every child route this daemon does not
+// serve is sent the route an older plugin's record names (removedChildRouteRecorded).
 func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 	h, _ := newStaleHarness(t) // newHarness serving the state route too
 	type nulRow struct {
@@ -200,7 +201,7 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		"POST /legion/v1/phase/retry":                            reads("issue"),
 		"POST /legion/v1/signoff":                                reads("issue"),
 		"POST /legion/v1/roots/close":                            reads("reason"),
-		"POST /legion/v1/children/park":                          noBody,
+		"POST /legion/v1/children/{op}":                          noBody,
 		"POST /legion/v1/children/rerun":                         reads("issue"),
 		"POST /legion/v1/intake/replay":                          reads("consumer"),
 		"POST /legion/v1/intake/discard":                         reads("reason"),
@@ -244,6 +245,9 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 			if strings.Contains(target, "{token}") {
 				token, _ := h.launch(fmt.Sprintf("LEGION-%d", 300+i), claim.RoleImplementer)
 				target = strings.Replace(target, "{token}", string(token), 1)
+			}
+			if strings.Contains(target, "{op}") {
+				_, target, _ = strings.Cut(removedChildRouteRecorded(t), " ")
 			}
 			recorder := h.operator(method, target, row.body)
 			if recorder.Code >= http.StatusInternalServerError {

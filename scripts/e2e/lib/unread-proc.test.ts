@@ -41,7 +41,7 @@ afterEach(() => {
 });
 
 // The probe runs each walk in a shell with the rigs' helpers sourced, the skill-scenario rig's two
-// and parked-decision-devbox.sh's stop_agent_daemons taken from their scripts, and prints one line a
+// and kept-decision-devbox.sh's stop_agent_daemons taken from their scripts, and prints one line a
 // walk: its name, its exit status, and the first line it wrote on stderr. `fail` is a driver's, here
 // one that prints and returns, so refuse_leftovers' report reaches the line. The two port walks ask
 // for PORT, a port this test listens on (heldPort), so the socket is found in /proc/net/tcp and
@@ -59,7 +59,7 @@ export LEGION_E2E_RUN=$work
 . "$root/scripts/e2e/lib/rig.sh"
 . "$root/scripts/e2e/lib/leftovers.sh"
 eval "$(sed -n '/^run_env_pids() {/p; /^stop_env_processes() {/,/^}/p' "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh")"
-eval "$(sed -n '/^stop_agent_daemons() {/,/^}/p' "$root/scripts/e2e/parked-decision-devbox.sh")"
+eval "$(sed -n '/^stop_agent_daemons() {/,/^}/p' "$root/scripts/e2e/kept-decision-devbox.sh")"
 walk() {
   local name=$1 status=0 said
   shift

@@ -153,7 +153,7 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 //
 // The transaction takes the shared serializer before that read, as every other writer of the
 // issue's lifecycle does (ReleaseIdleIssue, IssueRelease, IssueSuspension), and the lock rather
-// than the read is what holds the gate. A park or a close is one fact transaction that moves the
+// than the read is what holds the gate. A move to backlog or a close is one fact transaction that moves the
 // issue's status and queues the close's rows together, so without the lock a cancel can read the
 // status from before that transaction and still take its resume's id from the sequence after it:
 // a resume standing above a close that committed, which is the one order the gate exists to

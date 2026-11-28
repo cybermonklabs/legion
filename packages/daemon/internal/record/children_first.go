@@ -240,9 +240,9 @@ func withoutHeldUnderAccepted(waits map[string]ChildWait, records map[string]Iss
 // own — is open, because it is work of the parent that has still to happen: the parent's wait
 // therefore begins at its gate's opening, before the design-approved turn releases the wave. The
 // same two statuses on a child some tree of the daemon records are the opposite case, a child a
-// tree ran and parked or finished, which holds nothing. Which tree recorded it does not come into
-// it: a parked child holds nothing wherever it was parked, and reading it as open because another
-// tree parked it would hold its parent on work no tree will do.
+// tree ran and moved to backlog or finished, which holds nothing. Which tree recorded it does not
+// come into it: a child out of the workflow holds nothing wherever it left, and reading it as
+// open because another tree took it out would hold its parent on work no tree will do.
 //
 // A descendant that has become a tree of its own — handed over, or recorded under its own key as
 // its tree's root — is read by its own record whatever Dispatch shows: its run belongs to that

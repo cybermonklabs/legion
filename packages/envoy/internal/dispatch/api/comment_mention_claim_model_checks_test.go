@@ -12,7 +12,7 @@ import (
 
 // checkHeldReport is the unnamed check: every held lane's wait names the earlier event its send
 // waited behind, and every queued send that waited, and has had no WARN, names a real earlier event
-// through what its late WARN would report (reportedWaitLocked): a send parked with no event to
+// through what its late WARN would report (reportedWaitLocked): a send retried with no event to
 // wait behind - its claim could not be read - is no held copy, and a WARN of it would name event 0.
 // It reads the sender's state alone, which changes only in a section of the sender's lock
 // (cmLock.sections), so a step that locked none leaves it as the last check found it, and the
@@ -36,7 +36,7 @@ func (r *cmRun) checkHeldReport() {
 				continue
 			}
 			if wait := r.sender.reportedWaitLocked(lane, send); wait.by.EventID == 0 {
-				r.fail("unnamed", "%s waits on the %s since it parked, and a WARN of it would name event 0, which does not exist",
+				r.fail("unnamed", "%s waits on the %s since its retry was scheduled, and a WARN of it would name event 0, which does not exist",
 					send.comment.ID, cmLaneName(lane))
 				return
 			}
@@ -53,7 +53,7 @@ func cmLaneName(lane laneKey) string {
 
 // checkClaims is the stale check: every claim the sender records and trusts is its row's, unless a
 // refresh has written rows it has not recorded yet, a try has claimed the row for itself and not
-// parked yet, or the sweep is handing the attempt over.
+// scheduled its retry yet, or the sweep is handing the attempt over.
 func (r *cmRun) checkClaims() {
 	if r.refresh != nil && r.refresh.stmt != nil && r.refresh.stmt.wrote {
 		return

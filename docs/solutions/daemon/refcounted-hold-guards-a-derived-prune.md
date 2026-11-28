@@ -40,7 +40,7 @@ in that exemption, each a general lesson.
 
 **Round 1 — a `Set` is not a hold.** The exemption was `launchingSecrets: Set<string>` inside a
 `withPaneSecret(token, value, body)` wrapper: `add` before the write, `delete` in `finally`. Two
-generations of one root can be launching at once (a park-then-re-admit starts generation 2
+generations of one root can be launching at once (a move to backlog then a re-admit starts generation 2
 while generation 1 is still blocked inside tmux — `spawnTree`'s documented `treeReplaced`
 path), and both share `legion-<project>-<root>-architect`. Generation 2's `add` was a no-op;
 generation 1's `finally` deleted the exemption while generation 2's launch was still queued;

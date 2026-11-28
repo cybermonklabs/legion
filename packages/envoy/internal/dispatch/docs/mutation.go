@@ -203,7 +203,7 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 		return fmt.Errorf("append transactional live document update: %w", err)
 	}
 	if len(op.write.versions) == 0 {
-		s.hooks.parkLiveWrite(op.write.artifactID, PauseAfterFirstAppend)
+		s.hooks.pauseLiveWrite(op.write.artifactID, PauseAfterFirstAppend)
 	}
 	// The transaction holds the document's advisory lock from its read to its end, so no eviction
 	// of the room can finish before then, and a later reload holds the write. A room that failed
@@ -720,8 +720,8 @@ func ReplacementRendering(markdown string) (string, error) {
 // The seed leaves the document owing a settlement, the one that stamps, indexes and versions what
 // it wrote, which its caller schedules once the transaction has committed, unless ctx marks it
 // CreateDocument's (withVersionedSeed) and its tree needs none (seedOwesSettlement). Such a seed
-// records nothing owed: its append writes no pending-settlement row, as a room's parked bytes
-// write none (withUnowedAppend, AppendParkedUpdate), and its commit records no latest edit source
+// records nothing owed: its append writes no pending-settlement row, as a room's pending bytes
+// write none (withUnowedAppend, AppendPendingBytes), and its commit records no latest edit source
 // and leaves its room no record (ledgerSeed.owesNothing). So no resumption, room load or Shutdown
 // finds a settlement owed and warms the room for one, and WriteDocumentText answers that the
 // document owes none.

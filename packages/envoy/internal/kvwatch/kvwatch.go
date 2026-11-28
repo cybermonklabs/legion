@@ -453,7 +453,7 @@ func (w *Watcher) WaitReady(ctx context.Context) error {
 // only moves the handle; a watcher it armed while Stop ran is kept for End.
 //
 // Each watcher lives in a context of its own (subscription): nats.go ends the subscription when
-// that context ends and parks a goroutine on it until then (bus.KeyValue.WatchKeys), so it is
+// that context ends and leaves a goroutine waiting on it until then (bus.KeyValue.WatchKeys), so it is
 // cancelled once the watcher is stopped or has ended, never before. Its create request is bounded
 // by nats.go itself, since the context carries no deadline (WatchKeys), and by run: the stream read
 // is made under run, and a run that ends while the create is in flight cancels the watcher's
@@ -682,7 +682,7 @@ func (w *Watcher) endScan(generation uint64, read Read, scan KeyScan, started ti
 }
 
 // closed handles the end of sub, generation's watcher, whose updates nats.go has closed: it cancels
-// sub's context, which releases the goroutine nats.go parks on it, and, when generation is still
+// sub's context, which releases the goroutine nats.go leaves waiting on it, and, when generation is still
 // current, records the end as the watcher's terminal error and disarms the scheduled read.
 func (w *Watcher) closed(sub *subscription, generation uint64) {
 	sub.cancel()

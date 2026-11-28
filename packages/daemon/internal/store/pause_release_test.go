@@ -678,7 +678,7 @@ func TestAPodHoldEndsAtAReadyOnlyWhereARoleIsLive(t *testing.T) {
 // Decision 13 of dispatch://INFRA-3759: the resume ends the hold of a pod in which a role is live,
 // and a claim with no process recorded that is queued or launching is no live role. The held rows
 // are claimable from the resume's commit, before the resume ends the holds, so a held start the
-// outbox runs then, or an operator's spawn the resume's rule parks in the wake pacing, leaves its
+// outbox runs then, or an operator's spawn the resume's rule delays in the wake pacing, leaves its
 // claim launching with no locator while no role of the pod runs, and a claim nothing has launched
 // yet is queued with none: the hold stays. A launch whose process is recorded is coming up in the
 // pod, and the resume ends the hold for it.
@@ -703,7 +703,7 @@ func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
 	waiting := supervise.Claim{Token: token, Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RoleImplementer,
 		TreeEpoch: 1, Generation: 1, ServingGeneration: 1, State: supervise.StateLaunching}
 	if err := st.PutClaim(ctx, waiting); err != nil {
-		t.Fatalf("park the implementer's launch: %v", err)
+		t.Fatalf("delay the implementer's launch: %v", err)
 	}
 	if ended, err := st.EndLivePausePodHold(ctx, "legion", rootIssue, PausePodHoldResumed, resumedAt); err != nil || ended {
 		t.Fatalf("the resume's end with the implementer launching and no process recorded = %t, %v; want nothing ended", ended, err)

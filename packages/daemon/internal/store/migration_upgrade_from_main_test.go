@@ -116,12 +116,13 @@ func queueRowOfKind(store *Store, kind string) error {
 }
 
 // A daemon of this release is deployed over a database main migrated, and that database's outbox
-// holds the rows main's daemon left: a park queues a claim-release row and retries it for up to an
-// hour (internal/workflow's linger, internal/daemon's claim release), so one pending at the
-// upgrade is an ordinary state, and so is a merge-lane row of a release that still merged. The
-// upgrade applies every version that database has not recorded, every kind list of this branch
-// among them, and a list that leaves a kind out is refused by the constraint over the row that
-// carries it (SQLSTATE 23514), which fails Migrate and leaves the daemon unable to boot.
+// holds the rows main's daemon left: a departure short of a close queues a claim-release row and
+// retries it for up to an hour (internal/workflow's linger, internal/daemon's claim release), so
+// one pending at the upgrade is an ordinary state, and so is a merge-lane row of a release that
+// still merged. The upgrade applies every version that database has not recorded, every kind
+// list of this branch among them, and a list that leaves a kind out is refused by the constraint
+// over the row that carries it (SQLSTATE 23514), which fails Migrate and leaves the daemon
+// unable to boot.
 //
 // The database this test upgrades is main's: every migration up to and including main's own
 // 20261108000545 except the two this branch adds below it, which is what main has recorded and

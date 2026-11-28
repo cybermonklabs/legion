@@ -8,7 +8,7 @@
 // a tag given without the hooked server.
 //
 // A test installs the hook with Hook and arms a Hold at a point. The first goroutine of the
-// server that reaches that point with an event every Match of the hold accepts is parked there,
+// server that reaches that point with an event every Match of the hold accepts is held there,
 // with whatever locks the server's own code holds at that point, until the test releases it. So
 // a test forces an order the server's scheduling would only sometimes produce: a consumer's
 // state write held while a consumer of the same name is deleted and created again, a JetStream
@@ -16,8 +16,8 @@
 // held before one server stores it.
 //
 // The hook is the process's: one test of a binary hooks it at a time, and a test that hooks it
-// must not run in parallel with one that does. A server's shutdown releases every hold that parks
-// one of its goroutines, before it waits for its goroutines to end, and parks none of its
+// must not run in parallel with one that does. A server's shutdown releases every hold on
+// one of its goroutines, before it waits for its goroutines to end, and holds none of its
 // goroutines again until that wait is over (ServerShutdown, ServerDown): an operation held across
 // a Stop either lands or fails, and the Stop returns. Every hold is released, and the hook taken
 // off, when the test that installed it ends, and each hold armed and never reached fails that
@@ -72,9 +72,9 @@ const (
 	// DedupeReset is a stream update whose duplicate window changes, past the re-arm of the
 	// stream's purge of remembered duplicate ids ("Let it fire right away", server/stream.go) and
 	// before the store of the new window. The update re-arms that purge to fire at once, and only
-	// while the stream remembers an id. A hold here parks the update, with the stream's own lock
+	// while the stream remembers an id. A hold here holds the update, with the stream's own lock
 	// held, which this server version's purge does not take: the purge the re-arm fired runs
-	// during the park, reads the window being replaced, keeps an id the new window would drop and
+	// during the hold, reads the window being replaced, keeps an id the new window would drop and
 	// re-arms itself for as long as that old window, the order the defect needs. Event.Window is
 	// the old window and Event.NewWindow the one the update will store.
 	DedupeReset Point = "dedupe.reset"
@@ -88,7 +88,7 @@ const (
 	// ServerShutdown and ServerDown are no hold points: they are where a server's Shutdown or
 	// lame duck begins, before it stops anything, and where its Shutdown has waited for every
 	// goroutine of its own. Between the two the hook releases the server's held goroutines and
-	// parks none of them again. A lame duck reports ServerShutdown before it shuts JetStream
+	// holds none of them again. A lame duck reports ServerShutdown before it shuts JetStream
 	// down, which waits for each clustered stream's goroutines, and its Shutdown reports it a
 	// second time. Each carries the ID of the server's run (Event.ServerID), and a
 	// ServerShutdown of a run whose ServerDown the hook has seen changes nothing: v2.10.29 can
@@ -336,11 +336,11 @@ func Hook(t testing.TB) *Hooks {
 	return h
 }
 
-// report is the hook itself: it records the event, and parks the calling goroutine when the
-// event is the first to meet a live hold's matches. A hold released before it was reached parks
+// report is the hook itself: it records the event, and holds the calling goroutine when the
+// event is the first to meet a live hold's matches. A hold released before it was reached holds
 // nothing and takes no event from a live hold: the first event to meet its matches marks it
-// reached and goes on to the next hold. A server's ServerShutdown releases the holds that park
-// its goroutines, and none of its goroutines is parked until its ServerDown. A ServerShutdown of
+// reached and goes on to the next hold. A server's ServerShutdown releases the holds on
+// its goroutines, and none of its goroutines is held until its ServerDown. A ServerShutdown of
 // a run already down, reported late, changes nothing.
 func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	e := eventOf(me)
@@ -360,7 +360,7 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 		h.down[e.ServerID] = true
 		delete(h.stopping, e.ServerID)
 	}
-	var parked *Hold
+	var held *Hold
 	if !h.stoppingLocked(e.Store) {
 		for _, hold := range h.holds {
 			if hold.fired || !accepts(e, hold.point, hold.match) {
@@ -378,7 +378,7 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 			if wasReleased {
 				continue
 			}
-			parked = hold
+			held = hold
 			break
 		}
 	}
@@ -386,8 +386,8 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	for _, hold := range released {
 		hold.Release()
 	}
-	if parked != nil {
-		<-parked.release
+	if held != nil {
+		<-held.release
 	}
 }
 
@@ -451,7 +451,7 @@ func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 }
 
 // Hold arms a hold at point: the first goroutine to reach it with an event every match accepts
-// is parked there until Release. It fails the test when the linked nats-server has no such
+// is held there until Release. It fails the test when the linked nats-server has no such
 // point. The hold is released when the test ends, and a hold never reached by then fails the
 // test.
 func (h *Hooks) Hold(point Point, match ...Match) *Hold {
@@ -483,7 +483,7 @@ type Hold struct {
 }
 
 // SetOnReached makes f run in the hook right after it closes hold's reached channel, before the
-// hook decides whether the event parks on hold, with the Hooks' lock held: the harness's own tests
+// hook decides whether the event is held at hold, with the Hooks' lock held: the harness's own tests
 // use it to act at that instant, as a test released from Reached does, without a sleep. Set it
 // before the event can come. f must not call into the Hooks.
 func SetOnReached(hold *Hold, f func()) { hold.onReached.Store(&f) }
@@ -491,7 +491,7 @@ func SetOnReached(hold *Hold, f func()) { hold.onReached.Store(&f) }
 func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 
 // Reached waits for the hold to be reached, until the end of a wait on a server's own fact
-// (receive, testDeadline), and returns the event that reached it. That event's goroutine is parked
+// (receive, testDeadline), and returns the event that reached it. That event's goroutine is held
 // at the hold until Release, unless the hold had been released before it was reached, when the
 // event went on. It fails t, naming the point and the matches, when none did by then.
 func (hold *Hold) Reached(t testing.TB) Event {
@@ -509,13 +509,13 @@ func (hold *Hold) wasReached() bool {
 	}
 }
 
-// Release lets the parked goroutine go on, or, for a hold not yet reached, disarms it: the first
-// event to meet its matches marks it reached and goes on, to park on a live hold armed after it
+// Release lets the held goroutine go on, or, for a hold not yet reached, disarms it: the first
+// event to meet its matches marks it reached and goes on, to be held at a live hold armed after it
 // if one matches. It may be called more than once. A shutdown of the held server calls it too.
 func (hold *Hold) Release() { hold.once.Do(func() { close(hold.release) }) }
 
 // Released reports whether the hold has been released: by Release, by the test's end, or by a
-// shutdown of the server whose goroutine it parked.
+// shutdown of the server whose goroutine it held.
 func (hold *Hold) Released() bool {
 	select {
 	case <-hold.release:

@@ -749,7 +749,7 @@ type PriorityAct struct {
 // Priorities is the body GET /api/v1/priorities answers: every live priority, in rank order,
 // each with the work under it, and the two fault lists. It is an object rather than a bare array
 // because the counts of the work under each priority and the two fault lists — work in flight
-// under no priority, and priority work parked in `backlog` or `icebox` — are answered by this
+// under no priority, and priority work in `backlog` or `icebox` — are answered by this
 // same route, under keys of their own, and a bare array would have no room for them.
 //
 // Empty carries the sentence the page draws when the store holds no live priority at all: the
@@ -760,10 +760,10 @@ type PriorityAct struct {
 // `?summary=true` answers the two fault counts alone: Priorities is then empty, and each fault
 // carries its Count with no list beside it, which is what the navigation rail reads.
 type Priorities struct {
-	Priorities          []PriorityRow       `json:"priorities"`
-	WorkUnderNoPriority WorkUnderNoPriority `json:"work_under_no_priority"`
-	PriorityWorkParked  PriorityWorkParked  `json:"priority_work_parked"`
-	Empty               string              `json:"empty,omitempty"`
+	Priorities                    []PriorityRow                 `json:"priorities"`
+	WorkUnderNoPriority           WorkUnderNoPriority           `json:"work_under_no_priority"`
+	PriorityWorkInBacklogOrIcebox PriorityWorkInBacklogOrIcebox `json:"priority_work_in_backlog_or_icebox"`
+	Empty                         string                        `json:"empty,omitempty"`
 }
 
 // PriorityRow is one priority as the priorities page draws it: the priority itself and the work
@@ -778,7 +778,8 @@ type PriorityRow struct {
 // issue above it states. ByStatus counts the open issues in each lifecycle status, every status
 // of IssueStatuses present and 0 where none stands there, so a reader adds the columns it draws
 // — in flight is `in_progress`, `testing`, `needs_review` and `retro`, waiting is `todo` and
-// `triage`, parked is `backlog` and `icebox` — and no grouping is fixed by the server.
+// `triage`, in backlog or icebox is `backlog` and `icebox` — and no grouping is fixed by the
+// server.
 //
 // Claimed is how many of those open issues a session holds now, OpenAsks the open asks on them,
 // and ClosedLast7Days the issues that advance the priority and closed within the last seven days,
@@ -806,12 +807,12 @@ type WorkUnderNoPriority struct {
 	Issues    []PriorityIssue `json:"issues"`
 }
 
-// PriorityWorkParked is the second fault: an open issue in `backlog` or `icebox` whose own row
-// names a live priority that no issue above it carries; a child that only inherits a priority, or
-// restates one an issue above it carries, is none. Count is every such issue; ByPriority counts
-// them by each priority so named, an issue naming two counted under each, so the counts may add
-// to more than Count; Issues carries the 50 moved there most recently.
-type PriorityWorkParked struct {
+// PriorityWorkInBacklogOrIcebox is the second fault: an open issue in `backlog` or `icebox` whose
+// own row names a live priority that no issue above it carries; a child that only inherits a
+// priority, or restates one an issue above it carries, is none. Count is every such issue;
+// ByPriority counts them by each priority so named, an issue naming two counted under each, so the
+// counts may add to more than Count; Issues carries the 50 moved there most recently.
+type PriorityWorkInBacklogOrIcebox struct {
 	Count      int             `json:"count"`
 	ByPriority map[string]int  `json:"by_priority"`
 	Issues     []PriorityIssue `json:"issues"`
@@ -4782,22 +4783,22 @@ var IssueStatuses = []string{
 	"done",
 }
 
-// IssueStatusesInFlight is the four statuses work is running in, and IssueStatusesParked the two
-// an issue stands parked in. They are groupings of IssueStatuses, named here because the reading
-// of the priorities is written against both of them in two places — the route's two fault lists
-// (api/priority_queries.go) and the seeded corpus's own report of those faults
-// (cmd/dispatch-seed) — and one list each is better than a copy per reader. The counts a
-// priority answers are per status and never per grouping, so nothing but a fault is fixed by
-// them (model.PriorityWork).
+// IssueStatusesInFlight is the four statuses work is running in, and IssueStatusesBacklogOrIcebox
+// the two an issue stands in once it is moved out of the way. They are groupings of IssueStatuses,
+// named here because the reading of the priorities is written against both of them in two
+// places — the route's two fault lists (api/priority_queries.go) and the seeded corpus's own
+// report of those faults (cmd/dispatch-seed) — and one list each is better than a copy per
+// reader. The counts a priority answers are per status and never per grouping, so nothing but a
+// fault is fixed by them (model.PriorityWork).
 var (
-	IssueStatusesInFlight = []string{"in_progress", "testing", "needs_review", "retro"}
-	IssueStatusesParked   = []string{"icebox", "backlog"}
+	IssueStatusesInFlight        = []string{"in_progress", "testing", "needs_review", "retro"}
+	IssueStatusesBacklogOrIcebox = []string{"icebox", "backlog"}
 )
 
 // IssueStatusesOutOfWorkflow is every status of that lifecycle a Legion deployment runs nothing
-// in: an issue holding one is parked, closed, or not yet decided on, and the deployment's
-// workflow neither starts a phase for it nor refuses a READY on its behalf. Only `todo`, which
-// admits, and the four the workflow itself writes are left out.
+// in: an issue holding one is in backlog or icebox, closed, or not yet decided on, and the
+// deployment's workflow neither starts a phase for it nor refuses a READY on its behalf. Only
+// `todo`, which admits, and the four the workflow itself writes are left out.
 //
 // The daemon holds its own copy of this rule (packages/daemon/internal/record/project.go,
 // OutOfWorkflow): the two are separate values in separate Go modules that have to be changed

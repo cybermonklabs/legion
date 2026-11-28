@@ -741,7 +741,7 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 		t.Errorf("the child's line %q does not say the checks are the root's alone", line)
 	}
 	if line := newsLine(t, text, "- LEGION-210, in admitted: "); !strings.Contains(line, "out of the workflow") {
-		t.Errorf("the parked child's line %q does not say it is out of the workflow", line)
+		t.Errorf("the line of the child in backlog %q does not say it is out of the workflow", line)
 	}
 	if checks := newsItem(t, text, "The criteria document (artifact-checks)"); !strings.Contains(checks, `Checks: "c-live" changed; "c-upgrade" added.`) {
 		t.Errorf("the summary's checks pair = %q, want its checks", checks)

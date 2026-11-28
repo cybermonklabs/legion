@@ -21,13 +21,13 @@ type documentTestHooks interface {
 	RoomCounters(artifactID string) (docs.RoomCounters, error)
 	HoldRoomPersistence(artifactID string, duration time.Duration) error
 	ArmLiveWritePause(artifactID string, point docs.LiveWritePausePoint) error
-	AwaitLiveWriteParked(ctx context.Context, artifactID string, point docs.LiveWritePausePoint) error
+	AwaitLiveWritePaused(ctx context.Context, artifactID string, point docs.LiveWritePausePoint) error
 	ReleaseLiveWritePause(artifactID string, point docs.LiveWritePausePoint) (bool, error)
 }
 
-// liveWriteParkedWait is how long GET .../_test/live-write-pauses/{point} waits for a write to
-// park when the request names no ?wait.
-const liveWriteParkedWait = 10 * time.Second
+// liveWritePausedWait is how long GET .../_test/live-write-pauses/{point} waits for a write to
+// pause when the request names no ?wait.
+const liveWritePausedWait = 10 * time.Second
 
 // requireDocumentTestHooks authenticates the caller, as every test hook does, and answers the
 // document service's test hooks.
@@ -66,7 +66,7 @@ type residentRooms struct {
 // liveWritePauseState is the body the GET and the DELETE of
 // /api/v1/artifacts/{id}/_test/live-write-pauses/{point} answer.
 type liveWritePauseState struct {
-	Parked bool `json:"parked"`
+	Paused bool `json:"paused"`
 }
 
 // listResidentRooms answers {"rooms": [artifact id, ...]}: the documents this process holds a
@@ -141,15 +141,15 @@ func (s *server) armLiveWritePause(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// awaitLiveWriteParked waits up to ?wait (a Go duration, default liveWriteParkedWait) for a write
-// to park at the armed pause and answers {"parked": true}, or {"parked": false} when none did in
+// awaitLiveWritePaused waits up to ?wait (a Go duration, default liveWritePausedWait) for a write
+// to pause at the armed pause and answers {"paused": true}, or {"paused": false} when none did in
 // that time.
-func (s *server) awaitLiveWriteParked(w http.ResponseWriter, r *http.Request) {
+func (s *server) awaitLiveWritePaused(w http.ResponseWriter, r *http.Request) {
 	hooks, ok := s.requireDocumentTestHooks(w, r)
 	if !ok {
 		return
 	}
-	wait := liveWriteParkedWait
+	wait := liveWritePausedWait
 	if raw := r.URL.Query().Get("wait"); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil || parsed <= 0 {
@@ -160,28 +160,28 @@ func (s *server) awaitLiveWriteParked(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
-	err := hooks.AwaitLiveWriteParked(ctx, r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point")))
+	err := hooks.AwaitLiveWritePaused(ctx, r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point")))
 	switch {
 	case err == nil:
-		WriteJSON(w, http.StatusOK, liveWritePauseState{Parked: true})
+		WriteJSON(w, http.StatusOK, liveWritePauseState{Paused: true})
 	case errors.Is(err, context.DeadlineExceeded):
-		WriteJSON(w, http.StatusOK, liveWritePauseState{Parked: false})
+		WriteJSON(w, http.StatusOK, liveWritePauseState{Paused: false})
 	default:
 		writeDocumentTestHookError(w, err)
 	}
 }
 
-// releaseLiveWritePause disarms the pause and lets the write parked there go on, answering
-// {"parked": bool}: whether a write had parked.
+// releaseLiveWritePause disarms the pause and lets the write paused there go on, answering
+// {"paused": bool}: whether a write had paused.
 func (s *server) releaseLiveWritePause(w http.ResponseWriter, r *http.Request) {
 	hooks, ok := s.requireDocumentTestHooks(w, r)
 	if !ok {
 		return
 	}
-	parked, err := hooks.ReleaseLiveWritePause(r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point")))
+	paused, err := hooks.ReleaseLiveWritePause(r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point")))
 	if err != nil {
 		writeDocumentTestHookError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, liveWritePauseState{Parked: parked})
+	WriteJSON(w, http.StatusOK, liveWritePauseState{Paused: paused})
 }

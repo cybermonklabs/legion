@@ -8,7 +8,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodDelete,
 	Pattern:     "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
 	Auth:        authAny,
-	Description: "Test hook: release the live write parked at the pause and disarm it.",
+	Description: "Test hook: release the live write paused at the pause and disarm it.",
 	Handler:     (*server).releaseLiveWritePause,
 	TestHook:    true,
 	WriteClass:  scopeProject,

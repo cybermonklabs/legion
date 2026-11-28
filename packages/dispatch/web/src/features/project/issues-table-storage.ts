@@ -76,6 +76,53 @@ function writeStore(project: string, fields: Record<string, unknown>): void {
   }
 }
 
+/** Moves what a table kept under the key `from` to the key `to`, once: the old record is copied
+ *  only where `to` holds nothing yet, and removed either way, so a reader's stored layout
+ *  outlives a renamed key. A browser that refuses storage keeps neither, as every other read
+ *  here does. */
+export function moveTableStore(from: string, to: string): void {
+  try {
+    const kept = localStorage.getItem(tableStorageKey(from));
+    if (kept === null) return;
+    if (localStorage.getItem(tableStorageKey(to)) === null) {
+      localStorage.setItem(tableStorageKey(to), kept);
+    }
+    localStorage.removeItem(tableStorageKey(from));
+  } catch {
+    /* The URL still works when the browser refuses local preferences. */
+  }
+}
+
+/** Writes the layout stored under `project` again with each column id `renamed` names under the
+ *  id it has now, once, so a reader's width, place and visibility of a renamed column outlive the
+ *  rename. An entry already stored under the new id is kept and the old one dropped, and a store
+ *  that holds none of the old ids is not written at all. */
+export function renameStoredColumns(project: string, renamed: ReadonlyMap<string, string>): void {
+  const saved = readStore(project);
+  const fields: Record<string, unknown> = {};
+  for (const field of ["sizing", "visibility"] as const) {
+    const value = saved[field];
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const entries = Object.entries(value);
+    if (!entries.some(([id]) => renamed.has(id))) continue;
+    const moved = Object.fromEntries(entries.filter(([id]) => !renamed.has(id)));
+    for (const [id, entry] of entries) {
+      const to = renamed.get(id);
+      if (to !== undefined && !Object.hasOwn(moved, to)) moved[to] = entry;
+    }
+    fields[field] = moved;
+  }
+  const order = saved.order;
+  if (Array.isArray(order) && order.some((id) => renamed.has(id))) {
+    fields.order = order.flatMap((id) => {
+      const to = renamed.get(id);
+      if (to === undefined) return [id];
+      return order.includes(to) ? [] : [to];
+    });
+  }
+  if (Object.keys(fields).length > 0) writeStore(project, fields);
+}
+
 export function readLayout(
   project: string,
   { hiddenByDefault, ids, pins }: StoredColumns

@@ -249,12 +249,12 @@ type Horizon struct {
 	// pause is Await's backoff wait, which returns once d has passed or ctx has ended; NewHorizon
 	// sets pauseFor and a test replaces it to see the waits Await takes.
 	pause func(ctx context.Context, d time.Duration)
-	// afterObservationParked runs, outside the lock, each time a caller finds an observation
-	// already in flight and parks on it rather than running one of its own, before it waits on
+	// afterObservationJoined runs, outside the lock, each time a caller finds an observation
+	// already in flight and joins it rather than running one of its own, before it waits on
 	// it. Nothing in production sets it; the package's tests wait on it instead of sleeping for
 	// callers to arrive, and some hold a caller in it, so that it waits only once later
 	// observations have ended.
-	afterObservationParked func()
+	afterObservationJoined func()
 	// afterObservationBoundary runs, outside the lock, each time Safe or Await has read the count
 	// of observations started at its call (observationBoundary), before it looks for one. Nothing
 	// in production sets it; the package's tests hold a caller in it to have it look only after

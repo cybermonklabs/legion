@@ -163,7 +163,7 @@ func TestStoredOrderPendingRows(t *testing.T) {
 	}
 }
 
-func TestStoredOrderReusesThePrefixBeforeParkedRows(t *testing.T) {
+func TestStoredOrderReusesThePrefixBeforePendingRows(t *testing.T) {
 	t.Parallel()
 	seed := newDocumentCopy(crdt.WithClientID(100))
 	seed.Transact(typeParagraph(seed, "base"))
@@ -177,7 +177,7 @@ func TestStoredOrderReusesThePrefixBeforeParkedRows(t *testing.T) {
 		storedOrderHex(t, "01010d0004010174016500"),
 	}
 	// Old service histories can hold no-op sync rows. A long settled prefix must
-	// not be decoded again for every short parked span near its end.
+	// not be decoded again for every short pending span near its end.
 	const prefix = 1000
 	updates = append(append([][]byte{updates[0]}, slices.Repeat([][]byte{{0, 0}}, prefix)...), updates[1:]...)
 	tx := &storedOrderReplayTx{updates: updates, classes: make([]bool, len(updates))}
@@ -193,7 +193,7 @@ func TestStoredOrderReusesThePrefixBeforeParkedRows(t *testing.T) {
 	}
 }
 
-func TestStoredOrderComparesParkedContent(t *testing.T) {
+func TestStoredOrderComparesPendingContent(t *testing.T) {
 	t.Parallel()
 	full, without := newDocumentCopy(), newDocumentCopy()
 	delete1 := storedOrderHex(t, "000114010101")
@@ -204,7 +204,7 @@ func TestStoredOrderComparesParkedContent(t *testing.T) {
 		}
 	}
 	if !sameStoredState(full, without) {
-		t.Fatal("identical parked deletions compare unequal")
+		t.Fatal("identical pending deletions compare unequal")
 	}
 	if err := crdt.ApplyUpdateV1(full, delete2, nil); err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestStoredOrderComparesParkedContent(t *testing.T) {
 		t.Fatal("fixture must keep equal pending range counts")
 	}
 	if sameStoredState(full, without) {
-		t.Error("different parked deletions compare equal")
+		t.Error("different pending deletions compare equal")
 	}
 	filler := storedOrderHex(t, "01011400040101710361626300")
 	for _, doc := range []*crdt.Doc{full, without} {
@@ -225,7 +225,7 @@ func TestStoredOrderComparesParkedContent(t *testing.T) {
 		t.Fatalf("resolved text = %q without row = %q, want a and ac", got, omitted)
 	}
 
-	t.Run("parked structs", func(t *testing.T) {
+	t.Run("pending structs", func(t *testing.T) {
 		one, two := newDocumentCopy(), newDocumentCopy()
 		if err := crdt.ApplyUpdateV1(one, storedOrderHex(t, "01010901840900016200"), nil); err != nil {
 			t.Fatal(err)
@@ -234,17 +234,17 @@ func TestStoredOrderComparesParkedContent(t *testing.T) {
 			t.Fatal(err)
 		}
 		if one.PendingStats().Items != 1 || two.PendingStats().Items != 1 {
-			t.Fatal("fixture must keep equal parked item counts")
+			t.Fatal("fixture must keep equal pending item counts")
 		}
 		if sameStoredState(one, two) {
-			t.Fatal("parked structs with different content compare equal")
+			t.Fatal("pending structs with different content compare equal")
 		}
 		copy := newDocumentCopy()
 		if err := crdt.ApplyUpdateV1(copy, crdt.EncodeStateAsUpdateV1(one, nil), nil); err != nil {
 			t.Fatal(err)
 		}
 		if !sameStoredState(one, copy) {
-			t.Fatal("identical parked structs compare unequal")
+			t.Fatal("identical pending structs compare unequal")
 		}
 	})
 }

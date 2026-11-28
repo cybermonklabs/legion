@@ -29,7 +29,7 @@ import (
 // worker stopped. There are two shapes of that. A turn Oh My Pi started under the compaction
 // leaves the claim working for it and the end sends nothing at all: that turn's end gives the
 // claim back and sends the task (supervise's compactEnded, turnEnded). Where the end does
-// reach the send, the send itself can hold the task back — the paced turn of a launch parked
+// reach the send, the send itself can hold the task back — the paced turn of a launch delayed
 // over the process, an open update round the worker has answered — and each of those ends of
 // the daemon's own accord with the task sent (supervise's sendPending).
 //
@@ -203,8 +203,8 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     refuses that last one in its state as it refuses every other held claim, so one sentence
 //     answers the hold at both doors (supervise's compactStart);
 //   - a claim between states has no settled agent to ask: one queued, one with a launch in
-//     flight, and one stored working under a launch the daemon's wake pacing parks, which is
-//     told of that launch (claimUnsettled, refuseParkedRelaunch);
+//     flight, and one stored working under a launch the daemon's wake pacing delays, which is
+//     told of that launch (claimUnsettled, refuseDelayedRelaunch);
 //   - a claim stored working that the read finds no process behind has no agent to ask
 //     either: whatever its session was doing, nothing runs it now, and no launch is coming for
 //     it, since the relaunch that was to replace that process did not run. Such a claim is not
@@ -380,7 +380,7 @@ func boundReason(text string) string {
 // caller asking for a compaction of a claim being compacted already. Every other answer of the
 // shared read is that read's own refusal, given word for word at both doors: the turn's for a
 // process it finds running, and a claim with no state the daemon can act on for a process the
-// runtime would not answer for, for a claim that records none, and for a launch parked over it
+// runtime would not answer for, for a claim that records none, and for a launch delayed over it
 // (refuseWorkingClaim).
 //
 // A claim the machine refused as working that the view, read after that refusal, no longer

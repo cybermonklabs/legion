@@ -27,18 +27,18 @@ import (
 
 // newLeftPodRig is the idle rig (idleRig) over a child of a running tree rather than over a root:
 // the root LEGION-208 stands in the workflow at implementing, and its child LEGION-209 holds one
-// claim, its planner's, the role that worked the child's first phase. With parked false the child
-// stands at implementing and its planner is idle in the child's pod, holding a process, as a
-// planner stays once it has handed its phase on. With parked true the child stands where a park
-// leaves it, at phase done with the status backlog, and its planner is suspended by the daemon
-// with no process, as the park's own stop left it.
+// claim, its planner's, the role that worked the child's first phase. With inBacklog false the
+// child stands at implementing and its planner is idle in the child's pod, holding a process, as a
+// planner stays once it has handed its phase on. With inBacklog true the child stands where a move
+// to backlog leaves it, at phase done with the status backlog, and its planner is suspended by the
+// daemon with no process, as the move's own stop left it.
 //
 // Either way the pod has been quiet for half an hour, its session reported no background work
 // after that, the Envoy listener reports itself ready and the runtime holds the issue's Sandbox,
 // so nothing outside the issue's own standing keeps the pod. The rig's issue and token are the
 // child's and its planner's, which is what idleRig's own readers (drain, queuedBy, rows, records)
 // read.
-func newLeftPodRig(t *testing.T, parked bool) *idleRig {
+func newLeftPodRig(t *testing.T, inBacklog bool) *idleRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -50,7 +50,7 @@ func newLeftPodRig(t *testing.T, parked bool) *idleRig {
 	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Implementing, Generation: 1,
 		Status: "in_progress", Rank: "V", LastDispatchSeq: 1}
-	if parked {
+	if inBacklog {
 		child.Phase, child.Status, child.DispatchStatus = phase.Done, "backlog", "backlog"
 	}
 	putOutboxIssue(t, pool, records, root)
@@ -73,7 +73,7 @@ func newLeftPodRig(t *testing.T, parked bool) *idleRig {
 		Role: claim.RolePlanner, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Session: "ses-planner", SessionFile: "/tmp/planner.jsonl",
 		PluginContract: api.DaemonAPIVersion()}
-	if parked {
+	if inBacklog {
 		stored.State, stored.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByDaemon
 	} else {
 		locator, err := rt.Spawn(ctx, runtime.SpawnSpec{Claim: token, Role: claim.RolePlanner})
@@ -128,37 +128,38 @@ func quietPod(t *testing.T, rig *idleRig) {
 	}
 }
 
-// parkChild parks the rig's child as the workflow parks a child moved to backlog (the workflow's
-// leave): the record stands at phase done with the status backlog, and the outbox holds the park's
-// stop — a `suspend` of every role a child can hold, at the child's generation, and the
-// issue_suspend that deletes the child's Sandbox once every role has stopped. The departure's two
-// other rows, the release of the issue's Dispatch claim and the notice to the architect above,
-// reach no role of this pod, and are left out: the stop is what this file reads.
-func parkChild(t *testing.T, rig *idleRig) {
+// moveChildToBacklog moves the rig's child to backlog as the workflow takes a child moved to
+// backlog out of it (the workflow's leave): the record stands at phase done with the status
+// backlog, and the outbox holds the move's stop — a `suspend` of every role a child can hold, at
+// the child's generation, and the issue_suspend that deletes the child's Sandbox once every role
+// has stopped. The departure's two other rows, the release of the issue's Dispatch claim and the
+// notice to the architect above, reach no role of this pod, and are left out: the stop is what
+// this file reads.
+func moveChildToBacklog(t *testing.T, rig *idleRig) {
 	t.Helper()
 	ctx := context.Background()
-	parked := rig.issue
-	parked.Phase, parked.Status, parked.DispatchStatus = phase.Done, "backlog", "backlog"
+	moved := rig.issue
+	moved.Phase, moved.Status, moved.DispatchStatus = phase.Done, "backlog", "backlog"
 	payloads := make([]record.OutboxPayload, 0, len(claim.Roles)+1)
 	for _, role := range claim.Roles {
-		payloads = append(payloads, record.SuperviseRequest{Op: "suspend", Tree: parked.Tree, Role: role,
-			Generation: parked.Generation, Reason: parked.Key + " is backlog"})
+		payloads = append(payloads, record.SuperviseRequest{Op: "suspend", Tree: moved.Tree, Role: role,
+			Generation: moved.Generation, Reason: moved.Key + " is backlog"})
 	}
-	payloads = append(payloads, record.IssueSuspend{Tree: parked.Tree, Generation: parked.Generation, TreeGeneration: 1})
+	payloads = append(payloads, record.IssueSuspend{Tree: moved.Tree, Generation: moved.Generation, TreeGeneration: 1})
 	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := rig.issues.PutIssue(ctx, tx, parked); err != nil {
+		if err := rig.issues.PutIssue(ctx, tx, moved); err != nil {
 			return err
 		}
 		for _, payload := range payloads {
-			if err := rig.issues.Enqueue(ctx, tx, mustOutboxRow(t, parked.Key, payload, time.Now())); err != nil {
+			if err := rig.issues.Enqueue(ctx, tx, mustOutboxRow(t, moved.Key, payload, time.Now())); err != nil {
 				return err
 			}
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("park %s: %v", parked.Key, err)
+		t.Fatalf("move %s to backlog: %v", moved.Key, err)
 	}
-	rig.issue = parked
+	rig.issue = moved
 }
 
 // resumeAsOperator is an operator's resume of the rig's stopped planner: the event the operator's
@@ -225,12 +226,12 @@ func holdsOf(t *testing.T, rig *idleRig, reason workflow.IdleHold) []store.PodHo
 }
 
 // queuedLeftPodCheck brings the rig's child to the close of a left pod with a live role, as
-// TestALeftPodWithALiveRoleIsReadBeforeItsClose does: the child parked and its stop run, its pod
-// built again and its planner brought back by an operator, and the idle passes queue the close's
-// workspace check alone. It answers that check as the outbox lists it.
+// TestALeftPodWithALiveRoleIsReadBeforeItsClose does: the child moved to backlog and its stop
+// run, its pod built again and its planner brought back by an operator, and the idle passes queue
+// the close's workspace check alone. It answers that check as the outbox lists it.
 func queuedLeftPodCheck(t *testing.T, rig *idleRig) (record.OutboxRow, record.IssueWorkspaceCheck) {
 	t.Helper()
-	parkChild(t, rig)
+	moveChildToBacklog(t, rig)
 	rig.drain(t)
 	leftPodGone(rig)
 	resumeAsOperator(t, rig)
@@ -256,51 +257,51 @@ func queuedLeftPodCheck(t *testing.T, rig *idleRig) (record.OutboxRow, record.Is
 	return row, check
 }
 
-// A child a park took out of the workflow while its tree runs on had its one close at that park:
-// the park suspended its claims and deleted its Sandbox, and nothing of its running tree closes
-// it again. A role that runs there after that park runs in a pod built again for it — an
-// operator's resume, an operator's task to the suspended claim, an operator's retry and the
-// controller's fresh session each start a claim without reading its issue's standing — and once
-// its turn ends it stands idle. A deployment's parked child stood so: phase done, status backlog,
-// its one claim, the planner, idle, and its pod running, every idle pass holding that pod as
-// tree_not_live, a close's to stop, with no close left to stop it.
+// A child moved out of the workflow to backlog, icebox or triage while its tree runs on had its
+// one close at that move: the move suspended its claims and deleted its Sandbox, and nothing of
+// its running tree closes it again. A role that runs there after that move runs in a pod built
+// again for it — an operator's resume, an operator's task to the suspended claim, an operator's
+// retry and the controller's fresh session each start a claim without reading its issue's
+// standing — and once its turn ends it stands idle. A deployment's child in backlog stood so:
+// phase done, status backlog, its one claim, the planner, idle, and its pod running, every idle
+// pass holding that pod as tree_not_live, a close's to stop, with no close left to stop it.
 //
-// The test parks a finished child whose planner is idle in its running pod, runs the park's stop,
-// and reads what it did: the planner suspended and the Sandbox deleted. The operator's resume then
-// brings the planner back, idle, into a pod built again, which is the state that deployment's
-// child stood in. The idle passes then run the park's stop again themselves
-// (workflow.LeftPodClose): the planner reads suspended, by the daemon and with its session kept,
-// the Sandbox goes a second time, and no tree_not_live hold is recorded, after that stop or
-// before it.
-func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.T) {
+// The test moves a finished child whose planner is idle in its running pod to backlog, runs the
+// move's stop, and reads what it did: the planner suspended and the Sandbox deleted. The
+// operator's resume then brings the planner back, idle, into a pod built again, which is the
+// state that deployment's child stood in. The idle passes then run the move's stop again
+// themselves (workflow.LeftPodClose): the planner reads suspended, by the daemon and with its
+// session kept, the Sandbox goes a second time, and no tree_not_live hold is recorded, after that
+// stop or before it.
+func TestABacklogIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.T) {
 	t.Parallel()
 	rig := newLeftPodRig(t, false)
 
-	parkChild(t, rig)
+	moveChildToBacklog(t, rig)
 	rig.drain(t)
 	if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon {
-		t.Fatalf("the planner after the park's stop = %s by %s, want it suspended by the daemon", got.State, got.SuspendedBy)
+		t.Fatalf("the planner after the move's stop = %s by %s, want it suspended by the daemon", got.State, got.SuspendedBy)
 	}
 	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue"}) {
-		t.Fatalf("teardowns asked by the park = %v, want the park's own Sandbox suspension", asked)
+		t.Fatalf("teardowns asked by the move = %v, want the move's own Sandbox suspension", asked)
 	}
 	if _, suspended := rig.rt.reads(); suspended != 1 {
-		t.Fatalf("Sandbox teardowns the store authorized after the park = %d, want the park's one", suspended)
+		t.Fatalf("Sandbox teardowns the store authorized after the move = %d, want the move's one", suspended)
 	}
 	leftPodGone(rig)
 
 	resumeAsOperator(t, rig)
 	if left := rig.rows(t); len(left) != 0 {
-		t.Fatalf("rows of the parked child = %v, want none: the park's stop has finished and nothing else is queued", left)
+		t.Fatalf("rows of the child in backlog = %v, want none: the move's stop has finished and nothing else is queued", left)
 	}
 	if record.InWorkflow(rig.issue) || rig.issue.Phase != phase.Done || rig.issue.Status != "backlog" {
-		t.Fatalf("the child = %s at %s, want it parked: phase done, status backlog", rig.issue.Phase, rig.issue.Status)
+		t.Fatalf("the child = %s at %s, want it in backlog: phase done, status backlog", rig.issue.Phase, rig.issue.Status)
 	}
 
 	idlePasses(rig)
 	rig.drain(t)
 	if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon {
-		t.Fatalf("the parked child's planner after the idle passes = %s by %s, want it suspended by the daemon; tree_not_live holds recorded: %+v",
+		t.Fatalf("the planner of the child in backlog after the idle passes = %s by %s, want it suspended by the daemon; tree_not_live holds recorded: %+v",
 			got.State, got.SuspendedBy, holdsOf(t, rig, workflow.IdleHoldTreeNotLive))
 	}
 	if got := rig.storedClaim(t, rig.token); got.State != supervise.StateSuspended || got.Session != "ses-planner" || got.Locator != nil {
@@ -308,10 +309,10 @@ func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.
 			got.State, got.Session, got.Locator)
 	}
 	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue", "SuspendIssue"}) {
-		t.Fatalf("teardowns asked = %v, want the park's and then the close the idle pass finished", asked)
+		t.Fatalf("teardowns asked = %v, want the move's and then the close the idle pass finished", asked)
 	}
 	if _, suspended := rig.rt.reads(); suspended != 2 {
-		t.Fatalf("Sandbox teardowns the store authorized = %d, want the park's and the idle pass's close", suspended)
+		t.Fatalf("Sandbox teardowns the store authorized = %d, want the move's and the idle pass's close", suspended)
 	}
 	if left := rig.rows(t); len(left) != 0 {
 		t.Fatalf("rows left after the idle pass's close = %v, want none", left)
@@ -341,11 +342,11 @@ func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.
 // rule decides only pods with a live claim (store.IdlePods). So such a pod stood, with nobody in
 // it, for as long as its issue did.
 //
-// The test stages that pod — a parked child of a running tree, its one claim suspended by the
-// daemon and recording no process, the runtime still holding its Sandbox, quiet for half an hour
-// — and reads that a pass takes it: the passes queue the close's workspace check, which the pod's
-// launcher reads since no role runs there (R6), and whose clean read queues the Sandbox suspension,
-// which deletes the Sandbox, the pod and the disk, and leaves the claim as it was.
+// The test stages that pod — a child in backlog under a running tree, its one claim suspended by
+// the daemon and recording no process, the runtime still holding its Sandbox, quiet for half an
+// hour — and reads that a pass takes it: the passes queue the close's workspace check, which the
+// pod's launcher reads since no role runs there (R6), and whose clean read queues the Sandbox
+// suspension, which deletes the Sandbox, the pod and the disk, and leaves the claim as it was.
 func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T) {
 	t.Parallel()
 	rig := newLeftPodRig(t, true)
@@ -389,24 +390,24 @@ func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T
 }
 
 // The close of a left pod with a live role deletes a disk that role worked on, so it reads that
-// disk first, as the idle release does (workflow.LeftPodClose). The test stands the parked child
-// whose planner an operator's resume brought back, live and idle, in a pod built again, with one
-// commit origin does not hold in its workspace. The passes queue the close's workspace check
-// alone, which reads the workspace through the planner, finds the commit and declines: the
+// disk first, as the idle release does (workflow.LeftPodClose). The test stands the child in
+// backlog whose planner an operator's resume brought back, live and idle, in a pod built again,
+// with one commit origin does not hold in its workspace. The passes queue the close's workspace
+// check alone, which reads the workspace through the planner, finds the commit and declines: the
 // planner stays live in its pod, no stop and no Sandbox suspension is queued or run, the pod is
 // held as unpushed_work, and the planner is told once which commit keeps it. The passes after the
 // decline ask nothing more.
 func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	t.Parallel()
 	rig := newLeftPodRig(t, false)
-	parkChild(t, rig)
+	moveChildToBacklog(t, rig)
 	rig.drain(t)
 	leftPodGone(rig)
 	resumeAsOperator(t, rig)
 	publisher := &outboxPublisher{}
 	rig.runner.notices = publisher
 	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
-	parkTeardowns := rig.rt.teardownsAsked()
+	moveTeardowns := rig.rt.teardownsAsked()
 
 	if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
 		t.Fatalf("the passes queued %v, want the close's workspace check alone: a live role's disk is read before anything stops it", queued)
@@ -414,7 +415,7 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	rig.drain(t)
 
 	if read, suspended := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) || suspended != 1 {
-		t.Fatalf("the workspace was read through %v and %d Sandbox teardowns were authorized, want one read through the planner and the park's teardown alone",
+		t.Fatalf("the workspace was read through %v and %d Sandbox teardowns were authorized, want one read through the planner and the move's teardown alone",
 			read, suspended)
 	}
 	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
@@ -423,8 +424,8 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	if got := rig.storedClaim(t, rig.token); got.State == supervise.StateSuspended || got.Locator == nil {
 		t.Fatalf("the stored planner = %s with process %+v, want it live with the process it had", got.State, got.Locator)
 	}
-	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, parkTeardowns) {
-		t.Fatalf("teardowns asked = %v, want the park's %v alone", asked, parkTeardowns)
+	if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, moveTeardowns) {
+		t.Fatalf("teardowns asked = %v, want the move's %v alone", asked, moveTeardowns)
 	}
 	for _, left := range rig.rows(t) {
 		if left == "issue_suspend" || left == "supervise:suspend" {
@@ -629,8 +630,8 @@ func rowTurnStart(t *testing.T, rig *idleRig, kind, op string) (time.Time, bool)
 	return at, true
 }
 
-// checkedLeftPodClose stands the parked child whose planner an operator's resume brought back, live
-// and idle in a pod built again, its last turn started before the pod went quiet
+// checkedLeftPodClose stands the child in backlog whose planner an operator's resume brought back,
+// live and idle in a pod built again, its last turn started before the pod went quiet
 // (turnedBeforeQuiet), and runs one idle pass and the workspace check of the close that pass
 // queues. The check carries that turn's moment, the pass's newest turn start, and reads a
 // workspace that holds nothing origin does not hold; reading, where not nil, runs as the read
@@ -650,7 +651,7 @@ func checkedLeftPodClose(t *testing.T, reading func(rig *idleRig, readAt time.Ti
 func leftPodCloseChecked(t *testing.T, reading func(rig *idleRig, readAt time.Time)) (*idleRig, time.Time) {
 	t.Helper()
 	rig := newLeftPodRig(t, false)
-	parkChild(t, rig)
+	moveChildToBacklog(t, rig)
 	rig.drain(t)
 	leftPodGone(rig)
 	resumeAsOperator(t, rig)
@@ -812,10 +813,10 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 		// (releaseRuntime.teardown): the close's Sandbox suspension asks once, the store refuses it
 		// for the turn after the check, and it is not asked again.
 		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue", "SuspendIssue"}) {
-			t.Fatalf("teardowns asked = %v, want the park's and the close's one ask", asked)
+			t.Fatalf("teardowns asked = %v, want the move's and the close's one ask", asked)
 		}
 		if _, suspended := rig.rt.reads(); suspended != 1 {
-			t.Fatalf("Sandbox teardowns the store authorized = %d, want the park's one", suspended)
+			t.Fatalf("Sandbox teardowns the store authorized = %d, want the move's one", suspended)
 		}
 		if refused := rig.rt.refusals(); refused != 1 {
 			t.Fatalf("Sandbox teardowns the store refused = %d, want the close's one: its suspension finishes with its held stop", refused)
@@ -837,10 +838,10 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 		}
 		rig.drain(t)
 		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue", "SuspendIssue"}) {
-			t.Fatalf("teardowns asked after the operator's suspension = %v, want the park's and the close's one ask, and no other", asked)
+			t.Fatalf("teardowns asked after the operator's suspension = %v, want the move's and the close's one ask, and no other", asked)
 		}
 		if _, suspended := rig.rt.reads(); suspended != 1 {
-			t.Fatalf("Sandbox teardowns the store authorized after the operator's suspension = %d, want the park's one: the held close deleted the pod with no read",
+			t.Fatalf("Sandbox teardowns the store authorized after the operator's suspension = %d, want the move's one: the held close deleted the pod with no read",
 				suspended)
 		}
 		if refused := rig.rt.refusals(); refused != 1 {
@@ -855,7 +856,7 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 			t.Fatalf("the planner = %s by %s, want it suspended by the daemon: no turn started after the check", got.State, got.SuspendedBy)
 		}
 		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue", "SuspendIssue"}) {
-			t.Fatalf("teardowns asked = %v, want the park's and then the close's", asked)
+			t.Fatalf("teardowns asked = %v, want the move's and then the close's", asked)
 		}
 		if left := rig.rows(t); len(left) != 0 {
 			t.Fatalf("rows left after the close = %v, want none", left)
@@ -873,7 +874,7 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 func TestALeftPodWithNoLiveClaimKeepsADiskADeclineSaysHoldsWork(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// failedLeftPod is the parked child of newLeftPodRig whose planner failed rather than being
+	// failedLeftPod is the child in backlog of newLeftPodRig whose planner failed rather than being
 	// suspended, recording no process, in a pod the runtime names pod-a.
 	failedLeftPod := func(t *testing.T) *idleRig {
 		t.Helper()

@@ -61,7 +61,7 @@ func TestEveryBuilderRecordsExactlyTheNewsItsTextNames(t *testing.T) {
 		Actor: "user:alice", At: at}
 	replaced := record.DecisionMark{Issue: reconcileRoot, Ref: "dispatch://LEGION-600/ask/ask-0002", Decision: record.DecisionAskAnswered,
 		Actor: "user:alice", At: at.Add(time.Minute)}
-	if _, err := r.pool.Exec(r.ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
+	if _, err := r.pool.Exec(r.ctx, `insert into kept_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
 		values ($1, $2, $3, $4, $5, $6, 'outbox:7'), ($1, $7, $3, $4, $8, null, null)`,
 		reconcileRoot, kept.Ref, string(kept.Decision), kept.Actor, kept.At, string(rootToken), replaced.Ref, at.Add(time.Hour)); err != nil {
 		t.Fatalf("keep the root's decisions, the first held by the architect's task: %v", err)

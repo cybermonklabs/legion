@@ -26,7 +26,7 @@ package api
 // `launching`, while its start goes on under a context the answer does not cancel: the
 // operator's routes, the deliver included, answer 202 with the claim launching, the controller's
 // route 200, and `read_state` and `legion claims list` show how the start ended. A request that
-// writes no launch, such as one whose launch the wake pacing parks, is answered as before. A
+// writes no launch, such as one whose launch the wake pacing delays, is answered as before. A
 // caller whose contract (the one it states, else its pod's lowest) is below this entry's number
 // (entryNumber(claimStartContract)) is answered the first and the second as before: no sentence
 // for a start that waits for a slot, and the refusal itself (answersAsBefore, which follows

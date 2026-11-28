@@ -23,7 +23,7 @@ import (
 // Each test below holds the hooked server at one hold point and shows the hold is real: the
 // point is reached, what the server was about to do there does not happen while it is held, and
 // it happens once the hold is released. Each runs its control first, the same action unheld, so
-// the reading that sees nothing while the hold parks the server is one that does see the action
+// the reading that sees nothing while the server is held is one that does see the action
 // land. Removing the point from the hooked server (forced-order.sh -drop <point>) fails the test,
 // at the wait for the hold to be reached.
 
@@ -291,15 +291,15 @@ func TestForcedOrderHoldsAnAPIRequestBeforeItIsServed(t *testing.T) {
 	answered(t, done, "the stream info")
 }
 
-// stopWithin bounds the wait for a Stop of a server one of whose goroutines a hold parks. A stop
+// stopWithin bounds the wait for a Stop of a server one of whose goroutines is held at a hold. A stop
 // that does not release the hold waits for that goroutine for ever, so the bound is what turns
 // the hang into this test's failure.
 const stopWithin = 20 * time.Second
 
-// A server's shutdown releases the hold that parks one of its goroutines before it waits for its
+// A server's shutdown releases the hold on one of its goroutines before it waits for its
 // goroutines, so a Stop returns with an operation held: the held request then ends, answered or
-// failed. Once the server is down, a hold on it parks again. Its control is the run without the
-// release (forced-order.sh -drop server.shutdown): the Stop waits for the parked goroutine and the
+// failed. Once the server is down, a hold on it holds a goroutine again. Its control is the run without the
+// release (forced-order.sh -drop server.shutdown): the Stop waits for the held goroutine and the
 // test fails at stopWithin.
 func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 	srv, hooks, conn, _ := heldStream(t)
@@ -324,7 +324,7 @@ func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-time.After(stopWithin):
-		t.Fatalf("the server's Stop did not return within %s while a hold parked one of its goroutines", stopWithin)
+		t.Fatalf("the server's Stop did not return within %s while a hold held one of its goroutines", stopWithin)
 	}
 	if !hold.Released() {
 		t.Fatal("the Stop returned and the hold is not released")
@@ -341,7 +341,7 @@ func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 		t.Logf("the held request ended with the stop: %v", err)
 	}
 
-	// The server is down, so the hook parks its goroutines again once it is started.
+	// The server is down, so the hook holds its goroutines again once it is started.
 	srv.Start(t)
 	again := testnats.Connect(t, srv.URL())
 	t.Cleanup(again.Close)
@@ -357,7 +357,7 @@ func TestForcedOrderAStopReleasesTheHoldOnItsServer(t *testing.T) {
 // On v2.10.29 two concurrent Shutdown calls can each report server.shutdown, and the first can
 // reach the hook after the second has finished the shutdown and reported server.down. That late
 // report belongs to a run that is over: after a restart on the same store, holds on the new run
-// must still park. The test delays the first report until the second call has returned, then
+// must still hold. The test delays the first report until the second call has returned, then
 // restarts the server on its store and holds a request on it. Before the harness kept its
 // shutdown state by run, the late report marked the store stopping for good and the request was
 // answered through the armed hold. On v2.15.1 Shutdown reports once, and the test checks that.
@@ -449,7 +449,7 @@ func TestForcedOrderALateShutdownOfAnEndedRunHoldsNothing(t *testing.T) {
 		return err
 	})
 	// The request reaches api.worker either way; with the store left stopping it is answered
-	// through the hold rather than parked there.
+	// through the hold rather than held there.
 	hooks.Await(t, testnats.APIWorker, testnats.Subject(subject))
 	select {
 	case err := <-done:
@@ -466,11 +466,11 @@ func TestForcedOrderALateShutdownOfAnEndedRunHoldsNothing(t *testing.T) {
 
 // Two runs that report the same store, as two servers with no store directory do, stop at
 // overlapping times: A's shutdown begins, B's begins, B's ends. A is still inside its Shutdown,
-// which waits for its goroutines, so a hold must not park one of them. The test sends the hook
+// which waits for its goroutines, so a hold must not hold one of them. The test sends the hook
 // those reports itself, since two real servers cannot be made to interleave there on demand,
-// then a publish on that store: it must pass the armed hold while A is stopping, and park once
+// then a publish on that store: it must pass the armed hold while A is stopping, and be held once
 // A is down. With the stopping mark kept by store, B's down cleared A's mark and the publish
-// parked.
+// was held.
 func TestForcedOrderTwoRunsOnOneStoreKeepTheirOwnShutdowns(t *testing.T) {
 	hooks := testnats.Hook(t)
 	report := *natsserver.MeasureHook.Load()
@@ -491,7 +491,7 @@ func TestForcedOrderTwoRunsOnOneStoreKeepTheirOwnShutdowns(t *testing.T) {
 	select {
 	case <-publish():
 	case <-time.After(reachWithin):
-		t.Fatal("a publish on a store whose run A is still stopping was parked: B's down cleared A's mark")
+		t.Fatal("a publish on a store whose run A is still stopping was held: B's down cleared A's mark")
 	}
 
 	report(&natsserver.MeasureEvent{Point: string(testnats.ServerDown), Server: "A", ServerID: "run-a", Store: store})
@@ -510,17 +510,17 @@ func TestForcedOrderTwoRunsOnOneStoreKeepTheirOwnShutdowns(t *testing.T) {
 	}
 }
 
-// A hold released before anything reached it parks nothing, and takes no event away from a live
-// hold armed after it: the first matching event parks on the live hold. The test sends the hook
+// A hold released before anything reached it holds nothing, and takes no event away from a live
+// hold armed after it: the first matching event is held at the live hold. The test sends the hook
 // the publishes itself. Its control is the same publish with one live hold and no released one.
 // Before a released hold stepped aside, it took the first event, which passed through it, and
-// the live hold parked only the second.
+// the live hold held only the second.
 func TestForcedOrderAReleasedHoldTakesNoEventFromTheNextHold(t *testing.T) {
 	const subject = "released.hold"
 	for _, released := range []bool{false, true} {
-		name := "one live hold parks the first event"
+		name := "one live hold holds the first event"
 		if released {
-			name = "a released hold, then a live one: the first event parks on the live one"
+			name = "a released hold, then a live one: the live one holds the first event"
 		}
 		t.Run(name, func(t *testing.T) {
 			hooks := testnats.Hook(t)
@@ -560,13 +560,13 @@ func TestForcedOrderAReleasedHoldTakesNoEventFromTheNextHold(t *testing.T) {
 	}
 }
 
-// Two live holds A and B on one point: the first matching event parks on A, and a test that
+// Two live holds A and B on one point: the first matching event is held at A, and a test that
 // releases A as soon as A's Reached returns lets that event go on, not over to B, which stays for
 // the next event. The release has to land after the hook closes A's reached channel and before
 // it decides whether A was released, which no sleep can promise, so the test makes the hook wait
 // at that instant (testnats.SetOnReached on A) until A's Reached has returned and A is released.
 // While the hook read A's release after it had published A as reached, it took A for one
-// released before it was reached and parked the same event on B.
+// released before it was reached and held the same event at B.
 func TestForcedOrderAHoldReleasedAsItIsReachedKeepsItsEvent(t *testing.T) {
 	const subject = "released.on.reach"
 	hooks := testnats.Hook(t)
@@ -596,7 +596,7 @@ func TestForcedOrderAHoldReleasedAsItIsReachedKeepsItsEvent(t *testing.T) {
 	select {
 	case <-first:
 	case <-time.After(reachWithin):
-		t.Fatalf("the first publish, %s, did not return once A was released: it parked on B", took)
+		t.Fatalf("the first publish, %s, did not return once A was released: B held it", took)
 	}
 
 	second := publish()
@@ -644,7 +644,7 @@ func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
 	}
 
 	hold := hooks.Hold(testnats.ClientPublish, testnats.OnServer(srv), testnats.Subject("hold.pub"), testnats.ClientNamed("publisher"))
-	// No flush: the publisher's read loop is the goroutine the hold parks, so a PING after the
+	// No flush: the publisher's read loop is the goroutine held, so a PING after the
 	// publish would wait for the release too.
 	if err := publisher.Publish("hold.pub", []byte("second")); err != nil {
 		t.Fatalf("publish the held message: %v", err)
@@ -690,7 +690,7 @@ func TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt(t *testing.T
 	for _, hold := range holds {
 		t.Logf("held %s", hold.Reached(t))
 	}
-	// No member may answer the create while each is parked before it applies the assignment. No
+	// No member may answer the create while each is held before it applies the assignment. No
 	// fact orders that answer against a read here: each member applies the meta layer's entries in
 	// order, so a later request on the same path (another consumer's create) waits behind the held
 	// one and cannot serve as a barrier. So the row gives the answer a window it must not win,
@@ -699,7 +699,7 @@ func TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt(t *testing.T
 	// inside the window, and then as the client's timeout, not as an answer (answeredWhileHeld).
 	// The window's cost is to miss a broken hold that answers later than it. A read of the channel
 	// once, with no window, missed such a hold every time: a hook that reports each point reached
-	// and parks nothing let the answer through after the read.
+	// and holds nothing let the answer through after the read.
 	select {
 	case err := <-done:
 		answeredWhileHeld(t, "the create of N", err)
@@ -713,7 +713,7 @@ func TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt(t *testing.T
 
 // assignedWindow is how long TestForcedOrderHoldsAConsumerAssignmentBeforeItsServersApplyIt watches
 // for an answer to the held create. Timed on a build Job of six CPUs, five runs each, the create is
-// answered 57 to 59 ms after the holds are released, and, with a hook that parks nothing, 57 to
+// answered 57 to 59 ms after the holds are released, and, with a hook that holds nothing, 57 to
 // 62 ms after the third hold is reached, so 5 s is about 80 times the longest; a CI runner is
 // slower than that Job.
 const assignedWindow = 5 * time.Second
@@ -773,8 +773,8 @@ func TestForcedOrderHoldsACommittedEntryBeforeItsLeaderStoresIt(t *testing.T) {
 // A point no row above holds at is held to the same contract: msgget.timeSelected, the sequence a
 // message get by start_time chose (v2.15.1 alone: 2.10.29's message get takes no start_time).
 // Its event names its server, its store and its stream, so OnServer and Stream take it and the
-// server's Stop releases the goroutine it parks. Before it carried its server and store, the
-// hold was never reached on the server, and without OnServer it parked an API worker that the
+// server's Stop releases the goroutine it holds. Before it carried its server and store, the
+// hold was never reached on the server, and without OnServer it held an API worker that the
 // Stop then waited for; before it named its stream as Stream rather than as a consumer, a hold
 // by Stream was never reached.
 func TestForcedOrderAStopReleasesAHoldAtATimeSelectedMessageGet(t *testing.T) {
@@ -813,7 +813,7 @@ func TestForcedOrderAStopReleasesAHoldAtATimeSelectedMessageGet(t *testing.T) {
 	select {
 	case <-stopped:
 	case <-time.After(stopWithin):
-		t.Fatalf("the server's Stop did not return within %s while a hold at %s parked one of its goroutines", stopWithin, point)
+		t.Fatalf("the server's Stop did not return within %s while a hold at %s held one of its goroutines", stopWithin, point)
 	}
 	if !hold.Released() {
 		t.Fatal("the Stop returned and the hold is not released")

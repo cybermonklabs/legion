@@ -247,7 +247,7 @@ func (a *adoptionHarness) assertJoinedAndPlanning(key string, generation uint64)
 // whose re-parent event has not reached the daemon, is adopted by one release: Dispatch already
 // shows it todo, so the release writes nothing, and the answer comes once the record runs it in the
 // tree, planning under the open gate. Before, the release counted the record as released whatever
-// its tree, and park_child answered ISSUE_OUTSIDE_TREE (INFRA-214).
+// its tree, and the operation that moved a child to backlog answered ISSUE_OUTSIDE_TREE (INFRA-214).
 func TestReleaseAdoptsAQueuedRootDispatchShowsTodo(t *testing.T) {
 	a := newAdoptionHarness(t, 1)
 	a.observe(adoptionChild, 1, "todo", "", true)
@@ -318,8 +318,8 @@ func TestReleaseAdoptsAQueuedRootThatWaitsOnAnUnfinishedIssueAndAnswersItHeld(t 
 }
 
 // A queued root that left the line for backlog, lingering as a root of its own, and was then made
-// a child of a live tree is in the tree when its release answers, parked at done until the todo the
-// release writes reaches the daemon; that todo runs it in the tree as any parked child's does.
+// a child of a live tree is in the tree when its release answers, out of the workflow at done until the todo the
+// release writes reaches the daemon; that todo runs it in the tree as it runs any child out of the workflow.
 func TestReleaseAdoptsAQueuedRootFromBacklog(t *testing.T) {
 	a := newAdoptionHarness(t, 1)
 	a.observe(adoptionChild, 1, "todo", "", true)
@@ -333,7 +333,7 @@ func TestReleaseAdoptsAQueuedRootFromBacklog(t *testing.T) {
 		t.Fatalf("release of %s = %d %s, want released", adoptionChild, recorder.Code, recorder.Body)
 	}
 	if got := a.record(adoptionChild); got.Tree != adoptionTree || got.Generation != 2 || got.Phase != phase.Done || got.Lingers() {
-		t.Fatalf("%s when the release answered = %#v, want it parked at done in the tree of %s at generation 2, no linger of its own", adoptionChild, got, adoptionTree)
+		t.Fatalf("%s when the release answered = %#v, want it out of the workflow at done in the tree of %s at generation 2, no linger of its own", adoptionChild, got, adoptionTree)
 	}
 	if want := []statusWrite{{issue: adoptionChild, status: "todo"}}; !reflect.DeepEqual(a.statuses.writes, want) {
 		t.Fatalf("Dispatch writes = %#v, want %#v", a.statuses.writes, want)

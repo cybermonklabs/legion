@@ -55,7 +55,7 @@ func wakePaceOf(limiter *wakepace.Limiter, clock supervise.Clock) supervise.Wake
 	return supervise.WakePace{Pacer: pacer, Interval: limiter.Interval(), Rate: testWakeRate, Burst: testWakeBurst}
 }
 
-// parkedFor is a wake pacing on clock that lets the first paced launch out wait after the clock's
+// delayedFor is a wake pacing on clock that lets the first paced launch out wait after the clock's
 // now, wherever before that its place is joined, for a test that needs a launch held to a known
 // moment: a pacer over a limiter of one wake a minute, whose bucket is spent at that now for every
 // whole minute of wait, every paced release after that spread by the rest of wait. A place joined
@@ -63,7 +63,7 @@ func wakePaceOf(limiter *wakepace.Limiter, clock supervise.Clock) supervise.Wake
 // a minute or more. The rate and the burst the wake lines name are that limiter's. It stands where
 // these tests once handed the machines a Reserve that answered a fixed moment, which a pacer,
 // whose limiter gives the turns, has no equal of.
-func parkedFor(clock supervise.Clock, wait time.Duration) supervise.WakePace {
+func delayedFor(clock supervise.Clock, wait time.Duration) supervise.WakePace {
 	minutes := int(wait / time.Minute)
 	var spread atomic.Int64
 	limiter := wakepace.New(1, 1, func(time.Duration) time.Duration { return time.Duration(spread.Load()) })

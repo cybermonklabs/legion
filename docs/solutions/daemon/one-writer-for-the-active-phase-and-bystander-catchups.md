@@ -80,7 +80,7 @@ the predicate name is now the audit shortcut.
 
 The architect exemption is deliberate, not an oversight: an architect (root or sub-architect) is
 never `phases[issue].phase`, so the not-active-phase test would call it a bystander on every wake —
-and a sub-architect parks for the life of its subtree with no other recovery path than this
+and a sub-architect idles for the life of its subtree with no other recovery path than this
 catch-up. An architect's catch-up is therefore always delivered.
 
 ## Rule 3 — drop the bystander's catch-up at every point it could *still* be delivered

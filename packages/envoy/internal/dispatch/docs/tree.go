@@ -545,7 +545,7 @@ func documentCopyOptions(maxPending int, options ...crdt.DocOption) []crdt.DocOp
 }
 
 // emptyUpdateV1 is the V1 encoding of no structs and no delete ranges. ygo logs it beside Parked
-// for a commit that kept only parked bytes, and calls no OnUpdate for that commit
+// for a commit that kept only pending bytes, and calls no OnUpdate for that commit
 // (crdt.LoggedUpdate).
 var emptyUpdateV1 = crdt.EncodeStateAsUpdateV1(crdt.New(), nil)
 

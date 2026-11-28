@@ -314,7 +314,7 @@ export class WorkerQueue<Job extends WorkerJob, Answered, Answer> {
     // What the policy does without the worker is for a render still waiting on this job - for
     // the parse, the reader's own thread, which is where a body must end formatted. A place
     // kept on a posted job is not one (`Waiter`): the deadline of a body whose element has gone
-    // would otherwise park that parse on the thread of a reader who left it
+    // would otherwise leave that parse waiting on the thread of a reader who left it
     // (sjawhar/legion#2519).
     if (anyoneIsWaiting(held)) {
       this.settle(held, this.policy.withoutTheWorker(held.job));

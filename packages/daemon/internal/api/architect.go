@@ -1341,7 +1341,7 @@ func underTodoChild(children []releasedChild) map[string]bool {
 // transaction: a wave's children share the issues they wait on.
 //
 // A child is started when this request started its first phase (startedByRelease): the request
-// records every child it releases, one it writes todo — out of backlog, or parked at done — by its
+// records every child it releases, one it writes todo — out of backlog, or out of the workflow at done — by its
 // own write (recordOwnStatusWrite), and one Dispatch already shows todo by Dispatch's view of it
 // (enterTodoChild). Otherwise it is held when it waits on an issue that is not done, unless it is
 // running a phase it was already in: what it waits on is judged from the blockers Dispatch showed
@@ -1394,8 +1394,8 @@ func (s *server) releaseOutcome(ctx context.Context, children []releasedChild) (
 
 // startedByRelease says whether the release started a child's first phase: its record after the
 // release runs a phase of a run that, before it, had none — the child was unrecorded, still at
-// phase.Admitted, or in an earlier run (a parked child at done) that the release's todo re-entered
-// as a new generation. A record already running the same run, or a parked one the todo event has
+// phase.Admitted, or in an earlier run (a child out of the workflow at done) that the release's todo re-entered
+// as a new generation. A record already running the same run, or one out of the workflow that the todo event has
 // not reached yet, was started by no part of this request.
 func startedByRelease(before, after *record.Issue) bool {
 	if !runsPhase(after) {
@@ -1704,7 +1704,10 @@ func (s *server) openStep(w http.ResponseWriter, r *http.Request, issue string) 
 }
 
 // removedChildRoute answers an older plugin's call of a child route that this daemon no longer
-// serves. The owning architect now takes a child out of the workflow by its own status write in
+// serves. The route table registers it at the pattern of every child route
+// (`POST /legion/v1/children/{op}`), and the mux serves rerun_child's route from its own row, so
+// every other child route a plugin calls gets this answer.
+// The owning architect now takes a child out of the workflow by its own status write in
 // Dispatch, and the daemon takes that write from its event (workflow's sessionStatusWrite). So the
 // route reads no body, applies no fact and writes nothing to Dispatch. It answers 410
 // ROUTE_REMOVED with a reason that says which status to write, followed by the rules of that

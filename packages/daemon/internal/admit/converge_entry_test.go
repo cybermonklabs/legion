@@ -40,7 +40,7 @@ type convergeRow struct {
 	// stands is the phase the member is in, which names the role that works it
 	// (phase.RoleFor).
 	stands phase.Phase
-	// lingers records the root as a park left it: phase done at a status that is not todo, with
+	// lingers records the root as a move to backlog left it: phase done at a status that is not todo, with
 	// a linger deadline ahead.
 	lingers bool
 	// unslotted leaves the member holding none of the cap's slots.
@@ -119,7 +119,7 @@ func convergeRows() []convergeRow {
 			name: "a member of a tree that lingers", root: "LEGION-934", key: "LEGION-935", stands: phase.Testing,
 			flipRoot: "LEGION-936", flipKey: "LEGION-937", flip: func(r *convergeRow) { r.lingers, r.started = false, true },
 			lingers: true, claimed: true, state: supervise.StateWorking, given: seededEntry - 1,
-			why: "this row changes the root's own record alone, to the one a park left: nothing of a tree that has left the workflow is started again until its re-admission",
+			why: "this row changes the root's own record alone, to the one a move to backlog left: nothing of a tree that has left the workflow is started again until its re-admission",
 		},
 		{
 			// The one holder record.AtWork answered false for was a merger whose READY a closed

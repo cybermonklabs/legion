@@ -1576,22 +1576,22 @@ func runQueue(t *testing.T, deps Deps) (stop func()) {
 const runReturnBound = 10 * time.Second
 
 // Run returns within runReturnBound of its context ending, from its loops' waits: the scan loop
-// idle and the coverage loop parked, the state a running process spends its time in.
+// idle and the coverage loop waiting, the state a running process spends its time in.
 func TestRunReturnsWithinItsBoundOnceItsContextEnds(t *testing.T) {
 	// Not parallel: its assertion is a time - Run must return within runReturnBound of its context
 	// ending.
 	database := storetest.Open(t)
 	seedIssue(t, database, "STOP", "STOP-1", "Embedded at boot")
-	parked := make(chan struct{})
+	waiting := make(chan struct{})
 	idle := make(chan struct{}, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		Run(ctx, Deps{
-			Store:          database,
-			Embedder:       newSyncEmbedder(configuredIdentity),
-			coverageParked: closeOnceSettled(parked),
+			Store:           database,
+			Embedder:        newSyncEmbedder(configuredIdentity),
+			coverageWaiting: closeOnceSettled(waiting),
 			idle: func() {
 				select {
 				case idle <- struct{}{}:
@@ -1605,7 +1605,7 @@ func TestRunReturnsWithinItsBoundOnceItsContextEnds(t *testing.T) {
 		cancel()
 		testwait.Receive(t, "Run to return once its context ended", done)
 	})
-	testwait.Receive(t, "Run's coverage loop to report itself parked", parked)
+	testwait.Receive(t, "Run's coverage loop to report itself waiting", waiting)
 	testwait.Eventually(t, "STOP-1 embedded at boot", func() bool { return pendingCount(t, database) == 0 })
 	testwait.Receive(t, "Run's scan loop to go idle", idle)
 
@@ -1670,10 +1670,10 @@ func TestRunReturnsWithinItsBoundWhenItsContextEndsDuringAnEmbed(t *testing.T) {
 	}
 }
 
-// closeOnceSettled is a Deps.coverageParked that closes parked the first time the coverage loop
+// closeOnceSettled is a Deps.coverageWaiting that closes waiting the first time the coverage loop
 // settles with nothing owed, and passes over its wait on the embedder's first answer.
-func closeOnceSettled(parked chan struct{}) func(awaitingAnswer bool) {
-	settled := sync.OnceFunc(func() { close(parked) })
+func closeOnceSettled(waiting chan struct{}) func(awaitingAnswer bool) {
+	settled := sync.OnceFunc(func() { close(waiting) })
 	return func(awaitingAnswer bool) {
 		if !awaitingAnswer {
 			settled()
@@ -1715,15 +1715,15 @@ func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 // no due time, no further pass.
 //
 // It waits for the two ends of Run's own work, which Run reports, rather than for a window in
-// which nothing happened to be running. The coverage loop reports itself parked
-// (Deps.coverageParked) with its pass done, nothing owed and its next recheck
+// which nothing happened to be running. The coverage loop reports itself waiting
+// (Deps.coverageWaiting) with its pass done, nothing owed and its next recheck
 // identityRecheckInterval away, so it will write no more rows and signal no more wakes; and the
 // scan loop reports the state the woken shape exists for - nothing owed, nothing due, no timer
 // armed, no wake waiting (duty.WokenLoop.Idle).
 //
 // An idle report made before the coverage loop's last write says nothing about the rows it
 // wrote, and with nothing left to do the scan loop would never report again. So once the
-// coverage loop has parked, the test signals the scan loop's own wake channel (Deps.enqueued,
+// coverage loop waits, the test signals the scan loop's own wake channel (Deps.enqueued,
 // which it makes here, so no relay stands between the signal and the loop) and takes the scan
 // loop's next idle report while that report's call holds the loop. With the loop held nothing
 // takes a signal from the channel, so an empty channel then means the test's signal, and any
@@ -1746,7 +1746,7 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	fillCounts(t, database)
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	parked := make(chan struct{})
+	waiting := make(chan struct{})
 	wake := make(chan struct{}, 1)
 	// Each idle report the test takes holds the scan loop until the test closes the report's
 	// channel. Reports before the test asks for them, and after it has its answer, hold nothing.
@@ -1755,10 +1755,10 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	answered := make(chan struct{})
 	answer := sync.OnceFunc(func() { close(answered) })
 	runQueue(t, Deps{
-		Store:          counted,
-		Embedder:       newSyncEmbedder(configuredIdentity),
-		enqueued:       wake,
-		coverageParked: closeOnceSettled(parked),
+		Store:           counted,
+		Embedder:        newSyncEmbedder(configuredIdentity),
+		enqueued:        wake,
+		coverageWaiting: closeOnceSettled(waiting),
 		idle: func() {
 			if !asking.Load() {
 				return
@@ -1774,7 +1774,7 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	// Registered after runQueue's, so it runs first: a test that fails while asking lets the
 	// loop go before Run is stopped.
 	t.Cleanup(answer)
-	testwait.Receive(t, "Run's coverage loop to report itself parked", parked)
+	testwait.Receive(t, "Run's coverage loop to report itself waiting", waiting)
 	asking.Store(true)
 	select {
 	case wake <- struct{}{}:

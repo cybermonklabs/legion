@@ -378,7 +378,7 @@ const (
 // version does to it: a version with neither a mark nor that cannot be placed against a root's
 // wait on its gate, and answers none. Actor is the event's actor: for a review, the person who
 // reviewed, named on the notice the review sends, since that notice goes to the controller when
-// nobody in its tree can hear it (the daemon's parkDecision); the gate seed's read names the
+// nobody in its tree can hear it (the daemon's relaySpecDecision); the gate seed's read names the
 // reviewer that read found (dispatch.Approval.LatestReviewer).
 type DispatchArtifact struct {
 	Key                 string
@@ -392,7 +392,7 @@ type DispatchArtifact struct {
 	// artifact.approved or artifact.changes_requested event wherever one is decoded (the live
 	// consumer, the boot catch-up's DecodeDispatchEvent). It is zero for a version event and for a
 	// fact the gate seed builds from its read of Dispatch's approval, which names nobody. A
-	// person's (Actor.Person()) approval of a parked labelled root's primary document is what has
+	// person's (Actor.Person()) approval of the primary document of a labelled root in backlog or icebox is what has
 	// the workflow queue that root; a review a session or Dispatch itself wrote queues nothing.
 	Actor dispatch.Actor
 	// Issue is Dispatch's view of the issue the review is on, read when the fact is prepared by
@@ -425,7 +425,7 @@ const CarriedApprovalReasonPrefix = "Carried forward from the approval of versio
 
 // CarriedApproval says whether the review is a carried approval, by its reason's prefix
 // (CarriedApprovalReasonPrefix). A carry is Dispatch's bookkeeping of an earlier approval, not a
-// person's new act, so it queues no parked root. An empty reason (a null `reason` on the event, as
+// person's new act, so it queues no root in backlog or icebox. An empty reason (a null `reason` on the event, as
 // an approval given with none carries) is not a carry.
 func (a DispatchArtifact) CarriedApproval() bool {
 	return strings.HasPrefix(a.Reason, CarriedApprovalReasonPrefix)
@@ -434,25 +434,26 @@ func (a DispatchArtifact) CarriedApproval() bool {
 // PersonApproval says whether the review is an approval a person made themselves: an approval,
 // not a changes request or a version, by an actor Dispatch names a person, and not a carried one
 // (CarriedApproval). It is the one review the daemon reads the issue for when it prepares the
-// fact, and the one that can queue a parked labelled root as the person's handover, so the read
+// fact, and the one that can queue a labelled root in backlog or icebox as the person's handover, so the read
 // side and the deciding side test one predicate.
 func (a DispatchArtifact) PersonApproval() bool {
 	return a.Kind == DispatchArtifactApproved && a.Actor.Person() && !a.CarriedApproval()
 }
 
 // MayQueueHandover says whether the review is a person's approval (PersonApproval) of the primary
-// document of a root that Dispatch's view (Issue) shows parked: no parent, the legion label, status
-// backlog or icebox. Such an approval queues the root as the person's handover unless the root's
-// tree is live or its status changed after the approval (StatusChangedSeq), which the workflow
-// decides. The daemon reads the issue's event log for it when it prepares the fact (NeedsEventLog),
-// and the workflow decides from it, so the read side and the deciding side test one predicate.
+// document of a root in backlog or icebox, as Dispatch's view (Issue) shows it: no parent, the
+// legion label, status backlog or icebox. Such an approval queues the root as the person's handover
+// unless the root's tree is live or its status changed after the approval (StatusChangedSeq),
+// which the workflow decides. The daemon reads the issue's event log for it when it prepares the
+// fact (NeedsEventLog), and the workflow decides from it, so the read side and the deciding side
+// test one predicate.
 func (a DispatchArtifact) MayQueueHandover() bool {
 	if a.Issue == nil || !a.PersonApproval() {
 		return false
 	}
 	view := a.Issue
-	parked := view.Status == "backlog" || view.Status == "icebox"
-	return view.Parent == nil && view.HandedOver && parked && view.PrimaryArtifactID == a.ArtifactID
+	inBacklogOrIcebox := view.Status == "backlog" || view.Status == "icebox"
+	return view.Parent == nil && view.HandedOver && inBacklogOrIcebox && view.PrimaryArtifactID == a.ArtifactID
 }
 
 // GateAboveDispatch is the gate seed of a generation (Generation) finding the document at a version
@@ -644,7 +645,7 @@ func (f DispatchAskClosed) namedIssue() (string, bool) { return f.Key, true }
 // on (WaitingOn: `agent` or `human` on an open ask, a hand-back `human`, and "" on a closed one),
 // the actor who made it, its event's place in the issue's Dispatch event log (Mark), and the
 // comment's own id (Comment, empty for a hand-back), which is where in Dispatch a person's reply
-// relayed to the controller was made (workflow's relayParkedDecision).
+// relayed to the controller was made (workflow's relayKeptDecision).
 type DispatchAskReply struct {
 	Key       string
 	Ask       string
@@ -1429,7 +1430,7 @@ func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 // it, at Since. ReviewedBy is who gave the review either version names
 // (dispatch.Approval.LatestReviewer), zero with neither: the notice the registration sends names
 // that person, since it goes to the controller when nobody in the tree can hear it (the daemon's
-// parkDecision).
+// relaySpecDecision).
 //
 // Basis is the ancestor's approval the registration rests the step on, or, while its Pending is
 // set, the ancestor's open approval request the step waits on (dispatch://INFRA-3320, R1), as

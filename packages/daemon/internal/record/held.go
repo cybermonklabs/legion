@@ -24,9 +24,9 @@ const (
 	// promotion that opens its tree again (reopensAtPromotion): the daemon starts no issue of such a
 	// tree, and in that last case the root's promotion is what ends the hold.
 	HeldTreeClosed HeldReason = "tree_closed"
-	// HeldTreeParked is an issue of a tree that was parked, its root in backlog or icebox: the
+	// HeldTreeInBacklogOrIcebox is an issue of a tree whose root is in backlog or icebox: the
 	// two statuses of OutOfWorkflowStatuses that stop work without finishing it.
-	HeldTreeParked HeldReason = "tree_parked"
+	HeldTreeInBacklogOrIcebox HeldReason = "tree_in_backlog_or_icebox"
 	// HeldLabelOff is a root of its own tree whose record says the Legion label is off
 	// (Issue.HandedOver): nothing hands it to the daemon.
 	HeldLabelOff HeldReason = "label_off"
@@ -104,10 +104,10 @@ const (
 // body, and this list must follow that body's cases exactly, since a reorder here moves the
 // words that test requires of the table; a word added there is added here, to
 // `LEGION_HELD_REASONS` in `packages/contracts/src/legion-api.ts`, and as a row of the table in
-// `skills/legion-controller/references/admission.md`.
+// `skills/legion-controller/references/admission-held.md`.
 var HeldReasons = []HeldReason{
 	HeldTreeClosed,
-	HeldTreeParked,
+	HeldTreeInBacklogOrIcebox,
 	HeldLabelOff,
 	HeldAncestry,
 	HeldRootAwaitingPerson,
@@ -155,8 +155,9 @@ type HeldIssue struct {
 // answers for a candidate no drop site saw read one set of facts and give one answer.
 type HeldFacts struct {
 	// ByKey is the pass's own records by key, built over the whole issue list the pass was
-	// given rather than over the candidates, so that a parked or closed root among those
-	// records is found here and its tree's members read tree_parked or tree_closed.
+	// given rather than over the candidates, so that a root in backlog, icebox or done among
+	// those records is found here and its tree's members read tree_in_backlog_or_icebox or
+	// tree_closed.
 	ByKey map[string]Issue
 	// Live is the live roots (liveRoots), which the ancestry word reads: LineFacts carries no
 	// such set, and the word must be read against the same trees the line's own ancestry hold
@@ -320,8 +321,9 @@ func retroHeldBy(issue Issue, facts LineFacts) []string {
 // word that says a tree is closed and a release that acts on it agree. The linger the first word
 // reads is the one still running at the moment the pass read the record (Lingering,
 // LineFacts.Now), never Issue.Lingers, which stays true for ever once a deadline was armed: every
-// park arms one (workflow's beginLinger) and nothing but a re-admission clears it, so the broader
-// reading would give every parked tree's member tree_closed and leave tree_parked unreachable.
+// move out of the workflow arms one (workflow's beginLinger) and nothing but a re-admission
+// clears it, so the broader reading would give every member of a tree whose root is in backlog
+// or icebox tree_closed and leave tree_in_backlog_or_icebox unreachable.
 func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	root, recorded := facts.treeRoot(issue.Tree)
 	// Each of these is read where its own word is, and not before it: the ancestry scan, the
@@ -332,7 +334,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 		(!claim.IsTreeRoot(issue.Key, issue.Tree) && reopensAtPromotion(root, facts.Facts))):
 		return HeldTreeClosed, []string{issue.Tree}
 	case recorded && (root.Status == "backlog" || root.Status == "icebox"):
-		return HeldTreeParked, []string{issue.Tree}
+		return HeldTreeInBacklogOrIcebox, []string{issue.Tree}
 	case claim.IsTreeRoot(issue.Key, issue.Tree) && !issue.HandedOver:
 		return HeldLabelOff, nil
 	}
@@ -346,7 +348,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// among its own issues and for the roots it read beside them (ReadLineFacts), so a root
 	// nothing records has none, and TreeGate.Open() over no rows is false — so the issue read
 	// design_gate, held by a key no record holds, where C2 puts it under unclassified. Only
-	// these two are guarded: tree_closed and tree_parked ask the same of the record above, and
+	// these two are guarded: tree_closed and tree_in_backlog_or_icebox ask the same of the record above, and
 	// every word below reads facts of the issue itself, so an issue with no recorded root that
 	// a Dispatch link holds still reads dispatch_blocker, which is C1's order (the architect's
 	// ruling of 2026-11-12T07:28Z on dispatch://INFRA-3107).
@@ -404,7 +406,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 //
 // issues is the same list the caller gave Waiting, and the candidates are the records of it the
 // daemon holds in the workflow (InWorkflow, its own name for that): the facts are built over
-// the whole list, so a closed or parked root among the records is found, and only a candidate
+// the whole list, so a closed root or one in backlog or icebox among the records is found, and only a candidate
 // takes a row. Both callers ask the same of their candidates, so the filter is read here and
 // neither has to remember it. dropped is what the pass left behind (Waiting's second answer),
 // and line is the line it built.

@@ -519,7 +519,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// on whether its tree runs at all (whyStates, atWorkInSlotlessPhase). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are read from the same facts as the live trees of the block (record.LiveRoots) — live is
-	// wider than running, and a parked root's tree is neither.
+	// wider than running, and the tree of a root in backlog or icebox is neither.
 	running := record.RunningRoots(own, facts)
 	whyStates(&projected, own, running, in.Stranded, rows, facts)
 	// Every root of this project's own records carries whether its tree runs (`treeRuns`), read

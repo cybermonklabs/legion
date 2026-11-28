@@ -51,10 +51,10 @@ var socketQueues struct {
 const socketQueuesSpare = 30 * time.Second
 
 // probeSocketQueues fills a loopback connection whose server end never reads, and reads the client
-// socket's line in /proc/net/tcp while its writer is parked on it (writeParked) from before the read
-// until after it, with no write returned: the socket's send queue is then full. It reports true when
-// the line shows bytes to send, and false when it shows none, or when no line names the socket. It
-// reads the state of the writer and the kernel, and no time; its one bound is the test binary's
+// socket's line in /proc/net/tcp while its writer is blocked on it (writeBlocked) from before the
+// read until after it, with no write returned: the socket's send queue is then full. It reports true
+// when the line shows bytes to send, and false when it shows none, or when no line names the socket.
+// It reads the state of the writer and the kernel, and no time; its one bound is the test binary's
 // deadline less socketQueuesSpare, a guard against a socket that always takes the writes.
 func probeSocketQueues(t *testing.T) (bool, error) {
 	listener, err := testport.ListenLoopback()
@@ -102,14 +102,14 @@ func probeSocketQueues(t *testing.T) (bool, error) {
 	}
 	for deadline := time.Now().Add(bound); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		before := returned.Load()
-		if !writeParked(id) {
+		if !writeBlocked(id) {
 			continue
 		}
 		sockets, err := clientSockets(addr)
 		if err != nil {
 			return false, err
 		}
-		if !writeParked(id) || returned.Load() != before {
+		if !writeBlocked(id) || returned.Load() != before {
 			continue
 		}
 		for _, socket := range sockets {
@@ -119,5 +119,5 @@ func probeSocketQueues(t *testing.T) (bool, error) {
 		}
 		return false, nil
 	}
-	return false, fmt.Errorf("the writer to a loopback connection nobody reads was not parked on its socket %s before the test binary's deadline", socketQueuesSpare)
+	return false, fmt.Errorf("the writer to a loopback connection nobody reads was not blocked on its socket %s before the test binary's deadline", socketQueuesSpare)
 }

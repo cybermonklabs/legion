@@ -531,11 +531,11 @@ describe("envoy OMP extension", () => {
     const id = "ses_relay_closed";
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
       const session = await relayLossSession(id, "relay-closed-reason");
-      const parked = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
       try {
         expect(natsState.controls.get(deliverSubject(id))?.active()).toBe(true);
         // Every dial from now on waits, so the relay's own redial never ends during the row.
-        natsState.heldConnect = parked.promise;
+        natsState.heldConnect = held.promise;
         await natsState.connections[0]?.close();
         natsState.controls.get(deliverSubject(id))?.end();
         await until("the relay's own redial", () => natsState.connectedNames.length === 2);
@@ -547,7 +547,7 @@ describe("envoy OMP extension", () => {
         }
       } finally {
         natsState.heldConnect = undefined;
-        parked.resolve();
+        held.resolve();
         await session.stop();
       }
     });
@@ -583,9 +583,9 @@ describe("envoy OMP extension", () => {
     const closeError = NatsError.errorForCode(ErrorCode.AuthenticationExpired);
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
       const session = await relayLossSession(id, "relay-closed-error");
-      const parked = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
       try {
-        natsState.heldConnect = parked.promise;
+        natsState.heldConnect = held.promise;
         natsState.closeError = closeError;
         await natsState.connections[0]?.close();
         natsState.controls.get(deliverSubject(id))?.end();
@@ -595,7 +595,7 @@ describe("envoy OMP extension", () => {
         expect(await session.follow("team.relay-closed-error")).toContain(reason);
       } finally {
         natsState.heldConnect = undefined;
-        parked.resolve();
+        held.resolve();
         await session.stop();
       }
     });
@@ -649,16 +649,16 @@ describe("envoy OMP extension", () => {
     const control = `agentstream.${id}.control`;
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
       const session = await relayLossSession(id, "control-open-race");
-      const parked = Promise.withResolvers<void>();
+      const held = Promise.withResolvers<void>();
       try {
-        natsState.heldConnect = parked.promise;
+        natsState.heldConnect = held.promise;
         await natsState.connections[0]?.close();
         natsState.controls.get(control)?.end();
         await until("the control subject's own dial", () => natsState.connectedNames.length === 2);
         session.heartbeat();
         await until("the heartbeat's dial", () => natsState.connectedNames.length === 3);
         natsState.heldConnect = undefined;
-        parked.resolve();
+        held.resolve();
         await until("the control subject opened again", () =>
           (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active())
         );
@@ -671,7 +671,7 @@ describe("envoy OMP extension", () => {
         expect(live).toHaveLength(1);
       } finally {
         natsState.heldConnect = undefined;
-        parked.resolve();
+        held.resolve();
         await session.stop();
       }
     });

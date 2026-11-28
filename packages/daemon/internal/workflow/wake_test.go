@@ -718,7 +718,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	}
 }
 
-// R8: a linger, a park and a close each take the issue out of the workflow or stop its tree, and
+// R8: a linger, a move to backlog and a close each take the issue out of the workflow or stop its tree, and
 // a wake of any kind then does nothing.
 func TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow(t *testing.T) {
 	t.Parallel()
@@ -727,7 +727,7 @@ func TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow(t *testing.T) {
 		name  string
 		issue record.Issue
 	}{
-		{name: "a park", issue: record.Issue{Status: "backlog", Phase: phase.Implementing}},
+		{name: "a move to backlog", issue: record.Issue{Status: "backlog", Phase: phase.Implementing}},
 		{name: "a close", issue: record.Issue{Status: "done", Phase: phase.Done}},
 		{name: "a linger", issue: record.Issue{Status: "in_progress", Phase: phase.Done, LingerUntil: &lingerUntil}},
 	} {
@@ -767,7 +767,7 @@ func TestAWakeDoesNothingOnceAnOperatorTookTheClaimOver(t *testing.T) {
 	}
 }
 
-// R8: a daemon suspension — a linger, a park, a close or a hand-over — takes a released claim
+// R8: a daemon suspension — a linger, a move to backlog, a close or a hand-over — takes a released claim
 // over the same way, and a wake then does nothing either.
 func TestAWakeDoesNothingOnceTheDaemonTookTheClaimOver(t *testing.T) {
 	t.Parallel()

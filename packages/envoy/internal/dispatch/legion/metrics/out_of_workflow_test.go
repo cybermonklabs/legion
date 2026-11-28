@@ -47,8 +47,8 @@ func triaged(key string) *Issue {
 		statusAt(hour(6), "done")
 }
 
-// triagedAndObserved is the triaged issue with what Dispatch observed of it: the daemon parks a
-// child that leaves the workflow, for `triage` among the rest, in `done` (the daemon's
+// triagedAndObserved is the triaged issue with what Dispatch observed of it: the daemon puts a
+// child that leaves the workflow, for `triage` among the rest, in phase `done` (the daemon's
 // workflow/linger.go, leave), and reports it again in its phase once a `todo` takes it back.
 func triagedAndObserved(key string) *Issue {
 	return triaged(key).
@@ -58,12 +58,14 @@ func triagedAndObserved(key string) *Issue {
 		observeString(legion.FieldPhase, hour(6), "done")
 }
 
-// TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar is the spec's "Out of the workflow
-// before the close": "An hour in which the issue is out of the workflow, before its close, is
-// outside the work time and on no bar, as a park is. With observations, that is every stretch
-// whose observed phase is `done` before the close ... Before observations, it is the stretch from
-// an `issue.closed` that a reopen follows, or from a `triage` status write, to the next status
-// write." Each case names the stretch `done` on its timeline, takes it out of the work time, and
+// TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar is the spec's rule of the time out of
+// the workflow before the close,
+// dispatch://INFRA-1077/spec#b-05b51452-5c3e-449c-b2ae-52dd8c1d138f: an hour in which the issue
+// is out of the workflow, before its close, is outside the work time and on no bar, as an hour in
+// backlog or icebox is. With observations, that is every stretch
+// whose observed phase is `done` before the close; before observations, it is the stretch from an
+// `issue.closed` that a reopen follows, or from a `triage` status write, to the next status
+// write. Each case names the stretch `done` on its timeline, takes it out of the work time, and
 // keeps it off every bar, so the seven bars still add up to the work time.
 //
 // Review round 32's probe gave a work time of 8 h against 5 h of bars: its `done` stretch was on
@@ -76,17 +78,17 @@ func triagedAndObserved(key string) *Issue {
 // Before observations the stretch ends at the next status write, and "the reopen's status sets
 // the phase from then" (the spec's "The close"). A `needs_review` sets reviewing. A `todo`, or an
 // `in_progress` after `done`, marks no phase, so the issue goes on in the phase it had before the
-// stretch, as it does after a park.
+// stretch, as it does after a time in backlog or icebox.
 func TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar(t *testing.T) {
 	cases := []struct {
-		name     string
-		issue    *Issue
-		timeline []string
-		work     float64
-		parked   float64
-		queued   float64
-		out      float64
-		bars     map[string]float64
+		name      string
+		issue     *Issue
+		timeline  []string
+		work      float64
+		inBacklog float64
+		queued    float64
+		out       float64
+		bars      map[string]float64
 	}{
 		{
 			name:     "with observations: merged, closed, then reopened and queued",
@@ -133,10 +135,11 @@ func TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar(t *testing.T) {
 			bars: map[string]float64{"implementer": 4},
 		},
 		{
-			// An hour out of the workflow is no parked hour: `parked_hours` holds the time in
-			// `backlog` or `icebox` alone, and the work time leaves out each of the two beside
-			// the other. Out from hour 2 to hour 4, parked from hour 4 to hour 5.
-			name: "before observations: moved to triage, then parked",
+			// An hour out of the workflow is no hour in backlog or icebox:
+			// `backlog_or_icebox_hours` holds the time in `backlog` or `icebox` alone, and the
+			// work time leaves out each of the two beside the other. Out from hour 2 to hour 4,
+			// in backlog from hour 4 to hour 5.
+			name: "before observations: moved to triage, then to backlog",
 			issue: newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(7)).
 				statusAt(hour(0), "in_progress").
 				statusAt(hour(2), "triage").
@@ -144,7 +147,7 @@ func TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar(t *testing.T) {
 				statusAt(hour(5), "in_progress").
 				statusAt(hour(7), "done"),
 			timeline: []string{"implementing 0-2", "done 2-4", "implementing 4-7"},
-			work:     4, parked: 1, out: 2,
+			work:     4, inBacklog: 1, out: 2,
 			bars: map[string]float64{"implementer": 4},
 		},
 	}
@@ -161,10 +164,10 @@ func TestAnHourOutOfTheWorkflowIsOutsideTheWorkTimeAndOnNoBar(t *testing.T) {
 			// are read off the timeline the work time takes them out of (outOfWorkflowSpans).
 			spans, _ := population.Phases(each.issue)
 			out := totalOf(outOfWorkflowSpans(spans)).Hours()
-			if row.WorkHours != each.work || row.ParkedHours != each.parked || row.QueuedHours != each.queued || out != each.out {
-				t.Errorf("work time = %g h with %g h parked, %g h queued and %g h out of the workflow, want %g h with %g h, %g h and %g h",
-					row.WorkHours, row.ParkedHours, row.QueuedHours, out,
-					each.work, each.parked, each.queued, each.out)
+			if row.WorkHours != each.work || row.BacklogOrIceboxHours != each.inBacklog || row.QueuedHours != each.queued || out != each.out {
+				t.Errorf("work time = %g h with %g h in backlog or icebox, %g h queued and %g h out of the workflow, want %g h with %g h, %g h and %g h",
+					row.WorkHours, row.BacklogOrIceboxHours, row.QueuedHours, out,
+					each.work, each.inBacklog, each.queued, each.out)
 			}
 			hoursPerBar, _ := w.hoursPerBar(t)
 			for _, bar := range bars {

@@ -2990,7 +2990,7 @@ pass "stored-order.json holds the checker's fields, a clean and a mismatching ru
   printf '%s\n' "stored-order: $a base=1 $counts mismatches=0" \
     "stored-order: $b base=1 $counts mismatches=3" \
     "stored-order: $b version number=4 doc_update_version=9 stored_md5=0cc175b9c0f1b6a831c399e269772661 stored_length=1 fold_renders=false" \
-    "stored-order: $b pending update=9 parked_items=1 parked_delete_ranges=0" \
+    "stored-order: $b pending update=9 pending_items=1 pending_delete_ranges=0" \
     "stored-order: $b version number=12 doc_update_version=20 stored_md5=0cc175b9c0f1b6a831c399e269772661 stored_length=1 fold_md5=92eb5ffee6ae2fec3ad71c777531578f fold_length=2" \
     "stored-order: $c base=0 updates_checked=0 updates_skipped=0 versions_checked=0 versions_skipped=0 mismatches=0 refused=\"a prune checkpoint stands at update 4: the history above it is being rewritten\"" \
     "stored-order: $d error (read the document's stored updates: context canceled)" \

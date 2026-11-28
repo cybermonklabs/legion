@@ -73,14 +73,14 @@ func (o *consumerFileStore) measureWriteFile(name string, data []byte, perm fs.F
 // the stream's purge of remembered duplicate ids and before the store of the new window, so a
 // purge that runs while the update is here measures the ids' ages against oldWindow, the window
 // being replaced. The update re-arms that purge only while the stream remembers an id; the report
-// comes either way, and a hold here parks the update, not the purge, which runs during the park.
+// comes either way, and a hold here holds the update, not the purge, which runs during the hold.
 // It reports nothing when the two windows are the same, since the update touches the purge only
 // when they differ.
 //
 // It takes no lock the point's own caller holds: the update holds the stream's lock here, so the
 // stream's name is the update's own (a stream is never renamed), and the server's options lock is
 // the only one it takes. It does not wait for the purge the re-arm fires either, so the two
-// reports can come in either order; while a hold parks the update here, both come after that
+// reports can come in either order; while a hold holds the update here, both come after that
 // re-arm and before the store of the new window, and with no hold the purge can run after the
 // store instead.
 func measureDedupeReset(mset *stream, name string, oldWindow, newWindow time.Duration, point string) {
@@ -94,7 +94,7 @@ func measureDedupeReset(mset *stream, name string, oldWindow, newWindow time.Dur
 // the dedupe lock still held, so the window and the count it reports are the purge's own: the
 // window it measured the ids' ages against (that lock is held for the whole purge, so no update
 // can have stored another meanwhile) and the ids it kept. It must not take that lock again, and
-// it takes no lock a stream update parked at dedupe.reset holds, so the report comes while that
+// it takes no lock a stream update held at dedupe.reset holds, so the report comes while that
 // update waits.
 func measureDedupePurged(mset *stream, point string) {
 	if MeasureHook.Load() == nil {

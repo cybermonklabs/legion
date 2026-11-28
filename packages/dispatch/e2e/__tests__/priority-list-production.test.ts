@@ -74,7 +74,7 @@ const priorities = JSON.stringify({
     { id: "middle-priority", work: { by_status: { todo: 16, triage: 2 } } },
   ],
   work_under_no_priority: { count: 0, by_project: {}, issues: [] },
-  priority_work_parked: { count: 0, by_priority: {}, issues: [] },
+  priority_work_in_backlog_or_icebox: { count: 0, by_priority: {}, issues: [] },
 });
 
 /** What the stand-ins answer in one look. */

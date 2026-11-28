@@ -230,22 +230,22 @@ func TestARelaunchRecordsTheStallBackstop(t *testing.T) {
 	h.wantEndedLine(cause)
 }
 
-// A parked wake's turn: a relaunch the wake pacing holds over a process that still runs lets that
+// A delayed wake's turn: a relaunch the wake pacing holds over a process that still runs lets that
 // process go at its turn, and records what it ended then, as the process stands at the turn — the
-// park itself writes nothing, and what the process did in the wait is what the turn ends.
-func TestARelaunchRecordsAtAParkedWakesTurn(t *testing.T) {
+// delay itself writes nothing, and what the process did in the wait is what the turn ends.
+func TestARelaunchRecordsAtADelayedWakesTurn(t *testing.T) {
 	t.Run("the stale-plugin lane's refresh", func(t *testing.T) {
-		h, waiting := refreshParkedIdle(t)
+		h, waiting := refreshDelayedIdle(t)
 		if got := h.store.load(h.token).EndedWork; got.Cause != "" {
-			t.Fatalf("the park recorded %+v, want nothing before the turn lets the process go", got)
+			t.Fatalf("the delay recorded %+v, want nothing before the turn lets the process go", got)
 		}
 		h.reportActivity("subagent")
-		parked := h.generation()
+		generation := h.generation()
 
 		h.advance(waiting.At.Sub(h.clock.Now()))
 
 		h.wantState(StateLaunching)
-		h.wantEnded(EndedWork{At: waiting.At, Cause: endStalePlugin, Generation: parked,
+		h.wantEnded(EndedWork{At: waiting.At, Cause: endStalePlugin, Generation: generation,
 			Background: true, Kinds: []string{"subagent"}, Reported: true})
 		h.wantEndedLine(endStalePlugin)
 	})
@@ -258,16 +258,16 @@ func TestARelaunchRecordsAtAParkedWakesTurn(t *testing.T) {
 		h.observe(runtime.StaleAddress)
 		waiting := h.wantWaitingWake(WakeLaunch)
 		if got := h.store.load(h.token).EndedWork; got.Cause != "" {
-			t.Fatalf("the park recorded %+v, want nothing before the turn lets the process go", got)
+			t.Fatalf("the delay recorded %+v, want nothing before the turn lets the process go", got)
 		}
 		h.must(StreamTurnStart{Claim: h.token, DeliveryID: sent})
 		h.reportActivity("async-job")
-		parked := h.generation()
+		generation := h.generation()
 
 		h.advance(waiting.At.Sub(h.clock.Now()))
 
 		h.wantState(StateLaunching)
-		h.wantEnded(EndedWork{At: waiting.At, Cause: endRepointed, Generation: parked, Turn: true, TaskTurn: true,
+		h.wantEnded(EndedWork{At: waiting.At, Cause: endRepointed, Generation: generation, Turn: true, TaskTurn: true,
 			Background: true, Kinds: []string{"async-job"}, Reported: true})
 		h.wantEndedLine(endRepointed)
 	})
@@ -1014,14 +1014,14 @@ func TestARelaunchRecordsTheStallBackstopDuringACompaction(t *testing.T) {
 	}
 }
 
-// A death whose relaunch the wake pacing parks, over a ready claim whose session was being
+// A death whose relaunch the wake pacing delays, over a ready claim whose session was being
 // compacted, records nothing: the process never ran a turn, reported nothing and was in none. The
 // death finds nothing to record, so the let-go at the wake's turn decides the record again, with
-// the claim still in the working the park left it in and the compaction long dropped
+// the claim still in the working the delay left it in and the compaction long dropped
 // (compactionLostProcess). What it reads that working as is the dropped compaction, kept for that
 // let-go (Machine.lostCompaction): read as a turn, the wake's turn would record one the process was
 // never in.
-func TestARelaunchRecordsNoTurnAtAParkedWakesTurnAfterACompactionLostItsProcess(t *testing.T) {
+func TestARelaunchRecordsNoTurnAtADelayedWakesTurnAfterACompactionLostItsProcess(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	release, compacted := h.compactHeld()

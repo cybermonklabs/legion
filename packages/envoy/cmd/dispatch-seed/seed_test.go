@@ -903,7 +903,7 @@ func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 			t.Errorf("the status move of %s at seq %d names issue %s, status %s, last_seq %d and changed %v",
 				key, seq, payload.Key, payload.Status, payload.LastSeq, payload.Changed)
 		}
-		if slices.Contains(model.IssueStatusesParked, status) && !slices.Contains(model.IssueStatusesParked, issues[key].status) {
+		if slices.Contains(model.IssueStatusesBacklogOrIcebox, status) && !slices.Contains(model.IssueStatusesBacklogOrIcebox, issues[key].status) {
 			backlogElsewhere++
 		}
 		newest[key] = move{seq: seq, status: status}
@@ -915,7 +915,7 @@ func assertStatusMovesEndInTheStatus(t *testing.T, database *store.Store) {
 	var inBacklog, followed int
 	for key, issue := range issues {
 		last, moved := newest[key]
-		if !slices.Contains(model.IssueStatusesParked, issue.status) {
+		if !slices.Contains(model.IssueStatusesBacklogOrIcebox, issue.status) {
 			if moved && last.status != issue.status {
 				t.Errorf("%s stands in %s, and its newest status move, at seq %d, is into %s", key, issue.status, last.seq, last.status)
 			}

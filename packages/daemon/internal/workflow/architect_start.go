@@ -105,7 +105,7 @@ type ArchitectStart struct {
 // every derivation of a root architect's task reads them through.
 //
 // Decided is the caller's because it is what tells a task composed now from a held task narrowed.
-// A task composed now names what its tree is owed and nothing claims (ParkedDecisionTask, which
+// A task composed now names what its tree is owed and nothing claims (UnclaimedKeptTask, which
 // the engine reads beside this, architectStartWork). A held task names the decisions it already
 // holds, and those that stay in the tree are what its narrowing writes (NarrowRootTask). The held
 // task's own decisions are claimed by that task, so the unclaimed read would pass over them
@@ -170,7 +170,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //
 // A phase worker's start carries its phase's task, so a worker the daemon launches has work the
 // moment it is ready. A root architect's start carried a task only where a person had decided
-// something on its tree while nobody in that tree could hear it (ParkedDecisionTask), which is
+// something on its tree while nobody in that tree could hear it (UnclaimedKeptTask), which is
 // rare: the common fresh admission launched an architect with nothing at all, and the first thing
 // the daemon ever gave it was the catch-up its ready writes. That catch-up states the tree and
 // ends "start or resume it as your role says", which leaves the first act to the agent to infer

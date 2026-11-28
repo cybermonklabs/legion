@@ -181,9 +181,9 @@ func clone(t testing.TB, template string) *store.Store {
 
 // closeThroughTheSharedWait closes pool after t ends, through the shared wait (testwait.Returns):
 // store.Pool's Close returns only once every connection in use has come back, and a row that
-// failed, or the defect it caught, can leave the code under test holding one for good, parked on a
-// fake clock no one moves or a gate no one opens. The wait then fails naming what, the pool, where
-// Close alone would hang the test binary to its timeout.
+// failed, or the defect it caught, can leave the code under test holding one for good, blocked on
+// a fake clock no one moves or a gate no one opens. The wait then fails naming what, the pool,
+// where Close alone would hang the test binary to its timeout.
 //
 // The shared wait gives up at the connect end (testdb.ConnectEnd and testwait.GiveUpAt name the
 // same moment), and past it asks once and fails, so in a cleanup that starts at or past that end,

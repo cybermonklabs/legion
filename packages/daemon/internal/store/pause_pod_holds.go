@@ -54,7 +54,7 @@ const (
 	PausePodHoldResumed PausePodHoldEnd = "resumed"
 	// PausePodHoldReady: a role of the pod became ready.
 	PausePodHoldReady PausePodHoldEnd = "ready"
-	// PausePodHoldDeleted: a close, a park, a linger, a production check's look or a teardown
+	// PausePodHoldDeleted: a close, a move out of the workflow, a linger, a production check's look or a teardown
 	// deleted the pod.
 	PausePodHoldDeleted PausePodHoldEnd = "deleted"
 )
@@ -287,7 +287,7 @@ func scanPausePodHolds(rows pgx.Rows) ([]PausePodHold, error) {
 // in the wake pacing or that the gate holds, runs nothing. The resume ends the holds after its
 // commit has made the held rows claimable and after it has posted the resume by rule of each
 // operator's spawn owed a launch (internal/daemon's projectPause.Resumed), so a held start the
-// outbox runs in between, or such a spawn's machine, can park a launch so while no role of the
+// outbox runs in between, or such a spawn's machine, can leave a launch waiting so while no role of the
 // pod runs. It takes the issue's lock (LockIssueForPause) and then ends the hold in one statement
 // that reads the live role itself, so a stop transaction of a role of the same pod commits first
 // and the statement sees it: a hold that stop opened stays, since no role of the pod runs then.

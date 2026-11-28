@@ -395,7 +395,7 @@ func (kv KeyValue) Bucket() string {
 // subscription's life to ctx, which it uses for the consumer's create request (js.go:1970-1973)
 // and subscription lifetime (js.go:2072-2077). The watcher ends at ctx's deadline, so one that
 // follows the bucket takes a ctx without one, and the caller cancels ctx once it has stopped the
-// watcher, or the goroutine nats.go parks on ctx.Done() outlives the watch. A ctx without a
+// watcher, or the goroutine nats.go leaves waiting on ctx.Done() outlives the watch. A ctx without a
 // deadline still bounds the create by the JetStream request wait of the handle's legacy push
 // context, 5 s (js.go:303, jsm.go:1844-1846). The watcher sends a nil entry once it has delivered
 // every existing key, and closes its updates only once its subscription has ended; whoever stops it
@@ -956,7 +956,7 @@ func (kv KeyValue) ReadHistory(ctx context.Context, key string) ([]jetstream.Key
 
 // DrainWatcher reads watcher's updates until nats.go closes them, which it does once the
 // subscription a stop ended has delivered what it held: nats.go's delivery blocks holding the
-// watcher's lock on a full 256-entry buffer, so a watcher stopped and left unread parks its
+// watcher's lock on a full 256-entry buffer, so a watcher stopped and left unread blocks its
 // subscription's goroutine for good. ReadHistory, kvwatch's scans and the watchers kvwatch stops
 // all read theirs through it.
 func DrainWatcher(watcher jetstream.KeyWatcher) {

@@ -26,9 +26,9 @@ func fullPrefixStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, si
 	defer doc.Destroy()
 	var previous storedRender
 	rendered := false
-	var parked crdt.ContentIDs
+	var wasPending crdt.ContentIDs
 	base := true
-	var waiting, resolved []*parkedRow
+	var waiting, resolved []*pendingRow
 	for rows.Next() {
 		var version int64
 		var update []byte
@@ -52,7 +52,7 @@ func fullPrefixStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, si
 			clocks = doc.StateVector()
 			pending, err = crdt.ContentIDsFromUpdateV1(crdt.EncodeStateAsUpdateV1(doc, clocks))
 			if err != nil {
-				return fmt.Errorf("read parked content at update %d: %w", version, err)
+				return fmt.Errorf("read pending content at update %d: %w", version, err)
 			}
 			pending.Deletes = crdt.ExcludeIDSet(pending.Deletes, crdt.DeleteSetFromDoc(doc))
 		}
@@ -75,16 +75,16 @@ func fullPrefixStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, si
 					Kind: StoredOrderClass, Update: version, StoredClass: stored, ExpectedClass: expected,
 				})
 			}
-			if needed := addedParkedClocks(parked, pending); len(needed) > 0 {
-				waiting = append(waiting, &parkedRow{
+			if needed := addedPendingClocks(wasPending, pending); len(needed) > 0 {
+				waiting = append(waiting, &pendingRow{
 					mismatch: StoredOrderMismatch{
-						Kind: StoredOrderPending, Update: version, ParkedItems: now.Items, ParkedDeleteRanges: now.DeleteRanges,
+						Kind: StoredOrderPending, Update: version, PendingItems: now.Items, PendingDeleteRanges: now.DeleteRanges,
 					},
 					needed: needed,
 				})
 			}
 		}
-		previous, parked = current, pending
+		previous, wasPending = current, pending
 		if len(waiting) > 0 {
 			if clocks == nil {
 				clocks = doc.StateVector()
@@ -125,7 +125,7 @@ func fullPrefixStoredOrder(ctx context.Context, tx pgx.Tx, artifactID string, si
 	return nil
 }
 
-func compareFullStoredPrefix(ctx context.Context, tx pgx.Tx, artifactID string, omitted *parkedRow) (bool, error) {
+func compareFullStoredPrefix(ctx context.Context, tx pgx.Tx, artifactID string, omitted *pendingRow) (bool, error) {
 	rows, err := tx.Query(ctx, `
 		select version, update from doc_updates where artifact_id = $1 and version <= $2 order by version
 	`, artifactID, omitted.through)

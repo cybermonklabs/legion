@@ -4,12 +4,12 @@ package supervise
 // paused, as the plan's decisions say it. Four things, each written once, here:
 //
 //   - The gate (decision 7): a launch of a claim that is not the controller's runs nothing while
-//     the project is paused: at the wake gate (reserveWake), at a parked wake's turn (wakeNow), at
-//     a dropped wake taken up again (reparkWake), after a try's write (launchTries, pauseHeldTry),
-//     and at the grant of a start parked at its issue pod's gate (podStartDue), each through
-//     pauseGate. It is held on the machine with no timer, keeping the turn the pacing let it out
-//     on before the gate held it, if any (wake.paid), and the machine stops the claim for the
-//     pause in its next decision (TimerPause, pauseStopDue), with a launch owed.
+//     the project is paused: at the wake gate (reserveWake), at a delayed wake's turn (wakeNow),
+//     at a dropped wake taken up again (delayWakeAgain), after a try's write (launchTries,
+//     pauseHeldTry), and at the grant of a start waiting at its issue pod's gate (podStartDue),
+//     each through pauseGate. It is held on the machine with no timer, keeping the turn the pacing
+//     let it out on before the gate held it, if any (wake.paid), and the machine stops the claim
+//     for the pause in its next decision (TimerPause, pauseStopDue), with a launch owed.
 //   - The task gate (decision 8): no task is sent to such a claim while the project is paused
 //     (sendPending, pauseHolds).
 //   - The stop transaction (decision 6): a suspension a pause asked for (RequestSuspend.Pause)
@@ -44,7 +44,7 @@ type PauseStop struct {
 	// may have ended by the time the transaction runs.
 	Pause int64
 	// LaunchOwed is whether the role is owed a launch at the resume (decision 6): it holds a task
-	// no turn has taken (holdsTask), or the stop met a launch — a wake parked in the pacing, a
+	// no turn has taken (holdsTask), or the stop met a launch — a wake delayed in the pacing, a
 	// start the stop cancelled, a launch held until its agent is ready, a relaunch waiting its
 	// retry, or a launch the pause's gate held (suspendedFor, launchMet). The stop transaction
 	// owes one besides to every stopped role whose stop commits after its pause has ended with no
@@ -127,7 +127,7 @@ func (m *Machine) dropEndedPauseHold() {
 	m.dropHeld()
 }
 
-// launchMet is whether a launch of the claim waits on the machine now: a wake parked in the pacing,
+// launchMet is whether a launch of the claim waits on the machine now: a wake delayed in the pacing,
 // held by the pause's gate or waiting at its issue pod's gate (Machine.wake), or a relaunch waiting
 // its retry (Machine.relaunch). A pause's stop that meets one owes the role that launch
 // (PauseStop.LaunchOwed), and it is read before the stop lets the process go, which drops both
@@ -143,15 +143,15 @@ func (m *Machine) holdsTask() bool {
 }
 
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from
-// the wake gate before its exempt return (reserveWake), from a parked wake's turn (wakeNow), from a
-// dropped wake taken up again (reparkWake), from a try the pause met after its write (launchTries,
-// pauseHeldTry), and from the grant of a start parked at its issue pod's gate (podStartDue). The
-// launch runs nothing, takes no place in the pacing — it keeps the turn the pacing let it out on
-// before the gate held it (wake.paid) — and arms no retry: it waits on the machine as a parked
-// wake does (waitOnMachine), with no timer and no moment (wake.pause). A claim that records no
-// process is written launching and persisted, so a restart finds a launch to relaunch, which meets
-// the gate again (relaunchUnfinished in internal/daemon); one whose process runs keeps its state,
-// since the launch held is to replace that process.
+// the wake gate before its exempt return (reserveWake), from a delayed wake's turn (wakeNow), from
+// a dropped wake taken up again (delayWakeAgain), from a try the pause met after its write
+// (launchTries, pauseHeldTry), and from the grant of a start waiting at its issue pod's gate
+// (podStartDue). The launch runs nothing, takes no place in the pacing — it keeps the turn the
+// pacing let it out on before the gate held it (wake.paid) — and arms no retry: it waits on the
+// machine as a delayed wake does (waitOnMachine), with no timer and no moment (wake.pause). A
+// claim that records no process is written launching and persisted, so a restart finds a launch
+// to relaunch, which meets the gate again (relaunchUnfinished in internal/daemon); one whose
+// process runs keeps its state, since the launch held is to replace that process.
 //
 // A launch of the stale-plugin lane keeps the credit of the refresh gate it was admitted on while
 // this gate holds it, since that launch is still owed (laneLaunchOwed): the pause's stop that
@@ -172,11 +172,12 @@ func (m *Machine) pauseGate(ctx context.Context, waiting *wake, pause int64) err
 }
 
 // pauseHeldTry is a try the project's pause meets after its write (launchTries): it stops the
-// process its launch let go, as a try that parks at its issue pod's gate does (stopLetGo), so that
+// process its launch let go, as a try that waits at its issue pod's gate does (stopLetGo), so that
 // process does not run unrecorded through the pause, and the pause's gate holds the try's wake
 // (heldTryWake), which stops the claim for the pause in its next decision, a launch owed
 // (pauseStopDue). A pause that ends before that stop lets the wake out, and its run is a fresh try
-// of the same launch (letOutHeldLaunch). The wake carries no park, so no boot token goes with it.
+// of the same launch (letOutHeldLaunch). The wake waits at no pod's gate, so no boot token goes
+// with it.
 func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) error {
 	m.stopLetGo(ctx, "the project's pause to end")
 	return m.pauseGate(ctx, m.heldTryWake(l, ""), pause)
@@ -184,7 +185,7 @@ func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) er
 
 // pauseStopDue is the gate's own stop (TimerPause): the machine posting itself the suspension of
 // the claim whose launch the pause's gate held (decision 7) — By released, the pause's id, and a
-// deadline of now. It meets the claim as the pause's own stop meets a parked wake: a claim that
+// deadline of now. It meets the claim as the pause's own stop meets a delayed wake: a claim that
 // records no process is stopped at once (holdSuspendUntilReady), and so is one whose process is
 // registered, ready or idle (suspend) or still booting, since the launch the gate holds was to
 // replace that process and a hold until ready would protect a process nothing wants; a claim in a
@@ -240,7 +241,7 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 
 // letOutHeldLaunch takes the launch the pause's gate holds into the wake pacing once the pause it
 // was held for has ended (decision 7): it joins the queue its claim's class names (WakeQueue) and
-// its TimerWake is bound to that place, exactly as the wake gate parks a launch (reserveWake,
+// its TimerWake is bound to that place, exactly as the wake gate delays a launch (reserveWake,
 // bindWake, waitOnMachine). A launch the pacer lets out at once runs now, and the daemon is told
 // that let-out (wakeLetOut, decision 14); one that waits is told to the daemon as waiting when
 // this decision ends (tellWakeQueue) and of its let-out at its turn (wakeNow). A daemon whose
@@ -425,7 +426,7 @@ func (m *Machine) stopAtResult(ctx context.Context) error {
 // (Deps.WakeLetOut, decision 14). A let-out is told at the let-out itself and never at the join:
 // the pacer's let-out of a waiting place at the wake's turn (wakeNow), a place the pacer lets out
 // at once at the wake gate (reserveWake) or at the pause's let-out (letOutHeldLaunch), and an
-// operator's request that runs a waiting launch now (runParkedLaunchNow,
+// operator's request that runs a waiting launch now (runDelayedLaunchNow,
 // runDroppedLaunchForRetry), whose let-out is now. A wait that ends with no let-out is told at the
 // end of its decision (tellWakeQueue). Either way the daemon has been told the end of the wait it
 // was last told of (Machine.queueTold).
@@ -439,17 +440,17 @@ func (m *Machine) wakeLetOut(at time.Time) {
 // tellWakeQueue tells the daemon that this claim's paced launch began to wait in the pacing's
 // queue in the decision now ending (Deps.WakeQueued), or that a wait the daemon was told of ended
 // in it with no let-out (wakeLetOut, at the decision's now). It is the end of every decision
-// (Machine.unlock), so no path that parks a wake or takes one off the machine has to name it.
+// (Machine.unlock), so no path that delays a wake or takes one off the machine has to name it.
 //
-// A wait begins at the wake gate's park and at the pause's let-out's (reserveWake,
+// A wait begins at the wake gate's delay and at the pause's let-out's (reserveWake,
 // letOutHeldLaunch). It ends with no let-out where a request the pacing lets through launched the
-// claim in the waiting wake's place or stopped it (dropWakeFor, reparkWake), where the project
+// claim in the waiting wake's place or stopped it (dropWakeFor, delayWakeAgain), where the project
 // pause's gate took the launch (pauseGate), and where the process the wake waited over was let go
 // and nothing took its place (letGo). The resume's stuck clock stops for the wait and starts at
 // its end, so a wait whose end the daemon was never told would leave that clock stopped, and a
 // role no wake brought back would never be reported. A wake that is dropped and taken up again in
-// one decision, or that moves to another place (reparkWake, takeEarlierPlace), waits on, and the
-// daemon is told nothing.
+// one decision, or that moves to another place (delayWakeAgain, takeEarlierPlace), waits on, and
+// the daemon is told nothing.
 func (m *Machine) tellWakeQueue() {
 	queued := m.pacedWake() != nil
 	switch {

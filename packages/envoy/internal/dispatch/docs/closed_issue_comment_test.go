@@ -464,7 +464,7 @@ func TestAMarkAClosedIssuesRoomTookInsideTheMarginStillAnchors(t *testing.T) {
 // closedIssueRoomService is a document service whose persistence holds the room's own append once
 // armed (heldStore), so a test can leave an update in the room that the store has not taken
 // (holdOneRoomUpdate). The hold is released before the service shuts down - cleanups run in
-// reverse, and Shutdown waits for the room's persistence worker this hold parks.
+// reverse, and Shutdown waits for the room's persistence worker this hold blocks.
 func closedIssueRoomService(t *testing.T, database *store.Store, artifactID string) (*Service, *heldStore) {
 	t.Helper()
 	held := &heldStore{

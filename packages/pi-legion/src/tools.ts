@@ -1054,7 +1054,7 @@ export function createLegionTool(deps: {
         "suspension that does not outrank yours is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
         "its claim is working, CLAIM_UNSETTLED where it is not), for an agent whose claim is between states — " +
         "queued, with its launch in flight, or left working under a relaunch the " +
-        "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. Before any of those it refuses an agent " +
+        "wake pacing delayed (CLAIM_UNSETTLED) — and for role controller. Before any of those it refuses an agent " +
         "whose suspension outranks yours, landed or waiting for a turn to end: the operator's, which only the operator " +
         "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the agent over while the request " +
         "runs ends it with the same code, after your own suspension of the agent ran: the agent keeps the session its " +
@@ -1076,7 +1076,7 @@ export function createLegionTool(deps: {
         "suspension is held over (CLAIM_IN_A_TURN where its claim is working, CLAIM_UNSETTLED " +
         "where it is not), for an agent whose claim is between states — queued, with its launch in " +
         "flight, registered and not ready yet, which fresh_session " +
-        "reaches, or left working under a relaunch the wake pacing parked " +
+        "reaches, or left working under a relaunch the wake pacing delayed " +
         "(CLAIM_UNSETTLED) — for an agent whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
         "and for role controller. " +
         "stop, retry, suspend and resume_agent (issue, role), with fresh_session and compact, are the actions on an agent, " +

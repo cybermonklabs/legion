@@ -379,21 +379,21 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		}
 	})
 
-	t.Run("a gate on an issue parked out of the workflow is named", func(t *testing.T) {
-		// A gate is live while its issue is not done, so a parked tree's gate is named as a running
-		// tree's is.
+	t.Run("a gate on an issue in triage, icebox or backlog is named", func(t *testing.T) {
+		// A gate is live while its issue is not done, so the gate of a tree in triage, icebox or
+		// backlog is named as a running tree's is.
 		for _, status := range []string{model.IssueStatusTriage, "icebox", "backlog"} {
 			t.Run(status, func(t *testing.T) {
 				document := createAdviceIssue(t, handler, "DGATE", "The document's own issue", &spec)
-				parked := createAdviceIssue(t, handler, "DGATE", "The gate of a tree that runs nothing", &spec)
-				publishDesignGates(t, handler, parked.Key, []issueDesignGate{
+				outOfWorkflow := createAdviceIssue(t, handler, "DGATE", "The gate of a tree that runs nothing", &spec)
+				publishDesignGates(t, handler, outOfWorkflow.Key, []issueDesignGate{
 					{Step: model.GatedStepSpec, ArtifactID: document.PrimaryArtifactID},
 				})
-				setIssueStatus(t, handler, parked.Key, status)
+				setIssueStatus(t, handler, outOfWorkflow.Key, status)
 				approved := approveAdviceDocument(t, handler, document.PrimaryArtifactID)
 
-				superseded := supersededByEdit(t, handler, document.PrimaryArtifactID, "A sentence the parked gate had not seen.", approved)
-				want := []supersededApprovalGate{{Issue: parked.Key, Step: model.GatedStepSpec}}
+				superseded := supersededByEdit(t, handler, document.PrimaryArtifactID, "A sentence the gate out of the workflow had not seen.", approved)
+				want := []supersededApprovalGate{{Issue: outOfWorkflow.Key, Step: model.GatedStepSpec}}
 				if !slices.Equal(superseded.DesignGates, want) {
 					t.Fatalf("design_gates = %#v, want %#v: a gate whose issue is in %s, not done, is live",
 						superseded.DesignGates, want, status)

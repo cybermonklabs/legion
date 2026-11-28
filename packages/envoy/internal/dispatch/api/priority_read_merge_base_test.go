@@ -309,7 +309,9 @@ func (s *server) mergeBaseReadPriorities(ctx context.Context, projects []string,
 	body := model.Priorities{
 		Priorities:          make([]model.PriorityRow, 0, len(nodes)),
 		WorkUnderNoPriority: model.WorkUnderNoPriority{ByProject: map[string]int{}, Issues: []model.PriorityIssue{}},
-		PriorityWorkParked:  model.PriorityWorkParked{ByPriority: map[string]int{}, Issues: []model.PriorityIssue{}},
+		PriorityWorkInBacklogOrIcebox: model.PriorityWorkInBacklogOrIcebox{
+			ByPriority: map[string]int{}, Issues: []model.PriorityIssue{},
+		},
 	}
 	if len(nodes) == 0 {
 		body.Empty = mergeBasePriorityNoneWritten
@@ -354,11 +356,11 @@ func (s *server) mergeBaseReadPriorities(ctx context.Context, projects []string,
 		})
 	mergeBaseQueuePriorityFault(batch, mergeBaseBacklogQuery, mergeBaseBacklogSummaryQuery, summary, arguments, true,
 		func(count int, counts map[string]int, issues []model.PriorityIssue) {
-			body.PriorityWorkParked.Count = count
+			body.PriorityWorkInBacklogOrIcebox.Count = count
 			if counts != nil {
-				body.PriorityWorkParked.ByPriority = counts
+				body.PriorityWorkInBacklogOrIcebox.ByPriority = counts
 			}
-			body.PriorityWorkParked.Issues = issues
+			body.PriorityWorkInBacklogOrIcebox.Issues = issues
 		})
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return model.Priorities{}, fmt.Errorf("read the work under the priorities: %w", err)
@@ -491,7 +493,7 @@ func mergeBaseQueuePriorityFault(
 	query, summaryQuery string,
 	summary bool,
 	arguments []any,
-	parked bool,
+	inBacklog bool,
 	apply func(count int, counts map[string]int, issues []model.PriorityIssue),
 ) {
 	if summary {
@@ -506,7 +508,7 @@ func mergeBaseQueuePriorityFault(
 		return
 	}
 	batch.Queue(query, arguments...).Query(func(rows pgx.Rows) error {
-		count, counts, issues, err := mergeBaseScanPriorityFault(rows, parked)
+		count, counts, issues, err := mergeBaseScanPriorityFault(rows, inBacklog)
 		if err != nil {
 			return err
 		}
@@ -530,11 +532,11 @@ type mergeBasePriorityFaultRow struct {
 	movedBy   []byte
 }
 
-func (r *mergeBasePriorityFaultRow) targets(parked bool) []any {
+func (r *mergeBasePriorityFaultRow) targets(inBacklog bool) []any {
 	targets := []any{&r.total, &r.counts, &r.key, &r.title, &r.project, &r.status, &r.assignee}
 	targets = append(targets, r.claim.targets()...)
 	targets = append(targets, &r.changedAt)
-	if parked {
+	if inBacklog {
 		targets = append(targets, r.advances.targets()...)
 		targets = append(targets, &r.movedAt, &r.movedBy)
 	}
@@ -567,13 +569,13 @@ func (r *mergeBasePriorityFaultRow) resolve() (model.PriorityIssue, error) {
 	return issue, nil
 }
 
-func mergeBaseScanPriorityFault(rows pgx.Rows, parked bool) (int, map[string]int, []model.PriorityIssue, error) {
+func mergeBaseScanPriorityFault(rows pgx.Rows, inBacklog bool) (int, map[string]int, []model.PriorityIssue, error) {
 	count := 0
 	counts := map[string]int{}
 	issues := []model.PriorityIssue{}
 	for rows.Next() {
 		row := mergeBasePriorityFaultRow{}
-		if err := rows.Scan(row.targets(parked)...); err != nil {
+		if err := rows.Scan(row.targets(inBacklog)...); err != nil {
 			return 0, nil, nil, fmt.Errorf("read a fault row: %w", err)
 		}
 		count = row.total
@@ -593,7 +595,7 @@ func mergeBaseScanPriorityFault(rows pgx.Rows, parked bool) (int, map[string]int
 		return 0, nil, nil, fmt.Errorf("read a fault: %w", err)
 	}
 	slices.SortFunc(issues, func(a, b model.PriorityIssue) int {
-		if parked {
+		if inBacklog {
 			if order := mergeBaseComparePriorityTimes(a.MovedAt, b.MovedAt); order != 0 {
 				return order
 			}
@@ -694,8 +696,8 @@ func TestThePrioritiesReadAnswersAsTheMergeBaseAnswers(t *testing.T) {
 				switch {
 				case len(projects) == 0:
 					holdReadCorpusAnswer(t, want, form, "the read below this change")
-				case want.PriorityWorkParked.Count == 0:
-					t.Errorf("%s with %s answers no parked work in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
+				case want.PriorityWorkInBacklogOrIcebox.Count == 0:
+					t.Errorf("%s with %s answers no work in backlog or icebox in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
 				}
 			})
 		})
@@ -982,8 +984,8 @@ func jsonDifference(path string, a, b any) (string, any, any) {
 }
 
 // noLivePriority is a deployment that holds no live priority: two projects, work in flight and
-// parked in each, and one priority that is gone with relations to it still asserted, so the work
-// under it advances none.
+// in backlog or icebox in each, and one priority that is gone with relations to it still
+// asserted, so the work under it advances none.
 type noLivePriority struct {
 	database *store.Store
 	projects []string

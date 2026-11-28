@@ -59,7 +59,7 @@ type Supersession struct {
 // root a person answered (resumeTask), the decisions and the approval kept for an architect's
 // start or catch-up (KeptDecisionsTask, again at each send and each delivery; the kept approval
 // through StepApprovalStands), the controller's relay of a decision nobody in its tree hears (the
-// daemon's parkDecision, and again at a relayed changes request's publish, its controllerNotice;
+// daemon's relaySpecDecision, and again at a relayed changes request's publish, its controllerNotice;
 // and the relay of a person's approval whose handover a later change of the root's status refused,
 // Engine.refuseHandover) and the news of an approved version at each send of the task that carries
 // it (StepApprovalStands, which the daemon's itemStands asks); the clear of a generation asks it
@@ -181,7 +181,7 @@ func StepApprovalStands(gates map[record.DesignStep]record.DesignGate, step reco
 }
 
 // RefSuperseded is SupersedingApproval for a sender that holds only the review's Dispatch reference,
-// ref on issue (record.ParkedDecision.Ref, record.Notice.Ref): the step whose document ref names
+// ref on issue (record.KeptDecision.Ref, record.Notice.Ref): the step whose document ref names
 // (refStep) is resolved once here and set as d.Step, and SupersedingApproval is asked of that step's
 // gate in gates, the gates of issue, and of whether a person approves that step under steps, the
 // steps the deployment gates (record.TakesStep: a step the deployment gates, or criteria a root
@@ -198,9 +198,9 @@ func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record
 }
 
 // NoticeSuperseded is RefSuperseded of the decision of kind a queued notice carries on issue, a
-// design decision's notice or the parked-decision relay of one read as the Notice it is: its
+// design decision's notice or the kept-decision relay of one read as the Notice it is: its
 // reference, its version, Dispatch's mark of the review (record.Notice.Review) and the document
-// reviewed (record.Notice.Artifact). Readers ask through it at the daemon's relay (parkDecision),
+// reviewed (record.Notice.Artifact). Readers ask through it at the daemon's relay (relaySpecDecision),
 // delivery and publish (stillOwed) and at the clear of a generation (Engine.ClearGeneration),
 // so each asks the same question of the same notice.
 func NoticeSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep,

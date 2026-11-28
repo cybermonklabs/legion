@@ -5,7 +5,7 @@ package supervise
 // other role of the pod is starting or loading its session, or once that load has run for
 // podLoadBound without its agent registering. These tests build several machines of one issue
 // over one harness, which share its pod start gate (podHarness), and hold a role's start in the
-// fake runtime (holdStarts) where a pod coming up would hold it. A start the gate holds parks on
+// fake runtime (holdStarts) where a pod coming up would hold it. A start the gate holds waits on
 // its machine and its decision ends (askPod), so a test posts it as it posts any event and reads
 // the wait off what is observable — the gate's queue, the claim launching, the runtime asked
 // nothing — and the start the grant runs on a goroutine of its own is waited for
@@ -283,7 +283,7 @@ func (h *harness) podHolder() claim.Token {
 
 // wantWaitsForPod is r's start waiting at the gate, held by what is observable: the start is in
 // the gate's queue, the runtime has not been asked for r's process beyond the before starts it
-// was asked for earlier, and r's claim is launching, as the try wrote it before it parked.
+// was asked for earlier, and r's claim is launching, as the try wrote it before it waited.
 func (h *harness) wantWaitsForPod(r *podRole, before int) {
 	h.t.Helper()
 	testwait.Eventually(h.t, string(r.token)+"'s start to wait for its pod or to start", func() bool {
@@ -297,14 +297,14 @@ func (h *harness) wantWaitsForPod(r *podRole, before int) {
 	}
 }
 
-// parks is ev, a start of r that waits at the gate, handed to r's machine (postAsync), r's start
+// postWaitingForPod is ev, a start of r that waits at the gate, handed to r's machine (postAsync), r's start
 // waiting (wantWaitsForPod) with before starts of r asked of the runtime earlier, and the decision
-// that parked it ended (parkedPromptly).
-func (h *harness) parks(r *podRole, ev Event, before int) {
+// that made it wait ended (waitingForPodPromptly).
+func (h *harness) postWaitingForPod(r *podRole, ev Event, before int) {
 	h.t.Helper()
 	done := h.postAsync(r.m, ev)
 	h.wantWaitsForPod(r, before)
-	parkedPromptly(h.t, fmt.Sprintf("%T of %s, whose start waits at the gate", ev, r.token), done)
+	waitingForPodPromptly(h.t, fmt.Sprintf("%T of %s, whose start waits at the gate", ev, r.token), done)
 }
 
 // wantGrantedStart is r's start the gate granted after its wait: the gate tells r's machine on a
@@ -528,11 +528,11 @@ func receive(t *testing.T, what string, done <-chan error, failed bool) {
 	}
 }
 
-// parkedPromptly is the decision on done of a launch the gate parked, which must have ended in no
-// error within promptBound (promptly): a start the gate cannot grant parks on its machine and its
+// waitingForPodPromptly is the decision on done of a launch the gate made wait, which must have ended in no
+// error within promptBound (promptly): a start the gate cannot grant waits on its machine and its
 // decision ends (askPod), so a decision that waited at the gate for another role's load again
 // fails here, at the bound, rather than at the test binary's timeout.
-func parkedPromptly(t *testing.T, what string, done <-chan error) {
+func waitingForPodPromptly(t *testing.T, what string, done <-chan error) {
 	t.Helper()
 	if err := promptly(t, what, done); err != nil {
 		t.Fatalf("%s answered %v, want no failure", what, err)
@@ -546,9 +546,9 @@ func parkedPromptly(t *testing.T, what string, done <-chan error) {
 // the claim and the pod, and what a start that waited waited for, how long and what ended it;
 // every load's end writes its own, one per load. No stop of a claim waiting at the gate waits for
 // the load it waits for, nor does a read of that claim; every cut of a start names its end; and a
-// launch that parks stops the process it let go first, so a cut of the park leaves nothing
-// running: the subtests that stop a waiting claim, cut a start or stop the let-go process at the
-// park run the bodies podstart_stop_test.go holds.
+// launch that waits at the gate stops the process it let go first, so a cut of that wait leaves
+// nothing running: the subtests that stop a waiting claim, cut a start or stop the let-go process
+// at the gate run the bodies podstart_stop_test.go holds.
 func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	t.Run("the second start waits for the first role's registration", func(t *testing.T) {
 		h := podHarness(t, "")
@@ -556,7 +556,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 		h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 		h.wantStarts(first.token, 1)
-		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+		h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		h.clock.Advance(19 * time.Second)
 		h.wantWaitsForPod(second, 0)
 
@@ -573,7 +573,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 		h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
-		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+		h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		h.clock.Advance(8 * time.Second)
 		h.registered(first)
 		h.wantWaitsForPod(second, 0)
@@ -597,7 +597,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 		firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 		door.at(t, first)
-		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+		h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		// The pod comes up 118 s after the second start was asked, and the first role's process
 		// starts in it.
 		h.clock.Advance(118 * time.Second)
@@ -627,8 +627,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		third := h.podRole(claim.RoleTester, StateQueued)
 
 		h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
-		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
-		h.parks(third, RequestSpawn{Claim: third.token}, 0)
+		h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+		h.postWaitingForPod(third, RequestSpawn{Claim: third.token}, 0)
 		h.clock.Advance(10 * time.Second)
 
 		h.loadEnds(first)
@@ -652,7 +652,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 		firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 		door.at(t, first)
-		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+		h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 		h.clock.Advance(118 * time.Second)
 		door.release <- nil
 		receive(t, "the first role's start", firstStarted, false)
@@ -680,7 +680,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 		h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
-		h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+		h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 
 		// The first role's agent registers 100 s after its process started, inside the bound: its
 		// load ends 30 s later, at +130 s, and the bound no longer runs.
@@ -707,7 +707,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 			firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 			door.at(t, first)
-			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+			h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(4 * time.Second)
 			door.release <- errBoom
 			door.at(t, second)
@@ -717,7 +717,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.wantLoadEndLines(first.token, 0)
 
 			// The first role's launch tries again, and that try waits for the second role's load.
-			parkedPromptly(t, "the first role's launch, parked for its second try", firstStarted)
+			waitingForPodPromptly(t, "the first role's launch, waiting for its second try", firstStarted)
 			h.wantWaitsForPod(first, 1)
 			h.clock.Advance(7 * time.Second)
 			h.loadEnds(second)
@@ -733,7 +733,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
-			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+			h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(5 * time.Second)
 			relaunched := h.died(first)
 			h.wantGrantedStart(second, 1)
@@ -741,7 +741,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 5 * time.Second, endedBy: "process end"})
 
 			// The dead process's relaunch waits for the second role's load.
-			parkedPromptly(t, "the first role's relaunch, parked", relaunched)
+			waitingForPodPromptly(t, "the first role's relaunch, waiting", relaunched)
 			h.wantWaitsForPod(first, 1)
 			h.loadEnds(second)
 			h.wantGrantedStart(first, 2)
@@ -753,7 +753,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
-			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+			h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(4 * time.Second)
 			h.registered(first)
 			h.clock.Advance(10 * time.Second)
@@ -767,7 +767,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 14 * time.Second, endedBy: "process end"})
 
 			// The settle the death cut short ends nothing more: the load wrote one line.
-			parkedPromptly(t, "the first role's relaunch, parked", relaunched)
+			waitingForPodPromptly(t, "the first role's relaunch, waiting", relaunched)
 			h.clock.Advance(podLoadSettle)
 			h.wantLoadEndLines(first.token, 1)
 			h.wantWaitsForPod(first, 1)
@@ -782,7 +782,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 			firstStarted := h.postAsync(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 			door.at(t, first)
-			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+			h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(6 * time.Second)
 			suspended := h.postAsync(first.m, RequestSuspend{Claim: first.token, By: SuspendedByOperator, Reason: "a person stops the role while its pod comes up"})
 			door.at(t, second)
@@ -801,7 +801,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 
 			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
-			h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
+			h.postWaitingForPod(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 			h.clock.Advance(3 * time.Second)
 			h.mustPostTo(first.m, RequestStop{Claim: first.token, By: SuspendedByOperator})
 			h.wantGrantedStart(second, 1)
@@ -815,7 +815,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		for _, tc := range []struct {
 			name string
 			// paced is whether the daemon sets a wake pace; the first role's spawn takes its one
-			// token, so a second start the pacing does not let through would park rather than wait.
+			// token, so a second start the pacing does not let through would be delayed rather than wait.
 			paced  bool
 			state  ClaimState
 			start  func(claim.Token) Event
@@ -837,7 +837,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 				h.mustPostTo(first.m, RequestSpawn{Claim: first.token})
 				h.wantStarts(first.token, 1)
-				h.parks(second, tc.start(second.token), 0)
+				h.postWaitingForPod(second, tc.start(second.token), 0)
 				h.clock.Advance(2 * time.Second)
 
 				h.loadEnds(first)
@@ -860,10 +860,10 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	t.Run("a grant that reaches a machine the daemon's stop ended starts nothing, and the pod goes to the next start as a failed launch",
 		aGrantAfterTheDaemonsStop)
 	t.Run("a start granted and cut before it ran names what cut it to the next start", aGrantedStartCutBeforeItRan)
-	t.Run("a relaunch that waits stops the process it let go at the park, so a cut of the park leaves nothing running",
-		aRelaunchThatWaitsStopsAtThePark)
-	t.Run("a resume whose launch parks over a stop the runtime refused answers no failure and waits at the gate",
-		aResumeParkedOverARefusedStop)
+	t.Run("a relaunch that waits stops the process it let go before it waits at the gate, so a cut of that wait leaves nothing running",
+		aRelaunchThatWaitsStopsAtTheGate)
+	t.Run("a resume whose launch waits at the gate over a stop the runtime refused answers no failure",
+		aResumeWaitingOverARefusedStop)
 	t.Run("a start granted while the project is paused starts nothing, and the pause stops its claim", aGrantWhileTheProjectIsPaused)
 	t.Run("a start granted during a pause that ends before the pause's stop goes through the gate again as a fresh try",
 		aGrantWhoseLaunchThePauseLetsOut)

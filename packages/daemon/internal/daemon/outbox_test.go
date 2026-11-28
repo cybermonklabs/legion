@@ -62,9 +62,9 @@ func TestOutboxDropsSupersededStatusWrite(t *testing.T) {
 }
 
 // A person's handover row (record.PersonHandoverStatusRow) answers a person's legion label on a
-// triage root, or a person's approval of a parked labelled root's spec. Its delivery writes todo
+// triage root, or a person's approval of the spec of a labelled root in backlog or icebox. Its delivery writes todo
 // only while the issue still shows the status the row answered and still carries the label: a
-// person who parked the root since is let stand silently, as any superseded status write is, and
+// person who moved the root to backlog since is let stand silently, as any superseded status write is, and
 // one who took the label off withdrew the handover, which is dropped with one log line (R4 of
 // dispatch://LEGION-755 and the plan's D2). A hand-over row of the workflow
 // (record.HandOverStatusRow) is not held to the label:
@@ -78,7 +78,7 @@ func TestOutboxWritesAPersonsHandoverOnlyWhileItsLabelAndStatusStand(t *testing.
 		statuses []string
 		logged   int
 	}{
-		{name: "parked since", shown: dispatch.Issue{Key: "LEGION-208", Status: "backlog", Labels: []string{"legion"}, HandedOver: true}},
+		{name: "moved to backlog since", shown: dispatch.Issue{Key: "LEGION-208", Status: "backlog", Labels: []string{"legion"}, HandedOver: true}},
 		{name: "label gone", shown: dispatch.Issue{Key: "LEGION-208", Status: "triage"}, logged: 1},
 		{name: "label and status stand", shown: dispatch.Issue{Key: "LEGION-208", Status: "triage", Labels: []string{"legion"}, HandedOver: true}, statuses: []string{"todo"}},
 	} {

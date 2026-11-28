@@ -491,8 +491,8 @@ test("a long-named picture in a comment draws, its link to a long-named document
       await expect(paragraph.locator("[data-dispatch-href],[data-dispatch-ref]")).toHaveCount(0);
       // `RefPreview` keeps an open card under a pointer that has not moved
       // (`keptUnderAStillPointer`): it arms no close while the page moves beneath it, so only
-      // this park arms one, and the clock run after it is what spends the close delay. A clock
-      // run before the park spends nothing.
+      // this move of the pointer arms one, and the clock run after it is what spends the close
+      // delay. A clock run before the move spends nothing.
       await page.mouse.move(0, 0);
       await page.clock.runFor(2 * REF_PREVIEW_CLOSE_DELAY_MS);
       await paragraph.hover();

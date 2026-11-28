@@ -515,7 +515,7 @@ test.skipIf(skip)(
       name: "stall-steer",
       stateDir: state,
       // The delivery lands as the wedging cell begins, which is where a message from this
-      // worker's architect lands while its turn is parked in a call (steerExtension).
+      // worker's architect lands while its turn waits in a call (steerExtension).
       steer: { text: STEER_TEXT, when: "legion-watch-steer-pid" },
       reply: warmedWedge(pidFile, { goOn: true }, "Noted."),
     });
@@ -622,7 +622,7 @@ test.skipIf(skip)(
     expect(await runs(shell)).toBe(true);
 
     // So a backgrounded call is a closed call in this watch's book, and the process it started
-    // lives on outside it. That is the right record and not a gap: the agent is no longer parked
+    // lives on outside it. That is the right record and not a gap: the agent no longer waits
     // in that call — the host freed its turn and handed it the job — and the ladder's steps would
     // end the processes of a call nobody is waiting on and abort a turn that is working. What the
     // agent does next is a call of its own with a clock of its own, and a session that then goes

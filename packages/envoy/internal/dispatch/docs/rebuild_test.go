@@ -25,7 +25,7 @@ const rebuildUpdateItems = 100_000
 
 // oversizedHistory is eleven updates one client made in turn, each prepending rebuildUpdateItems
 // empty paragraphs. Each is accepted on its own: AppendUpdate applies it to an empty document,
-// where the first integrates and each later one parks whole behind the clock gap the earlier ones
+// where the first integrates and each later one stays pending whole behind the clock gap the earlier ones
 // leave, within ygo's pending cap of 100,000 items. Merged, they are one client's 1.1 million
 // items, which ygo refuses from that client's header before it integrates any (sjawhar/ygo
 // v1.55.1-sami.2, crdt/update.go:831-842 decodeStructs), so the history cannot load and no load

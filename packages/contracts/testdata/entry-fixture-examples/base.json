@@ -18,7 +18,7 @@
     }
   ],
   "requests": [
-    { "contract": 100, "route": "POST /legion/v1/children/park", "fieldPaths": ["issue"] },
+    { "contract": 100, "route": "POST /legion/v1/issues/retired", "fieldPaths": ["issue"] },
     {
       "contract": 100,
       "route": "POST /legion/v1/claims/exit",

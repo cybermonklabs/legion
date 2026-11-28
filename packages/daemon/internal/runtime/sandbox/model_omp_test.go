@@ -301,8 +301,8 @@ func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 		}
 		mu.Unlock()
 		if first {
-			// Over the settings' maxDelayMs: Oh My Pi surfaces the failure rather than parking
-			// the turn, and the role's chain is walked.
+			// Over the settings' maxDelayMs: Oh My Pi surfaces the failure rather than waiting
+			// out the retry-after in the turn, and the role's chain is walked.
 			w.Header().Set("retry-after", "120")
 			w.Header().Set("content-type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)

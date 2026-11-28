@@ -49,9 +49,10 @@ var childWorkingPhases = []string{
 	legion.PhaseAwaitingChildren,
 }
 
-// parkedStatuses are the statuses whose time the work time subtracts: the daemon writes `backlog`
-// when it parks a root, and the gate treats both as parked (daemon workflow/gate.go).
-var parkedStatuses = []string{"backlog", "icebox"}
+// backlogStatuses are the statuses whose time the work time subtracts: the daemon writes
+// `backlog` when it moves a root to the backlog, and the gate treats both as out of the workflow
+// (daemon workflow/gate.go).
+var backlogStatuses = []string{"backlog", "icebox"}
 
 // The statuses the workflow writes with the phases a fallback timeline reads: the implementer's
 // `in_progress`, the tester's `testing`, `needs_review` for both the reviewer's and the
@@ -200,9 +201,10 @@ type PhaseSpan struct {
 // (outOfWorkflowByStatus), and those stretches are laid over its steps as `done`, the phase the
 // daemon reports for such an hour, so the two timelines name it alike and the work time and the
 // bars read it off either one the same way (outOfWorkflowSpans). The steps run on beneath a
-// stretch, as they run on beneath a park: after it the phase is the reopen's own where its status
-// marks one ("the reopen's status sets the phase from then", the spec's "The close"), and where it
-// marks none, a `todo` or an admission's `in_progress`, the phase the issue had before the stretch.
+// stretch, as they run on beneath a time in backlog or icebox: after it the phase is the reopen's
+// own where its status marks one ("the reopen's status sets the phase from then", the spec's "The
+// close"), and where it marks none, a `todo` or an admission's `in_progress`, the phase the issue
+// had before the stretch.
 //
 // Where the observations take over is the answer's second half because the rules that read a
 // phase before observations — metric 3's review rounds, its send-backs and the first review its
@@ -311,7 +313,8 @@ func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 // changed, so it names no phase and ends none. The phase before it runs on through it, to the
 // next mark that carries a phase or to the issue's end where none follows, and its hours stay on
 // the bar of the phase the issue was last seen in, so the bars of the issue still add up to its
-// work time (the spec's "Parked and pre-work hours in phase time"). Both readers of an issue's
+// work time (the spec's rule on hours out of the work time in phase time,
+// dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645). Both readers of an issue's
 // phase stretches take them from here, the timeline (sampledPhases) and the root's recorded wait
 // on a person (waitingOnPersonSpans), so the two cannot read one mark two ways. slotSpans reads
 // the drops through markedPhase too.
@@ -576,19 +579,20 @@ func phaseSteps(marks []phaseMark) []phaseMark {
 //
 // The statuses that name no phase of their own — `todo`, `triage`, `backlog`, `icebox` and
 // `done` — leave the phase as it was. The work time leaves out the hours of all of them but
-// `todo`, whatever phase the issue was in: `backlog` and `icebox` are parked (parkedSpans), a
-// `triage`, or a `done` a reopen follows, is out of the workflow, which Phases lays over these
-// steps as `done` (outOfWorkflowByStatus), and the last `done` is the close, where the issue's
-// life ends. The phase beneath a park or a stretch out of the workflow runs on after it, unless
-// the status that ends it names one. The hours after a `todo` stay on the phase the issue had,
-// since before observations the queue is none (queuedSpans).
+// `todo`, whatever phase the issue was in: `backlog` and `icebox` are its time in backlog or
+// icebox (backlogSpans), a `triage`, or a `done` a reopen follows, is out of the workflow, which
+// Phases lays over these steps as `done` (outOfWorkflowByStatus), and the last `done` is the
+// close, where the issue's life ends. The phase beneath a time in backlog or icebox or a stretch
+// out of the workflow runs on after it, unless the status that ends it names one. The hours after
+// a `todo` stay on the phase the issue had, since before observations the queue is none
+// (queuedSpans).
 //
-// Neither does the `in_progress` of admission: "A status write such as the `in_progress` of
-// admission starts no phase" and "Design runs once, to the first planner event: an issue parked
-// and admitted again goes back into the phase it left, not into design" (the spec's "What starts
-// planning"). The design mark is `fallbackMarks`' own, from the issue's first slot or its
-// architect's first event, and planning starts at the first planner event, so an `in_progress`
-// here names the send-back alone.
+// Neither does the `in_progress` of admission: a status write such as that one starts no phase,
+// and design runs once, to the first planner event, so an issue moved to backlog or icebox and
+// admitted again goes back into the phase it left, not into design (the spec's "What starts
+// planning", dispatch://INFRA-1077/spec#b-a4f461b2-1d64-4d96-a359-d8b8d96afd97). The design mark
+// is `fallbackMarks`' own, from the issue's first slot or its architect's first event, and
+// planning starts at the first planner event, so an `in_progress` here names the send-back alone.
 func statusPhase(previous, status string, line []string) (phase string, sendBack, named bool) {
 	switch status {
 	case statusTesting:
@@ -604,8 +608,8 @@ func statusPhase(previous, status string, line []string) (phase string, sendBack
 		return legion.PhaseRetro, false, true
 	case statusImplementing:
 		// The workflow writes `in_progress` twice over: once where it admits an issue out of the
-		// queue or out of parked, and once for every send-back to implementing, whatever phase
-		// the issue comes back from (workflow/table.go's TriggerTesterFailed,
+		// queue or out of backlog or icebox, and once for every send-back to implementing,
+		// whatever phase the issue comes back from (workflow/table.go's TriggerTesterFailed,
 		// TriggerReviewRejected and TriggerBackward all write it, and before
 		// cybermonklabs/legion#4464 a conflict's move did too). Only the send-back, a move out of
 		// `testing`, `needs_review` or `retro`, names a phase.
@@ -655,11 +659,11 @@ func statusMoved(marks []Mark, from []string, to string) bool {
 	return false
 }
 
-// parkedSpans are the stretches the issue sat in a parked status (backlog or icebox), from the
-// statuses its own events snapshotted.
-func (p *Population) parkedSpans(issue *Issue) []Span {
+// backlogSpans are the stretches the issue sat in `backlog` or `icebox`, from the statuses its
+// own events snapshotted.
+func (p *Population) backlogSpans(issue *Issue) []Span {
 	return markSpans(issue.StatusMarks, p.issueEnd(issue), func(value string) bool {
-		return slices.Contains(parkedStatuses, value)
+		return slices.Contains(backlogStatuses, value)
 	})
 }
 
@@ -687,8 +691,9 @@ func (p *Population) outOfWorkflowByStatus(issue *Issue) []Span {
 }
 
 // outOfWorkflowSpans is the timeline's hours out of the workflow, and there is one definition of
-// them: "An hour in which the issue is out of the workflow, before its close, is outside the work
-// time and on no bar, as a park is" (the spec's "Out of the workflow before the close"). They are
+// them: an hour in which the issue is out of the workflow, before its close, is outside the work
+// time and on no bar, as an hour in backlog or icebox is (the spec's "Out of the workflow before
+// the close", dispatch://INFRA-1077/spec#b-05b51452-5c3e-449c-b2ae-52dd8c1d138f). They are
 // the timeline's own `done` spans. With observations, that is "every stretch whose observed phase
 // is `done` before the close: a merge before Dispatch's status write, a reopened issue's done
 // stretch, and a child that left the workflow, such as one moved to `triage`", all of which the
@@ -712,7 +717,8 @@ func outOfWorkflowSpans(timeline []PhaseSpan) []Span {
 // carries it again holding none.
 //
 // Before observations it is none: the timeline the event log draws holds no queued phase, and
-// the parked subtraction already covers the daemon's own parking.
+// the subtraction of the time in backlog or icebox already covers the daemon's own moves to the
+// backlog.
 func queuedSpans(timeline []PhaseSpan) []Span {
 	return phaseSpansOf(timeline, phaseQueued)
 }

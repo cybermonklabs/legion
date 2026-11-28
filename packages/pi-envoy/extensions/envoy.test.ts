@@ -7975,9 +7975,9 @@ console.log(JSON.stringify(args));
           registered = undefined;
           seen();
         }
-        const parked = registrationHold;
-        if (parked !== undefined && parked.session === body?.session_id) {
-          const { reached, release } = parked;
+        const held = registrationHold;
+        if (held !== undefined && held.session === body?.session_id) {
+          const { reached, release } = held;
           registrationHold = undefined;
           reached();
           await release;
@@ -10028,7 +10028,7 @@ console.log(JSON.stringify(args));
       // moved: from here the hold is a newer holder, and the refusal it carries would stand.
       lastSeen.set("ses_nr", (lastSeen.get("ses_nr") ?? 1) + 1);
 
-      // The next move's claim is refused too, and the read of the hold inside it parks at the
+      // The next move's claim is refused too, and the read of the hold inside it waits at the
       // listener: the move is abandoned at its deadline with that read still in flight.
       const reading = gateRoleRead(role);
       tick();
@@ -13268,11 +13268,11 @@ console.log(JSON.stringify(args));
         await fixture.handlers.get("session_start")?.({}, context);
         expect(registered).toEqual(["ses_stall_moved"]);
 
-        // A tick's pass parks at its registration: the `healing` latch stays set, so the backstop
+        // A tick's pass waits at its registration: the `healing` latch stays set, so the backstop
         // is what registers from here.
         wedgePass = true;
         intervals[0]?.();
-        await until("the registration the pass parks in", () => registered.length === 2);
+        await until("the registration the pass is held in", () => registered.length === 2);
 
         // The host opens a new session; its own pass is queued behind the wedged one, so nothing
         // in it registers the session the pane is now running.
@@ -13363,7 +13363,7 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("session_start")?.({}, context);
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
 
-      // This tick's pass parks in its registration and is abandoned at its deadline, which the
+      // This tick's pass waits in its registration and is abandoned at its deadline, which the
       // heartbeat says as a stall; that failure's own chain then releases the healing latch.
       wedgeRegistration = true;
       intervals[0]?.();
@@ -13443,7 +13443,7 @@ console.log(JSON.stringify(args));
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
       try {
-        // The first session's pass parks here, with its connection half made.
+        // The first session's pass waits here, with its connection half made.
         natsState.heldConnect = connected.promise;
         await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext("ses_fenced_a"));
@@ -13559,7 +13559,7 @@ console.log(JSON.stringify(args));
       const fixture = createPi();
       const connected = Promise.withResolvers<void>();
       try {
-        // The first session's pass parks in its dial and is abandoned at its deadline.
+        // The first session's pass waits in its dial and is abandoned at its deadline.
         natsState.heldConnect = connected.promise;
         await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, sessionContext("ses_dial_a"));

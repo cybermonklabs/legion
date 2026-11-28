@@ -1197,11 +1197,11 @@ export function ConversationTab({
     return reply.id === target.id;
   };
   // The thread composer shows in the thread its reply answers, unless the reader's Cancel reply
-  // put it away there (`parked`).
+  // put it away there (`putAway`).
   const phoneReplyTargetsThread =
     phoneThread !== undefined &&
     phone.replyTo?.id === phoneThread.root.id &&
-    phone.parked === undefined;
+    phone.putAway === undefined;
   // A thread reply put away over the docked composer's own draft is out of sight, so the docked
   // composer says it is kept, whose comment it answers, and how to go on with it: that comment's
   // Reply. Once the list no longer holds the comment, or holds it deleted - which takes no
@@ -1209,26 +1209,26 @@ export function ConversationTab({
   // reader to read or copy, with Discard my draft, and says which. It offers no Use it here: the
   // docked field holds a draft of its own, which is why the reply was put away rather than
   // carried there (`usePhoneThread`'s `cancelReply`), and Use it here would write over it.
-  let parkedNotice: ReactNode;
-  if (phone.parked !== undefined && phone.replyTo !== null) {
-    const parkedFor = listed.get(phone.replyTo.id);
-    parkedNotice =
-      parkedFor === "standing" ? (
+  let putAwayNotice: ReactNode;
+  if (phone.putAway !== undefined && phone.replyTo !== null) {
+    const putAwayFor = listed.get(phone.replyTo.id);
+    putAwayNotice =
+      putAwayFor === "standing" ? (
         <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
           <KeptReply actor={phone.replyTo.actor} />
         </p>
       ) : (
         <DraftOffer
-          body={phone.parked.body}
-          drop={{ label: "Discard my draft", press: phone.dropParked }}
+          body={phone.putAway.body}
+          drop={{ label: "Discard my draft", press: phone.dropPutAway }}
           lead={
             <GoneReply
               actor={phone.replyTo.actor}
-              deleted={parkedFor === "deleted"}
+              deleted={putAwayFor === "deleted"}
               parentKind={phone.replyTo.parentKind}
             />
           }
-          replacement={phone.parked.replacement}
+          replacement={phone.putAway.replacement}
         />
       );
   }
@@ -1416,7 +1416,7 @@ export function ConversationTab({
           intake={phone.dockedIntake}
           listed={listed}
           mutationKey={sendKey}
-          notice={parkedNotice}
+          notice={putAwayNotice}
           onCancelReply={() => setReplyTo(null)}
           onClose={() => setReplyTo(null)}
           onSent={() => {

@@ -116,18 +116,18 @@ type SignedInUser = { event_head: string; kind: "user"; login: string };
 
 /** The app at `/` for alice, holding a write of hers for another tab's sign-out (`tab-2`), its
  *  whoami answered alice until `signedIn` turns false, and then Dispatch's `401 NO_IDENTITY` -
- *  except a read `parked` is set for, which waits for the test to answer it. */
+ *  except a read `waiting` is set for, which waits for the test to answer it. */
 async function holdingForAnotherTab() {
   const state: {
-    parked?: { promise: Promise<SignedInUser>; resolve: (user: SignedInUser) => void };
+    waiting?: { promise: Promise<SignedInUser>; resolve: (user: SignedInUser) => void };
     signedIn: boolean;
   } = { signedIn: true };
   const app = renderApp({
     whoAmI: async () => {
-      const parked = state.parked;
-      if (parked !== undefined) {
-        state.parked = undefined;
-        return parked.promise;
+      const waiting = state.waiting;
+      if (waiting !== undefined) {
+        state.waiting = undefined;
+        return waiting.promise;
       }
       if (!state.signedIn) throw new ApiError(401, { code: "NO_IDENTITY", error: "unauthorized" });
       return { event_head: "0", kind: "user", login: "alice" };
@@ -188,9 +188,9 @@ test("a 401 while another tab's sign-out holds the writes discards them, after t
   const { app, attempts, signer, state } = await holdingForAnotherTab();
   try {
     const goneRead = Promise.withResolvers<SignedInUser>();
-    state.parked = goneRead;
+    state.waiting = goneRead;
     signer.close();
-    await waitFor(() => expect(state.parked).toBeUndefined());
+    await waitFor(() => expect(state.waiting).toBeUndefined());
     state.signedIn = false;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
     await act(async () => goneRead.resolve({ event_head: "0", kind: "user", login: "alice" }));

@@ -721,7 +721,7 @@ func leakedCallGuard(what string) string {
 // deregisters itself, so leakedCallGuard can refuse a later call that would otherwise share its
 // ongoing CPU - rather than stopped; the point of the deadline is only to stop waiting for it and
 // report that promptly, not to free its resources. A deregistration goroutine is spawned only on
-// a deadline miss, and only then: on a call that truly never returns, it stays parked on result's
+// a deadline miss, and only then: on a call that truly never returns, it stays blocked on result's
 // receive, at no CPU cost, for as long as the test binary runs. cleared, non-nil only on a
 // deadline miss, closes the instant that goroutine deregisters op's own entry - the signal
 // waitForLeakToClear waits on, rather than polling. err is op's own, a timed window's verdict

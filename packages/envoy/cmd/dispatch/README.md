@@ -1172,10 +1172,10 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 - `preloads`: the cold sockets' loaded states waiting for their room's load.
 
 - `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
-  It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received;
-  parked rows already stored are part of the history a load decodes, so they count.
+  It leaves out the updates a room leaves pending after it loaded, while they wait for an edit it has not received;
+  pending rows already stored are part of the history a load decodes, so they count.
   ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`):
-  a count of parked items and, separately, of parked delete ranges, not bytes.
+  a count of pending items and, separately, of pending delete ranges, not bytes.
 
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
@@ -2922,7 +2922,7 @@ Its census answers `0`.
 Migration `20261125131100_events_backlog_moves` creates `events_backlog_moves` on `events (issue_key, seq)`, partial on the conditions `backlogMoveLateral` (`internal/dispatch/api/priority_queries.go`) writes on the event: `type = 'issue.updated'`, `payload->'changed' @> '"status"'::jsonb` and `payload->>'status' in ('icebox', 'backlog')`.
 That lateral reads when an issue in `backlog` or `icebox` was moved there, for the second fault of `GET /api/v1/priorities` and for the listing's `?moved=true`.
 Postgres uses a partial index only where the query's conditions imply its predicate, so the predicate is written as the lateral writes its conditions and the lateral's text does not change;
-a change to `model.IssueStatusesParked` needs a new index whose predicate holds the new list.
+a change to `model.IssueStatusesBacklogOrIcebox` needs a new index whose predicate holds the new list.
 Through the index the lateral reads the issue's moves backwards from the newest and stops at the first, where before it read every event of each issue in backlog or icebox and sorted them.
 It is built `concurrently` too, after `20261125125703`, and a start applies it before it serves, so its build adds to the time the server is down at the deploy that carries it.
 Its census answers `0`.
@@ -4498,9 +4498,9 @@ The reads of the `block_refs` rows themselves, a document's links out (`refs.Edg
 
 `envoy-dispatch stored-order [--artifact <uuid>]... [--since <RFC 3339 time>]` reads, and never writes, whether each document's stored history replays:
 folding its `doc_updates` rows in version order must give every row's `content_changed` (measured against the render the rows before it fold to, true when either side does not render) and every version's markdown at its `doc_update_version`, and no row may be stored ahead of one it depends on.
-A row after which the fold parks structs is that only when no later row carries what it parked again:
+A row after which the fold holds structs pending is that only when no later row carries what it left pending again:
 the room stores a peer's edit that arrives ahead of the edit it builds on at once, so a restart keeps it, and the commit that integrates it once that edit arrives stores it again, so the check folds the history a second time without such rows and reports them as `pending` only when that fold differs.
-A row still parked when the history ends is counted as `awaiting`, not a mismatch:
+A row still pending when the history ends is counted as `awaiting`, not a mismatch:
 the store alone cannot tell an edit whose predecessor has not arrived from a dependency never stored, and a dependency the room held and the store lost also leaves every later version rendering text the fold lacks.
 It reads `DATABASE_URL` as the other subcommands do and runs no migration; with no `--artifact` it checks every document.
 Each document is read in one repeatable-read transaction, which stays open while the check renders the document at every checked update:
@@ -4522,7 +4522,7 @@ The check holds only for one renderer: run it from the same commit as the Dispat
 A version an earlier build rendered (a change to `pmdoc`'s Markdown output) differs from this build's render of the same state.
 
 Output, every line starting `stored-order: `:
-one line per document (`<uuid> base=… updates_checked=… updates_skipped=… versions_checked=… versions_skipped=… versions_compacted=… mismatches=…`, with `compacted="<reason>"` for a document whose versions record updates below its base, `awaiting="<reason>"` for one holding rows still parked, and `refused="<reason>"` for a refused document), one line per mismatch (`class update=… stored=… expected=…`, `pending update=… parked_items=… parked_delete_ranges=…`, or `version number=… doc_update_version=… stored_md5=… stored_length=… fold_md5=… fold_length=…`), and last a summary (`documents=… clean=… mismatched=… refused=… failed=… unchecked=…`).
+one line per document (`<uuid> base=… updates_checked=… updates_skipped=… versions_checked=… versions_skipped=… versions_compacted=… mismatches=…`, with `compacted="<reason>"` for a document whose versions record updates below its base, `awaiting="<reason>"` for one holding rows still pending, and `refused="<reason>"` for a refused document), one line per mismatch (`class update=… stored=… expected=…`, `pending update=… pending_items=… pending_delete_ranges=…`, or `version number=… doc_update_version=… stored_md5=… stored_length=… fold_md5=… fold_length=…`), and last a summary (`documents=… clean=… mismatched=… refused=… failed=… unchecked=…`).
 It prints no document text.
 A document whose check compared no update and no version, one whose versions inside the window all sit below the base included, is `unchecked`, never clean.
 Exit 0 when every document checked is clean, 1 on any mismatch, refusal, read failure, missing `DATABASE_URL`, unchecked document `--artifact` names, or a run that checked no document at all (an empty database included), 2 on a usage error.
@@ -5701,19 +5701,19 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/artifacts/{id}/_test/live-write-pauses/{point}` (PUT; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
-  Park the document's next live write on this process at `{point}`: `after-first-append` (it holds the document's lock) or `after-commit` (before its publish).
+  Pause the document's next live write on this process at `{point}`: `after-first-append` (it holds the document's lock) or `after-commit` (before its publish).
   `204` once armed, `409 PAUSE_ARMED` when a pause is armed already, `400 PAUSE_POINT_INPUT` for another point.
   Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/live-write-pauses/{point}` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
-  Wait up to `?wait` (a Go duration, 10 s when absent) for a write to park at the armed pause: `{"parked": true}`, or `{"parked": false}` when none did.
+  Wait up to `?wait` (a Go duration, 10 s when absent) for a write to pause at the armed pause: `{"paused": true}`, or `{"paused": false}` when none did.
   `404 PAUSE_NOT_ARMED` when no pause is armed.
   Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/live-write-pauses/{point}` (DELETE; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
-  Disarm the pause and let the write parked there continue: `{"parked": bool}`, whether a write had parked.
+  Disarm the pause and let the write paused there continue: `{"paused": bool}`, whether a write had paused.
   `404 PAUSE_NOT_ARMED` when no pause is armed.
   Not mounted otherwise.
 

@@ -489,7 +489,7 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // by the words and is named when nothing else of the tree moves.
 //
 // The words that do not silence are each a tree's own work or a person's: a tree closed or
-// parked waits for a re-admission (tree_closed, tree_parked), a root whose label is off waits
+// with its root in backlog or icebox waits for a re-admission (tree_closed, tree_in_backlog_or_icebox), a root whose label is off waits
 // for a person to hand it over (label_off), a root a live tree has not released waits for its
 // architect (ancestry), an issue under an accepted ancestor waits while that ancestor stands
 // in retro or merging (accepted_ancestor), and an issue in accepting, retro or merging is at
@@ -511,20 +511,20 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // this table would otherwise be ignored quietly, which is the fault rather than a new place to
 // hide it.
 var silencedTree = map[record.HeldReason]bool{
-	record.HeldTreeClosed:          false,
-	record.HeldTreeParked:          false,
-	record.HeldLabelOff:            false,
-	record.HeldAncestry:            false,
-	record.HeldRootAwaitingPerson:  true,
-	record.HeldDesignGate:          true,
-	record.HeldDispatchBlocker:     true,
-	record.HeldChildrenFirst:       true,
-	record.HeldAwaitingChildren:    true,
-	record.HeldAcceptedAncestor:    false,
-	record.HeldChildrenBeforeRetro: false,
-	record.HeldTaskStopped:         false,
-	record.HeldAtWork:              false,
-	record.HeldUnclassified:        false,
+	record.HeldTreeClosed:            false,
+	record.HeldTreeInBacklogOrIcebox: false,
+	record.HeldLabelOff:              false,
+	record.HeldAncestry:              false,
+	record.HeldRootAwaitingPerson:    true,
+	record.HeldDesignGate:            true,
+	record.HeldDispatchBlocker:       true,
+	record.HeldChildrenFirst:         true,
+	record.HeldAwaitingChildren:      true,
+	record.HeldAcceptedAncestor:      false,
+	record.HeldChildrenBeforeRetro:   false,
+	record.HeldTaskStopped:           false,
+	record.HeldAtWork:                false,
+	record.HeldUnclassified:          false,
 }
 
 // silences says whether an issue the line left behind for word is waiting by design, from the
@@ -906,6 +906,6 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		}
 	}
 	reason.WriteString("\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-		" You can park the tree.")
+		" You can move the tree's root to backlog.")
 	return reason.String()
 }

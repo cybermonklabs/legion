@@ -33,8 +33,8 @@ import (
 )
 
 // LEGION-755's proof that the daemon itself queues a person's handover: a person's legion label on
-// an unrecorded root in triage, and a person's approval of a parked labelled root's primary
-// document, each become one todo write of the daemon's (a dispatch_status outbox row marked
+// an unrecorded root in triage, and a person's approval of the primary document of a labelled root in backlog or icebox
+// each become one todo write of the daemon's (a dispatch_status outbox row marked
 // personHandover), delivered under the daemon's own actor, so the root is recorded and admitted as
 // a person's todo would be and no agent's write is needed. The rig is the blockers proof's
 // (blockers_scratch_dispatch_test.go): the real Dispatch server with its events on, a real
@@ -466,7 +466,7 @@ func (r *personHandoverRig) reviews(artifactID string) []scratchReview {
 // versions the document in the route's own transaction, and answers the version it wrote. Each
 // document it edits is the spec of a labelled root. Once the daemon's role-holder publications
 // have marked the project, Dispatch refuses such a write from a session that is no architect of
-// the root (403 DOCUMENT_WRITER_NOT_ARCHITECT), and no architect holds these parked roots.
+// the root (403 DOCUMENT_WRITER_NOT_ARCHITECT), and no architect holds these roots in backlog.
 func (r *personHandoverRig) editDocument(artifactID string, ops ...map[string]string) int {
 	r.t.Helper()
 	return r.editAs(artifactID, asPerson, ops...)
@@ -1169,7 +1169,7 @@ func (r *personHandoverRig) registerGate(key, artifactID string, grant func() st
 	}
 }
 
-// cleaned waits for the cleanup of key's tree, which its park began, to be confirmed
+// cleaned waits for the cleanup of key's tree, which its move to backlog began, to be confirmed
 // (tree_lifecycles), as the blockers proof waits before it takes a tree back: a root handed back
 // while its cleanup still runs waits for it, and is promoted at the next fact.
 func (r *personHandoverRig) cleaned(key string) {
@@ -1266,82 +1266,82 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 	t.Logf("the recorded root %s, moved back to triage and retitled by the person, got no todo:\n%s", handed.Key, body)
 }
 
-// A3. A person's approval of the primary document of a parked labelled root with no parent is that
+// A3. A person's approval of the primary document of a labelled root in backlog with no parent is that
 // person's handover, and the daemon queues the root's todo itself, whether the root is unrecorded
 // or recorded from an earlier run; nothing else a person approves, and nothing a session does, is.
 // The cap is one slot, held from step 2 on by a running root whose architect registered its gate,
 // so every root the daemon queues stands in admission.waiting. Every labelled root is created by a
-// session, so its label hands nothing over (A2), and the person parks it in backlog: the parked
-// labelled unrecorded root A3 starts from.
+// session, so its label hands nothing over (A2), and the person moves it to backlog: the labelled
+// unrecorded root in backlog that A3 starts from.
 //
 //  1. a labelled root the person set todo takes the slot, its architect registers its gate, and
-//     the person parks it in backlog: a recorded root with a gate from its earlier run, whose tree's
+//     the person moves it to backlog: a recorded root with a gate from its earlier run, whose tree's
 //     cleanup the proof waits out;
 //  2. a second labelled root takes the slot for good, its architect registering its gate: the
 //     running root;
-//  3. a parked labelled root: the shared token's approval of its spec is refused 403
+//  3. a labelled root in backlog: the shared token's approval of its spec is refused 403
 //     OAUTH_SCOPE_REQUIRED, since that token holds no scope at all; a session
 //     uploads a second document, which the person approves, and the daemon applies that approval
 //     writing nothing; the person then approves the spec itself, and within 60 s Dispatch shows the
 //     root todo under the daemon's actor, admission.waiting names it, and the log holds the one
 //     queue from source approval;
-//  4. the person approves the spec of a parked root nobody handed to Legion: nothing;
-//  5. the person approves the spec of a parked labelled child, under that root: nothing;
+//  4. the person approves the spec of a root in backlog nobody handed to Legion: nothing;
+//  5. the person approves the spec of a labelled child in backlog, under that root: nothing;
 //  6. the person approves the running root's registered gate document: its gate opens as today,
 //     the state's design gate approved at that version, and no handover is queued;
-//  7. the carried case: on a parked labelled root the person writes a decision block into the spec;
-//     the person approves it, which queues the root (todo, waiting), and parks it again; the
+//  7. the carried case: on a labelled root in backlog the person writes a decision block into the spec;
+//     the person approves it, which queues the root (todo, waiting), and moves it to backlog again; the
 //     person then answers the block, and Dispatch records a carried approval of the version the
 //     answer wrote, in the person's name: the daemon applies it writing nothing;
-//  8. the recorded parked root of step 1, its spec revised by the person, is approved by the person
+//  8. the recorded root in backlog of step 1, its spec revised by the person, is approved by the person
 //     at the new version: todo within 60 s, admission.waiting names it, and no design-approved
 //     notice is queued for it, since its own gate only records the approval;
-//  9. the root of step 3, parked again by the person and its spec revised by the person, is
+//  9. the root of step 3, moved to backlog again by the person and its spec revised by the person, is
 //     approved again by the person at the new version: todo again, a second queue.
-func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+func TestAPersonsApprovalOfABacklogRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
 	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}
 
-	// 1. A recorded root with a registered gate from its earlier run, parked.
+	// 1. A recorded root with a registered gate from its earlier run, moved to backlog.
 	recorded := r.create(asSession, "Earlier run keeps its gate", labelled)
 	r.registerGate(recorded.Key, recorded.PrimaryArtifactID, r.admit(recorded.Key))
-	parkedRecorded := r.setStatus(recorded.Key, "backlog")
-	settled(t, r.d, "release the slot of "+recorded.Key+" once the person parked it", func(s api.State) bool {
+	recordedInBacklog := r.setStatus(recorded.Key, "backlog")
+	settled(t, r.d, "release the slot of "+recorded.Key+" once the person moved it to backlog", func(s api.State) bool {
 		return !slices.Contains(s.Admission.Active, recorded.Key)
 	})
 	r.cleaned(recorded.Key)
-	t.Logf("%s ran, registered its gate at version 1, and was parked by the person at Dispatch's sequence %d; its tree's cleanup is confirmed", recorded.Key, parkedRecorded.LastSeq)
+	t.Logf("%s ran, registered its gate at version 1, and was moved to backlog by the person at Dispatch's sequence %d; its tree's cleanup is confirmed", recorded.Key, recordedInBacklog.LastSeq)
 
 	// 2. The running root takes the slot for good.
 	running := r.create(asSession, "Flagship tree occupies everything", labelled)
 	r.registerGate(running.Key, running.PrimaryArtifactID, r.admit(running.Key))
 
-	// 3. A parked labelled root: the bearer's approval, a non-primary document's, then the spec's.
-	parked := r.create(asSession, "Parked proposal awaiting approval", labelled)
-	r.setStatus(parked.Key, "backlog")
-	if status, answer, _ := r.approveDocument(parked.PrimaryArtifactID, bearing(scratchAgentToken)); status != http.StatusForbidden ||
+	// 3. A labelled root in backlog: the bearer's approval, a non-primary document's, then the spec's.
+	inBacklog := r.create(asSession, "Proposal in backlog awaiting approval", labelled)
+	r.setStatus(inBacklog.Key, "backlog")
+	if status, answer, _ := r.approveDocument(inBacklog.PrimaryArtifactID, bearing(scratchAgentToken)); status != http.StatusForbidden ||
 		!strings.Contains(string(answer), `"code":"OAUTH_SCOPE_REQUIRED"`) {
-		t.Fatalf("the shared token's approval of %s's spec = %d %s; want 403 OAUTH_SCOPE_REQUIRED: it holds no scope and so acts as no person", parked.Key, status, answer)
+		t.Fatalf("the shared token's approval of %s's spec = %d %s; want 403 OAUTH_SCOPE_REQUIRED: it holds no scope and so acts as no person", inBacklog.Key, status, answer)
 	}
-	notes := r.uploadDocument(parked.Key, "notes.md", "# Notes\n\nSide notes, not the spec.\n")
+	notes := r.uploadDocument(inBacklog.Key, "notes.md", "# Notes\n\nSide notes, not the spec.\n")
 	notesReview := r.approve(notes)
-	r.applied(r.newestEvent(parked.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == notesReview.Version }))
-	r.notQueued(parked.Key, "backlog", 0)
-	t.Logf("the shared token's approval of %s's spec was refused for the scope it does not hold, and the person's approval of its second document %s queued nothing", parked.Key, notes)
-	first := r.approve(parked.PrimaryArtifactID)
-	r.queuedByThePerson(parked.Key, "approval", 1)
-	t.Logf("the person's approval of %s's spec at version %d queued the root", parked.Key, first.Version)
+	r.applied(r.newestEvent(inBacklog.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == notesReview.Version }))
+	r.notQueued(inBacklog.Key, "backlog", 0)
+	t.Logf("the shared token's approval of %s's spec was refused for the scope it does not hold, and the person's approval of its second document %s queued nothing", inBacklog.Key, notes)
+	first := r.approve(inBacklog.PrimaryArtifactID)
+	r.queuedByThePerson(inBacklog.Key, "approval", 1)
+	t.Logf("the person's approval of %s's spec at version %d queued the root", inBacklog.Key, first.Version)
 
-	// 4. A parked root nobody handed to Legion.
+	// 4. A root in backlog nobody handed to Legion.
 	unlabelled := r.create(asPerson, "Nobody delegated this chore", nil)
 	r.setStatus(unlabelled.Key, "backlog")
 	review := r.approve(unlabelled.PrimaryArtifactID)
 	r.applied(r.newestEvent(unlabelled.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == review.Version }))
 	r.notQueued(unlabelled.Key, "backlog", 0)
 
-	// 5. A parked labelled child. The person files it: Dispatch refuses a session that is no
+	// 5. A labelled child in backlog. The person files it: Dispatch refuses a session that is no
 	// architect a create of an issue Legion runs under a parent (403 DOCUMENT_WRITER_NOT_ARCHITECT),
 	// and a person's label hands over a root alone (intake's LabelledTriageRoot).
 	child := r.create(asPerson, "Subtask beneath undelegated work", map[string]any{"labels": []string{"legion"}, "parent": unlabelled.Key})
@@ -1373,8 +1373,8 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 		t.Fatalf("the person approved %s's spec at version %d; want %d, the version holding the decision block", carried.Key, approved.Version, blockVersion)
 	}
 	r.queuedByThePerson(carried.Key, "approval", 1)
-	reparked := r.setStatus(carried.Key, "backlog")
-	r.applied(r.newestEvent(carried.Key, "issue.updated", func(e scratchEvent) bool { return e.Seq == reparked.LastSeq }))
+	backlogAgain := r.setStatus(carried.Key, "backlog")
+	r.applied(r.newestEvent(carried.Key, "issue.updated", func(e scratchEvent) bool { return e.Seq == backlogAgain.LastSeq }))
 	r.answerBlock(askID, personHandoverAnswer)
 	carry := r.carriedReview(carried.PrimaryArtifactID, approved.Version)
 	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == carry.Version }))
@@ -1382,7 +1382,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	t.Logf("the person's answer to the decision block of %s carried their approval of version %d to version %d (%q), and the daemon queued nothing for it",
 		carried.Key, approved.Version, carry.Version, *carry.Reason)
 
-	// 8. The recorded parked root with a gate from its earlier run, approved at a new version.
+	// 8. The recorded root in backlog with a gate from its earlier run, approved at a new version.
 	revised := r.revise(recorded.PrimaryArtifactID, "behind a flag", "behind a flag, in two waves")
 	noticesBefore := r.designApprovedNotices(recorded.Key)
 	review = r.approve(recorded.PrimaryArtifactID)
@@ -1391,21 +1391,21 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	}
 	r.queuedByThePerson(recorded.Key, "approval", 1)
 	if after := r.designApprovedNotices(recorded.Key); after != noticesBefore {
-		t.Fatalf("the daemon queued %d design-approved notices on %s for the approval that queued its todo; want none: a recorded parked root's own gate only records the approval",
+		t.Fatalf("the daemon queued %d design-approved notices on %s for the approval that queued its todo; want none: the own gate of a recorded root in backlog only records the approval",
 			after-noticesBefore, recorded.Key)
 	}
-	t.Logf("the person's approval of the recorded parked root %s at version %d queued it again with no design-approved notice", recorded.Key, review.Version)
+	t.Logf("the person's approval of the recorded root in backlog %s at version %d queued it again with no design-approved notice", recorded.Key, review.Version)
 
-	// 9. A second approval of a later version, after the person parked the root of step 3 again.
-	again := r.setStatus(parked.Key, "backlog")
-	r.applied(r.newestEvent(parked.Key, "issue.updated", func(e scratchEvent) bool { return e.Seq == again.LastSeq }))
-	revised = r.revise(parked.PrimaryArtifactID, "behind a flag", "behind a flag, gradually")
-	review = r.approve(parked.PrimaryArtifactID)
+	// 9. A second approval of a later version, after the person moved the root of step 3 to backlog again.
+	again := r.setStatus(inBacklog.Key, "backlog")
+	r.applied(r.newestEvent(inBacklog.Key, "issue.updated", func(e scratchEvent) bool { return e.Seq == again.LastSeq }))
+	revised = r.revise(inBacklog.PrimaryArtifactID, "behind a flag", "behind a flag, gradually")
+	review = r.approve(inBacklog.PrimaryArtifactID)
 	if review.Version != revised || review.Version <= first.Version {
-		t.Fatalf("the person approved %s's spec at version %d; want %d, a version later than the first approval's %d", parked.Key, review.Version, revised, first.Version)
+		t.Fatalf("the person approved %s's spec at version %d; want %d, a version later than the first approval's %d", inBacklog.Key, review.Version, revised, first.Version)
 	}
-	r.queuedByThePerson(parked.Key, "approval", 2)
-	t.Logf("the person's second approval of %s, at version %d after a second park, queued it again", parked.Key, review.Version)
+	r.queuedByThePerson(inBacklog.Key, "approval", 2)
+	t.Logf("the person's second approval of %s, at version %d after a second move to backlog, queued it again", inBacklog.Key, review.Version)
 }
 
 // A4. The boot listing queues a person's label the daemon's Dispatch consumer never sees. The
@@ -1489,7 +1489,7 @@ func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
 
 // A5. An approval an agent makes with a personal token of the person's, holding the approve
 // scope, is that person's approval: Dispatch records it under the person's own actor, with the
-// act naming the token beside it, so the daemon queues the parked labelled root as that person's
+// act naming the token beside it, so the daemon queues the labelled root in backlog as that person's
 // handover exactly as their own approval at a browser does (A3). The daemon tells the two apart
 // nowhere: it reads the review's actor, which is a person either way (dispatch.Actor carries its
 // kind and its id and nothing else), which is the consequence this proof pins.
@@ -1497,7 +1497,7 @@ func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
 //  1. a labelled root the person set todo takes the cap's one slot and keeps it, so a queued root
 //     stands visibly in admission.waiting;
 //  2. the person mints a personal token holding person and approve, as they do at the dashboard;
-//  3. a session's labelled root is parked in backlog, and its spec is approved with that token:
+//  3. a session's labelled root is moved to backlog, and its spec is approved with that token:
 //     Dispatch answers an approved review in the person's name, and within 60 s it shows the root
 //     todo under the daemon's own actor, admission.waiting names it, the daemon logged the one
 //     queue from source approval and left no handover row in its outbox.
@@ -1514,11 +1514,11 @@ func TestPersonHandoverIsQueuedForAnApprovalMadeWithThePersonsTokenAgainstScratc
 	// 2. The person's own token, holding both scopes.
 	token := r.mintPersonalToken("handover-approver", "person", "approve")
 
-	// 3. The parked labelled root, approved with that token.
-	parked := r.create(asSession, "Parked proposal awaiting approval", labelled)
-	r.setStatus(parked.Key, "backlog")
-	review := r.approvedBy(parked.PrimaryArtifactID, bearing(token), "the person's token's")
-	r.queuedByThePerson(parked.Key, "approval", 1)
+	// 3. The labelled root in backlog, approved with that token.
+	inBacklog := r.create(asSession, "Proposal in backlog awaiting approval", labelled)
+	r.setStatus(inBacklog.Key, "backlog")
+	review := r.approvedBy(inBacklog.PrimaryArtifactID, bearing(token), "the person's token's")
+	r.queuedByThePerson(inBacklog.Key, "approval", 1)
 	t.Logf("the approval of %s's spec at version %d, made with the person's own token rather than at their browser, queued the root as their handover",
-		parked.Key, review.Version)
+		inBacklog.Key, review.Version)
 }

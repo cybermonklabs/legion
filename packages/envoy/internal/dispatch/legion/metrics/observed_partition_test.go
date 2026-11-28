@@ -7,10 +7,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline: the spec's "Parked and pre-work hours
-// in phase time" ends "So the bars of an issue add up to its work time, and the two cards agree",
-// and the whole of metric 2 rests on it — a reader of legion-phase-time reads the seven bars
-// beside legion-work-time's work time.
+// TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline: the spec's rule on hours out of the
+// work time in phase time (dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645) ends
+// "So the bars of an issue add up to its work time, and the two cards agree", and the whole of
+// metric 2 rests on it — a reader of legion-phase-time reads the seven bars beside
+// legion-work-time's work time.
 //
 // dispatch://INFRA-979's corpus cannot check that invariant on the observed timeline. Every one of
 // its 289 finished issues carries a single trailing `done` mark, so every timeline the A2
@@ -36,9 +37,9 @@ func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 				observeString(legion.FieldPhase, hour(5), "testing"),
 		},
 		{
-			// Parked mid-flight: those hours are on no bar and out of the work time, so the
-			// identity must hold over what is left of a broken-up life.
-			name: "a park between two observed phases",
+			// Moved to backlog mid-flight: those hours are on no bar and out of the work time, so
+			// the identity must hold over what is left of a broken-up life.
+			name: "a move to backlog between two observed phases",
 			issue: newIssue("INFRA-2").worked("implementer", hour(0)).closedAt(hour(9)).
 				observeString(legion.FieldPhase, hour(1), "implementing").
 				statusAt(hour(3), "backlog").
@@ -82,7 +83,7 @@ func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 			issue: mergedThenReopened("INFRA-6"),
 		},
 		{
-			// The daemon parks a child that leaves the workflow in `done`, and reports it
+			// The daemon puts a child that leaves the workflow in phase `done`, and reports it
 			// again once it is back.
 			name:  "a child moved to triage and reported again",
 			issue: triagedAndObserved("INFRA-7").under("INFRA-1"),
@@ -97,9 +98,9 @@ func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 // TestTheSevenBarsPartitionTheWorkTimeOnTheFallbackTimeline is the same identity on the other
 // timeline. dispatch://INFRA-979's corpus does hold it over all 289 finished issues, but the
 // corpus is one shape of history: every issue there runs forward through its phases once. These
-// are the shapes that bend — a handoff with no role event after it, a send-back, two parks, an
-// issue only one role ever touched, a close a reopen undid, a stretch in `triage` — which the
-// corpus happens not to carry in a form that would break the sum.
+// are the shapes that bend — a handoff with no role event after it, a send-back, two moves to
+// backlog or icebox, an issue only one role ever touched, a close a reopen undid, a stretch in
+// `triage` — which the corpus happens not to carry in a form that would break the sum.
 func TestTheSevenBarsPartitionTheWorkTimeOnTheFallbackTimeline(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -134,7 +135,7 @@ func TestTheSevenBarsPartitionTheWorkTimeOnTheFallbackTimeline(t *testing.T) {
 				statusAt(hour(12), "done"),
 		},
 		{
-			name: "parked twice",
+			name: "moved to backlog, then to icebox",
 			issue: newIssue("INFRA-4").worked("implementer", hour(0)).closedAt(hour(12)).
 				statusAt(hour(0), "in_progress").statusAt(hour(2), "backlog").
 				statusAt(hour(4), "in_progress").statusAt(hour(7), "icebox").
@@ -195,10 +196,11 @@ func TestAnAdmittedRootHoldingASlotIsDesignAndTheRestIsQueue(t *testing.T) {
 // row for it, so an observed timeline can hold a `null` phase mark between two phases, or after
 // the last one. That mark names no phase and ends none: the phase before it runs on to the next
 // mark that carries a phase, or to the close where none follows, so the bars of the issue still
-// add up to its work time (the spec's "Parked and pre-work hours in phase time": "So the bars of
-// an issue add up to its work time, and the two cards agree"). The first case is implementing
-// from hour 0, `null` at hour 2 and implementing again at hour 4, closed at hour 6: six hours of
-// work time, of which a `null` that ended the phase before it left two on no bar.
+// add up to its work time (the spec's rule on hours out of the work time in phase time,
+// dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645: "So the bars of an issue add
+// up to its work time, and the two cards agree"). The first case is implementing from hour 0,
+// `null` at hour 2 and implementing again at hour 4, closed at hour 6: six hours of work time, of
+// which a `null` that ended the phase before it left two on no bar.
 func TestANullPhaseMarkEndsNoPhase(t *testing.T) {
 	cases := []struct {
 		name     string

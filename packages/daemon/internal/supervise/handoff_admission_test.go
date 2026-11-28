@@ -13,7 +13,7 @@ import (
 
 // The rows of this file are one boundary: a prompt of the claim's task and its turn around a
 // compaction, which is Oh My Pi's handoff. The handoff aborts no turn, and the pinned Oh My Pi
-// parks a prompt that reaches it while a handoff runs, admitting and acknowledging it only once the
+// holds a prompt that reaches it while a handoff runs, admitting and acknowledging it only once the
 // handoff ends. So whatever order the prompt's acknowledgement, its turn, its result and the
 // compaction's end reach the machine in, the task is sent once and its own turn confirms it — and a
 // send that ends before its prompt was written leaves the task unsent, whatever turn runs.
@@ -118,7 +118,7 @@ func takeCompactionWithSendInFlight(t *testing.T, h *harness, fail error) (*gate
 }
 
 // sendRunsOutUnderTheHandoff lets the held send go, answering no acknowledgement within its wait:
-// what the send sees when Oh My Pi parks its prompt until the handoff ends. Every later send the
+// what the send sees when Oh My Pi holds its prompt until the handoff ends. Every later send the
 // connection is given goes at once, so a second send the machine makes is counted rather than held.
 func sendRunsOutUnderTheHandoff(t *testing.T, h *harness, gated *gatedConn, sent string) {
 	t.Helper()

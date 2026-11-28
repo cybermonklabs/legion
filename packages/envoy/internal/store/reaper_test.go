@@ -650,7 +650,7 @@ func TestTheRoleClaimReaperEndsThePassWhenItsContextEndsOnAKeyItCannotRead(t *te
 	}
 }
 
-// blockedDeleteRoleKeyValue is the role bucket's legacy handle with every delete parked until
+// blockedDeleteRoleKeyValue is the role bucket's legacy handle with every delete blocked until
 // release is closed, and sent closed once the first of them has arrived. It is the half of the
 // refused key's delete the handle above cannot reach: that one answers an error of its own, so a
 // pass that read the context rather than the delete's answer still ends, and only the ctx.Err()
@@ -685,7 +685,7 @@ func (kv *blockedDeleteRoleKeyValue) count() int {
 
 // blockRoleClaimDeletes installs such a handle over reg's role bucket handle for the rest of the
 // test (swapRoleBucketHandle), so the pass still scans the bucket and only the deletes it owes
-// are parked.
+// are blocked.
 func blockRoleClaimDeletes(t *testing.T, reg *Registry, release <-chan struct{}) *blockedDeleteRoleKeyValue {
 	t.Helper()
 	return swapRoleBucketHandle(t, reg, func(legacy natsgo.KeyValue) *blockedDeleteRoleKeyValue {
@@ -699,13 +699,13 @@ func blockRoleClaimDeletes(t *testing.T, reg *Registry, release <-chan struct{})
 // The delete of a key this build cannot read is bounded like every release, and a bound is only
 // visible against a call that does not answer.
 //
-// So the delete here is parked, and the pass's context ends while it is parked: a pass that
+// So the delete here is blocked, and the pass's context ends while it is blocked: a pass that
 // waits for the bucket answers nothing until the test releases the delete, and the pass answers
-// before that, which only the bound around the delete can do. The parked call is released before
+// before that, which only the bound around the delete can do. The blocked call is released before
 // the test ends, so no goroutine is left on it - what bus.Bounded abandons runs on to its own
 // end, which here is the release (bus.Bounded, and ReapRoleClaims on why a delete that lands
 // late is safe).
-func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotReadIsParked(t *testing.T) {
+func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotReadIsBlocked(t *testing.T) {
 	logs := captureRegistryLogs(t)
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -726,7 +726,7 @@ func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotRe
 	}
 
 	// Closed however the case ends, before the handle is put back, so the delete bus.Bounded
-	// abandoned is never left parked on a test that has finished.
+	// abandoned is never left blocked on a test that has finished.
 	release := make(chan struct{})
 	defer close(release)
 	deletes := blockRoleClaimDeletes(t, reg, release)
@@ -760,7 +760,7 @@ func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotRe
 		t.Fatalf("the pass is still inside the delete of a key it cannot read %s after its context ended; want it to answer at the context's end, which is what bus.Bounded around that delete is for", answerBound)
 	}
 	if !errors.Is(answered.err, context.Canceled) {
-		t.Fatalf("a pass whose context ended under its parked delete of an unreadable key = %+v, %v; want it to end with the context's error", answered.sweep, answered.err)
+		t.Fatalf("a pass whose context ended under its blocked delete of an unreadable key = %+v, %v; want it to end with the context's error", answered.sweep, answered.err)
 	}
 	if want := (RoleClaimSweep{}); answered.sweep != want {
 		t.Fatalf("the pass = %+v, want %+v: the counts it had reached when the context ended", answered.sweep, want)
@@ -775,7 +775,7 @@ func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotRe
 		}
 	}
 	if got := deletes.count(); got != 1 {
-		t.Fatalf("the pass sent %d deletes to the bucket over %d unreadable keys; want the one it was parked on when the context ended", got, len(letters))
+		t.Fatalf("the pass sent %d deletes to the bucket over %d unreadable keys; want the one it was blocked on when the context ended", got, len(letters))
 	}
 }
 

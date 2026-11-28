@@ -205,12 +205,12 @@ const (
 	// no process of its own waits launching until it fires; one whose process runs waits as the
 	// gate found it.
 	TimerPause TimerKind = "pause"
-	// TimerPodStart is the grant of its issue pod's start to a launch parked at the pod's gate
+	// TimerPodStart is the grant of its issue pod's start to a launch waiting at the pod's gate
 	// (askPod): no wait of the clock's, but the gate's grant, posted to the machine as a timer's
 	// firing is (podHold.notify, fire). The launch asks the runtime for its process when it fires
 	// (podStartDue). The claim waits launching with no process until then, and whatever drops the
-	// parked launch's wake takes its start out of the gate at the end of that decision, naming
-	// that end, and disarms it (endPodPark).
+	// waiting launch's wake takes its start out of the gate at the end of that decision, naming
+	// that end, and disarms it (endPodStartWait).
 	TimerPodStart TimerKind = "pod_start"
 )
 
@@ -252,7 +252,7 @@ type StalePlugin struct {
 // RecordedDeath is a restored claim whose stored record says the process it records died: the
 // daemon before this one judged that process gone and charged its death (Claim.DeathCharged),
 // and the relaunch that death raised lived in that daemon's memory alone, a wake the pacing
-// parked, so a restart lost it. The boot raises it once for every such claim, beside the
+// delayed, so a restart lost it. The boot raises it once for every such claim, beside the
 // unfinished launches it relaunches (internal/daemon's launchUnfinished), so that relaunch enters
 // the restart's own wave rather than waiting for the runtime to report the death again
 // (dispatch://INFRA-5472). That report needs the pod's launcher to reconnect when the pod lives
@@ -517,14 +517,14 @@ type RequestSpawn struct {
 	//
 	// The rule the gate holds a carried place to (revive, launchAfter, reserveWake, placeFor),
 	// stated here alone: the gate takes the place up, and a place that still waits is the launch's
-	// place, and it parks on it; one the pacer let out less than one interval (WakePace.Interval)
-	// before the gate reached it is its turn come a little early, and it runs at once; one the
-	// pacer let out an interval or more before is not run at once, and the launch joins its queue
-	// afresh, since every launch the caller posted together that reached its gate that late would
-	// otherwise run in one instant, outside the rate and the burst. The gate logs the last case. A
-	// launch the gate does not reach — refused, or held by a project pause — gives its place up
-	// as its decision ends (Machine.handle), and the turn it would have taken goes to the wake
-	// behind it.
+	// place, and the launch is delayed on it; one the pacer let out less than one interval
+	// (WakePace.Interval) before the gate reached it is its turn come a little early, and it runs
+	// at once; one the pacer let out an interval or more before is not run at once, and the launch
+	// joins its queue afresh, since every launch the caller posted together that reached its gate
+	// that late would otherwise run in one instant, outside the rate and the burst. The gate logs
+	// the last case. A launch the gate does not reach — refused, or held by a project pause —
+	// gives its place up as its decision ends (Machine.handle), and the turn it would have taken
+	// goes to the wake behind it.
 	Place *wakepace.Place
 }
 
@@ -968,7 +968,7 @@ const (
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
 	// The gate's own stop of a launch it held while the project is paused (pauseGate).
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
-	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod).
+	// The grant of its issue pod's start to a launch waiting at the pod's gate (askPod).
 	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
 
 	onSpawn         eventKind = "request_spawn"
@@ -1358,16 +1358,16 @@ func fillTable(t *builder) {
 	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
 
-	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod). The park
+	// The grant of its issue pod's start to a launch waiting at the pod's gate (askPod). The wait
 	// keeps the claim launching with no process, and every decision that moves the claim out of
-	// launching drops the parked launch's wake, and its end takes the start out of the gate for
-	// what it left of the claim and disarms this timer (endPodPark, after suspended, retire, and
+	// launching drops the waiting launch's wake, and its end takes the start out of the gate for
+	// what it left of the claim and disarms this timer (endPodStartWait, after suspended, retire, and
 	// letGo, which a failure makes), so the grant reaches a launching claim alone. Its launch ends
 	// as any launch does: started and launching, failed, or launching again for a retry; or held
 	// by the pause's gate, where the project is paused at the grant (pauseGate).
-	t.row(onPodStartTimer, "the issue pod's gate granted this claim's parked launch its start: ask the runtime for its process now", podStartDue,
+	t.row(onPodStartTimer, "the issue pod's gate granted this claim's waiting launch its start: ask the runtime for its process now", podStartDue,
 		[]ClaimState{StateLaunching, StateFailed}, StateLaunching)
-	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",
+	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a launch waiting at the gate keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its wait",
 		StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle,
 		StateSuspended, StateFailed, StateRetired)
 
@@ -1930,7 +1930,7 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // A send the compaction held whose prompt frame was written and whose answer did not come within
 // its wait is not taken for a loss (heldSend, keepHeldPrompt, runtime.ErrPromptUnanswered): the
 // write proves the frame went out, not that Oh My Pi received it, and where it did, the pinned Oh
-// My Pi parks a prompt that reaches it while a handoff runs and admits and acknowledges it only
+// My Pi holds a prompt that reaches it while a handoff runs and admits and acknowledges it only
 // once the handoff ends, so the send's wait can run out with the prompt still to start its turn.
 // Nothing is taken back, recorded or charged, and the prompt is kept as the task's held prompt.
 // Every other end of a held send takes the path below as any send's does, a wait that ran out
@@ -2386,7 +2386,7 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // (compactStart closed any turn its times showed open). A turn starting there — a follow-up an
 // Envoy delivery queued while the session was being compacted, which the new daemon's hello may
 // already have found streaming (askTurnOver), or the turn of a prompt of the task that Oh My Pi
-// parked until the handoff ended — is decided and recorded as any start is (beginTurn, startTurn):
+// held until the handoff ended — is decided and recorded as any start is (beginTurn, startTurn):
 // it is dated, and its start line is written here, because its end writes the end line
 // (turnEnded), and an operator reads an end with no start as a turn the daemon never saw begin.
 // beginTurn's durable write stores that date, so a daemon restarted while this turn runs reads it
@@ -2403,7 +2403,7 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // (askTurnOver), so the question goes before the decision: only a start that names the pending
 // delivery confirms it, and only the shim's replay of a start names one (StreamTurnStart). Oh My
 // Pi's own agent_start names none, so an Envoy follow-up and the turn of the task's prompt that Oh
-// My Pi parked until the handoff ended start alike: neither confirms the task, the worker's calls
+// My Pi held until the handoff ended start alike: neither confirms the task, the worker's calls
 // inside either meet it unconfirmed, and the end of either sends it again. That is told twice,
 // never not at all, the lesser fault (confirmCarrying), and main and this branch before its merge
 // did the same. Left standing, the question would take either start for the owed task's turn, and
@@ -2525,7 +2525,7 @@ func (m *Machine) busyTurnBegun(delivery string) {
 //
 // A claim working because its session is being compacted is left exactly where it is: a turn
 // can start and end under the compaction — an Envoy follow-up, or the turn of a prompt Oh My Pi
-// parked until the handoff ended (turnStartedWhileBusy) — and taking that turn's end for
+// held until the handoff ended (turnStartedWhileBusy) — and taking that turn's end for
 // the compaction's end would hand the claim its owed task while Oh My Pi is still writing the
 // handoff document. CompactEnded is the only end of a
 // compaction (compactEnded). The end is recorded on the compaction all the same: the turn it
@@ -3271,7 +3271,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // so zeroing the counts alone would serve the cause and the sentence of the failure being
 // retried beside `attempts` of zeroes — a record of zeroes, which is what a notice of the same
 // failure refuses to carry (workflow.noticeFailure) — for as long as this run has not reached
-// its launch, which the wake pacing may park and a refused lifecycle recheck may leave
+// its launch, which the wake pacing may delay and a refused lifecycle recheck may leave
 // unwritten. The claim being run again is what clears the record; the launch clearing it a
 // second time (launchTries) costs nothing.
 //
@@ -3282,7 +3282,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // reads off the live machine and what the next persist writes. So a retry in a new session asks
 // whether the session may be left behind before the admission (mayForget), which changes nothing,
 // and leaves it behind only once the claim is admitted (forgetSession), beside the record's clear.
-// A launch check that refuses after the admission — launchAfter's own, or a parked wake's recheck
+// A launch check that refuses after the admission — launchAfter's own, or a delayed wake's recheck
 // when its turn comes — finds both already cleared on the live machine, while the store still
 // holds them as AdmitClaim wrote them, until the next persist.
 //

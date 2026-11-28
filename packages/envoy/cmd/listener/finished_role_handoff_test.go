@@ -61,15 +61,15 @@ type handedPublishAnswer struct {
 	Warnings   []string `json:"warnings"`
 }
 
-// A publish to a Legion role whose issue has left the workflow - closed, parked, or its tree
-// retired - is handed to the agent's daemon and answered 200 with that agent as recipient, and
-// nothing is kept: no next holder of the role is coming, so a copy kept on the role's lane would
-// wait for nobody, while the daemon answers this one now from the stopped agent's conversation.
-// The publish names the role in its old form, the name alone, and the hand-off's 200 names the
-// new form in its warnings as a delivery's 200 and a keep's 202 do (store.Registry.ReadRole): the
-// publisher is one the old form's refusal would stop, whoever answers it. The publish's delivery
-// line and its count read handed_off, as the agent subject's hand-off's do, and the line names the
-// agent it was handed to (sendHandedOff).
+// A publish to a Legion role whose issue has left the workflow - closed, moved to backlog or
+// icebox, or its tree retired - is handed to the agent's daemon and answered 200 with that agent
+// as recipient, and nothing is kept: no next holder of the role is coming, so a copy kept on the
+// role's lane would wait for nobody, while the daemon answers this one now from the stopped
+// agent's conversation. The publish names the role in its old form, the name alone, and the
+// hand-off's 200 names the new form in its warnings as a delivery's 200 and a keep's 202 do
+// (store.Registry.ReadRole): the publisher is one the old form's refusal would stop, whoever
+// answers it. The publish's delivery line and its count read handed_off, as the agent subject's
+// hand-off's do, and the line names the agent it was handed to (sendHandedOff).
 func TestAPublishToAFinishedLegionRoleIsHandedToItsDaemonAndNotKept(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	withFinishedHandoff(t, d)

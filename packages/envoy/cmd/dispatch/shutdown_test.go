@@ -556,7 +556,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	stop()
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	// Released on every path out of the row, a failure included, and shutdown waited for after
-	// it, so a failure below never leaves shutdown parked in the hook while the row's database
+	// it, so a failure below never leaves shutdown blocked in the hook while the row's database
 	// is dropped.
 	releaseOnce := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(func() {

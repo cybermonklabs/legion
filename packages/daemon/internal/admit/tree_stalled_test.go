@@ -355,7 +355,7 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 			reason += "\n" + line
 		}
 		return stalledNotice{issue: root, reason: reason + "\nRead the tree and decide what it needs." +
-			" You can ask a role what it waits on. You can park the tree."}
+			" You can ask a role what it waits on. You can move the tree's root to backlog."}
 	}
 	want := []stalledNotice{
 		toldOf(stalledRootA, 7,
@@ -887,7 +887,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 
 		const stillness = "The tree has been quiet for 7.0 hours. No agent of the tree is at work."
 		const decide = "\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-			" You can park the tree."
+			" You can move the tree's root to backlog."
 		wantDeadlocked := []stalledNotice{
 			{issue: deadAwaiting, reason: deadAwaiting + " has stopped. " + stillness + "\n" + deadAwaiting +
 				" is in awaiting_person. No role works this phase. The record holds no pull request." + decide},

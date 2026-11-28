@@ -185,12 +185,12 @@ func namingRef(naming map[int64]bool) int {
 }
 
 // keepDecision keeps one person's decision on issue, as the one rule for a decision nobody in its
-// tree hears keeps it (record.RelayParkedDecision).
+// tree hears keeps it (record.RelayKeptDecision).
 func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, ref string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: issue, Ref: ref,
+		return records.KeepDecision(ctx, tx, record.KeptDecision{Issue: issue, Ref: ref,
 			Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
 	}); err != nil {
 		t.Fatalf("keep the decision %s: %v", ref, err)

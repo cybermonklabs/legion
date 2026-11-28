@@ -174,9 +174,9 @@ type Deps struct {
 // it (UpdateCredit, taken and landed under that lock), and each gated on what the observer
 // recorded with it (BrowserUpdate). AppendUpdatesWithCredit stores updates of a room the same
 // way, from the updates it is handed rather than the room's queue, which is what the room's
-// persistence does with an update no class was recorded for. AppendParkedUpdate stores a room's
-// parked bytes the same way, with no class, no credit and no settlement owed: they change nothing
-// a settlement reads (storeParked). AppendRoomUpdatesTx appends such a run inside a durable
+// persistence does with an update no class was recorded for. AppendPendingBytes stores a room's
+// pending bytes the same way, with no class, no credit and no settlement owed: they change nothing
+// a settlement reads (storePendingBytes). AppendRoomUpdatesTx appends such a run inside a durable
 // writer's transaction, gated on the flush, and answers the first version it stored with how many
 // of the run it stored, since the gate stores a prefix of a browser's run and refuses the rest; a
 // flush left short that way fails, and its transaction stores nothing of the run
@@ -199,7 +199,7 @@ type VersionedStore interface {
 	persistence.VersionedPersistence
 	AppendRoomFlush(ctx context.Context, room string, flush *RoomFlush, through uint64, credit *UpdateCredit) (persistence.Version, error)
 	AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (first persistence.Version, err error)
-	AppendParkedUpdate(ctx context.Context, room string, update []byte) (persistence.Version, error)
+	AppendPendingBytes(ctx context.Context, room string, update []byte) (persistence.Version, error)
 	AppendRoomUpdatesTx(ctx context.Context, tx pgx.Tx, room string, flush *RoomFlush, updates []BrowserUpdate) (first persistence.Version, stored int, err error)
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
@@ -623,12 +623,12 @@ type Service struct {
 	schemaSwitches atomic.Uint64
 	// residentBytes is the encoded bytes the loads ygo holds took, each load's own history and
 	// every update the room it left behind has committed since (residentLoad), for the room
-	// figures: loaded state only. The bytes a commit parks after the load - structs and deletions
+	// figures: loaded state only. The bytes a commit leaves pending after the load - structs and deletions
 	// waiting for an edit the room has not received, which sit in ygo's pending queue inside the
-	// room's document until they integrate or the room unloads - are not counted; parked rows
+	// room's document until they integrate or the room unloads - are not counted; pending rows
 	// already stored are part of the history a later load decodes, and count there. ygo bounds
-	// the parked ones per room by Server.MaxPendingItems, which this service sets to
-	// maxUpdateItems (1<<20; New, below, and persistence.go), refusing an update that would park
+	// the pending ones per room by Server.MaxPendingItems, which this service sets to
+	// maxUpdateItems (1<<20; New, below, and persistence.go), refusing an update that would leave pending
 	// more items, or more delete ranges, than that (ygo v1.55.1-sami.1
 	// provider/websocket/server.go:1246-1248): a count, not bytes.
 	// Each load's bytes are counted against that load's token, and each unload of a name ends the
@@ -1121,7 +1121,7 @@ func New(deps Deps) *Service {
 	srv.PersistCoalesceWindow = -1
 	srv.CompactEvery = 200
 	// The rooms decode under the service's own cap (Service.maxPendingItems; see maxUpdateItems),
-	// which ygo reads as each room loads. It is also the most a room's peers can park in it, about
+	// which ygo reads as each room loads. It is also the most a room's peers can leave pending in it, about
 	// ten times ygo's default; bounding what one peer's update can do to a room is LEGION-487.
 	// ygo's check of each update the service broadcasts (Server.BroadcastUpdate) takes no pending
 	// queue: the room has already applied the update (reearth/ygo#268, in the pinned fork).
@@ -1229,7 +1229,7 @@ func socketWriteTimeout(end clock.Deadline) time.Duration {
 //   - ReadCache, the cold reads' cache's weight, entries and budget; Preloads, the cold sockets'
 //     states waiting for their room's load; ResidentBytes, the encoded bytes the loads ygo holds
 //     took (each load's history and every update it committed since, taken back when an unload
-//     of the name ends that load's token): loaded state only, without the parked updates ygo
+//     of the name ends that load's token): loaded state only, without the pending updates ygo
 //     bounds per room by MaxPendingItems, a count of items and delete ranges, not bytes
 //     (Service.residentBytes);
 //   - SettlementWakeups, the wakes of the waits for a room's appends.
@@ -2940,9 +2940,9 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 
 // refuseClosedIssueAppend answers an append the gate refused because the document's issue is
 // closed (ErrIssueClosed): a browser update the room took later than closeMargin after the close
-// (an update the room took before then is stored, observedBeforeClose), or a commit's parked
-// bytes, which carry no observed time (storeParked). It starts the close of the room for its
-// issue, as the notification would close it (setRoomIssueOpen), once per instance
+// (an update the room took before then is stored, observedBeforeClose), or a commit's pending
+// bytes, which carry no observed time (storePendingBytes). It starts the close of the room for
+// its issue, as the notification would close it (setRoomIssueOpen), once per instance
 // (issueCloseStarted), on a goroutine of its own: the caller can be ygo's persistence worker,
 // which the close waits for. The close runs whatever the room's record holds: that flag is no proof
 // that a close was ever made, for the reason setRoomIssueOpen gives (notified).

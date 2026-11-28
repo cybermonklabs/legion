@@ -256,9 +256,9 @@ func TestTheEndOfARunReadsNoOtherIssuesRuns(t *testing.T) {
 		})
 		counter := &statementCounter{}
 		counted := countedPool(t, pool, counter)
-		if _, err := intake.ApplyFact(context.Background(), counted, "dispatch", "park-planning", intake.DispatchIssue{Key: planning, ResolvedRepo: "acme/widgets", Seq: 4,
+		if _, err := intake.ApplyFact(context.Background(), counted, "dispatch", "backlog-planning", intake.DispatchIssue{Key: planning, ResolvedRepo: "acme/widgets", Seq: 4,
 			Type: "issue.updated", Status: "backlog", Title: planning, Parent: finishedRoot, Rank: "B", HandedOver: true}, engine); err != nil {
-			t.Fatalf("park %s: %v", planning, err)
+			t.Fatalf("move %s to backlog: %v", planning, err)
 		}
 		measured := cost{counter.sent.Load(), counter.rows.Load()}
 		assertStepWrites(t, pool, planning, start("step", 1, 1, 1), end("stopped", "step", 1, 1, 1))
@@ -270,16 +270,16 @@ func TestTheEndOfARunReadsNoOtherIssuesRuns(t *testing.T) {
 	}
 	few, many := measure(t, 2), measure(t, 200)
 	if few != many {
-		t.Errorf("parking one issue made %d statements reading %d rows with 200 other runs open, and %d reading %d with 2; want as many",
+		t.Errorf("moving one issue to backlog made %d statements reading %d rows with 200 other runs open, and %d reading %d with 2; want as many",
 			many.statements, many.rows, few.statements, few.rows)
 	}
 }
 
-// parkFinishingTree parks the running tree's root, a person's: it leaves the workflow and its
-// tree lingers.
-func parkFinishingTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
+// backlogFinishingTree moves the running tree's root to backlog, as a person does: it leaves the
+// workflow and its tree lingers.
+func backlogFinishingTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 	t.Helper()
-	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
+	apply(t, pool, admission, "root-backlog", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 }
 
 // wayOut is a way out of a step that neither the workflow nor admission knows: a handler of its
@@ -322,7 +322,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		lingerClosed bool
 	}
 	none := func(*testing.T, *pgxpool.Pool, *Admission, intake.Handler) {}
-	parked := parkFinishingTree
+	toBacklog := backlogFinishingTree
 	closed := closeFinishingTree
 	issueFact := func(key, status string) intake.DispatchIssue {
 		fact := intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated", Status: status, Title: key, Rank: "B", HandedOver: true}
@@ -333,8 +333,8 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 	}
 	moves := map[string][]row{
 		"DispatchIssue": {
-			{name: "a person parks a child", arrange: none, fact: issueFact(planning, "backlog"), leaves: planning},
-			{name: "a person parks the root, and its tree lingers", arrange: none, fact: issueFact(finishedRoot, "backlog"), leaves: finishedRoot},
+			{name: "a person moves a child to backlog", arrange: none, fact: issueFact(planning, "backlog"), leaves: planning},
+			{name: "a person moves the root to backlog, and its tree lingers", arrange: none, fact: issueFact(finishedRoot, "backlog"), leaves: finishedRoot},
 			{name: "a person sets a running child back to todo", arrange: none, fact: issueFact(planning, "todo"), leaves: planning},
 			{name: "a person reopens the closed root, and the tree is promoted again", arrange: closed, fact: issueFact(finishedRoot, "todo")},
 		},
@@ -355,9 +355,9 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 			fact: intake.TaskStopped{Issue: planning, Task: "default", By: ownersArchitect(t, finishedRoot), Generation: 1}, leaves: planning}},
 		"PullRequestMerged": {{name: "a member's merge lands while its tree lingers", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 			seedAwaitingPullRequest(t, pool)
-			parked(t, pool, admission, engine)
+			toBacklog(t, pool, admission, engine)
 		}, source: "github", fact: intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5", HeadSHA: "head-5"}, leaves: awaiting}},
-		"LingerExpired": {{name: "the linger's close stops a merge that can no longer land", arrange: parked, source: "timer",
+		"LingerExpired": {{name: "the linger's close stops a merge that can no longer land", arrange: toBacklog, source: "timer",
 			fact: intake.LingerExpired{Issue: finishedRoot, Generation: lingerOfRoot}, lingerClosed: true}},
 		// A head that conflicts with its base moves no issue (dispatch://INFRA-4374): the second
 		// read that confirms the conflict asks the implementer to merge the base forward while the

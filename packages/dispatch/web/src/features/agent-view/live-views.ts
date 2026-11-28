@@ -7,7 +7,7 @@
  * This store is the one owner of three things, and nothing else decides them:
  *
  *  - **The draft and the place.** They belonged to the view before: the draft to assistant-ui's
- *    composer runtime, parked in a ref that died with the view, and the place to
+ *    composer runtime, kept in a ref that died with the view, and the place to
  *    `use-live-follow.ts`, which measured it afresh at every mount. A view that sleeps is
  *    unmounted (D6), so both now live here, written while the view is up and handed back when it
  *    wakes.

@@ -20,7 +20,7 @@ body: |-
   sweep's replacement of the pod names fewer (below), every end of a round over a marked pod names
   every role that had not answered and has a session or a pod in its set: a role the round passes
   over, a role the daemon or the operator took over after the earlier pod went, a woken role
-  whose launch the wake pacing parks or whose own launch replaces the pod, and a role that was
+  whose launch the wake pacing delays or whose own launch replaces the pod, and a role that was
   suspended already when the earlier pod went. So such an end can name a role whose
   work the pod does not hold. A role that failed before the round opened is no member of it, so no
   end names it as one that lost work; the sweep's replacement, through a process in the pod or

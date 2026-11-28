@@ -100,7 +100,7 @@ func TestAHookPromptAListenerKeepsEndsTheRow(t *testing.T) {
 // wakes the pod and waits on its backoff. The wake is the daemon's own, so the pod comes back
 // whatever the listener does with a publish; the row's first attempt after the resume has
 // launched is what publishes (TestAHookPromptForAReleasedPodIsKeptForItsWokenSession,
-// TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod).
+// TestAHookPromptWaitsOutTheDelayedWakeOfItsReleasedPod).
 func TestAHookPromptForAReleasedPodWakesItAndWaits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -143,23 +143,23 @@ func TestAHookPromptForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
 // waitOnMachine): it is released no more, and no session of it can hold the role before that turn.
 // The row publishes nothing while the wake waits, since a kept publish then would start the
 // listener's hour long before the pod comes back. It waits as a routine wait, to the turn or to
-// parkedWakeBound on, whichever comes first, and reads the claim again then: the attempt that
-// finds the park makes the row due at the bound, a drain before the bound runs nothing, an
-// attempt past it while the park holds waits to the next bound, and an attempt past a turn the
+// delayedWakeBound on, whichever comes first, and reads the claim again then: the attempt that
+// finds the delay makes the row due at the bound, a drain before the bound runs nothing, an
+// attempt past it while the delay holds waits to the next bound, and an attempt past a turn the
 // wake has not run yet waits on its backoff. Once the turn has launched the resume, the row's
 // next attempt publishes the prompt with keep, once, and ends.
-func TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
+func TestAHookPromptWaitsOutTheDelayedWakeOfItsReleasedPod(t *testing.T) {
 	t.Parallel()
-	keptAfterTheParkedWake(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"))
+	keptAfterTheDelayedWake(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"))
 }
 
-// The turn a parked resume waits for lives in the machine's memory alone, and an operator's
-// resume ends the park long before it: the request drops the waiting wake and launches at once
-// (supervise's dropWakeFor). The row that found the park reads the claim again at the bound, so
+// The turn a delayed resume waits for lives in the machine's memory alone, and an operator's
+// resume ends the delay long before it: the request drops the waiting wake and launches at once
+// (supervise's dropWakeFor). The row that found the delay reads the claim again at the bound, so
 // its next attempt publishes the prompt with keep, once, and ends, the pacing's turn still far
-// off. The negative control is parkedWait without the bound, the row due at the turn: the attempt
+// off. The negative control is delayedWait without the bound, the row due at the turn: the attempt
 // at the bound then finds the row not due and publishes nothing.
-func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
+func TestAHookPromptFollowsAnOperatorsResumeOfItsDelayedWakeWithinTheBound(t *testing.T) {
 	t.Parallel()
 	keptAfterAnOperatorsResume(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"))
 }
@@ -317,22 +317,22 @@ func TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce(t *testing.T) {
 	})
 }
 
-// A relaunch the wake pacing parks over a process the claim still records holds no row: the
+// A relaunch the wake pacing delays over a process the claim still records holds no row: the
 // machine leaves that claim as it stands, idle on its process (supervise's waitOnMachine), and its
 // live session can take a publish now, so the row's first attempt publishes. The claim is one of
 // the wave TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt reads, a process on an
-// earlier plugin contract whose stale-plugin relaunch waits its turn (parkedOverItsProcess). A row
+// earlier plugin contract whose stale-plugin relaunch waits its turn (delayedOverItsProcess). A row
 // held there would hold every notice, hook prompt, merge-queue removal and merge forward's message
 // to a live session behind that session's paced refresh. The negative control is
-// wakeForDelivery's park check without its first half, the claim launching with no process: each
-// row then waits for the relaunch (parkedWait) and publishes nothing.
-func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
+// wakeForDelivery's delay check without its first half, the claim launching with no process: each
+// row then waits for the relaunch (delayedWait) and publishes nothing.
+func TestARelaunchDelayedOverALiveProcessHoldsNoRow(t *testing.T) {
 	t.Parallel()
 	t.Run("a hook prompt", func(t *testing.T) {
 		ctx := context.Background()
 		publisher := &holderPublisher{}
 		runner, sup, pool := hookRunner(t, publisher)
-		parkedOverItsProcess(t, sup, "LEGION-208", claim.RoleImplementer)
+		delayedOverItsProcess(t, sup, "LEGION-208", claim.RoleImplementer)
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
 
 		if err := runner.RunOnce(ctx); err != nil {
@@ -354,7 +354,7 @@ func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
 		records := record.NewStore()
 		noticeTree(t, pool, records, false)
 		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-		parkedOverItsProcess(t, sup, "LEGION-1", claim.RoleArchitect)
+		delayedOverItsProcess(t, sup, "LEGION-1", claim.RoleArchitect)
 		publisher := &holderPublisher{}
 		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, time.Now()))
 		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
@@ -369,20 +369,20 @@ func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
 	})
 }
 
-// parkedOverItsProcess creates role's claim on issue, the root of its own tree, as the stale-plugin
+// delayedOverItsProcess creates role's claim on issue, the root of its own tree, as the stale-plugin
 // wave of TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt leaves one: idle on
 // the process it records, which speaks the contract before the daemon's (liveClaim), under the
-// relaunch that lane raises for it, parked in the wake pacing over that process. The pacing lets
-// the relaunch's place out an hour ahead (parkedFor) and the machines' clock fires no timer the
+// relaunch that lane raises for it, delayed in the wake pacing over that process. The pacing lets
+// the relaunch's place out an hour ahead (delayedFor) and the machines' clock fires no timer the
 // test does not fire (heldClock), so the relaunch waits through the whole test. It is posted as
 // the daemon's pass posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Credit).
-func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
+func delayedOverItsProcess(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
 	t.Helper()
 	ctx := context.Background()
 	// A machine takes its deps where it is built, so the clock and the pacing go in before the
 	// claim is created.
 	sup.deps.Clock = &heldClock{}
-	sup.deps.WakePace = parkedFor(sup.deps.Clock, time.Hour)
+	sup.deps.WakePace = delayedFor(sup.deps.Clock, time.Hour)
 	token := mustClaimToken(t, issue, role)
 	live := liveClaim(1, token, sup.deps.PluginContract-1)
 	live.Token, live.Project, live.Tree, live.Issue, live.Role, live.State = token, "legion", issue, issue, role, supervise.StateIdle
@@ -395,7 +395,7 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 	}
 	if held := machine.View(); held.State != supervise.StateIdle || held.Locator == nil ||
 		held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakePluginRefresh {
-		t.Fatalf("the %s is %s recording %+v with wake %+v, want it idle on its process under the stale-plugin relaunch the pacing parked",
+		t.Fatalf("the %s is %s recording %+v with wake %+v, want it idle on its process under the stale-plugin relaunch the pacing delayed",
 			role, held.State, held.Locator, held.WakeWaiting)
 	}
 	return machine
@@ -507,20 +507,20 @@ func keptAcrossTheWake(t *testing.T, payload record.OutboxPayload, role claim.Ro
 }
 
 const (
-	// parkedTurn is how far ahead the wake pacing of parkTheWake gives every wake its turn.
-	parkedTurn = 2 * time.Hour
-	// parkFound is how far ahead of the wall clock the runner's clock reads at the row's attempt
-	// that finds the park: past the backoff the first attempt set, which is never above 64 s
+	// delayedTurn is how far ahead the wake pacing of delayTheWake gives every wake its turn.
+	delayedTurn = 2 * time.Hour
+	// delayFound is how far ahead of the wall clock the runner's clock reads at the row's attempt
+	// that finds the delay: past the backoff the first attempt set, which is never above 64 s
 	// (record.RetryBackoff).
-	parkFound = 2 * time.Minute
+	delayFound = 2 * time.Minute
 )
 
-// parkedWake is one role-message row for a released claim on LEGION-208 whose resume the wake
-// pacing parked, as parkTheWake leaves it: the runner, its database and the listener of
+// delayedWake is one role-message row for a released claim on LEGION-208 whose resume the wake
+// pacing delayed, as delayTheWake leaves it: the runner, its database and the listener of
 // keptAcrossTheWake, the claim's machine and the clock its timers wait on, the row as it was
 // queued under its id, the role's topic, the wake's turn, and the moment the runner's clock read
-// at the attempt that found the park.
-type parkedWake struct {
+// at the attempt that found the delay.
+type delayedWake struct {
 	t         *testing.T
 	runner    *outbox
 	pool      *store.Pool
@@ -533,13 +533,13 @@ type parkedWake struct {
 	found     time.Time
 }
 
-// parkTheWake queues one role-message row for role's released claim on LEGION-208 and runs it to
-// the park, against the listener keptAcrossTheWake meets. The pacing lets the first wake's place
-// out parkedTurn ahead (parkedFor) and the machines' clock fires a timer only when the test fires it
+// delayTheWake queues one role-message row for role's released claim on LEGION-208 and runs it to
+// the delay, against the listener keptAcrossTheWake meets. The pacing lets the first wake's place
+// out delayedTurn ahead (delayedFor) and the machines' clock fires a timer only when the test fires it
 // (heldClock), so the resume the row's first attempt makes waits, its claim launching with no
-// process and its view naming the waiting launch. The row's next attempt, parkFound on, finds
-// the park and waits for that launch, publishing nothing.
-func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *parkedWake {
+// process and its view naming the waiting launch. The row's next attempt, delayFound on, finds
+// the delay and waits for that launch, publishing nothing.
+func delayTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *delayedWake {
 	t.Helper()
 	publisher := &holderPublisher{keeps: true}
 	runner, sup, pool := hookRunner(t, publisher)
@@ -547,30 +547,30 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	// claim is created.
 	clock := &heldClock{}
 	sup.deps.Clock = clock
-	sup.deps.WakePace = parkedFor(clock, parkedTurn)
+	sup.deps.WakePace = delayedFor(clock, delayedTurn)
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
 	machine := recordedReleasedClaim(t, runner, role)
 	row := mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute))
 	enqueueOutbox(t, pool, runner.records, row)
 	row.ID = noticeRowID(t, pool)
-	p := &parkedWake{t: t, runner: runner, pool: pool, publisher: publisher, machine: machine, clock: clock, row: row, topic: topic}
+	p := &delayedWake{t: t, runner: runner, pool: pool, publisher: publisher, machine: machine, clock: clock, row: row, topic: topic}
 
 	drainAt(t, runner, 0, "the row's first attempt")
 	held := machine.View()
 	if held.State != supervise.StateLaunching || held.Locator != nil ||
 		held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakeLaunch {
-		t.Fatalf("the %s is %s recording %+v with wake %+v after the first attempt, want it launching with no process under the resume the pacing parked",
+		t.Fatalf("the %s is %s recording %+v with wake %+v after the first attempt, want it launching with no process under the resume the pacing delayed",
 			role, held.State, held.Locator, held.WakeWaiting)
 	}
 	p.turn = held.WakeWaiting.At.UTC()
 
-	p.found = drainAt(t, runner, parkFound, "the row's attempt that finds the park")
+	p.found = drainAt(t, runner, delayFound, "the row's attempt that finds the delay")
 	if tries, waited, _ := p.waiting(); tries != 2 || !strings.Contains(waited, "launch, which the wake pacing holds until") {
 		t.Fatalf("the row has run %d times and last waited on %q, want two attempts, the second waiting for the launch the wake pacing holds", tries, waited)
 	}
 	if attempts, _ := publisher.snapshot(); attempts != 0 {
-		t.Fatalf("the attempts up to the park published %d times, want none: the pod has not started, and a kept copy's hour runs from its publish", attempts)
+		t.Fatalf("the attempts up to the delay published %d times, want none: the pod has not started, and a kept copy's hour runs from its publish", attempts)
 	}
 	return p
 }
@@ -589,7 +589,7 @@ func drainAt(t *testing.T, runner *outbox, ahead time.Duration, what string) tim
 
 // waiting is the row as its last attempt left it: how often it has run, what it last waited on,
 // and when it is due.
-func (p *parkedWake) waiting() (tries int, waited string, due time.Time) {
+func (p *delayedWake) waiting() (tries int, waited string, due time.Time) {
 	p.t.Helper()
 	if err := p.pool.QueryRow(context.Background(), "select attempts, last_error, next_at from outbox").Scan(&tries, &waited, &due); err != nil {
 		p.t.Fatalf("read the waiting row: %v", err)
@@ -597,42 +597,42 @@ func (p *parkedWake) waiting() (tries int, waited string, due time.Time) {
 	return tries, waited, due
 }
 
-// keptAfterTheParkedWake drives one role-message row for role's released claim on LEGION-208
-// through a resume the wake pacing parks (parkTheWake) and the park's whole wait. The attempt
-// that finds the park makes the row due parkedWakeBound on, not at the wake's turn, and what it
+// keptAfterTheDelayedWake drives one role-message row for role's released claim on LEGION-208
+// through a resume the wake pacing delays (delayTheWake) and the delay's whole wait. The attempt
+// that finds the delay makes the row due delayedWakeBound on, not at the wake's turn, and what it
 // waits on is routine (routineWait), so settle logs none of its attempts as a warning. A drain
-// before the bound does not run the row; an attempt past the bound, the park still holding,
+// before the bound does not run the row; an attempt past the bound, the delay still holding,
 // waits to the next bound; and an attempt past the turn while the wake still waits for its timer
 // falls back to the backoff. Once the test fires the wake's turn and the resume launches, the
 // next attempt publishes message with keep and ends the row (keptOnce).
-func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role claim.Role, message string) {
+func keptAfterTheDelayedWake(t *testing.T, payload record.OutboxPayload, role claim.Role, message string) {
 	t.Helper()
-	p := parkTheWake(t, payload, role)
+	p := delayTheWake(t, payload, role)
 	_, _, due := p.waiting()
-	if want := p.found.Add(parkedWakeBound); !due.Equal(want.Truncate(time.Microsecond)) {
-		t.Fatalf("the row is due at %s, want %s, parkedWakeBound after the attempt that found the park rather than at the wake's turn, %s: the turn lives in the machine's memory alone, and a park that ends early would hold the row to it",
+	if want := p.found.Add(delayedWakeBound); !due.Equal(want.Truncate(time.Microsecond)) {
+		t.Fatalf("the row is due at %s, want %s, delayedWakeBound after the attempt that found the delay rather than at the wake's turn, %s: the turn lives in the machine's memory alone, and a delay that ends early would hold the row to it",
 			due, want, p.turn)
 	}
 	// The drain keeps no error, so the wait is read from the executor run once more on the same
-	// clock: over a claim parked with no process it reads the claim's view and writes nothing.
+	// clock: over a claim delayed with no process it reads the claim's view and writes nothing.
 	waited := p.runner.execute(context.Background(), p.row)
-	if at, named := wait.UntilAt(waited); !errors.Is(waited, wait.ErrWaiting) || !routineWait(waited) || !named || !at.Equal(p.found.Add(parkedWakeBound)) {
-		t.Fatalf("the parked attempt answers %v, naming %s (%t), want a routine wait (routineWait) naming the bound, %s: settle warns at every attempt from the seventh of a wait that is not routine, about once a minute over an hour's park",
-			waited, at, named, p.found.Add(parkedWakeBound))
+	if at, named := wait.UntilAt(waited); !errors.Is(waited, wait.ErrWaiting) || !routineWait(waited) || !named || !at.Equal(p.found.Add(delayedWakeBound)) {
+		t.Fatalf("the delayed attempt answers %v, naming %s (%t), want a routine wait (routineWait) naming the bound, %s: settle warns at every attempt from the seventh of a wait that is not routine, about once a minute over an hour's delay",
+			waited, at, named, p.found.Add(delayedWakeBound))
 	}
-	drainAt(p.t, p.runner, parkFound+parkedWakeBound/2, "a drain before the bound")
+	drainAt(p.t, p.runner, delayFound+delayedWakeBound/2, "a drain before the bound")
 	if tries, _, _ := p.waiting(); tries != 2 {
 		t.Fatalf("the row has run %d times after a drain before the bound, want the two it had: it is due at the bound", tries)
 	}
-	again := drainAt(p.t, p.runner, parkFound+parkedWakeBound+time.Minute, "the row's attempt past the bound")
+	again := drainAt(p.t, p.runner, delayFound+delayedWakeBound+time.Minute, "the row's attempt past the bound")
 	tries, _, due := p.waiting()
-	if want := again.Add(parkedWakeBound); tries != 3 || !due.Equal(want.Truncate(time.Microsecond)) {
-		t.Fatalf("the row has run %d times and is due at %s after an attempt past the bound, want three attempts and the row due at the next bound, %s, the park still holding",
+	if want := again.Add(delayedWakeBound); tries != 3 || !due.Equal(want.Truncate(time.Microsecond)) {
+		t.Fatalf("the row has run %d times and is due at %s after an attempt past the bound, want three attempts and the row due at the next bound, %s, the delay still holding",
 			tries, due, want)
 	}
 	// The row can come due a moment before the machine's own timer runs the wake: its turn is
 	// past then, and the row waits on its backoff rather than at a moment already gone.
-	drainAt(p.t, p.runner, parkedTurn+time.Minute, "an attempt past the turn whose wake has not run yet")
+	drainAt(p.t, p.runner, delayedTurn+time.Minute, "an attempt past the turn whose wake has not run yet")
 	tries, _, due = p.waiting()
 	if tries != 4 || !due.After(p.turn) {
 		t.Fatalf("the row has run %d times and is due at %s after an attempt past the turn %s, want four attempts and the row due on its backoff, past the turn",
@@ -649,26 +649,26 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {
 		t.Fatalf("the %s is %s recording %+v with wake %+v after the wake's turn, want the resume launched", role, held.State, held.Locator, held.WakeWaiting)
 	}
-	drainAt(p.t, p.runner, parkedTurn+3*time.Minute, "the row's attempt after the resume launched")
+	drainAt(p.t, p.runner, delayedTurn+3*time.Minute, "the row's attempt after the resume launched")
 	keptOnce(t, p.publisher, p.pool, role, p.row.ID, p.topic, message, "the attempt after the launch")
 }
 
 // keptAfterAnOperatorsResume drives one role-message row for role's released claim on LEGION-208
-// to the park the wake pacing makes of its resume (parkTheWake), and then resumes the claim as an
+// to the delay the wake pacing makes of its resume (delayTheWake), and then resumes the claim as an
 // operator does through the API's resume route (supervise.RequestResume): the request drops the
 // waiting wake and launches at once (supervise's dropWakeFor), the pacing's timer never fired.
-// The row's next attempt, at the bound after the attempt that found the park, publishes message
+// The row's next attempt, at the bound after the attempt that found the delay, publishes message
 // with keep and ends the row (keptOnce).
 func keptAfterAnOperatorsResume(t *testing.T, payload record.OutboxPayload, role claim.Role, message string) {
 	t.Helper()
-	p := parkTheWake(t, payload, role)
+	p := delayTheWake(t, payload, role)
 	if err := p.machine.Handle(context.Background(), supervise.RequestResume{Claim: mustClaimToken(t, "LEGION-208", role), By: supervise.SuspendedByOperator}); err != nil {
-		t.Fatalf("the operator's resume of the parked %s: %v", role, err)
+		t.Fatalf("the operator's resume of the delayed %s: %v", role, err)
 	}
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {
 		t.Fatalf("the %s is %s recording %+v with wake %+v after the operator's resume, want the resume launched at once", role, held.State, held.Locator, held.WakeWaiting)
 	}
-	drainAt(p.t, p.runner, parkFound+parkedWakeBound, "the row's attempt at the bound")
+	drainAt(p.t, p.runner, delayFound+delayedWakeBound, "the row's attempt at the bound")
 	if attempts, _ := p.publisher.snapshot(); attempts == 0 {
 		_, _, due := p.waiting()
 		t.Fatalf("the row's attempt at the bound after the operator's resume published nothing, the row due at %s: a row due at the wake's turn, %s, waits out a turn the operator's resume has already ended",

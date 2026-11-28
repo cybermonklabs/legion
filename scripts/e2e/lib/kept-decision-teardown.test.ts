@@ -17,7 +17,7 @@ import { alive } from "./process-alive";
 import { libRowBoundMs, rowWaits, untilTrue } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
-// stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
+// stop_agent_daemons (kept-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
 // start detached: a per-project daemon broker, a session leader of its own that writes broker.pid
 // in its runtime directory, and the services it supervises. On the pinned build each service runs
 // in a session of its own and ends when its broker ends; the stand-in instead keeps its two members
@@ -34,7 +34,7 @@ import { scriptFunctions } from "./script-functions";
 // ubuntu-24.04-arm image it runs on already carries both.
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
-const scriptPath = join(e2e, "parked-decision-devbox.sh");
+const scriptPath = join(e2e, "kept-decision-devbox.sh");
 const fn = scriptFunctions(scriptPath);
 const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
@@ -43,7 +43,7 @@ if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`
 const host = hostGate({ programs: ["tmux", "jq"] });
 const jq = hostGate({ programs: ["jq"] });
 
-const dir = temporaryDirectory("parked-decision-teardown-test");
+const dir = temporaryDirectory("kept-decision-teardown-test");
 const started: number[] = [];
 // What the test started that no pid of its own names: a tmux server to kill, a session a process
 // writes its own pid file for. Each is registered the moment the test starts it, before the waits
@@ -74,7 +74,7 @@ afterAll(() => {
 // /tmp, as the live proofs' do (codex-host.sh's `mktemp -d /tmp/ncs-codex-tmux.XXXXXX`). Its
 // removal is registered after the teardowns above, so the server's kill-server reaches its socket
 // before the directory goes (Bun runs a scope's afterAll hooks in the order they were registered).
-const tmuxDir = temporaryDirectory("pdt-tmux", { root: "/tmp" });
+const tmuxDir = temporaryDirectory("kdt-tmux", { root: "/tmp" });
 
 const sessionOf = (pid: number) =>
   Number(

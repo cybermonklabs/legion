@@ -20,7 +20,7 @@ const (
 	// PauseStopStopped: the role stopped (RecordPauseStoppedTx), or stood queued with nothing to
 	// stop (EndPauseStop).
 	PauseStopStopped PauseStopEnd = "stopped"
-	// PauseStopTakenOver: something else stopped the role first: a park, a close, a linger, an
+	// PauseStopTakenOver: something else stopped the role first: a move out of the workflow, a close, a linger, an
 	// operator, an earlier pause's late stop or an idle release (EndPauseStop).
 	PauseStopTakenOver PauseStopEnd = "taken_over"
 	// PauseStopFailed: the claim failed or retired.
@@ -95,7 +95,7 @@ func validPauseStopClaim(stop PauseStopClaim) error {
 
 // EndPauseStop ends pause's open stop of token at at as end and answers whether one was open.
 // The `pause_stop` executor ends a stop this way when the claim answers it is stopped other than
-// by this pause's own suspension (decision 4): `taken_over` where a park, a close, the operator,
+// by this pause's own suspension (decision 4): `taken_over` where a move out of the workflow, a close, the operator,
 // an earlier pause's late stop or an idle release stopped it first, `failed` where it failed or
 // retired, `stopped` where it is queued with nothing to stop; the resume ends them `cancelled`. A
 // stop ended here owes no launch. A stop the pause's own suspension made is recorded by

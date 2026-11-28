@@ -19,7 +19,7 @@ Count by filer, the line's `session <id> (<title>)` title cut at its last `·` (
 
 ## 2. The week's tree sizes
 
-A tree is an open `legion`-labelled issue with no labelled ancestor, with its descendants; one closed in the window counts at its close. Walk down from each root with `dispatch issues --project <PROJECT> --parent <KEY> --all`, level by level (`Links: child_of` names the parent, never a child). Report the trees by descendant count at any depth in five buckets, 0, 1-2, 3-5, 6-10 and 11 or more, with each bucket's parked (`backlog`, `icebox`) descendants. The report key is `tree_sizes`.
+A tree is an open `legion`-labelled issue with no labelled ancestor, with its descendants; one closed in the window counts at its close. Walk down from each root with `dispatch issues --project <PROJECT> --parent <KEY> --all`, level by level (`Links: child_of` names the parent, never a child). Report the trees by descendant count at any depth in five buckets, 0, 1-2, 3-5, 6-10 and 11 or more, with each bucket's descendants in `backlog` or `icebox`. The report key is `tree_sizes`.
 
 ## 3. The nudges
 

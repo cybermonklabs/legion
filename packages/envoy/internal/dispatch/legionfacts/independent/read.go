@@ -272,7 +272,7 @@ func (p *population) takeRoleEvents(read []eventRow, titles map[string]string) {
 }
 
 // takeStatusMarks keeps every status the issues' own events carried, oldest first. They are what
-// says when an issue sat parked and, for an issue the sampler never saw, what phase it was in.
+// says when an issue sat in backlog or icebox and, for an issue the sampler never saw, what phase it was in.
 func (p *population) takeStatusMarks(read []eventRow) {
 	for _, one := range read {
 		if !strings.HasPrefix(one.kind, "issue.") || one.status == "" {

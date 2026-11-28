@@ -17,7 +17,7 @@ import (
 )
 
 // A peer's update the room refuses leaves the room's document as every other peer of the room holds
-// it. The room refuses an update whose delete set would park more delete ranges than its pending
+// it. The room refuses an update whose delete set would leave more delete ranges pending than its pending
 // queue takes; a refusal that comes after the update has already deleted text the room holds leaves
 // the room with a deletion it told the sender failed and sent no other peer, so the document the room
 // stores and settles is no longer the one every open editor shows. Here one peer's update deletes
@@ -86,7 +86,7 @@ func TestARefusedPeerUpdateLeavesTheRoomAsItsOtherPeersHoldIt(t *testing.T) {
 }
 
 // unknownDeleteRanges is an update holding only a delete set: ranges non-adjacent delete ranges of a
-// client no room has seen, each of which a room that receives it parks until the client's structs
+// client no room has seen, each of which a room that receives it keeps pending until the client's structs
 // arrive.
 func unknownDeleteRanges(ranges int) []byte {
 	far := crdt.New(crdt.WithClientID(0x7fff0001))

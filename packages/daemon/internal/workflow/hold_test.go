@@ -407,7 +407,7 @@ func TestAnEscalatedChildOfAClosedTreeKeepsItsHoldButShowsNoEscalation(t *testin
 // controller. The tree architect's own failed claim holds no phase either, and is still told to the
 // issue's topic, lingering or not. It is not told to the controller: a lingering root is done, and
 // the controller's skill does nothing for a failed architect whose root is done, since the tree is
-// parked or closed already (#4065).
+// in backlog or icebox, or closed, already (#4065).
 func TestALingeringTreesFailedClaimHoldsNothingAndItsArchitectsIsStillTold(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)

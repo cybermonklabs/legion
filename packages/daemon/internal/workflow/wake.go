@@ -145,7 +145,7 @@ type Pods interface {
 // never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
 // of an issue in reviewing is told the entry of its round too (WakeTask says why).
 //
-// The row is marked with the wake's kind, so the start finishes without acting once a park, a
+// The row is marked with the wake's kind, so the start finishes without acting once a move to backlog, a
 // close or a moved phase has taken the role over while the row waited (decision 10 of
 // dispatch://INFRA-3759), and with the pause that held the wake, 0 for none (decision 15), which
 // the outbox's lines of the start name. The outbox holds every start of a paused project, marked
@@ -161,7 +161,7 @@ func wakeRow(issue record.Issue, role claim.Role, kind, detail string, pause int
 // PauseWakeRow is the start a project's pause owes a role it stopped with a launch owed: the row
 // the stop transaction writes beside its held wake (pods.WakePause, decision 6 of
 // dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so it
-// finishes without acting once a park, a close or a moved phase has taken the role over (decision
+// finishes without acting once a move to backlog, a close or a moved phase has taken the role over (decision
 // 10). The outbox holds it while a pause stands, as it holds every start of a paused project. It
 // carries no task and no detail: the task the role holds pending, if any, is what its launch
 // delivers.

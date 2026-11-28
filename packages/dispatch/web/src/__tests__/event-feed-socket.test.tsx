@@ -850,7 +850,7 @@ test("a resume whose replay Dispatch says is complete refreshes nothing, and one
   }
 });
 
-test("a backwards system-clock step does not park the whole-cache throttle", async () => {
+test("a backwards system-clock step does not stall the whole-cache throttle", async () => {
   const originalNow = Date.now;
   // On the fake clock, which this test's waits move on: the injected window below is crossed
   // rather than waited out. The real `Date.now` is taken first, since the step this test makes

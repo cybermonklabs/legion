@@ -100,7 +100,7 @@ func observedClaim(t *testing.T, issue, tree string, role claim.Role, state supe
 
 // seedObserved records the rig's store. Its first part is internal/projection's
 // TestEveryIssueInTheWorkflowHasAPlace over the real store, one issue for each of the fourteen
-// words of admission.held: a member of a closed tree (LEGION-101) and of a parked tree
+// words of admission.held: a member of a closed tree (LEGION-101) and of a tree in backlog
 // (LEGION-111), a root whose label is off (LEGION-120), a root whose Dispatch chain reaches another
 // live root (LEGION-140), a member of a tree whose root waits on a person (LEGION-151), a member
 // under a shut design gate (LEGION-161), a child an unfinished Dispatch link holds (LEGION-171), an

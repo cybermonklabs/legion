@@ -573,13 +573,13 @@ func TestListIssuesAnswersTheMoveOnlyWhenAsked(t *testing.T) {
 		map[string]any{"title": "Moved twice, then retitled"}, "bob"); retitled.Code != http.StatusOK {
 		t.Fatalf("retitle %s: status=%d body=%s", twice, retitled.Code, retitled.Body.String())
 	}
-	unrecorded := seedPriorityIssue(t, handler, "MOVE", "Parked before moves were recorded", "", "", nil)
+	unrecorded := seedPriorityIssue(t, handler, "MOVE", "In backlog before moves were recorded", "", "", nil)
 	if _, err := database.Pool.Exec(ctx, `update issues set status = 'backlog' where key = $1`, unrecorded); err != nil {
-		t.Fatalf("park %s with no event: %v", unrecorded, err)
+		t.Fatalf("move %s to backlog with no event: %v", unrecorded, err)
 	}
-	returned := seedPriorityIssue(t, handler, "MOVE", "Parked and taken back", "backlog", "", nil)
+	returned := seedPriorityIssue(t, handler, "MOVE", "Moved to backlog and taken back", "backlog", "", nil)
 	moveTestIssue(t, handler, returned, "todo", "bob")
-	never := seedPriorityIssue(t, handler, "MOVE", "Never parked", "", "", nil)
+	never := seedPriorityIssue(t, handler, "MOVE", "Never in backlog", "", "", nil)
 
 	// The move into icebox, and the retitle after it, which is the issue's newest event and moves
 	// no status: the listing answers the first.
@@ -711,7 +711,7 @@ func TestTheListingAnswersTheFaultLists(t *testing.T) {
 	}
 
 	body := readPriorities(t, handler, "")
-	unplaced, inBacklog := body.WorkUnderNoPriority, body.PriorityWorkParked
+	unplaced, inBacklog := body.WorkUnderNoPriority, body.PriorityWorkInBacklogOrIcebox
 	// An issue that names no priority itself is no fault of priority work in backlog or icebox,
 	// whatever it inherits, and neither is one that names only a priority an issue above it
 	// carries.

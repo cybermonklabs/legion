@@ -812,12 +812,12 @@ func (a *Admission) TellController(ctx context.Context, tx pgx.Tx, notice record
 // queuePersonHandover queues the todo write of a person's handover of key: a root a person handed
 // to Legion, which the daemon admits without an agent's act. Today that is a person's legion label
 // on an unrecorded root in triage (applyFact for the event, applySummary for the boot listing);
-// the workflow queues the same write for a person's approval of a parked labelled root's spec. The
+// the workflow queues the same write for a person's approval of the spec of a labelled root in backlog or icebox. The
 // controller used to write this todo at a triage wake, so a handover waited on an agent's memory;
 // a person's decision is the handover, and the daemon writes it itself and wakes nobody. The row
 // carries observedStatus, the status the person's act found the issue in, because its delivery
 // (the daemon's outbox) re-reads the issue and writes only while Dispatch still shows that status:
-// a person's later park, between the act and the delivery, is never undone. One row per issue at
+// a person's later move to backlog, between the act and the delivery, is never undone. One row per issue at
 // a time: while a marked row is pending (record.Store.PersonHandoverPending) a second act — the
 // stream's redelivery, another edit of the same root, the boot listing of a root an event already
 // queued — queues nothing, since the pending row carries the same write, and the triage wake that
@@ -2074,7 +2074,7 @@ func (a *Admission) releaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
 // person's approval a gate of its holds of a version its document has since moved past: the new
 // generation's architect registers each step again on a cleared gate, and its start task
-// (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest version. One
+// (workflow.Engine.UnclaimedKeptTask) tells it to request approval of the latest version. One
 // approval is kept, read from the first required step whose approved version sits below its
 // latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
 // task names the document the person reviewed rather than the spec of every deployment. The
@@ -2149,10 +2149,10 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // It also clears the mark of a release for a wait from every issue that needs no slot at all
 // (record.Issue.ReleasedForWaitAt, over issues rather than over the slotted rows): an issue
 // released for a wait holds no row, so the loop below never sees it, and it goes on working, so
-// it can reach its done, or be parked, with nothing else to clear the mark. Left standing, the
+// it can reach its done, or be moved to backlog, with nothing else to clear the mark. Left standing, the
 // mark would say the issue stands in the line waiting for its slot
 // back when nothing of it is waiting, and its work coming back later would take its place in
-// the line from the moment before the park (record.Waiting).
+// the line from the moment before the move to backlog (record.Waiting).
 func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]string, error) {
 	own, err := a.store.SlottedIssues(ctx, tx, a.project)
 	if err != nil {
@@ -3128,7 +3128,7 @@ func (a *Admission) catchingUpFor(key string) bool {
 //
 // The run is the tree root's generation, not the waiting issue's own: re-admission raises the
 // root's and leaves every member's where it stands (workflow's linger), so a sub-parent that
-// waited for its unreleased children before the park would be marked told for ever and the new
+// waited for its unreleased children before the move to backlog would be marked told for ever and the new
 // run's architect would never hear of that wait. The mark is keyed on the tree as well, because
 // a generation names a run only within one tree: a sub-parent handed over as a root of its own
 // numbers its run from its own record (readmit), which can be the number the tree it left was
@@ -3929,11 +3929,11 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in the
 // workflow, its tree running and its root not lingering, while an issue in accepting, retro or merging is in
 // the pass's records whatever Dispatch now says of it, since record.Store.LiveIssues answers
-// every record that is not done, a parked one included. So this half asks each of the three —
+// every record that is not done, one in backlog or icebox included. So this half asks each of the three —
 // record.InWorkflow, whose own statement is record.OutOfWorkflow over the Dispatch status, and
 // record.TreeRuns over the pass's lifecycles and gates, which carries the lingering root with
 // it. Without them the repair's bound would be the retired-claim skip further down rather than
-// the rule: a parked issue in its retro, or one whose tree left the workflow, would have its
+// the rule: an issue in backlog in its retro, or one whose tree left the workflow, would have its
 // worker started again. The three sibling passes carry the same guard
 // (startMidPhaseMembers, finishFencedStarts, workflow's booted).
 //
@@ -4045,7 +4045,7 @@ type slotReading struct {
 // is the issues holding a row, so a waiting issue's lost worker starts again with the row's return
 // and never before it (TestReturningASlotStopsNothing). The mark stands only while the root needs
 // a row (releaseSlots clears it), and the loop asks the same two terms the past-review half asks,
-// so a parked root, or one whose tree left the workflow, is weighed by nothing here.
+// so a root in backlog or icebox, or one whose tree left the workflow, is weighed by nothing here.
 //
 // It reads over at most the cap's worth of slotted issues, the handful in accepting, retro or merging and the
 // roots released for a wait, which the cap does not bound, through one batched record.RoleRuns
@@ -4437,8 +4437,8 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // A tree that lingers is read by the absence of its root rather than by its root's deadline: a
 // lingering root is in phase done at a status that is not todo, which is exactly what the
 // project's live read leaves out (record.Store.LiveIssues), so its record is not here to carry
-// a linger at all. Reading the zero record's deadline answered false for every parked tree,
-// which is the one case this repair exists for: the members of a parked tree keep their phase
+// a linger at all. Reading the zero record's deadline answered false for every tree whose root is in backlog or icebox,
+// which is the one case this repair exists for: the members of such a tree keep their phase
 // and their generation, so the row passed every other fence, and at the tree's re-admission its
 // issue stood in the line's first part with the old row's place and took a slot ahead of its
 // own root.

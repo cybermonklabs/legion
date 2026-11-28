@@ -148,7 +148,7 @@ export type ReplyListing = ListedReply | "gone";
 export interface DraftIntake {
   /** Drops what the composer holds - the field's draft and a send of its own held there - and
    *  ends it, as its own Discard does: the Conversation's Discard my draft for a phone thread
-   *  reply put away for a comment the list no longer holds (`usePhoneThread`'s `dropParked`),
+   *  reply put away for a comment the list no longer holds (`usePhoneThread`'s `dropPutAway`),
    *  whose composer is out of sight. */
   readonly drop: () => void;
   /** Puts `draft`, which the reader carried to `to`, in the field, and says whether it did: a

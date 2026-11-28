@@ -895,7 +895,7 @@ package api
 // for the project's own controller. It refuses a
 // claim in a turn (`CLAIM_IN_A_TURN`), a claim between states — queued, with a launch in flight,
 // one whose agent has registered and is not ready yet, or stored working under a launch the wake
-// pacing parks (`CLAIM_UNSETTLED`), of which fresh_session refuses all but the registered one,
+// pacing delays (`CLAIM_UNSETTLED`), of which fresh_session refuses all but the registered one,
 // which it reaches — a Claude Code claim, which runs no Oh My Pi session (`CLAIM_NOT_ON_OMP`),
 // and the role `controller` (`INVALID_ROLE`). The controller's `legion` tool gains
 // `compact (issue, role)` beside `fresh_session`, and
@@ -1542,7 +1542,7 @@ package api
 // finds the process gone once more, a moved claim being otherwise answered as that second read
 // finds it; at the compaction, one the machine refused as working whose later view is no longer
 // working, which before this change was read and could be answered `CLAIM_IN_A_TURN`. A claim
-// under a relaunch the wake pacing parks keeps `CLAIM_UNSETTLED`. The read records what it finds
+// under a relaunch the wake pacing delays keeps `CLAIM_UNSETTLED`. The read records what it finds
 // as the sweep's report of the process would: a running verdict that clears the death charge
 // writes the claim as the machine holds it, as that report's write does, and a refusal stops,
 // suspends, forgets, takes back and starts nothing. One answer more changed: a fresh session that
@@ -3407,8 +3407,8 @@ package api
 // enumerated field (answers.go's EnumeratedFields): `memory-guard-kill` is a kind of controller
 // notice, which no answer a plugin parses carries. So a caller at 217 is served what one at 213,
 // #4553's entry above, is, `caches` as a capability row's `source` among it, and 217's answer
-// and request records are 213's under its own number; its request records hold no `POST
-// /legion/v1/children/park` (205's entry).
+// and request records are 213's under its own number; its request records hold no body for the
+// removed child route (205's entry).
 //
 // The skew is safe in both directions. A single-role launcher of an earlier image refuses the
 // metadata flags (its validateMetadata needed `--roles-dir`), one built before 151 refuses

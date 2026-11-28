@@ -17,26 +17,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// Dispatch releases an issue's claim when the issue closes and at no other departure, so a park —
-// a root's tree lingering for backlog, icebox or triage, a root released for want of a slot, a
-// child parked alone — leaves the claim of the session the daemon just stopped standing on the
-// board. The one claim_release row each park queues is what clears it, and a close queues none:
-// the close released it already. The row carries nothing of the holder, which it reads with the
-// issue's own record when it runs.
+// Dispatch releases an issue's claim when the issue closes and at no other departure, so a move
+// short of a close — a root's tree lingering for backlog, icebox or triage, a root released for
+// want of a slot, a child moved to backlog, icebox or triage alone — leaves the claim of the
+// session the daemon just stopped standing on the board. The one claim_release row each such move
+// queues is what clears it, and a close queues none: the close released it already. The row
+// carries nothing of the holder, which it reads with the issue's own record when it runs.
 //
-// Each parking row asserts the whole set of rows the departure queued, not the release alone: the
-// park suspends every role of what it parks, and queues the suspension and, for a root, the
-// linger's close. That set is how the test shows the release was added to the park and replaced
-// nothing. No row disarms a pull request, since the daemon changes no merge setting of any
+// Each row of such a move asserts the whole set of rows the departure queued, not the release
+// alone: the move suspends every role of what it moves, and queues the suspension and, for a root,
+// the linger's close. That set is how the test shows the release was added to the move and
+// replaced nothing. No row disarms a pull request, since the daemon changes no merge setting of any
 // (dispatch://INFRA-714 R2).
 func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 	t.Parallel()
-	// A root's park acts on its whole tree: six suspends and an IssueSuspend for each of its two
+	// A root's departure acts on its whole tree: six suspends and an IssueSuspend for each of its two
 	// members, and the one row that closes the linger.
-	parkedTree := map[string]int{"supervise": 12, "issue_suspend": 2, "linger_close": 1}
-	// A child's park ends the child alone, and tells the architect above it (here the tree's) which
+	treeOutOfWorkflow := map[string]int{"supervise": 12, "issue_suspend": 2, "linger_close": 1}
+	// A child's departure ends the child alone, and tells the architect above it (here the tree's) which
 	// child left.
-	parkedChild := map[string]int{"supervise": 6, "issue_suspend": 1, "notice": 1}
+	childOutOfWorkflow := map[string]int{"supervise": 6, "issue_suspend": 1, "notice": 1}
 	for _, tc := range []struct {
 		name string
 		// lingers seeds a root whose tree already lingers, and operator one whose tree the
@@ -54,7 +54,7 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 				return engine.leave(ctx, tx, root, "backlog")
 			},
 			releases: []string{"LEGION-208"},
-			kinds:    withRelease(parkedTree),
+			kinds:    withRelease(treeOutOfWorkflow),
 		},
 		{
 			name: "a root moved to icebox",
@@ -62,7 +62,7 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 				return engine.leave(ctx, tx, root, "icebox")
 			},
 			releases: []string{"LEGION-208"},
-			kinds:    withRelease(parkedTree),
+			kinds:    withRelease(treeOutOfWorkflow),
 		},
 		{
 			name: "a root moved to triage",
@@ -70,7 +70,7 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 				return engine.leave(ctx, tx, root, "triage")
 			},
 			releases: []string{"LEGION-208"},
-			kinds:    withRelease(parkedTree),
+			kinds:    withRelease(treeOutOfWorkflow),
 		},
 		{
 			name: "a child moved to backlog",
@@ -78,7 +78,7 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 				return engine.leave(ctx, tx, child, "backlog")
 			},
 			releases: []string{"LEGION-209"},
-			kinds:    withRelease(parkedChild),
+			kinds:    withRelease(childOutOfWorkflow),
 		},
 		{
 			// The unslotted release leaves at the active status the root stands at, so the row is
@@ -88,21 +88,21 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 				return engine.LeaveUnslotted(ctx, tx, root)
 			},
 			releases: []string{"LEGION-208"},
-			kinds:    withRelease(parkedTree),
+			kinds:    withRelease(treeOutOfWorkflow),
 		},
 		{
 			name: "a root closed as done",
 			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
 				return engine.leave(ctx, tx, root, "done")
 			},
-			kinds: parkedTree,
+			kinds: treeOutOfWorkflow,
 		},
 		{
 			name: "a child closed as done",
 			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, _, child record.Issue) error {
 				return engine.leave(ctx, tx, child, "done")
 			},
-			kinds: parkedChild,
+			kinds: childOutOfWorkflow,
 		},
 		{
 			// The first leave of this tree queued its release; a root that already lingers leaves
@@ -167,10 +167,11 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 	}
 }
 
-// withRelease is the rows a park queues with the one claim_release row of its own.
-func withRelease(park map[string]int) map[string]int {
+// withRelease is the rows a move short of a close queues: left's, with the one claim_release row
+// of its own.
+func withRelease(left map[string]int) map[string]int {
 	kinds := map[string]int{"claim_release": 1}
-	for kind, count := range park {
+	for kind, count := range left {
 		kinds[kind] = count
 	}
 	return kinds

@@ -149,16 +149,16 @@ func TestAnUnmergedCloseEndsAMergeWhoseFenceIsAnEarlierLingers(t *testing.T) {
 	engine := stepEngine(nil)
 	mergingChild(t, pool, engine)
 	apply := applyFacts(t, pool, engine)
-	apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+	apply("backlog-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 		Status: "backlog", Title: "root", Rank: "U"})
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return engine.store.PutHandover(t.Context(), tx, record.Handover{Issue: "LEGION-209", Tree: root.Tree, Generation: root.Generation - 1})
 	})
 	if _, end := runOf(stepWrites(t, pool, "LEGION-209"), "merge", 0); isEnd(end) {
-		t.Fatalf("the park ended LEGION-209's merge %+v; a merge that awaits its landing in the linger stays open", end)
+		t.Fatalf("the move to backlog ended LEGION-209's merge %+v; a merge that awaits its landing in the linger stays open", end)
 	}
-	parked := issueRecord(t, pool, root.Key)
-	engine.cfg.Clock = func() time.Time { return parked.LingerUntil.Add(time.Second) }
+	inBacklog := issueRecord(t, pool, root.Key)
+	engine.cfg.Clock = func() time.Time { return inBacklog.LingerUntil.Add(time.Second) }
 	apply("close-unmerged", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"})
 	start, end := runOf(stepWrites(t, pool, "LEGION-209"), "merge", 0)
 	if !isEnd(end) || end.ID != start.ID {

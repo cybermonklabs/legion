@@ -119,7 +119,7 @@ func newMainPathRig(t *testing.T, wired bool) *mainPathRig {
 	admission := admit.New(records, engine, 1, mainPathProject, quietLogger())
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	// The hold of what a root architect's task names is the claim store's own write
-	// (20261101163106_parked_decisions), so this rig runs through the daemon's own claim store: a task held
+	// (migration 20261101163106), so this rig runs through the daemon's own claim store: a task held
 	// on the claim holds those rows, and the next start of the root names none of them again.
 	trees := outboxTreeStore(t, pool, mainPathRoot)
 	sup.deps.Store = keptClaimStore{Store: trees}
@@ -198,7 +198,7 @@ func (r *mainPathRig) admitPass() {
 
 // decide is a person answering ask of the root, as Dispatch's event reaches the engine: on a root
 // nobody in whose tree hears it, the one rule for such a decision keeps it for the next architect
-// start (record.RelayParkedDecision). It returns the reference the start's task must name.
+// start (record.RelayKeptDecision). It returns the reference the start's task must name.
 func (r *mainPathRig) decide(ask string) string {
 	r.t.Helper()
 	ref := fmt.Sprintf("dispatch://%s/ask/%s", r.key, ask)
@@ -211,18 +211,18 @@ func (r *mainPathRig) decide(ask string) string {
 	return ref
 }
 
-// park is a person setting the running root to backlog: the engine takes it out of the workflow,
+// toBacklog is a person setting the running root to backlog: the engine takes it out of the workflow,
 // where its tree lingers and every claim of it is queued a suspend.
-func (r *mainPathRig) park() {
+func (r *mainPathRig) toBacklog() {
 	r.t.Helper()
 	r.apply("backlog", intake.DispatchIssue{Key: r.key, ResolvedRepo: "acme/widgets", Seq: r.nextSeq(), Type: "issue.updated",
 		Status: "backlog", Title: "root", Rank: "A", HandedOver: true})
 	if got := r.issue(); got.Status != "backlog" || !got.Lingers() {
-		r.t.Fatalf("the parked root = %+v, want it out of the workflow with its tree lingering", got)
+		r.t.Fatalf("the root in backlog = %+v, want it out of the workflow with its tree lingering", got)
 	}
 }
 
-// handBack is a person setting the parked root to todo again: admission re-admits it at the next
+// handBack is a person setting the root in backlog to todo again: admission re-admits it at the next
 // generation and this same pass admits it, which queues its architect's start.
 func (r *mainPathRig) handBack() {
 	r.t.Helper()
@@ -278,7 +278,7 @@ func (r *mainPathRig) runStarts() {
 	}
 }
 
-// runSuspend runs the architect's suspend row the park queued (the engine's beginLinger), as the
+// runSuspend runs the architect's suspend row the move to backlog queued (the engine's beginLinger), as the
 // supervise lane runs it, and holds the claim to the suspension it writes.
 func (r *mainPathRig) runSuspend() {
 	r.t.Helper()
@@ -308,7 +308,7 @@ func (r *mainPathRig) machine() *supervise.Machine {
 }
 
 // launchArchitect creates the root architect's claim and launches it, as its first start does: the
-// session that goes on running across the root's waits and parks.
+// session that goes on running across the root's waits and its moves to backlog.
 func (r *mainPathRig) launchArchitect() {
 	r.t.Helper()
 	machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: r.key, Issue: r.key,
@@ -398,7 +398,7 @@ type mainPath struct {
 }
 
 // mainPaths are those ways, each driving the real admission: its fresh start for a root that
-// waited in `todo` for its slot, the start of its re-admission after a park, and the resume task an
+// waited in `todo` for its slot, the start of its re-admission after a move to backlog, and the resume task an
 // answered root's architect is given — from admission's answered branch and from the reconcile that
 // finds a person already acted.
 var mainPaths = []mainPath{
@@ -410,7 +410,7 @@ var mainPaths = []mainPath{
 
 // freshAdmissionPath: a person decides on a labelled, handed-over `todo` root while it waits for
 // its slot, so the decision is kept; an admission pass admits it and queues the architect start
-// whose task names that decision (admission's ParkedDecisionTask); the start launches the
+// whose task names that decision (admission's UnclaimedKeptTask); the start launches the
 // architect, and its ready is what sends the task.
 func freshAdmissionPath(r *mainPathRig) string {
 	r.put(r.waitingRoot())
@@ -427,8 +427,8 @@ func freshAdmissionPath(r *mainPathRig) string {
 	return ref
 }
 
-// readmissionPath: the root ran, a person parked it to backlog and its architect's suspend ran, a
-// person then decided on the parked tree (kept), and a person handed it back to `todo`, which
+// readmissionPath: the root ran, a person moved it to backlog and its architect's suspend ran, a
+// person then decided on the tree in backlog (kept), and a person handed it back to `todo`, which
 // re-admits it at the next generation. That generation's start names the kept decision, resumes
 // the suspended architect, and the resumed agent's ready is what sends the task.
 func readmissionPath(r *mainPathRig) string {
@@ -437,9 +437,9 @@ func readmissionPath(r *mainPathRig) string {
 	r.runStarts()
 	r.bringUp()
 	// The first start gives a fresh architect its tree's own first task
-	// (workflow.ArchitectStartTask), which it works before anything parks it.
+	// (workflow.ArchitectStartTask), which it works before anything moves it to backlog.
 	r.takeTheTask()
-	r.park()
+	r.toBacklog()
 	r.runSuspend()
 	ref := r.decide(mainPathAsk)
 	r.handBack()
@@ -518,7 +518,7 @@ func toldInPlacePath(r *mainPathRig) string {
 // reaches its architect exactly once, the answer was asked for it and said yes, and the prompt
 // count is the same as main's own, which sends everything (Deps.RootHears nil).
 //
-// The negative control is the same root parked again while its start task waits on a ready claim:
+// The negative control is the same root moved to backlog again while its start task waits on a ready claim:
 // there the answer says no, and the task is held rather than prompted to an architect no run of
 // the root owns. The start of the root's next run carries a task of a newer entry, which takes the
 // held task's place: the held task is retired unsent, and the decision it named is told by the
@@ -570,23 +570,23 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		})
 	}
 
-	// The same root as the fresh admission, parked again before the architect it launched comes up:
+	// The same root as the fresh admission, moved to backlog again before the architect it launched comes up:
 	// the start's task waits on a ready claim while the root has nobody to hear it. The answer holds
-	// it there — unsent, still pending — for as long as the root is parked.
-	t.Run("a task of a parked root is held, then superseded by the start of the root's next run", func(t *testing.T) {
+	// it there — unsent, still pending — for as long as the root is in backlog.
+	t.Run("a task of a root in backlog is held, then superseded by the start of the root's next run", func(t *testing.T) {
 		rig := newMainPathRig(t, true)
 		rig.put(rig.waitingRoot())
 		ref := rig.decide(mainPathAsk)
 		rig.admitPass()
 		rig.runStarts()
-		rig.park()
+		rig.toBacklog()
 		rig.bringUp()
 		pending := rig.machine().Claim().Pending
 		if pending == nil || !strings.Contains(pending.Task, ref) || !pending.DeliveredAt.IsZero() {
-			t.Fatalf("the parked root's task = %#v, want it pending and unsent on the ready claim", pending)
+			t.Fatalf("the task of the root in backlog = %#v, want it pending and unsent on the ready claim", pending)
 		}
 		if got := rig.prompts(); len(got) != 0 {
-			t.Fatalf("the architect of a parked root was prompted %+v, want nothing: no run of the root owns it", got)
+			t.Fatalf("the architect of a root in backlog was prompted %+v, want nothing: no run of the root owns it", got)
 		}
 		refused := rig.asked.about(pending.ID)
 		if len(refused) == 0 {
@@ -594,7 +594,7 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 		}
 		for _, call := range refused {
 			if call.hears {
-				t.Fatalf("RootHears answered yes for %#v while %s is parked and lingering, want no", call, rig.key)
+				t.Fatalf("RootHears answered yes for %#v while %s is in backlog and lingering, want no", call, rig.key)
 			}
 		}
 

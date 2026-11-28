@@ -19,11 +19,11 @@ import (
 // backfill of design_gates.ever_opened decides it.
 //
 // The backfill reads a member of the tree standing in a phase other than admitted as proof that
-// the gate opened. A parked member is one: workflow's leave records any non-root member a person
+// the gate opened. A member out of the workflow is one: workflow's leave records any non-root member a person
 // moves to backlog, icebox, triage or done at phase.Done, whatever the gate was doing, and a
 // child of a live tree is recorded before any release (the daemon records every live-tree child).
 // So a tree whose architect has not yet had its spec approved, and one of whose filed children a
-// person parked, reads as a tree whose gate opened.
+// person moved to backlog, reads as a tree whose gate opened.
 //
 // What that costs after the upgrade: the first admission pass takes the root's slot back while
 // its architect works, the root is in neither part of the waiting line (its gate is not open, so
@@ -35,14 +35,14 @@ func TestTheMigrationLeavesAGateThatNeverOpenedUnopened(t *testing.T) {
 	st := preReleaseStore(t)
 	pool := st.Pool()
 	records := record.NewStore()
-	root, parked := bootProject+"-1", bootProject+"-2"
+	root, inBacklog := bootProject+"-1", bootProject+"-2"
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		// The root whose architect is writing the spec, and the child of its tree a person
-		// parked before any approval, which the record keeps at phase done.
+		// moved to backlog before any approval, which the record keeps at phase done.
 		if err := records.PutIssue(ctx, tx, bootIssue(root, root, "in_progress", phase.Admitted)); err != nil {
 			return err
 		}
-		if err := records.PutIssue(ctx, tx, bootIssue(parked, root, "backlog", phase.Done)); err != nil {
+		if err := records.PutIssue(ctx, tx, bootIssue(inBacklog, root, "backlog", phase.Done)); err != nil {
 			return err
 		}
 		// The gate as the architect registered it: a document and a version, with no approval.
@@ -64,7 +64,7 @@ func TestTheMigrationLeavesAGateThatNeverOpenedUnopened(t *testing.T) {
 		t.Fatalf("read the gate of %s: %v", root, err)
 	}
 	if everOpened {
-		t.Fatalf("the migration marked the gate of %s as having opened, though no version of its spec was ever approved: a parked child is recorded at phase done whatever the gate did", root)
+		t.Fatalf("the migration marked the gate of %s as having opened, though no version of its spec was ever approved: a child in backlog is recorded at phase done whatever the gate did", root)
 	}
 
 	// And the boot that follows leaves the architect its slot.

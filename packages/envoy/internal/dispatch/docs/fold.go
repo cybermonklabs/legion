@@ -4,7 +4,7 @@ package docs
 // share (foldRead), which folds rows totalling at most foldBufferBytes from memory once its
 // transaction has ended and streams larger logs inside it; the state the rows make (stateThrough);
 // the document that state decodes into (documentThrough, LoadDocument); the fold itself (fold,
-// readsBackOtherwise); and whether a document holds anything it cannot place (parks).
+// readsBackOtherwise); and whether a document holds anything it cannot place (holdsPending).
 
 import (
 	"context"
@@ -20,12 +20,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// parks reports whether doc holds anything it cannot place: an item whose origin or predecessor
-// has not arrived, or a delete of an item it does not hold. A document that parks nothing holds
+// holdsPending reports whether doc holds anything it cannot place: an item whose origin or predecessor
+// has not arrived, or a delete of an item it does not hold. A document that holds nothing pending holds
 // whole every update applied to it.
-func parks(doc *crdt.Doc) bool {
-	parked := doc.PendingStats()
-	return parked.Items > 0 || parked.DeleteRanges > 0
+func holdsPending(doc *crdt.Doc) bool {
+	pending := doc.PendingStats()
+	return pending.Items > 0 || pending.DeleteRanges > 0
 }
 
 // stateThrough returns the state the room's stored updates through version, which updates replays,
@@ -37,19 +37,19 @@ func parks(doc *crdt.Doc) bool {
 // validation - is a crdt.New, which collects an item's content in the transaction that deletes it,
 // the transaction that applies a load included.
 //
-// A document parks an update whose dependencies have not arrived, and a delete of an item it does
+// A document keeps pending an update whose dependencies have not arrived, and a delete of an item it does
 // not hold. ygo's encoding of the document carries both (upstream since v1.51.0), and when the
-// document parked anything stateThrough also merges in each stored update's structs past the
+// document left anything pending stateThrough also merges in each stored update's structs past the
 // document's state vector and every stored update's deletes, as it did while ygo's encoding
-// carried neither; a room that loads the state parks them again.
+// carried neither; a room that loads the state keeps them pending again.
 //
 // The state is kept only when it reads back as the document that made it: decoded into a fresh
 // document, it must make the same state vector. That catches a re-encoding that renumbers or drops
 // a client's clocks, as a decoder that integrated the items after a skipped clock range would, at
-// lower clocks; ygo parks them (upstream since v1.51.0, reearth/ygo#257). It does not catch a
+// lower clocks; ygo keeps them pending (upstream since v1.51.0, reearth/ygo#257). It does not catch a
 // re-encoding that keeps every clock and moves text, such as a lost right origin:
 // TestACompactedDocumentKeepsItsOrderThroughLaterUpdates guards that on each ygo bump. A state that
-// reads back otherwise, or a log the fold's document cannot apply (one parking more than its
+// reads back otherwise, or a log the fold's document cannot apply (one leaving more pending than its
 // pending queue, maxPending, holds), is not used: stateThrough returns the same stored updates
 // merged whole, as they were stored (mergedThrough), and a compaction, which calls fold itself,
 // leaves them as stored. The merge of a log the fold cannot apply is what a load of it decodes and
@@ -227,7 +227,7 @@ func readStoredLog(ctx context.Context, tx pgx.Tx, room string) (storedLog, erro
 var errUnfoldable = errors.New("apply a stored document update")
 
 // updateSource hands use each update of a stored log, oldest first, every time it is called: the
-// fold reads the log a second time when its document parked anything. It replays either the rows
+// fold reads the log a second time when its document left anything pending. It replays either the rows
 // a transaction reads (storedUpdates) or rows already read into memory (memoryUpdates), so a load
 // and a compaction fold one way whichever holds the rows.
 type updateSource func(use func([]byte) error) error
@@ -300,12 +300,12 @@ func fold(updates updateSource, maxPending int) (state []byte, readBack *crdt.Do
 	}
 	state = crdt.EncodeStateAsUpdateV1(doc, nil)
 	made := doc.StateVector()
-	if parks(doc) {
+	if holdsPending(doc) {
 		parts := [][]byte{state}
 		if err := updates(func(update []byte) error {
 			rest, err := crdt.DiffUpdateV1(update, made)
 			if err != nil {
-				return fmt.Errorf("read parked document update: %w", err)
+				return fmt.Errorf("read pending document update: %w", err)
 			}
 			parts = append(parts, rest)
 			return nil
@@ -313,7 +313,7 @@ func fold(updates updateSource, maxPending int) (state []byte, readBack *crdt.Do
 			return nil, nil, nil, err
 		}
 		if state, err = crdt.MergeUpdatesV1(parts...); err != nil {
-			return nil, nil, nil, fmt.Errorf("keep parked document updates: %w", err)
+			return nil, nil, nil, fmt.Errorf("keep pending document updates: %w", err)
 		}
 	}
 	doc = nil

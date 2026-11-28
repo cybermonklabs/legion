@@ -11,6 +11,10 @@ const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
 /** The one list of the statuses backlog and icebox: the count here and the priorities page's
  *  fault list of the priority work in either (`PrioritiesPage.tsx`) both read it. */
 export const BACKLOG_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
+/** The key the priorities page's list of priority work in backlog or icebox keeps its layout
+ *  under (`PrioritiesPage.tsx`'s `BACKLOG_LAYOUT`), which the move of a layout stored under the
+ *  key the list had before writes to (`moveFormerPriorityLayouts`). */
+export const BACKLOG_LAYOUT_KEY = "priorities-backlog";
 
 /** What the newest-event column files a row under when nothing under the priority has moved. */
 export const NEVER_MOVED = "Never";
@@ -155,6 +159,10 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
 ];
 
 export const PRIORITY_COLUMNS_BY_ID = columnsById(PRIORITY_COLUMNS);
+/** The layout key of the priorities table: one table, one deployment, one stored layout. Its
+ *  backlog column was stored under an older id, which moves once, before the app first renders
+ *  (`PRIORITY_FORMER_IDS`, `moveFormerPriorityLayouts`). */
+export const PRIORITY_LAYOUT_KEY = "priorities";
 /** The priorities table's layout: the order and the title pinned, and the title filling a
  *  desktop box with what the other shown columns leave (`fills`), so nothing scrolls sideways. */
 export const PRIORITY_LAYOUT = { ...tableLayout(PRIORITY_COLUMNS, "title"), fills: "title" };
@@ -163,3 +171,10 @@ export const PRIORITY_LAYOUT = { ...tableLayout(PRIORITY_COLUMNS, "title"), fill
 export const PRIORITY_PHONE_HIDDEN = phoneHidden(PRIORITY_COLUMNS);
 /** The table opens in the one order, which is what the page is about. */
 export const PRIORITY_SORTING = [{ id: "order", desc: false }];
+/** The id the backlog column had before, with the id it has now: a reader's stored width, place
+ *  and visibility of it move under `backlog` once, before the app first renders
+ *  (`moveFormerPriorityLayouts`), and an older link's sort by it is read under `backlog`
+ *  (`readTableView`). An older link's filter by it is not read, as it names no column of the
+ *  table, and goes from the address at the next change (`writeTableView`): it filters nothing, as
+ *  one by `backlog` does, since a count has no filter. */
+export const PRIORITY_FORMER_IDS: ReadonlyMap<string, string> = new Map([["parked", "backlog"]]);

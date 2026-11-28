@@ -506,7 +506,7 @@ func TestAChangesRequestARootNeverResumedForIsNotRecordedAsTold(t *testing.T) {
 	version := 2
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2,
 		ToldChangesVersion: &version, ToldChangesReason: "say more"})
-	apply("parked", intake.DispatchIssue{Key: "LEGION-208", Seq: 20, Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"})
+	apply("backlog", intake.DispatchIssue{Key: "LEGION-208", Seq: 20, Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"})
 	if gate := recordedGate(t, pool); gate == nil || gate.ToldChangesVersion != nil {
 		t.Fatalf("gate = %+v, want the told record cleared with the root's leaving", gate)
 	}
@@ -622,7 +622,7 @@ func TestALaterChangesRequestARootNeverResumedForIsNotRecordedAsTold(t *testing.
 			version := 2
 			seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2,
 				ToldChangesVersion: &version, ToldChangesReason: "say more", ToldChangesMark: record.EventMark{Seq: tc.seq}})
-			apply("parked", intake.DispatchIssue{Key: "LEGION-208", Seq: 20, Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"})
+			apply("backlog", intake.DispatchIssue{Key: "LEGION-208", Seq: 20, Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"})
 			gate := recordedGate(t, pool)
 			if gate == nil || (gate.ToldChangesVersion == nil) != tc.cleared {
 				t.Fatalf("gate = %+v, want the told record cleared = %v", gate, tc.cleared)

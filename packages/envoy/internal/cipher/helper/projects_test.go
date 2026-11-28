@@ -128,7 +128,7 @@ func TestAnAttachToARegisteredSessionKeepsItsProjects(t *testing.T) {
 }
 
 // TestASessionComingBackUnderOtherProjectsGetsANewIdentity: a named session whose process is
-// gone is parked with its projects; coming back naming another list, it does not take the parked
+// gone is kept dormant with its projects; coming back naming another list, it does not take the dormant
 // key or enrollment, whose grants were decided under the old list: it gets a fresh key, and the
 // old enrollment is revoked.
 func TestASessionComingBackUnderOtherProjectsGetsANewIdentity(t *testing.T) {

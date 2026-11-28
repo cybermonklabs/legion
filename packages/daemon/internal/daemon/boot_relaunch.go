@@ -167,7 +167,7 @@ func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.To
 // recordedDeaths is the claims of claims, as the boot restored them, whose record says the process
 // they record died: a live claim with its death charged (supervise.Claim.DeathCharged) and a
 // locator. The daemon before this one judged each process gone and charged its death, and the
-// relaunch it raised for it lived in its memory alone, a wake the pacing parked, which the restart
+// relaunch it raised for it lived in its memory alone, a wake the pacing delayed, which the restart
 // lost (dispatch://INFRA-5472). The boot relaunches each beside its unfinished launches
 // (relaunchUnfinished), rather than when the runtime next reports the death: in a pod that lives
 // on — its roles container restarted — that report waits for the pod's launcher to reconnect, a
@@ -192,7 +192,7 @@ func recordedDeaths(claims []supervise.Claim) []claim.Token {
 // would only give up again. A report of the death decided before this read keeps the place it
 // joined itself, in the first queue the pass would have placed it in. One decided after this read
 // and before the pass takes its places joins a place ahead of the pass's, so the replay moves
-// nothing and gives up the place the pass took for it. One decided after the pass parks its
+// nothing and gives up the place the pass took for it. One decided after the pass delays its
 // relaunch behind every place the pass took in the first queue, and the replay moves that wake to
 // the place the pass took for it (supervise's takeEarlierPlace), giving the report's own place up.
 func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {

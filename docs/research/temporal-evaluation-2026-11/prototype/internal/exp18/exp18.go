@@ -156,7 +156,7 @@ func call(ctx *task.WorkflowContext, p Params, name string) error {
 	return ctx.CallActivity(name, task.WithActivityInput(stepInput{Params: p, Step: name})).Await(&line)
 }
 
-// wait is the gate every body stops at, so a change meets a run that is parked.
+// wait is the gate every body stops at, so a change meets a run that waits there.
 func wait(ctx *task.WorkflowContext) error {
 	var answer string
 	return ctx.WaitForSingleEvent(ReleaseEvent, Wait).Await(&answer)

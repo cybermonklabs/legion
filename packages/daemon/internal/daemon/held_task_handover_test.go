@@ -33,7 +33,7 @@ const (
 // could hear them, and the claim's write of the delivery that task is queued as takes those rows
 // from the start row and holds them: they stand where they always stood, under the issue each was
 // decided on, and the delivery's confirmation is what tells them. Such a task waits on the claim,
-// unsent, while its root is parked, lingering or waiting for its slot (supervise's
+// unsent, while its root is in backlog, lingering or waiting for its slot (supervise's
 // Deps.RootHears), and the root's linger can hand a child of that tree to Legion meanwhile. The
 // child is a tree of its own from then on, so a hold of a claim of the tree it left counts for
 // nothing and the child's own architect names what was decided on it; the old architect's task
@@ -175,7 +175,7 @@ func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t 
 	replaced := record.DecisionMark{Issue: key, Ref: "dispatch://" + key + "/ask/ask-0002", Decision: record.DecisionAskAnswered,
 		Actor: "user:alice", At: at.Add(time.Minute)}
 	named := record.KeptDecisions{Decisions: []record.DecisionMark{kept, replaced}}
-	if _, err := pool.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
+	if _, err := pool.Exec(ctx, `insert into kept_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
 		values ($1, $2, $3, $4, $5, $6, 'outbox:7'), ($1, $7, $3, $4, $8, null, null)`,
 		key, kept.Ref, string(kept.Decision), kept.Actor, kept.At, string(token), replaced.Ref, at.Add(time.Hour)); err != nil {
 		t.Fatalf("keep the decisions of %s, the first held by the architect's task: %v", key, err)
@@ -298,7 +298,7 @@ func (r *heldTaskRig) put(issue record.Issue) {
 }
 
 // launchArchitect creates the root architect's claim, launches it and brings its agent up: the one
-// session that goes on running across the root's park and its next run.
+// session that goes on running across the root's move to backlog and its next run.
 func (r *heldTaskRig) launchArchitect() {
 	r.t.Helper()
 	machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: heldTaskRoot,
@@ -335,7 +335,7 @@ func (r *heldTaskRig) bootArchitect(machine *supervise.Machine, who string) {
 
 // decide is a person deciding on an ask of issue while nobody in the root's tree hears it, kept
 // under the root by the one rule both paths that find such a decision follow
-// (record.RelayParkedDecision). It returns the reference a start task of the root must name.
+// (record.RelayKeptDecision). It returns the reference a start task of the root must name.
 func (r *heldTaskRig) decide(issue string) string {
 	r.t.Helper()
 	r.decided++
@@ -347,8 +347,8 @@ func (r *heldTaskRig) decide(issue string) string {
 		if err != nil || stored == nil {
 			return err
 		}
-		outcome, err = record.RelayParkedDecision(r.ctx, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: ref, Decision: record.DecisionAskAnswered,
+		outcome, err = record.RelayKeptDecision(r.ctx, tx, r.records, issue, *stored, true,
+			record.KeptDecision{Ref: ref, Decision: record.DecisionAskAnswered,
 				Actor: "user:alice", At: r.at}, record.Notice{}, nil)
 		return err
 	}); err != nil {
@@ -395,7 +395,7 @@ func (r *heldTaskRig) readmit() {
 func (r *heldTaskRig) enqueueStart() int64 {
 	r.t.Helper()
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		task, named, err := r.engine.ParkedDecisionTask(r.ctx, tx, r.root)
+		task, named, err := r.engine.UnclaimedKeptTask(r.ctx, tx, r.root)
 		if err != nil {
 			return err
 		}

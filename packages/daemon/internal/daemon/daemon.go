@@ -2647,7 +2647,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		if open, paused, err = s.pauses.service.Load(boot); err != nil {
 			return fmt.Errorf("read whether the project is paused: %w", err)
 		}
-		// Before any claim is restored, so the machines that park a launch again stop its
+		// Before any claim is restored, so the machines that delay a launch again stop its
 		// resume's clock after this has started it (projectPause.startStoppedResumeClocks).
 		if err := s.pauses.startStoppedResumeClocks(boot); err != nil {
 			return err
@@ -2715,7 +2715,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 	// over the unfinished launches, in their order (relaunchUnfinished), and that launch is on this
 	// daemon's contract; a stale-plugin relaunch posted to it first would raise its launch outside
 	// that order and leave the turn the pass reserves it spent. The orphan sweep's own stale-plugin
-	// posts pass over a claim whose relaunch waits (parkedWakes), so this is the one post to skip.
+	// posts pass over a claim whose relaunch waits (delayedWakes), so this is the one post to skip.
 	deaths := recordedDeaths(s.claims)
 	s.refreshStalePlugins(slices.DeleteFunc(slices.Clone(s.claims), func(c supervise.Claim) bool { return slices.Contains(deaths, c.Token) }), "boot")
 	if len(deaths) > 0 {
@@ -2826,15 +2826,15 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // each credit, granted before its previous correction, that the machine holding it no longer
 // holds for a launch of the lane still owed on it, which is the backstop for a credit lost to a
 // path that gives none back, and then sets its count from the refresh wakes the machines' views
-// show waiting — the lane's own kind, the one kind only this lane parks
-// (supervise.WakePluginRefresh, parkedWakes) — or leaves it at the credits out, whichever is
+// show waiting — the lane's own kind, the one kind only this lane delays
+// (supervise.WakePluginRefresh, delayedWakes) — or leaves it at the credits out, whichever is
 // more. Every such wake holds a credit, so the reading is above the credits out only by the lag
 // of a view a machine has not stored yet. The boot pass corrects an empty gate, which is what a
 // restart leaves: no machine of this daemon holds a wake yet, so the reading is zero and the
 // fleet's refresh starts with every credit free (supervise.RefreshGate.Correct).
 //
 // A claim whose machine already holds a waiting wake is passed over before the gate is asked at
-// all, read from the same snapshot the correction counts (parkedWakes). The machine decides such
+// all, read from the same snapshot the correction counts (delayedWakes). The machine decides such
 // a claim nothing — refreshPlugin returns over a claim that already holds a wake of any kind, and
 // gives back whatever credit the post carried — so asking for one here would spend an admission
 // on a claim that raises no relaunch, and spend it for most of the pass, since the machine's
@@ -2868,7 +2868,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // decides the post against unless a decision lands in between, so what is left of that window is
 // one decision long rather than a reconciliation long.
 //
-// The skip of a claim in a turn is as imperfect as the parked skip above, and costs what that one
+// The skip of a claim in a turn is as imperfect as the delayed-wake skip above, and costs what that one
 // costs. The machine decides the post as the claim stands when the post reaches it: a claim read
 // idle can have started a turn by then, and one read working can have ended it. The first is
 // posted a credit the machine gives straight back (refreshPlugin, endRefreshLane) and is
@@ -2889,7 +2889,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // (refreshPlugin).
 func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger string) {
 	noInstall := func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) }
-	parked, refreshes := s.parkedWakes()
+	delayed, refreshes := s.delayedWakes()
 	s.refreshGate.Correct(refreshes)
 	refused := 0
 	for _, c := range claims {
@@ -2906,7 +2906,7 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 			}
 			continue
 		}
-		if parked[c.Token] {
+		if delayed[c.Token] {
 			continue
 		}
 		// The two posts that take no credit, each for the reason above it: the controller's
@@ -3006,7 +3006,7 @@ func claimsToRefresh(claims []supervise.Claim, noPluginInstall func(supervise.Cl
 	return left
 }
 
-// parkedWakes is every claim of this daemon whose machine holds a waiting wake of any kind,
+// delayedWakes is every claim of this daemon whose machine holds a waiting wake of any kind,
 // with the refreshes of that same reading counted beside it: the two answers the refresh pass
 // needs come from one walk of the published views, so the claims it passes over and the count
 // it puts the gate right from are of one instant rather than of two (waitingWakes; the pass
@@ -3016,25 +3016,25 @@ func claimsToRefresh(claims []supervise.Claim, noPluginInstall func(supervise.Cl
 // would decide this claim anything, and refreshPlugin decides a claim that holds a wake of any
 // kind nothing at all. The count beside it is the lane's own kind alone, because those are the
 // wakes the gate bounds, and each holds a credit. A launch of the lane that waits outside the
-// pacing — held by the pause's gate, parked at its issue pod's start gate, or a retry — is in no
+// pacing — held by the pause's gate, waiting at its issue pod's start gate, or a retry — is in no
 // view as a waiting wake, and the credit it keeps is what the gate counts for it.
 //
 // The reading is of the views each machine last published, so it lags a decision in flight in both
-// directions (Machine.WaitingWake): a claim whose wake was parked a moment ago can be missing from
+// directions (Machine.WaitingWake): a claim whose wake was delayed a moment ago can be missing from
 // it, and one whose wake has just run can still be in it. The first costs nothing here: it is a
 // post the machine answers by giving its credit straight back. The second is a claim the pass
 // leaves to the next sweep, a minute later, and it can make the count one more than the credits
 // out, which admits one fewer until then (supervise.RefreshGate.Correct).
-func (s *supervision) parkedWakes() (map[claim.Token]bool, int) {
-	parked := map[claim.Token]bool{}
+func (s *supervision) delayedWakes() (map[claim.Token]bool, int) {
+	delayed := map[claim.Token]bool{}
 	refreshes := 0
 	for _, wake := range s.waitingWakes() {
-		parked[wake.Claim] = true
+		delayed[wake.Claim] = true
 		if wake.Kind == supervise.WakePluginRefresh {
 			refreshes++
 		}
 	}
-	return parked, refreshes
+	return delayed, refreshes
 }
 
 // noPluginInstall is c's launch installing no plugin at all, whatever contract the claim records:

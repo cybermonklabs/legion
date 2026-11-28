@@ -55,7 +55,7 @@ func TestAnAdoptedClosedTreesMemberForgetsOnlyTheChangesRequestItsGatesApprovalS
 					LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true}); err != nil {
 					return err
 				}
-				return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: member, Ref: ref,
+				return records.KeepDecision(ctx, tx, record.KeptDecision{Issue: member, Ref: ref,
 					Decision: record.DecisionDesignChangesRequested, Actor: "user:alice", At: tc.mark.At, Seq: tc.mark.Seq})
 			}); err != nil {
 				t.Fatalf("keep the person's changes request beside the gate's approval: %v", err)
@@ -66,10 +66,10 @@ func TestAnAdoptedClosedTreesMemberForgetsOnlyTheChangesRequestItsGatesApprovalS
 				return engine.AdoptMember(ctx, tx, adopted, live, intake.AdoptedChild{Issue: member, Parent: live.Key})
 			})
 
-			var kept []record.ParkedDecision
+			var kept []record.KeptDecision
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				var err error
-				kept, err = records.ParkedDecisions(ctx, tx, live.Tree)
+				kept, err = records.KeptDecisionsOf(ctx, tx, live.Tree)
 				return err
 			}); err != nil {
 				t.Fatalf("read what the tree of %s keeps: %v", live.Tree, err)

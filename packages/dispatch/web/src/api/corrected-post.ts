@@ -302,7 +302,8 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   priorities: "the priorities and the work under them",
   "priorities full": "the priorities and the work under them",
   "priorities history": "one priority's history of its own fields",
-  "priorities summary": "the two counts of work under no priority and parked under one",
+  "priorities summary":
+    "the two counts of work under no priority and in backlog or icebox under one",
   project: "a project's documents by name, as `artifacts` lists an issue's",
   "project-default-assignees": "each project's default assignee",
   projects: "the projects",

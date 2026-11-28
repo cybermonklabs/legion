@@ -1182,7 +1182,7 @@ type blockingProxy struct {
 }
 
 // startBlockingProxy listens on 127.0.0.1 and forwards what it accepts to server, the address of
-// the test database. Its cleanup lets the blocked connections go, so nothing is left parked on
+// the test database. Its cleanup lets the blocked connections go, so nothing is left blocked on
 // the proxy and the backends behind them end.
 func startBlockingProxy(t *testing.T, server string) *blockingProxy {
 	t.Helper()
@@ -1202,7 +1202,7 @@ func startBlockingProxy(t *testing.T, server string) *blockingProxy {
 				return
 			}
 			// A connection accepted once the proxy is blocked is forwarded all the same: a nil
-			// channel is never ready, so its copies never park.
+			// channel is never ready, so its copies never block.
 			blocked := proxy.blocked
 			select {
 			case <-proxy.blocked:
@@ -1232,7 +1232,7 @@ func (p *blockingProxy) serve(client net.Conn, blocked <-chan struct{}) {
 	p.forward(client, server, blocked)
 }
 
-// forward copies src to dst until either side ends, and parks on the first read it makes once the
+// forward copies src to dst until either side ends, and blocks on the first read it makes once the
 // proxy is blocked: neither those bytes nor the end of src's side reach dst until the release.
 func (p *blockingProxy) forward(dst, src net.Conn, blocked <-chan struct{}) {
 	buffer := make([]byte, 32*1024)
@@ -1309,7 +1309,7 @@ func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
 	}
 	proxied := &store.Store{Pool: store.NewPool(opened)}
 	defer func() {
-		// The link goes first: a pool whose connection is parked on the proxy cannot close.
+		// The link goes first: a pool whose connection is blocked on the proxy cannot close.
 		proxy.release()
 		proxied.Pool.Close()
 	}()

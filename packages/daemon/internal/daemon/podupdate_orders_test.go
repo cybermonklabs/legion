@@ -53,12 +53,12 @@ package daemon
 // which P0 mounted, the store records each pod of that volume at a role's start in it, as a pod's
 // launcher does (launcherStarts), and marks P, so the released implementer is named, and its work
 // is on that volume. Then the same two wakes after a takeover: once the round has opened, the
-// daemon, as a linger, a park, a close or a hand-over does, or the operator suspends the released
-// implementer, which takes it over (supervise's suspendedAgain), and then resumes it as that source
-// resumes a claim, the daemon by its rule and the operator by its own resume; the launch is refused
-// for P, or comes up in P before its agent registers. These rows run on a pod with a volume of its
-// own, so each is named at no end, as each woken twin is. A rule under which a takeover takes the
-// pod's earlier work off the role, the loss of the tester's round 36
+// daemon, as a linger, a move to backlog, a close or a hand-over does, or the operator suspends
+// the released implementer, which takes it over (supervise's suspendedAgain), and then resumes it
+// as that source resumes a claim, the daemon by its rule and the operator by its own resume; the
+// launch is refused for P, or comes up in P before its agent registers. These rows run on a pod
+// with a volume of its own, so each is named at no end, as each woken twin is. A rule under which
+// a takeover takes the pod's earlier work off the role, the loss of the tester's round 36
 // (dispatch://INFRA-4425/artifact/tester-round36-at-b7bca9a7-md), fails none of them. The six rows
 // of TestATakenOverReleasedRoleIsNamedWhereALaterPodOfItsKeptVolumeWent hold that loss, since there
 // P mounts the kept volume of the release, and the role stays taken over to the round's end. Two
@@ -75,7 +75,7 @@ package daemon
 // reaches, and named at none: no agent of the implementer registered in P, and P, on a volume of
 // its own, holds nothing from before it. The operator, or the daemon, takes the released
 // implementer over, and P goes before any resume, or P is recreated and the resume that follows
-// comes up in the pod in P's place or is refused for it. The wake pacing parks the woken
+// comes up in the pod in P's place or is refused for it. The wake pacing delays the woken
 // implementer's launch, which records no process and waits on no pod, and the sweep replaces P by
 // issue. The woken implementer's own launch replaces P and comes up in the pod the launch builds in
 // its place. And the operator, or the daemon, suspended the implementer before the release, which
@@ -255,7 +255,7 @@ const (
 	neverRunSuspended
 	operatorTakeoverPodWent
 	daemonTakeoverPodWent
-	wokenParked
+	wokenDelayed
 	wokenReplacesThePod
 	operatorStoppedRefused
 	daemonStoppedRefused
@@ -295,7 +295,7 @@ func (k memberKind) String() string {
 		"it was refused for the pod with no session, never registered, and the daemon suspended it",
 		"an idle release suspended it, the operator took it over, and the pod went or was recreated before the operator's resume",
 		"an idle release suspended it, the daemon took it over, and the pod went or was recreated before the daemon's resume",
-		"an idle release suspended it, and the wake pacing parked its wake's launch before any pod",
+		"an idle release suspended it, and the wake pacing delayed its wake's launch before any pod",
 		"an idle release suspended it, and its wake's own launch replaced the pod",
 		"the operator suspended it before an idle release of its pod, and its resume was refused for the pod",
 		"the daemon suspended it before an idle release of its pod, and its resume by rule was refused for the pod",
@@ -323,7 +323,7 @@ func (k memberKind) suspended() bool {
 	case releasedOnce, releasedChain, releasedKeptVolume, wokenRefused, wokenIntoPod,
 		daemonTakeoverRefused, daemonTakeoverIntoPod, operatorTakeoverRefused, operatorTakeoverIntoPod,
 		releasedLostSession, neverRunSuspended, operatorTakeoverPodWent, daemonTakeoverPodWent,
-		wokenParked, wokenReplacesThePod, operatorStoppedRefused, daemonStoppedRefused, operatorStoppedHeld, daemonStoppedHeld,
+		wokenDelayed, wokenReplacesThePod, operatorStoppedRefused, daemonStoppedRefused, operatorStoppedHeld, daemonStoppedHeld,
 		releasedKeptLaterPod, daemonStoppedKeptVolume, daemonTakeoverKeptHeld, operatorTakeoverKeptHeld,
 		daemonSuspendedWokenKept, operatorSuspendedWokenKept:
 		return true
@@ -373,10 +373,10 @@ func (k memberKind) losesKeptVolume() bool {
 
 // takenOverBy is the source that suspends the released implementer of kind again once the round
 // over P has opened, which takes the claim over (supervise's suspendedAgain): the daemon, as a
-// linger, a park, a close or a hand-over does, or the operator. That source then resumes it
-// (resumeOf), save where P goes first and is not recreated, and save the kinds that hold it
-// suspended to the round's end (daemonTakeoverKeptHeld, operatorTakeoverKeptHeld). It is "" for a
-// kind that no source takes over.
+// linger, a move to backlog, a close or a hand-over does, or the operator. That source then
+// resumes it (resumeOf), save where P goes first and is not recreated, and save the kinds that
+// hold it suspended to the round's end (daemonTakeoverKeptHeld, operatorTakeoverKeptHeld). It is
+// "" for a kind that no source takes over.
 func (k memberKind) takenOverBy() supervise.SuspendSource {
 	switch k {
 	case daemonTakeoverRefused, daemonTakeoverIntoPod, daemonTakeoverPodWent, daemonTakeoverKeptHeld:
@@ -389,10 +389,10 @@ func (k memberKind) takenOverBy() supervise.SuspendSource {
 
 // stoppedBeforeRelease is the source that suspends the implementer of kind in P0 before P0's idle
 // release, which suspends only the claims that run (internal/workflow's idle release reads the
-// live claims) and so suspends the tester alone: the daemon, as a park does, or the operator. The
-// implementer's agent ran in P0, whose workspace the release took only once it held nothing that
-// origin does not, so P, on a volume of its own, holds none of the implementer's work. It is "" for
-// every other kind.
+// live claims) and so suspends the tester alone: the daemon, as a move to backlog does, or the
+// operator. The implementer's agent ran in P0, whose workspace the release took only once it held
+// nothing that origin does not, so P, on a volume of its own, holds none of the implementer's work.
+// It is "" for every other kind.
 func (k memberKind) stoppedBeforeRelease() supervise.SuspendSource {
 	switch k {
 	case daemonStoppedRefused, daemonStoppedHeld:
@@ -514,7 +514,7 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 		{endPodGone, operatorTakeoverIntoPod, ""},
 		{endRecreated, operatorTakeoverIntoPod, ""},
 		{endRecreatedRefusing, operatorTakeoverIntoPod, ""},
-		// The four orders INFRA-1484's architect ruled on: a takeover before any resume, the parked
+		// The four orders INFRA-1484's architect ruled on: a takeover before any resume, the delayed
 		// wake, the woken role's own launch replacing the pod, and a role the release did not
 		// suspend.
 		{endPodGone, operatorTakeoverPodWent, ""},
@@ -523,7 +523,7 @@ func TestPodUpdateNamesWhatTheRoundsPodTookAtEachEndOfEachMember(t *testing.T) {
 		{endPodGone, daemonTakeoverPodWent, ""},
 		{endRecreated, daemonTakeoverPodWent, ""},
 		{endRecreatedRefusing, daemonTakeoverPodWent, ""},
-		{endByIssue, wokenParked, ""},
+		{endByIssue, wokenDelayed, ""},
 		{endAtALaunch, wokenReplacesThePod, ""},
 		{endBySweep, operatorStoppedRefused, ""},
 		{endThroughAProcess, operatorStoppedRefused, ""},
@@ -1155,45 +1155,45 @@ var (
 	roundPodMadeAt   = podUpdateStart.Add(-10 * time.Minute)
 )
 
-// parkedWakeLetOut is when the wake pacing lets out the woken implementer's launch it parks
-// (wokenParked, parkingPace): ten minutes into the round, before its bound.
-var parkedWakeLetOut = podUpdateStart.Add(10 * time.Minute)
+// delayedWakeLetOut is when the wake pacing lets out the woken implementer's launch it delays
+// (wokenDelayed, delayPace): ten minutes into the round, before its bound.
+var delayedWakeLetOut = podUpdateStart.Add(10 * time.Minute)
 
-// parkingPace is a wake pacing that lets every paced launch out at once until park, and from then
-// on lets the next out at parkedWakeLetOut: the tester's wakes before the round run as each is
-// raised, and the woken implementer's launch waits in the pacing with no process and no pod, as a
-// wave of wakes leaves it. It is a pacer on the rig's clock over a limiter whose burst holds every
-// launch before the park (parkingBurst); park spends what is left of the burst and spreads the
-// release after it to that moment. A fixed-moment Reserve, which these tests once handed the
-// machines, has no pacer equal.
-type parkingPace struct {
+// delayPace is a wake pacing that lets every paced launch out at once until delay is called, and
+// from then on lets the next out at delayedWakeLetOut: the tester's wakes before the round run as
+// each is raised, and the woken implementer's launch waits in the pacing with no process and no
+// pod, as a wave of wakes leaves it. It is a pacer on the rig's clock over a limiter whose burst
+// holds every launch before the delay (delayBurst); delay spends what is left of the burst and
+// spreads the release after it to that moment. A fixed-moment Reserve, which these tests once
+// handed the machines, has no pacer equal.
+type delayPace struct {
 	clock   supervise.Clock
 	limiter *wakepace.Limiter
 	spread  atomic.Int64
 }
 
-// parkingBurst is how many launches parkingPace lets out at once before its park.
-const parkingBurst = 64
+// delayBurst is how many launches delayPace lets out at once before its delay.
+const delayBurst = 64
 
 // pace builds the pacing a rig's machines read (podUpdateRigOptions.wakePace) on the rig's clock.
-func (p *parkingPace) pace(clock supervise.Clock) supervise.WakePace {
+func (p *delayPace) pace(clock supervise.Clock) supervise.WakePace {
 	p.clock = clock
-	p.limiter = wakepace.New(1, parkingBurst, func(time.Duration) time.Duration { return time.Duration(p.spread.Load()) })
+	p.limiter = wakepace.New(1, delayBurst, func(time.Duration) time.Duration { return time.Duration(p.spread.Load()) })
 	pace := wakePaceOf(p.limiter, clock)
-	pace.Rate, pace.Burst = 1, parkingBurst
+	pace.Rate, pace.Burst = 1, delayBurst
 	return pace
 }
 
-// park spends what is left of the burst at the clock's now, and spreads the next paced release to
-// parkedWakeLetOut. The first reservation past the burst is a paced release at the bucket's base,
+// delay spends what is left of the burst at the clock's now, and spreads the next paced release to
+// delayedWakeLetOut. The first reservation past the burst is a paced release at the bucket's base,
 // and the one after it comes one interval later, which the spread moves to the let-out.
-func (p *parkingPace) park() {
+func (p *delayPace) delay() {
 	now := p.clock.Now()
 	first := p.limiter.Reserve(now)
 	for !first.After(now) {
 		first = p.limiter.Reserve(now)
 	}
-	p.spread.Store(int64(parkedWakeLetOut.Sub(first.Add(p.limiter.Interval()))))
+	p.spread.Store(int64(delayedWakeLetOut.Sub(first.Add(p.limiter.Interval()))))
 }
 
 // suspendedTo is orderedTo for a member the daemon or the operator suspended before the round's
@@ -1221,8 +1221,8 @@ func (p *parkingPace) park() {
 // before the round opens (keptVolumeReplaced). The round over P opens and asks the tester. Then the
 // implementer's session is forgotten (releasedLostSession), or a woken implementer is woken, before
 // the tester answers: its launch is refused for P (wokenRefused) or comes up in P (wokenIntoPod),
-// and no agent of it registers, or the wake pacing parks it (wokenParked). A member taken over is
-// suspended again first, by the daemon or by the operator, which takes the released claim over
+// and no agent of it registers, or the wake pacing delays it (wokenDelayed). A member taken over
+// is suspended again first, by the daemon or by the operator, which takes the released claim over
 // (supervise's suspendedAgain), and is then resumed as that source resumes a claim (resumeOf), its
 // launch refused for P or coming up in P as its woken twin's is (memberKind.woken); a member the
 // daemon or the operator suspended before the release is resumed so too, its launch refused for P.
@@ -1238,8 +1238,8 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	t.Helper()
 	implementer, tester := claim.RoleImplementer, claim.RoleTester
 	var opts podUpdateRigOptions
-	pacing := &parkingPace{}
-	if kind == wokenParked {
+	pacing := &delayPace{}
+	if kind == wokenDelayed {
 		opts.wakePace = pacing.pace
 	}
 	rig := newPodUpdateRigWith(t, opts, podUpdateRole{role: implementer, state: supervise.StateQueued}, podUpdateRole{role: tester, state: supervise.StateQueued})
@@ -1348,17 +1348,17 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 		if c := rig.claimOf(implementer); c.State != supervise.StateLaunching || podOf(c.Locator) != podUpdatePod {
 			t.Fatalf("the resumed implementer is %s at %+v, want it launching in pod %s, its agent not registered", c.State, c.Locator, podUpdatePod)
 		}
-	case wokenParked:
-		pacing.park()
+	case wokenDelayed:
+		pacing.delay()
 		rig.intoPod(implementer, podUpdatePod)
 		launched := len(rig.launchesOf(implementer))
 		rig.handle(implementer, rig.wakeFor(implementer))
 		view := rig.machineOf(implementer).View()
-		if parked := view.WakeWaiting; parked == nil || parked.Kind != supervise.WakeLaunch || !parked.At.Equal(parkedWakeLetOut) ||
+		if delayed := view.WakeWaiting; delayed == nil || delayed.Kind != supervise.WakeLaunch || !delayed.At.Equal(delayedWakeLetOut) ||
 			view.State != supervise.StateLaunching || view.Locator != nil || view.AwaitsPod != nil ||
 			len(view.RegisteredPods.Pods) != 1 || len(rig.launchesOf(implementer)) != launched {
-			t.Fatalf("the woken implementer is %s at %+v waiting on %+v with wake %+v and set %+v after %d launches more; want it launching under the launch the pacing parked until %s, with no process, no pod waited on, the set the P0 it registered in and no launch made",
-				view.State, view.Locator, view.AwaitsPod, parked, view.RegisteredPods, len(rig.launchesOf(implementer))-launched, parkedWakeLetOut)
+			t.Fatalf("the woken implementer is %s at %+v waiting on %+v with wake %+v and set %+v after %d launches more; want it launching under the launch the pacing delayed until %s, with no process, no pod waited on, the set the P0 it registered in and no launch made",
+				view.State, view.Locator, view.AwaitsPod, delayed, view.RegisteredPods, len(rig.launchesOf(implementer))-launched, delayedWakeLetOut)
 		}
 	}
 	if by := kind.suspendsWoken(); by != "" {
@@ -1390,10 +1390,10 @@ func suspendedTo(t *testing.T, end roundPodEnd, kind memberKind) *podUpdateRig {
 	case endByIssue:
 		// No claim records a process or waits on a pod: the tester answered and the daemon
 		// suspended it, and the implementer's launch waits in the wake pacing. The sweep replaces
-		// P by issue, and the parked launch runs at its turn, into the pod built in P's place.
+		// P by issue, and the delayed launch runs at its turn, into the pod built in P's place.
 		rig.suspendBy(tester, supervise.SuspendedByDaemon)
 		rig.awaitIssueReplacement("while the woken launch waits for its turn")
-		rig.runParkedLaunch(implementer, podUpdateStart, parkedWakeLetOut)
+		rig.runDelayedLaunch(implementer, podUpdateStart, delayedWakeLetOut)
 	case endBySweep, endAtALaunch:
 		// No role process is left in P. Where the implementer stays released, the tester's
 		// process ends and its relaunch is refused for P, so the tester waits on P; where the

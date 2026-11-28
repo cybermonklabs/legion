@@ -72,7 +72,7 @@ func heldChildHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder
 // behind it, nothing ever deleted it. The next daemon-authored todo on the child — the one
 // rerun_child writes in the new run — found the cancelled row and was read as a hand-over event
 // of the closed tree arriving late (the workflow's rejectStaleHandover): the route answered 200,
-// the child stayed parked, and a write putting Dispatch back to backlog was queued. Nothing is
+// the child stayed in backlog, and a write putting Dispatch back to backlog was queued. Nothing is
 // written at the linger's start now, and the hand-over is decided at its end from the member's
 // own state (the workflow's unfinishedHandOvers).
 func TestARerunUnderAReopenedRootIsNotTakenForAStaleHandOver(t *testing.T) {

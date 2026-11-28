@@ -39,9 +39,9 @@ func (r *cmRun) apply(s cmStep) {
 		if strings.HasPrefix(g.site, "next:") {
 			g.tried = false
 		}
-		parking := strings.HasPrefix(g.site, "park:")
-		if parking {
-			// The park records the claim the try took (park).
+		scheduling := strings.HasPrefix(g.site, "scheduleRetry:")
+		if scheduling {
+			// The scheduled retry records the claim the try took (scheduleRetry).
 			g.ended = nil
 		}
 		if g.refresh && r.refresh != nil && r.refresh.stmt != nil && r.refresh.stmt.answered {
@@ -89,7 +89,7 @@ func (r *cmRun) apply(s cmStep) {
 			r.lock.Mutex.Unlock()
 		}
 		switch {
-		case parking && r.timer == nil:
+		case scheduling && r.timer == nil:
 			g.givenUp, g.lane = true, laneKey{}
 		case !hadTimer && r.timer != nil:
 			g.givenUp = false
@@ -133,7 +133,7 @@ func (r *cmRun) apply(s cmStep) {
 	case cmTimerRuns:
 		timer := r.timer
 		r.timer = nil
-		r.log("the timer of the parked held lane runs")
+		r.log("the retry timer of the waiting held lane runs")
 		timer.run()
 		r.settle()
 	case cmTimePasses:
@@ -252,8 +252,8 @@ func (g *cmG) atNext() bool {
 // rows, a refresh's write, an outbox send - may run while a goroutine waits for the sender's lock:
 // a goroutine that could take the lock may still wait milliseconds for a core, as long as a
 // statement takes, so a refresh may re-read a row and write it again between a try's answer and
-// the park that records the try's claim
-// (TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark). Time moves on a
+// the retry schedule that records the try's claim
+// (TestAWaitingSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsRetrySchedule). Time moves on a
 // slot only while no goroutine waits for the lock: nothing waits that long.
 func (r *cmRun) enabled() []cmStep {
 	if r.ended() || r.fault != "" {

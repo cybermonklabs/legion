@@ -115,7 +115,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 			refusal: "put LEGION-208 at generation 1: it stands in held from awaiting_person, and its task a is running at {Kind: Position:0}, which stands in admitted",
 		},
 		{
-			name: "an adopted member parked at its next run (moveIntoTree)", at: phase.Admitted, generation: 2, place: implementing,
+			name: "an adopted member out of the workflow at its next run (moveIntoTree)", at: phase.Admitted, generation: 2, place: implementing,
 			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
 				issue.Status = "backlog"
 				into := record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION"}

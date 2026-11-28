@@ -3769,18 +3769,18 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 	}{
 		{
 			// LEGION-208's architect writes its design from a slot while its gate stands shut, so
-			// its members LEGION-209 and LEGION-213 read design_gate. LEGION-212 is parked in
-			// backlog, so its member LEGION-210 reads tree_parked, and its tree is no live one.
+			// its members LEGION-209 and LEGION-213 read design_gate. LEGION-212 is in backlog, so
+			// its member LEGION-210 reads tree_in_backlog_or_icebox, and its tree is no live one.
 			name:   "two words, counted in the ladder's order",
 			active: `["LEGION-208"]`,
 			trees:  `["LEGION-208"]`,
 			held: `[{"issue":"LEGION-209","reason":"design_gate","heldBy":["LEGION-208"]},` +
-				`{"issue":"LEGION-210","reason":"tree_parked","heldBy":["LEGION-212"]},` +
+				`{"issue":"LEGION-210","reason":"tree_in_backlog_or_icebox","heldBy":["LEGION-212"]},` +
 				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]}]`,
 			issues: records(slotted("LEGION-208", "LEGION-208", "admitted", "in_progress"), issue("LEGION-209", "LEGION-208", "admitted", "todo"),
 				issue("LEGION-210", "LEGION-212", "admitted", "todo"), issue("LEGION-212", "LEGION-212", "admitted", "backlog"),
 				issue("LEGION-213", "LEGION-208", "admitted", "todo")),
-			want: "admission.held: 3 issues — tree_parked 1, design_gate 2\n",
+			want: "admission.held: 3 issues — tree_in_backlog_or_icebox 1, design_gate 2\n",
 		},
 		{
 			// A root at implementing that holds no slot row and that the line does not place: a gap,

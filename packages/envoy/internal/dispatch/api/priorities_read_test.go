@@ -4,7 +4,7 @@
 //
 // The body is three readings at once: every live priority in rank order with the work that
 // advances it counted over the projects the request named, and the two faults — work in flight
-// under no priority, and priority work parked in `backlog` or `icebox`. So the fixture is one
+// under no priority, and priority work in `backlog` or `icebox`. So the fixture is one
 // deployment's worth of work: issues of three projects under six priorities, in every status the
 // counts separate, with a claim, an open ask, work closed inside the seven-day window and work
 // closed outside it, and the two faults in both their shapes. The rows that hold each fault list
@@ -218,17 +218,17 @@ func TestPrioritiesRead(t *testing.T) {
 		restated:      "the issue above it carries the priority it names",
 	}
 	for key, why := range notFaulted {
-		if slices.Contains(faultKeys(body.PriorityWorkParked.Issues), key) {
+		if slices.Contains(faultKeys(body.PriorityWorkInBacklogOrIcebox.Issues), key) {
 			t.Fatalf("the priority work in backlog or icebox lists %s, want it left out: %s", key, why)
 		}
 	}
 	wantBacklog := 2 + bulkFaultRows
-	if body.PriorityWorkParked.Count != wantBacklog {
-		t.Fatalf("the priority work in backlog or icebox = %d, want %d", body.PriorityWorkParked.Count, wantBacklog)
+	if body.PriorityWorkInBacklogOrIcebox.Count != wantBacklog {
+		t.Fatalf("the priority work in backlog or icebox = %d, want %d", body.PriorityWorkInBacklogOrIcebox.Count, wantBacklog)
 	}
-	if len(body.PriorityWorkParked.Issues) != priorityFaultRows {
+	if len(body.PriorityWorkInBacklogOrIcebox.Issues) != priorityFaultRows {
 		t.Fatalf("the priority work in backlog or icebox draws %d rows, want %d",
-			len(body.PriorityWorkParked.Issues), priorityFaultRows)
+			len(body.PriorityWorkInBacklogOrIcebox.Issues), priorityFaultRows)
 	}
 	own := backlogRow(t, body, backlogOwn)
 	if got := advanceEntries(own.Advances); own.Status != "backlog" ||
@@ -255,7 +255,7 @@ func TestPrioritiesRead(t *testing.T) {
 	// Each priority counts the issues in backlog or icebox that state it with no issue above them
 	// carrying it: the issue of both arms under two-at-once alone, since it only inherits
 	// pace-the-work, and the bulk rows and the parent written above under pace-the-work.
-	if got := body.PriorityWorkParked.ByPriority; len(got) != 2 || got["two-at-once"] != 1 || got["pace-the-work"] != 1+bulkFaultRows {
+	if got := body.PriorityWorkInBacklogOrIcebox.ByPriority; len(got) != 2 || got["two-at-once"] != 1 || got["pace-the-work"] != 1+bulkFaultRows {
 		t.Fatalf("the work in backlog or icebox by priority = %v, want two-at-once 1 and pace-the-work %d",
 			got, 1+bulkFaultRows)
 	}
@@ -296,11 +296,11 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatalf("the bulk project's work under no priority is drawn %v, want the newest %d by the time each issue changed: %v",
 			got, priorityFaultRows, bulkUnplaced[:priorityFaultRows])
 	}
-	if bulk.PriorityWorkParked.Count != bulkFaultRows || len(bulk.PriorityWorkParked.Issues) != priorityFaultRows {
+	if bulk.PriorityWorkInBacklogOrIcebox.Count != bulkFaultRows || len(bulk.PriorityWorkInBacklogOrIcebox.Issues) != priorityFaultRows {
 		t.Fatalf("the bulk project's work in backlog or icebox = %d issues drawn %d, want %d drawn %d",
-			bulk.PriorityWorkParked.Count, len(bulk.PriorityWorkParked.Issues), bulkFaultRows, priorityFaultRows)
+			bulk.PriorityWorkInBacklogOrIcebox.Count, len(bulk.PriorityWorkInBacklogOrIcebox.Issues), bulkFaultRows, priorityFaultRows)
 	}
-	if got := faultKeys(bulk.PriorityWorkParked.Issues); !slices.Equal(got, bulkBacklog[:priorityFaultRows]) {
+	if got := faultKeys(bulk.PriorityWorkInBacklogOrIcebox.Issues); !slices.Equal(got, bulkBacklog[:priorityFaultRows]) {
 		t.Fatalf("the bulk project's work in backlog or icebox is drawn %v, want the newest %d by the time each was moved: %v",
 			got, priorityFaultRows, bulkBacklog[:priorityFaultRows])
 	}
@@ -320,10 +320,10 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatalf("the work under no priority narrowed to CORE = %d by %v, want the two of that project alone",
 			narrowed.WorkUnderNoPriority.Count, narrowed.WorkUnderNoPriority.ByProject)
 	}
-	if got := faultKeys(narrowed.PriorityWorkParked.Issues); narrowed.PriorityWorkParked.Count != 1 ||
+	if got := faultKeys(narrowed.PriorityWorkInBacklogOrIcebox.Issues); narrowed.PriorityWorkInBacklogOrIcebox.Count != 1 ||
 		!slices.Equal(got, []string{backlogOwn}) {
 		t.Fatalf("the work in backlog or icebox narrowed to CORE = %d rows %v, want %s alone",
-			narrowed.PriorityWorkParked.Count, got, backlogOwn)
+			narrowed.PriorityWorkInBacklogOrIcebox.Count, got, backlogOwn)
 	}
 
 	// `?summary=true`: the two counts alone, which is what the navigation rail reads.
@@ -331,17 +331,17 @@ func TestPrioritiesRead(t *testing.T) {
 	if len(summary.Priorities) != 0 {
 		t.Fatalf("the summary draws %d priorities, want none", len(summary.Priorities))
 	}
-	if summary.WorkUnderNoPriority.Count != wantUnplaced || summary.PriorityWorkParked.Count != wantBacklog {
+	if summary.WorkUnderNoPriority.Count != wantUnplaced || summary.PriorityWorkInBacklogOrIcebox.Count != wantBacklog {
 		t.Fatalf("the summary counts %d and %d, want the whole read's %d and %d",
-			summary.WorkUnderNoPriority.Count, summary.PriorityWorkParked.Count, wantUnplaced, wantBacklog)
+			summary.WorkUnderNoPriority.Count, summary.PriorityWorkInBacklogOrIcebox.Count, wantUnplaced, wantBacklog)
 	}
-	if len(summary.WorkUnderNoPriority.Issues) != 0 || len(summary.PriorityWorkParked.Issues) != 0 {
+	if len(summary.WorkUnderNoPriority.Issues) != 0 || len(summary.PriorityWorkInBacklogOrIcebox.Issues) != 0 {
 		t.Fatalf("the summary draws %d and %d rows, want none of either",
-			len(summary.WorkUnderNoPriority.Issues), len(summary.PriorityWorkParked.Issues))
+			len(summary.WorkUnderNoPriority.Issues), len(summary.PriorityWorkInBacklogOrIcebox.Issues))
 	}
-	if len(summary.WorkUnderNoPriority.ByProject) != 0 || len(summary.PriorityWorkParked.ByPriority) != 0 {
+	if len(summary.WorkUnderNoPriority.ByProject) != 0 || len(summary.PriorityWorkInBacklogOrIcebox.ByPriority) != 0 {
 		t.Fatalf("the summary groups %v and %v, want neither grouping",
-			summary.WorkUnderNoPriority.ByProject, summary.PriorityWorkParked.ByPriority)
+			summary.WorkUnderNoPriority.ByProject, summary.PriorityWorkInBacklogOrIcebox.ByPriority)
 	}
 
 	// A deployment that has written no priority: the empty list, the sentence saying why, and
@@ -352,9 +352,9 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatalf("the body of a deployment with no priority = %d priorities, empty %q, want none and %q",
 			len(emptyBody.Priorities), emptyBody.Empty, priorityNoneWritten)
 	}
-	if emptyBody.WorkUnderNoPriority.Count != 0 || emptyBody.PriorityWorkParked.Count != 0 {
+	if emptyBody.WorkUnderNoPriority.Count != 0 || emptyBody.PriorityWorkInBacklogOrIcebox.Count != 0 {
 		t.Fatalf("the body of a deployment with no priority counts %d and %d faults, want none of either",
-			emptyBody.WorkUnderNoPriority.Count, emptyBody.PriorityWorkParked.Count)
+			emptyBody.WorkUnderNoPriority.Count, emptyBody.PriorityWorkInBacklogOrIcebox.Count)
 	}
 }
 
@@ -396,12 +396,12 @@ func priorityRow(t *testing.T, body model.Priorities, id string) model.PriorityR
 // backlogRow is one row of the second fault, priority work in backlog or icebox, by its key.
 func backlogRow(t *testing.T, body model.Priorities, key string) model.PriorityIssue {
 	t.Helper()
-	for _, issue := range body.PriorityWorkParked.Issues {
+	for _, issue := range body.PriorityWorkInBacklogOrIcebox.Issues {
 		if issue.Key == key {
 			return issue
 		}
 	}
-	t.Fatalf("the work in backlog or icebox draws no row for %s: %v", key, faultKeys(body.PriorityWorkParked.Issues))
+	t.Fatalf("the work in backlog or icebox draws no row for %s: %v", key, faultKeys(body.PriorityWorkInBacklogOrIcebox.Issues))
 	return model.PriorityIssue{}
 }
 
@@ -442,9 +442,9 @@ func assertNewestEvent(t *testing.T, row model.PriorityRow, want time.Time) {
 	}
 }
 
-// assertNoReason reads the parked fault's rows as the bytes the route answered, and holds each
-// to the fields the shape names: a status change records no reason, so no row carries one
-// (model.PriorityIssue).
+// assertNoReason reads the rows of the fault in backlog or icebox as the bytes the route
+// answered, and holds each to the fields the shape names: a status change records no reason, so
+// no row carries one (model.PriorityIssue).
 func assertNoReason(t *testing.T, handler http.Handler) {
 	t.Helper()
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/priorities", nil, "alice")
@@ -452,30 +452,30 @@ func assertNoReason(t *testing.T, handler http.Handler) {
 		t.Fatalf("read the priorities: status=%d body=%s", response.Code, response.Body.String())
 	}
 	var body struct {
-		PriorityWorkParked struct {
+		PriorityWorkInBacklogOrIcebox struct {
 			Issues []map[string]json.RawMessage `json:"issues"`
-		} `json:"priority_work_parked"`
+		} `json:"priority_work_in_backlog_or_icebox"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode the priorities: %v", err)
 	}
-	if len(body.PriorityWorkParked.Issues) == 0 {
-		t.Fatal("the parked work draws no row; a reading of its fields proves nothing")
+	if len(body.PriorityWorkInBacklogOrIcebox.Issues) == 0 {
+		t.Fatal("the work in backlog or icebox draws no row; a reading of its fields proves nothing")
 	}
-	for _, issue := range body.PriorityWorkParked.Issues {
+	for _, issue := range body.PriorityWorkInBacklogOrIcebox.Issues {
 		for field := range issue {
 			if field == "reason" {
-				t.Fatalf("a parked row carries a reason: %v", issue)
+				t.Fatalf("a row in backlog or icebox carries a reason: %v", issue)
 			}
 			// The priorities a row advances are its `advances` entries alone, never a bare
 			// list of ids beside them.
 			if field == "priorities" {
-				t.Fatalf("a parked row carries a bare priorities list: %v", issue)
+				t.Fatalf("a row in backlog or icebox carries a bare priorities list: %v", issue)
 			}
 		}
 		for _, field := range []string{"moved_at", "moved_by", "advances", "changed_at"} {
 			if _, carried := issue[field]; !carried {
-				t.Fatalf("a parked row carries no %s: %v", field, issue)
+				t.Fatalf("a row in backlog or icebox carries no %s: %v", field, issue)
 			}
 		}
 	}
@@ -483,7 +483,7 @@ func assertNoReason(t *testing.T, handler http.Handler) {
 
 // seedPriorityIssue writes one issue through the routes and leaves it in the status the caller
 // named: a create carries no status, so the status is a write of its own, which is also what
-// records the `issue.updated` event the parked fault reads.
+// records the `issue.updated` event the fault in backlog or icebox reads.
 func seedPriorityIssue(t *testing.T, handler http.Handler, project, title, status, parent string, advances []string) string {
 	t.Helper()
 	body := map[string]any{"project": project, "title": title, "force": true}
@@ -535,8 +535,8 @@ func ageSeededIssue(t *testing.T, database *store.Store, key string, at time.Tim
 // issues in flight under no priority, and as many standing in `backlog` under one priority, each
 // with the `issue.updated` event that says when it was moved there. It answers the keys of each,
 // in the order the fault lists draw them — the unplaced by the time each issue last changed, the
-// parked by the time each was moved, both newest first.
-func seedBulkFaults(t *testing.T, database *store.Store, priority string) (unplaced, parked []string) {
+// work in backlog by the time each was moved, both newest first.
+func seedBulkFaults(t *testing.T, database *store.Store, priority string) (unplaced, inBacklog []string) {
 	t.Helper()
 	// An hour back, one minute apart, so every bulk row is older than the issues the test
 	// writes through the routes and no two share a moment.
@@ -556,20 +556,20 @@ func seedBulkFaults(t *testing.T, database *store.Store, priority string) (unpla
 		}.values())
 		unplaced = append(unplaced, unplacedKey)
 
-		parkedKey := seededIssueKey(bulkFaultProject, bulkFaultRows+index+1)
+		backlogKey := seededIssueKey(bulkFaultProject, bulkFaultRows+index+1)
 		issues = append(issues, seededIssueRow{
-			key: parkedKey, project: bulkFaultProject, number: bulkFaultRows + index + 1,
-			title: fmt.Sprintf("Bulk parked work %02d", index), status: "backlog",
+			key: backlogKey, project: bulkFaultProject, number: bulkFaultRows + index + 1,
+			title: fmt.Sprintf("Bulk backlog work %02d", index), status: "backlog",
 			rank: seededRank(bulkFaultRows + index), at: at, lastSeq: 1,
 		}.values())
-		events = append(events, seededEvent(parkedKey, 1, "issue.updated", moved, at))
-		tuples = append(tuples, seededAdvancesTuple(parkedKey, priority, at))
-		parked = append(parked, parkedKey)
+		events = append(events, seededEvent(backlogKey, 1, "issue.updated", moved, at))
+		tuples = append(tuples, seededAdvancesTuple(backlogKey, priority, at))
+		inBacklog = append(inBacklog, backlogKey)
 	}
 	copySeededRows(t, database, "projects", seededProjectColumns,
 		[][]any{seededProject(bulkFaultProject, 2*bulkFaultRows, base)})
 	copySeededRows(t, database, "issues", seededIssueColumns, issues)
 	copySeededRows(t, database, "events", seededEventColumns, events)
 	copySeededRows(t, database, "priority_tuples", seededTupleColumns, tuples)
-	return unplaced, parked
+	return unplaced, inBacklog
 }

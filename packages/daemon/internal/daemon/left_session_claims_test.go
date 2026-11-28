@@ -1222,7 +1222,7 @@ var leftArms = map[record.ClaimLeftReason][]leftArm{
 		r.queueRelease(record.ClaimRelease{})
 	}, holder: "session:" + claimTreeSession}},
 	record.ClaimLeftIssueRuns: {{name: "the move's row runs after the issue is in the workflow again", set: func(r *leftRig) {
-		readmitted := parkedIssue()
+		readmitted := outOfWorkflowIssue()
 		readmitted.Status, readmitted.Phase, readmitted.Generation = "todo", phase.Admitted, 2
 		r.put(readmitted)
 		r.dispatch.takes(claimIssue, claimTreeSession)
@@ -1279,7 +1279,7 @@ func TestEachClaimAReleaseLeavesIsReadInTheRecordWithItsReason(t *testing.T) {
 			t.Run(string(reason)+": "+arm.name, func(t *testing.T) {
 				t.Parallel()
 				r := newLeftRig(t)
-				r.seedReleaseTree(parkedIssue())
+				r.seedReleaseTree(outOfWorkflowIssue())
 				arm.set(r)
 				before := r.clock.Now()
 				if arm.run != nil {
@@ -1318,7 +1318,7 @@ func TestEachClaimAReleaseLeavesIsReadInTheRecordWithItsReason(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newLeftRig(t)
-			r.seedReleaseTree(parkedIssue())
+			r.seedReleaseTree(outOfWorkflowIssue())
 			r.recordClaimLeft(claimIssue, earlier)
 			if left := r.claimLeft(claimIssue); left == nil || left["reason"] != string(record.ClaimLeftPerson) {
 				t.Fatalf("the record of %s names claimLeft %v before the release, want the earlier entry", claimIssue, left)

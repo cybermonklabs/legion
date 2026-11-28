@@ -44,9 +44,9 @@ type stallConn struct {
 	// server's bytes are dropped from then on, where a frozen connection holds them until Move.
 	stalled    bool
 	dropServer bool
-	// parked is closed once the reader has stopped at the gate Stall set, so it reads nothing more.
-	parked    chan struct{}
-	parkOnce  *sync.Once
+	// stopped is closed once the reader has stopped at the gate Stall set, so it reads nothing more.
+	stopped   chan struct{}
+	stopOnce  *sync.Once
 	readSince bytes.Buffer
 	// ended is closed once the client's side has ended and the server has closed its side after it,
 	// so the server has read and handled every byte the relay forwarded.
@@ -107,28 +107,28 @@ func (r *StallRelay) stall(dropServer bool) {
 	defer r.mu.Unlock()
 	for _, c := range r.conns {
 		if c.gate == nil {
-			c.gate, c.parked, c.parkOnce = make(chan struct{}), make(chan struct{}), new(sync.Once)
+			c.gate, c.stopped, c.stopOnce = make(chan struct{}), make(chan struct{}), new(sync.Once)
 		}
 		c.stalled = true
 		c.dropServer = dropServer
 	}
 }
 
-// AwaitParked waits until the reader of every stalled connection has stopped at its stall, and fails
+// AwaitStopped waits until the reader of every stalled connection has stopped at its stall, and fails
 // the test, naming the connection whose reader had not, at the end of a wait on a server's own fact
 // (receive, testDeadline, read once for every connection). A reader waiting inside a read as the
 // stall began reads what its client sends next, at most stallReadBuffer bytes, and stops after it; a
 // client that sends nothing keeps it there.
-func (r *StallRelay) AwaitParked(t testing.TB) {
+func (r *StallRelay) AwaitStopped(t testing.TB) {
 	t.Helper()
 	end := boundOf(t)
 	conns := r.stalledConns()
 	for i, c := range conns {
 		r.mu.Lock()
-		parked := c.parked
+		stopped := c.stopped
 		r.mu.Unlock()
 		receive(t, end, fmt.Sprintf("the relay's reader of stalled connection %d of %d, from client %s, to stop at its stall, "+
-			"which a reader inside a read as the stall began does only once its client sends again", i+1, len(conns), c.client.RemoteAddr()), parked)
+			"which a reader inside a read as the stall began does only once its client sends again", i+1, len(conns), c.client.RemoteAddr()), stopped)
 	}
 }
 
@@ -240,10 +240,10 @@ func (r *StallRelay) toServer(c *stallConn) {
 	buffer := make([]byte, stallReadBuffer)
 	for {
 		r.mu.Lock()
-		gate, parkOnce, parked := c.gate, c.parkOnce, c.parked
+		gate, stopOnce, stopped := c.gate, c.stopOnce, c.stopped
 		r.mu.Unlock()
 		if gate != nil {
-			parkOnce.Do(func() { close(parked) })
+			stopOnce.Do(func() { close(stopped) })
 			<-gate
 		}
 		n, err := c.client.Read(buffer)

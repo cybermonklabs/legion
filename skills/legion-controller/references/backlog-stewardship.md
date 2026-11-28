@@ -13,7 +13,7 @@ Run the pass at most once a turn, after the wake's work, as the last step before
 - On any other turn it is due when the wake's work is done, nothing else waits, and `dispatch issues --project <KEY> --updated-since <your newest pass line's time> --all` lists an issue, or when your context holds no pass line.
 
 1. Read the `read_state` summary's admission lines, the newest weekly plan, and the open roots, and make [the owner audit](#the-owner-audit) on that read.
-2. Change only a rank, an admission or the plan, where it no longer matches the project's priorities. Admit an issue only as the intake your deployment instructions give and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow: a free slot is no reason to admit.
+2. Change only a rank, an admission or the plan, where it no longer matches the project's priorities. Admit an issue only as the intake your deployment instructions give and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow: a free slot is no reason to admit. A plan line that defers a root the daemon queued or runs: `skill://legion-controller/references/deferral-asks.md`.
 3. In the daily form, also [reconcile the weekly plan](#reconcile-the-weekly-plan).
 4. End the pass with exactly one line: `Prioritization pass at <RFC3339>: <what it changed, or none>`.
 
@@ -47,12 +47,3 @@ The pass's step 1 reads the open roots: the rows of `dispatch issues --project <
 A session route is stopped only when two reads of `dispatch issues --project <KEY> --route-status no_holder --all` on two wakes, at least ten minutes apart, both list it. Then read its owner in `envoy_sessions`: recover the work only from one that reads `gone`, or `unresponsive` with a `last_seen` more than 20 minutes old.
 
 Move only the work that a person's directive, recorded in the plan with its link, sends to Legion when its session stops: keep its labels, add `legion`, then `set_status` it to `todo`, and update its owner row. Never apply this to an issue in a live Legion tree.
-
-## A root the plan defers
-
-A labelled root the daemon queued or runs, which the weekly plan says to defer, is parked at your next pass only when the plan's line names a person's request: `set_status` to `backlog` (`icebox` for longer), citing that request in a comment. A plan row with no such request moves nothing. Ask instead:
-
-1. Find your earlier ask: step 1 of `skill://legion-controller/references/park-asks.md`, with `Asked whether to defer: ` for `Asked whether to park: `, its second line the plan row. Open or resolved with no answer, or your reply starts `Deferred` or `Let run`: do nothing. Answered with no reply of yours: step 4. Your reply starts `Not deferred`: step 2.
-2. Check that Legion runs the root: it carries the label, stands in `admission.active` or `admission.waiting`, and its `phase` is not `done`. If not, do nothing. Else open a `dispatch ask` naming the root and the plan row, options `Defer it` and `Let it run`, follow it, and comment on the root: first line `Asked whether to defer: dispatch://<ASK KEY>/ask/<id>`, second line the plan row exactly.
-3. Name the row and the ask in the day's report while it is open.
-4. On `Defer it` while step 2's check holds, park the root as above, citing the answer. On `Let it run`, move nothing and take the deferral off that plan row with `dispatch doc-edit`. Reply under the ask, first line exactly `Deferred dispatch://<root>`, `Not deferred dispatch://<root>` or `Let run dispatch://<root>` (`dispatch comment --issue <the ask's issue> --reply-to-ask '<ask id>' --body-file -`).

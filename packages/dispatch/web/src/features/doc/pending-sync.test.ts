@@ -517,7 +517,7 @@ test("a later writable admission keeps this tab's own unacknowledged rows", asyn
   expect(await rowsOf(artifact)).toEqual(mine);
 });
 
-test("a restore that parks on a scratch document is dropped, reported, and leaves the live document alone", async () => {
+test("a restore that leaves structs pending on a scratch document is dropped, reported, and leaves the live document alone", async () => {
   const artifact = artifactId();
   // The edit was typed against a history the server no longer has: a rebuild reseeded the same
   // text from a fresh document, so the items the edit sits beside are gone. The clock is held at
@@ -596,8 +596,8 @@ test("a stale saved row does not discard another row that still applies", async 
 
 test("a stale row does not let a later row from the same lost history through", async () => {
   const artifact = artifactId();
-  // Two browsers typed against a history the server lost to a rebuild: each row parks on the
-  // same missing client, so a check that kept the first row's parked structs as its baseline
+  // Two browsers typed against a history the server lost to a rebuild: each row waits on the
+  // same missing client, so a check that kept the first row's pending structs as its baseline
   // would let the second row onto the live document.
   const lost = serverWith("shared", 100);
   await savedEdit(artifact, lost, " stale one");

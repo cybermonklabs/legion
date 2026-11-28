@@ -44,11 +44,11 @@ func subArchitectOn(t *testing.T, sup *supervisor, state supervise.ClaimState, l
 // that brings it back (for a child's failed architect, the child's next phase start) queues a
 // catch-up of its own at its ready, and one suspended while its issue is in the workflow holds
 // it, as a root's catch-up is held, without holding back the root's own notices behind it. A
-// child parked out of the workflow (backlog) has its architect suspended with its launch and the
+// child moved out of the workflow (backlog) has its architect suspended with its launch and the
 // child's generation kept, so no newer catch-up supersedes the row and its claim has not ended:
 // its catch-up finishes undelivered at once, with one line, publishing nothing and waiting for
 // nothing, since the child's next launch writes a fresh one. Held, it would wait on its backoff,
-// publish to a role nobody holds and warn, for as long as the child stayed parked. A child closed
+// publish to a role nobody holds and warn, for as long as the child stayed in backlog. A child closed
 // as done, whose architect the close retired, ends its catch-up the same way, before any publish.
 // A newer launch of the child's architect, or the child at a later generation, supersedes an
 // older catch-up, which finishes without publishing; the root's claim and generation decide
@@ -138,8 +138,8 @@ func TestASubArchitectsCatchUpGoesToItAlone(t *testing.T) {
 			state        supervise.ClaimState
 			by           supervise.SuspendSource
 		}{
-			// A park suspends the child's architect and keeps its claim (workflow's leave).
-			{name: "parked to backlog", status: "backlog", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
+			// A move to backlog suspends the child's architect and keeps its claim (workflow's leave).
+			{name: "moved to backlog", status: "backlog", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 			// A close as done retires it, its session kept for a reopen (supervise's issue close).
 			{name: "closed as done", status: "done", state: supervise.StateRetired},
 		} {

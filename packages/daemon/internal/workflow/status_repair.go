@@ -23,7 +23,7 @@ import (
 // It skips an issue by these rules, in this order:
 //
 //  1. the daemon no longer works it (InWorkflow): its status is one the workflow does not run in,
-//     or its phase is done. This clause alone keeps the repair off an issue parked at done, since
+//     or its phase is done. This clause alone keeps the repair off an issue out of the workflow at done, since
 //     PhaseStatus(phase.Done) is "done" and the phase rule below would pass an issue standing
 //     there with any other status. It is the whole protection for an issue a person reopened
 //     under a record the daemon closed, which stands at phase done with a live status, so nothing

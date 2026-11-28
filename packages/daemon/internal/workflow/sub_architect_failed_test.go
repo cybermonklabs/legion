@@ -24,7 +24,7 @@ import (
 // sends it above the child (record.OwningArchitect). The controller hears nothing of it, since an
 // architect inside the tree is left to act. A done child, a child that left the workflow and a
 // child of a lingering tree tell nobody: a done child's claims were closed (retired, sessions
-// kept), a parked child's were suspended, and a lingering tree holds its members where they stood.
+// kept), the claims of a child in backlog were suspended, and a lingering tree holds its members where they stood.
 func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 	t.Parallel()
 	const sentence = "the architect's process died with its catch-up outstanding, and its relaunches ran out"

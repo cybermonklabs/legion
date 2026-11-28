@@ -1702,7 +1702,7 @@ test("on a desktop the status bar spans its box and stays one short line", async
   for (const [status, title] of [
     ["todo", "Queued member"],
     ["testing", "Testing member"],
-    ["backlog", "Parked member"],
+    ["backlog", "Member in backlog"],
   ] as const) {
     const issue = await createIssue({ project: "CORE", title });
     await patchIssue(issue.key, { status });

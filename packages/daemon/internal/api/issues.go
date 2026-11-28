@@ -9,7 +9,7 @@ type IssueStatusRequest struct {
 }
 
 // IssueStatusResponse confirms Dispatch accepted the controller's synchronous status update and the
-// record took it (applyOwnStatusWrite): an issue the controller parks stops before the answer, not
+// record took it (applyOwnStatusWrite): an issue the controller moves to backlog stops before the answer, not
 // when the move's event comes back through the Dispatch consumer.
 type IssueStatusResponse struct{}
 

@@ -999,7 +999,7 @@ func TestHorizonResetDiscardsAnObservationInFlight(t *testing.T) {
 // leaves no gap (Gap), so a reader would arm no re-read and the event would wait for the next
 // notification however long that takes. Whatever Safe returns, an event committed before the call
 // must be at or below H or keep a gap open. The test lets the observation in flight end only once
-// the call has parked on it, so the call always finds it in flight, however slowly it gets there.
+// the call has joined it, so the call always finds it in flight, however slowly it gets there.
 func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -1012,11 +1012,11 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 		t.Fatalf("Await on a quiet log = %d, %v; want %d", safe, err, first)
 	}
 
-	// The stale observation's caller runs it, so only the call below parks.
-	parked := make(chan struct{}, 1)
-	horizon.afterObservationParked = func() {
+	// The stale observation's caller runs it, so only the call below joins it.
+	joined := make(chan struct{}, 1)
+	horizon.afterObservationJoined = func() {
 		select {
-		case parked <- struct{}{}:
+		case joined <- struct{}{}:
 		default:
 		}
 	}
@@ -1037,7 +1037,7 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 		safe, err := horizon.Safe(ctx)
 		called <- result{safe, err}
 	}()
-	receiveBeforeTheDeadline(t, "the call to park on the stale observation in flight", parked)
+	receiveBeforeTheDeadline(t, "the call to join the stale observation in flight", joined)
 	close(gated.release)
 	if err := receiveBeforeTheDeadline(t, "the Safe that ran the stale observation to return", stale); err != nil {
 		t.Fatalf("Safe that ran the stale observation: %v", err)
@@ -1070,12 +1070,12 @@ func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 	const callers = 8
 	// The first caller's observation is held in flight, and every other caller calls only once it
 	// is, so each of them must wait it out and take the next. The test waits for all of them to
-	// be parked on it before it lets it end: a caller that called only after the next one had
-	// ended would rightly run a third. Waiting on the parking itself is what the run's own
+	// have joined it before it lets it end: a caller that called only after the next one had
+	// ended would rightly run a third. Waiting on the join itself is what the run's own
 	// machinery reports; a sleep long enough on an idle machine is not long enough on a loaded
 	// one.
-	parked := make(chan struct{}, callers)
-	horizon.afterObservationParked = func() { parked <- struct{}{} }
+	joined := make(chan struct{}, callers)
+	horizon.afterObservationJoined = func() { joined <- struct{}{} }
 	errs := make(chan error, callers)
 	safe := func() {
 		_, err := horizon.Safe(ctx)
@@ -1087,7 +1087,7 @@ func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 		go safe()
 	}
 	for i := range callers - 1 {
-		receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d later ones to park on the held observation", i+1, callers-1), parked)
+		receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d later ones to join the held observation", i+1, callers-1), joined)
 	}
 	close(counting.release)
 	for i := range callers {
@@ -1119,7 +1119,7 @@ func heldScriptedHorizonDB(script ...scriptedObservation) (db *scriptedHorizonDB
 
 // A caller that waited out an observation and wakes only after the next one has ended takes that
 // one as it ended, since it started after the call, and runs none of its own. The test holds six
-// of the seven late callers in the parking hook, before they wait on the observation in flight,
+// of the seven late callers in the joining hook, before they wait on the observation in flight,
 // until the seventh has run the next observation to its end, so each of the six wakes to find it
 // ended, however the scheduler wakes them.
 func TestHorizonCallersThatWakeAfterTheNextObservationEndedTakeIt(t *testing.T) {
@@ -1132,14 +1132,14 @@ func TestHorizonCallersThatWakeAfterTheNextObservationEndedTakeIt(t *testing.T) 
 	}
 	db, observations, entered, release := heldScriptedHorizonDB(script...)
 	horizon := NewHorizon(db)
-	// A caller that wakes late and runs an observation of its own can park on another's, so the
-	// hook may run more than once per caller; parked holds every such call.
-	parked := make(chan struct{}, 2*callers)
+	// A caller that wakes late and runs an observation of its own can join another's, so the
+	// hook may run more than once per caller; joined holds every such call.
+	joined := make(chan struct{}, 2*callers)
 	late := make(chan struct{})
-	var parks atomic.Int32
-	horizon.afterObservationParked = func() {
-		parked <- struct{}{}
-		if parks.Add(1) < callers-1 {
+	var joins atomic.Int32
+	horizon.afterObservationJoined = func() {
+		joined <- struct{}{}
+		if joins.Add(1) < callers-1 {
 			<-late
 		}
 	}
@@ -1154,7 +1154,7 @@ func TestHorizonCallersThatWakeAfterTheNextObservationEndedTakeIt(t *testing.T) 
 		go safe()
 	}
 	for i := range callers - 1 {
-		receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d later ones to park on the held observation", i+1, callers-1), parked)
+		receiveBeforeTheDeadline(t, fmt.Sprintf("Safe call %d of the %d later ones to join the held observation", i+1, callers-1), joined)
 	}
 	close(release)
 	// The first caller's answer, and that of the late caller the hook let through, which ran the
@@ -1187,9 +1187,9 @@ func TestHorizonACallerThatWokeLateTakesNoOtherCallersCancellation(t *testing.T)
 		scriptedObservation{newest: 8, xid: 103, selfProves: true},
 	)
 	horizon := NewHorizon(db)
-	parked, late := make(chan struct{}), make(chan struct{})
-	horizon.afterObservationParked = func() {
-		close(parked)
+	joined, late := make(chan struct{}), make(chan struct{})
+	horizon.afterObservationJoined = func() {
+		close(joined)
 		<-late
 	}
 	first := make(chan error, 1)
@@ -1203,7 +1203,7 @@ func TestHorizonACallerThatWokeLateTakesNoOtherCallersCancellation(t *testing.T)
 		_, err := horizon.Safe(ctx)
 		waiter <- err
 	}()
-	receiveBeforeTheDeadline(t, "the second caller to park on the held observation", parked)
+	receiveBeforeTheDeadline(t, "the second caller to join the held observation", joined)
 	close(release)
 	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
 		t.Fatalf("Safe that ran the first observation: %v", err)
@@ -1243,14 +1243,14 @@ func TestHorizonCallersOfAnAbandonedObservationShareTheNext(t *testing.T) {
 		runner <- err
 	}()
 	receiveBeforeTheDeadline(t, "the runner's observation to reach the database", entered)
-	// The second caller to park is held before it waits, until the first has run the next
+	// The second caller to join is held before it waits, until the first has run the next
 	// observation to its end.
-	parked := make(chan struct{}, 2)
+	joined := make(chan struct{}, 2)
 	late := make(chan struct{})
-	var parks atomic.Int32
-	horizon.afterObservationParked = func() {
-		parked <- struct{}{}
-		if parks.Add(1) == 2 {
+	var joins atomic.Int32
+	horizon.afterObservationJoined = func() {
+		joined <- struct{}{}
+		if joins.Add(1) == 2 {
 			<-late
 		}
 	}
@@ -1262,7 +1262,7 @@ func TestHorizonCallersOfAnAbandonedObservationShareTheNext(t *testing.T) {
 		}()
 	}
 	for i := range 2 {
-		receiveBeforeTheDeadline(t, fmt.Sprintf("caller %d of 2 to park on the runner's observation", i+1), parked)
+		receiveBeforeTheDeadline(t, fmt.Sprintf("caller %d of 2 to join the runner's observation", i+1), joined)
 	}
 	cancelRunner()
 	close(release)
@@ -1308,8 +1308,8 @@ func TestHorizonACallerThatLooksLateAfterItsBoundaryTakesTheObservationThatEnded
 			<-late
 		}
 	}
-	parked := make(chan struct{}, 1)
-	horizon.afterObservationParked = func() { parked <- struct{}{} }
+	joined := make(chan struct{}, 1)
+	horizon.afterObservationJoined = func() { joined <- struct{}{} }
 	held := make(chan error, 1)
 	go func() {
 		_, err := horizon.Safe(ctx)
@@ -1321,7 +1321,7 @@ func TestHorizonACallerThatLooksLateAfterItsBoundaryTakesTheObservationThatEnded
 		_, err := horizon.Safe(ctx)
 		other <- err
 	}()
-	receiveBeforeTheDeadline(t, "the other call to park on the first observation", parked)
+	receiveBeforeTheDeadline(t, "the other call to join the first observation", joined)
 	close(release)
 	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
 		t.Fatalf("Safe that ran the first observation: %v", err)
@@ -1527,14 +1527,14 @@ func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation
 		scriptedObservation{newest: 8, xid: 104, selfProves: true},
 	)
 	horizon := NewHorizon(db)
-	// The second caller to park is held before it waits, until the first has run the next
+	// The second caller to join is held before it waits, until the first has run the next
 	// observation and a third caller's cancelled one has ended.
-	parked := make(chan struct{}, 2)
+	joined := make(chan struct{}, 2)
 	late := make(chan struct{})
-	var parks atomic.Int32
-	horizon.afterObservationParked = func() {
-		parked <- struct{}{}
-		if parks.Add(1) == 2 {
+	var joins atomic.Int32
+	horizon.afterObservationJoined = func() {
+		joined <- struct{}{}
+		if joins.Add(1) == 2 {
 			<-late
 		}
 	}
@@ -1552,7 +1552,7 @@ func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation
 		}()
 	}
 	for i := range 2 {
-		receiveBeforeTheDeadline(t, fmt.Sprintf("caller %d of 2 to park on the first observation", i+1), parked)
+		receiveBeforeTheDeadline(t, fmt.Sprintf("caller %d of 2 to join the first observation", i+1), joined)
 	}
 	close(release)
 	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
@@ -1579,7 +1579,7 @@ func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation
 // the gap. One its gap check already counted tells it nothing new: taking it after a backoff
 // would only leave the gap as it was and cost a second backoff before the observation that can
 // prove anything. The test has Await join the first observation, numbered above its count, and
-// holds it in the parking hook, before it waits on that one, until another caller has run the
+// holds it in the joining hook, before it waits on that one, until another caller has run the
 // next to its end. An older transaction holds both, so Await's gap check reads both, held, and it
 // backs off once; the third observation then proves them.
 func TestHorizonAwaitBacksOffOnceForObservationsItsGapCheckRead(t *testing.T) {
@@ -1601,11 +1601,11 @@ func TestHorizonAwaitBacksOffOnceForObservationsItsGapCheckRead(t *testing.T) {
 			<-looks
 		}
 	}
-	parked, late := make(chan struct{}), make(chan struct{})
-	var parks atomic.Int32
-	horizon.afterObservationParked = func() {
-		if parks.Add(1) == 1 {
-			close(parked)
+	joined, late := make(chan struct{}), make(chan struct{})
+	var joins atomic.Int32
+	horizon.afterObservationJoined = func() {
+		if joins.Add(1) == 1 {
+			close(joined)
 			<-late
 		}
 	}
@@ -1624,7 +1624,7 @@ func TestHorizonAwaitBacksOffOnceForObservationsItsGapCheckRead(t *testing.T) {
 	}()
 	receiveBeforeTheDeadline(t, "the first caller's observation to reach the database", entered)
 	close(looks)
-	receiveBeforeTheDeadline(t, "Await to park on the first observation", parked)
+	receiveBeforeTheDeadline(t, "Await to join the first observation", joined)
 	close(release)
 	if err := receiveBeforeTheDeadline(t, "the Safe that ran the first observation to return", first); err != nil {
 		t.Fatalf("Safe that ran the first observation: %v", err)

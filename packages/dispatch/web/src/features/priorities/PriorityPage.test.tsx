@@ -122,7 +122,7 @@ const ROWS: PriorityRow[] = [
 const BODY: Priorities = {
   priorities: ROWS,
   work_under_no_priority: { by_project: null, count: 0, issues: null },
-  priority_work_parked: { by_priority: null, count: 0, issues: null },
+  priority_work_in_backlog_or_icebox: { by_priority: null, count: 0, issues: null },
 };
 
 /** The read of the priorities once another person wrote `overrides` over priority `id`. */

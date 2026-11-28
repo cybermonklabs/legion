@@ -13,8 +13,8 @@ import (
 // What a root architect's start task names of the decisions a person made while nobody in its
 // tree could hear them (record.KeptDecisions, carried as supervise.Delivery.Kept and persisted as
 // pending_task_deliveries.kept_decisions) is held by the delivery that task was queued as, and
-// told at that delivery's confirmation. Those rows stand in parked_decisions throughout
-// (20261101163106_parked_decisions): the claim's write of the delivery takes each from the start row that
+// told at that delivery's confirmation. Those rows stand in kept_decisions throughout
+// (migration 20261101163106): the claim's write of the delivery takes each from the start row that
 // named it and marks it held by this claim and delivery id, the write recording the confirmation
 // tells it, and the write that retires the delivery leaves it KEPT again. Each is the delivery's
 // own write, so no ordering of queues, confirmations, retirements and restarts can leave a row
@@ -22,7 +22,7 @@ import (
 //
 // The telling follows the one validity rule both sides of this machinery follow: a row is told
 // only while its own issue still stands in the claim's tree. An issue that has left it — a child
-// a linger handed to Legion, a parked child a person orphaned, a queued root admission adopted —
+// a linger handed to Legion, a child in backlog a person orphaned, a queued root admission adopted —
 // is owed its answer by the tree it stands in now, so its row's claim and hold go instead and
 // that tree's next start or catch-up names it. The old architect having been prompted with it as
 // well is the lesser fault: a person's decision is never lost.
@@ -65,7 +65,7 @@ func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Tok
 	if !confirmed {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, seq, artifact, version,
+	if _, err := tx.Exec(ctx, `insert into kept_decisions (issue, ref, decision, actor, at, seq, artifact, version,
 			held_by_claim, held_by_delivery)
 		select named.issue, named.ref, named.decision, named.actor, named.at, nullif(named.seq, 0),
 			coalesce(named.artifact, ''), nullif(named.version, 0), $1, $2
@@ -99,7 +99,7 @@ func holdKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delive
 	if len(kept) == 0 {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `update parked_decisions set held_by_delivery = $2
+	if _, err := tx.Exec(ctx, `update kept_decisions set held_by_delivery = $2
 		where held_by_claim = $1 and held_by_delivery is not null and held_by_delivery <> $2`,
 		string(token), delivery); err != nil {
 		return fmt.Errorf("move what the task of %s held to delivery %s: %w", token, delivery, err)
@@ -109,13 +109,13 @@ func holdKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delive
 		string(token), delivery); err != nil {
 		return fmt.Errorf("move the approval the task of %s held to delivery %s: %w", token, delivery, err)
 	}
-	if _, err := tx.Exec(ctx, `update parked_decisions set claimed_by = null, held_by_claim = $1, held_by_delivery = $2
+	if _, err := tx.Exec(ctx, `update kept_decisions set claimed_by = null, held_by_claim = $1, held_by_delivery = $2
 		from jsonb_to_recordset(coalesce($3::jsonb -> 'decisions', '[]'::jsonb)) as named (ref text, at timestamptz),
 			claims holder, issues owner
-		where holder.token = $1 and owner.key = parked_decisions.issue
-		and parked_decisions.ref = named.ref and parked_decisions.at = named.at
-		and (parked_decisions.held_by_claim = $1 or parked_decisions.claimed_by = any(holder.delivered_rows)
-			or (parked_decisions.claimed_by is null and parked_decisions.held_by_claim is null and owner.tree = holder.tree))`,
+		where holder.token = $1 and owner.key = kept_decisions.issue
+		and kept_decisions.ref = named.ref and kept_decisions.at = named.at
+		and (kept_decisions.held_by_claim = $1 or kept_decisions.claimed_by = any(holder.delivered_rows)
+			or (kept_decisions.claimed_by is null and kept_decisions.held_by_claim is null and owner.tree = holder.tree))`,
 		string(token), delivery, kept); err != nil {
 		return fmt.Errorf("hold what the task queued on %s as delivery %s names: %w", token, delivery, err)
 	}
@@ -135,7 +135,7 @@ func holdKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delive
 // so every row it holds whose issue still stands in the claim's tree has been told and is deleted,
 // and every row whose issue has left is KEPT again for the tree it stands in now to name.
 func tellKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string) error {
-	for _, table := range []string{"parked_decisions", "readmitted_approvals"} {
+	for _, table := range []string{"kept_decisions", "readmitted_approvals"} {
 		if _, err := tx.Exec(ctx, `delete from `+table+` using claims holder, issues owner
 			where holder.token = $1 and owner.key = `+table+`.issue and `+table+`.held_by_claim = $1
 			and `+table+`.held_by_delivery = $2 and owner.tree = holder.tree`, string(token), delivery); err != nil {
@@ -151,7 +151,7 @@ func tellKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delive
 // never both, and a claim is settled by the start or catch-up that owns it, never by a delivery's
 // release.
 func releaseKeptDecisions(ctx context.Context, tx pgx.Tx, token claim.Token, delivery string) error {
-	for _, table := range []string{"parked_decisions", "readmitted_approvals"} {
+	for _, table := range []string{"kept_decisions", "readmitted_approvals"} {
 		if _, err := tx.Exec(ctx, `update `+table+` set held_by_claim = null, held_by_delivery = null
 			where held_by_claim = $1 and held_by_delivery = $2`, string(token), delivery); err != nil {
 			return fmt.Errorf("leave what the delivery %s on %s held kept: %w", delivery, token, err)

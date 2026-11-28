@@ -126,7 +126,7 @@ func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) 
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
 	apply := applyFacts(t, pool, engine)
-	apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+	apply("backlog-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 		Status: "backlog", Title: "root", Rank: "U"})
 	writes := stepWrites(t, pool, "LEGION-209")
 	if len(writes) != 2 || !isStart(writes[1]) || writes[1].Kind != "merge" {

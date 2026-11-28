@@ -24,7 +24,7 @@ func freeCredits(gate *RefreshGate) int {
 // the turn took the wake off the machine, and the credit goes back only at the end of the decision
 // that runs the turn (endRefreshLane). The turn is held inside the relaunch it runs (the fake
 // runtime's Resume), where the sweep reads the claim's view and corrects the gate from it, as the
-// daemon's sweep does (internal/daemon's parkedWakes, refreshStalePlugins), and asks for the rest
+// daemon's sweep does (internal/daemon's delayedWakes, refreshStalePlugins), and asks for the rest
 // of the gate's share; then it does so again. The first correction keeps the credit because it was
 // granted since the correction before it; the second asks the machine, which is deciding, and so
 // keeps it too (reclaimCredit).
@@ -101,7 +101,7 @@ func TestACreditWhoseTurnIsRunningIsCountedByACorrectionMadeDuringTheTurn(t *tes
 func TestACreditItsMachineNoLongerHoldsIsTakenBackAtTheSecondCorrection(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// plant is the path planted after the credited post parked its wake, nil for none.
+		// plant is the path planted after the credited post delayed its wake, nil for none.
 		plant func(m *Machine)
 	}{
 		{"the machine let it go without giving it back", func(m *Machine) {

@@ -66,8 +66,9 @@ func putClaimRow(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.
 }
 
 // readmittedTree records the running tree runningTree seeds and moves its root to backlog and back
-// to todo, as the controller's restart did on 2026-11-23. The backlog parks the root and gives its
-// slot to LEGION-ACTIVE; the todo re-admits it at generation 2, where it waits in the line.
+// to todo, as the controller's restart did on 2026-11-23. The backlog takes the root out of the
+// workflow and gives its slot to LEGION-ACTIVE; the todo re-admits it at generation 2, where it
+// waits in the line.
 //
 // With cleaned false the root comes back inside its linger, so its tree's lifecycle stands open
 // under the workflow, as INFRA-3118's did on 2026-11-23. With cleaned true the tree's cleanup was
@@ -78,7 +79,7 @@ func readmittedTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, clea
 	apply(t, pool, admission, "root-backlog", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 		Status: "backlog", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
 	if got := issue(t, pool, rmRoot); !got.Lingers() || got.Status != "backlog" {
-		t.Fatalf("the parked %s = %#v, want it lingering in backlog", rmRoot, got)
+		t.Fatalf("%s after its move to backlog = %#v, want it lingering in backlog", rmRoot, got)
 	}
 	if !holdsSlot(t, pool, rmActive) || holdsSlot(t, pool, rmRoot) {
 		t.Fatalf("the slots after %s's backlog = %#v, want %s promoted onto the slot it gave back", rmRoot, slots(t, pool), rmActive)

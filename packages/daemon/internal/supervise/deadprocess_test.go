@@ -144,10 +144,10 @@ func TestAReadThatFindsTheProcessRunningWritesTheClearSoTheNextDeathAfterARestar
 // same reasons.
 //
 // The scripted verdict is the one that would show a read had been made: a gone verdict over the
-// claim that records nothing would set the record, and the alive verdict over the parked claim
+// claim that records nothing would set the record, and the alive verdict over the delayed claim
 // would clear the record its death left and the charge with it. Neither moves, and the runtime
 // is asked nothing at all.
-func TestReadProcessAsksNothingOfAClaimWithNoProcessOrADeadProcessAParkedLaunchReplaces(t *testing.T) {
+func TestReadProcessAsksNothingOfAClaimWithNoProcessOrADeadProcessADelayedLaunchReplaces(t *testing.T) {
 	t.Run("a claim that records no process", func(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateSuspended)
@@ -166,7 +166,7 @@ func TestReadProcessAsksNothingOfAClaimWithNoProcessOrADeadProcessAParkedLaunchR
 		}
 	})
 
-	t.Run("a dead process a parked launch replaces", func(t *testing.T) {
+	t.Run("a dead process a delayed launch replaces", func(t *testing.T) {
 		h := pacedHarness(t, wakeRate)
 		h.reach(StateWorking)
 		dead := h.locator()
@@ -183,10 +183,10 @@ func TestReadProcessAsksNothingOfAClaimWithNoProcessOrADeadProcessAParkedLaunchR
 		}
 		h.wantCalls("Probe", probes)
 		if !h.claim().ProcessGone {
-			t.Error("the claim reports nothing of its process, want the gone verdict the park kept")
+			t.Error("the claim reports nothing of its process, want the gone verdict the delay kept")
 		}
 		if c := h.claim(); c.Locator == nil || *c.Locator != dead {
-			t.Errorf("the claim records %+v, want the dead process the park kept, %+v", c.Locator, dead)
+			t.Errorf("the claim records %+v, want the dead process the delay kept, %+v", c.Locator, dead)
 		}
 		h.wantWakeDueAt(waiting)
 	})
@@ -501,7 +501,7 @@ func TestASuspendIsHeldOverALiveTurnWhereADeadProcessWouldLandIt(t *testing.T) {
 // (compactEnded), and a claim whose paced launch waits over its process has a turn coming that
 // replaces that process (launchWaits, wakeNow). The read records the gone verdict in both — it
 // judges nothing else, so it drops no compaction and runs no launch — and the suspension waits.
-func TestASuspendIsHeldForACompactionOrAParkedLaunchOverADeadProcess(t *testing.T) {
+func TestASuspendIsHeldForACompactionOrADelayedLaunchOverADeadProcess(t *testing.T) {
 	t.Run("a session in a compaction", func(t *testing.T) {
 		h := newHarness(t)
 		h.reach(StateIdle)
@@ -527,7 +527,7 @@ func TestASuspendIsHeldForACompactionOrAParkedLaunchOverADeadProcess(t *testing.
 		}
 	})
 
-	t.Run("a parked launch over the dead process", func(t *testing.T) {
+	t.Run("a delayed launch over the dead process", func(t *testing.T) {
 		h := pacedHarness(t, wakeRate)
 		h.reach(StateWorking)
 		dead := h.locator()
@@ -542,7 +542,7 @@ func TestASuspendIsHeldForACompactionOrAParkedLaunchOverADeadProcess(t *testing.
 		h.wantState(StateWorking)
 		h.wantCalls("Suspend", 0)
 		if c := h.claim(); !c.SuspensionHeld || c.Locator == nil || *c.Locator != dead {
-			t.Fatalf("the claim is %+v, want the suspension held over the dead process the park kept, %+v", c, dead)
+			t.Fatalf("the claim is %+v, want the suspension held over the dead process the delay kept, %+v", c, dead)
 		}
 		h.wantWakeDueAt(waiting)
 	})

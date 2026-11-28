@@ -92,7 +92,7 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 		// A decision kept for the tree is the root architect's: the child's catch-up neither
 		// names it nor claims it.
 		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			return record.NewStore().AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
+			return record.NewStore().KeepDecision(ctx, tx, record.KeptDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
 				Decision: record.DecisionDesignApproved, Actor: "user:alice", At: time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)})
 		}); err != nil {
 			t.Fatalf("keep a decision: %v", err)

@@ -51,12 +51,12 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // workflow stands in admission.active, in admission.waiting or in admission.held, and no issue
 // stands in held and in one of the other two. The fixture carries one issue for each word of the
 // ladder (record.HeldReasons, which the test walks) — a member of a closed tree, a member of a
-// parked tree, a root whose label is off, a root whose Dispatch chain reaches another live root,
-// a member of a tree whose root waits on a person, a parent that holds a phase start while a child
-// of it is open (awaiting_children), a member under a shut design gate, a child an unfinished
-// Dispatch link holds, a parent whose own children are still open, an issue beneath an accepted
-// ancestor, a parent held before its retro for the issue beneath it, a task stopped in its merge,
-// an issue in accepting, retro or merging that nothing holds, which reads at_work
+// tree whose root is in backlog, a root whose label is off, a root whose Dispatch chain reaches
+// another live root, a member of a tree whose root waits on a person, a parent that holds a phase
+// start while a child of it is open (awaiting_children), a member under a shut design gate, a
+// child an unfinished Dispatch link holds, a parent whose own children are still open, an issue
+// beneath an accepted ancestor, a parent held before its retro for the issue beneath it, a task
+// stopped in its merge, an issue in accepting, retro or merging that nothing holds, which reads at_work
 // (record.HeldAtWork), and an issue none of the others is true of — and the rows are read from
 // the projected state, which is where a reader meets them.
 //
@@ -79,12 +79,12 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	answeredAt := projectedAt.Add(-30 * time.Minute)
 	releasedAt := projectedAt.Add(-45 * time.Minute)
 
-	// A tree a person closed and a tree a person parked. Neither root is in the workflow, so
+	// A tree a person closed and a tree a person moved to backlog. Neither root is in the workflow, so
 	// neither is a candidate for a word of its own, and each holds its member where it stands.
 	closedRoot := treeRoot("LEGION-100", "done", phase.Done)
 	closedMember := treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)
-	parkedRoot := treeRoot("LEGION-110", "backlog", phase.Admitted)
-	parkedMember := treeMember("LEGION-111", "LEGION-110", "LEGION-110", "todo", phase.Admitted)
+	backlogRoot := treeRoot("LEGION-110", "backlog", phase.Admitted)
+	backlogMember := treeMember("LEGION-111", "LEGION-110", "LEGION-110", "todo", phase.Admitted)
 	// A root the record says the Legion label is off: nothing hands it to the daemon.
 	unlabelled := treeRoot("LEGION-120", "todo", phase.Admitted)
 	unlabelled.HandedOver = false
@@ -143,7 +143,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	waitingParent := treeMember("LEGION-186", "LEGION-185", "LEGION-185", "in_progress", phase.AwaitingChildren)
 
 	store := projectionStore{
-		issues: []record.Issue{closedRoot, closedMember, parkedRoot, parkedMember, unlabelled, queuedRoot, underQueued,
+		issues: []record.Issue{closedRoot, closedMember, backlogRoot, backlogMember, unlabelled, queuedRoot, underQueued,
 			askingRoot, askingMember, gatedRoot, gatedMember, openRoot, blockedChild, merging, beneathMerging, unplaced,
 			slotHolder, linkedRoot, parentOfOpen, answeredRoot, heldParent, childAtWork, stoppedTask, waitingRoot, waitingParent},
 		slots: []record.Slot{
@@ -187,7 +187,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 
 	wantHeld := []api.HeldIssue{
 		{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: []string{"LEGION-100"}},
-		{Issue: "LEGION-111", Reason: record.HeldTreeParked, HeldBy: []string{"LEGION-110"}},
+		{Issue: "LEGION-111", Reason: record.HeldTreeInBacklogOrIcebox, HeldBy: []string{"LEGION-110"}},
 		{Issue: "LEGION-120", Reason: record.HeldLabelOff},
 		{Issue: "LEGION-140", Reason: record.HeldAncestry, HeldBy: []string{"LEGION-130"}},
 		{Issue: "LEGION-151", Reason: record.HeldRootAwaitingPerson, HeldBy: []string{"LEGION-150"}},
@@ -327,13 +327,13 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 	openRoot := treeRoot("LEGION-1", "todo", phase.Admitted)
 	slotted := []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: projectedAt}}
 
-	// A root parked in backlog whose linger is still running, and the same root once it has run
+	// A root moved to backlog whose linger is still running, and the same root once it has run
 	// out. The two cases differ in nothing but the deadline against the moment the pass reads the
 	// record (record.LineFacts.Now), and they are here because that moment is the one fact of the
-	// ladder a clock decides: every park arms a linger (the workflow's beginLinger) and nothing
+	// ladder a clock decides: every move out of the workflow arms a linger (the workflow's beginLinger) and nothing
 	// but a re-admission clears it, so a word that read Issue.Lingers instead would give every
-	// parked tree's member tree_closed for ever and leave tree_parked unreachable.
-	parkedWithLinger := func(until time.Time) projectionStore {
+	// member of a tree in backlog tree_closed for ever and leave tree_in_backlog_or_icebox unreachable.
+	backlogWithLinger := func(until time.Time) projectionStore {
 		root := treeRoot("LEGION-1", "backlog", phase.Admitted)
 		root.LingerUntil = &until
 		return projectionStore{issues: []record.Issue{root,
@@ -359,9 +359,9 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeClosed, HeldBy: []string{"LEGION-1"}},
 		},
 		{
-			// tree_parked before dispatch_blocker: the link would hold the child where it stands
+			// tree_in_backlog_or_icebox before dispatch_blocker: the link would hold the child where it stands
 			// if its tree ran, and its tree is stopped.
-			name: "a parked tree with an unfinished Dispatch link",
+			name: "a tree in backlog with an unfinished Dispatch link",
 			store: projectionStore{
 				issues: []record.Issue{treeRoot("LEGION-1", "backlog", phase.Admitted),
 					treeMember("LEGION-2", "LEGION-1", "LEGION-1", "todo", phase.Admitted)},
@@ -371,7 +371,7 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 				},
 			},
 			issue: "LEGION-2",
-			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeParked, HeldBy: []string{"LEGION-1"}},
+			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeInBacklogOrIcebox, HeldBy: []string{"LEGION-1"}},
 		},
 		{
 			// label_off before ancestry: nothing hands such a root to Legion, so the release that
@@ -443,16 +443,16 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},
 		},
 		{
-			name:  "a member of a parked tree whose linger is still running",
-			store: parkedWithLinger(lingering),
+			name:  "a member of a tree in backlog whose linger is still running",
+			store: backlogWithLinger(lingering),
 			issue: "LEGION-2",
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeClosed, HeldBy: []string{"LEGION-1"}},
 		},
 		{
-			name:  "a member of a parked tree whose linger has run out",
-			store: parkedWithLinger(expired),
+			name:  "a member of a tree in backlog whose linger has run out",
+			store: backlogWithLinger(expired),
 			issue: "LEGION-2",
-			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeParked, HeldBy: []string{"LEGION-1"}},
+			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeInBacklogOrIcebox, HeldBy: []string{"LEGION-1"}},
 		},
 		{
 			// C2: none of the other words is true of an issue at work in a running tree that holds

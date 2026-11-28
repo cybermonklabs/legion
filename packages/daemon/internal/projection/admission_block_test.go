@@ -100,7 +100,7 @@ func TestTheJudgedAdmissionBlockIsTheBlockTheStateServes(t *testing.T) {
 // reach 402's chain only through the done parent's own record. LEGION-420's tree lingers with a
 // member still in the workflow, and a done member beside it. LEGION-450 is a root whose linger ran
 // out. LEGION-430 and LEGION-431 wait in the line, 431 behind an issue nobody has finished.
-// LEGION-440 is a root a person parked in backlog. OTHER-1 is another project's issue holding the
+// LEGION-440 is a root a person moved to backlog. OTHER-1 is another project's issue holding the
 // shared table's slot 3.
 func partingStore() projectionStore {
 	lingers, lingered := projectedAt.Add(time.Hour), projectedAt.Add(-time.Hour)

@@ -30,20 +30,20 @@ type Growth map[string]float64
 
 // The names Growth keys a fact by, the facts of a map by the prefix their key follows.
 const (
-	growthWorkHours      = "work_hours"
-	growthSlotHours      = "slot_hours"
-	growthParkedHours    = "parked_hours"
-	growthQueuedHours    = "queued_hours"
-	growthSlotWaitHours  = "slot_wait_hours"
-	growthImplementing   = "implementing_hours_after_first_review"
-	growthTesting        = "testing_hours_after_first_review"
-	growthWorkFirstAt    = "work_first_at"
-	growthWorkLastAt     = "work_last_at"
-	growthPhasePrefix    = "phase_hours."
-	growthBarPrefix      = "bars."
-	growthBarHours       = "hours"
-	growthSegmentsPrefix = "segments."
-	growthIdlePrefix     = "idle_by_role."
+	growthWorkHours            = "work_hours"
+	growthSlotHours            = "slot_hours"
+	growthBacklogOrIceboxHours = "backlog_or_icebox_hours"
+	growthQueuedHours          = "queued_hours"
+	growthSlotWaitHours        = "slot_wait_hours"
+	growthImplementing         = "implementing_hours_after_first_review"
+	growthTesting              = "testing_hours_after_first_review"
+	growthWorkFirstAt          = "work_first_at"
+	growthWorkLastAt           = "work_last_at"
+	growthPhasePrefix          = "phase_hours."
+	growthBarPrefix            = "bars."
+	growthBarHours             = "hours"
+	growthSegmentsPrefix       = "segments."
+	growthIdlePrefix           = "idle_by_role."
 )
 
 // GrowthRates is how fast the facts a Legion board entry carries grow after the moment they are
@@ -66,8 +66,8 @@ func (r GrowthRates) Grows() bool {
 }
 
 // Rates is g's rates of the facts a Legion board entry carries (GrowthRates). g's other names are
-// facts the entry does not carry - the bars, the idle hours by role, the parked, queued and
-// slot-wait hours, the hours after the first review - and are left out, as is work_first_at: past
+// facts the entry does not carry - the bars, the idle hours by role, the hours in backlog or
+// icebox, the queued and slot-wait hours, the hours after the first review - and are left out, as is work_first_at: past
 // the moment a row is closed at, the end of a bar still open is the one moment that moves
 // (closed.go), so the computation gives the first moment of work no rate. A rate of 0 is left out
 // too, as a fact that stands still is, which has no entry in g.
@@ -108,7 +108,7 @@ func (f *IssueFacts) scalarHours() [7]namedHours {
 	return [7]namedHours{
 		{growthWorkHours, &f.WorkHours},
 		{growthSlotHours, &f.SlotHours},
-		{growthParkedHours, &f.ParkedHours},
+		{growthBacklogOrIceboxHours, &f.BacklogOrIceboxHours},
 		{growthQueuedHours, &f.QueuedHours},
 		{growthSlotWaitHours, &f.SlotWaitHours},
 		{growthImplementing, &f.ImplementingHoursAfterFirstReview},

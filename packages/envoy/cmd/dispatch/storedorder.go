@@ -122,7 +122,7 @@ func writeStoredOrderReport(out io.Writer, report docs.StoredOrderReport) {
 			report.VersionsCompacted, report.Base))
 	}
 	if report.UpdatesAwaitingPredecessor > 0 {
-		fmt.Fprintf(out, " awaiting=%q", fmt.Sprintf("%d updates park structs no later update carries: an edit stored ahead of one it builds on that has not arrived, or a dependency never stored",
+		fmt.Fprintf(out, " awaiting=%q", fmt.Sprintf("%d updates leave structs pending that no later update carries: an edit stored ahead of one it builds on that has not arrived, or a dependency never stored",
 			report.UpdatesAwaitingPredecessor))
 	}
 	if report.Refused != "" {

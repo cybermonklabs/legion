@@ -38,7 +38,7 @@ func TestAnAncestorsStartTaskAtItsAdmissionNamesTheRootsRestingOnIt(t *testing.T
 			apply(t, pool, admission, "ancestor-todo", intake.DispatchIssue{Key: ancestor, ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated",
 				Status: "todo", Title: "ancestor", Rank: "B", HandedOver: handed}, admission.engine)
 		}},
-		{"an ancestor on the backlog", parkedRoot, readmitRoot},
+		{"an ancestor on the backlog", rootInBacklog, readmitRoot},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

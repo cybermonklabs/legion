@@ -13,14 +13,14 @@ The architect decided against its own retry, so the issue stays at `phase: held`
 3. **The release.**
    - The cause is gone (a refused launch, a died process, an agent that never came up), or you fixed what `detail` names: `set_status` the root to `todo`. It returns to `heldFrom` with its generation, review rounds, pod and place in line kept. On a child, the same `todo` brings it back at `admitted` with a new generation.
    - The provider keeps refusing the claim's session (`provider_error`, or `prompt_retires_exhausted`): `fresh_session`, which loses everything the old session held. Not `compact`, which refuses a failed claim.
-   - The cause stays: keep the tree admitted and ask whether to park it (`skill://legion-controller/references/park-asks.md`).
+   - The cause stays: keep the tree admitted and ask whether to move it to backlog (`skill://legion-controller/references/backlog-asks.md`).
 
 ## A child that looks independent
 
 Check the child and its parent in `read_state` and Dispatch. When it still looks independent, open an ask naming the child, why, and the root you would file, with the options `File an issue`, `File it for Legion` and `Do not file`. Never label a child or cut its `child_of` link: that admits it as a root while its tree still records it. Only on a person's yes:
 
 1. File the root with no `--parent`: `dispatch issue --project <PROJECT> --title '<title>' --spec-file -`, its spec citing the ask and carrying its `Filed for` line, with `--label legion` only when the answer asks Legion to run it. `<PROJECT>` is the issue key's prefix (`daemon.project`), not the lowercase token in role names.
-2. Park the child (`set_status` to `icebox`), with a comment naming the new root and the person's answer.
+2. Move the child to `icebox` (`set_status`), with a comment naming the new root and the person's answer.
 3. A root filed with the label comes back to you on its `triage` wake.
 
 ## An update round that is not finishing (`update-stalled`)
@@ -33,4 +33,4 @@ For each hold that `reason` names:
 - Your own suspension: `resume_agent` the agent once its cause is gone, or keep the agent held. Open no ask.
 - Anything else (a refused pod replacement, no process in the pod, two pods): open a finding ask naming the issue, the round and `reason`, so an operator acts on it.
 
-Send no role a message about the round, park nothing and write no status: the round ends once the hold clears.
+Send no role a message about the round, move nothing to `backlog` or `icebox` and write no status: the round ends once the hold clears.

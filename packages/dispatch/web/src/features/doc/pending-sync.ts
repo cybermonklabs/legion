@@ -85,7 +85,8 @@ function covers(
   return false;
 }
 
-/** Whether applying an update added a parked delete that the live document did not already hold. */
+/** Whether applying an update added a pending delete that the live document did not already
+ *  hold. */
 function addsPendingDeletes(before: Uint8Array | null, after: Uint8Array | null): boolean {
   if (after === null) {
     return false;
@@ -106,7 +107,8 @@ function addsPendingDeletes(before: Uint8Array | null, after: Uint8Array | null)
   return false;
 }
 
-/** A copy of `doc` to test restored rows on, so the live document never takes a row that parks. */
+/** A copy of `doc` to test restored rows on, so the live document never takes a row that leaves
+ *  structs or deletes pending. */
 function scratchOf(doc: Y.Doc): Y.Doc {
   const scratch = new Y.Doc();
   Y.applyUpdate(scratch, Y.encodeStateAsUpdate(doc));
@@ -114,13 +116,14 @@ function scratchOf(doc: Y.Doc): Y.Doc {
 }
 
 /**
- * Applies a restored row to `scratch` and says whether it parked something the scratch did not
- * already park: a missing client, or a delete of items it does not hold, which is what a row typed
- * against a history the server rebuilt since does. yjs 13.6.32 exposes parked structs and deletes
- * only through these `StructStore` internals. `encodeStateAsUpdate` carries the live document's
- * own parked structs and deletes into the scratch, so only what the row adds counts.
+ * Applies a restored row to `scratch` and says whether it left something pending the scratch did
+ * not already hold pending: a missing client, or a delete of items it does not hold, which is
+ * what a row typed against a history the server rebuilt since does. yjs 13.6.32 exposes pending
+ * structs and deletes only through these `StructStore` internals. `encodeStateAsUpdate` carries
+ * the live document's own pending structs and deletes into the scratch, so only what the row adds
+ * counts.
  */
-function addsParking(scratch: Y.Doc, update: Uint8Array): boolean {
+function addsPending(scratch: Y.Doc, update: Uint8Array): boolean {
   const beforeMissing = new Set(scratch.store.pendingStructs?.missing.keys() ?? []);
   const beforeDeletes = scratch.store.pendingDs;
 
@@ -213,19 +216,19 @@ function readable(scratch: Y.Doc): string {
 }
 
 /**
- * Whether one browser client's stored rows, applied in order to a copy of `doc`, park nothing and
- * leave what the copy shows as it was. Rows the document already holds do; so do rows whose only
- * change the editor of this load derived again. Rows that park never do, so a row typed against a
- * rebuilt history stays named. A copy that holds any root but the tree and the margin records,
- * before or after the rows, holds something the comparison cannot read, so its rows are kept
- * rather than risk dropping a person's unsent edit. Applying a row adds roots and never removes
- * one, so the roots after the rows cover those before.
+ * Whether one browser client's stored rows, applied in order to a copy of `doc`, leave nothing
+ * pending and leave what the copy shows as it was. Rows the document already holds do; so do rows
+ * whose only change the editor of this load derived again. Rows that leave something pending
+ * never do, so a row typed against a rebuilt history stays named. A copy that holds any root but
+ * the tree and the margin records, before or after the rows, holds something the comparison
+ * cannot read, so its rows are kept rather than risk dropping a person's unsent edit. Applying a
+ * row adds roots and never removes one, so the roots after the rows cover those before.
  */
 function changesNothing(doc: Y.Doc, updates: readonly Uint8Array[]): boolean {
   const scratch = scratchOf(doc);
   const before = readable(scratch);
   return (
-    updates.every((update) => !addsParking(scratch, update)) &&
+    updates.every((update) => !addsPending(scratch, update)) &&
     [...scratch.share.keys()].every((name) => name === FRAGMENT_NAME || name === MARKS_MAP_NAME) &&
     readable(scratch) === before
   );
@@ -245,8 +248,8 @@ export function startPendingSync({
   // name an edit nobody made - a read-only admission refuses a heading-id stamp, and the stamp of a
   // reconnect's editor can come before its admission is known. Each is still a struct of this
   // tab's client, though, and every later update of the client continues its clock: a stored row
-  // typed after one parks on a reload unless the server or the store holds it. So a person's edit
-  // records the held updates first, in order.
+  // typed after one is left pending on a reload unless the server or the store holds it. So a
+  // person's edit records the held updates first, in order.
   let derived: { ordinal: number; update: Uint8Array }[] = [];
   // Whether the stored rows were last restored for a writable admission (false) or pruned for a
   // read-only one (true); undefined before the first. A later admission with the same flag
@@ -558,14 +561,14 @@ export function startPendingSync({
       }
       // Every row is judged and applied in one synchronous pass, so the scratch copy stays the
       // live document's equal: it takes each row the live document takes, and is copied afresh
-      // only after a row it refused, whose parked structs would otherwise hide the next stale
+      // only after a row it refused, whose pending structs would otherwise hide the next stale
       // row from the same lost history. One document encode, plus one per refused row.
       let scratch = scratchOf(doc);
       const handled: PendingKey[] = [];
       const rerecorded: Promise<void>[] = [];
       for (const row of restored) {
         handled.push(row.key);
-        if (addsParking(scratch, row.update)) {
+        if (addsPending(scratch, row.update)) {
           rebuiltAt = Math.min(rebuiltAt ?? row.at, row.at);
           scratch = scratchOf(doc);
           continue;

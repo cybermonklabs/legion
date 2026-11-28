@@ -106,7 +106,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
-	parks := countParks(sender, false)
+	retries := countRetries(sender, false)
 	t.Cleanup(func() {
 		stop()
 		sender.wait()
@@ -124,7 +124,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	}
 
 	enqueue("a-first", "A-1")
-	waitUntil(t, "A's first send held on its own lane", func() bool { return parks.Load() >= 1 })
+	waitUntil(t, "A's first send held on its own lane", func() bool { return retries.Load() >= 1 })
 	enqueue("b-only", "B-1")
 	enqueue("a-second", "A-1")
 	waitUntil(t, "B's mention of s1 sent while A's wait", func() bool {
@@ -219,9 +219,9 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 }
 
 // A send in flight keeps its place in the queue's capacity, so a send that waits for an earlier
-// event always has room to park, and the owner's later sends never pass it. With a capacity of one
+// event always has room to wait for its retry, and the owner's later sends never pass it. With a capacity of one
 // and the first send of A-1 in flight, the second send of A-1 is refused at once and its claim
-// given back - the delivery sweep sends it later, asking the rule again - and the first parks
+// given back - the delivery sweep sends it later, asking the rule again - and the first waits for its retry
 // within the capacity. Nothing of A-1 is sent before the first: the order holds.
 func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	t.Parallel()
@@ -257,7 +257,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	sender.mu.Lock()
 	sender.capacity = 1
 	sender.mu.Unlock()
-	parks := countParks(sender, true)
+	retries := countRetries(sender, true)
 	t.Cleanup(func() {
 		stop()
 		sender.wait()
@@ -274,7 +274,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	<-started
 	second := enqueue("second", "A-1")
 	close(release)
-	waitUntil(t, "the first send parked on A-1's held lane", func() bool { return parks.Load() == 1 })
+	waitUntil(t, "the first send waiting for its retry on A-1's held lane", func() bool { return retries.Load() == 1 })
 	queued, inflight := queuedAndInFlight(sender)
 	mu.Lock()
 	defer mu.Unlock()
@@ -301,7 +301,7 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
-	parks := countParks(sender, true)
+	retries := countRetries(sender, true)
 	t.Cleanup(func() {
 		stop()
 		sender.wait()
@@ -313,10 +313,10 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 		})
 	}
 	held := heldLane(laneKey{recipient: "session:s1"}, "A-1")
-	waitUntil(t, "the three sends on A's held lane, parked", func() bool {
+	waitUntil(t, "the three sends on A's held lane, waiting for their retry", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
-		return parks.Load() == 1 && len(sender.lanes[held]) == 3
+		return retries.Load() == 1 && len(sender.lanes[held]) == 3
 	})
 
 	count, _ := sender.heldSamples(time.Now())

@@ -243,7 +243,7 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // the claim reads working at a let-go (endState), which a claim working for a compaction with no
 // turn under it does not, and the claim's times show the turn open (Claim.OpenTurn), which every
 // turn that runs does. No wake can be waiting to replace the process first: the controller's
-// launch is never parked, since the wake gate, the project pause and the pod-start gate each pass
+// launch is never delayed, since the wake gate, the project pause and the pod-start gate each pass
 // it (gatePaces, pauseHolding, gated).
 //
 // Otherwise it ends the launch as the stall backstop ends a stalled turn, whether or not steps still

@@ -422,7 +422,7 @@ func (s *Service) failRoomLoad(room string, load *roomLoad, cause error) {
 }
 
 // validateUpdate decodes a stored history, or an update about to replace one, as the room will
-// decode it: into a document with maxPending parked items, the caller's own pending queue
+// decode it: into a document with maxPending pending items, the caller's own pending queue
 // (Service.maxPendingItems for a rebuild's check of the history its rooms would load,
 // PgVersioned.maxPendingItems for the store's check of a rebuilt seed; see maxUpdateItems for the
 // rule both follow), which is the cap a room's load hook decodes its stored state under
@@ -509,7 +509,7 @@ func (s *Service) refuseIfRebuilding(room string) error {
 // a settled room's expired marks, unmarkExpired), and that is outside the pool's deadlock
 // cycle only because ygo runs OnInject before getOrCreateRoom (sjawhar/ygo v1.55.1-sami.2,
 // provider/websocket/inject.go:319-328): an injection refused here has published no room
-// placeholder for a connection-holder to park on, so nothing holding a connection is waiting
+// placeholder for a connection-holder to wait on, so nothing holding a connection is waiting
 // on this read. A vendored reordering of those two calls puts it back in the cycle.
 func (s *Service) allowInject(ctx context.Context, info websocket.InjectInfo) error {
 	if err := s.refuseIfRebuilding(info.Room); err != nil {
@@ -788,12 +788,12 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		s.observeRoomUpdates(room, replica)
 	})
 	// A commit that changed nothing the room holds - one whose whole update waits for an edit the
-	// room has not received, so it only parked - has no update observer (ygo calls OnUpdate only
+	// room has not received, so it only left bytes pending - has no update observer (ygo calls OnUpdate only
 	// for a transaction that changes the document, reearth/ygo#350), but ygo logs it, with what it
-	// parked (crdt.LoggedUpdate.Parked). ygo calls OnAfterTransaction for every committed
+	// left pending (crdt.LoggedUpdate.Parked). ygo calls OnAfterTransaction for every committed
 	// transaction, outside the document's lock and before OnUpdate, so the replica is drained here
 	// for a transaction that changed no shared type while the log holds something: the replica
-	// takes the commit, and what it parked is queued for the store (classifyDrained), whichever
+	// takes the commit, and what it left pending is queued for the store (classifyDrained), whichever
 	// path the update reached the room by - a peer's connection, or a published write whose
 	// update waits on an item a cold fork read from the store. A transaction that changed a
 	// shared type is drained by the update observer above, after the steps it takes first.
@@ -806,20 +806,20 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	return nil
 }
 
-// onPeerUpdate stores what a peer's update parked, once ygo has applied it. ygo hands the room's
+// onPeerUpdate stores what a peer's update left pending, once ygo has applied it. ygo hands the room's
 // persistence only what an update integrated, through OnUpdate, and nothing at all for one that
-// only parked bytes - it waits for an edit the room has not received - so this is the one place
-// the parked bytes are made durable: the drain the apply ran (the room's update observer, or its
+// only left bytes pending - it waits for an edit the room has not received - so this is the one place
+// the pending bytes are made durable: the drain the apply ran (the room's update observer, or its
 // after-transaction drain for a commit that changed nothing, onLoadDocument) queued them
-// (classifyDrained), and storeParked appends them before ygo answers the peer and before ygo's
+// (classifyDrained), and storePendingBytes appends them before ygo answers the peer and before ygo's
 // Shutdown, which waits for this hook, can let the process exit. The hook runs on the peer's read
 // loop, which holds no lock of the service's, so it can wait for the document's lock the store
 // takes; an OnUpdate observer cannot, since it runs on the goroutine that committed, which can be
 // a settlement holding that lock.
-// An unbounded apply can fail after parking bytes, so its error does not skip the durable append.
+// An unbounded apply can fail after leaving bytes pending, so its error does not skip the durable append.
 func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error) error {
 	err := apply()
-	s.storeParked(info.Room)
+	s.storePendingBytes(info.Room)
 	return err
 }
 
@@ -865,38 +865,38 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 	}
 }
 
-// storeParked appends the parked bytes its drains queued, taking them in the order they were queued
-// (classifyDrained), each on its own and gated on the cursor of the room instance that parked
-// it (AppendParkedUpdate). It stores them with no class, no credit and no settlement owed: they
+// storePendingBytes appends the pending bytes its drains queued, taking them in the order they were
+// queued (classifyDrained), each on its own and gated on the cursor of the room instance that took
+// it (AppendPendingBytes). It stores them with no class, no credit and no settlement owed: they
 // changed nothing the room renders, and the commit that integrates them marks the document owed.
-// A load of the stored history parks them again and integrates them once their predecessor
+// A load of the stored history keeps them pending again and integrates them once their predecessor
 // arrives, which a browser that reconnects sends; the commit that integrates them stores them a
 // second time, in its own update, which a load applies to no effect, since a struct a document
 // already holds is skipped. The bytes are bounded by the room's pending queue (MaxPendingItems),
-// which refuses an update that would park past it, and a struct sent again parks only once, so a
+// which refuses an update that would leave pending more than that, and a struct sent again is pending only once, so a
 // peer that keeps sending what cannot integrate cannot grow the store past that bound per room
 // instance. The bytes carry no observed time, so the gate refuses them once the document's issue
 // is closed, whenever the room took them (observedBeforeClose). On that refusal (ErrIssueClosed)
-// storeParked calls refuseClosedIssueAppend for the instance that parked them, as
+// storePendingBytes calls refuseClosedIssueAppend for the instance that took them, as
 // StoreUpdateContext does for a refused browser update; any other failed append fails the room.
-func (s *Service) storeParked(room string) {
+func (s *Service) storePendingBytes(room string) {
 	for {
 		state := s.lockExistingState(room)
-		if state == nil || len(state.parked) == 0 {
+		if state == nil || len(state.pendingBytes) == 0 {
 			if state != nil {
 				s.unlockState(room, state)
 			}
 			return
 		}
-		next := state.parked[0]
-		state.parked = slices.Delete(state.parked, 0, 1)
+		next := state.pendingBytes[0]
+		state.pendingBytes = slices.Delete(state.pendingBytes, 0, 1)
 		s.unlockState(room, state)
 		if s.roomFailed(room) {
 			continue
 		}
 		ctx := withRoomCursor(context.Background(), &next.instance.cursor)
-		if _, err := s.persistence.AppendParkedUpdate(ctx, room, next.update); err != nil {
-			s.appendFailed(room, next.instance, fmt.Errorf("store the parked bytes of a document update: %w", err))
+		if _, err := s.persistence.AppendPendingBytes(ctx, room, next.update); err != nil {
+			s.appendFailed(room, next.instance, fmt.Errorf("store the pending bytes of a document update: %w", err))
 		}
 	}
 }
@@ -909,14 +909,14 @@ func (s *Service) storeParked(room string) {
 // peer's update or a published live write's, rather than another process's append a catch-up
 // applied.
 //
-// A commit can park bytes - structs or deletions that wait for an edit the room has not received -
+// A commit can leave bytes pending - structs or deletions that wait for an edit the room has not received -
 // and ygo logs them in Parked, beside an Update that carries only what the commit integrated, the
-// bytes OnUpdate hands the room's persistence. So the room's persistence never stores parked bytes,
-// and they are queued on the room's record for storeParked to store on their own, outside the
+// bytes OnUpdate hands the room's persistence. So the room's persistence never stores pending bytes,
+// and they are queued on the room's record for storePendingBytes to store on their own, outside the
 // replica's lock - a drain runs under a settlement's document lock too (readPoint), and the store
-// takes that lock. Parked bytes a published live write left are already durable, stored by the
+// takes that lock. Pending bytes a published live write left are already durable, stored by the
 // transaction that wrote it, and a catch-up's are the stored rows themselves, so only another
-// origin's bytes are queued. A commit that only parked
+// origin's bytes are queued. A commit that only left bytes pending
 // is logged with an empty update (emptyUpdateV1), and ygo calls no OnUpdate for it, so no
 // persistence call will ever take a class for it: none is queued.
 //
@@ -932,7 +932,7 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	_, remote := logged.Origin.(*remoteUpdateOrigin)
 	if len(logged.Parked) > 0 && !published && !remote {
 		state := s.lockState(room)
-		state.parked = append(state.parked, parkedBytes{update: logged.Parked, instance: instance})
+		state.pendingBytes = append(state.pendingBytes, pendingCommit{update: logged.Parked, instance: instance})
 		s.unlockState(room, state)
 	}
 	if len(logged.Parked) > 0 && bytes.Equal(logged.Update, emptyUpdateV1) {

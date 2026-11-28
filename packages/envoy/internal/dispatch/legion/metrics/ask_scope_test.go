@@ -44,17 +44,17 @@ func TestAnAskCountsOnlyForTheIssueItWasOpenedOn(t *testing.T) {
 // reads "The design phase runs from the issue's first slot, or else from that architect's
 // first event, **to the first planner event**". One interval, ending where planning begins, so
 // nothing later can reopen it. `statusPhase` instead maps every entry into `in_progress` out of
-// nothing, the queue or parked to the design phase whenever the issue has architect events, so an
-// issue parked mid-flight and re-admitted goes back to design for the rest of its life. Over
-// dispatch://INFRA-979's corpus the architect bar reads 714.65 h against 404.97 h, of which only
-// 97.12 h is the one issue whose architect spoke after its planner; the rest is this.
+// nothing, the queue or the backlog to the design phase whenever the issue has architect events,
+// so an issue moved to backlog mid-flight and re-admitted goes back to design for the rest of its
+// life. Over dispatch://INFRA-979's corpus the architect bar reads 714.65 h against 404.97 h, of
+// which only 97.12 h is the one issue whose architect spoke after its planner; the rest is this.
 func TestAReAdmissionDoesNotReopenTheDesignPhase(t *testing.T) {
 	issue := newIssue("INFRA-1").
 		worked("architect", hour(0)).
 		worked("planner", hour(1)).
 		worked("implementer", hour(2)).
 		closedAt(hour(7)).
-		// Admitted out of the queue, parked mid-implementing, then admitted again.
+		// Admitted out of the queue, moved to backlog mid-implementing, then admitted again.
 		statusAt(hour(0), "in_progress").
 		statusAt(hour(3), "backlog").
 		statusAt(hour(5), "in_progress").
@@ -62,13 +62,13 @@ func TestAReAdmissionDoesNotReopenTheDesignPhase(t *testing.T) {
 
 	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
 
-	// Work time is the five hours outside the park: design 0-1, planning 1-2, implementing 2-3
+	// Work time is the five hours outside the backlog: design 0-1, planning 1-2, implementing 2-3
 	// and 5-7.
 	if got := barOf(t, w, "architect").Hours; got != 1 {
 		t.Errorf("the architect bar = %g h, want 1: design runs from the architect's first event to the first planner event, and the re-admission at hour 5 reopens nothing",
 			got)
 	}
 	if got := barOf(t, w, "implementer").Hours; got != 3 {
-		t.Errorf("the implementer bar = %g h, want 3: hours 2-3 and the two after the park", got)
+		t.Errorf("the implementer bar = %g h, want 3: hours 2-3 and the two after the backlog", got)
 	}
 }

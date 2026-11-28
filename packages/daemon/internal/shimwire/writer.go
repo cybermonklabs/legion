@@ -19,7 +19,7 @@ var ErrEmbeddedNewline = errors.New("shimwire: a frame line may not contain a ne
 // unix socket buffer of roughly 200 KiB, where the bytes the kernel refused were dropped and
 // every chunked agent_end reached the daemon truncated (socket-writer.ts:19-25). Its queue and
 // its drain handler are the netpoller's job here — an io.Writer either writes everything or
-// reports why it could not, and a net.Conn parks the goroutine until the peer drains. What is
+// reports why it could not, and a net.Conn blocks the goroutine until the peer drains. What is
 // left for this type is the part Go does not give: one frame is one Write, while the frame holds
 // the writer's one slot, so two goroutines sharing a stream can never interleave their lines or
 // lose a newline between them.

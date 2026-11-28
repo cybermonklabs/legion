@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// parkedDecisionSource is the processed-event source of the parked-decision notices the outbox
+// keptDecisionSource is the processed-event source of the kept-decision notices the outbox
 // writes. Its event id is the dedupe key the undelivered notice went under (record.Notice.
 // Published: a re-held copy's is its original row's), so one decision writes one notice however
 // many rows and reports carry it, and however often a row whose finish did not commit runs again.
@@ -23,7 +23,7 @@ import (
 // row's key, so neither the listener's delivery caches nor a host's dedupe
 // (dedupeKeyNamesItsEvent, packages/contracts/src/envelope.ts) can tell that two rows relay one
 // decision.
-const parkedDecisionSource = "parked-decision"
+const keptDecisionSource = "kept-decision"
 
 // keptJSON encodes what a start row's task names of what its root keeps, for the delivery to carry
 // and the claim store to persist (supervise.Delivery.Kept). A task that names nothing carries
@@ -39,18 +39,18 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 	return encoded, nil
 }
 
-// parkDecision hands the person's spec decision a notice reports to the one rule for a decision
-// nobody in its tree hears (record.RelayParkedDecision): the project's controller is told, in a
-// parked-decision notice of its own, and the decision is kept for the root's next architect start.
-// It runs in a transaction of its own that marks key processed and owns the commit hook the write
-// registers (projectRecords, store.OnCommit), so the notice's lane wakes as it commits. It does
-// nothing for a kind that is no spec decision, nor for a changes request the person has since
+// relaySpecDecision hands the person's spec decision a notice reports to the one rule for a
+// decision nobody in its tree hears (record.RelayKeptDecision): the project's controller is told,
+// in a kept-decision notice of its own, and the decision is kept for the root's next architect
+// start. It runs in a transaction of its own that marks key processed and owns the commit hook the
+// write registers (projectRecords, store.OnCommit), so the notice's lane wakes as it commits. It
+// does nothing for a kind that is no spec decision, nor for a changes request the person has since
 // replaced with a newer one of the same document (workflow.ChangesSuperseded): the workflow tells
 // such a request when it arrives after the newer one — late, or replayed from a message the intake
 // gave up on, however late — and kept now it would take the newer decision's place, and its
 // claim, under the document's ref. Every outcome logs one line that pairs the
 // undelivered row with what became of its decision: sent, kept for a root that waits for its slot,
-// not relayed (by no person, on a root that is no parked tree, on a tree that hears it, on a root
+// not relayed (by no person, on a root back in the workflow, on a tree that hears it, on a root
 // with no record, or replaced since), or handled before under the same key, by an earlier run or
 // another row carrying the same notice, whose own line said what became of it. The line is a hook
 // of the transaction, so it is logged once the transaction has committed.
@@ -60,9 +60,9 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // controller is not told to act on a review the person's own approval took the place of, nor on
 // an approval the gate no longer holds. The same read of the gates says whether a newer changes
 // request replaced it (workflow.ChangesSuperseded). The relay carries the notice's facts of the
-// review (record.RelayParkedDecision), so the publish of a relayed changes request asks again
+// review (record.RelayKeptDecision), so the publish of a relayed changes request asks again
 // of the same decision (controllerNotice).
-func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
+func (r *outbox) relaySpecDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
 		return nil
@@ -75,30 +75,30 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		store.OnCommit(ctx, func() {
 			switch {
 			case !fresh:
-				r.log.Info("outbox parked decision handled before under this key", args...)
+				r.log.Info("outbox kept decision handled before under this key", args...)
 			case !recorded:
-				r.log.Info("outbox parked decision not relayed: its root has no record", args...)
+				r.log.Info("outbox kept decision not relayed: its root has no record", args...)
 			case superseded != nil && superseded.By == nil:
-				r.log.Info("outbox parked decision not relayed: the gate no longer holds the approval it reports",
+				r.log.Info("outbox kept decision not relayed: the gate no longer holds the approval it reports",
 					append(args, "version", notice.Version)...)
 			case superseded != nil:
-				r.log.Info("outbox parked decision not relayed: the person's approval followed it",
+				r.log.Info("outbox kept decision not relayed: the person's approval followed it",
 					append(args, "version", notice.Version, "approved", superseded.By.Version)...)
 			case replaced:
-				r.log.Info("outbox parked decision not relayed: a newer changes request of its document replaced it", append(args, "ref", notice.Ref, "version", notice.Version)...)
+				r.log.Info("outbox kept decision not relayed: a newer changes request of its document replaced it", append(args, "ref", notice.Ref, "version", notice.Version)...)
 			case outcome == record.RelaySent:
-				r.log.Info("outbox parked decision sent to the controller", args...)
+				r.log.Info("outbox kept decision sent to the controller", args...)
 			case outcome == record.RelayKept:
-				r.log.Info("outbox parked decision kept for its root's start, which waits for its slot", args...)
+				r.log.Info("outbox kept decision left for its root's start, which waits for its slot", args...)
 			case outcome == record.RelayNoPerson, outcome == record.RelayNoPersonWaiting:
-				r.log.Info("outbox parked decision not relayed: it names no person", append(args, "ref", notice.Ref)...)
-			case outcome == record.RelayNotParked:
-				r.log.Info("outbox parked decision not relayed: its root is not parked", args...)
+				r.log.Info("outbox kept decision not relayed: it names no person", append(args, "ref", notice.Ref)...)
+			case outcome == record.RelayBackInWorkflow:
+				r.log.Info("outbox kept decision not relayed: its root is back in the workflow", args...)
 			default:
-				r.log.Info("outbox parked decision not relayed: its tree hears it", args...)
+				r.log.Info("outbox kept decision not relayed: its tree hears it", args...)
 			}
 		})
-		marked, err := r.records.MarkProcessed(ctx, tx, parkedDecisionSource, key)
+		marked, err := r.records.MarkProcessed(ctx, tx, keptDecisionSource, key)
 		if err != nil || !marked {
 			return err
 		}
@@ -131,8 +131,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		if at.IsZero() {
 			at = now
 		}
-		outcome, err = record.RelayParkedDecision(ctx, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq,
+		outcome, err = record.RelayKeptDecision(ctx, tx, r.records, issue, *stored, true,
+			record.KeptDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq,
 				Artifact: notice.Artifact, Version: notice.Version},
 			notice, r.gatedSteps)
 		return err
@@ -169,9 +169,9 @@ func diskNotice(kind record.NoticeKind) bool {
 // a transaction that marks key processed, so a row whose finish did not commit runs again and
 // queues nothing more. The undelivered row then finishes.
 //
-// It does nothing for a kind that is no disk notice, as parkDecision does nothing for a kind that
-// is no spec decision, so every place a notice finishes undelivered because nobody will hold its
-// architect's role calls both, before its own line: an architect that will not hold its role
+// It does nothing for a kind that is no disk notice, as relaySpecDecision does nothing for a kind
+// that is no spec decision, so every place a notice finishes undelivered because nobody will hold
+// its architect's role calls both, before its own line: an architect that will not hold its role
 // again (noticeAnswered), and one that stopped with its finished tree, found before a publish
 // (deliverNotice, the Legion reviewer's point 3 on R6's review fixes) or before a re-hold
 // (reholdNotice). Every outcome logs one line that pairs the undelivered row with what became of

@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// This file holds the rule for a list of kept decisions (record.ParkedDecision and
+// This file holds the rule for a list of kept decisions (record.KeptDecision and
 // record.DecisionMark, keptDecisionTypes) that
 // TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord holds the three sender packages to,
 // the loops it allows (keptLoopReaders) and the test of that list's rows;
@@ -86,24 +86,24 @@ import (
 //     are held to the predicate as functions, through what they call.
 
 // keptDecisionTypes are the record types that hold one kept decision: the row the daemon keeps
-// (record.ParkedDecision) and the mark a task names it by (record.DecisionMark). A loop that
+// (record.KeptDecision) and the mark a task names it by (record.DecisionMark). A loop that
 // reads a value of either type reads a kept decision, whatever the loop runs over (readKeptLoop).
-var keptDecisionTypes = []string{"ParkedDecision", "DecisionMark"}
+var keptDecisionTypes = []string{"KeptDecision", "DecisionMark"}
 
 // keptLoopName names one loop of keptLoopReaders: its function, as go/types names it
 // (types.Func.FullName), and its clause as gofmt prints it (loopClause).
 type keptLoopName struct{ fn, clause string }
 
 // keptLoopReaders is every loop of the three packages one pass of whose body reads a kept
-// decision (record.ParkedDecision or record.DecisionMark) and does not ask the predicate of each
+// decision (record.KeptDecision or record.DecisionMark) and does not ask the predicate of each
 // decision it reads in that pass, each named by its function and its clause (keptLoopName), with
 // why the loop renders nothing an architect or person reads. A row allows that one loop: another
 // such loop of the same function needs a row of its own, a clause two such loops share allows
 // neither, and a row whose loop came to ask, changed its clause or went is taken out
 // (unaskedKeptLoops).
 var keptLoopReaders = map[keptLoopName]string{
-	{senderModule + "workflow.ParkedDecisionTask", "for _, d := range decisions"}: "it turns each unclaimed row into its mark " +
-		"(record.ParkedDecision.Mark), the list ForgetSuperseded and KeptDecisionsTask each ask of in a loop of their own, and renders nothing",
+	{senderModule + "workflow.UnclaimedKeptTask", "for _, d := range decisions"}: "it turns each unclaimed row into its mark " +
+		"(record.KeptDecision.Mark), the list ForgetSuperseded and KeptDecisionsTask each ask of in a loop of their own, and renders nothing",
 	{senderModule + "workflow.ReadKeptGates", "for _, d := range owed.Decisions"}: "it collects the issue each decision was made on, " +
 		"to read their gates in one read (record.Store.Gates), and renders nothing",
 	{"(*" + senderModule + "workflow.Engine).warnKeptDecisionsOfAClosedTree", "for _, decision := range kept"}: "it writes each " +

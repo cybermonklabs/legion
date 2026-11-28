@@ -432,8 +432,8 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // tellStalledTrees), which takes the words of this judgement rather than walking the project's
 // issues again; every other caller takes the value and ignores it. now is the caller's
 // own clock, and the one thing it decides is one of those words: the tree_closed word asks
-// whether a root's linger is still running at it (record.Lingering), so that a parked root's
-// member reads tree_parked once that root's linger has run out. It reaches the judgement as
+// whether a root's linger is still running at it (record.Lingering), so that the member of a root
+// in backlog or icebox reads tree_in_backlog_or_icebox once that root's linger has run out. It reaches the judgement as
 // record.LineFacts.Now, which the line's own placement reads nowhere.
 //
 // It is the one place the line is judged: admission's own pass (admit's promoteHolds), the

@@ -152,7 +152,7 @@ func (c *idleConn) Close() error {
 }
 
 // cutConn carries no byte it reads once the cut is decided. A read deadline in the past is a
-// request and not a stop: it wakes a read parked in the poller, but a read whose socket became
+// request and not a stop: it wakes a read waiting in the poller, but a read whose socket became
 // readable before that goroutine ran finds the poller already ready, and poll_runtime_pollWait
 // answers pollNoError without reading the deadline again (runtime/netpoll.go), so the syscall
 // runs and hands back the bytes. That is how the one read in flight when the grant stops

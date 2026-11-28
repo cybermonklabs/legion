@@ -20,10 +20,10 @@ import (
 )
 
 // A claim refresh whose statement commits and whose answer is lost - the connection drops after
-// the commit - leaves the parked send's claim unknown, never assumed: the sender reads the row
+// the commit - leaves the waiting send's claim unknown, never assumed: the sender reads the row
 // before it acts on the send, records the claim the lost refresh wrote, and goes on writing the
 // row. Trusting the claim it recorded before, it would name a claim the row no longer carries,
-// no refresh would write the row again, and the claim would lapse with the send still parked
+// no refresh would write the row again, and the claim would lapse with the send still waiting
 // (TestTheMentionSenderClaimModel finds what follows). The server, its statements and its
 // database are the real ones; its connections run through lossyConns, which drops the one that
 // carries the refresh's UPDATE once the server has committed it. The control row's answer arrives.
@@ -61,29 +61,29 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			served.mentions = sender
 
 			// No outbox runs, so the issue's earlier events stay unsent and the comment's send
-			// parks under the claim its first try took, its timer left to the test.
+			// waits for its retry under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A refresh whose answer is lost", "before")
-			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			testwait.Receive(t, "the parked send's timer", timers)
+			comment := postMentionOfS1(t, handler, issue.Key, "the waiting one")
+			testwait.Receive(t, "the waiting send's timer", timers)
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
 			recorded := func() time.Time {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				return sender.held[key].claimed
 			}
-			parked := attemptClaimedAt(t, database, comment, "session:s1")
-			if !recorded().Equal(parked) {
-				t.Fatalf("the parked send's claim is recorded as %v, its row carries %v", recorded(), parked)
+			waitClaim := attemptClaimedAt(t, database, comment, "session:s1")
+			if !recorded().Equal(waitClaim) {
+				t.Fatalf("the waiting send's claim is recorded as %v, its row carries %v", recorded(), waitClaim)
 			}
 
 			lossy.armed.Store(tc.lose)
 			sender.refreshHeldClaims(context.Background())
 			lossy.armed.Store(false)
 			written := attemptClaimedAt(t, database, comment, "session:s1")
-			t.Logf("parked under %v; the refresh wrote %v, and the sender records %v; connections dropped: %d",
-				parked, written, recorded(), lossy.dropped.Load())
-			if !written.After(parked) {
-				t.Fatalf("the refresh's statement did not commit: the row's claim is still %v", parked)
+			t.Logf("waiting under %v; the refresh wrote %v, and the sender records %v; connections dropped: %d",
+				waitClaim, written, recorded(), lossy.dropped.Load())
+			if !written.After(waitClaim) {
+				t.Fatalf("the refresh's statement did not commit: the row's claim is still %v", waitClaim)
 			}
 			if want := int32(map[bool]int{false: 0, true: 1}[tc.lose]); lossy.dropped.Load() != want {
 				t.Fatalf("%d connections dropped after the refresh's statement, want %d", lossy.dropped.Load(), want)
@@ -93,11 +93,11 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			again := attemptClaimedAt(t, database, comment, "session:s1")
 			t.Logf("the next refresh: the row carries %v, and the sender records %v", again, recorded())
 			if !again.After(written) {
-				t.Fatalf("the next refresh left the row's claim at %v, the one the refresh whose answer was lost wrote: the sender named its claim from before, %v, which the row no longer carries, so no refresh writes the row again and the claim lapses with the send still parked",
-					written, parked)
+				t.Fatalf("the next refresh left the row's claim at %v, the one the refresh whose answer was lost wrote: the sender named its claim from before, %v, which the row no longer carries, so no refresh writes the row again and the claim lapses with the send still waiting",
+					written, waitClaim)
 			}
 			if !recorded().Equal(again) {
-				t.Fatalf("the sender records the parked send's claim as %v, the row carries %v", recorded(), again)
+				t.Fatalf("the sender records the waiting send's claim as %v, the row carries %v", recorded(), again)
 			}
 		})
 	}
@@ -106,13 +106,13 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 // A refresh writes a claim again only while the claim it names is live, so a refresh whose answer
 // is lost never revives a claim that lapsed: one it revived would be more than a lease past the
 // claim the sender records, which the re-read cannot tell from another sender's
-// (model.DeliveryClaimSinceSQL), so the sender would go on trusting the lapsed claim, its parked
+// (model.DeliveryClaimSinceSQL), so the sender would go on trusting the lapsed claim, its waiting
 // send's take would find the revived one live and refuse the send as another sender's, and the
-// owner's next comment would reach s1 first. A parked send's claim lapses after a lease with no
+// owner's next comment would reach s1 first. A waiting send's claim lapses after a lease with no
 // committed refresh: here a database the sender cannot reach for that long, its refresh failing
 // before it commits and its re-read failing too, or two leases with no refresh at all. Then a
 // refresh's answer is lost after its statement commits, the owner's next comment is posted, the
-// earlier events are sent, and the parked send goes: s1 must take it first, and the sender must
+// earlier events are sent, and the waiting send goes: s1 must take it first, and the sender must
 // never trust a claim its row does not carry. The server, its statements and its database are the
 // real ones, its connections running through lossyConns; each control row's answer arrives.
 func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
@@ -168,21 +168,21 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			served.mentions = sender
 
 			// No outbox runs, so the issue's earlier events stay unsent and the comment's send
-			// parks under the claim its first try took, its timer left to the test.
+			// waits for its retry under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A lost refresh after a lapse", "before")
-			parkedOne := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			unpark := testwait.Receive(t, "the parked send's timer", timers)
-			key := mentionKey{comment: parkedOne, target: "session:s1", attempt: 1}
+			waitingOne := postMentionOfS1(t, handler, issue.Key, "the waiting one")
+			runRetry := testwait.Receive(t, "the waiting send's timer", timers)
+			key := mentionKey{comment: waitingOne, target: "session:s1", attempt: 1}
 			if tc.outage {
 				down.Store(true)
 				sender.refreshHeldClaims(ctx)
 				down.Store(false)
 				if _, unsure := recordedClaim(sender, key); !unsure {
-					t.Fatal("a refresh that failed before it committed left the parked send's claim known")
+					t.Fatal("a refresh that failed before it committed left the waiting send's claim known")
 				}
 			}
 			ageClaimAndRecord(t, database, sender, key, tc.age)
-			aged := attemptClaimedAt(t, database, parkedOne, "session:s1")
+			aged := attemptClaimedAt(t, database, waitingOne, "session:s1")
 
 			lossy.armed.Store(tc.lose)
 			sender.refreshHeldClaims(ctx)
@@ -190,7 +190,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			if want := int32(map[bool]int{false: 0, true: 1}[tc.lose]); lossy.dropped.Load() != want {
 				t.Fatalf("%d connections dropped after the refresh's statement, want %d", lossy.dropped.Load(), want)
 			}
-			row := attemptClaimedAt(t, database, parkedOne, "session:s1")
+			row := attemptClaimedAt(t, database, waitingOne, "session:s1")
 			recorded, unsure := recordedClaim(sender, key)
 			t.Logf("the claim aged to %v; after the refresh the row carries %v, and the sender records %v (unsure %t)",
 				aged, row, recorded, unsure)
@@ -199,18 +199,18 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 					row, aged)
 			}
 			if !unsure && !recorded.Equal(row) {
-				t.Errorf("the sender trusts claim %v for the parked send while its row carries %v", recorded, row)
+				t.Errorf("the sender trusts claim %v for the waiting send while its row carries %v", recorded, row)
 			}
 
 			later := postMentionOfS1(t, handler, issue.Key, "the later one")
 			publishIssueEvents(t, database, issue.Key)
-			unpark()
+			runRetry()
 			settledCommentDeliveries(t, database, later)
-			states := attemptStates(t, database, "comment_deliveries", "comment_id", parkedOne)
+			states := attemptStates(t, database, "comment_deliveries", "comment_id", waitingOne)
 			bodies := state.bodiesTo("s1")
-			t.Logf("the parked one's attempts %v; s1 took %q", states, bodies)
-			if !slices.Equal(states, []string{"1:sent"}) || !slices.Equal(bodies, []string{"the parked one", "the later one"}) {
-				t.Errorf("the parked one's attempts are %v and s1 took %q, want the parked one sent, before the later one", states, bodies)
+			t.Logf("the waiting one's attempts %v; s1 took %q", states, bodies)
+			if !slices.Equal(states, []string{"1:sent"}) || !slices.Equal(bodies, []string{"the waiting one", "the later one"}) {
+				t.Errorf("the waiting one's attempts are %v and s1 took %q, want the waiting one sent, before the later one", states, bodies)
 			}
 		})
 	}

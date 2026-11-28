@@ -428,7 +428,7 @@ func TestAReopenedRootsCheckStartsNoLookWhileItRunsAgain(t *testing.T) {
 	}
 }
 
-// A done child a person parks and sets done again leaves twice more, each a close of the same
+// A done child a person moves to backlog and sets done again leaves twice more, each a close of the same
 // merge: the check it has stands, recorded or open, and no second check is opened over it, no
 // second bound row queued, no look started. A rerun's merge, of another pull request after a
 // re-entry closed the check, still replaces it (openCheck).
@@ -439,9 +439,9 @@ func TestADoneChildSetDoneAgainKeepsItsChecks(t *testing.T) {
 	recorded := productionCheck(t, rig.pool, "LEGION-209")
 	bounds := outboxKindCount(t, rig.pool, "LEGION-209", record.OutboxKindCheckBound)
 
-	rig.apply("parked", intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "backlog", Title: "child", Parent: "LEGION-208", Rank: "V"})
+	rig.apply("backlog", intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "backlog", Title: "child", Parent: "LEGION-208", Rank: "V"})
 	// Admission, which runs after the engine on each event, records the observation the engine
-	// kept its hands off (the parked status, the sequence); the rig's admission stub records
+	// kept its hands off (the backlog status, the sequence); the rig's admission stub records
 	// nothing, so the row is moved by hand to what the daemon would hold at the next event.
 	if _, err := rig.pool.Exec(context.Background(), "update issues set status = 'backlog', dispatch_status = 'backlog', last_dispatch_seq = 3 where key = 'LEGION-209'"); err != nil {
 		t.Fatal(err)

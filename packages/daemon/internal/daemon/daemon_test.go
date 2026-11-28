@@ -994,7 +994,7 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
 	// The wall clock, in place of these tests' still one (daemon.go's RealClock for a nil
-	// override): a wake parked on a clock whose timers never fire would never take its turn.
+	// override): a wake delayed on a clock whose timers never fire would never take its turn.
 	o.clock = nil
 	d := startDaemon(t, cfg, o)
 

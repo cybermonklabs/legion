@@ -84,7 +84,7 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 //
 // What the row does not do is tell the engine what it read. That read carries no actor, so the
 // engine could only take every change it shows for a person's, and two of the daemon's own rows
-// are queued precisely because a change was not a person's — a session's own close or park, which
+// are queued precisely because a change was not a person's — a session's own close or move to backlog, which
 // the re-assert undoes, would end the tree as if a person had. The close reaches the record
 // through its own event, with its actor; until that event arrives the record stands where the
 // workflow left it, which is what this case reads.

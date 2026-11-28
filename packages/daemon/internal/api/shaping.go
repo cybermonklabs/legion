@@ -1040,7 +1040,8 @@ const shapedAnswersContract = 193
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It is LastNumberedContract,
-// the last number of answers.go's frozenContracts (contracts.go), and it never moves.
+// the last number of answers.go's frozenContracts (contracts.go): the cutover froze this number,
+// and it does not move with DaemonAPIVersion() or the entry numbers a build assigns.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1270,7 +1271,8 @@ func withoutPriority(issue Issue) (Issue, bool) {
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the keys arrived at stays where it is. It is a number of
-// answers.go's frozenContracts.
+// answers.go's frozenContracts: the cutover froze it, and it does not move with
+// DaemonAPIVersion() or the entry numbers a build assigns.
 const causeTimesContract = 256
 
 // withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
@@ -1354,12 +1356,16 @@ func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
 }
 
 // heldReasonStandIn is the word a held row of reason is served as to a reader that does not admit
-// reason, and false where no older word stands in for it. `awaiting_children` is served as
-// `children_first`: a started parent waiting on its open children is the wait that word named
-// before gateBasisContract gave it its own (dispatch://INFRA-3320 R13). `children_first` arrived
-// with the field at heldContract, so no reader that knows `admission.held` refuses it
-// (fieldArrivals.heldBack). Every other word the table holds back has no older word of its own
-// and is served as `unclassified` (withoutUnadmittedHeldWords).
+// reason, and false where the row is served as `unclassified` with no `heldBy` instead
+// (withoutUnadmittedHeldWords). `awaiting_children` is served as `children_first`: a started
+// parent waiting on its open children is the wait that word named before gateBasisContract gave it
+// its own (dispatch://INFRA-3320 R13). `children_first` arrived with the field at heldContract, so
+// no reader that knows `admission.held` refuses it (fieldArrivals.heldBack). Every other word the
+// table holds back answers false. The `children_before_retro` and `task_stopped` of
+// OwnerPlanContract have no older word of their own. `tree_in_backlog_or_icebox` has one, the word
+// the field had for the same hold since heldContract, which a reader from heldContract below entry
+// 20261125161823 read with its `heldBy`; it answers false all the same, so the daemon never writes
+// the retired word (dispatch://INFRA-2017 R5).
 func heldReasonStandIn(reason record.HeldReason) (record.HeldReason, bool) {
 	if reason == record.HeldAwaitingChildren {
 		return record.HeldChildrenFirst, true
@@ -1887,23 +1893,28 @@ func withoutUnadmittedHoldReason(issue Issue, restore int) (Issue, bool) {
 }
 
 // withoutUnadmittedHeldWords is state whose `admission.held` names no row by a word restore's
-// reader does not admit. It follows the declared table (answers.go's heldReasons) and takes any
-// word the table holds back from restore (fieldArrivals.heldBack says which words and why): today
-// the `children_before_retro` and `task_stopped` of OwnerPlanContract and the
-// `awaiting_children` of gateBasisContract, and tomorrow any word the table gives a later
-// arrival. A reader from heldContract up to such a contract reads `reason` with a `z.enum` of the
-// words before it and refuses the whole body for another.
+// reader does not admit. It follows the declared table (answers.go's heldReasons and the words an
+// entry's registerEntry row adds to the field) and takes any word the table holds back from
+// restore (fieldArrivals.heldBack says which words and why): today the `children_before_retro`
+// and `task_stopped` of OwnerPlanContract, the `awaiting_children` of gateBasisContract and the
+// `tree_in_backlog_or_icebox` of entry 20261125161823's registerEntry row, and tomorrow any word
+// an entry gives a later arrival. A reader from heldContract up to the contract before a word
+// reads `reason` with a `z.enum` of the words before it and refuses the whole body for another.
 //
 // The row is rewritten rather than dropped, which is where this parts company with
-// withoutUnadmittedStrandedStates: an older word does stand for it. A word an older word of the
-// field stands in for is served as that word, with its `heldBy`, which names what that word names
-// (heldReasonStandIn): `awaiting_children` as `children_first`, the wait that word named before
-// gateBasisContract gave it its own. Every other such word is served as `unclassified` with no
-// `heldBy`: each issue of the two holds OwnerPlanContract added read `unclassified` at every
-// daemon before that contract, and a word no row of the table declares is no word any older
-// reader is known to admit. `unclassified` and `children_first` both arrived with the field, so
-// every reader that knows the field admits them. So the row is served as that reader read it
-// before, and every other row as it stands.
+// withoutUnadmittedStrandedStates: an older word does stand for it. A word heldReasonStandIn
+// names a stand-in for is served as that word, with its `heldBy`, which names what that word
+// names: `awaiting_children` as `children_first`, the wait that word named before
+// gateBasisContract gave it its own, so that row is served as that reader read it before. Every
+// other such word is served as `unclassified` with no `heldBy`. Each issue of the two holds
+// OwnerPlanContract added read `unclassified` at every daemon before that contract, so their rows
+// too are served as that reader read them before. The word of treeInBacklogOrIceboxContract has
+// an older word of the field, the word the field had for the same hold since heldContract, which
+// a reader below that entry read with its `heldBy`; that row is served as `unclassified` with no
+// `heldBy` all the same, so the daemon never writes the retired word (dispatch://INFRA-2017 R5).
+// A word no row of the table declares is no word any older reader is known to admit.
+// `unclassified` and `children_first` both arrived with the field, so every reader that knows the
+// field admits them. A row whose word restore's reader admits is served as it stands.
 //
 // A state whose rows name no such word is returned as it is, with no copy made. Otherwise the
 // rows are copied before one is written, so the state the source answered is left as it was. It

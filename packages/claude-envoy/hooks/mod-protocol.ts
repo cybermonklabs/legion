@@ -67,7 +67,7 @@ export const MOD_INSTANCE_HEADER = "x-claude-envoy-mod"
  *  directory, and failing that Claude Code's own configuration directory: `CLAUDE_CONFIG_DIR`,
  *  else `<HOME>/.claude`. Nothing else is a base, `TMPDIR` and `/tmp` included: in a directory
  *  other local users can write, another of them binds the path first - a session id is not
- *  secret - and then reads the conversation and submits prompts as the person, or parks a plain
+ *  secret - and then reads the conversation and submits prompts as the person, or puts a plain
  *  file there and silences the session for good (INFRA-1026 review). A session none of the three
  *  variables names a base for gets no mod link at all. */
 const MOD_SOCKET_RUNTIME_VARIABLE = "XDG_RUNTIME_DIR"

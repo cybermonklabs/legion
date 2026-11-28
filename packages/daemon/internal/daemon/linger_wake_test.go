@@ -56,8 +56,9 @@ func lastAdmissionMessage(t *testing.T, r *admissionStateRig) (stateMessage, any
 }
 
 // The admission block's held list reads a root's linger against the pass's clock (record.Lingering
-// in HeldReasonOf's tree_closed word), so a member of a parked tree whose root still lingers reads
-// tree_closed, and the same member reads tree_parked once the linger runs out, with no write at all.
+// in HeldReasonOf's tree_closed word), so a member of a tree whose root is in backlog or icebox and
+// still lingers reads tree_closed, and the same member reads tree_in_backlog_or_icebox once the
+// linger runs out, with no write at all.
 // The pass that wrote the block reported that deadline to the daemon's one timer for it
 // (admit.Admission.UseLingerWake, lingerWake), and at the deadline the timer applies an admission
 // pass (wakeAtLingerDeadlines, intake.LingerDeadline): the changed block's admission event is
@@ -79,13 +80,13 @@ func TestTheAdmissionBlockALingerDeadlineChangesIsPublishedAtTheDeadline(t *test
 	go func() { w.wakeAtLingerDeadlines(store.ForConcurrentWorker(running)); close(stopped) }()
 	t.Cleanup(func() { stop(); <-stopped })
 
-	// A tree a person parked while it ran: its root left the workflow at backlog, its linger armed
+	// A tree a person moved to backlog while it ran: its root left the workflow at backlog, its linger armed
 	// (the workflow's beginLinger puts the root at done), and its member waits in it.
 	until := time.Now().Add(4 * time.Second).UTC().Truncate(time.Microsecond)
 	r.seed(t, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
-		parked := r.root(root, "A", "backlog")
-		parked.Phase, parked.LingerUntil = phase.Done, &until
-		if err := records.PutIssue(ctx, tx, parked); err != nil {
+		inBacklog := r.root(root, "A", "backlog")
+		inBacklog.Phase, inBacklog.LingerUntil = phase.Done, &until
+		if err := records.PutIssue(ctx, tx, inBacklog); err != nil {
 			return err
 		}
 		if _, err := records.OpenTreeLifecycle(ctx, tx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
@@ -122,8 +123,8 @@ func TestTheAdmissionBlockALingerDeadlineChangesIsPublishedAtTheDeadline(t *test
 	if message.Seq <= first.Seq {
 		t.Fatalf("the publishes after the deadline carry no admission event after sequence %d", first.Seq)
 	}
-	if got := heldReasonIn(t, changed, child); got != string(record.HeldTreeParked) {
-		t.Fatalf("after the deadline the block holds %s as %q, want %q; block %v", child, got, record.HeldTreeParked, changed)
+	if got := heldReasonIn(t, changed, child); got != string(record.HeldTreeInBacklogOrIcebox) {
+		t.Fatalf("after the deadline the block holds %s as %q, want %q; block %v", child, got, record.HeldTreeInBacklogOrIcebox, changed)
 	}
 	if want := r.servedBlock(t); !reflect.DeepEqual(changed, want) {
 		t.Fatalf("the event carries the block %v, want the block the state serves, %v", changed, want)

@@ -1132,7 +1132,7 @@ func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 	const other = claim.Token("legion-legion-LEGION-209-tester")
 	for _, tc := range []struct {
 		name  string
-		park  func(h *harness)
+		stop  func(h *harness)
 		state ClaimState
 		ask   func(h *harness) Event
 	}{
@@ -1144,7 +1144,7 @@ func TestARetryOrDeliveryOfASessionTheClaimDoesNotHoldIsRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateReady)
-			tc.park(h)
+			tc.stop(h)
 			h.wantState(tc.state)
 			h.store.setHold(sessionID(session), other)
 			h.restart()

@@ -173,7 +173,7 @@ func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
 // The store is read where the charge is made, before the restart, so the same control reaches
 // the write itself: died writes the charge with the count it charged, before the relaunch it
 // raises, and no step of this window writes the claim after it — the refusal keeps the claim
-// exactly as it stands, and a parked relaunch writes nothing until its turn.
+// exactly as it stands, and a delayed relaunch writes nothing until its turn.
 func TestADeathChargedBeforeARestartIsNotChargedAgainAfterIt(t *testing.T) {
 	limit := testLimits().LaunchFailures
 	h := newHarness(t)
@@ -455,10 +455,10 @@ func TestACompletedTurnAfterEachDeathKeepsTheClaimRelaunching(t *testing.T) {
 	h.wantBudgets(Budgets{})
 }
 
-// A parked agent — idle, with nothing pending — that the environment kills now and then (a node
+// An idle agent, with nothing pending, that the environment kills now and then (a node
 // drained, a pod evicted) is relaunched each time: with no work outstanding its deaths strand
 // nothing, so they are not counted against it.
-func TestAParkedAgentWithNothingPendingIsRelaunchedHoweverOftenItDies(t *testing.T) {
+func TestAnIdleAgentWithNothingPendingIsRelaunchedHoweverOftenItDies(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	for range 2 * testLimits().LaunchFailures {

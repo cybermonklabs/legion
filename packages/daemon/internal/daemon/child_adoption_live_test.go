@@ -12,7 +12,7 @@
 // reads, from todo, from backlog, and from the state INFRA-214 reached, before it answers
 // (api's adoptReleasedChildren); a todo root under an unreleased child of a live tree waits in no
 // line (record.Waiting reads its Ancestry, the Dispatch chain above it), past a root of its own
-// parked on that chain too, a todo child of that root waits with it, is refused by name when
+// moved to backlog on that chain too, a todo child of that root waits with it, is refused by name when
 // released alone, and moves with it into the tree its release adopts it into, and the root queues
 // as its own again once a person moves an ancestor out of the tree, recorded or not (such an event
 // reads again the chain of every held root it is on); a root that ran as a tree of its own is
@@ -46,8 +46,8 @@
 // every claim is launched by the package's fake runtime, which provisions each claim's workspace in
 // its own pod (fake.Runtime.InPod), so no host clone is made; the tree's architect is brought to
 // ready over the daemon's own worker stream and HTTP routes. The live tree, the slots a second and
-// a third tree hold, step 7's parked root, step 9's run of a root of its own, step 10's parked
-// member and step 11's other tree are seeded through the store, as every daemon test seeds its
+// a third tree hold, step 7's root in backlog, step 9's run of a root of its own, step 10's
+// member in backlog and step 11's other tree are seeded through the store, as every daemon test seeds its
 // fixture; every issue the change acts on is recorded by the daemon from its own envelopes.
 package daemon
 
@@ -111,7 +111,8 @@ type childAdoptionLive struct {
 	// tree is the live tree's root, T, whose design gate is approved, so a todo child that joins
 	// it starts planning once it has a slot; T holds a slot while no child of it is open and none
 	// while one is (dispatch://INFRA-3320 R9, R11). filler, X, is a second tree holding a slot
-	// until step 5 parks it, and spare, Y, a third holding the last slot until step 2 parks it.
+	// until step 5 moves it to backlog, and spare, Y, a third holding the last slot until step 2
+	// moves it to backlog.
 	tree, filler, spare string
 	// architect is T's architect session, registered once over the daemon's own routes.
 	architect *childAdoptionArchitect
@@ -131,7 +132,7 @@ func TestAQueuedRootUnderALiveTreeJoinsItLive(t *testing.T) {
 	r.step("release-adopts-infra-214-state", r.releaseAdoptsInfra214State)
 	r.step("held-under-an-unreleased-child", r.heldUnderAnUnreleasedChild)
 	r.step("child-of-an-ancestry-held-root-waits-with-it", r.childOfAnAncestryHeldRootWaitsWithIt)
-	r.step("ancestry-held-past-a-parked-root-on-its-chain", r.ancestryHeldPastAParkedRootOnItsChain)
+	r.step("ancestry-held-past-a-backlog-root-on-its-chain", r.ancestryHeldPastABacklogRootOnItsChain)
 	r.step("ancestry-held-root-queues-once-its-parent-leaves", r.ancestryHeldRootQueuesOnceItsParentLeaves)
 	r.step("a-root-that-ran-keeps-queueing", r.aRootThatRanKeepsQueueing)
 	r.step("ancestry-held-root-queues-once-a-recorded-ancestor-leaves", r.ancestryHeldRootQueuesOnceARecordedAncestorLeaves)
@@ -649,7 +650,7 @@ func (r *childAdoptionLive) releaseAdoptsFromTodo() {
 // Step 3 (AC2, backlog). F, a labelled todo root, queues while every slot is held, then a person
 // moves it to backlog, which takes it out of the line and lingers it. Dispatch shows it re-parented
 // under T, still in backlog, with no event of that. T's architect releases it: before the release
-// answers, F is in T, parked at done, and the release wrote todo to Dispatch. That write's own
+// answers, F is in T, out of the workflow at done, and the release wrote todo to Dispatch. That write's own
 // event puts F back in the line in T, waiting for a slot of its own; T's architect then moves D,
 // step 2's child, to backlog, and F takes D's slot and runs in T.
 func (r *childAdoptionLive) releaseAdoptsFromBacklog() {
@@ -678,7 +679,7 @@ func (r *childAdoptionLive) releaseAdoptsFromBacklog() {
 	r.note("drove POST /legion/v1/waves/release {%s} by %s's architect: %d", f, r.tree, status)
 	recorded := r.inTree(f, r.tree)
 	if recorded.Phase != phase.Done || recorded.LingerUntil != nil {
-		t.Fatalf("the daemon records %s in %s (lingering %v) as the release answers, want parked at done with no linger", f, recorded.Phase, recorded.LingerUntil)
+		t.Fatalf("the daemon records %s in %s (lingering %v) as the release answers, want it out of the workflow at done with no linger", f, recorded.Phase, recorded.LingerUntil)
 	}
 	r.note("read back as the release answered, before any envelope: the daemon records %s in the tree of %s at generation %d, phase %s, no linger",
 		f, recorded.Tree, recorded.Generation, recorded.Phase)
@@ -873,17 +874,17 @@ func (r *childAdoptionLive) childOfAnAncestryHeldRootWaitsWithIt() {
 	r.backlogAndFree(h)
 }
 
-// Step 7 (held past a parked root). Q6 is recorded as a root of its own, parked in backlog, and
+// Step 7 (held past a root in backlog). Q6 is recorded as a root of its own, moved to backlog, and
 // Dispatch shows it in backlog under T. P6, on Dispatch alone, is in backlog under Q6, never
 // released and never recorded. R6, a labelled todo issue under P6, is held out of the line under T,
 // the live root its chain reaches past Q6, whose own tree is not live, while two slots stand free.
 // T's architect releases R6: it joins T and plans on a slot of its own, and T's architect then
 // moves it to backlog.
-func (r *childAdoptionLive) ancestryHeldPastAParkedRootOnItsChain() {
+func (r *childAdoptionLive) ancestryHeldPastABacklogRootOnItsChain() {
 	q, p, h := r.key(21), r.key(22), r.key(23)
 	ctx := context.Background()
 	r.board.place(q, "backlog", r.tree, true)
-	r.write(fmt.Sprintf("%s, a root of its own parked in backlog", q), func(tx pgx.Tx) error {
+	r.write(fmt.Sprintf("%s, a root of its own in backlog", q), func(tx pgx.Tx) error {
 		return r.records.PutIssue(ctx, tx, record.Issue{
 			Key: q, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: q, Project: r.cfg.Project,
 			Title: q, Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog", Rank: "E",
@@ -956,7 +957,7 @@ func (r *childAdoptionLive) aRootThatRanKeepsQueueing() {
 }
 
 // Step 10 (a recorded ancestor moved). R moves to backlog, freeing its slot. Q is a member of T,
-// parked in backlog. P5, on Dispatch alone, is in backlog under Q, never released and never
+// moved to backlog. P5, on Dispatch alone, is in backlog under Q, never released and never
 // recorded. H5, a labelled todo issue under P5, is held out of the line under T, the root its
 // chain reaches through Q, while two slots stand free. A person then moves Q to no parent, and
 // Dispatch's event of Q says so: though the daemon records Q, the event reads H5's chain again, and
@@ -967,7 +968,7 @@ func (r *childAdoptionLive) ancestryHeldRootQueuesOnceARecordedAncestorLeaves() 
 	ctx := context.Background()
 	tree := r.tree
 	r.board.place(q, "backlog", tree, false)
-	r.write(fmt.Sprintf("%s, a member of the tree of %s parked in backlog", q, tree), func(tx pgx.Tx) error {
+	r.write(fmt.Sprintf("%s, a member of the tree of %s in backlog", q, tree), func(tx pgx.Tx) error {
 		return r.records.PutIssue(ctx, tx, record.Issue{
 			Key: q, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: tree, Project: r.cfg.Project,
 			Title: q, Parent: &tree, Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog", Rank: "D",
@@ -1062,7 +1063,7 @@ func (r *childAdoptionLive) frees(key, parent, which string) {
 }
 
 // Step 11 (AC4). H5 moves to backlog, freeing its slot. U is a second live tree, holding a free slot,
-// with G, a child parked in backlog. Dispatch shows G in backlog under T. T's architect's release
+// with G, a child in backlog. Dispatch shows G in backlog under T. T's architect's release
 // of G is refused 409 CHILD_IN_OTHER_TREE, naming G and U, and changes nothing: G's record is as it
 // was and nothing is written to Dispatch.
 func (r *childAdoptionLive) releaseRefuses() {
@@ -1071,7 +1072,7 @@ func (r *childAdoptionLive) releaseRefuses() {
 	r.frees(r.key(20), r.key(19), "the root step 10 slotted")
 	ctx := context.Background()
 	r.board.show(u, "in_progress")
-	r.write(fmt.Sprintf("%s, a second tree holding a free slot, and %s, its child parked in backlog", u, g), func(tx pgx.Tx) error {
+	r.write(fmt.Sprintf("%s, a second tree holding a free slot, and %s, its child in backlog", u, g), func(tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: u, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: u, Project: r.cfg.Project,
 			Title: u, Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "B",

@@ -177,7 +177,7 @@ func TestACompactionChangesTheStampAndKeepsTheDocument(t *testing.T) {
 // LoadDocument hands out the document the fold's read-back decoded, or, for a log of one update,
 // the update decoded once: the same document a load's state decodes into, for a log of many
 // updates (each pmdoc fixture rewritten into the next and back), a log of one, and a log whose
-// fold parks an update and a delete, which the loaded document parks again.
+// fold keeps an update and a delete pending, which the loaded document keeps pending again.
 func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -226,7 +226,7 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 		appendUpdates(t, versioned, artifactID, fixtures[0].update)
 		sameAsLoad(t, artifactID)
 	})
-	t.Run("parked updates", func(t *testing.T) {
+	t.Run("pending updates", func(t *testing.T) {
 		writer := crdt.New(crdt.WithClientID(7))
 		text := writer.GetText("t")
 		writer.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 0, "base", nil) })
@@ -236,7 +236,7 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 		lost := crdt.EncodeStateAsUpdateV1(writer, afterBase)
 		afterLost := writer.StateVector()
 		writer.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 9, " kept", nil) })
-		parkedInsert := crdt.EncodeStateAsUpdateV1(writer, afterLost)
+		pendingInsert := crdt.EncodeStateAsUpdateV1(writer, afterLost)
 		other := crdt.New(crdt.WithClientID(8))
 		if err := crdt.ApplyUpdateV1(other, base, nil); err != nil {
 			t.Fatalf("open the second writer: %v", err)
@@ -246,13 +246,13 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 		gone := crdt.EncodeStateAsUpdateV1(other, afterBase)
 		afterGone := other.StateVector()
 		other.Transact(func(txn *crdt.Transaction) { otherText.Delete(txn, 0, 5) })
-		parkedDelete := crdt.EncodeStateAsUpdateV1(other, afterGone)
+		pendingDelete := crdt.EncodeStateAsUpdateV1(other, afterGone)
 
-		artifactID := createDocument(t, database, "parked")
-		appendUpdates(t, versioned, artifactID, base, parkedInsert, parkedDelete)
+		artifactID := createDocument(t, database, "pending")
+		appendUpdates(t, versioned, artifactID, base, pendingInsert, pendingDelete)
 		doc := sameAsLoad(t, artifactID)
-		if parked := doc.PendingStats(); parked.Items == 0 && parked.DeleteRanges == 0 {
-			t.Fatal("the loaded document parks nothing, want the insert and the delete whose dependencies never arrived")
+		if pending := doc.PendingStats(); pending.Items == 0 && pending.DeleteRanges == 0 {
+			t.Fatal("the loaded document holds nothing pending, want the insert and the delete whose dependencies never arrived")
 		}
 		for _, update := range [][]byte{lost, gone} {
 			if err := crdt.ApplyUpdateV1(doc, update, nil); err != nil {

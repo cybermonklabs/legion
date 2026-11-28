@@ -20,7 +20,7 @@ import (
 // Every send that waits on a held lane past the warn threshold is reported, once: the one that
 // waited for an earlier event of its issue and each send of that issue to the same recipient
 // queued behind it - three sends of A-1, three WARN lines, one naming each comment, and no
-// second line for any of them however many times the lane parks again.
+// second line for any of them however many times the lane waits for its retry again.
 func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
@@ -50,7 +50,7 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 		return strings.Count(logs.String(), marker) >= 3
 	})
 
-	// A second past the threshold the lane has parked again several times.
+	// A second past the threshold the lane has waited for its retry again several times.
 	time.Sleep(time.Second)
 	logged := logs.String()
 	t.Logf("WARN lines: %d", strings.Count(logged, marker))
@@ -64,10 +64,10 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 	}
 }
 
-// A send whose wait passes the threshold while no park can see it is reported as its wait ends.
-// A-1's first send waits behind event 42 for s1 and parks, moving A-1's second send behind it; its
+// A send whose wait passes the threshold while no scheduled retry can see it is reported as its wait ends.
+// A-1's first send waits behind event 42 for s1 and waits for its retry, moving A-1's second send behind it; its
 // retry starts before the threshold and is in flight past it, then goes, and the second goes after
-// it. Neither parks again, yet each waited past the threshold: each logs one WARN naming its own
+// it. Neither waits for a retry again, yet each waited past the threshold: each logs one WARN naming its own
 // comment, s1 and event 42.
 func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T) {
 	// Not parallel: it swaps the default logger (logtest.SetDefault).
@@ -109,7 +109,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 	time.Sleep(300 * time.Millisecond)
 	const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 	if got := strings.Count(logs.String(), marker); got != 0 {
-		t.Fatalf("%d WARN lines before either send's wait ended, want none: no park saw the threshold pass", got)
+		t.Fatalf("%d WARN lines before either send's wait ended, want none: no scheduled retry saw the threshold pass", got)
 	}
 	close(release)
 	waitUntil(t, "A-1's two sends gone", func() bool {
@@ -161,12 +161,12 @@ func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
 	}
 }
 
-// A held lane whose head waits again is parked by the goroutine that served it, which gives it up
+// A held lane whose head waits again is left waiting for its retry by the goroutine that served it, which gives it up
 // before the lane's timer starts: the timer, run here the moment it is started (after), starts
 // one goroutine on the lane only once the first has let it go, and no two goroutines ever send two
 // of its sends at once. A-1's first send waits three times, A-1's second waits behind it; each send
 // takes 5 ms, so two goroutines on the lane would have both in flight together.
-func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
+func TestAHeldLaneScheduledForRetryAgainHasOneGoroutine(t *testing.T) {
 	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries, active, most atomic.Int32
@@ -222,14 +222,14 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 	}
 }
 
-// A park's timer starts only once no goroutine serves the parked lane. A-1's first send to s1
-// waits three times and its second waits behind it: the first park makes A-1's held lane beside
+// A retry's timer starts only once no goroutine serves the waiting lane. A-1's first send to s1
+// waits three times and its second waits behind it: the first retry makes A-1's held lane beside
 // s1's lane, whose goroutine may still be on s1's lane; the next two are the held lane's own head
 // waiting again, and the goroutine on that lane gives it up (next) before its timer starts, so at
 // each of their starts no goroutine serves any lane, the held lane being the only one with a
-// send. That is why a parked lane's pending timer says no goroutine is on it, which the park tests
-// read (parkRig.state, countParks) where a count of goroutines would lag the park.
-func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
+// send. That is why a waiting lane's pending timer says no goroutine is on it, which the retry tests
+// read (retryRig.state, countRetries) where a count of goroutines would lag the retry.
+func TestALanesRetryTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries atomic.Int32
@@ -255,7 +255,7 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 		mu.Lock()
 		servingAtStart = append(servingAtStart, serving)
 		mu.Unlock()
-		// The timer runs once no goroutine serves any lane, so the next park's start reads the
+		// The timer runs once no goroutine serves any lane, so the next retry's start reads the
 		// serve loop's own order and not how fast a goroutine left a lane it no longer serves.
 		go func() {
 			for {
@@ -289,20 +289,20 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	t.Logf("goroutines serving lanes as each park's timer started: %v", servingAtStart)
+	t.Logf("goroutines serving lanes as each retry's timer started: %v", servingAtStart)
 	if len(servingAtStart) != 3 {
-		t.Fatalf("%d park timers started, want three, one per wait of A-1's first send", len(servingAtStart))
+		t.Fatalf("%d retry timers started, want three, one per wait of A-1's first send", len(servingAtStart))
 	}
 	if servingAtStart[1] != 0 || servingAtStart[2] != 0 {
-		t.Fatalf("goroutines serving lanes as the held lane's own parks started their timers: %v, want none for the second and third: the lane's goroutine starts its timer before it gives the lane up", servingAtStart)
+		t.Fatalf("goroutines serving lanes as the held lane's own retries started their timers: %v, want none for the second and third: the lane's goroutine starts its timer before it gives the lane up", servingAtStart)
 	}
 }
 
 // A send whose claim turned unknown - a refresh's answer was lost - and whose claim read then fails
-// makes no try and parks as a send that waited does, but it waited behind no earlier event: it is
+// makes no try and waits for a retry as a send that waited does, but it waited behind no earlier event: it is
 // no held copy, so the held gauges count nothing of it and no WARN names an earlier event of its
 // owner, which would be event 0. The control row's read answers, and the send is tried.
-func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
+func TestASendRetriedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, tc := range []struct {
 		name     string
@@ -351,26 +351,26 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			sender.mu.Lock()
 			sender.serving = 0
 			sender.mu.Unlock()
-			sender.unpark(item.lane())
+			sender.retryLane(item.lane())
 
-			parked := testwait.Until(t, "the send to go or to park (where it stands)", func() (string, bool) {
+			retried := testwait.Until(t, "the send to go or to wait for a retry (where it stands)", func() (string, bool) {
 				select {
 				case <-tried:
 					return "went", true
 				case <-timers:
-					return "parked", true
+					return "waited for a retry", true
 				default:
-					return "neither went nor parked", false
+					return "neither went nor waited for a retry", false
 				}
-			}) == "parked"
-			if parked != tc.readFail {
-				t.Fatalf("the send parked: %t, want %t", parked, tc.readFail)
+			}) == "waited for a retry"
+			if retried != tc.readFail {
+				t.Fatalf("the send waited for a retry: %t, want %t", retried, tc.readFail)
 			}
 			held, _ := sender.heldSamples(time.Now())
 			const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 			logged := logs.String()
 			warns := strings.Count(logged, marker)
-			t.Logf("parked %t: the held gauge reads %d, and %d WARN lines name an earlier event", parked, held, warns)
+			t.Logf("retried %t: the held gauge reads %d, and %d WARN lines name an earlier event", retried, held, warns)
 			if held != 0 || warns != 0 {
 				t.Fatalf("a send no earlier event holds counts %d in the held gauge, with %d WARN lines naming an earlier event it does not wait behind:\n%s",
 					held, warns, logged)
@@ -379,31 +379,31 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 	}
 }
 
-// A send parked only because its unknown claim could not be read waited behind no event, so when
+// A send retried only because its unknown claim could not be read waited behind no event, so when
 // it goes, past the warn threshold, it logs no WARN that it waited behind an earlier event: such a
 // WARN would name session "" and event 0, which does not exist. TestTheMentionSenderClaimModel
 // finds it as a held send whose late WARN names event 0. The control row's read answers at once.
 //
-// A second send of the owner that joins the lane that park made is no held copy either while the
+// A second send of the owner that joins the lane that retry made is no held copy either while the
 // lane waits behind no event (queueLocked stamps it only behind one): when both then go, past the
 // threshold, neither logs a WARN. When the head's try then waits behind event 42, for more than a
-// second, that park stamps the send that joined unstamped (park), so each WARN as they go names
+// second, that retry stamps the send that joined unstamped (scheduleRetry), so each WARN as they go names
 // event 42 and a wait of at least a second and no longer than the test has run: never the age of
 // a send stamped at no time, nor a wait measured backwards.
-func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
+func TestASendRetriedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, tc := range []struct {
 		name     string
 		readFail bool
-		// second joins a-second to the lane the failed read parked, before the read answers.
+		// second joins a-second to the lane the failed read left waiting, before the read answers.
 		second bool
 		// headWaits makes a-first's first try wait behind event 42 for s1.
 		headWaits bool
 	}{
 		{name: "control: the claim read answers"},
 		{name: "the claim read fails once, past the threshold", readFail: true},
-		{name: "a second send joins the lane the failed read parked, and both go past the threshold", readFail: true, second: true},
-		{name: "a second send joins the lane the failed read parked, and the head then waits behind event 42", readFail: true, second: true, headWaits: true},
+		{name: "a second send joins the lane the failed read left waiting, and both go past the threshold", readFail: true, second: true},
+		{name: "a second send joins the lane the failed read left waiting, and the head then waits behind event 42", readFail: true, second: true, headWaits: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			began := time.Now()
@@ -457,13 +457,13 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.held[item.key()] = state
 			sender.serving = 0
 			sender.mu.Unlock()
-			sender.unpark(item.lane())
+			sender.retryLane(item.lane())
 			joined := false
-			// Each park's timer is fired once the wait is past the threshold; the run ends when the
+			// Each retry's timer is fired once the wait is past the threshold; the run ends when the
 			// sender holds no send, which is what the wait waits for, asking every Poll. Its one
-			// bound is the test binary's deadline: a send that never goes or parks fails it by name,
+			// bound is the test binary's deadline: a send that never goes or waits for a retry fails it by name,
 			// and a slow machine only takes longer.
-			testwait.Until(t, "the sender to hold no send, each park's timer fired (the sends it still holds)", func() (int, bool) {
+			testwait.Until(t, "the sender to hold no send, each retry's timer fired (the sends it still holds)", func() (int, bool) {
 				sender.mu.Lock()
 				held := len(sender.held)
 				sender.mu.Unlock()
@@ -473,7 +473,7 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 				select {
 				case fire := <-timers:
 					if tc.second && !joined {
-						// The lane the failed read parked holds a-first and no wait: a-second joins it.
+						// The lane the failed read left waiting holds a-first and no wait: a-second joins it.
 						joined = true
 						sender.enqueue(context.Background(), mentionSend{
 							comment: model.Comment{ID: "a-second", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
@@ -495,7 +495,7 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 				return held, false
 			})
 			if tc.second && !joined {
-				t.Fatal("the failed read parked no lane for a-second to join")
+				t.Fatal("the failed read left no lane waiting for a-second to join")
 			}
 			// reportLate runs after a send leaves held, on the goroutine that served it: join that
 			// goroutine before reading the log.

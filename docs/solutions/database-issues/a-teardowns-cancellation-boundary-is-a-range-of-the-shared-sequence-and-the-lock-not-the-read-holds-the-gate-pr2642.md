@@ -42,11 +42,11 @@ arrives beside it.
   `wake_row` across three migrations (`20261101222956_issue_idle_release.up.sql`,
   `20261102153000_issue_release_rows.up.sql`, `20261102183000_issue_release_wake.up.sql`), with a row outside the range cancelling.
 - `CancelIssueRelease` shipped without `treelifecycle.Serialize`, which its three sibling writers
-  all take. A park or close is one fact transaction that moves the issue's status and queues its
+  all take. A move to backlog or a close is one fact transaction that moves the issue's status and queues its
   rows together, so an unserialized cancel could read the status from before it and take its
   resume's id from after it: a resume standing above a close, whose suspension then finished
   without acting and left the issue's Sandbox with its launcher tokens and `gh` credentials. The
-  test holds the park's transaction open to drive that window and fails ten runs of ten without the
+  test holds the transaction of the move to backlog open to drive that window and fails ten runs of ten without the
   lock.
 - The local second fact is `restoreWorkspace` refusing when `workspace.Created(dir)` is not after
   the bundle's own `At` (`launcher/restore.go`): the daemon cannot see which workspace a launcher

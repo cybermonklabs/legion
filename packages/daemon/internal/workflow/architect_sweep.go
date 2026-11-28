@@ -356,10 +356,10 @@ func (e *Engine) startArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 
 // architectStartWork is the task a root architect's start carries, derived from the record as it
 // stands (ArchitectStartOf, which reads the roots that rest on its approval too) with what its tree
-// is owed and nothing claims (ParkedDecisionTask), and the kept decisions that task names, which
+// is owed and nothing claims (UnclaimedKeptTask), and the kept decisions that task names, which
 // the row that carries it claims.
 func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
-	decided, kept, err := e.ParkedDecisionTask(ctx, tx, root)
+	decided, kept, err := e.UnclaimedKeptTask(ctx, tx, root)
 	if err != nil {
 		return "", nil, err
 	}

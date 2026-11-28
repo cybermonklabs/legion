@@ -128,13 +128,13 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
 
 ### Added
 
-- The controller skill handles the Go daemon's `parked-decision` notice and walks the parked roots
-  and their children at its start and on each `tick`. It re-admits a root it parked for a hold of
-  its own, a park it marks with a comment that begins `Parked by Legion while it waits on:`, when a
-  person's decision after the park gives its work a next step. It leaves every other park, a
-  person's, another session's or an operator's `legion status`, for whoever made it to set to
-  `todo`, and answers a person's question on its ask
-  (`skill://legion-controller/references/parked-decisions.md`).
+- The controller skill handles the Go daemon's notice of a person's decision on a tree out of the
+  workflow, and walks the roots in `backlog` or `icebox` and their children at its start and on
+  each `tick`. It re-admits a root it moved there for a hold of its own, which it marks with a
+  comment on the root, when a person's decision after that move gives its work a next step. It
+  leaves every other move, a person's, another session's or an operator's `legion status`, for
+  whoever made it to set to `todo`, and answers a person's question on its ask (the controller
+  skill's reference on these decisions).
 
 ### Changed
 
@@ -222,7 +222,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
 
 ### Changed
 
-- The controller's skill no longer writes `todo` for a root a person handed over: a person's `legion` label on a new issue in `triage`, and a person's approval of a parked labelled issue's spec, are queued by the daemon. `triage.md` reads the label's setter as the newest event that added it, keeps the controller's `todo` write for the roots it labels or files itself, and `backlog-stewardship.md` says a root the weekly plan says to defer is parked at the next backlog pass.
+- The controller's skill no longer writes `todo` for a root a person handed over: a person's `legion` label on a new issue in `triage`, and a person's approval of the spec of a labelled issue in `backlog` or `icebox`, are queued by the daemon. `triage.md` reads the label's setter as the newest event that added it, keeps the controller's `todo` write for the roots it labels or files itself, and `backlog-stewardship.md` says a root the weekly plan says to defer moves to `backlog` at the next backlog pass.
 
 ## [15.9.0] - 2026-11-01
 
@@ -1011,7 +1011,7 @@ before the split, and the Envoy plugin's releases after it, are in `packages/pi-
   ask to the controller, and the `Production:` line names the ask.
 - The controller starts no work on its own. "Keeping the slots full", the walk that labelled and
   admitted the highest-priority `todo` issue whenever a slot was free, is gone: a free slot is
-  never a reason to label or admit an issue, the controller never sets a parked issue back to
+  never a reason to label or admit an issue, the controller never sets an issue in `backlog` or `icebox` back to
   `todo` to fill one, and the `slot-free`, `todo` and `tick` wakes the daemon still sends take
   nothing. Work reaches Legion only when a person labels it, or asks the controller to (a message,
   a Slack request, an answer to a finding ask). Every issue the controller files for a person

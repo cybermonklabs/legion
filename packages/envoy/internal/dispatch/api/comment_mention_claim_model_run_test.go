@@ -364,7 +364,7 @@ func (r *cmRun) lanes() map[laneKey][]mentionKey {
 
 // start is the record of a goroutine the step being taken started: the refresh, or a lane
 // goroutine serving the one lane no other goroutine is on, none waits for one in ready, and none
-// is parked, its timer pending or about to start (queueLocked, unpark).
+// waits for its retry, its timer pending or about to start (queueLocked, retryLane).
 func (r *cmRun) start(refresh bool) *cmG {
 	g := &cmG{refresh: refresh, born: r.slot, last: -1}
 	r.gs = append(r.gs, g)
@@ -393,7 +393,7 @@ func (r *cmRun) start(refresh bool) *cmG {
 }
 
 // settle waits for every goroutine of the bubble to stop, then takes in where the one the step
-// let go on, or started, came to - the sender's lock, or one of its statements - and the park
+// let go on, or started, came to - the sender's lock, or one of its statements - and the retry
 // timer the step started, and drops the goroutine it let go on when it came nowhere, which has
 // ended.
 func (r *cmRun) settle() {
@@ -476,7 +476,7 @@ func (r *cmRun) settle() {
 	r.mu.Unlock()
 	switch {
 	case len(started) > 1 || len(started) == 1 && r.timer != nil:
-		r.failModel("a second park timer for the held lane")
+		r.failModel("a second retry timer for the held lane")
 	case len(started) == 1:
 		r.timer = &cmTimer{run: started[0], began: r.slot}
 	}

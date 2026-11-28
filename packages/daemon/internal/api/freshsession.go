@@ -57,7 +57,7 @@ const (
 	claimInATurn = "CLAIM_IN_A_TURN"
 	// claimUnsettled: a claim between states has no settled agent for either recovery to act on
 	// — one queued, one with a launch in flight, and one stored working under a launch the wake
-	// pacing parks, which has a launch in flight as much as the other two (refuseParkedRelaunch).
+	// pacing delays, which has a launch in flight as much as the other two (refuseDelayedRelaunch).
 	// The compaction gives it for a registered claim as well, which runs no session to ask yet
 	// where the fresh session suspends it and starts it again (agentRunning, supervise's
 	// onCompact rows).
@@ -309,9 +309,9 @@ func outcomeOf(started bool) freshOutcome {
 // worker started again in a new session.
 //
 // A claim between states — queued, with a launch in flight, or stored working under a launch
-// the wake pacing parks — is refused because it has no settled agent to stop: its suspension
+// the wake pacing delays — is refused because it has no settled agent to stop: its suspension
 // would be held for the launch it is still waiting for, and the request would answer long after
-// the claim moved on. The refusal names that launch and stops there (refuseParkedRelaunch).
+// the claim moved on. The refusal names that launch and stops there (refuseDelayedRelaunch).
 // The project's controller is refused whatever state it is in: its keeper starts it, as that
 // keeper alone is told when it must (supervise's askedRetry refuses the controller's retry
 // for the same reason), and the controller's own door cannot name it at all, since `controller`
@@ -321,7 +321,7 @@ func outcomeOf(started bool) freshOutcome {
 // claims retry`, with or without --fresh-session, is how it comes back, in a new session either
 // way (supervise's freshSession), and the machine admits that retry (askedRetry).
 //
-// A claim stored working is in a turn, under a launch the wake pacing parks, being compacted,
+// A claim stored working is in a turn, under a launch the wake pacing delays, being compacted,
 // or over no process at all, and one order tells them apart at both doors
 // (refuseWorkingClaim). The last of them is the one this operation exists for: the read made
 // at the request finds no process, so there is no turn to cut off and no agent to stop, and
@@ -528,7 +528,7 @@ func (s *server) refuseInATurn(w http.ResponseWriter, r *http.Request, token cla
 // compaction's door (refuseState), the fresh session's (freshSession), and the fresh session's
 // second read of a claim whose suspension the machine refused as working (suspendForFreshSession).
 //
-// A launch the wake pacing parks is read first, because such a claim is nearest to that
+// A launch the wake pacing delays is read first, because such a claim is nearest to that
 // launch whatever its process is doing: the launch's turn lets that process go and starts the
 // next, so what the process is doing now decides nothing (relaunchWaits, supervise's wakeNow).
 //
@@ -551,12 +551,12 @@ func (s *server) refuseInATurn(w http.ResponseWriter, r *http.Request, token cla
 //     and nothing of the claim changes (refuseUnreadableProcess);
 //   - a process that is running is a claim in a turn, in the words every claim stored working
 //     took before this read existed (refuseInATurn);
-//   - a claim whose process a launch the wake pacing parks now replaces was not read, and is
-//     answered as the park is above (supervise.ProcessReplacedByLaunch, refuseParkedRelaunch).
-//     Such a park can be raised between the view this was handed and the machine's lock — the
-//     sweep's death of the process parks its relaunch there — and the machine says so under
+//   - a claim whose process a launch the wake pacing delays now replaces was not read, and is
+//     answered as the delay is above (supervise.ProcessReplacedByLaunch, refuseDelayedRelaunch).
+//     Such a delay can be raised between the view this was handed and the machine's lock — the
+//     sweep's death of the process delays its relaunch there — and the machine says so under
 //     that lock, where it is true of the claim; a view read again after the lock would be of a
-//     later moment, in which the parked launch may already have run and the claim be launching;
+//     later moment, in which the delayed launch may already have run and the claim be launching;
 //   - a claim recording no process at all was not read either, and nothing says whether a turn
 //     of it is running: no door acts on it and nothing of the claim changes, as for a runtime
 //     that would not say (supervise.ProcessNotRecorded, refuseUnrecordedProcess).
@@ -569,7 +569,7 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 	token claim.Token, view supervise.ClaimView, op agentAction) (answered bool) {
 	switch {
 	case relaunchWaits(view):
-		s.refuseParkedRelaunch(w, r, token, op)
+		s.refuseDelayedRelaunch(w, r, token, op)
 		return true
 	case view.Compacting:
 		s.refuseInATurn(w, r, token, op)
@@ -592,7 +592,7 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 	case supervise.ProcessRuns:
 		s.refuseInATurn(w, r, token, op)
 	case supervise.ProcessReplacedByLaunch:
-		s.refuseParkedRelaunch(w, r, token, op)
+		s.refuseDelayedRelaunch(w, r, token, op)
 	case supervise.ProcessNotRecorded:
 		s.refuseUnrecordedProcess(w, r, token, op)
 	default:
@@ -603,16 +603,16 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 	return true
 }
 
-// refuseParkedRelaunch is the refusal of a claim stored working while a launch the daemon's
+// refuseDelayedRelaunch is the refusal of a claim stored working while a launch the daemon's
 // wake pacing holds waits over it (relaunchWaits), which both recoveries give: such a claim is
 // a claim between states with a launch in flight, which is what claimUnsettled says, and the
 // refusal names that launch and the states the action does reach (agentAction). What the
 // launch's turn brings is not in it (askAgainLater).
 //
-// The refusal names no session and no agent, because the claim may still have both: the park
+// The refusal names no session and no agent, because the claim may still have both: the delay
 // can hold over a process that is alive and in a turn of its own (supervise's repoint), and
 // what every such claim has in common is the launch, not what it is running under it.
-func (s *server) refuseParkedRelaunch(w http.ResponseWriter, r *http.Request, token claim.Token, op agentAction) {
+func (s *server) refuseDelayedRelaunch(w http.ResponseWriter, r *http.Request, token claim.Token, op agentAction) {
 	s.writeFailure(w, r, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 		"%s has a relaunch in flight: the daemon is starting its process again, and that relaunch waits its turn in the wake pacing. %s. %s",
 		token, op.reaches, askAgainLater))
@@ -667,7 +667,7 @@ func (s *server) refuseMovedClaim(w http.ResponseWriter, r *http.Request, token 
 // refuseHeldSuspension is the refusal of a claim a suspension is held over (supervise's
 // holdSuspension), which both recoveries give in whatever state the hold found the claim. A
 // claim stored working is the commonest: it is working for a turn, for a compaction, or over
-// the process a launch the wake pacing parked will replace. A hold is as live before the agent
+// the process a launch the wake pacing delayed will replace. A hold is as live before the agent
 // is ready, where it is held for a launch that has not registered and stands through
 // shim_connected and registered until the agent's ready runs it (supervise's
 // holdSuspendUntilReady, ready), and it stands over a ready or idle claim whose stop the
@@ -732,7 +732,7 @@ func (s *server) refuseHeldSuspension(w http.ResponseWriter, r *http.Request, to
 
 // relaunchWaits is whether a launch the daemon's wake pacing holds waits over this claim
 // (supervise.ClaimView.WakeWaiting, supervise.StartsProcess). Read of a claim that is working,
-// it is the window a death under a compaction leaves when the pacing parks the relaunch: the
+// it is the window a death under a compaction leaves when the pacing delays the relaunch: the
 // claim is stored working over the process it lost, with nothing in a turn and nothing that
 // will end one, and the launch it waits for is the one the refusal names (supervise's
 // TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn). Both recoveries read
@@ -743,15 +743,15 @@ func (s *server) refuseHeldSuspension(w http.ResponseWriter, r *http.Request, to
 // (supervise.Machine.ReadProcess, supervise.ProcessReplacedByLaunch).
 //
 // It asks the supervise package whether the waiting wake starts a process rather than naming a
-// kind, because what the refusal says is that a launch is in flight, and every lane that parks
+// kind, because what the refusal says is that a launch is in flight, and every lane that delays
 // one in a machine says so: the ordinary launch and the relaunch the stale-plugin refresh lane
 // raises, which is told apart on the wire for a reader counting that lane's work and nowhere
 // else (supervise.WakePluginRefresh, dispatch://INFRA-2712 R4). A wake of a kind that starts no
 // process would leave the claim to the two windows below, which is where such a claim belongs.
 //
-// A turn that started under a launch parked over a process that is still alive reads the same
+// A turn that started under a launch delayed over a process that is still alive reads the same
 // here (supervise's repoint), and the refusal is as true of it, since it says only that the
-// launch is in flight. Nothing the claim records tells the two apart — a park writes nothing
+// launch is in flight. Nothing the claim records tells the two apart — a delay writes nothing
 // of the claim, and the dead process is kept until the turn — so neither door says which of
 // the two it found.
 func relaunchWaits(view supervise.ClaimView) bool {
@@ -807,9 +807,9 @@ func storedWorking(state supervise.ClaimState) bool {
 // runs. So the claim's process is read again, under the machine's lock, in the one order both
 // doors read a claim stored working (refuseWorkingClaim, supervise.Machine.ReadProcess), and
 // the claim is answered by what that read finds: a process running or a session
-// being compacted is the turn's refusal (refuseInATurn), a launch the wake pacing now parks
-// over it is the parked relaunch's (refuseParkedRelaunch) — the read found the process gone,
-// and the sweep's report of the same death parked the relaunch before this suspension reached
+// being compacted is the turn's refusal (refuseInATurn), a launch the wake pacing now delays
+// over it is the delayed relaunch's (refuseDelayedRelaunch) — the read found the process gone,
+// and the sweep's report of the same death delayed the relaunch before this suspension reached
 // the lock, so the machine left the claim to that launch and refused the suspension as one it
 // may not hold (supervise's holdSuspension, launchWaits) — and a read that is not answered,
 // or of a claim recording no process, is refused as those reads are at the door

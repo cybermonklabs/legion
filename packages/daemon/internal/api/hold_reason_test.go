@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -233,5 +237,104 @@ func TestAnOlderCallerReadsTheNewHeldWordsAsUnclassified(t *testing.T) {
 	}
 	if got := state.Admission.Held[golden].Reason; got != record.HeldChildrenBeforeRetro {
 		t.Errorf("the state the source answered holds %s's word as %q after the narrowing, want it kept", childrenIssue, got)
+	}
+}
+
+// treeInBacklogRoot is a root a person moved to backlog whose linger has run out, and
+// treeInBacklogChild a child of its tree that the record holds in the workflow, which the ladder
+// gives tree_in_backlog_or_icebox, held by the root.
+const (
+	treeInBacklogRoot  = "LEGION-250"
+	treeInBacklogChild = "LEGION-251"
+)
+
+// stateAnswerOut names a directory the state test below writes each answer it is served into, as
+// `<name>.json`, for a reader of an older release's state schema to parse. It writes nothing when
+// the variable is unset.
+const stateAnswerOut = "LEGION_STATE_ANSWER_OUT"
+
+// baseContract is the contract just below this branch's entry, treeInBacklogOrIceboxContract. A
+// build stamped in main's merge order (contractOrder, scripts/daemon-contract-order.sh --stamp)
+// numbers every entry the base holds first and appends this branch's entry after them, so there
+// the number below it is the base's own contract: what a plugin built from the base states. An
+// unstamped build ranks its entries by id, and an entry the base made after this one
+// (look-names-its-check, #5463's) then ranks above it, so there the number below it is only the
+// boundary the narrowing serves, not the base's contract. It is read from the registry, since no
+// source line holds an entry's number.
+func baseContract() int { return entryNumber(treeInBacklogOrIceboxContract) - 1 }
+
+// A caller whose plugin speaks a contract below entryNumber(treeInBacklogOrIceboxContract) reads
+// `admission.held`'s `reason` as a strict list that does not hold tree_in_backlog_or_icebox, and
+// refuses the whole body for a word it does not know. So the row of a child under a tree whose
+// root stands in backlog is served to it as `unclassified` with no `heldBy`
+// (withoutUnadmittedHeldWords). The plugins the deployments run (152, 178 and 188) state no
+// contract: each is a caller in a pod whose claims record its contract, which is below
+// shapedAnswersContract, so the claims are counted (podContracts counts no claim at or above that
+// contract for a caller that states none). The base's plugin (baseContract) states its contract in
+// `Legion-Plugin-Contract`. A caller at this daemon's contract is served the word, held by the
+// root. With LEGION_STATE_ANSWER_OUT naming a directory, each answer is written there:
+// `pod-152.json`, `pod-178.json`, `pod-188.json`, `<the base's contract>.json`, and
+// `<this daemon's contract>.json`.
+func TestAnOlderCallerReadsAChildUnderATreeInBacklogAsUnclassified(t *testing.T) {
+	const remote = "192.0.2.1:41000"
+	state := populatedState(t)
+	issues := maps.Clone(state.Issues)
+	issues[treeInBacklogRoot] = Issue{Key: treeInBacklogRoot, Generation: 1, Phase: phase.Done, Status: "backlog", Tree: treeInBacklogRoot, Repo: "acme/widgets"}
+	issues[treeInBacklogChild] = Issue{Key: treeInBacklogChild, Generation: 1, Phase: phase.Admitted, Status: "todo", Tree: treeInBacklogRoot, Repo: "acme/widgets"}
+	state.Issues = issues
+	golden := len(state.Admission.Held)
+	state.Admission.Held = append(slices.Clone(state.Admission.Held),
+		HeldIssue{Issue: treeInBacklogChild, Reason: record.HeldTreeInBacklogOrIcebox, HeldBy: []string{treeInBacklogRoot}})
+	current := DaemonAPIVersion()
+	handler := stateServer(t, state, podClaims(current))
+	write := func(name string, body []byte) {
+		t.Helper()
+		out := os.Getenv(stateAnswerOut)
+		if out == "" {
+			return
+		}
+		if err := os.WriteFile(filepath.Join(out, name+".json"), body, 0o644); err != nil {
+			t.Fatalf("write the answer %s under %s: %v", name, out, err)
+		}
+	}
+
+	at := stateStating(t, handler, remote, current)
+	write(strconv.Itoa(current), at)
+	want := map[string]any{"issue": treeInBacklogChild, "reason": string(record.HeldTreeInBacklogOrIcebox), "heldBy": []any{treeInBacklogRoot}}
+	if row := heldRowsServed(t, at)[treeInBacklogChild]; !reflect.DeepEqual(row, want) {
+		t.Errorf("%s is served to a caller at contract %d as %v, want %v", treeInBacklogChild, current, row, want)
+	}
+	entry := entryNumber(treeInBacklogOrIceboxContract)
+	if row := heldRowsServed(t, stateStating(t, handler, remote, entry))[treeInBacklogChild]; !reflect.DeepEqual(row, want) {
+		t.Errorf("%s is served at the entry's contract %d as %v, want %v", treeInBacklogChild, entry, row, want)
+	}
+
+	type answer struct {
+		name string
+		body []byte
+	}
+	var below []answer
+	for _, contract := range []int{152, 178, 188} {
+		below = append(below, answer{"pod-" + strconv.Itoa(contract), stateFrom(t, state, statePodAddr+":41000", podClaims(contract))})
+	}
+	base := baseContract()
+	below = append(below, answer{strconv.Itoa(base), stateStating(t, handler, remote, base)})
+	for _, served := range below {
+		write(served.name, served.body)
+		rows := heldRowsServed(t, served.body)
+		if row := rows[treeInBacklogChild]; !reflect.DeepEqual(row, map[string]any{"issue": treeInBacklogChild, "reason": string(record.HeldUnclassified)}) {
+			t.Errorf("%s: %s is served as %v, want unclassified with no heldBy", served.name, treeInBacklogChild, row)
+		}
+		for _, row := range state.Admission.Held[:golden] {
+			if got := rows[row.Issue]; got["reason"] != string(row.Reason) {
+				t.Errorf("%s: %s is served as %v, want its word %s as it stands", served.name, row.Issue, got, row.Reason)
+			}
+		}
+		if bytes.Contains(served.body, []byte(record.HeldTreeInBacklogOrIcebox)) {
+			t.Errorf("%s: the answer names %s, which a reader below contract %d refuses", served.name, record.HeldTreeInBacklogOrIcebox, entryNumber(treeInBacklogOrIceboxContract))
+		}
+	}
+	if got := state.Admission.Held[golden].Reason; got != record.HeldTreeInBacklogOrIcebox {
+		t.Errorf("the state the source answered holds %s's word as %q after the narrowing, want it kept", treeInBacklogChild, got)
 	}
 }

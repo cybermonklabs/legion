@@ -378,7 +378,7 @@ func TestEveryTableHoldsTheRowsOfARegisteredEntry(t *testing.T) {
 		t.Errorf("the state's row of Answers() types %+v, want typedSettings() %+v", state.TypedSettings, settings)
 	}
 	removed := RemovedRoutes()
-	if removed["POST /legion/v1/every-table/removed"] != number || removed["POST /legion/v1/children/park"] != childRouteRemovedContract {
+	if removed["POST /legion/v1/every-table/removed"] != number || removed["POST /legion/v1/children/{op}"] != childRouteRemovedContract {
 		t.Errorf("RemovedRoutes() = %v, want the frozen route at %d and the entry's at %d", removed, childRouteRemovedContract, number)
 	}
 	accepted := AcceptedByName()

@@ -835,7 +835,7 @@ note "issues holding a slot: $(jq -c .admission.active "$evidence/admission.json
 # waiting after its merge. The first root is accepted below, in retro-handoff.
 set_status "$child_issue" backlog
 until_true 300 "$child_issue to leave the workflow" issue_phase "$child_issue" "done"
-note "the proof human parked $child_issue (backlog): it takes no further turns and holds no issue above it"
+note "the proof human moved $child_issue to backlog: it takes no further turns and holds no issue above it"
 pass
 
 begin panes-pinned-to-the-rig-before-any-agent-turn

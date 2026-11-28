@@ -64,11 +64,11 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 	// A member of a tree whose root has finished.
 	closedTree := projectionStore{issues: []record.Issue{treeRoot("LEGION-100", "done", phase.Done),
 		treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)}}
-	// A member of a tree whose root a person parked in backlog, its linger run out.
+	// A member of a tree whose root a person moved to backlog, its linger run out.
 	expired := projectedAt.Add(-time.Hour)
-	parkedRoot := treeRoot("LEGION-100", "backlog", phase.Admitted)
-	parkedRoot.LingerUntil = &expired
-	parkedTree := projectionStore{issues: []record.Issue{parkedRoot,
+	backlogRoot := treeRoot("LEGION-100", "backlog", phase.Admitted)
+	backlogRoot.LingerUntil = &expired
+	backlogTree := projectionStore{issues: []record.Issue{backlogRoot,
 		treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)}}
 	// A root whose label is off.
 	unlabelled := treeRoot("LEGION-100", "todo", phase.Admitted)
@@ -178,12 +178,12 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		{record.HeldTreeClosed, api.WhyUnlisted}: {closedTree,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
 			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; in the last case that root's promotion ends this hold."},
-		{record.HeldTreeParked, api.WhyBlocked}: {linked(parkedTree),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
-			"Its tree is parked: LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},
-		{record.HeldTreeParked, api.WhyUnlisted}: {parkedTree,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
-			"Its tree is parked: LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},
+		{record.HeldTreeInBacklogOrIcebox, api.WhyBlocked}: {linked(backlogTree),
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeInBacklogOrIcebox, HeldBy: byRoot},
+			"Its tree's root LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},
+		{record.HeldTreeInBacklogOrIcebox, api.WhyUnlisted}: {backlogTree,
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeInBacklogOrIcebox, HeldBy: byRoot},
+			"Its tree's root LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},
 		{record.HeldLabelOff, api.WhyBlocked}: {labelOffWithChild,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff},
 			"It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."},

@@ -125,7 +125,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 
 // A child's close never touches its parent's pod: the parent runs in a pod of its own. Whichever
 // state the close's stops left the child's claim in — suspended with its session for a child
-// parked in backlog, icebox or triage, retired for one closed as done — the close deletes the
+// moved to backlog, icebox or triage, retired for one closed as done — the close deletes the
 // child's Sandbox, since keeping it keeps nothing: the disk the roles worked on was the pod's own
 // and went with the pod. The delete is a foreground one, fenced to the object as read, and
 // awaited until the API no longer has it, so garbage collection takes the role Secrets the
@@ -138,7 +138,7 @@ func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
 		session bool
 		state   supervise.ClaimState
 	}{
-		{name: "a parked child, its claim suspended with its session", session: true, state: supervise.StateSuspended},
+		{name: "a child in backlog or icebox, its claim suspended with its session", session: true, state: supervise.StateSuspended},
 		{name: "a done child, its claim retired", state: supervise.StateRetired},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -166,7 +166,7 @@ func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
 				t.Fatal(err)
 			}
 			// The child's one stored claim is where the close's stops left it: suspended with its
-			// session for a parked child, retired with none for a done one.
+			// session for a child in backlog or icebox, retired with none for a done one.
 			stored := supervise.Claim{Token: childToken, Project: testProject, Tree: testTree, TreeEpoch: 1, Issue: childIssue, Role: claim.RoleImplementer,
 				Generation: 1, State: tc.state}
 			if tc.session {

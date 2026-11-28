@@ -17,7 +17,7 @@ The start procedure (`skill://legion-controller/SKILL.md`, *What happened before
 1. Read `read_state`. Handle each issue held with `holdReason: escalated`, and each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says. Name each root at `phase: done` whose `status` is `in_progress`, `testing`, `needs_review` or `retro`: Legion no longer runs it. Take them from the summary's `<KEY> done <status>` lines, ten keys an `issues` read, never from `phase: "done"`.
 2. Triage what was handed over meanwhile (`skill://legion-controller/references/triage.md#at-every-start`).
 3. Catch up (`skill://legion-controller/references/finding-asks.md#catch-up-at-every-start`).
-4. Run the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`).
+4. Run the walk of roots in backlog or icebox (`skill://legion-controller/references/kept-decisions.md#the-walk`).
 
 ## The `legion` tool
 

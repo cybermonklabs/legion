@@ -169,7 +169,7 @@ func TestAFirstAdmissionRaisesItsArchitectEntryAndCarriesItOnTheStart(t *testing
 func TestAReadmittedQueuedRootRaisesItsArchitectEntryAgain(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	// The row the generation before left: the architect was handed its first entry then. The
 	// claim token is written rather than minted, because LEGION-ROOT is no issue key.
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -316,7 +316,7 @@ func TestAQueuedRootTheDerivationServesNoTaskRaisesNoArchitectEntry(t *testing.T
 	}
 }
 
-// A root parked at admitted while a child of its tree stood in planning, whose architect was given
+// A root moved to backlog at admitted while a child of its tree stood in planning, whose architect was given
 // its first task and never confirmed it, is a tree that ran at an earlier generation, though its
 // architect's claim served nothing: no run and no entry. A person hands it back, and the
 // re-admission's promotion gives its architect the earlier generation's shape — register the spec

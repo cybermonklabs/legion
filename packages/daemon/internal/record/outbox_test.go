@@ -477,7 +477,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a slot-free notice for an architect", payload: Notice{Kind: SlotFreeNotice}, reason: "unknown notice kind"},
 		{name: "a todo notice for an architect", payload: Notice{Kind: TodoNotice}, reason: "unknown notice kind"},
 		{name: "a tick notice for an architect", payload: Notice{Kind: TickNotice}, reason: "unknown notice kind"},
-		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
+		{name: "a kept-decision notice for an architect", payload: Notice{Kind: KeptDecisionNotice}, reason: "unknown notice kind"},
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
 		// The two wakes the controller's skill said to do nothing on (#4065):
 		// the daemon writes neither kind any more, to anyone.
@@ -488,7 +488,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an architect-stalled notice naming no arm", payload: ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, reason: "carries the reason that names its arm"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
-		{name: "a decision on a basis notice", payload: Notice{Kind: "basis-ended", Ref: "dispatch://LEGION-100/spec", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
+		{name: "a decision on a basis notice", payload: Notice{Kind: "basis-ended", Ref: "dispatch://LEGION-100/spec", Decision: DecisionDesignApproved}, reason: "only a kept-decision controller notice does"},
 		{name: "a pending-basis seed of no step", payload: PendingBasisSeed{ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100", Generation: 2, RegisteredAt: now}, reason: "a pending-basis seed names"},
 		{name: "a pending-basis seed of no request", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Generation: 2, RegisteredAt: now}, reason: "a pending-basis seed names"},
 		{name: "a pending-basis seed of no version", payload: PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", Ask: "ask-100", Generation: 2, RegisteredAt: now}, reason: "a pending-basis seed names"},
@@ -497,8 +497,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a re-parent seed of no parent", payload: ReparentSeed{Tree: "LEGION-300", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
 		{name: "a re-parent seed of no tree", payload: ReparentSeed{Parent: "LEGION-301", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
 		{name: "a re-parent seed of no reason", payload: ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300"}, reason: "a re-parent seed names"},
-		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
-		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a parked-decision controller notice does"},
+		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a kept-decision controller notice does"},
+		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a kept-decision controller notice does"},
 		{name: "a review's document on a phase-finished notice",
 			payload: Notice{Kind: "phase-finished", Artifact: "artifact-1"},
 			reason:  "only a design-approved or design-changes-requested notice does"},
@@ -513,19 +513,19 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 			payload: ControllerNotice{Kind: "held", Artifact: "artifact-1"},
 			reason:  "relaying a design approval or changes request does"},
 		{name: "a review's document on a relayed answer",
-			payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered,
+			payload: ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionAskAnswered,
 				Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a",
 				Artifact: "artifact-1"},
 			reason: "relaying a design approval or changes request does"},
-		{name: "a parked decision with no root", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a parked-decision notice needs"},
-		{name: "a parked decision with no ref", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Actor: "user:a"}, reason: "a parked-decision notice needs"},
-		{name: "a parked decision by no person", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "session:s"}, reason: "a parked-decision notice needs"},
-		{name: "a parked decision by an empty user", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "user:"}, reason: "a parked-decision notice needs"},
-		{name: "an unknown decision", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: "ask-ignored", Root: "LEGION-1", Ref: "dispatch://LEGION-1", Actor: "user:a"}, reason: "a parked-decision notice needs"},
-		{name: "a parked decision with no decision", payload: ControllerNotice{Kind: ParkedDecisionNotice, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a parked-decision notice needs"},
-		{name: "a decision on a slot-free wake", payload: ControllerNotice{Kind: SlotFreeNotice, Decision: DecisionAskAnswered}, reason: "only a parked-decision does"},
-		{name: "an actor on a tick", payload: ControllerNotice{Kind: TickNotice, Actor: "user:a"}, reason: "only a parked-decision does"},
-		{name: "a root on a held notice to the controller", payload: ControllerNotice{Kind: "held", Root: "LEGION-1"}, reason: "only a parked-decision does"},
+		{name: "a kept decision with no root", payload: ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionAskAnswered, Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a kept-decision notice needs"},
+		{name: "a kept decision with no ref", payload: ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Actor: "user:a"}, reason: "a kept-decision notice needs"},
+		{name: "a kept decision by no person", payload: ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "session:s"}, reason: "a kept-decision notice needs"},
+		{name: "a kept decision by an empty user", payload: ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "user:"}, reason: "a kept-decision notice needs"},
+		{name: "an unknown decision", payload: ControllerNotice{Kind: KeptDecisionNotice, Decision: "ask-ignored", Root: "LEGION-1", Ref: "dispatch://LEGION-1", Actor: "user:a"}, reason: "a kept-decision notice needs"},
+		{name: "a kept decision with no decision", payload: ControllerNotice{Kind: KeptDecisionNotice, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a kept-decision notice needs"},
+		{name: "a decision on a slot-free wake", payload: ControllerNotice{Kind: SlotFreeNotice, Decision: DecisionAskAnswered}, reason: "only a kept-decision does"},
+		{name: "an actor on a tick", payload: ControllerNotice{Kind: TickNotice, Actor: "user:a"}, reason: "only a kept-decision does"},
+		{name: "a root on a held notice to the controller", payload: ControllerNotice{Kind: "held", Root: "LEGION-1"}, reason: "only a kept-decision does"},
 		{name: "an update-stalled notice for an architect", payload: Notice{Kind: UpdateStalledNotice}, reason: "unknown notice kind"},
 		{name: "an architect's notice carrying an update round", payload: Notice{Kind: "held", Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "only the controller's update-stalled notice does"},
 		{name: "a failure record on a phase-finished notice", payload: Notice{Kind: "phase-finished", Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
@@ -1108,14 +1108,14 @@ func TestATickNoticeCarriesItsOpenCapabilitiesThroughTheRow(t *testing.T) {
 	}
 }
 
-// A parked-decision notice keeps every field through its outbox row, and a spec decision's
+// A kept-decision notice keeps every field through its outbox row, and a spec decision's
 // architect notice keeps who made it and where.
-func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
+func TestAKeptDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 	now := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
 	for _, payload := range []OutboxPayload{
-		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignChangesRequested, Root: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
+		ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionDesignChangesRequested, Root: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
 			Actor: "user:alice", Version: 3, Reason: "name the rollback path"},
-		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskReply, Root: "LEGION-1", Ref: "dispatch://LEGION-2/comment/c-1", Actor: "user:alice"},
+		ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionAskReply, Root: "LEGION-1", Ref: "dispatch://LEGION-2/comment/c-1", Actor: "user:alice"},
 		Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"},
 	} {
 		row, err := NewOutboxRow("LEGION-1", payload, now)
@@ -1133,7 +1133,7 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 // document reviewed, on the notices that carry one: the design-approved and
 // design-changes-requested notices that report it, the basis-changes-requested notice that reports
 // a changes request on an ancestor's document, which the outbox asks again as it asks a
-// design-changes-requested one (ChangesRequest), and the parked-decision controller notice that
+// design-changes-requested one (ChangesRequest), and the kept-decision controller notice that
 // relays either spec decision as the notice did, whose publish asks again whether the review stands
 // when it relays a changes request. Every other kind is refused them
 // (TestNewOutboxRowRefusesInvalidPayloads).
@@ -1148,10 +1148,10 @@ func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
 			Ref: spec, Review: review, Artifact: document},
 		Notice{Kind: "basis-changes-requested", Role: claim.RoleArchitect, Version: 3, Reason: reason,
 			Actor: "user:alice", Ref: spec, Review: review, Artifact: document},
-		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignChangesRequested,
+		ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionDesignChangesRequested,
 			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Reason: reason,
 			Review: review, Artifact: document},
-		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignApproved,
+		ControllerNotice{Kind: KeptDecisionNotice, Decision: DecisionDesignApproved,
 			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Review: review,
 			Artifact: document},
 	} {
@@ -1181,7 +1181,7 @@ func TestSpecDecisionNamesTheThreeKindsAPersonsSpecDecisionWrites(t *testing.T) 
 		"carried-gate-opened":      DecisionCarriedGateOpened,
 		"child-status":             "",
 		"worker-died":              "",
-		ParkedDecisionNotice:       "",
+		KeptDecisionNotice:         "",
 		"basis-ended":              "",
 		"basis-changes-requested":  "",
 		"resting-root":             "",

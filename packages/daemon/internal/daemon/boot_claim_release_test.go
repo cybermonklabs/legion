@@ -57,9 +57,9 @@ type bootClaimFixture struct {
 	queued, deleted bool
 }
 
-// bootParked is the record of an issue the daemon took out of the workflow without closing it:
+// bootOutOfWorkflow is the record of an issue the daemon took out of the workflow without closing it:
 // the one state whose Dispatch claim the boot releases.
-func bootParked(key string) *record.Issue {
+func bootOutOfWorkflow(key string) *record.Issue {
 	return bootRecord(key, "backlog", phase.Done)
 }
 
@@ -70,17 +70,17 @@ func bootRecord(key, status string, at phase.Phase) *record.Issue {
 }
 
 // bootClaimListing is the board the boot reads: every shape a claim on it can have, each on an
-// issue of its own, and a parked issue carrying no claim at all.
+// issue of its own, and an issue out of the workflow carrying no claim at all.
 func bootClaimListing() []bootClaimFixture {
 	return []bootClaimFixture{
 		{key: "CAPTURE-1", status: "backlog", listedClaim: "session:" + bootOwnSession,
-			recorded: bootParked("CAPTURE-1"), liveClaim: sessionClaim(bootOwnSession), queued: true, deleted: true},
+			recorded: bootOutOfWorkflow("CAPTURE-1"), liveClaim: sessionClaim(bootOwnSession), queued: true, deleted: true},
 		{key: "CAPTURE-2", status: "backlog", listedClaim: "user:alice",
-			recorded: bootParked("CAPTURE-2"), liveClaim: &dispatch.Claim{Kind: "user", ID: "alice"}, queued: true},
+			recorded: bootOutOfWorkflow("CAPTURE-2"), liveClaim: &dispatch.Claim{Kind: "user", ID: "alice"}, queued: true},
 		{key: "CAPTURE-3", status: "backlog", listedClaim: "session:" + bootOtherSession,
-			recorded: bootParked("CAPTURE-3"), liveClaim: sessionClaim(bootOtherSession), queued: true},
+			recorded: bootOutOfWorkflow("CAPTURE-3"), liveClaim: sessionClaim(bootOtherSession), queued: true},
 		{key: "CAPTURE-4", status: "backlog", listedClaim: "session:" + bootUnknownSession,
-			recorded: bootParked("CAPTURE-4"), liveClaim: sessionClaim(bootUnknownSession), queued: true},
+			recorded: bootOutOfWorkflow("CAPTURE-4"), liveClaim: sessionClaim(bootUnknownSession), queued: true},
 		{key: "CAPTURE-5", status: "backlog", listedClaim: "session:" + bootOwnSession,
 			liveClaim: sessionClaim(bootOwnSession)},
 		{key: "CAPTURE-6", status: "done", listedClaim: "session:" + bootOwnSession,
@@ -88,10 +88,10 @@ func bootClaimListing() []bootClaimFixture {
 		{key: "CAPTURE-7", status: "in_progress", listedClaim: "session:" + bootOwnSession, slotted: true,
 			recorded: bootRecord("CAPTURE-7", "in_progress", phase.Implementing), liveClaim: sessionClaim(bootOwnSession)},
 		{key: "CAPTURE-8", status: "backlog", listedUnread: true,
-			recorded: bootParked("CAPTURE-8"), liveClaim: sessionClaim(bootOwnSession), queued: true, deleted: true},
+			recorded: bootOutOfWorkflow("CAPTURE-8"), liveClaim: sessionClaim(bootOwnSession), queued: true, deleted: true},
 		{key: "CAPTURE-9", status: "backlog", listedClaim: "session:" + bootOwnSession,
-			recorded: bootParked("CAPTURE-9"), liveClaim: sessionClaim(bootOwnSession), operatorHolds: true, queued: true},
-		{key: "CAPTURE-10", status: "backlog", recorded: bootParked("CAPTURE-10")},
+			recorded: bootOutOfWorkflow("CAPTURE-9"), liveClaim: sessionClaim(bootOwnSession), operatorHolds: true, queued: true},
+		{key: "CAPTURE-10", status: "backlog", recorded: bootOutOfWorkflow("CAPTURE-10")},
 	}
 }
 
@@ -287,14 +287,14 @@ func (r *bootClaimRig) drain() {
 	r.t.Fatalf("claim release rows left after eight drains = %v, want every row ended", r.queued())
 }
 
-// TestBootReleasesParkedClaims is the boot's claim release pass (workflowRuntime's
-// releaseParkedClaims) over the real store: which of a Dispatch listing's claims it queues a
+// TestBootReleasesOutOfWorkflowClaims is the boot's claim release pass (workflowRuntime's
+// releaseOutOfWorkflowClaims) over the real store: which of a Dispatch listing's claims it queues a
 // release row for, what each of those rows then does to the board, that a boot run again while a
 // row still waits on its holder queues a second one, and that the repository recovery starts no
 // pass at all.
-func TestBootReleasesParkedClaims(t *testing.T) {
+func TestBootReleasesOutOfWorkflowClaims(t *testing.T) {
 	t.Parallel()
-	t.Run("one boot over the board", testBootQueuesTheParkedClaims)
+	t.Run("one boot over the board", testBootQueuesTheOutOfWorkflowClaims)
 	t.Run("a second boot while the first row waits", testASecondBootQueuesASecondRelease)
 	t.Run("the repository recovery", testTheRecoveryStartsNoClaimReleasePass)
 }
@@ -307,7 +307,7 @@ func TestBootReleasesParkedClaims(t *testing.T) {
 // part of the decision — the row's own executor reads both when it runs — so a person's claim, a
 // session of another tree, a holder no claims row accounts for and a tree the operator holds each
 // get a row whose DELETE is never sent.
-func testBootQueuesTheParkedClaims(t *testing.T) {
+func testBootQueuesTheOutOfWorkflowClaims(t *testing.T) {
 	fixtures := bootClaimListing()
 	rig := newBootClaimRig(t, fixtures, nil)
 	rig.boot()
@@ -340,39 +340,39 @@ func testBootQueuesTheParkedClaims(t *testing.T) {
 // already gone. Once the holder stops, one of the two rows takes the claim off the board and the
 // other finds it gone and ends, so the board is left exactly as one row would have left it.
 func testASecondBootQueuesASecondRelease(t *testing.T) {
-	parked := bootClaimFixture{key: "CAPTURE-1", status: "backlog", listedClaim: "session:" + bootOwnSession,
-		recorded: bootParked("CAPTURE-1"), liveClaim: sessionClaim(bootOwnSession)}
+	outOfWorkflow := bootClaimFixture{key: "CAPTURE-1", status: "backlog", listedClaim: "session:" + bootOwnSession,
+		recorded: bootOutOfWorkflow("CAPTURE-1"), liveClaim: sessionClaim(bootOwnSession)}
 	// The holder answers the first DELETE still holding the claim; it has stopped by the next one.
-	rig := newBootClaimRig(t, []bootClaimFixture{parked}, answersInTurn(claimConflict(dispatch.IssueClaimed)))
+	rig := newBootClaimRig(t, []bootClaimFixture{outOfWorkflow}, answersInTurn(claimConflict(dispatch.IssueClaimed)))
 	rig.boot()
 	rig.clock.advance(time.Minute)
 	if err := rig.runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("drain the outbox: %v", err)
 	}
-	if got, want := rig.queued(), []string{parked.key}; !slices.Equal(got, want) {
+	if got, want := rig.queued(), []string{outOfWorkflow.key}; !slices.Equal(got, want) {
 		t.Fatalf("rows after the first boot's release waited on its holder = %v, want %v", got, want)
 	}
-	if got := rig.client.releasesOf(parked.key); got != 1 {
+	if got := rig.client.releasesOf(outOfWorkflow.key); got != 1 {
 		t.Fatalf("Dispatch was sent %d claim releases before the second boot, want the one it refused", got)
 	}
 
 	rig.boot()
-	if got, want := rig.queued(), []string{parked.key, parked.key}; !slices.Equal(got, want) {
+	if got, want := rig.queued(), []string{outOfWorkflow.key, outOfWorkflow.key}; !slices.Equal(got, want) {
 		t.Fatalf("rows after the second boot = %v, want the waiting row and a second one", got)
 	}
 
 	rig.drain()
-	if got := rig.client.releasesOf(parked.key); got != 2 {
+	if got := rig.client.releasesOf(outOfWorkflow.key); got != 2 {
 		t.Fatalf("Dispatch was sent %d claim releases in all, want the refused one and the one it took", got)
 	}
-	if shown, _ := rig.client.GetIssue(context.Background(), parked.key); shown.Claim != nil {
-		t.Fatalf("%s is still claimed by %s, want the claim off the board", parked.key, shown.Claim.Holder())
+	if shown, _ := rig.client.GetIssue(context.Background(), outOfWorkflow.key); shown.Claim != nil {
+		t.Fatalf("%s is still claimed by %s, want the claim off the board", outOfWorkflow.key, shown.Claim.Holder())
 	}
 }
 
 // The repository recovery applies a listing of its own (recoverRepositories, which passes boot
-// false), and starts no claim release pass: the pass is the boot's one-off, and a park the daemon
-// sees queues its own row.
+// false), and starts no claim release pass: the pass is the boot's one-off, and each departure
+// short of a close that the daemon sees queues its own row.
 func testTheRecoveryStartsNoClaimReleasePass(t *testing.T) {
 	fixtures := bootClaimListing()
 	rig := newBootClaimRig(t, fixtures, nil)

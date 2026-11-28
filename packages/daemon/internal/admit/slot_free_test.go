@@ -35,7 +35,7 @@ func TestAReleasedSlotNoWaitingRootTakesWakesTheController(t *testing.T) {
 		assertSlots(t, pool, nil)
 		assertControllerNotices(t, pool, slotFree("LEGION-ACTIVE"))
 	})
-	t.Run("two roots a human parked, in one fact", func(t *testing.T) {
+	t.Run("two roots a human moved to backlog, in one fact", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 3, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		registerController(t, pool)
@@ -46,11 +46,11 @@ func TestAReleasedSlotNoWaitingRootTakesWakesTheController(t *testing.T) {
 		second.Status = "backlog"
 		putIssue(t, pool, second)
 
-		apply(t, pool, admission, "park-first", intake.DispatchIssue{Key: "LEGION-FIRST", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-FIRST", Rank: "A", HandedOver: handed}, engineStub{})
+		apply(t, pool, admission, "backlog-first", intake.DispatchIssue{Key: "LEGION-FIRST", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-FIRST", Rank: "A", HandedOver: handed}, engineStub{})
 		assertSlots(t, pool, []record.Slot{{Issue: "LEGION-KEPT", Index: 2, AdmittedAt: fixedNow}})
 		assertControllerNotices(t, pool, slotFree("LEGION-FIRST"))
 	})
-	t.Run("a boot that finds a parked root", func(t *testing.T) {
+	t.Run("a boot that finds a root in backlog", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		registerController(t, pool)
@@ -76,7 +76,7 @@ func TestAFreeSlotWakesTheControllerOnlyAtTheReleaseThatLeftItFree(t *testing.T)
 }
 
 // assertControllerNotices compares the controller notices in the outbox, oldest first, with want;
-// the other effects a fact has (a real engine's suspend of a parked tree) are not these tests'.
+// the other effects a fact has (a real engine's suspend of a tree moved to backlog) are not these tests'.
 func assertControllerNotices(t *testing.T, pool *pgxpool.Pool, want []effect) {
 	t.Helper()
 	var got []effect

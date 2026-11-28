@@ -308,7 +308,7 @@ func TestSignAnswersNoCredentialWhileTheHelperHoldsNone(t *testing.T) {
 }
 
 // TestARegisterWaitWaitsForAConfirmationThatNeedsNoCredential: a renew of an inherited enrollment
-// is signed by the session's own key alone, so a session that comes back for a parked identity
+// is signed by the session's own key alone, so a session that comes back for a dormant identity
 // still becomes enrolled on a helper holding no launcher credential. A caller that asked to wait
 // must be given that answer, not the snapshot from before it: a register that does not wait here
 // answers NO_CREDENTIAL and `agent-secrets register --wait N` exits 1 for a session the broker
@@ -417,9 +417,9 @@ func TestARegisterWaitAnswersAtOnceWhenNoConfirmationIsInFlight(t *testing.T) {
 		}
 	})
 
-	// A session with no parked record at all, the headline promise: it has no enrollment to
+	// A session with no dormant record at all, the headline promise: it has no enrollment to
 	// confirm, so there is nothing a wait can shorten and every launch gets its answer at once.
-	t.Run("a session with no parked record at all", func(t *testing.T) {
+	t.Run("a session with no dormant record at all", func(t *testing.T) {
 		r := newRig(t, "")
 		r.callerPID.Store(int64(os.Getpid()))
 
@@ -584,7 +584,7 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRene
 // TestANameTakenDuringAnEnrollRetryConfirmsItsInheritedEnrollmentAtOnce: a launcher cannot name
 // a fresh session before its exec, so a resumed one registers unnamed first and is named
 // seconds later. That first registration starts an enroll the helper cannot make for want of a
-// launcher credential, and its retry backs off towards a minute; the name then brings a parked
+// launcher credential, and its retry backs off towards a minute; the name then brings a dormant
 // identity with it, whose inherited enrollment a renew signed by the session's own key confirms
 // with no credential at all. The `register --wait N` carrying the name is already waiting for
 // that renew (Session.confirmSettled), so the rename's wake must start it at once: a retry

@@ -186,7 +186,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 				return r.h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil)
 			}}}
 		}},
-		"POST /legion/v1/children/park": {none: "a removed route's refusal; " + noFact},
+		"POST /legion/v1/children/{op}": {none: "every child route this daemon does not serve answers with its refusal; " + noFact},
 		"POST /legion/v1/phase/retry": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
 			// A failure of the architect's claim holds an issue in accepting, whose role is the
 			// architect's (workflow's claimFailed), and the held run is the step of the phase its

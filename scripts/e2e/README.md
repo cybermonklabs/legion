@@ -192,13 +192,13 @@ Each item below names a script, then what it proves.
   a second start revokes the first's capability and grants; the controller liveness probe reads the live listener.
   Devbox only
 
-- `parked-decision-devbox.sh`
+- `kept-decision-devbox.sh`
 
-  a person's decision on a parked tree reaches the operator-launched controller, against a scratch Dispatch, NATS, a real Envoy listener, the Go daemon and real agents:
-  the person's answer on a root the controller parked for a hold (its `Parked by Legion while it waits on:` mark) comes to the controller as a `parked-decision` notice, and the controller sets the root `todo`, so it is admitted again and its architect's start task names the answer;
-  the person's question on a parked root comes to the controller, which comments and leaves it parked, and a session's reply on the same ask wakes nothing;
-  the person's answer on a root an operator, the person or another session parked gets a comment and leaves it parked;
-  the person's approval of a parked root's spec is queued by the daemon as their handover (sjawhar/legion#2619) and sends no notice;
+  a person's decision on a tree out of the workflow reaches the operator-launched controller, against a scratch Dispatch, NATS, a real Envoy listener, the Go daemon and real agents:
+  the person's answer on a root the controller moved to backlog for a hold (its `Moved to backlog by Legion while it waits on:` mark) comes to the controller as a `kept-decision` notice, and the controller sets the root `todo`, so it is admitted again and its architect's start task names the answer;
+  the person's question on a root in backlog comes to the controller, which comments and leaves it in backlog, and a session's reply on the same ask wakes nothing;
+  the person's answer on a root an operator, the person or another session moved to backlog gets a comment and leaves it there;
+  the person's approval of the spec of a root in backlog is queued by the daemon as their handover (sjawhar/legion#2619) and sends no notice;
   an answer while no controller runs is found by the next controller's start walk.
   Devbox only (INFRA-214, A3 and A4)
 
@@ -352,7 +352,7 @@ Each item below names a script, then what it proves.
   a labelled root still queued in admission, which a person then makes a child of a live tree, joins that tree and runs there, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own:
   Dispatch's re-parent event takes it out of `admission.waiting` and into the tree, where it plans with its own architect, which its first phase start starts, on the slot the tree's root gives back while a child of it is open (dispatch://INFRA-3320 R9, R11);
   `release_children` adopts one the daemon saw no re-parent of before it answers, from todo, from backlog (writing todo, whose event runs it) and from the state INFRA-214 reached (backlog, label off, todo), each then waiting for a slot of its own, and the old linger's close stops none of it;
-  a todo root under an unreleased child of the live tree is recorded but waits in no line, even with a slot free and a root of its own parked between it and the tree, until its release, and its own todo child waits with it, is refused 409 `CHILD_IN_OTHER_TREE` naming it and the held root when released alone, and joins the tree with it;
+  a todo root under an unreleased child of the live tree is recorded but waits in no line, even with a slot free and a root of its own in backlog between it and the tree, until its release, and its own todo child waits with it, is refused 409 `CHILD_IN_OTHER_TREE` naming it and the held root when released alone, and joins the tree with it;
   such a root takes the free slot once a person moves an ancestor out from under the tree, unrecorded or recorded;
   a root that ran as a tree of its own is never held so, and takes the free slot;
   and a child recorded in another live tree is refused 409 `CHILD_IN_OTHER_TREE` naming it and that tree, with nothing changed or written
@@ -1095,7 +1095,7 @@ A file, URL or token that prevents Dispatch fails the baseline read, naming it; 
 The scratch Dispatch runs with `HOME` and `XDG_CONFIG_HOME` in the run's work directory, so it reads no envoy.json of the operator's.
 
 It proves admission order and a child that stands in its tree with no slot of its own
-— a slot is one issue the daemon has started, held as "Admission and the `legion` label" in `docs/site/src/content/docs/legion/concepts.md` says; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
+— a slot is one issue the daemon has started, held as "Admission and the `legion` label" in `docs/site/src/content/docs/legion/concepts.md` says; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is moved to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
 — then drives a root from `todo` through an architect's spec and gate registration, which the architect does on its own (the proof never prompts it:
 its first turns come from the task its start carries and the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, the merger's own merge of the head it read, which closes the issue (`merger-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
 It also proves three changes-requested rounds, each posted by the reviewer pane, which then completes its phase
@@ -2268,7 +2268,7 @@ Each item below names a check, then what it does and what it requires.
   over a settle window nothing in it is observed ending, it keeps its uid and stays Running with its Sandbox `Running`, and both its workers probe `Alive`, its own two having answered nothing.
   They then answer, its pod is replaced in turn into a second new pod, and no worker of either issue — each issue's architect, a root's own claim, among them — was ever observed `Gone` or `NotRecordedProcess` without `Displaced` between its task and its answer: no round cut a turn.
   Each issue's branch still names the head its last worker reported, read as that role's own App from the new pod.
-  What a round leaves in an issue's record — a completion it accepts, a park or a wait on a person it never writes — is the daemon's half and `internal/daemon`'s own round tests hold it;
+  What a round leaves in an issue's record — a completion it accepts, a move to backlog or a wait on a person it never writes — is the daemon's half and `internal/daemon`'s own round tests hold it;
   this checkpoint is the runtime's.
   The four roles are then suspended, the two new pods kept
 
@@ -2547,7 +2547,7 @@ Four roots run under `admission_cap: 4`, a cap of the issues the daemon has star
 - Tree 1 runs the whole workflow with real agents to `done`, through one changes-requested review round in a thread the reviewer opens and the architect's acceptance at `accepting`;
   the daemon's merge closes it, its tester runs the production check after the close (the first look, then the bound's last look) while the tree lingers, and the tree closes at the linger's expiry.
   While its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own:
-  the four issues the daemon has started fill the cap and hold tree 3 in the line, then child 1 is closed as `done` and released, child 2 parked in backlog, which deletes its Sandbox as a close does — no Sandbox, no pod and so no disk — and the slots they held go to tree 3 and, later, to child 2's re-entry.
+  the four issues the daemon has started fill the cap and hold tree 3 in the line, then child 1 is closed as `done` and released, child 2 moved to backlog, which deletes its Sandbox as a close does — no Sandbox, no pod and so no disk — and the slots they held go to tree 3 and, later, to child 2's re-entry.
   Children 3 and 4, filed while the root stands in `accepting` and holds no slot of its own, move it to `awaiting_children`, where they hold its sign-off:
   the daemon refuses it `WAITING_ON_CHILDREN` naming both, the proof human moves them to the backlog one at a time, the refusal after the first move names the one that remains, and the last move sends the root back to `testing`, on its head merged with the base's tip, before the sign-off lands.
 
@@ -2786,20 +2786,20 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   while tree 1 keeps running: the proof human sets child 1 `done`, and its Sandbox and pod are gone (`kubectl get sandboxes,pods -l legion.dev/issue=<child 1>` lists nothing) and so is the disk that pod owned, the daemon logged `sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned` for it exactly once and no lost volume, every claim of child 1, its own architect's among them, is `retired` with its session kept for a reopen, and the root's Sandbox stays Running, its pod's own disk Bound and its pod the same uid.
   The proof human then sets child 2 `backlog`, and within 600 s it has no Sandbox, no pod and no disk (`kubectl get sandboxes,pods -l legion.dev/issue=<child 2>` lists nothing, and `<pod>-issue` answers none):
-  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the six role Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
+  a move to backlog reaches the same durable suspend effect as a close, which deletes the Sandbox with the six role Secrets it owned once the pod is gone, so nothing of the child in backlog is kept and its next `todo` makes the Sandbox afresh.
   Each of these waits reads the disk inside it, since a pod's own claim is reaped a moment after the pod object goes.
   The two slots those children held are freed with them, and tree 3, waiting since `issue-independence`, takes one: a child's slot going to a root is the cap counting issues
 
 - `child-reentered`
 
-  resume by rule, live: child 2's planner, parked by `child-release`, is `suspended` with `suspendedBy: daemon`;
+  resume by rule, live: child 2's planner, which `child-release`'s move to backlog stopped, is `suspended` with `suspendedBy: daemon`;
   the proof human sets child 2 `todo` again, its planning start resumes that planner on the session it kept with no `suspendedBy`, the daemon logs `supervise: resuming by rule` for it exactly once naming the daemon's suspension, and the planner's session then holds two planning tasks, the first run's and the re-entered run's.
-  The proof human parks child 2 again: within 900 s it has no Sandbox, no pod and no disk, and its planner is suspended by the daemon.
+  The proof human moves child 2 to backlog again: within 900 s it has no Sandbox, no pod and no disk, and its planner is suspended by the daemon.
   The control, on the same claim and start path:
-  `legion claims suspend` of the parked planner records `suspendedBy: operator`, and child 2 is set `todo` once more;
+  `legion claims suspend` of that suspended planner records `suspendedBy: operator`, and child 2 is set `todo` once more;
   its planning start waits (`outbox row waits` naming the suspension that holds until the operator resumes the agent), the planner stays suspended by the operator at the same generation for 60 s, and no `supervise: resuming by rule` line names it.
   `legion claims resume` relaunches it and the waiting start gives it the run's planning task, its session's third.
-  Child 2 is parked a last time: within 900 s no Sandbox, no pod and no disk, its planner suspended by the daemon
+  Child 2 is moved to backlog a last time: within 900 s no Sandbox, no pod and no disk, its planner suspended by the daemon
   — what the session keeps is the table's, not the disk's
 
 - `repository-configuration`
@@ -3011,7 +3011,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   every finished worker of tree 1 (planner, implementer, tester, reviewer) still runs in the pod it first registered with, that pod Running;
   the root's one Sandbox is Running and its pod's own disk Bound;
-  child 2, parked in backlog, has no Sandbox and no disk, and so no pod;
+  child 2, in backlog, has no Sandbox and no disk, and so no pod;
   and child 1, done, has neither a Sandbox nor a disk
   — each disk read by its pod's name, since an issue's disk is its pod's own ephemeral volume and carries no label
 
@@ -3113,7 +3113,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `daily-report`
 
   the controller's daily report, which the proof's instructions exempt from their wait for a targeted message and fit to the run:
-  an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, parked in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters ([`lib/stage4b-report-posted.jq`](lib/stage4b-report-posted.jq), tested by `bun test scripts/e2e/lib`, a message its author deleted counting as not posted);
+  an issue titled `Legion daily report (<run directory>)` appears in LEGSMOKE, in icebox and without the `legion` label, holding the controller session's message, which names tree 1 and the free slots within 2,000 characters ([`lib/stage4b-report-posted.jq`](lib/stage4b-report-posted.jq), tested by `bun test scripts/e2e/lib`, a message its author deleted counting as not posted);
   in the controller's session, the call that posted it comes on a turn a `tick on LEGSMOKE` delivery started once the start turn had ended, never in its start turn.
   That call is the controller's first `dispatch message --issue <report>` run through bash, made any way Oh My Pi offers:
   the `bash` tool, a write to its `xd://bash` device, or `eval` code calling `tool.bash(...)` ([`lib/omp-tool-calls.jq`](lib/omp-tool-calls.jq), which `stage3-4b13b-acceptance.sh`'s merger check reads too; `lib/report-after-tick.test.ts`).
@@ -3179,8 +3179,8 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `node-release`
 
   tree 1 lingers (`linger_hours: 0.5`, from the close its merge brought on):
-  the root and its parked children 2, 3 and 4 each have no Sandbox and no disk, and so no pod, read first
-  — each stop deleted the member's Sandbox once its pod was gone, the children's at their parks and the root's at its production check's close;
+  the root and its children 2, 3 and 4 in backlog each have no Sandbox and no disk, and so no pod, read first
+  — each stop deleted the member's Sandbox once its pod was gone, the children's at their moves to backlog and the root's at its production check's close;
   then every node any pod of tree 1 ran on (read from the pod watch:
   the root's, the children's, the replacements the fence and the stream move made, the pod the production check's last look brought back) is released
   — the node is gone after its NodePool's consolidation, or, when another pod keeps it, Pending or Running, the node stays carrying no pod of tree 1:
@@ -3197,7 +3197,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   the close waits while a member's production check is open, which `production-check-bound` saw closed) no Sandbox or pod carries tree 1's label any more, and none of the pods of the root and children 2, 3 and 4 has a disk.
   The cleanup finds little left to delete:
   each member's own stop already took its Sandbox, and the disk its pod owned went with that pod
-  — child 1's at its `done`, child 2's at its parks, those of children 3 and 4 at the parks that let the sign-off land, the root's at the linger's suspension and again when its production check closed.
+  — child 1's at its `done`, child 2's at its moves to backlog, those of children 3 and 4 at the moves that let the sign-off land, the root's at the linger's suspension and again when its production check closed.
   Every member of the tree left the workflow before the close, so none is handed over
 
 - `re-admission`
@@ -3331,7 +3331,7 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
   Ctrl-D quits Oh My Pi cleanly and the command exits 0, as Oh My Pi did.
   A non-zero code is carried through too; the stub-omp unit test (`cmd/legion/controller_test.go`, exit 3) holds that
 
-## parked-decision-devbox.sh
+## kept-decision-devbox.sh
 
 The devbox proof of INFRA-214's A3 and A4.
 A person decides on a tree that Legion does not run, and the decision reaches the project controller.
@@ -3343,7 +3343,7 @@ Nothing in the run reads production, and no tree reaches a pull request.
 ```bash
 LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic \
 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
-  bash scripts/e2e/parked-decision-devbox.sh
+  bash scripts/e2e/kept-decision-devbox.sh
 ```
 
 `--help` prints the inputs and the checkpoints, and does nothing else.
@@ -3366,11 +3366,11 @@ LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM priva
 
   `prerequisites` proves each App from its token against GitHub's `GET /apps/<slug>` ([`read_app_logins`](#libworkflowsh)), and `legion.yaml`'s `github_apps` is the block it proved.
 
-- `PARKED_DECISION_EVIDENCE_DIR`: the evidence directory.
+- `KEPT_DECISION_EVIDENCE_DIR`: the evidence directory.
   The default is a fresh `/tmp` directory.
   The run keeps it and prints its path.
 
-- `PARKED_DECISION_UNTIL=<checkpoint>`: the run stops after that checkpoint passes.
+- `KEPT_DECISION_UNTIL=<checkpoint>`: the run stops after that checkpoint passes.
   This is a development run, not the proof.
 
 Run the script from the operator's own Oh My Pi session.
@@ -3381,7 +3381,7 @@ Thus no process of the run gets an operator's endpoint or bearer.
 **Services.**
 Postgres (`legion-e2e-pd-pg-<pid>`) and NATS (`legion-e2e-pd-nats-<pid>`) in containers, the Envoy listener, the scratch Dispatch, the daemon, and each controller in a window of the run's own tmux server.
 The person is `smoke`: each write of the proof human carries the `X-Dispatch-User: smoke` header, and Dispatch records the actor `user:smoke`.
-The stand-in session of `dispatch_agent` (`session stage3-architect-stand-in`) writes the session reply of the control and tries to park tree 5, which the daemon sets back.
+The stand-in session of `dispatch_agent` (`session stage3-architect-stand-in`) writes the session reply of the control and tries to move tree 5 to backlog, which the daemon sets back.
 The script posts the hold marks on trees 1 and 3 over the same agents' bearer, naming session 1, the first controller's session, as their author.
 The project's default repository is `sjawhar/legion-smoke`.
 
@@ -3397,7 +3397,7 @@ The work directory is `/tmp/legion-e2e-pd.<pid>.<random>`.
   No pane gets a targeted message, so each phase worker waits.
 
 - `controller.yaml` and `controller-instructions.md`: the configuration of the controller, and its instructions.
-  The controller handles each `parked-decision` notice and runs the walk for the roots of this run alone.
+  The controller handles each `kept-decision` notice and runs the walk for the roots of this run alone.
 
 Each checkpoint prints `== <name>`, what it saw, and `ok <name>`.
 The first failure ends the run and names the checkpoint.
@@ -3418,15 +3418,15 @@ The transcript records the duration of each wait.
 - `trees-wait-on-a-person`: The person files trees 1, 2, 4 and 5 and sets each to `todo`.
   Each tree gets to `awaiting_person` with `waitingOn.kind: gate`.
 
-- `trees-parked`: `legion issue status <key> backlog` parks trees 1 and 2.
-  Right after tree 1's park, the script posts the controller's hold mark on tree 1 as session 1 (`Parked by Legion while it waits on: …`), the comment the controller posts when it parks a tree for a hold.
+- `trees-in-backlog`: `legion issue status <key> backlog` moves trees 1 and 2 to backlog.
+  Right after tree 1's move, the script posts the controller's hold mark on tree 1 as session 1 (`Moved to backlog by Legion while it waits on: …`), the comment the controller posts when it moves a tree to backlog for a hold.
   Tree 2 gets no mark.
   The person sets tree 4 to `backlog`.
   Right after those writes, the stand-in session (`dispatch_agent`) sets tree 5 to `backlog`.
-  A session outside a tree cannot park a root that waits on a person:
-  the daemon logs `workflow: a session wrote a lifecycle status; the daemon re-asserts its own` for tree 5 with `wrote=backlog`, Dispatch shows the logged status written back by `legion-daemon:<project>`, and tree 5 still waits on its gate and is not parked (`Engine.sessionStatusWrite`).
+  A session outside a tree cannot move a root that waits on a person to backlog:
+  the daemon logs `workflow: a session wrote a lifecycle status; the daemon re-asserts its own` for tree 5 with `wrote=backlog`, Dispatch shows the logged status written back by `legion-daemon:<project>`, and tree 5 still waits on its gate and is still in the workflow (`Engine.sessionStatusWrite`).
   Each of trees 1, 2 and 4 gets to phase `done` with no slot, and its architect gets to `suspended`.
-  A park can come while the architect's last turn still runs, with its suspension held for that turn.
+  A move to backlog can come while the architect's last turn still runs, with its suspension held for that turn.
   A decision made then goes to that live session, and the daemon has nothing to relay, so no check answers on a tree before its architect is suspended.
   The newest `backlog` write is by `session:legion-daemon:<project>` on trees 1 and 2 and by `user:smoke` on tree 4.
   Only tree 1 carries the mark.
@@ -3434,32 +3434,32 @@ The transcript records the duration of each wait.
 
 - `answer-readmits`: A3.
   The person answers the question on tree 1.
-  The daemon log holds `workflow: a person's decision on a parked tree goes to the controller` with `decision=ask-answered` for tree 1.
-  Session 1 receives `summary: parked-decision on <tree 1>`.
+  The daemon log holds `workflow: a person's decision on a tree that does not run goes to the controller` with `decision=ask-answered` for tree 1.
+  Session 1 receives `summary: kept-decision on <tree 1>`.
   Then it calls `set_status` to `todo`.
   Dispatch records that write as `legion-daemon:<project>`.
   Admission takes tree 1 again.
   A user turn of its architect names `dispatch://<tree 1>/ask/<id> (ask-answered by user:smoke)`.
-  Session 1 writes a `Parked decision read: …` comment on tree 1.
+  Session 1 writes a `Kept decision read: …` comment on tree 1.
 
-- `question-stays-parked`: A3.
+- `question-stays-in-backlog`: A3.
   The person replies on the open approval ask of tree 2.
-  The daemon log holds `workflow: a person's decision on a parked tree goes to the controller` with `decision=ask-reply` and `actor=user:smoke`.
-  Session 1 receives the notice and answers on that ask: its reply begins `Parked decision read: …`, and the ask then waits on the person.
+  The daemon log holds `workflow: a person's decision on a tree that does not run goes to the controller` with `decision=ask-reply` and `actor=user:smoke`.
+  Session 1 receives the notice and answers on that ask: its reply begins `Kept decision read: …`, and the ask then waits on the person.
   The control: the stand-in session replies (`turn: agent`) on the same ask.
-  The daemon logs `workflow: a session's reply on a parked tree is not relayed`, and no second notice gets to session 1.
+  The daemon logs `workflow: a session's reply on a tree that does not run is not relayed`, and no second notice gets to session 1.
   600 s after the reply, tree 2 is still `backlog` and phase `done`, with no `todo` event after the person's reply.
 
-- `foreign-park-stays`: A3.
-  The person answers the questions on tree 2, which the operator parked with no hold mark, and tree 4, which the person parked.
+- `foreign-backlog-stays`: A3.
+  The person answers the questions on tree 2, which the operator moved to backlog with no hold mark, and tree 4, which the person moved to backlog.
   For each tree, the daemon log holds the workflow's relay with `decision=ask-answered`, and session 1 receives the notice.
-  Session 1 writes a new `Parked decision read: …` comment on each tree that names who parked it and says it stays parked:
-  `legion-daemon` on tree 2 and `smoke parked the tree` on tree 4.
+  Session 1 writes a new `Kept decision read: …` comment on each tree that names who moved it and says it stays there:
+  `legion-daemon` on tree 2 and `smoke moved the tree to backlog` on tree 4.
   600 s after the latest comment, session 1 has set neither tree to `todo`.
   Each is still `backlog` and phase `done`, with no `todo` event after its answer.
 
 - `approval-queues`: A3.
-  The person approves the spec of tree 4, still parked by the person.
+  The person approves the spec of tree 4, which the person moved to backlog.
   That approval is the person's handover (sjawhar/legion#2619):
   the daemon logs `admission: queued a person's handover` with `source=approval`, Dispatch records `todo` as `legion-daemon:<project>`, admission takes tree 4, and it gets to `planning`.
   No spec notice of tree 4 finishes undelivered, the daemon relays nothing for the approval, and session 1 receives no further notice on tree 4.
@@ -3469,7 +3469,7 @@ The transcript records the duration of each wait.
 - `walk-on-start`: A4.
   The person files tree 3.
   The tree waits on its gate.
-  The script parks it with `legion issue status`, posts the hold mark as session 1, and opens a question on it as the stand-in session.
+  The script moves it to backlog with `legion issue status`, posts the hold mark as session 1, and opens a question on it as the stand-in session.
   When the tree is phase `done` and its architect is `suspended`, the person answers the question while no controller runs, and the daemon logs the relay.
   The second controller starts.
   The script reads only its session file.
@@ -3478,9 +3478,9 @@ The transcript records the duration of each wait.
   It sets tree 3 to `todo`, and Dispatch records that write as the daemon's.
   Admission takes tree 3, and the task of its architect names the answer.
   Session 2 writes a comment on tree 3.
-  When the file of session 2 stays the same for 120 s, tree 2 is still `backlog` with no newer `Parked decision read:` comment, and session 2 has not set it to `todo`.
+  When the file of session 2 stays the same for 120 s, tree 2 is still `backlog` with no newer `Kept decision read:` comment, and session 2 has not set it to `todo`.
 
-- `verdict`: [`lib/parked-decision-verdict.jq`](lib/parked-decision-verdict.jq) reads the daemon log.
+- `verdict`: [`lib/kept-decision-verdict.jq`](lib/kept-decision-verdict.jq) reads the daemon log.
   `unmatched` and `unrelayed` are empty, and `undelivered` and `sent` are empty too:
   each decision of the run is an answer or a reply, which the workflow relays itself, and the one approval, tree 4's, was queued as a handover.
   The log holds the workflow's relay of a person's answer on each of trees 1 to 4.
@@ -3492,12 +3492,12 @@ The transcript records the duration of each wait.
   On the pinned build each service runs in a session of its own and ends when its broker ends.
   For each `broker.pid` there, each process of that broker's session is stopped when it carries that runtime directory in `OMP_DAEMON_RUNTIME_DIR` or is one of the run's processes.
   No process is stopped for its working directory alone.
-  It reads each `broker.pid` with `jq`; on a PATH without `jq` it fails naming `jq` rather than stopping nothing (`lib/parked-decision-teardown.test.ts`).
+  It reads each `broker.pid` with `jq`; on a PATH without `jq` it fails naming `jq` rather than stopping nothing (`lib/kept-decision-teardown.test.ts`).
   Every process of the run then ends within 600 s; a survivor fails the check, and the check first prints its `ps` line (pid, ppid, process group, session, start time and command line).
   The branch `legion/<tree>` of each tree is gone from `sjawhar/legion-smoke` (GitHub answers 404).
   The work directory is gone.
 
-The last line is `parked decision devbox e2e: PASS` or `parked decision devbox e2e: FAIL (check <name>)`.
+The last line is `kept decision devbox e2e: PASS` or `kept decision devbox e2e: FAIL (check <name>)`.
 The EXIT trap does the same cleanup on each exit:
 it stops the controllers, the daemon, Dispatch, the listener, the agent sessions' daemon brokers and the containers, closes the open pull requests of the run, removes its branches, and copies each session of the profile into the evidence directory.
 A pass leaves nothing but the evidence directory.
@@ -3507,7 +3507,7 @@ The verdict also reads a log store's entries.
 The input is the JSON objects of the daemon, one to a line:
 
 ```bash
-jq -r '.[].jsonPayload | tojson' <log export>.json | jq -R -s -f scripts/e2e/lib/parked-decision-verdict.jq
+jq -r '.[].jsonPayload | tojson' <log export>.json | jq -R -s -f scripts/e2e/lib/kept-decision-verdict.jq
 ```
 
 ## dispatch-user-turns.sh
@@ -4773,7 +4773,7 @@ Each move of a child to backlog first drives T's architect's `POST /legion/v1/ch
 | `release-adopts-infra-214-state` | E labelled todo, moved to backlog (it lingers), its label taken off and moved back to todo, each by envelope; the stand-in alone shows it todo under T; the release of E inside its linger; then T's architect's backlog of F; at the step's end, its backlog of E, then its backlog of C | E todo at `done` and out of the line before the release (INFRA-214's state); 200, E recorded in T's tree and waiting for a slot; once F is in backlog, E running in T on F's slot; past its old linger's deadline plus an outbox poll, the old `linger_close` row run and gone, E still in `planning` with its planner's claim at the generation the release gave it, no `tree_close` supervise row and no `workspace_remove` row of E queued after the release, and no suspension, release or tree cleanup of E asked of the fake runtime; once E and C are in backlog, T, with no child of it open, back in `planning` on a slot (dispatch://INFRA-3320 R12) |
 | `held-under-an-unreleased-child` | P on the stand-in alone, backlog under T, never recorded; H labelled todo under P, by envelope; then X moved to backlog by envelope, which frees its slot; then the release of H; then T's architect's backlog of H | H recorded as a root of its own but not in `admission.waiting`, with no slot and no architect; once X's slot is free, over three seconds, `admission.active` T's alone of cap 3, nothing waiting, and H still with no slot and no architect; then 200, H recorded in T's tree under P, running in T; then H at `done` with no slot |
 | `child-of-an-ancestry-held-root-waits-with-it` | P3 on the stand-in alone, backlog under T, never recorded; H3 labelled todo under P3, then K3 labelled todo under H3, each by envelope; then the release of K3 alone; then the release of H3; then T's architect's backlog of K3; then its backlog of H3 | H3 recorded as a root of its own, T on the Dispatch chain it records; K3 recorded in H3's tree under H3; over three seconds, with two slots standing free (`admission.active` T's alone of cap 3), H3 and K3 each out of `admission.waiting`, with no slot, no architect and no launch of one; the release of K3 409 `CHILD_IN_OTHER_TREE` whose message names K3 and H3, K3's record as it was (H3's tree, parent, phase, status, generation, sequence) and no status write taken by the Dispatch stand-in; then the release of H3 200, and as it answers H3 and K3 both recorded in T's tree, H3 under P3 and K3 under H3; K3 running in T on a free slot while H3, waiting for its open child, stands `admitted` out of `admission.waiting` with no slot and no architect; once K3 is in backlog, H3 running in T on a slot of its own |
-| `ancestry-held-past-a-parked-root-on-its-chain` | Q6 seeded as a root of its own in backlog (phase `done`, no parent recorded), shown on the stand-in backlog under T; P6 on the stand-in alone, backlog under Q6, never recorded; R6 labelled todo under P6, by envelope; then the release of R6; then T's architect's backlog of R6 | Q6 recorded in its own tree; over three seconds, with two slots standing free (`admission.active` T's alone of cap 3), R6 not in `admission.waiting`, with no slot, no architect and no launch of one; R6 recorded as a root of its own, T on the Dispatch chain it records, past Q6; then 200, and as it answers R6 recorded in T's tree under P6, then running in T; then R6 at `done` with no slot |
+| `ancestry-held-past-a-backlog-root-on-its-chain` | Q6 seeded as a root of its own in backlog (phase `done`, no parent recorded), shown on the stand-in backlog under T; P6 on the stand-in alone, backlog under Q6, never recorded; R6 labelled todo under P6, by envelope; then the release of R6; then T's architect's backlog of R6 | Q6 recorded in its own tree; over three seconds, with two slots standing free (`admission.active` T's alone of cap 3), R6 not in `admission.waiting`, with no slot, no architect and no launch of one; R6 recorded as a root of its own, T on the Dispatch chain it records, past Q6; then 200, and as it answers R6 recorded in T's tree under P6, then running in T; then R6 at `done` with no slot |
 | `ancestry-held-root-queues-once-its-parent-leaves` | P2 on the stand-in alone, backlog under T, never recorded; H2 labelled todo under P2, by envelope; then P2 moved to no parent, on the stand-in and by P2's own envelope (status backlog, no parent, unlabelled) | H2 recorded as a root of its own, T on the Dispatch chain it records; over three seconds, with two slots standing free (`admission.active` T's alone of cap 3), H2 not in `admission.waiting`, with no slot, no architect and no launch of one; after P2's envelope, within the bounded wait, H2 holding one of those slots with its architect's claim, the fake runtime asked to launch H2's architect, H2 in `admission.active` and out of `admission.waiting`, recorded in its own tree with T on no chain it records, and P2 still unrecorded |
 | `a-root-that-ran-keeps-queueing` | H2 moved to backlog by envelope, which frees its slot; a tree lifecycle seeded under R's key, as R's own run would have left it, R never recorded; P4 on the stand-in alone, backlog under T, never recorded; R labelled todo under P4, by envelope | H2 with no slot; within the bounded wait, R holding a free slot with its architect's claim, the fake runtime asked to launch R's architect, R in `admission.active` and out of `admission.waiting`, recorded in its own tree with T on no chain it records: not held under T, whose release would refuse it |
 | `ancestry-held-root-queues-once-a-recorded-ancestor-leaves` | R moved to backlog by envelope, which frees its slot; Q seeded as T's child in backlog (phase `done`), shown on the stand-in backlog under T; P5 on the stand-in alone, backlog under Q, never recorded; H5 labelled todo under P5, by envelope; then Q moved to no parent, on the stand-in and by Q's own envelope (status backlog, no parent, unlabelled) | R with no slot; Q recorded in T's tree; H5 recorded as a root of its own, T on the Dispatch chain it records, through Q; over three seconds, with two slots free, H5 not in `admission.waiting`, with no slot, no architect and no launch of one; after Q's envelope, within the bounded wait, H5 holding one of those slots with its architect's claim, the fake runtime asked to launch H5's architect, H5 in `admission.active` and out of `admission.waiting`, recorded in its own tree with T on no chain it records, and P5 still unrecorded |
@@ -7329,7 +7329,7 @@ the caller does, with its work directory, `<key-dir>` unconditionally and `<dest
 
 ## lib/model-endpoint.sh
 
-The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), whose own `note` and `fail` it calls, by [`parked-decision-devbox.sh`](#parked-decision-devboxsh), which checks `LEGION_E2E_MODEL_BASE_URL` with `model_base_url_refusal`, by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh), and by [`nats-callout-sessions.sh`](#nats-callout-sessionssh), which also holds Codex's route to its key with `responses_key_preflight`.
+The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), whose own `note` and `fail` it calls, by [`kept-decision-devbox.sh`](#kept-decision-devboxsh), which checks `LEGION_E2E_MODEL_BASE_URL` with `model_base_url_refusal`, by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh), and by [`nats-callout-sessions.sh`](#nats-callout-sessionssh), which also holds Codex's route to its key with `responses_key_preflight`.
 `anthropic_base_url` is Anthropic's own endpoint, the one a run with no `LEGION_E2E_MODEL_BASE_URL` calls.
 `model_base_url_refusal URL` prints why `URL` cannot be a model base URL, and nothing when it can:
 an `http://` or `https://` URL of letters, digits and `:/._~-` alone (so it carries no user or password, and stays a plain YAML scalar), ending in neither a colon nor a slash.
@@ -7761,7 +7761,7 @@ Bun ends a row at its bound and names no wait, so each wait gives up `rowWaitMar
 `rowWaits(rowBoundMs)` makes `rowBoundMs` the bound of every row of the calling file (`setDefaultTimeout`), whatever the runner's command line, and marks each row's start (`beforeEach`): its `end()` is that start plus the bound less the margin, and its `secondsLeft()` the whole seconds from now to that end, which each shell a row starts sets [`until_true_deadline`](#librigsh) from, so every wait of the row, the shell's own polls included, shares one end.
 `libRowBoundMs` is 200 s, the bound `bun run test:e2e-lib` gives every row: about twice the slowest row of the directory measured with 8 busy loops on its two CPUs (98.5 s).
 `untilTrue(what, end, look)` polls `look` every 50 ms until it answers true, looks once more at `end` itself, as `until_true` does, and then fails naming `what` and `look`'s last answer; `untilGone(pid, what, end)` waits so for `pid` to end, a zombie counting as ended, and refuses at once a pid that names no process at all, which would read as gone.
-`lib/row-waits.test.ts` holds each of those; `lib/process-tree.test.ts`, `lib/run-processes.test.ts`, `lib/unread-proc.test.ts`, `lib/leftovers.test.ts`, `lib/own-group.test.ts`, `lib/parked-decision-teardown.test.ts`, `lib/stage4b-role-kill.test.ts`, `lib/multi-repo-second-owner.test.ts`, `lib/held-port.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts` and the skill-scenario rig's sweep rows wait through it
+`lib/row-waits.test.ts` holds each of those; `lib/process-tree.test.ts`, `lib/run-processes.test.ts`, `lib/unread-proc.test.ts`, `lib/leftovers.test.ts`, `lib/own-group.test.ts`, `lib/kept-decision-teardown.test.ts`, `lib/stage4b-role-kill.test.ts`, `lib/multi-repo-second-owner.test.ts`, `lib/held-port.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts` and the skill-scenario rig's sweep rows wait through it
 
 ## lib/arg-max-force.sh
 
@@ -7777,7 +7777,7 @@ The control it must pass runs there too: OLD_FORM, the command line the walk rep
 ## lib/proc-root.ts
 
 A proc root of a test's own processes, for code under test that reads `${proc_root:-/proc}`: a directory holding a link to the real `/proc/<pid>` of each process the test names (`procRootOf`), so that code reads those processes' own files and signals their real pids, and its work is the test's processes rather than the host's.
-The walks of every process read it: `procs_naming` (and so `run_processes`, `marked_processes`, the sweep and the skill-scenario rig's `run_env_pids`), `listening_holders`, `refuse_leftovers`, the parked-decision proof's `stop_agent_daemons` and `lib/role-namespaces.sh`'s `role_kill_sh`.
+The walks of every process read it: `procs_naming` (and so `run_processes`, `marked_processes`, the sweep and the skill-scenario rig's `run_env_pids`), `listening_holders`, `refuse_leftovers`, the kept-decision proof's `stop_agent_daemons` and `lib/role-namespaces.sh`'s `role_kill_sh`.
 A walk of the host's whole `/proc` held a row to the host's process count; on this devbox at 25,474 entries `refuse_leftovers` alone took 29 s.
 Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
 A harness shell makes the same root for itself with one `ln -s` an entry, as `lib/unread-proc.test.ts`'s row for an agent's member that outlives its TERM does
@@ -7787,7 +7787,7 @@ A harness shell makes the same root for itself with one `ln -s` an entry, as `li
 `alive(pid)` says whether a process a row started is still running: it answers signal 0, and `/proc/<pid>/stat` names a state other than `Z`, since a zombie still answers signal 0.
 A process that ends between the signal and the read leaves no stat file, and the read fails with `ENOENT` or `ESRCH`: `alive` returns false for it, and throws on any other failure of the read, which says nothing about the process.
 `lib/process-alive.test.ts` forces that race with a read that fails after the signal has succeeded.
-`lib/parked-decision-teardown.test.ts` waits on it for a pane, a broker and a broker's session to end.
+`lib/kept-decision-teardown.test.ts` waits on it for a pane, a broker and a broker's session to end.
 
 ## lib/process-tree.sh
 
@@ -7884,13 +7884,13 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 - `proc_describe PID…`
 
   prints one line for each PID that runs, with its parent, process group, session, start time (from `/proc/stat`'s `btime`) and command line, the fields of `ps -o pid,ppid,pgid,sid,lstart,args -p`, and nothing for one that has ended.
-  The parked-decision proof's cleanup wait names each survivor with it when it fails
+  The kept-decision proof's cleanup wait names each survivor with it when it fails
 
 - `record_pid_sh`
 
   the POSIX sh a tmux pane's command runs as `sh -c "$record_pid_sh" record-pid FILE COMMAND…`:
   it writes its own pid and start time to FILE through a rename and execs COMMAND, so FILE names COMMAND's own process.
-  The controller, parked-decision and Stage 4b proofs start each `legion controller start` this way, and the Dispatch user-turn proof its session's Oh My Pi
+  The controller, kept-decision and Stage 4b proofs start each `legion controller start` this way, and the Dispatch user-turn proof its session's Oh My Pi
 
 - `recorded_pid FILE EXE`
 
@@ -7996,7 +7996,7 @@ Their ports differ, so nothing else collides.
 Sets `nats_image` to the NATS server image every live proof that starts its own server runs: `testnats.HubImage`, the constant `packages/envoy/internal/testnats/nats.go` declares, which is the hub's `nats:2.15.1-alpine` (`.github/ci-images.yaml`).
 The listener and the Legion daemon refuse a nats-server below the floor `packages/envoy/natsversion` holds, every 2.10 among them, so a proof on any older image never brings its stack up; reading the Go tests' own constant keeps the two from drifting.
 Needs `$root`; ends the script when it cannot read the constant, and says so on stderr under `set -e` too.
-Stage 2, Stage 3, both Claude backend proofs, the controller-start, user-turns, parked-decision and verifiers proofs, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it.
+Stage 2, Stage 3, both Claude backend proofs, the controller-start, user-turns, kept-decision and verifiers proofs, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it.
 `lib/nats-image.test.ts` scans every tracked shell script, and holds each one with a `docker run` line that passes `-js` to starting `"$nats_image"` and sourcing this helper; the drivers above are a floor under that scan.
 It also scans every tracked text file but dated plans and changelogs for the nats-server module's path followed by `@` and a version, in any command (`go install`, `go run`, `go get`), a literal version or `@$name` with a literal `name=<version>` in the same file, and fails on any version the floor refuses.
 It holds no copy of the floor: it builds `packages/envoy/natsversion/cmd/natsfloor` once and asks it, so the verdict is `natsversion.Refusal`'s, the rule the listener and the daemon refuse a server by, and so it needs `go` on `PATH`.
@@ -8005,7 +8005,7 @@ It does not see a `docker run` continued over lines, `podman` or a launcher that
 ## lib/omp-home.sh
 
 The run's own `HOME` for Oh My Pi, so a stage proof's isolated profile lives in its work directory and the operator's `~/.omp/profiles` is never written or deleted.
-Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller, the controller proof, `dispatch-user-turns.sh`, `parked-decision-devbox.sh`, `claude-backend-tmux.sh`, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it, and so do the three model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh), [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) and [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)) for `omp_setup_wizard_off`.
+Stage 2, Stage 3, the 4b.13b acceptance, Stage 4b's controller, the controller proof, `dispatch-user-turns.sh`, `kept-decision-devbox.sh`, `claude-backend-tmux.sh`, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it, and so do the three model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh), [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) and [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh)) for `omp_setup_wizard_off`.
 
 ```bash
 . "$root/scripts/e2e/lib/omp-home.sh"     # sourced, never run
@@ -8051,7 +8051,7 @@ Only the working directory's project settings and `PI_CONFIG_FILES` overlays mer
 `omp_session_unsets` is the one list of the operator's own Oh My Pi session variables that no Oh My Pi a rig starts from that session may inherit, as `env` options:
 `-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE`.
 They are that session's id, the mark Oh My Pi puts on the shells its bash tool spawns, its settings overlays (laid over every profile Oh My Pi opens), the NATS its Envoy plugin dials, the Oh My Pi binary that `legion controller start` and the daemon would run in place of `omp_invocation`, and the variable the runtime sets to `1` in a pane or pod that resumes a recorded Oh My Pi session, under which an Oh My Pi a rig resumes (`--continue`) exits rather than moving where another live process holds the session, and which `legion controller start` also drops from what it inherits.
-`legion controller start` hands Oh My Pi its caller's environment, so the four rigs that run it or an interactive `omp` from the operator's shell (`controller-start-tmux.sh`, `parked-decision-devbox.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh`) put the list in front of each launch: `env "${omp_session_unsets[@]}" …` in an argv, and `env ${omp_session_unsets[*]} …` in a pane's shell command.
+`legion controller start` hands Oh My Pi its caller's environment, so the four rigs that run it or an interactive `omp` from the operator's shell (`controller-start-tmux.sh`, `kept-decision-devbox.sh`, `stage4b-sandbox-tree.sh`, `dispatch-user-turns.sh`) put the list in front of each launch: `env "${omp_session_unsets[@]}" …` in an argv, and `env ${omp_session_unsets[*]} …` in a pane's shell command.
 
 ## lib/leftovers.sh
 
@@ -8308,7 +8308,7 @@ Either `DIR` must be a path the caller's cleanup removes unconditionally, on eve
 not the evidence directory, and not a workspace a failing run keeps for debugging — the rule [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)'s own `--key-dir` states for the model key, and the reason is the same.
 It refuses, writing nothing, a role the last `require_app_inputs` did not read, and the block it writes names commands, never a token and never a key.
 
-In the four tmux proofs — [`stage3-devbox-workflow.sh`](#stage3-devbox-workflowsh), [`stage3-4b13b-acceptance.sh`](#stage3-4b13b-acceptancesh), [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`parked-decision-devbox.sh`](#parked-decision-devboxsh) — that key is `$work/app-key/review/key.pem`, mode 0600 in a directory of mode 0700, and `$work` is a `mktemp -d` under `/tmp`, or under `$TMPDIR` where the proof takes one.
+In the four tmux proofs — [`stage3-devbox-workflow.sh`](#stage3-devbox-workflowsh), [`stage3-4b13b-acceptance.sh`](#stage3-4b13b-acceptancesh), [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`kept-decision-devbox.sh`](#kept-decision-devboxsh) — that key is `$work/app-key/review/key.pem`, mode 0600 in a directory of mode 0700, and `$work` is a `mktemp -d` under `/tmp`, or under `$TMPDIR` where the proof takes one.
 [`stage4b-sandbox-tree.sh`](#stage4b-sandbox-treesh) writes that same file under its own `$work` (`/tmp/legion-e2e4b.<pid>.<random>`), and so does [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh) under `aws-private-ip`, its one pod-reachability mode other than `bridge`:
 six proofs in all leave the review App's private key on the driver for as long as their run lasts.
 Owner-only there is the operator's own uid, so every process of that uid can read the key, the four tmux proofs' agent panes included:

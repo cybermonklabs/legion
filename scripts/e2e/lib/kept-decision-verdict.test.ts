@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runJq } from "./run-jq.ts";
 
-// The parked-decision verdict (INFRA-214): each person's spec decision the outbox finished
+// The kept-decision verdict (INFRA-214): each person's spec decision the outbox finished
 // undelivered, paired by its row with the line that relayed it, found it relayed, or relayed nothing
 // because no person made it. Judged on a daemon log as the daemon writes it, one JSON object a line.
 
-const program = fileURLToPath(new URL("./parked-decision-verdict.jq", import.meta.url));
+const program = fileURLToPath(new URL("./kept-decision-verdict.jq", import.meta.url));
 const root = join(import.meta.dir, "..", "..", "..");
 
 interface Verdict {
@@ -39,13 +39,13 @@ interface Verdict {
 const stopped = "outbox notice finished undelivered: its architect stopped with its finished tree";
 const ended = "outbox notice finished undelivered: its architect will not hold its role again";
 const noArchitect = "outbox notice finished undelivered: it has no architect";
-const sentText = "outbox parked decision sent to the controller";
-const handledText = "outbox parked decision handled before under this key";
-const keptText = "outbox parked decision kept for its root's start, which waits for its slot";
-const notRelayed = "outbox parked decision not relayed: it names no person";
-const notParked = "outbox parked decision not relayed: its root is not parked";
-const treeHears = "outbox parked decision not relayed: its tree hears it";
-const noRecord = "outbox parked decision not relayed: its root has no record";
+const sentText = "outbox kept decision sent to the controller";
+const handledText = "outbox kept decision handled before under this key";
+const keptText = "outbox kept decision left for its root's start, which waits for its slot";
+const notRelayed = "outbox kept decision not relayed: it names no person";
+const backInWorkflow = "outbox kept decision not relayed: its root is back in the workflow";
+const treeHears = "outbox kept decision not relayed: its tree hears it";
+const noRecord = "outbox kept decision not relayed: its root has no record";
 
 type Line = Record<string, unknown>;
 const at = (seconds: number) =>
@@ -78,7 +78,7 @@ function verdict(log: (Line | string)[]): Verdict {
   return JSON.parse(runJq(["-R", "-s", "-c", "-f", program], `${input}\n`));
 }
 
-describe("parked-decision-verdict.jq", () => {
+describe("kept-decision-verdict.jq", () => {
   test("an undelivered approval and the line that sent it pair, so nothing is unmatched", () => {
     const got = verdict([undelivered(1, 7, "design-approved"), relay(2, sentText, 7)]);
     expect(got.undelivered).toEqual([
@@ -116,7 +116,7 @@ describe("parked-decision-verdict.jq", () => {
       undelivered(5, 9, "carried-gate-opened", ended),
       relay(6, notRelayed, 9, { kind: "carried-gate-opened", ref: "dispatch://ACME-110/spec" }),
       undelivered(7, 10, "design-approved", ended),
-      relay(8, notParked, 10),
+      relay(8, backInWorkflow, 10),
     ]);
     expect(got.unmatched).toEqual([]);
     expect(got.sent).toEqual([]);
@@ -142,7 +142,7 @@ describe("parked-decision-verdict.jq", () => {
       },
       {
         time: at(8),
-        msg: notParked,
+        msg: backInWorkflow,
         row: 10,
         key: "outbox:10",
         kind: "design-approved",
@@ -200,16 +200,16 @@ describe("the texts the verdict counts are the daemon's own", () => {
     const prefix = "outbox notice finished undelivered: its architect";
     expect(outbox).toContain(`"${prefix}`);
     expect(jq).toContain(JSON.stringify(prefix));
-    const parked = readFileSync(join(daemon, "parked_decision.go"), "utf8");
-    const notRelayedLines = [notRelayed, notParked, treeHears, noRecord];
+    const keptDecisionSource = readFileSync(join(daemon, "kept_decision.go"), "utf8");
+    const notRelayedLines = [notRelayed, backInWorkflow, treeHears, noRecord];
     for (const text of [sentText, handledText, keptText, ...notRelayedLines]) {
-      expect(parked).toContain(JSON.stringify(text));
+      expect(keptDecisionSource).toContain(JSON.stringify(text));
     }
     for (const text of [sentText, handledText, keptText]) {
       expect(jq).toContain(JSON.stringify(text));
     }
     // Every not-relayed line is counted by the one prefix they share.
-    const unrelayedPrefix = "outbox parked decision not relayed:";
+    const unrelayedPrefix = "outbox kept decision not relayed:";
     expect(jq).toContain(JSON.stringify(unrelayedPrefix));
     for (const text of notRelayedLines) {
       expect(text.startsWith(unrelayedPrefix)).toBe(true);

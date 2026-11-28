@@ -62,7 +62,7 @@ func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	}
 	assertPhase(t, pool, phase.Accepting)
 
-	// One leaves by its own close, the other by a person's park: either empties the set.
+	// One leaves by its own close, the other by a person's move to backlog: either empties the set.
 	leave(t, pool, "LEGION-209", phase.Done, "done")
 	if result := signOffNow(t, pool, "signoff-one-left", "LEGION-208"); result.Refusal == nil || result.Refusal.Code != "SIGNOFF_CHILD_IN_WORKFLOW" {
 		t.Fatalf("sign-off with one issue still beneath = %+v, want it refused again", result.Refusal)
@@ -74,7 +74,7 @@ func TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow(t *testing.T) {
 	assertPhase(t, pool, phase.Retro)
 }
 
-// leave moves key to at with the Dispatch status it leaves on, as a close or a person's park
+// leave moves key to at with the Dispatch status it leaves on, as a close or a person's move to backlog
 // leaves it.
 func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status string) {
 	t.Helper()

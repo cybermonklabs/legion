@@ -12,8 +12,8 @@ const claimReleaseVersion = 20261108000545
 
 // A claim-release row releases the Dispatch claim of an issue the daemon took out of the workflow
 // without closing it (record.ClaimRelease). The outbox refuses a kind its constraint does not
-// name, so the row could not be queued before this migration, and the transaction that parks the
-// issue would fail with it: the negative control is that refusal, read before the migration. After
+// name, so the row could not be queued before this migration, and the transaction that moves the
+// issue out of the workflow would fail with it: the negative control is that refusal, read before the migration. After
 // the whole set the row is queued, and so is every kind this release writes, since each migration
 // of the constraint rewrites the list whole and a kind left out would stop its own effect. The
 // three merge-lane kinds this release retired are refused instead, because 20261108152000, which

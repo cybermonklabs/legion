@@ -28,7 +28,7 @@ func warnHeld(send mentionSend, wait heldWait, now time.Time) {
 // reportLate logs the WARN of item, a send that has just left lane, a held lane, with no wait
 // left, when it had waited there heldWarnAfter and no WARN was logged for it: its wait passed the
 // threshold while it was in flight, or while it waited behind a send whose try was in flight,
-// which no park saw. Every send held past the threshold is so reported once, however its wait
+// which no scheduled retry saw. Every send held past the threshold is so reported once, however its wait
 // ends. It names what the lane last waited behind, or, when the lane has no wait recorded, what
 // item itself last waited behind.
 func (m *mentionSender) reportLate(lane laneKey, item mentionSend) {

@@ -90,7 +90,7 @@ test("a write that ends any way but landing leaves the chain", () => {
 const BODY: Priorities = {
   priorities: [],
   work_under_no_priority: { by_project: null, count: 0, issues: null },
-  priority_work_parked: { by_priority: null, count: 0, issues: null },
+  priority_work_in_backlog_or_icebox: { by_priority: null, count: 0, issues: null },
 };
 
 const SAVED: Priority = {

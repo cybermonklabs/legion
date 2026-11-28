@@ -26,7 +26,7 @@ const (
 	lockSiteLane
 	// lockSiteRefresh is a function only the refresh calls (keepClaims), the same.
 	lockSiteRefresh
-	// lockSiteModel is a function only the model's own calls make (enqueue, unpark, wait), which
+	// lockSiteModel is a function only the model's own calls make (enqueue, retryLane, wait), which
 	// take the lock as they come.
 	lockSiteModel
 	// lockSiteOutsideTheModel is a function the model never calls: the held gauges' read, which no
@@ -36,20 +36,20 @@ const (
 
 // mentionSenderLockSites is every function of the package that takes the mention sender's lock,
 // by whose goroutine calls it. The claim model reads a lock's caller off the stack by its
-// function's name (cmCaller) and parkGate reads park's the same way (lockCaller, parkLockSite),
+// function's name (cmCaller) and retryGate reads scheduleRetry's the same way (lockCaller, retryLockSite),
 // so this list must name those functions as their frames name them:
 // TestTheLockSiteListNamesTheSendersLocks holds it to the package's source in every run of this
 // package, where the model itself runs only in its own job (envoy-go-claim-model).
 var mentionSenderLockSites = map[string]lockSite{
 	"next": lockSiteLane, "claimKnown": lockSiteLane, "markTrying": lockSiteLane, "claimedDuring": lockSiteLane,
-	"park": lockSiteLane, "reportLate": lockSiteLane,
+	"scheduleRetry": lockSiteLane, "reportLate": lockSiteLane,
 	"refreshHeldClaims": lockSiteRefresh, "rereadUnsure": lockSiteRefresh,
-	"enqueue": lockSiteModel, "unpark": lockSiteModel, "wait": lockSiteModel,
+	"enqueue": lockSiteModel, "retryLane": lockSiteModel, "wait": lockSiteModel,
 	"heldSamples": lockSiteOutsideTheModel,
 }
 
-// parkLockSite is the function whose Lock parkGate holds at its gate: park, a lane's.
-const parkLockSite = "park"
+// retryLockSite is the function whose Lock retryGate holds at its gate: scheduleRetry, a lane's.
+const retryLockSite = "scheduleRetry"
 
 // The claim model's list of the sender's lock sites (mentionSenderLockSites) names exactly the
 // functions whose frames take the sender's lock as the model reads a frame (cmCaller): each
@@ -82,8 +82,8 @@ func TestTheLockSiteListNamesTheSendersLocks(t *testing.T) {
 		t.Fatalf("the claim model's lock-site list (mentionSenderLockSites) does not match the sender's source:\n%s",
 			strings.Join(problems, "\n"))
 	}
-	if mentionSenderLockSites[parkLockSite] != lockSiteLane {
-		t.Fatalf("parkGate holds the Lock of %q, which the list does not name as a lane goroutine's", parkLockSite)
+	if mentionSenderLockSites[retryLockSite] != lockSiteLane {
+		t.Fatalf("retryGate holds the Lock of %q, which the list does not name as a lane goroutine's", retryLockSite)
 	}
 
 	// Control: the same source with claimKnown renamed claimKnownRenamed, as a rename leaves it.
@@ -98,11 +98,11 @@ func TestTheLockSiteListNamesTheSendersLocks(t *testing.T) {
 	}
 
 	// Controls: a lock site the model cannot name, each planted alone.
-	const unpark = "func (m *mentionSender) unpark(lane laneKey) {\n"
+	const retryLaneDeclared = "func (m *mentionSender) retryLane(lane laneKey) {\n"
 	for _, plant := range []struct {
 		name string
 		// file is the file the plant adds; with no file, the plant's source goes first in the
-		// body of unpark, a listed method.
+		// body of retryLane, a listed method.
 		file, source, want string
 	}{
 		{name: "a lock through a local alias", file: "planted_alias.go",
@@ -110,7 +110,7 @@ func TestTheLockSiteListNamesTheSendersLocks(t *testing.T) {
 			want:   `"plantedAlias" takes the sender's lock and the list does not name it`},
 		{name: "a lock in a function literal inside a listed method",
 			source: "\tfunc() {\n\t\tm.mu.Lock()\n\t\tm.mu.Unlock()\n\t}()\n",
-			want:   "a function literal in unpark takes the sender's lock: the claim model reads its frame as func1"},
+			want:   "a function literal in retryLane takes the sender's lock: the claim model reads its frame as func1"},
 		{name: "a lock in a plain function", file: "planted_function.go",
 			source: "package api\n\nfunc plantedFunction(m *mentionSender) {\n\tm.mu.Lock()\n\tm.mu.Unlock()\n}\n",
 			want:   `"plantedFunction" takes the sender's lock and the list does not name it`},
@@ -136,8 +136,8 @@ func TestTheLockSiteListNamesTheSendersLocks(t *testing.T) {
 			faulty = plantedLockSources(t, sources, "", nil)
 			faulty[plant.file] = []byte(plant.source)
 		} else {
-			faulty = plantedLockSources(t, sources, unpark, func(source string) string {
-				return strings.Replace(source, unpark, unpark+plant.source, 1)
+			faulty = plantedLockSources(t, sources, retryLaneDeclared, func(source string) string {
+				return strings.Replace(source, retryLaneDeclared, retryLaneDeclared+plant.source, 1)
 			})
 		}
 		found := lockSiteProblems(t, faulty)

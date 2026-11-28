@@ -84,8 +84,8 @@ without a controller until someone runs the command again. Under `controller: da
 only) the daemon launches it as a pod in the cluster and relaunches it when it dies; a person
 reaches it through Dispatch. The daemon wakes it when something needs a judgment no tree owns:
 
-- a `triage` issue labelled `legion` by an agent session, to admit, park or leave to you (a
-  person's label is queued by the daemon: the issue moves to `todo` without the controller);
+- a `triage` issue labelled `legion` by an agent session, to admit, move to `backlog` or leave to
+  you (a person's label is queued by the daemon: the issue moves to `todo` without the controller);
 - a tree its own architect escalated, or one whose architect ran out of launches.
 
 The daemon also wakes it when an admission slot frees and on a timer, every
@@ -191,7 +191,7 @@ working copy and no bookmark reaches, such as a side head, is not kept.
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
 | `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow, and an open child moves it to `awaiting_children`. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
-| `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
+| `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or in backlog or icebox. | implement App |
 
 A failed test or a review that requests changes sends the issue back to `implementing` from
 testing or review, and the change goes through the issue's steps after the implementer again: in
@@ -338,8 +338,8 @@ The worker at work goes on, but every start of a phase worker of the issue into 
 a slot, its next phase's or a restart of its current one, waits until the issue holds a slot again;
 a start of `retro` or `merging` takes no slot and runs at once.
 `legion state` names such an issue under `admission.waiting` and under `admission.blocked` and
-never under `admission.active`, which is how you tell it from an issue a person parked, which is
-in none of the three.
+never under `admission.active`, which is how you tell it from an issue a person moved to `backlog`
+or `icebox`, which is in none of the three.
 
 The line is ordered by Dispatch priority first, and `legion state` prints it in the order the
 daemon promotes it: P0, then P1, P2 and P3, and then issues with no priority.
@@ -430,29 +430,29 @@ another owner took. A root whose architect requested approval of its spec and re
 wait on you is no reason for the controller to label or admit anything: a root you
 handed to Legion takes its place through the waiting line.
 
-A parked root waits on nobody. When you approve its spec, the daemon sets it to `todo` itself,
-whoever parked it, when the root keeps its `legion` label and has no parent. An approval on a root
-that has a parent, and one that Dispatch carries in your name from an earlier one, do not queue it.
-Such an approval, a request for changes, and an answer or a reply on one of its asks go to the
-controller, which reads the decision. If the controller parked the root for a hold of its own, which
-it marks with a comment that begins `Parked by Legion while it waits on:`, and the decision gives
-the work a next step, the controller sets the root back to `todo`, and the architect starts by
-reading that decision. The controller's walk also sets such a root back to `todo`, with a comment
-that cites the mark, once the hold's cause is gone or the event it waits on has happened. Every
-other park, a root you parked yourself, one another agent's session parked, or one an operator
-parked with `legion issue status`, stays parked until a person sets the root to `todo`, approves its
-spec as above, or asks the controller to start it. The controller says so in a comment, and the
-architect then starts with the decision. When the approved version is no longer the spec's current
-one, the architect asks for approval of the current one. A question alone leaves the root parked:
-the controller answers it on its ask from the issue's record, or says that setting the root to
-`todo` brings the architect back to answer. A reply an agent session writes on such an ask is no
-decision: it stays on the ask for the person who asked, and nothing wakes.
+A root in backlog or icebox waits on nobody. When you approve its spec, the daemon sets it to `todo`
+itself, whoever moved it there, when the root keeps its `legion` label and has no parent. An approval
+on a root that has a parent, and one that Dispatch carries in your name from an earlier one, do not
+queue it. Such an approval, a request for changes, and an answer or a reply on one of its asks go to
+the controller, which reads the decision. If the controller moved the root to backlog for a hold of
+its own, which it marks with a comment that begins `Moved to backlog by Legion while it waits on:`,
+and the decision gives the work a next step, the controller sets the root back to `todo`, and the
+architect starts by reading that decision. The controller's walk also sets such a root back to
+`todo`, with a comment that cites the mark, once the hold's cause is gone or the event it waits on
+has happened. Every other move, a root you moved yourself, one another agent's session moved, or
+one an operator moved with `legion issue status`, stays in backlog or icebox until a person sets the
+root to `todo`, approves its spec as above, or asks the controller to start it. The controller says
+so in a comment, and the architect then starts with the decision. When the approved version is no
+longer the spec's current one, the architect asks for approval of the current one. A question alone
+leaves the root where it is: the controller answers it on its ask from the issue's record, or says
+that setting the root to `todo` brings the architect back to answer. A reply an agent session writes
+on such an ask is no decision: it stays on the ask for the person who asked, and nothing wakes.
 
-A held root is not a parked one. Its work stopped because a worker's budget ran out
+A held root is not in backlog or icebox. Its work stopped because a worker's budget ran out
 ([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
 hold: the issue returns to the phase it was held from and that phase's worker starts again, with
-no new run of the tree. A root you parked, by contrast, starts a new run when you set it to
-`todo`.
+no new run of the tree. A root you moved to backlog or icebox, by contrast, starts a new run when
+you set it to `todo`.
 
 ## The design gate
 
@@ -727,7 +727,7 @@ own merges.
 It stands there on no admission slot, as `accepting` and `retro` do, so no wait of it changes the
 cap.
 Its architect is told once which issues the close waits for,
-and the close comes when the last of them is done or parked. What is
+and the close comes when the last of them is done or in backlog or icebox. What is
 left after the close is to see the change work in production, and that is
 work after the close, where your project asks for it: `projects.<KEY>.production_check` in
 `legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a
@@ -802,10 +802,10 @@ that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 `prompt_retire_limit` in the configuration) the daemon stops relaunching that agent and **holds**
 the issue. A held phase worker is its architect's to retry or escalate to the controller. A root's
 architect that runs out goes to the controller, which restarts a running tree when it finds no
-cause or the cause is gone, and otherwise asks a person whether to park it. A child's architect
-that runs out holds nothing: the architect above it is told and takes the child's notices, and
-the daemon starts the child's architect again, with fresh budgets, at the child's next phase
-start.
+cause or the cause is gone, and otherwise asks a person whether to move it to backlog. A child's
+architect that runs out holds nothing: the architect above it is told and takes the child's
+notices, and the daemon starts the child's architect again, with fresh budgets, at the child's next
+phase start.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word

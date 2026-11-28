@@ -144,7 +144,7 @@ func TestTheDeregistrationFallbackAnswersItsRequestWhileItsListingIsStillStalled
 // The forwarding stops the moment the watcher is stopped, which is what a scan that ends does
 // (kvwatch.drainScan's done: Stop, then a drain of what is left). Entries nats.go has already
 // buffered are then read off the real watcher without forwarding them - leaving them unread would
-// park nats.go's delivery goroutine for good on a full buffer - so the count stands still once
+// block nats.go's delivery goroutine for good on a full buffer - so the count stands still once
 // the scan has stopped, and a count that goes on climbing is a listing still reading the bucket.
 type slowWatchKV struct {
 	jetstream.KeyValue
@@ -197,7 +197,7 @@ func (k *slowWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream.
 
 // drain reads the stopped watcher's remaining entries, without delaying or counting them: they
 // reach no caller, and nats.go's delivery callback blocks on a full buffer holding the watcher's
-// lock, so a stopped watcher left unread parks its subscription's goroutine.
+// lock, so a stopped watcher left unread blocks its subscription's goroutine.
 func (k *slowWatchKV) drain(watcher jetstream.KeyWatcher) {
 	for range watcher.Updates() {
 	}

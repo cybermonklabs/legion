@@ -22,10 +22,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The issue a claim release row answers: a child the daemon parked, in its root's tree, held by
-// the tree's own architect session. The tree's architect recorded another session before the one
-// it records now, which it left behind, and so did a claim of another tree. The project's
-// controller holds a claim of its own, on no issue and no tree.
+// The issue a claim release row answers: a child the daemon took out of the workflow, in its root's
+// tree, held by the tree's own architect session. The tree's architect recorded another session
+// before the one it records now, which it left behind, and so did a claim of another tree. The
+// project's controller holds a claim of its own, on no issue and no tree.
 const (
 	claimTree              = "LEGION-1"
 	claimIssue             = "LEGION-2"
@@ -129,7 +129,7 @@ func claimConflict(code string) error {
 // sessionClaim is a Dispatch claim held by an agent session, the only holder the daemon releases.
 func sessionClaim(id string) *dispatch.Claim { return &dispatch.Claim{Kind: "session", ID: id} }
 
-// claimReleaseRig is one parked issue with a claim release row of its own, drained by hand
+// claimReleaseRig is one issue out of the workflow with a claim release row of its own, drained by hand
 // (RunOnce) on a clock the test holds, with the runner's log captured.
 type claimReleaseRig struct {
 	t      *testing.T
@@ -142,7 +142,7 @@ type claimReleaseRig struct {
 	row int64
 }
 
-// newClaimReleaseRig seeds the tree and its parked issue and builds the runner over them. Every
+// newClaimReleaseRig seeds the tree and its issue out of the workflow and builds the runner over them. Every
 // session the holder cases name is recorded: the tree's own architect, one that claims only in
 // another tree, and the project's controller, whose claims row carries no tree at all. The tree's
 // architect and the claim of another tree each hold a session in claim_sessions that they left
@@ -288,9 +288,9 @@ func claimReleaseRoot() record.Issue {
 		Project: "LEGION", Tree: claimTree, Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
 }
 
-// parkedIssue is the issue a release row answers: the daemon took it out of the workflow without
+// outOfWorkflowIssue is the issue a release row answers: the daemon took it out of the workflow without
 // closing it, which is the one state that releases its claim.
-func parkedIssue() record.Issue {
+func outOfWorkflowIssue() record.Issue {
 	parent := claimTree
 	return record.Issue{Key: claimIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: claimTree, Parent: &parent, Title: "Child", Phase: phase.Planning,
@@ -393,7 +393,7 @@ func testReleaseClaimHolders(t *testing.T) {
 			shown := tc.shown
 			shown.Status = "backlog"
 			rig := newClaimReleaseRig(t, shown, !tc.released, nil)
-			rig.records(parkedIssue())
+			rig.records(outOfWorkflowIssue())
 			rig.due(0)
 			rig.run()
 
@@ -427,18 +427,18 @@ func testReleaseClaimHolders(t *testing.T) {
 
 // The record decides as much as the holder does: a claim of an issue the daemon runs belongs to
 // that run, and so does a claim of an issue whose tree runs again at a later generation while
-// Dispatch still shows it parked. A tree the operator holds is the operator's whole — its own
+// Dispatch still shows it out of the workflow. A tree the operator holds is the operator's whole — its own
 // root spawn shares the tree's key, so its session is a session of the issue's tree here — and
 // the workflow may act on none of its claims. The holder is the tree's own architect session in
 // each of the three, the one holder the daemon would otherwise take the claim from, and the
 // issue's record says why it stays. An issue the daemon records nothing for is one it can
 // attribute nothing of, and it says nothing either: there is no record to say it in.
 func testReleaseClaimRecord(t *testing.T) {
-	live := parkedIssue()
+	live := outOfWorkflowIssue()
 	live.Status, live.Phase = "in_progress", phase.Implementing
-	readmitted := parkedIssue()
+	readmitted := outOfWorkflowIssue()
 	readmitted.Status, readmitted.Phase, readmitted.Generation = "todo", phase.Admitted, 2
-	parked := parkedIssue()
+	outOfWorkflow := outOfWorkflowIssue()
 	for _, tc := range []struct {
 		name     string
 		recorded *record.Issue
@@ -448,7 +448,7 @@ func testReleaseClaimRecord(t *testing.T) {
 	}{
 		{name: "the daemon records the issue live in the workflow", recorded: &live, left: record.ClaimLeftIssueRuns},
 		{name: "its tree runs again at a later generation", recorded: &readmitted, left: record.ClaimLeftIssueRuns},
-		{name: "the operator holds the stopped issue's tree", recorded: &parked, operatorHolds: true, left: record.ClaimLeftOperatorTree},
+		{name: "the operator holds the stopped issue's tree", recorded: &outOfWorkflow, operatorHolds: true, left: record.ClaimLeftOperatorTree},
 		{name: "the daemon records nothing for the issue"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -554,7 +554,7 @@ func testReleaseClaimAnswers(t *testing.T) {
 			t.Run(shape.name+", "+tc.name, func(t *testing.T) {
 				rig := newClaimReleaseRig(t, dispatch.Issue{Status: "backlog", Claim: sessionClaim(shape.holder)},
 					false, answersInTurn(tc.answers...))
-				rig.records(parkedIssue())
+				rig.records(outOfWorkflowIssue())
 				rig.dueRow(tc.age, shape.payload)
 				for attempt := range tc.attempts {
 					if attempt > 0 {
@@ -608,7 +608,7 @@ func testReleaseClaimAnswers(t *testing.T) {
 	t.Run("the root's architect session, live, holds a stopped child's claim", func(t *testing.T) {
 		rig := newClaimReleaseRig(t, dispatch.Issue{Status: "backlog", Claim: sessionClaim(claimTreeSession)},
 			false, func(int) error { return claimConflict(dispatch.IssueClaimed) })
-		rig.records(parkedIssue())
+		rig.records(outOfWorkflowIssue())
 		rig.due(0)
 		for range 3 {
 			rig.run()
@@ -638,7 +638,7 @@ func testReleaseClaimAnswers(t *testing.T) {
 func testReleaseClaimLane(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	noticeTree(t, pool, record.NewStore(), false)
-	putOutboxIssue(t, pool, record.NewStore(), parkedIssue())
+	putOutboxIssue(t, pool, record.NewStore(), outOfWorkflowIssue())
 	seedSessionClaim(t, pool, "architect-claim", "LEGION", claimTree, claimTree, claimTreeSession)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, claimTree, supervise.StateWorking)

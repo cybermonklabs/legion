@@ -10,7 +10,7 @@ package supervise
 // its own, and that each door a relaunch can leave by with no launch of it owed returns the
 // credit there (the two take-backs a store can refuse, at the end of this file). That the credit
 // is kept through the waits of a launch outside the pacing — a retry, a hold of the pause's gate
-// and a park at its issue pod's start gate — is held in refresh_bound_test.go.
+// and a wait at its issue pod's start gate — is held in refresh_bound_test.go.
 //
 // Beside the credit runs the re-read the admitted wake makes when its turn comes (R2): a refresh
 // can wait tens of minutes in a wave, and a claim that has registered on this daemon's contract
@@ -239,7 +239,7 @@ func TestARefreshWhoseClaimIsInATurnAtItsTurnRelaunchesNothingAndIsAdmittedAgain
 // that wake not at all: there is nothing left to replace, and replacing it would cost the claim
 // its process and the task it holds for a fact that is already fixed. The credit goes back, and
 // the claim is left watched exactly as the lifecycle refusal beside it leaves one (watchAgain):
-// the bound the acknowledged prompt waits for its turn on, which the park disarmed, is armed
+// the bound the acknowledged prompt waits for its turn on, which the delay disarmed, is armed
 // again, so a prompt the agent read and never turned on still fails rather than waiting for ever.
 //
 // The negative control is the re-read taken out of runWake: the claim's process is then replaced
@@ -251,7 +251,7 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 	h.m.deps.PluginContract = refreshContract
 	kept := h.locator()
 
-	// The task is sent and the agent acknowledges it, which is what arms the bound the park
+	// The task is sent and the agent acknowledges it, which is what arms the bound the delay
 	// takes away (acked, waitOnMachine).
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Row: 7})
 	acked := h.wantPrompts(1)[0].DeliveryID
@@ -259,7 +259,7 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 	h.mustRefreshPass(gate, "sweep")
 	waiting := h.wantWaitingWake(WakePluginRefresh)
 	if _, awaiting := h.m.timers[TimerTurn]; awaiting {
-		t.Fatal("the park left the turn bound of the process the refresh replaces armed, want it disarmed")
+		t.Fatal("the delay left the turn bound of the process the refresh replaces armed, want it disarmed")
 	}
 
 	// The shim reconnects inside the wait and the agent registers on this daemon's own contract.
@@ -315,9 +315,9 @@ func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 			h.reach(StateIdle)
 		}, nil, refreshAsks{asked: 1, granted: 1, released: 1}},
 		{"the lagged second admission, over a wake of this claim's that already waits", func(h *harness, gate *fakeAdmitter) {
-			// The pass reads the wakes the machines last published, so a wake parked a moment
+			// The pass reads the wakes the machines last published, so a wake delayed a moment
 			// before it counted is one its reading misses and posts a credit for anyway
-			// (parkedWakes in internal/daemon, refreshPlugin): the post that lags reaches a
+			// (delayedWakes in internal/daemon, refreshPlugin): the post that lags reaches a
 			// machine whose refresh is already waiting.
 			h.reach(StateIdle)
 			h.m.deps.PluginContract = refreshContract
@@ -390,7 +390,7 @@ func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 // rig, where the same window is manufactured by racing a wall-clock sweep against turn ends.
 //
 // The negative control is the guard removed (the `!controller && !m.refreshCredit` branch of
-// refreshPlugin): eight such claims at once where a wave's turns end together park eight wakes
+// refreshPlugin): eight such claims at once where a wave's turns end together delay eight wakes
 // the gate never granted, which is twice the rate in the pacing. This test reads it at the wake
 // the claim then holds and at the asks the gate was never made.
 func TestAnUncreditedRelaunchAsksTheGateAndRelaunchesNothingWhenItIsFull(t *testing.T) {
@@ -537,12 +537,12 @@ func TestAHeldRelaunchTheGateRefusesAtTheTurnsEndWaitsForTheNextSweep(t *testing
 
 // A refresh whose wake is let go with the claim's process gives its credit back there. Every
 // suspension, failure and retirement of a claim ends with that one call (letGo), which drops the
-// wake parked over the process together with the process itself: no launch of the refresh is
+// wake delayed over the process together with the process itself: no launch of the refresh is
 // owed after it, so the credit goes back at once (dispatch://INFRA-2712 R1).
 //
 // A credit kept here would cost the lane more than a credit. The sweep's own correction takes it
 // back a minute later, but the machine goes on reading it as held until then, so the next post
-// it meets with no credit of its own skips the gate and parks a wake the gate never granted,
+// it meets with no credit of its own skips the gate and delays a wake the gate never granted,
 // which is the one thing the bound promises cannot happen (refreshPlugin, Machine.refreshCredit).
 //
 // The negative control is the credit check removed from the end of a decision (endRefreshLane):
@@ -557,14 +557,14 @@ func TestARefreshWhoseWakeIsLetGoWithTheClaimsProcessGivesItsCreditBack(t *testi
 	h.wantWaitingWake(WakePluginRefresh)
 
 	// The operator suspends the claim while its refresh waits: the stop lets the process go, and
-	// the wake parked over that process goes with it (the table's suspend row, suspendNow, letGo).
+	// the wake delayed over that process goes with it (the table's suspend row, suspendNow, letGo).
 	h.must(RequestSuspend{Claim: h.token, Reason: "the operator drains the tree", By: SuspendedByOperator})
 
 	h.wantState(StateSuspended)
 	h.wantStarts(h.token, 1)
 	h.wantCalls("Suspend", 1)
 	if held := h.m.View().WakeWaiting; held != nil {
-		t.Fatalf("the suspended claim names wake %+v, want none: the wake went with the process it was parked over", held)
+		t.Fatalf("the suspended claim names wake %+v, want none: the wake went with the process it was delayed over", held)
 	}
 	gate.wantAsks(t, "the refresh whose wake was let go with the claim's process", refreshAsks{asked: 1, granted: 1, released: 1})
 }
@@ -575,7 +575,7 @@ func TestARefreshWhoseWakeIsLetGoWithTheClaimsProcessGivesItsCreditBack(t *testi
 // back with the process the suspension lets go (suspendedFor, letGo).
 //
 // It is the one of wakeNow's two turns that do not reach runWake which the machine drives: the
-// other is a wake whose kind starts no process, and every kind a machine parks today starts one
+// other is a wake whose kind starts no process, and every kind a machine delays today starts one
 // (StartsProcess, reserveWake).
 //
 // The negative control is the credit check removed from the end of a decision (endRefreshLane):
@@ -636,7 +636,7 @@ func (s *cleanupReservedAfterFirstCheckStore) CheckLaunch(ctx context.Context, c
 // refusal's first branch over a claim which still records its process: the error goes back to
 // whoever asked for it and no retry is armed, so the credit would otherwise be held by a machine
 // with no launch of the lane owed until the sweep's own correction took it back — and, until
-// then, read as held, which makes the machine skip the gate at its next uncredited post and park
+// then, read as held, which makes the machine skip the gate at its next uncredited post and delay
 // a wake the gate never granted (Machine.refreshCredit, refreshPlugin).
 //
 // It is driven rather than placed: the relaunch's own lifecycle check passes, as it does for
@@ -703,7 +703,7 @@ func (h *harness) taskTheAgentTook() string {
 // turn that prompt's was, so settle retires nothing and the claim is idle holding the task
 // confirmed (turnEnded's resultPending branch, turnOver). The start names the delivery, as a
 // reconnecting shim's replay of a start it already saw does (turnStarted): a bare start inside a
-// parked wake's wait is attributed to no delivery at all, because the park disarmed the wait for
+// delayed wake's wait is attributed to no delivery at all, because the delay disarmed the wait for
 // the prompt (waitOnMachine).
 func (h *harness) turnEndsWithItsResultToCome(sent string) {
 	h.t.Helper()
@@ -732,7 +732,7 @@ func (h *harness) turnEndsWithItsResultToCome(sent string) {
 //
 // These are the two doors no release of this lane reached before: the credit sat out until the
 // sweep's own correction took it back a minute later, and until then the machine read it as
-// held, so its next uncredited post skipped the gate and parked a wake the gate never granted —
+// held, so its next uncredited post skipped the gate and delayed a wake the gate never granted —
 // the one thing the bound promises cannot happen (Machine.refreshCredit, refreshPlugin).
 //
 // The negative control of both cases is the credit check removed from the end of a decision

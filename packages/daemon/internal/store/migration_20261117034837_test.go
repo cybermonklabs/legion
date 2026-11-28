@@ -62,7 +62,7 @@ func TestMigrationIssuePlansRefusesABadRoleAndAPlace(t *testing.T) {
 		},
 		{
 			name:       "a state no task is in",
-			refused:    `update plan_tasks set state = 'parked' where issue = 'LEGION-208' and task = 'a'`,
+			refused:    `update plan_tasks set state = 'paused' where issue = 'LEGION-208' and task = 'a'`,
 			stored:     `update plan_tasks set state = 'left' where issue = 'LEGION-208' and task = 'a'`,
 			constraint: "plan_tasks_state_check",
 		},

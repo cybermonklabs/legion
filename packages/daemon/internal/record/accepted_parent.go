@@ -71,7 +71,7 @@ func byKey(members []Issue) map[string]Issue {
 // InWorkflow — a recorded member at admitted with status todo is — so it keeps that root open
 // through this set for ever, while the child itself is pinned at admitted while the root is merging;
 // a child held under an ancestor above an issue in accepting deadlocks that issue's sign-off the
-// same way. Neither moves, and no act of a person short of parking the child breaks it.
+// same way. Neither moves, and no act of a person short of moving the child out of the workflow breaks it.
 // Excluding exactly the issues the daemon's own hold has stopped costs nothing else: every other
 // issue beneath still refuses the sign-off and still holds the merged root open, and the held
 // issue still holds every ancestor that has not been accepted, because the hold is what the

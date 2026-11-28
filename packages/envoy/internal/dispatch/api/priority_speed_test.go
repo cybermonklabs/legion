@@ -464,12 +464,12 @@ func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGro
 		if err != nil {
 			t.Fatalf("read the priorities: %v", err)
 		}
-		parts := []string{fmt.Sprintf("%d priorities, %d unplaced, %d parked:", len(body.Priorities),
-			body.WorkUnderNoPriority.Count, body.PriorityWorkParked.Count)}
+		parts := []string{fmt.Sprintf("%d priorities, %d unplaced, %d in backlog or icebox:", len(body.Priorities),
+			body.WorkUnderNoPriority.Count, body.PriorityWorkInBacklogOrIcebox.Count)}
 		for _, issue := range body.WorkUnderNoPriority.Issues {
 			parts = append(parts, issue.Key)
 		}
-		for _, issue := range body.PriorityWorkParked.Issues {
+		for _, issue := range body.PriorityWorkInBacklogOrIcebox.Issues {
 			parts = append(parts, fmt.Sprintf("%s(%d)", issue.Key, len(issue.Advances)))
 		}
 		return strings.Join(parts, " ")

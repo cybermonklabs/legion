@@ -52,10 +52,10 @@ package api
 // `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held
 // task that resumes an answered root carries, so the task's text is written at each send. An
 // older daemon neither reads nor writes that column: it sends the task text a row holds, which is
-// empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
-// Dispatch's sequence of a kept spec decision's review, `parked_decisions.artifact`, the document
-// that review is of (the empty string on every row already there), and
-// `parked_decisions.version`, the version reviewed (null on every row already there), which an
+// empty for a resume task this release queued and never sent. It also adds the `seq` column of
+// the table of kept decisions, Dispatch's sequence of a kept spec decision's review, its
+// `artifact` column, the document that review is of (the empty string on every row already
+// there), and its `version` column, the version reviewed (null on every row already there), which an
 // older daemon neither reads nor writes: a row it inserts carries no sequence, no document, no
 // version and its own clock, as before this release, while a decision it keeps over a row this
 // release kept is written beside that row's sequence, document and version, the earlier

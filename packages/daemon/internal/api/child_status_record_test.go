@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -116,16 +118,39 @@ func assertEchoChangesNothing(t *testing.T, h *harness, handlers []intake.Handle
 }
 
 // An older plugin still offers its agents an operation that called a child route this daemon no
-// longer serves. The route stays registered only to refuse that call: 410 ROUTE_REMOVED, with a
-// reason that says which status to write on the child in Dispatch, followed by the rules of that
-// write (record.EndChildRule), so the older plugin's tool shows its agent what to do instead. The
-// refusal reads no body, so a call with no body or with a body that does not decode gets the same
-// answer. It changes nothing: no Dispatch write, no change to the child's record, no outbox row
-// and no fact applied.
-func TestTheRemovedChildRouteAnswersWithTheStatusWrite(t *testing.T) {
+// longer serves. Every such route answers 410 ROUTE_REMOVED, with a reason that says which status
+// to write on the child in Dispatch, followed by the rules of that write (record.EndChildRule), so
+// the older plugin's tool shows its agent what to do instead. The routes are read from the records
+// of request-shapes.json: each route under /legion/v1/children/ that a record names and that is no
+// row of the route table, which the table's pattern of every child route answers
+// (removedChildRoute). One call carries the grant of an architect in its turn whose claim records
+// the contract of an older plugin, the call a plugin of 188 makes; the refusal reads no body, so a
+// call with no body or with a body that does not decode gets the same answer. It changes nothing:
+// no Dispatch write, no change to the child's record, no outbox row and no fact applied.
+// rerun_child's route keeps its own row: rerunChild answers it, and refuses a child that still
+// runs with its own code.
+func TestAChildRouteThisDaemonDoesNotServeAnswersWithTheStatusToWrite(t *testing.T) {
 	h, _, statuses := statusHarness(t)
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-	grant := architect.grant(t)
+	grants := []string{architect.grant(t), architect.grant(t)}
+	const older = 188
+	h.makeStale(t, architect.token, architect.session, architect.secret, older)
+	if c := h.stored(architect.token); c.State != supervise.StateWorking || c.PluginContract != older {
+		t.Fatalf("the architect's claim is %s at contract %d, want working at %d: this case proves nothing", c.State, c.PluginContract, older)
+	}
+	onFile, written := readRequestShapes(t)
+	if !written {
+		t.Fatalf("%s is not written yet: run `go test ./internal/api/ -update` once to write it", requestShapesFixture)
+	}
+	var removed []string
+	for _, record := range onFile {
+		if strings.HasPrefix(record.Route, "POST /legion/v1/children/") && RemovedRoutes()[servedPattern(record.Route)] != 0 && !slices.Contains(removed, record.Route) {
+			removed = append(removed, record.Route)
+		}
+	}
+	if len(removed) == 0 {
+		t.Fatalf("no record of %s names a child route the route table does not serve: this test proves nothing", requestShapesFixture)
+	}
 	const reason = "This route is removed. Write backlog, icebox or done on the child in Dispatch (dispatch issue-update --issue <KEY> --status <status>). " +
 		"Add --reason when the status is done. The daemon takes the move from the Dispatch event of that write. " + record.EndChildRule
 	count := func(table string) int {
@@ -138,17 +163,20 @@ func TestTheRemovedChildRouteAnswersWithTheStatusWrite(t *testing.T) {
 	}
 	child, outbox, facts := recordedChild(t, h, statusChild), count("outbox"), count("processed_events")
 
-	for _, tc := range []struct {
-		name string
-		body any
-	}{
-		{name: "an architect's request for its running child", body: map[string]any{"grantId": grant, "issue": statusChild}},
-		{name: "no body"},
-		{name: "a body that does not decode", body: `{"grantId":`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			refusedSaying(t, h.request(http.MethodPost, "/legion/v1/children/park", tc.body, nil), http.StatusGone, "ROUTE_REMOVED", reason)
-		})
+	for _, route := range removed {
+		method, path, _ := strings.Cut(route, " ")
+		for _, tc := range []struct {
+			name string
+			body any
+		}{
+			{name: "an architect in its turn on an older plugin, for its running child", body: map[string]any{"grantId": grants[0], "issue": statusChild}},
+			{name: "no body"},
+			{name: "a body that does not decode", body: `{"grantId":`},
+		} {
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				refusedSaying(t, h.request(method, path, tc.body, nil), http.StatusGone, "ROUTE_REMOVED", reason)
+			})
+		}
 	}
 	if len(statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none", statuses.writes)
@@ -162,6 +190,9 @@ func TestTheRemovedChildRouteAnswersWithTheStatusWrite(t *testing.T) {
 	if after := count("processed_events"); after != facts {
 		t.Fatalf("applied facts after the refusals = %d, want the %d before them", after, facts)
 	}
+
+	refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": grants[1], "issue": statusChild}, nil),
+		http.StatusConflict, "CHILD_RUNNING")
 }
 
 // The rules for ending a child, and the sentence on a status the daemon has not taken yet, are
@@ -218,9 +249,9 @@ func TestTheOwningArchitectsBacklogThenRerunChildRestartsTheChild(t *testing.T) 
 	assertEchoChangesNothing(t, h, handlers, statusEcho(6, "todo"))
 }
 
-// The controller's set_status moves the record within its own request too: the controller parking
-// a running child stops it at once, and the echo changes nothing.
-func TestControllerStatusParksTheRecordWithoutWaitingForItsDispatchEvent(t *testing.T) {
+// The controller's set_status moves the record within its own request too: the controller's
+// move of a running child to backlog stops it at once, and the echo changes nothing.
+func TestControllerStatusMovesTheRecordToBacklogWithoutWaitingForItsDispatchEvent(t *testing.T) {
 	h, handlers, statuses := statusHarness(t)
 	grant := controllerGrant(t, h)
 
@@ -231,9 +262,9 @@ func TestControllerStatusParksTheRecordWithoutWaitingForItsDispatchEvent(t *test
 	if len(statuses.writes) != 1 || statuses.writes[0] != (statusWrite{issue: statusChild, status: "backlog"}) {
 		t.Fatalf("Dispatch writes = %#v, want the child's backlog", statuses.writes)
 	}
-	parked := recordedChild(t, h, statusChild)
-	if parked == nil || parked.Phase != phase.Done || parked.Status != "backlog" || parked.LastDispatchSeq != 5 {
-		t.Fatalf("the child's record once set_status answered = %#v, want it parked at its write's sequence 5", parked)
+	moved := recordedChild(t, h, statusChild)
+	if moved == nil || moved.Phase != phase.Done || moved.Status != "backlog" || moved.LastDispatchSeq != 5 {
+		t.Fatalf("the child's record once set_status answered = %#v, want it out of the workflow in backlog at its write's sequence 5", moved)
 	}
 	if got := superviseRows(t, h, "suspend", claim.RolePlanner); got != 1 {
 		t.Fatalf("planner suspend rows = %d, want the move to stop the planner once", got)

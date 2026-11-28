@@ -100,7 +100,7 @@ const recorded: Priorities = {
       },
     ],
   },
-  priority_work_parked: {
+  priority_work_in_backlog_or_icebox: {
     count: 2,
     by_priority: { "ship-the-daemon": 2, "legion-first": 1 },
     issues: [
@@ -528,7 +528,7 @@ describe("dispatch priorities", () => {
     priorities = {
       priorities: [],
       work_under_no_priority: { count: 0, by_project: {}, issues: [] },
-      priority_work_parked: { count: 0, by_priority: {}, issues: [] },
+      priority_work_in_backlog_or_icebox: { count: 0, by_priority: {}, issues: [] },
       empty: NONE_WRITTEN,
     };
 

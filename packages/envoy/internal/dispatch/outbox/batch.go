@@ -465,7 +465,7 @@ func planChains(events []*batchEvent) []*chain {
 // why it stays pending. A failed send holds back the rest of its chain. A send that waits for an
 // earlier event's topic send of its owner (chainSend.after) is made only once that send reached the
 // topic family or was refused for good (a refused topic send is never made again, so nothing is
-// left for the session to see first), its chain parked until then, and when the topic send failed
+// left for the session to see first), its chain awaiting that answer until then, and when the topic send failed
 // or was held back itself, the waiting send and the rest of its chain are held back by the same
 // event, as a failed send holds back the rest of its own chain. A topic send waits for no other
 // chain, so every such wait ends at an answer on the owner's topic chain, or when the batch stops.
@@ -496,9 +496,9 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 	handed := newKeptHandovers()
 	stopped := false
 	var inflight []*chain
-	// parked are the chains whose next send waits for a topic send that has no answer yet
+	// awaiting are the chains whose next send waits for a topic send that has no answer yet
 	// (chainSend.after).
-	var parked []*chain
+	var awaiting []*chain
 	left := map[string]int{}
 	for _, c := range chains {
 		left[c.owner]++
@@ -525,7 +525,7 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		}
 		send := c.sends[c.next]
 		if send.after != nil && send.after.state != reached && send.after.state != refused {
-			parked = append(parked, c)
+			awaiting = append(awaiting, c)
 			return
 		}
 		routed := send.event.item
@@ -546,14 +546,14 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 		}
 		inflight = append(inflight, c)
 	}
-	// unpark takes on each parked chain whose topic send has its answer: on to its send when the
+	// takeUpAwaiting takes on each awaiting chain whose topic send has its answer: on to its send when the
 	// topic send reached the topic family or was refused for good, and to its end when it failed or
 	// was held back, its sends held back by the event whose failed send stopped it, the topic send's
-	// own or the one that held it back. A batch that stopped makes no further send, so a parked
+	// own or the one that held it back. A batch that stopped makes no further send, so an awaiting
 	// chain then ends with its sends unsent, as every other chain does.
-	unpark := func() {
-		taken := parked
-		parked = parked[:0]
+	takeUpAwaiting := func() {
+		taken := awaiting
+		awaiting = awaiting[:0]
 		for _, c := range taken {
 			after := c.sends[c.next].after
 			switch {
@@ -566,13 +566,13 @@ func sendChains(ctx context.Context, deps Deps, sender bus.Sender, chains []*cha
 			case after.state == held:
 				holdRest(c, after.heldBy)
 			default:
-				parked = append(parked, c)
+				awaiting = append(awaiting, c)
 			}
 		}
 	}
 	settle := func(index int, err error) {
-		// Every answer may be the one a parked chain waits for, or the one that stopped the batch.
-		defer unpark()
+		// Every answer may be the one an awaiting chain waits for, or the one that stopped the batch.
+		defer takeUpAwaiting()
 		c := inflight[index]
 		inflight = append(inflight[:index], inflight[index+1:]...)
 		send := c.sends[c.next]

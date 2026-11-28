@@ -33,7 +33,7 @@ func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
 	t.Run("a reopen inside the linger", func(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		token := mustClaimToken(t, doorChild, claim.RoleArchitect)
-		parkTheRootBeforeTheChildsRowsRun(rig)
+		moveTheRootToBacklogBeforeTheChildsRowsRun(rig)
 
 		called := len(rig.rt.Calls())
 		reopenTheRoot(rig)
@@ -44,13 +44,13 @@ func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		token := mustClaimToken(t, doorChild, claim.RoleArchitect)
 		rig.written("release", childAt("todo", 2))
-		rig.apply("root-parked", intake.DispatchIssue{Key: doorRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "backlog", HandedOver: true,
+		rig.apply("root-backlog", intake.DispatchIssue{Key: doorRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "backlog", HandedOver: true,
 			Title: "root", Rank: "U"})
 		// The linger's deadline is moved into the past before the outbox runs the child's rows: the
 		// tree still lingers (record.Issue.Lingers), and its linger no longer runs.
 		root := readIssue(t, rig.pool, doorRoot)
 		if root == nil || !root.Lingers() {
-			t.Fatalf("the parked root = %+v, want its tree lingering", root)
+			t.Fatalf("the root in backlog = %+v, want its tree lingering", root)
 		}
 		expired := time.Now().Add(-time.Minute)
 		root.LingerUntil = &expired
@@ -71,13 +71,13 @@ func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
 	t.Run("a re-admitted root waiting for its slot", func(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		token := mustClaimToken(t, doorChild, claim.RoleArchitect)
-		parkTheRootBeforeTheChildsRowsRun(rig)
+		moveTheRootToBacklogBeforeTheChildsRowsRun(rig)
 
 		// Three other trees run, each root at work in a slot, which fills the rig's admission cap of
-		// three: the park gave back the slots of the root and the child.
+		// three: the move to backlog gave back the slots of the root and the child.
 		var held int
 		if err := rig.pool.QueryRow(rig.ctx, `select count(*) from slots`).Scan(&held); err != nil || held != 0 {
-			t.Fatalf("the parked tree holds %d slots (%v), want the park to have given back every one", held, err)
+			t.Fatalf("the tree in backlog holds %d slots (%v), want the move to backlog to have given back every one", held, err)
 		}
 		others, ranks := []string{"LEGION-20", "LEGION-21", "LEGION-22"}, []string{"W", "X", "Y"}
 		for i, key := range others {
@@ -108,9 +108,9 @@ func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
 			t.Fatalf("the child's architect was launched %+v while its root waits for a slot, want no launch", launches)
 		}
 
-		// A person parks one of the other trees, which gives its slot back: the same fact's
+		// A person moves one of the other trees to backlog, which gives its slot back: the same fact's
 		// admission pass promotes the waiting root, which opens its tree again.
-		rig.apply("other-parked", intake.DispatchIssue{Key: others[0], ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", HandedOver: true,
+		rig.apply("other-backlog", intake.DispatchIssue{Key: others[0], ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", HandedOver: true,
 			Title: others[0], Rank: "W"})
 		if root := readIssue(t, rig.pool, doorRoot); root.Status != "in_progress" {
 			t.Fatalf("the root after a slot came free stands %s at %s, want it promoted in_progress", root.Status, root.Phase)
@@ -183,13 +183,13 @@ func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishesWhileItsTreeDoesNotR
 	}
 }
 
-// parkTheRootBeforeTheChildsRowsRun is the child released, then its root moved out of the workflow
+// moveTheRootToBacklogBeforeTheChildsRowsRun is the child released, then its root moved out of the workflow
 // before the outbox runs the child's rows, and those rows drained: the tree lingers, and the start
 // of the child's architect waits with no claim created.
-func parkTheRootBeforeTheChildsRowsRun(rig *childArchitectRig) {
+func moveTheRootToBacklogBeforeTheChildsRowsRun(rig *childArchitectRig) {
 	rig.t.Helper()
 	rig.written("release", childAt("todo", 2))
-	rig.apply("root-parked", intake.DispatchIssue{Key: doorRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "backlog", HandedOver: true,
+	rig.apply("root-backlog", intake.DispatchIssue{Key: doorRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "backlog", HandedOver: true,
 		Title: "root", Rank: "U"})
 	rig.drain()
 	if _, found := rig.sup.Machine(mustClaimToken(rig.t, doorChild, claim.RoleArchitect)); found {

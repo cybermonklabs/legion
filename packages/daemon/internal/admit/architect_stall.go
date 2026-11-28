@@ -162,7 +162,7 @@ func (a *Admission) readStallFloor(ctx context.Context, tx pgx.Tx) (stallFloor, 
 // resume of that pause), read once per reading through tx, and nothing for a project no pause has
 // ended. A root whose architect the pause held no launch of is absent. The pause owes an
 // architect it stops a launch where the architect holds a task it did not finish or a launch the
-// pacing had parked, and it holds each wake of an architect that arrives while it stands; the
+// pacing had delayed, and it holds each wake of an architect that arrives while it stands; the
 // resume lets each such launch out through the pacing, so the architect could take no turn
 // before that let-out. A launch that still waits in the pacing's queue has no let-out yet, and
 // reads as let out at now, the reading's own moment, so no time counts while it waits.
@@ -305,7 +305,7 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // that entry was first queued to the claim and that agent's last ready; for a task no let-go took
 // back, held by a claim that is suspended, failed or retired, when that task was first queued;
 // and in every case no earlier than the end of the project's latest pause (floor). While the
-// claim's agent is not up, which is where a launch the wake pacing has parked stands, it counts
+// claim's agent is not up, which is where a launch the wake pacing has delayed stands, it counts
 // nothing. The pause keeps such a task unsent (supervise's sendPending), and stops at its ready
 // an architect launched before the task went, so the task stands pending, unconfirmed and not
 // taken back, through the whole pause. It answers what the record says, and "" for a root it does
@@ -386,7 +386,7 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 // queueing, and one queued before a relaunch is counted from the relaunched agent's ready.
 //
 // In queued, launch_uncertain, launching, shim_connected and registered no agent is up to take a
-// prompt, so the task counts nothing. A launch the wake pacing has parked stands there
+// prompt, so the task counts nothing. A launch the wake pacing has delayed stands there
 // (supervise's waitOnMachine persists the claim launching), and the pacing lets launches out at
 // its rate (worker_wakes_per_minute, 8 by default, one every 7.5 seconds). After a pause, the
 // resume lets every launch the pause held out through it, so an architect ninety launches back

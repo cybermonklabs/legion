@@ -389,7 +389,7 @@ func TestAWaitingRootTellsItsArchitectOnlyWhenTheWaitBegins(t *testing.T) {
 		record.Issue{Key: "LEGION-211", Phase: phase.Reviewing, Status: "needs_review"})
 	assertWaitNotice(t, rig.pool, "LEGION-209, LEGION-210, LEGION-211")
 
-	rig.apply("child-parked", intake.DispatchIssue{Key: "LEGION-210", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-210", Parent: "LEGION-208", Rank: "V2"})
+	rig.apply("child-backlog", intake.DispatchIssue{Key: "LEGION-210", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-210", Parent: "LEGION-208", Rank: "V2"})
 	assertPhase(t, rig.pool, phase.Merging)
 	assertWaitNotice(t, rig.pool, "LEGION-209, LEGION-210, LEGION-211")
 
@@ -399,7 +399,7 @@ func TestAWaitingRootTellsItsArchitectOnlyWhenTheWaitBegins(t *testing.T) {
 }
 
 // A merged root closes the moment its last open child leaves the workflow, however it leaves: that
-// child's own merge, or the architect parking it to backlog (a Dispatch status event no session
+// child's own merge, or the architect moving it to backlog (a Dispatch status event no session
 // wrote). The close is the one the merge would have made: done written to Dispatch, the linger
 // armed, every claim of the tree suspended and the root's production check opened on its merge.
 func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
@@ -413,8 +413,8 @@ func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
 			seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 			rig.apply("child-merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
 		}},
-		{name: "the architect parks the child", child: record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"}, leave: func(t *testing.T, rig mergedRootRig) {
-			rig.apply("child-parked", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
+		{name: "the architect moves the child to backlog", child: record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"}, leave: func(t *testing.T, rig mergedRootRig) {
+			rig.apply("child-backlog", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -431,7 +431,7 @@ func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
 				t.Fatalf("the root's done status writes = %d, %v; want one over retro", statusWrites, err)
 			}
 			assertOutboxCount(t, rig.pool, "linger_close", 1)
-			// The linger suspends every claim of the tree; a child the architect parked was suspended
+			// The linger suspends every claim of the tree; a child the architect moved to backlog was suspended
 			// by its own departure first, so only the root's count is exactly one.
 			suspended := superviseRequests(t, rig.pool, "suspend")
 			for _, issue := range []string{"LEGION-208", "LEGION-209"} {
@@ -493,7 +493,7 @@ func TestWhichChildrenHoldAMergedRootsCloseUp(t *testing.T) {
 		child record.Issue
 		waits bool
 	}{
-		{name: "parked in backlog", child: record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "backlog"}},
+		{name: "moved to backlog", child: record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "backlog"}},
 		{name: "already done", child: record.Issue{Key: "LEGION-209", Phase: phase.Done, Status: "done"}},
 		{name: "released, no phase started", child: record.Issue{Key: "LEGION-209", Phase: phase.Admitted, Status: "todo"}},
 		{name: "held out of launches", child: record.Issue{Key: "LEGION-209", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Status: "in_progress"}, waits: true},
@@ -575,7 +575,7 @@ func TestANewPullRequestFromAWaitingRootsBranchLeavesItsMergeStanding(t *testing
 		UpdatedAt: time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)})
 	assertPhase(t, rig.pool, phase.Merging)
 
-	rig.apply("child-parked", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
+	rig.apply("child-backlog", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
 	assertPhase(t, rig.pool, phase.Done)
 	if check := productionCheck(t, rig.pool, "LEGION-208"); check == nil || !check.Open() || check.Number != 42 || check.MergeSHA != "merge" {
 		t.Fatalf("the root's production check = %+v, want it open on pull request #42 at merge", check)

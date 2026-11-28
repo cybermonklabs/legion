@@ -45,7 +45,7 @@ func TestALineLargerThanTheSocketBufferIsDeliveredWhole(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer conn.Close()
-	// Let the writer fill the kernel buffer and park before anything is read from it.
+	// Let the writer fill the kernel buffer and block before anything is read from it.
 	time.Sleep(100 * time.Millisecond)
 	got, err := NewReader(conn).ReadLine()
 	if err != nil {

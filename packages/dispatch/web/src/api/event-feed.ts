@@ -170,7 +170,7 @@ export function useEventFeed({
     // that no target can be derived from", and it subsumes every target already queued.
     let pendingAll = false;
     // `performance.now()`, not `Date.now()`: a monotonic clock, so a backwards system-clock
-    // step cannot park the throttle for the length of the step.
+    // step cannot stall the throttle for the length of the step.
     let lastWholeCacheRefresh = Number.NEGATIVE_INFINITY;
     let wholeCacheTrailing: number | undefined;
     let pending: RefreshTarget[] = [];

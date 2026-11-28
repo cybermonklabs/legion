@@ -103,7 +103,7 @@ func TestAHeldClockDroppedWhileItIsReadStillReadsTheThread(t *testing.T) {
 // A drop that starts while a read holds the clock waits for that read before it closes the clock's
 // descriptors (xidHeldClock). Here the read, once it holds the clock and right before it reads the
 // descriptor (xidHeldClockReading), starts a drop on another goroutine and goes on only once that
-// drop is parked on the clock's lock or has returned. The read must answer this thread's clocks,
+// drop is blocked on the clock's lock or has returned. The read must answer this thread's clocks,
 // and the drop must not return before the read lets the clock go. A drop that closed the
 // descriptors without the clock's lock returns first, and the read then reads a closed descriptor
 // and answers nothing.
@@ -132,15 +132,15 @@ func TestADropThatStartsDuringAReadWaitsForIt(t *testing.T) {
 			defer close(dropped)
 			xidDropThreadClock(thread)
 		}()
-		during = testwait.UntilPolling(t, time.Millisecond, "the drop started during the read to park on the clock's lock or return",
+		during = testwait.UntilPolling(t, time.Millisecond, "the drop started during the read to block on the clock's lock or return",
 			func() (string, bool) {
 				select {
 				case <-dropped:
 					return "returned", true
 				default:
 				}
-				if xidDropParkedOnAClocksLock() {
-					return "parked on the clock's lock", true
+				if xidDropBlockedOnAClocksLock() {
+					return "blocked on the clock's lock", true
 				}
 				return "running", false
 			})
@@ -156,7 +156,7 @@ func TestADropThatStartsDuringAReadWaitsForIt(t *testing.T) {
 	if !held.dropped {
 		t.Fatal("the drop returned with the clock not dropped, so this run proves nothing")
 	}
-	if during != "parked on the clock's lock" {
+	if during != "blocked on the clock's lock" {
 		t.Errorf("a drop started while a read held the clock %s before the read let the clock go: it closed the clock's descriptors under the read", during)
 	}
 	if reading.thread != thread {
@@ -164,10 +164,10 @@ func TestADropThatStartsDuringAReadWaitsForIt(t *testing.T) {
 	}
 }
 
-// xidDropParkedOnAClocksLock reports whether a goroutine is parked on a sync.Mutex inside
-// xidDropThreadClock, read off a dump of every goroutine's stack: a goroutine parked on a mutex is
+// xidDropBlockedOnAClocksLock reports whether a goroutine is blocked on a sync.Mutex inside
+// xidDropThreadClock, read off a dump of every goroutine's stack: a goroutine blocked on a mutex is
 // headed [sync.Mutex.Lock] there.
-func xidDropParkedOnAClocksLock() bool {
+func xidDropBlockedOnAClocksLock() bool {
 	buf := make([]byte, 1<<20)
 	for {
 		n := runtime.Stack(buf, true)

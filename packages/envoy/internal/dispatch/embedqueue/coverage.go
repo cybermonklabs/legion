@@ -657,7 +657,7 @@ func recheckCoverage(ctx context.Context, deps Deps) (identityRun, error) {
 // fail (coverPass). The context ending returns at once.
 //
 // After each pass that succeeded it reports the wait it settles into to a test of this package
-// (reportParked).
+// (reportWaiting).
 func runCoverage(ctx context.Context, deps Deps) {
 	pass := coverPass
 	for {
@@ -675,7 +675,7 @@ func runCoverage(ctx context.Context, deps Deps) {
 			}
 		}
 		timer := time.NewTimer(duty.Jittered(deps.identityRecheck))
-		deps.reportParked(err, answered)
+		deps.reportWaiting(err, answered)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -687,7 +687,7 @@ func runCoverage(ctx context.Context, deps Deps) {
 	}
 }
 
-// reportParked tells a test of this package (Deps.coverageParked) that the coverage loop has
+// reportWaiting tells a test of this package (Deps.coverageWaiting) that the coverage loop has
 // settled into its wait after a pass that succeeded, which is what a test waits for to know the
 // pass is done, since the loop returns only when the process stops. awaitingAnswer is false for
 // the wait that owes nothing until the interval is out, when the loop reads nothing, writes
@@ -695,14 +695,14 @@ func runCoverage(ctx context.Context, deps Deps) {
 // skipped the identity steps for want of one, made only while that answer has not come, so a test
 // that takes it knows the run proved nothing and left the rows it skipped alone. The wait after a
 // failed pass is not reported.
-func (d Deps) reportParked(err error, answered <-chan struct{}) {
-	if d.coverageParked == nil || err != nil {
+func (d Deps) reportWaiting(err error, answered <-chan struct{}) {
+	if d.coverageWaiting == nil || err != nil {
 		return
 	}
 	select {
 	case <-answered:
 	default:
-		d.coverageParked(answered != nil)
+		d.coverageWaiting(answered != nil)
 	}
 }
 

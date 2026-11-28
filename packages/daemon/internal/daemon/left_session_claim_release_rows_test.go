@@ -56,7 +56,7 @@ func TestALeftSessionsReleaseLeavesEveryClaimItsTableRowsLeave(t *testing.T) {
 			shown.Status = "backlog"
 			rig := newClaimReleaseRig(t, shown, true, nil)
 			if !tc.unrecorded {
-				rig.records(parkedIssue())
+				rig.records(outOfWorkflowIssue())
 			}
 			if tc.operatorHolds {
 				openTreeUnderOperator(t, rig.pool)

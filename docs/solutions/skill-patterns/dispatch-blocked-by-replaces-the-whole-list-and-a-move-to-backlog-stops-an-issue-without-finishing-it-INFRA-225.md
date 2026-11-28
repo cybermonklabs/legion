@@ -1,11 +1,11 @@
 ---
-title: "Dispatch's --blocked-by replaces the whole list, and a park stops an issue without finishing it"
+title: "Dispatch's --blocked-by replaces the whole list, and a move to backlog stops an issue without finishing it"
 category: skill-patterns
 tags:
   - dispatch
   - blocked-by
   - legion-architect
-  - park-child
+  - move-to-backlog
   - rerun-child
 date: 2026-10-26
 status: active
@@ -15,7 +15,7 @@ related_issues:
   - "sjawhar/legion#2188"
 ---
 
-# Dispatch's --blocked-by replaces the whole list, and a park stops an issue without finishing it
+# Dispatch's --blocked-by replaces the whole list, and a move to backlog stops an issue without finishing it
 
 Legion holds an issue while Dispatch shows it blocked by an issue that is not `done`. A skill
 that tells an agent to set or change those links:
@@ -24,13 +24,13 @@ that tells an agent to set or change those links:
   `dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>` (or `--blocked-by` on
   `dispatch issue`). Each call replaces the list; `--clear-blocked-by` empties it. One call per
   dependency keeps only the last, and the issue starts when that one closes.
-- Treats only `done` as finished. A park (`backlog`, `icebox`) stops an issue; whatever waits on
-  it stays held, and nobody is told.
-- Before parking a child for good, sets each dependent's list again without it, or parks the
-  dependent too.
-- Keeps the links through a park that precedes `rerun_child`: the dependents wait through the
-  rerun and start when its merge closes the child. Removing them there starts the dependents
-  before the rerun's work exists.
+- Treats only `done` as finished. A move to `backlog` or `icebox` stops an issue; whatever waits
+  on it stays held, and nobody is told.
+- Before moving a child to `backlog` or `icebox` for good, sets each dependent's list again
+  without it, or moves the dependent there too.
+- Keeps the links through a move to `backlog` that precedes `rerun_child`: the dependents wait
+  through the rerun and start when its merge closes the child. Removing them there starts the
+  dependents before the rerun's work exists.
 - Does not hold a child on another repository's change with a link when its task must name the
   merged commit: Legion starts it at the close, before anyone writes the commit in.
 - Checks each claim about a CLI against its `--help` and its handler before writing it.
@@ -39,7 +39,8 @@ that tells an agent to set or change those links:
 
 - Review round 4 at e2c36e93: the architect skill said to link "each child it depends on" with
   one `--blocked-by <other>` call each. `dispatch issue-update --help` reads "Replacement list …
-  [] clears it", and `writeBlockedBy` deletes every link before inserting. The tester saw a parked
-  child leave its dependent sibling held at `admitted` with no notice.
-- Review round 5: the round-4 park rule applied to every park, including the one `rerun_child`
-  requires (`CHILD_RUNNING` until parked). Scoping it to a park for good fixed it.
+  [] clears it", and `writeBlockedBy` deletes every link before inserting. The tester saw a child
+  in backlog leave its dependent sibling held at `admitted` with no notice.
+- Review round 5: the round-4 rule applied to every move to backlog, including the one
+  `rerun_child` requires (`CHILD_RUNNING` until the child is in backlog). Scoping it to a move for
+  good fixed it.

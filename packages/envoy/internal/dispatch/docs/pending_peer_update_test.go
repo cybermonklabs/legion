@@ -16,12 +16,12 @@ import (
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
-// The rows the store keeps for a room fold to the room's own document when a peer's update parks in
+// The rows the store keeps for a room fold to the room's own document when a peer's update is left pending in
 // the room: a keystroke sent before the keystroke it was typed after waits in the room's pending
 // queue, which the update the room hands its store leaves out, and the room integrates it once the
 // earlier keystroke arrives. A load of the stored rows - the fold a room load and a compaction make -
 // reads the document the room holds, both while the keystroke waits and once it has landed.
-func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T) {
+func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateIsLeftPending(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)
 	// No settlement writes the room between the load of its stored rows and the read of the room
@@ -36,7 +36,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 		return strings.TrimSpace(peerMarkdown(alpha)) == "Seed." && strings.TrimSpace(peerMarkdown(beta)) == "Seed."
 	})
 
-	// Two keystrokes of one writer, the second typed after the first, so the second parks in a
+	// Two keystrokes of one writer, the second typed after the first, so the second is left pending in a
 	// document that lacks the first.
 	writer := crdt.New()
 	if err := crdt.ApplyUpdateV1(writer, crdt.EncodeStateAsUpdateV1(alpha.Doc, nil), nil); err != nil {
@@ -48,7 +48,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	if err := alpha.Write(ygsync.EncodeUpdate(second)); err != nil {
 		t.Fatalf("send the second keystroke: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the room to park the second keystroke", func() bool {
+	waitFor(t, 10*time.Second, "the room to keep the second keystroke pending", func() bool {
 		live := service.srv.GetDoc(artifactID)
 		return live != nil && live.PendingStats().Items > 0
 	})

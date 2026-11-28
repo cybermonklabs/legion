@@ -2355,7 +2355,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * Follows `watched`, the connection the session holds. nats.js resubscribes by itself after a
    * reconnect; what was published while it was away is in the stream, and the relay restarts at
    * its ack floor on the new epoch's registration. nats.js 2.29.3 never ends a connection's status
-   * readers, even after it closes, so this reader stays parked on a closed connection; the close
+   * readers, even after it closes, so this reader stays waiting on a closed connection; the close
    * is read from `closed()`, and a close for good is `connectionClosed`'s.
    */
   function watchConnection(watched: ChannelConnection): void {

@@ -69,9 +69,9 @@ func recordedOn(key, tree, status string) record.Issue {
 		HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 }
 
-// parkedIn is a record of key parked in tree under tree itself: a child its run finished, at
+// backlogIn is a record of key moved to backlog in tree under tree itself: a child its run finished, at
 // backlog.
-func parkedIn(key, tree string) record.Issue {
+func backlogIn(key, tree string) record.Issue {
 	issue := recordedOn(key, tree, "backlog")
 	issue.Phase, issue.Parent, issue.HandedOver = phase.Done, &tree, false
 	return issue
@@ -106,9 +106,9 @@ func TestPrepareReadsTheDispatchChainAboveAParent(t *testing.T) {
 			shown: []dispatch.Issue{shownUnder(child, "todo", parent, true), shownUnder(parent, "backlog", tree, false), top}, want: []string{parent, tree}},
 		{name: "a tree two unrecorded ancestors up", recorded: []record.Issue{recordedOn(tree, tree, "in_progress")},
 			shown: []dispatch.Issue{shownUnder(child, "todo", parent, true), shownUnder(parent, "backlog", other, false), shownUnder(other, "backlog", tree, false), top}, want: []string{parent, other, tree}},
-		{name: "a chain through a recorded member of a tree to its root", recorded: []record.Issue{recordedOn(tree, tree, "in_progress"), parkedIn(other, tree)},
+		{name: "a chain through a recorded member of a tree to its root", recorded: []record.Issue{recordedOn(tree, tree, "in_progress"), backlogIn(other, tree)},
 			shown: []dispatch.Issue{shownUnder(child, "todo", parent, true), shownUnder(parent, "backlog", other, false), shownUnder(other, "backlog", tree, false), top}, want: []string{parent, other, tree}},
-		{name: "a recorded member of a tree moved out from under it", recorded: []record.Issue{recordedOn(tree, tree, "in_progress"), parkedIn(other, tree)},
+		{name: "a recorded member of a tree moved out from under it", recorded: []record.Issue{recordedOn(tree, tree, "in_progress"), backlogIn(other, tree)},
 			shown: []dispatch.Issue{shownUnder(child, "todo", parent, true), shownUnder(parent, "backlog", other, false), shownUnder(other, "backlog", "", false)}, want: []string{parent, other}},
 		{name: "a recorded parent", recorded: []record.Issue{recordedOn(tree, tree, "in_progress"), recordedOn(parent, tree, "in_progress")},
 			shown: []dispatch.Issue{shownUnder(child, "todo", parent, true), shownUnder(parent, "in_progress", tree, true), top}, want: []string{parent, tree}},
@@ -449,7 +449,7 @@ func (l *ancestryLine) waiting(key string) bool {
 func TestAnAncestryHeldRootQueuesOnceARecordedAncestorLeavesTheLiveTree(t *testing.T) {
 	t.Parallel()
 	const tree, member, parent, child = "LEGION-168", "LEGION-170", "LEGION-169", "LEGION-214"
-	line := newAncestryLine(t, tree, parkedIn(member, tree))
+	line := newAncestryLine(t, tree, backlogIn(member, tree))
 	line.client.issues[member] = shownUnder(member, "backlog", tree, false)
 	line.client.issues[parent] = shownUnder(parent, "backlog", member, false)
 
@@ -494,30 +494,30 @@ func TestARereadSkipsARootWhoseChainItCannotRead(t *testing.T) {
 	}
 }
 
-// A labelled todo issue whose Dispatch chain reaches a running tree past a recorded root parked out
-// of the workflow (INFRA-214's state: a once-queued root a person moved under the tree and did not
-// release) is held under the running tree, whose release would reach it: the parked root, not
+// A labelled todo issue whose Dispatch chain reaches a running tree past a recorded root that left
+// the workflow for backlog (INFRA-214's state: a once-queued root a person moved under the tree and did not
+// release) is held under the running tree, whose release would reach it: the root in backlog, not
 // live, is passed over rather than ending the chain, whether it is the issue's parent or further up.
-func TestARootHeldPastAParkedRootOnItsChainTakesNoSlot(t *testing.T) {
+func TestARootHeldPastARootInBacklogOnItsChainTakesNoSlot(t *testing.T) {
 	t.Parallel()
-	const tree, parked, parent, child = "LEGION-168", "LEGION-180", "LEGION-169", "LEGION-214"
+	const tree, inBacklog, parent, child = "LEGION-168", "LEGION-180", "LEGION-169", "LEGION-214"
 	for _, tc := range []struct {
 		name, under string
 		want        []string
 	}{
-		{name: "an unrecorded parent under the parked root", under: parent, want: []string{parent, parked, tree}},
-		{name: "the parked root as its parent", under: parked, want: []string{parked, tree}},
+		{name: "an unrecorded parent under the root in backlog", under: parent, want: []string{parent, inBacklog, tree}},
+		{name: "the root in backlog as its parent", under: inBacklog, want: []string{inBacklog, tree}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := recordedOn(parked, parked, "backlog")
+			root := recordedOn(inBacklog, inBacklog, "backlog")
 			root.Phase, root.Parent = phase.Done, record.ParentOf(tree)
 			line := newAncestryLine(t, tree, root)
-			line.client.issues[parked] = shownUnder(parked, "backlog", tree, false)
-			line.client.issues[parent] = shownUnder(parent, "backlog", parked, false)
+			line.client.issues[inBacklog] = shownUnder(inBacklog, "backlog", tree, false)
+			line.client.issues[parent] = shownUnder(parent, "backlog", inBacklog, false)
 
 			line.queue(child, tc.under)
 			if slotted, issue := line.slotted(child); slotted || issue == nil || issue.Status != "todo" || !slices.Equal(issue.Ancestry, tc.want) || line.waiting(child) {
-				t.Fatalf("%s slotted %v, waiting %v, recorded %#v; want it held out of the line with chain %v, under %s past %s", child, slotted, line.waiting(child), issue, tc.want, tree, parked)
+				t.Fatalf("%s slotted %v, waiting %v, recorded %#v; want it held out of the line with chain %v, under %s past %s", child, slotted, line.waiting(child), issue, tc.want, tree, inBacklog)
 			}
 		})
 	}
@@ -566,7 +566,7 @@ func TestARereadReadsOnlyTheRootsWhoseChainHoldsTheEventsIssue(t *testing.T) {
 func TestAStaleEventOfAMovedAncestorBringsBackNoAncestryHold(t *testing.T) {
 	t.Parallel()
 	const tree, other, member, parent, child = "LEGION-168", "LEGION-190", "LEGION-170", "LEGION-169", "LEGION-214"
-	line := newAncestryLine(t, tree, parkedIn(member, tree), recordedOn(other, other, "in_progress"))
+	line := newAncestryLine(t, tree, backlogIn(member, tree), recordedOn(other, other, "in_progress"))
 	if err := store.Transact(context.Background(), line.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := line.records.PutSlot(context.Background(), tx, record.Slot{Issue: other, Index: 1, AdmittedAt: time.Now()}); err != nil {
 			return err

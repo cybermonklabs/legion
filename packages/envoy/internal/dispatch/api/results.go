@@ -237,7 +237,7 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// The check is resolved before the transaction opens. Resolving it folds the live
 	// Verification document, which for a document no room holds is a cold read bounded by a
 	// minute (docs/read_cache.go), and no issue's owner lock is held across a read that long:
-	// four writers parked on one issue's lock already cost a read of an unrelated issue the
+	// four writers blocked on one issue's lock already cost a read of an unrelated issue the
 	// whole seventeen seconds the lock was held (store/pool.go). Nothing the lock protects is
 	// settled here — the check's words and its `when` are the document's, not the issue's — and
 	// what it does protect, the block's indexed version and digest, is read again under it

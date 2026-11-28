@@ -6377,7 +6377,7 @@ own.
   approval gate.
 - Anything you would otherwise write as an end-of-message question block and hope someone
   reads.
-- Before you park on a blocker. Never leave a session idle on an unasked question.
+- Before you stop on a blocker. Never leave a session idle on an unasked question.
 - Unattended or long-running work (Legion roles, background agents) that will need input
   later — dispatch the question as soon as you know you'll need it, don't wait to be asked.
 

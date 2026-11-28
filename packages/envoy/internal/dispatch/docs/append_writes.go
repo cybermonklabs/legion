@@ -244,7 +244,7 @@ func (p *appendPlan) send(ctx context.Context, tx pgx.Tx) error {
 // connection commits with (writeStatement.queue, appendRoomTx in room_appends.go).
 //
 // owes is whether the document owes a settlement from these updates. It is false for a room's
-// parked bytes alone (AppendParkedUpdate), which change nothing a settlement reads and credit
+// pending bytes alone (AppendPendingBytes), which change nothing a settlement reads and credit
 // nobody: they write no owed row and no pending authors, and the commit that later integrates
 // them marks the document owed itself. It is false too for the seed of a document CreateDocument
 // creates whose tree needs no settlement (SeedText, withUnowedAppend), which credits nobody and

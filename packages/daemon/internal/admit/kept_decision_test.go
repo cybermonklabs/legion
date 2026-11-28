@@ -26,20 +26,21 @@ import (
 // scrum is a session outside every tree; alice, the person, is awaiting_person_answers_test.go's.
 var scrum = dispatch.Actor{Kind: "session", ID: "scrum"}
 
-// parkedRoot records LEGION-ROOT as a root a person parked: out of the workflow, lingering.
-func parkedRoot(t *testing.T, pool *pgxpool.Pool) {
+// rootInBacklog records LEGION-ROOT as a root a person moved to backlog: out of the workflow,
+// lingering.
+func rootInBacklog(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	until := fixedNow.Add(72 * time.Hour)
 	putIssue(t, pool, record.Issue{Key: "LEGION-ROOT", Tree: "LEGION-ROOT", Project: testProject, Title: "root", Phase: phase.Done,
 		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, LingerUntil: &until, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 }
 
-// parkedDecisionNotices is every parked-decision controller notice in the outbox, oldest first.
-func parkedDecisionNotices(t *testing.T, pool *pgxpool.Pool) []effect {
+// keptDecisionNotices is every kept-decision controller notice in the outbox, oldest first.
+func keptDecisionNotices(t *testing.T, pool *pgxpool.Pool) []effect {
 	t.Helper()
 	var got []effect
 	for _, row := range controllerNotices(t, pool) {
-		if row.payload.(record.ControllerNotice).Kind == record.ParkedDecisionNotice {
+		if row.payload.(record.ControllerNotice).Kind == record.KeptDecisionNotice {
 			got = append(got, row)
 		}
 	}
@@ -68,23 +69,23 @@ func architectStartTasks(t *testing.T, pool *pgxpool.Pool) []string {
 	return tasks
 }
 
-// readmitRoot sets the parked LEGION-ROOT back to todo, as a person or the controller does.
+// readmitRoot sets LEGION-ROOT, in backlog, back to todo, as a person or the controller does.
 func readmitRoot(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
 	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: "LEGION-ROOT", ResolvedRepo: "acme/widgets", Seq: 5, Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "A", HandedOver: true}, admission.engine)
 }
 
-// A person's answer on an ask of a parked tree goes to the controller, once however often its
-// event is replayed; a session's reply sends nothing and is logged, on the agent's turn and under
-// a closed ask alike, a reply that leaves the turn with the human sends nothing, and an answer to
-// an approval ask (the gate relays that decision) sends nothing.
-func TestAPersonsAnswerOnAParkedTreeGoesToTheController(t *testing.T) {
+// A person's answer on an ask of a tree that does not run goes to the controller, once however
+// often its event is replayed; a session's reply sends nothing and is logged, on the agent's turn
+// and under a closed ask alike, a reply that leaves the turn with the human sends nothing, and an
+// answer to an approval ask (the gate relays that decision) sends nothing.
+func TestAPersonsAnswerOnATreeThatDoesNotRunGoesToTheController(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
 	var logged bytes.Buffer
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(&logged, nil)))
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	for _, step := range []struct {
 		id   string
 		fact intake.Fact
@@ -103,27 +104,27 @@ func TestAPersonsAnswerOnAParkedTreeGoesToTheController(t *testing.T) {
 		}
 	}
 	want := []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-ROOT", payload: record.ControllerNotice{
-		Kind: record.ParkedDecisionNotice, Decision: record.DecisionAskAnswered, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/ask/ask-1", Actor: "user:alice"}}}
-	if got := parkedDecisionNotices(t, pool); !reflect.DeepEqual(got, want) {
-		t.Fatalf("parked-decision notices = %#v, want %#v", got, want)
+		Kind: record.KeptDecisionNotice, Decision: record.DecisionAskAnswered, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/ask/ask-1", Actor: "user:alice"}}}
+	if got := keptDecisionNotices(t, pool); !reflect.DeepEqual(got, want) {
+		t.Fatalf("kept-decision notices = %#v, want %#v", got, want)
 	}
-	if n := strings.Count(logged.String(), `msg="workflow: a session's reply on a parked tree is not relayed"`); n != 2 || !strings.Contains(logged.String(), "actor=session:scrum") ||
+	if n := strings.Count(logged.String(), `msg="workflow: a session's reply on a tree that does not run is not relayed"`); n != 2 || !strings.Contains(logged.String(), "actor=session:scrum") ||
 		!strings.Contains(logged.String(), "ask=ask-1") || !strings.Contains(logged.String(), "ask=ask-3") {
 		t.Fatalf("log %q; want both session replies logged, naming session:scrum, ask-1 and ask-3", logged.String())
 	}
-	if n := strings.Count(logged.String(), `msg="workflow: a person's decision on a parked tree goes to the controller"`); n != 1 ||
+	if n := strings.Count(logged.String(), `msg="workflow: a person's decision on a tree that does not run goes to the controller"`); n != 1 ||
 		!strings.Contains(logged.String(), "decision=ask-answered ref=dispatch://LEGION-ROOT/ask/ask-1 actor=user:alice") {
 		t.Fatalf("log %q; want the relay logged once with its decision, ref and actor", logged.String())
 	}
 }
 
-// A person's resolution of a question on a parked tree is relayed as ask-resolved, and a person's
-// agent-turn reply, or reply under a closed ask, as ask-reply naming the comment.
+// A person's resolution of a question on a tree that does not run is relayed as ask-resolved, and
+// a person's agent-turn reply, or reply under a closed ask, as ask-reply naming the comment.
 func TestAPersonsResolutionAndReplyAreRelayed(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	for id, fact := range map[string]intake.Fact{
 		"dispatch-51": intake.DispatchAskClosed{Key: "LEGION-ROOT", Ask: "ask-1", Kind: "question", State: "resolved", Actor: alice},
 		"dispatch-52": intake.DispatchAskReply{Key: "LEGION-ROOT", Ask: "ask-2", WaitingOn: "agent", Actor: alice, Comment: "c-2"},
@@ -135,7 +136,7 @@ func TestAPersonsResolutionAndReplyAreRelayed(t *testing.T) {
 		}
 	}
 	got := map[string]record.DecisionKind{}
-	for _, row := range parkedDecisionNotices(t, pool) {
+	for _, row := range keptDecisionNotices(t, pool) {
 		notice := row.payload.(record.ControllerNotice)
 		got[notice.Ref] = notice.Decision
 	}
@@ -150,12 +151,12 @@ func TestAPersonsResolutionAndReplyAreRelayed(t *testing.T) {
 	}
 }
 
-// A person's reply on an ask of a parked child goes to the controller on the child's issue, naming
-// the tree's root.
-func TestAPersonsReplyOnAParkedChildNamesItsRoot(t *testing.T) {
+// A person's reply on an ask of a child of a tree that does not run goes to the controller on the
+// child's issue, naming the tree's root.
+func TestAPersonsReplyOnAChildOfATreeThatDoesNotRunNamesItsRoot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	root := "LEGION-ROOT"
 	putIssue(t, pool, record.Issue{Key: "LEGION-KID", Tree: root, Parent: &root, Project: testProject, Title: "kid", Phase: phase.Planning,
 		Generation: 1, Status: "in_progress", Rank: "B", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
@@ -164,14 +165,14 @@ func TestAPersonsReplyOnAParkedChildNamesItsRoot(t *testing.T) {
 		t.Fatalf("apply the reply: %v", err)
 	}
 	want := []effect{{kind: record.OutboxKindControllerNotice, issue: "LEGION-KID", payload: record.ControllerNotice{
-		Kind: record.ParkedDecisionNotice, Decision: record.DecisionAskReply, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-KID/comment/c-9", Actor: "user:alice"}}}
-	if got := parkedDecisionNotices(t, pool); !reflect.DeepEqual(got, want) {
-		t.Fatalf("parked-decision notices = %#v, want %#v", got, want)
+		Kind: record.KeptDecisionNotice, Decision: record.DecisionAskReply, Root: "LEGION-ROOT", Ref: "dispatch://LEGION-KID/comment/c-9", Actor: "user:alice"}}}
+	if got := keptDecisionNotices(t, pool); !reflect.DeepEqual(got, want) {
+		t.Fatalf("kept-decision notices = %#v, want %#v", got, want)
 	}
 }
 
 // On a running tree its architect hears every answer and reply, so nothing goes to the controller,
-// and a session's reply there is no parked tree's to log.
+// and a session's reply there is not logged as one on a tree that does not run.
 func TestAnAnswerOnARunningTreeSendsNothing(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
@@ -187,11 +188,11 @@ func TestAnAnswerOnARunningTreeSendsNothing(t *testing.T) {
 			t.Fatalf("apply %s: %v", id, err)
 		}
 	}
-	if got := parkedDecisionNotices(t, pool); len(got) != 0 {
-		t.Fatalf("parked-decision notices = %#v, want none on a running tree", got)
+	if got := keptDecisionNotices(t, pool); len(got) != 0 {
+		t.Fatalf("kept-decision notices = %#v, want none on a running tree", got)
 	}
-	if strings.Contains(logged.String(), "parked tree") {
-		t.Fatalf("log %q; want no parked-tree line on a running tree", logged.String())
+	if strings.Contains(logged.String(), "tree that does not run") {
+		t.Fatalf("log %q; want no line of a tree that does not run on a running tree", logged.String())
 	}
 }
 
@@ -203,7 +204,7 @@ func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testi
 	ctx := context.Background()
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "dispatch-41",
 		intake.DispatchAskClosed{Key: "LEGION-ROOT", Ask: "ask-1", Kind: "question", State: "answered", Actor: alice}, admission.engine, admission); err != nil {
 		t.Fatalf("apply the answer: %v", err)
@@ -220,7 +221,7 @@ func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testi
 		t.Fatalf("the start's kept record %#v, want the one decision it named, at %s", kept, fixedNow)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		if kept, err := record.NewStore().ParkedDecisions(ctx, tx, "LEGION-ROOT"); err != nil || len(kept) != 1 {
+		if kept, err := record.NewStore().KeptDecisionsOf(ctx, tx, "LEGION-ROOT"); err != nil || len(kept) != 1 {
 			t.Fatalf("kept after the start %#v, %v; want the decision still kept until the start is delivered", kept, err)
 		}
 	})
@@ -235,7 +236,7 @@ func TestADecisionWhileARootWaitsForItsSlotIsNamedAtItsStart(t *testing.T) {
 	var logged bytes.Buffer
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(&logged, nil)))
 	seedSlotted(t, pool, "LEGION-BUSY", "A")
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	readmitRoot(t, pool, admission)
 	if tasks := architectStartTasks(t, pool); len(tasks) != 0 {
 		t.Fatalf("architect starts' tasks %q, want none while the root waits for its slot", tasks)
@@ -248,14 +249,14 @@ func TestADecisionWhileARootWaitsForItsSlotIsNamedAtItsStart(t *testing.T) {
 			t.Fatalf("apply %s: %v", id, err)
 		}
 	}
-	if got := parkedDecisionNotices(t, pool); len(got) != 0 {
-		t.Fatalf("parked-decision notices = %#v, want none for a tree that already runs again", got)
+	if got := keptDecisionNotices(t, pool); len(got) != 0 {
+		t.Fatalf("kept-decision notices = %#v, want none for a tree that already runs again", got)
 	}
-	if strings.Contains(logged.String(), "parked tree") || strings.Count(logged.String(),
+	if strings.Contains(logged.String(), "tree that does not run") || strings.Count(logged.String(),
 		`msg="workflow: a person's decision on a tree waiting for its slot is kept for its architect's start"`) != 1 {
-		t.Fatalf("log %q; want the person's reply logged as kept once and no parked-tree line", logged.String())
+		t.Fatalf("log %q; want the person's reply logged as kept once and no line of a tree that does not run", logged.String())
 	}
-	apply(t, pool, admission, "busy-parked", intake.DispatchIssue{Key: "LEGION-BUSY", ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated",
+	apply(t, pool, admission, "busy-in-backlog", intake.DispatchIssue{Key: "LEGION-BUSY", ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated",
 		Status: "backlog", Title: "LEGION-BUSY", Rank: "A", HandedOver: true}, admission.engine)
 	tasks := architectStartTasks(t, pool)
 	if len(tasks) != 1 || tasks[0] != architectStart(t, pool, admission, "LEGION-ROOT",
@@ -265,11 +266,11 @@ func TestADecisionWhileARootWaitsForItsSlotIsNamedAtItsStart(t *testing.T) {
 	}
 }
 
-// Two roots stand at todo, handed over, with nobody in their tree parked: one waiting on a person,
-// whose answer resumes it with a task of its own (workflow's ResumeAwaitedRoot), and one that holds
-// its slot and runs. Neither waits for a slot (record.WaitsForSlot), so a person's reply and a
-// person's answer on either keep nothing and tell the controller nothing — the first fails if the
-// wait on a person stops being a term of the rule, the second if the slot it holds does.
+// Two roots stand at todo, handed over, in trees that run: one waiting on a person, whose answer
+// resumes it with a task of its own (workflow's ResumeAwaitedRoot), and one that holds its slot
+// and runs. Neither waits for a slot (record.WaitsForSlot), so a person's reply and a person's
+// answer on either keep nothing and tell the controller nothing — the first fails if the wait on
+// a person stops being a term of the rule, the second if the slot it holds does.
 func TestADecisionOnARootThatWaitsForNoSlotKeepsNothing(t *testing.T) {
 	root := record.Issue{Key: "LEGION-ROOT", Tree: "LEGION-ROOT", Project: testProject, Title: "root", Generation: 1,
 		Status: "todo", Rank: "A", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
@@ -308,11 +309,11 @@ func TestADecisionOnARootThatWaitsForNoSlotKeepsNothing(t *testing.T) {
 					t.Fatalf("apply %s: %v", step.id, err)
 				}
 			}
-			if got := parkedDecisionNotices(t, pool); len(got) != 0 {
-				t.Fatalf("parked-decision notices = %#v, want none: the tree hears the person itself", got)
+			if got := keptDecisionNotices(t, pool); len(got) != 0 {
+				t.Fatalf("kept-decision notices = %#v, want none: the tree hears the person itself", got)
 			}
 			inTx(t, pool, func(tx pgx.Tx) {
-				kept, err := record.NewStore().ParkedDecisions(ctx, tx, "LEGION-ROOT")
+				kept, err := record.NewStore().KeptDecisionsOf(ctx, tx, "LEGION-ROOT")
 				if err != nil || len(kept) != 0 {
 					t.Fatalf("kept %#v, %v; want nothing kept for a root that waits for no slot", kept, err)
 				}
@@ -358,12 +359,12 @@ func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) 
 			ctx := context.Background()
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, nil)
-			parkedRoot(t, pool)
+			rootInBacklog(t, pool)
 			if tc.ran {
 				putEarlierRootArchitect(t, pool)
 			}
 			inTx(t, pool, func(tx pgx.Tx) {
-				if err := record.NewStore().AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-ROOT",
+				if err := record.NewStore().KeepDecision(ctx, tx, record.KeptDecision{Issue: "LEGION-ROOT",
 					Ref: "dispatch://LEGION-ROOT/ask/ask-1", Decision: record.DecisionAskAnswered, Actor: "user:alice", At: fixedNow}); err != nil {
 					t.Fatalf("keep the decision: %v", err)
 				}
@@ -388,12 +389,12 @@ func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	refs := []string{"dispatch://LEGION-ROOT/ask/ask-1", "dispatch://LEGION-ROOT/comment/c-1"}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
 		for i, ref := range refs {
-			if err := records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-ROOT", Ref: ref,
+			if err := records.KeepDecision(ctx, tx, record.KeptDecision{Issue: "LEGION-ROOT", Ref: ref,
 				Decision: record.DecisionAskAnswered, Actor: "user:alice", At: fixedNow.Add(time.Duration(i) * time.Minute)}); err != nil {
 				t.Fatalf("keep the decision %s: %v", ref, err)
 			}
@@ -471,7 +472,7 @@ func TestEveryStartsArchitectTaskIsTheDerivationOverItsRecord(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, nil)
-			parkedRoot(t, pool)
+			rootInBacklog(t, pool)
 			if tc.ran {
 				putEarlierRootArchitect(t, pool)
 			}
@@ -516,14 +517,14 @@ func TestARootReadmittedOnAnOlderApprovalIsToldBothVersions(t *testing.T) {
 				Clock: func() time.Time { return fixedNow }, Steps: tc.gate.Steps()}, nil)
 			admission := New(record.NewStore(), engine, 1, testProject, nil)
 			admission.now = func() time.Time { return fixedNow }
-			parkedRoot(t, pool)
+			rootInBacklog(t, pool)
 			inTx(t, pool, func(tx pgx.Tx) {
 				records := record.NewStore()
 				if err := records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-ROOT", ArtifactID: "artifact-root", LatestVersion: 4, ApprovedVersion: new(tc.approved)}); err != nil {
 					t.Fatalf("put the gate: %v", err)
 				}
 				if tc.decision {
-					if err := records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/spec",
+					if err := records.KeepDecision(ctx, tx, record.KeptDecision{Issue: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/spec",
 						Decision: record.DecisionDesignApproved, Actor: "user:alice", At: fixedNow}); err != nil {
 						t.Fatalf("keep the relayed decision: %v", err)
 					}
@@ -588,7 +589,7 @@ func TestAReadmissionKeepsOrDropsTheApprovalAnEarlierKept(t *testing.T) {
 				Clock: func() time.Time { return fixedNow }, Steps: tc.policy.Steps()}, nil)
 			admission := New(record.NewStore(), engine, 1, testProject, nil)
 			admission.now = func() time.Time { return fixedNow }
-			parkedRoot(t, pool)
+			rootInBacklog(t, pool)
 			inTx(t, pool, func(tx pgx.Tx) {
 				records := record.NewStore()
 				if err := records.KeepReadmittedApproval(ctx, tx, "LEGION-ROOT", record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3}); err != nil {
@@ -615,9 +616,9 @@ func TestAReadmissionKeepsOrDropsTheApprovalAnEarlierKept(t *testing.T) {
 }
 
 // Under an armed gate, a root re-admitted on a stale approval, whose start then finishes without
-// delivering, and which is parked and re-admitted again with no gate registered between, still
-// starts its architect naming both versions: the second re-admission finds no gate and keeps the
-// pair the first kept, which the undelivered start released.
+// delivering, and which is moved to backlog and re-admitted again with no gate registered
+// between, still starts its architect naming both versions: the second re-admission finds no gate
+// and keeps the pair the first kept, which the undelivered start released.
 func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *testing.T) {
 	versions := keptVersions(3, 4)
 	ctx := context.Background()
@@ -626,7 +627,7 @@ func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *test
 		Clock: func() time.Time { return fixedNow }, Steps: config.DesignGateRootIssues.Steps()}, nil)
 	admission := New(record.NewStore(), engine, 1, testProject, nil)
 	admission.now = func() time.Time { return fixedNow }
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-ROOT", ArtifactID: "artifact-root", LatestVersion: 4, ApprovedVersion: new(3)}); err != nil {
 			t.Fatalf("put the gate: %v", err)
@@ -637,15 +638,15 @@ func TestARootReadmittedTwiceWithNoStartDeliveredIsStillToldBothVersions(t *test
 		starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", versions) {
 		t.Fatalf("first architect starts %#v, want one whose task names %q", starts, versions)
 	}
-	// The start finishes without delivering (its tree parked again first): its row goes, and with
-	// it its claim on the pair.
+	// The start finishes without delivering (its tree moved to backlog again first): its row goes,
+	// and with it its claim on the pair.
 	if _, err := pool.Exec(ctx, "delete from outbox"); err != nil {
 		t.Fatalf("finish the first start without delivering: %v", err)
 	}
 	if _, err := pool.Exec(ctx, "delete from slots"); err != nil {
 		t.Fatalf("free the slot: %v", err)
 	}
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	apply(t, pool, admission, "readmitted-again", intake.DispatchIssue{Key: "LEGION-ROOT", ResolvedRepo: "acme/widgets", Seq: 9, Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "A", HandedOver: true}, admission.engine)
 	if starts := architectStartRows(t, pool); len(starts) != 1 ||
@@ -699,7 +700,7 @@ func TestTheKeptApprovalOfAReadmittedRootIsThePersonsAndNotTheBasis(t *testing.T
 				Clock: func() time.Time { return fixedNow }, Steps: config.DesignGateRootIssues.Steps()}, nil)
 			admission := New(record.NewStore(), engine, 1, testProject, nil)
 			admission.now = func() time.Time { return fixedNow }
-			parkedRoot(t, pool)
+			rootInBacklog(t, pool)
 			seedGate(t, pool, tc.gate)
 
 			readmitRoot(t, pool, admission)
@@ -802,17 +803,18 @@ func TestASpecDecisionNoticeNamesWhoMadeItAndWhere(t *testing.T) {
 	}
 }
 
-// A person who approves the latest version of a parked labelled root's spec hands the root over
-// (sjawhar/legion#2619): the daemon queues its todo and writes no notice. The approval is still the
-// newest the gate knows of, so the re-admission that todo brings keeps no stale pair: the gate was
-// approved at version 2 and revised to 3 before the park, and the person has now approved 3. A
-// start that named the pair would tell the new architect to request approval of the version the
-// person just approved, and send the person an ask they have already answered.
+// A person who approves the latest version of a labelled root's spec while the root is in backlog
+// hands the root over (sjawhar/legion#2619): the daemon queues its todo and writes no notice. The
+// approval is still the newest the gate knows of, so the re-admission that todo brings keeps no
+// stale pair: the gate was approved at version 2 and revised to 3 before the move to backlog, and
+// the person has now approved 3. A start that named the pair would tell the new architect to
+// request approval of the version the person just approved, and send the person an ask they have
+// already answered.
 func TestARootAPersonsApprovalHandsOverIsToldNoStaleApproval(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-ROOT", ArtifactID: "artifact-root", LatestVersion: 3,
 			ApprovedVersion: new(2)}); err != nil {

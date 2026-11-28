@@ -338,8 +338,8 @@ func (h *HandshakeHold) TakeWriteLock(conn *natsgo.Conn) (release func(), err er
 // the write and lets the lock go, as it does in production.
 //
 // It returns once that write can no longer complete before the release, which is what a row that
-// then waits behind the lock needs (stalledForGood). A write parked on its socket is not enough: a
-// parked write resumes whenever more of the socket's bytes move to the proxy's end, and after the
+// then waits behind the lock needs (stalledForGood). A write blocked on its socket is not enough:
+// a blocked write resumes whenever more of the socket's bytes move to the proxy's end, and after the
 // proxy is frozen they can go on moving for a while, through a relay read already under way or as
 // the proxy's receive window grows. The publish then returns and lets the lock go, and a publish
 // waiting for the lock takes it, as the hand-back in
@@ -388,7 +388,7 @@ func (h *HandshakeHold) HoldStalledWrite(t *testing.T, conn *natsgo.Conn) (relea
 	return release
 }
 
-// stalledForGood reports whether publishUntil's goroutine, numbered id, is parked in a write that
+// stalledForGood reports whether publishUntil's goroutine, numbered id, is blocked in a write that
 // cannot complete until the proxy is restored. That needs three facts, read in this order:
 //   - the relay readers waiting at the freeze's gate (gatedReaders): such a reader reads no more of
 //     its client;
@@ -396,17 +396,17 @@ func (h *HandshakeHold) HoldStalledWrite(t *testing.T, conn *natsgo.Conn) (relea
 //     timer armed (clientSockets), and its connection's reader is among those at the gate: the
 //     proxy's end has closed its receive window, the socket has nothing in flight, and the kernel
 //     moves none of its bytes until the proxy reads, which the first fact rules out;
-//   - the goroutine was parked in the same write (writeParked, with no publish returned) from
+//   - the goroutine was blocked in the same write (writeBlocked, with no publish returned) from
 //     before the kernel's account was read until after it.
 //
 // Such a write waits for room in a send queue that nothing empties. It reads the state of the
-// goroutine, the proxy and the kernel, and no time. It answers an error when the write stayed parked
+// goroutine, the proxy and the kernel, and no time. It answers an error when the write stayed blocked
 // across the kernel's account and no socket to the proxy showed a send queue: the kernel reports no
 // queues there, which a row rules out first with RequireSocketQueues, or conn does not go through the
 // hold.
 func (h *HandshakeHold) stalledForGood(id uint64, returned *atomic.Int64) (bool, error) {
 	before := returned.Load()
-	if !writeParked(id) {
+	if !writeBlocked(id) {
 		return false, nil
 	}
 	gated := h.gatedReaders()
@@ -419,7 +419,7 @@ func (h *HandshakeHold) stalledForGood(id uint64, returned *atomic.Int64) (bool,
 	if err != nil {
 		return false, fmt.Errorf("read the sockets to the hold's proxy at %s: %w", server, err)
 	}
-	if !writeParked(id) || returned.Load() != before {
+	if !writeBlocked(id) || returned.Load() != before {
 		return false, nil
 	}
 	loaded := 0
@@ -433,7 +433,7 @@ func (h *HandshakeHold) stalledForGood(id uint64, returned *atomic.Int64) (bool,
 		}
 	}
 	if loaded == 0 {
-		return false, fmt.Errorf("a write of nats.go's stayed parked on its socket while /proc/net/tcp showed no bytes to send on any of the %d established socket(s) to the hold's proxy at %s: the connection does not go through the hold, or this kernel reports no socket queues there and the row did not call RequireSocketQueues first, so HoldStalledWrite cannot read that the write is stalled for good", len(sockets), server)
+		return false, fmt.Errorf("a write of nats.go's stayed blocked on its socket while /proc/net/tcp showed no bytes to send on any of the %d established socket(s) to the hold's proxy at %s: the connection does not go through the hold, or this kernel reports no socket queues there and the row did not call RequireSocketQueues first, so HoldStalledWrite cannot read that the write is stalled for good", len(sockets), server)
 	}
 	return true, nil
 }
@@ -441,7 +441,7 @@ func (h *HandshakeHold) stalledForGood(id uint64, returned *atomic.Int64) (bool,
 // publishUntil sends its own goroutine's id on id, then publishes 64 KiB at a time to conn, counting
 // each publish that returns in returned, until stop closes or a publish fails. Each publish of that
 // size flushes in place, under nats.go's connection lock (natsWriter.appendBufs, nats.go
-// v1.55.0:2364), so once the socket stops taking bytes the publish parks in the socket's write
+// v1.55.0:2364), so once the socket stops taking bytes the publish blocks in the socket's write
 // holding the lock.
 func publishUntil(conn *natsgo.Conn, stop <-chan struct{}, id chan<- uint64, returned *atomic.Int64) {
 	id <- goroutineID()
@@ -469,13 +469,13 @@ func goroutineID() uint64 {
 	return id
 }
 
-// writeParked reports whether the goroutine numbered id, publishUntil's, is parked waiting for its
+// writeBlocked reports whether the goroutine numbered id, publishUntil's, is blocked waiting for its
 // socket to take a write: in the stacks the runtime reports for every goroutine, its own says "IO
 // wait" and runs through internal/poll's FD.Write. That goroutine does nothing but publish, so a
-// write it is parked in is a publish's. Its nats.go frames are not matched: the runtime names that
+// write it is blocked in is a publish's. Its nats.go frames are not matched: the runtime names that
 // package github.com/nats-io/nats%2ego, writing the dot of its last path element escaped. It reads
 // the goroutine's state, not how long it has been in it.
-func writeParked(id uint64) bool {
+func writeBlocked(id uint64) bool {
 	buf := make([]byte, 1<<20)
 	for {
 		n := runtime.Stack(buf, true)

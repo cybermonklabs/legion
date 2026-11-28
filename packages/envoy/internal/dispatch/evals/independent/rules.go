@@ -64,9 +64,11 @@ const (
 	fieldClaimPrefix = "claim."
 )
 
-// parkedStatuses are the statuses an issue sits parked in: "A park runs from its `backlog` or
-// `icebox` status write until the next status write, or to the end of the issue's time."
-var parkedStatuses = []string{"backlog", "icebox"}
+// backlogStatuses are backlog and icebox, the statuses whose time the work time leaves out: that
+// time runs from the `backlog` or `icebox` status write until the next status write, or to the
+// end of the issue's time (the spec's rule on role events inside that time,
+// dispatch://INFRA-1077/spec#b-fc46c17f-e8b5-41b2-8941-4c6169fc86ea).
+var backlogStatuses = []string{"backlog", "icebox"}
 
 // noRole is the seventh bar of phase time, the one no role works.
 const noRole = "no_role"
@@ -183,10 +185,10 @@ type values struct {
 	sentBack         bool
 	afterFirstReview float64
 	children         int
-	// parked is the hours of the issue's work time it sat in each parked status ("minus any time
-	// in `backlog` or `icebox`"), by status: what the work time left out, which no measure states
-	// and the reading reports beside them.
-	parked map[string]float64
+	// inBacklog is the hours of the issue's work time it sat in each of `backlog` and `icebox`
+	// ("minus any time in `backlog` or `icebox`"), by status: what the work time left out, which no
+	// measure states and the reading reports beside them.
+	inBacklog map[string]float64
 }
 
 // reading is one run over one population: the trees it placed the issues in, and the timelines,
@@ -235,13 +237,13 @@ func (r *reading) valuesOf(key string) values {
 		idle:      r.idleByRole(key, worked),
 		slotWait:  rounded(r.slotWait(key)),
 		children:  len(r.children[key]),
-		parked:    map[string]float64{},
+		inBacklog: map[string]float64{},
 	}
 	if at, works := r.firstWork(key); works {
 		life := []span{{from: at, to: r.population.end(key)}}
-		for _, status := range parkedStatuses {
+		for _, status := range backlogStatuses {
 			sat := markStretches(r.population.issues[key].statusMarks, r.population.end(key), func(value string) bool { return value == status })
-			result.parked[status] = hoursOf(intersect(life, sat))
+			result.inBacklog[status] = hoursOf(intersect(life, sat))
 		}
 	}
 	result.reviewRounds, result.sentBack, result.afterFirstReview = r.rework(key, worked)
@@ -264,29 +266,32 @@ func (r *reading) workedOf(key string) []span {
 		end := r.population.end(key)
 		life := []span{{from: at, to: end}}
 		queued := phaseStretches(r.timelineOf(key).spans, phaseQueued)
-		worked = subtract(subtract(subtract(life, r.parked(key)), queued), r.outOfWorkflow(key))
+		worked = subtract(subtract(subtract(life, r.inBacklog(key)), queued), r.outOfWorkflow(key))
 	}
 	r.worked[key] = worked
 	return worked
 }
 
-// parked is when the issue sat parked: each `backlog` or `icebox` status write until the next
-// status write, "an event by any role inside that stretch does not end the park".
-func (r *reading) parked(key string) []span {
+// inBacklog is when the issue sat in backlog or icebox: each `backlog` or `icebox` status write
+// until the next status write, which an event by any role inside that stretch does not end (the
+// spec's rule on role events inside that time,
+// dispatch://INFRA-1077/spec#b-fc46c17f-e8b5-41b2-8941-4c6169fc86ea).
+func (r *reading) inBacklog(key string) []span {
 	return markStretches(r.population.issues[key].statusMarks, r.population.end(key), func(value string) bool {
-		return slices.Contains(parkedStatuses, value)
+		return slices.Contains(backlogStatuses, value)
 	})
 }
 
 // outOfWorkflow is when the issue was out of the workflow before its close, which the work time
-// leaves out as it leaves out a park, so no bar holds it (dispatch://INFRA-1077's spec version 50,
-// "Out of the workflow before the close", 9f994275a7): "With observations, that is every stretch
-// whose observed phase is `done` before the close ... Before observations, it is the stretch from
-// an `issue.closed` that a reopen follows, or from a `triage` status write, to the next status
-// write." The observed part of the timeline gives the first, and the statuses its event log's
-// part covers give the second. The close is the issue's last move to `done`, so the `done` its
-// status history ends with, and any snapshot of it after, is the close and no stretch. It is no
-// park: the parked hours are `backlog` and `icebox` alone (parked).
+// leaves out as it leaves out time in backlog or icebox, so no bar holds it
+// (dispatch://INFRA-1077's spec version 50, "Out of the workflow before the close", 9f994275a7):
+// "With observations, that is every stretch whose observed phase is `done` before the close ...
+// Before observations, it is the stretch from an `issue.closed` that a reopen follows, or from a
+// `triage` status write, to the next status write." The observed part of the timeline gives the
+// first, and the statuses its event log's part covers give the second. The close is the issue's
+// last move to `done`, so the `done` its status history ends with, and any snapshot of it after,
+// is the close and no stretch. It is not time in backlog or icebox: that time is the hours of
+// `backlog` and `icebox` alone (inBacklog).
 func (r *reading) outOfWorkflow(key string) []span {
 	end := r.population.end(key)
 	drawn := r.timelineOf(key)
@@ -409,10 +414,12 @@ func claimWorking(value string) bool {
 }
 
 // childrenStretches is when the issue was waiting on its children: "the issue is a root with a
-// child in a phase from planning to awaiting merge", a child counting "only during its own work
-// time, as work time to merge defines it: not while it is parked, back in the queue, or before its
-// first worker event". The child's work time leaves out its hours out of the workflow as well, so a
-// root waits on a child through none of them (9f994275a7).
+// child in a phase from planning to awaiting merge", a child counting only during its own work
+// time as work time to merge defines it, so never while it is in backlog or icebox, back in the
+// queue, or before its first worker event (the spec's rule of when a child makes its root wait on
+// children, dispatch://INFRA-1077/spec#b-b9aae78c-0d9c-4a57-aa0c-9015502f0a51). The child's work
+// time leaves out its hours out of the workflow as well, so a root waits on a child through none
+// of them (9f994275a7).
 func (r *reading) childrenStretches(key string) []span {
 	if r.rootOf(key) != key {
 		return nil
@@ -838,8 +845,8 @@ func phaseSteps(marks []logMark) []logMark {
 // "`testing` is testing, `needs_review` is reviewing until that round's `review` handoff and then
 // accepting, ... and an `in_progress` after `testing`, `needs_review` or `retro` (a send-back) is
 // implementing. Every other `in_progress`, such as admission's, and every `todo` mark no phase."
-// `retro` marks retro, on the implementer's bar (bars). A park is no phase either: the work time
-// leaves it out.
+// `retro` marks retro, on the implementer's bar (bars). Time in backlog or icebox is no phase
+// either: the work time leaves it out.
 func statusPhase(previous, status string) (string, bool) {
 	switch status {
 	case "testing":

@@ -786,7 +786,7 @@ releases, one per `legion-envoy-v*` tag.
 
 ### Fixed
 
-- Dispatch's offline stored-order checker reuses the prefix before each parked row instead of replaying the old history for every comparison. It copies prefixes through encoded snapshots, keeps three document copies, and replays each row's unresolved span separately. Pending-state comparison still uses encoded bytes: the document server exposes no decoded pending structs, and content identifiers alone cannot distinguish different payloads at the same clocks.
+- Dispatch's offline stored-order checker reuses the prefix before each pending row instead of replaying the old history for every comparison. It copies prefixes through encoded snapshots, keeps three document copies, and replays each row's unresolved span separately. Pending-state comparison still uses encoded bytes: the document server exposes no decoded pending structs, and content identifiers alone cannot distinguish different payloads at the same clocks.
 - Two-process document tests wait until the newly connected editor's metadata marker is stored before another process writes. Rendering the document is no longer used as evidence that the editor's append is complete.
 
 ## [29.5.1] - 2026-11-04
@@ -817,11 +817,11 @@ releases, one per `legion-envoy-v*` tag.
   read or a browser's join is inside it, so closing an issue, evicting a room or shutting down
   waits for them and then closes it; and a browser's edit that reaches the server ahead of the
   edit it builds on is stored at once, even when the update then fails, so a restart before
-  that earlier edit arrives no longer loses it. The stored-order check judges each parked row
-  independently: a later update that carries its newly parked content again is accepted, a
-  resolved row whose parked content is not carried again is a mismatch even while unrelated
+  that earlier edit arrives no longer loses it. The stored-order check judges each pending row
+  independently: a later update that carries its newly pending content again is accepted, a
+  resolved row whose pending content is not carried again is a mismatch even while unrelated
   edits still wait, and an unresolved row counts as awaiting. Replay keeps the part that
-  integrated immediately and compares actual parked content.
+  integrated immediately and compares actual pending content.
   Every write fork reads its client ID after decoding its history, so inserted text still gets
   the lost-write check when that decode changes the ID.
 
@@ -5796,7 +5796,7 @@ releases, one per `legion-envoy-v*` tag.
   connection returned meanwhile, Dispatch exits without the connections waiting on it (`dispatch:
   exit with database connections still in use once the database stopped answering`). The compose
   file sets `stop_grace_period: 30s`.
-- A document's stored update log kept every byte any write had inserted, and every cold load of it built all of it: Dispatch merged the stored updates whole, and a merge keeps the content of deleted items. Five hundred 2,000-character replies to one anchored comment, each projecting the thread's margin record again, left 257 MB stored under a 3 KB document, and a cold one-word edit of it then took 1,842 MiB, past the 1,024 MiB task. A load now applies the stored updates one at a time to a document that collects garbage and returns what it holds, so it costs the live document and one update; and compaction, which runs as a room closes, as the server shuts down and daily, folds the whole log into that state rather than keeping the newest 500 updates beside a merge of the rest. An update a load's document parks for a dependency the log lacks is merged back into that state. A log the fold cannot apply, or a state that does not read back as the document that made it, is not used: the load merges the stored updates whole as before, and compaction leaves them as stored. After compaction, `doc_updates` and any backup of it hold no text a write deleted, so text deleted before a version captured it is gone (Sami's decision, LEGION-496). `doc_updates` is snapshotted once, and the snapshot kept 90 days, right before the first deploy that carries this.
+- A document's stored update log kept every byte any write had inserted, and every cold load of it built all of it: Dispatch merged the stored updates whole, and a merge keeps the content of deleted items. Five hundred 2,000-character replies to one anchored comment, each projecting the thread's margin record again, left 257 MB stored under a 3 KB document, and a cold one-word edit of it then took 1,842 MiB, past the 1,024 MiB task. A load now applies the stored updates one at a time to a document that collects garbage and returns what it holds, so it costs the live document and one update; and compaction, which runs as a room closes, as the server shuts down and daily, folds the whole log into that state rather than keeping the newest 500 updates beside a merge of the rest. An update a load's document holds pending for a dependency the log lacks is merged back into that state. A log the fold cannot apply, or a state that does not read back as the document that made it, is not used: the load merges the stored updates whole as before, and compaction leaves them as stored. After compaction, `doc_updates` and any backup of it hold no text a write deleted, so text deleted before a version captured it is gone (Sami's decision, LEGION-496). `doc_updates` is snapshotted once, and the snapshot kept 90 days, right before the first deploy that carries this.
 - A document edit that repairs an ask a browser left unreadable now reports it in
   `decision_blocks_added`, matching the open ask its next settlement creates. An edit keeps that
   count as count-only advice when the bounded issue-advice query fails (LEGION-470).
@@ -5829,7 +5829,7 @@ releases, one per `legion-envoy-v*` tag.
   update, and its document still decodes under `MaxPendingItems`. A complete state resolves its
   own dependencies through a worklist rather than a re-scan per step, so a chain-shaped state near
   the pending cap no longer takes time quadratic in its size (#260). A merged update's skip has
-  parked the items after it upstream since v1.51.0 (#257). Upstream v1.51.1's depth check on the
+  left the items after it pending upstream since v1.51.0 (#257). Upstream v1.51.1's depth check on the
   values `YText` stores is the entry below's.
 - A mark attribute value nesting exactly 100 arrays and objects, which the schema admitted, is now outside it: ygo stores a mark as one value, the map of its attributes, so that mark reached 101 levels, and from ygo v1.51.1 (reearth/ygo#288) `YText.Insert`, `Format` and `ApplyDelta` panic on a value nested past 100. `pmdoc.Update` writes marks through all three and `MarkRange` through `Format`, so on that ygo an edit rewriting text that carried such a mark answered `500` from a recovered panic. The bound is stated once in terms of ygo's limit (`ygoValueNesting`): 100 for a node's attribute value, which ygo stores as it is, and 99 for a mark's; `MarkRange` checks the mark it is given before it writes. A stored document holding such a mark, which only a crafted client can write, is a tree outside the schema like any other: its reads and edits answer `409 DOC_SCHEMA` naming the repair, settlement writes no version of it and never writes it back, and an upload of replacement markdown repairs it (LEGION-535).
 - Dispatch pinned `github.com/reearth/ygo` to the `sjawhar/ygo` fork at `v1.50.1-sami.2` (commit
@@ -5839,7 +5839,7 @@ releases, one per `legion-envoy-v*` tag.
   toward different right-hand neighbours, so a browser joining a room, settlement's copy of a room
   and a compacted state could read the text in a different order from the room (reearth/ygo#266).
   An update that fills a gap in one client's updates is no longer discarded: ygo integrated a
-  merged update's items past the gap, and now parks them until the gap arrives (#257). A complete
+  merged update's items past the gap, and now keeps them pending until the gap arrives (#257). A complete
   document state no longer fails once 100,000 of its items wait on items later in the same state,
   as when a browser whose client id is lower than the server's writes more than 100,000 blocks
   into a paragraph the server wrote: ygo resolves a state's own dependencies before it applies its
@@ -5865,7 +5865,7 @@ releases, one per `legion-envoy-v*` tag.
   once reads went through a copy. Once its room was evicted or the server restarted, the
   lower-numbered client's document could not be read or opened at all. Every decode of a
   document's state, each copy of its room and its stored history alike, used ygo's default queue
-  of 100,000 items parked behind one whose parent it cannot place yet, which such a state
+  of 100,000 items pending behind one whose parent it cannot place yet, which such a state
   overruns; each, and the room's own load, now decodes with a queue as long as one update can
   carry. The store's check of each update it appends decoded the update alone at the same
   default, so a browser update of more than 100,000 items written against blocks the document

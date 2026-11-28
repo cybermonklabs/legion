@@ -165,7 +165,7 @@ func onlyMismatch(t *testing.T, report StoredOrderReport, kind StoredOrderMismat
 // The checker reports each way a stored history fails to replay - a class its prefix does not
 // measure, a version at an update whose fold renders other text, an unrenderable prefix measured as
 // no change, an update stored ahead of one it depends on that no later row carries again - and
-// refuses a history a prune rewrote; a history that replays passes, a parked edit a later row
+// refuses a history a prune rewrote; a history that replays passes, a pending edit a later row
 // carries again passes, one whose predecessor is not stored is counted as awaiting, a compacted
 // base is folded as a state and not checked, rows created before the since time are folded
 // unchecked, and a version inside the window recording an update a compaction folded into the base
@@ -245,18 +245,18 @@ func TestStoredOrderChecker(t *testing.T) {
 		dependent := history.store(history.edit(replaceRun("edited", "edited again")), false)
 		history.store(dependency, true)
 		mismatch := onlyMismatch(t, history.check(time.Time{}), StoredOrderPending)
-		if mismatch.Update != dependent || mismatch.ParkedItems == 0 {
-			t.Fatalf("mismatch = %+v, want update %d leaving parked items", mismatch, dependent)
+		if mismatch.Update != dependent || mismatch.PendingItems == 0 {
+			t.Fatalf("mismatch = %+v, want update %d leaving pending items", mismatch, dependent)
 		}
 	})
 
-	t.Run("a parked edit a later update carries again", func(t *testing.T) {
+	t.Run("a pending edit a later update carries again", func(t *testing.T) {
 		history := newCraftedHistory(t, seed)
 		before := history.doc.StateVector()
 		history.edit(replaceRun("Second.", "Second, edited."))
 		history.store(history.edit(replaceRun("edited", "edited again")), false)
-		// The commit that integrates a stored parked edit, once its predecessor arrives, carries
-		// the predecessor and the parked structs together.
+		// The commit that integrates a stored pending edit, once its predecessor arrives, carries
+		// the predecessor and the pending structs together.
 		history.version(history.markdown(), history.store(crdt.EncodeStateAsUpdateV1(history.doc, before), true))
 		report := history.check(time.Time{})
 		if !report.Clean() || report.UpdatesAwaitingPredecessor != 0 {

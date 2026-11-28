@@ -57,7 +57,7 @@ const body: Priorities = {
     priority("rocq-lean", "Rocq and Lean speed work restarted"),
     priority("oss-verify", "OSS Verify: curl, TLS and Rustls"),
   ],
-  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+  priority_work_in_backlog_or_icebox: { by_priority: {}, count: 0, issues: [] },
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
 

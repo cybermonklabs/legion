@@ -79,7 +79,7 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 //
 // The root here is the red test's, with a person's decision on it while it waited for its slot:
 // the generation-1 start names that decision, its task is sent and never confirmed, the root is
-// parked and its architect suspended, and the hand-back re-admits it at generation 2.
+// moved to backlog and its architect suspended, and the hand-back re-admits it at generation 2.
 func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.T) {
 	t.Parallel()
 	r := newMainPathRig(t, true)
@@ -90,13 +90,13 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	r.bringUp()
 	held := r.machine().Claim().Pending
 	if held == nil || held.Generation != 1 || !strings.Contains(held.Task, ref) || !held.Prompted || !held.ConfirmedAt.IsZero() {
-		t.Fatalf("the architect's task before the park = %#v, want its generation-1 task naming %s, sent and unconfirmed", held, ref)
+		t.Fatalf("the architect's task before the move to backlog = %#v, want its generation-1 task naming %s, sent and unconfirmed", held, ref)
 	}
 	if kept := keptDecisions(t, r.pool, r.records, r.key); len(kept) != 1 || kept[0].HeldBy.Delivery != held.ID {
 		t.Fatalf("%s keeps %#v, want %s held by %s", r.key, kept, ref, held.ID)
 	}
 
-	r.park()
+	r.toBacklog()
 	r.runSuspend()
 	r.handBack()
 	r.runStarts()

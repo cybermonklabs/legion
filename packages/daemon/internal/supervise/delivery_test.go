@@ -2157,7 +2157,7 @@ func TestAConfirmationDoesNotSurviveHalfWritten(t *testing.T) {
 
 // A root architect's task of a run is held, never dropped, while its root has nobody to hear it
 // (Deps.RootHears): such a task names no phase, so nothing else would keep it from being prompted
-// to an architect whose tree is parked, lingering or waiting for its slot, and the decisions it
+// to an architect whose tree is in backlog or icebox, lingering or waiting for its slot, and the decisions it
 // names are told when the turn that takes it starts. It stays pending, uncharged, and the next deliver
 // request — the start of the root's next run, which the pending task refuses — is what sends it.
 // A task of no run is nobody's to hold: an operator's own is prompted whatever the root is doing.
@@ -2199,7 +2199,7 @@ func TestARootArchitectsTaskIsHeldUntilItsRootHasAnArchitectToHearIt(t *testing.
 	}
 	sent := h.wantPrompts(1)[0]
 	if sent.Message != "a person decided on the tree" {
-		t.Fatalf("prompt = %q, want the task held through the park", sent.Message)
+		t.Fatalf("prompt = %q, want the task held while the root had nobody to hear it", sent.Message)
 	}
 }
 

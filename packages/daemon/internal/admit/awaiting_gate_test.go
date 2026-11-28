@@ -624,7 +624,7 @@ func TestAResumeWithTheGateOpenAdvancesTheAdmittedChildren(t *testing.T) {
 }
 
 // The architect asks Q1 and Q2 in one turn, the person answers Q1, and the root resumes with Q2
-// still with the person. Neither the architect's own claim event nor a parked child sends the
+// still with the person. Neither the architect's own claim event nor a child moved to backlog sends the
 // resumed root back to awaiting_person: the resume is a handout, and only a hand-back after it
 // starts the next wait.
 func TestAResumedRootIsNotSentBackByAClaimEventOrAMemberLeave(t *testing.T) {
@@ -635,7 +635,7 @@ func TestAResumedRootIsNotSentBackByAClaimEventOrAMemberLeave(t *testing.T) {
 		{name: "the architect's own claim event", after: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 			applyFact(t, pool, admission, "claim-again", intake.DispatchClaim{Key: "LEGION-100", Seq: 40, ClaimedBy: "session:" + architect.ID})
 		}},
-		{name: "a parked child", after: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
+		{name: "a child moved to backlog", after: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 			backlogChild(t, pool, admission)
 		}},
 	} {

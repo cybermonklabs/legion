@@ -21,8 +21,8 @@ import (
 //     cannot bound these; an agent that dies in its turn each time it is woken would otherwise be
 //     relaunched for ever. The count ends with the work it was charged against: the task's retire
 //     (retirePending) or a turn that ends normally (turnEnded), either of which says the agent got
-//     through what it was doing. A death with no turn open and nothing pending is not counted: a
-//     parked agent — idle, holding no task — that the environment kills now and then is relaunched
+//     through what it was doing. A death with no turn open and nothing pending is not counted: an
+//     idle agent, holding no task, that the environment kills now and then is relaunched
 //     however often it happens. Bounded by the launch failure limit.
 //   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
 //     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
@@ -259,12 +259,12 @@ func (m *Machine) launchBudgetSpent() bool {
 // task, and also when a turn of the agent's was open at the death — the claim's last turn started
 // and has not ended — since a turn an Envoy message began does the issue's work with no task
 // behind it, and a root architect killed six times inside its turns was relaunched for ever
-// because each death found nothing pending. A death with no turn open and nothing pending is a
-// parked agent the environment killed, which is not counted however often it happens.
+// because each death found nothing pending. A death with no turn open and nothing pending is an
+// idle agent the environment killed, which is not counted however often it happens.
 //
 // The daemon's own delivery of a relaunch's record is no task (HoldsTask): it is the sentence of
-// what the last let-go ended, which a parked agent is given at every ready that finds it holding
-// nothing, so a parked agent killed again before it read it holds that and nothing else, and its
+// what the last let-go ended, which an idle agent is given at every ready that finds it holding
+// nothing, so an idle agent killed again before it read it holds that and nothing else, and its
 // death is not counted either.
 //
 // The death ends the turn it interrupted (Claim.LastTurnEnd), as the controller keeper's end of a

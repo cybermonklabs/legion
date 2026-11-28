@@ -42,7 +42,7 @@ func TestOnThreadCountsItsOwnGoroutineAlone(t *testing.T) {
 const burnSteps = 50
 
 // minBurn is the shortest burn, where both clocks step far under a millisecond: long enough that
-// the waiting goroutine's own cost, tens of microseconds to start another goroutine and park on
+// the waiting goroutine's own cost, tens of microseconds to start another goroutine and block on
 // its channel, is far inside a tenth of it.
 const minBurn = 80 * time.Millisecond
 

@@ -12,7 +12,7 @@ body: |-
   its final drain only while no feeder runs; with a feeder running, it queues its update and
   returns. Two refusals on a closed issue now close the room for its issue, so its
   browsers reconnect read-only: a browser update the append gate cuts from the batch its own call
-  stores, which was neither stored nor refused, and a commit's parked bytes, which failed the room
+  stores, which was neither stored nor refused, and a commit's pending bytes, which failed the room
   and so lost an edit the room took while the issue was open.
 time: 2026-11-28T00:47:25Z
 custom:

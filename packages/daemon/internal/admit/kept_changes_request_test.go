@@ -17,8 +17,8 @@ import (
 // the moment a task about it is sent, and a changes request a later approval followed is not.
 // Here a person requested changes to the spec of a root in the backlog while nobody in its tree
 // could hear it,
-// so the daemon kept that decision for the root's next architect (the outbox's parkDecision, or
-// the relay: record.Store.AddParkedDecision). The same person then approved the latest version,
+// so the daemon kept that decision for the root's next architect (the outbox's relaySpecDecision, or
+// the relay: record.Store.KeepDecision). The same person then approved the latest version,
 // which is their hand-over (sjawhar/legion#2619): the daemon queues the root's todo, keeps
 // nothing, and so replaces nothing on the spec's reference. The re-admission's start must not
 // tell the new architect that the person requested changes: the person's word is the approval
@@ -28,13 +28,13 @@ func TestAChangesRequestKeptOnARootInTheBacklogIsNotNamedOnceThePersonsApprovalH
 	ctx := context.Background()
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
 		if err := records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-ROOT", ArtifactID: "artifact-root", LatestVersion: 3}); err != nil {
 			t.Fatalf("put the gate: %v", err)
 		}
-		if err := records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/spec",
+		if err := records.KeepDecision(ctx, tx, record.KeptDecision{Issue: "LEGION-ROOT", Ref: "dispatch://LEGION-ROOT/spec",
 			Decision: record.DecisionDesignChangesRequested, Actor: "user:alice", At: fixedNow.Add(-time.Hour)}); err != nil {
 			t.Fatalf("keep the person's changes request: %v", err)
 		}

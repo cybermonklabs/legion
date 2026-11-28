@@ -8,10 +8,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// TestNoQueueOrParkedHourEntersTheWorkTime: the work time runs from the issue's first worker
+// TestNoQueueOrBacklogHourEntersTheWorkTime: the work time runs from the issue's first worker
 // event to its close, less the hours it sat in backlog or icebox and the hours its observed
 // phase was `admitted` with no slot held.
-func TestNoQueueOrParkedHourEntersTheWorkTime(t *testing.T) {
+func TestNoQueueOrBacklogHourEntersTheWorkTime(t *testing.T) {
 	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(10)).
 		statusAt(hour(0), "in_progress").
 		statusAt(hour(2), "backlog").
@@ -26,9 +26,9 @@ func TestNoQueueOrParkedHourEntersTheWorkTime(t *testing.T) {
 		t.Fatalf("the window finished %d issues and timed %d, want one of each", len(w.finished), len(w.timed()))
 	}
 	row := w.fact(t, "INFRA-1")
-	if row.WorkHours != 7 || row.ParkedHours != 2 || row.QueuedHours != 1 {
-		t.Fatalf("work time = %g hours (parked %g, queued %g), want 7 of 10 hours with 2 parked and 1 back in the queue",
-			row.WorkHours, row.ParkedHours, row.QueuedHours)
+	if row.WorkHours != 7 || row.BacklogOrIceboxHours != 2 || row.QueuedHours != 1 {
+		t.Fatalf("work time = %g hours (in backlog or icebox %g, queued %g), want 7 of 10 hours with 2 in backlog and 1 back in the queue",
+			row.WorkHours, row.BacklogOrIceboxHours, row.QueuedHours)
 	}
 	if median := valueOf(w.workTime().Median); median != 7 {
 		t.Errorf("the median work time = %g, want 7", median)
@@ -43,11 +43,13 @@ func TestNoQueueOrParkedHourEntersTheWorkTime(t *testing.T) {
 	}
 }
 
-// TestTimeInIceboxIsParkedAndOutOfTheWorkTime: the work time leaves out "any time in `backlog` or
-// `icebox`", and "A park runs from its `backlog` or `icebox` status write until the next status
-// write" (the spec's metric 1 and "A park and role events"). The issue below sat in icebox for
-// three of the eight hours from its first worker event to its close.
-func TestTimeInIceboxIsParkedAndOutOfTheWorkTime(t *testing.T) {
+// TestTimeInIceboxIsOutOfTheWorkTime: the work time leaves out "any time in `backlog` or
+// `icebox`", and that time runs from the `backlog` or `icebox` status write to the next status
+// write (the spec's metric 1, dispatch://INFRA-1077/spec#b-d585afad-8e90-463d-937a-70ef6444267d,
+// and its rule on role events inside that time,
+// dispatch://INFRA-1077/spec#b-fc46c17f-e8b5-41b2-8941-4c6169fc86ea). The issue below sat in
+// icebox for three of the eight hours from its first worker event to its close.
+func TestTimeInIceboxIsOutOfTheWorkTime(t *testing.T) {
 	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(8)).
 		statusAt(hour(0), "in_progress").
 		statusAt(hour(2), "icebox").
@@ -56,23 +58,24 @@ func TestTimeInIceboxIsParkedAndOutOfTheWorkTime(t *testing.T) {
 	if timed := w.timed(); len(timed) != 1 {
 		t.Fatalf("work-time rows = %d, want the one issue", len(timed))
 	}
-	if row := w.fact(t, "INFRA-1"); row.WorkHours != 5 || row.ParkedHours != 3 {
-		t.Fatalf("work time = %g hours with %g parked, want 5 with the 3 in icebox parked", row.WorkHours, row.ParkedHours)
+	if row := w.fact(t, "INFRA-1"); row.WorkHours != 5 || row.BacklogOrIceboxHours != 3 {
+		t.Fatalf("work time = %g hours with %g in backlog or icebox, want 5 with the 3 in icebox", row.WorkHours, row.BacklogOrIceboxHours)
 	}
 }
 
-// TestTheSevenBarsOfAnIssueAddUpToItsWorkTime: "An hour that work time to merge leaves out is on
-// no bar of phase time: an hour in `backlog` or `icebox`, an hour back in the queue, and any hour
-// before the issue's first worker event. So the bars of an issue add up to its work time, and the
-// two cards agree" (the spec's "Rule details — Parked and pre-work hours in phase time"). Both
-// timelines are read: the fallback, whose first phase is the tester's own event because the
-// `in_progress` of admission starts none, and whose handoff leaves an hour on no phase at all,
-// and the observed one, which goes back to the queue mid-life.
+// TestTheSevenBarsOfAnIssueAddUpToItsWorkTime: an hour that work time to merge leaves out is on
+// no bar of phase time (an hour in `backlog` or `icebox`, an hour back in the queue, and any hour
+// before the issue's first worker event), so the bars of an issue add up to its work time and the
+// two cards agree (the spec's rule on hours out of the work time in phase time,
+// dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645). Both timelines are read:
+// the fallback, whose first phase is the tester's own event because the `in_progress` of
+// admission starts none, and whose handoff leaves an hour on no phase at all, and the observed
+// one, which goes back to the queue mid-life.
 func TestTheSevenBarsOfAnIssueAddUpToItsWorkTime(t *testing.T) {
 	// The fallback: an `in_progress` at hour -3 that starts no phase, the tester's own event at
 	// hour 2 — the first worker event, where the work time and the first phase both start —
 	// testing ended by its handoff at hour 3, the reviewer's own event an hour later, and two
-	// parked hours from hour 5.
+	// hours in backlog from hour 5.
 	fallback := newIssue("INFRA-1").
 		statusAt(hour(-3), "in_progress").
 		worked("tester", hour(2)).
@@ -82,7 +85,7 @@ func TestTheSevenBarsOfAnIssueAddUpToItsWorkTime(t *testing.T) {
 		statusAt(hour(7), "needs_review").
 		closedAt(hour(9))
 	// The observed: a design hour before the first worker event, implementing from it, two hours
-	// back in the queue from hour 4 with the slot given up, and one parked hour from hour 7.
+	// back in the queue from hour 4 with the slot given up, and one hour in backlog from hour 7.
 	observed := newIssue("INFRA-2").worked("implementer", hour(0)).closedAt(hour(10)).
 		observeString(legion.FieldPhase, hour(-1), "admitted").
 		observe(legion.FieldSlot, hour(-1), "1").
@@ -96,19 +99,19 @@ func TestTheSevenBarsOfAnIssueAddUpToItsWorkTime(t *testing.T) {
 	for _, one := range []struct {
 		issue     *Issue
 		workHours float64
-		parked    float64
+		inBacklog float64
 		queued    float64
 		bars      map[string]float64
 	}{
-		// Seven hours of life less the two parked ones. The three implementing hours before the
+		// Seven hours of life less the two in backlog. The three implementing hours before the
 		// first worker event are on no bar, the `test` handoff starts the reviewer's phase an
-		// hour before the reviewer's own first event, and the two parked hours of reviewing are
-		// gone.
+		// hour before the reviewer's own first event, and the two hours of reviewing in backlog
+		// are gone.
 		{fallback, 5, 2, 0, map[string]float64{
 			"architect": 0, "planner": 0, "implementer": 0, "tester": 1, "reviewer": 4, "merger": 0, barNoRole: 0,
 		}},
-		// Ten hours of life less the hour parked and the two back in the queue. The design hour
-		// before the first worker event is on no bar, and so are the queued hours.
+		// Ten hours of life less the hour in backlog and the two back in the queue. The design
+		// hour before the first worker event is on no bar, and so are the queued hours.
 		{observed, 7, 1, 2, map[string]float64{
 			"architect": 0, "planner": 0, "implementer": 7, "tester": 0, "reviewer": 0, "merger": 0, barNoRole: 0,
 		}},
@@ -116,9 +119,9 @@ func TestTheSevenBarsOfAnIssueAddUpToItsWorkTime(t *testing.T) {
 		t.Run(one.issue.Key, func(t *testing.T) {
 			w := windowOf(fixture(hour(-24), hour(24), one.issue), ScopeAll)
 			row := w.fact(t, one.issue.Key)
-			if row.WorkHours != one.workHours || row.ParkedHours != one.parked || row.QueuedHours != one.queued {
-				t.Fatalf("the work time = %g hours (parked %g, queued %g), want %g (%g, %g)",
-					row.WorkHours, row.ParkedHours, row.QueuedHours, one.workHours, one.parked, one.queued)
+			if row.WorkHours != one.workHours || row.BacklogOrIceboxHours != one.inBacklog || row.QueuedHours != one.queued {
+				t.Fatalf("the work time = %g hours (in backlog or icebox %g, queued %g), want %g (%g, %g)",
+					row.WorkHours, row.BacklogOrIceboxHours, row.QueuedHours, one.workHours, one.inBacklog, one.queued)
 			}
 			hoursPerBar, whole := w.hoursPerBar(t)
 			if !reflect.DeepEqual(hoursPerBar, one.bars) {

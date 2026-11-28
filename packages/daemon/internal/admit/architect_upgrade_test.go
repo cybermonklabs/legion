@@ -311,8 +311,8 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 	registerController(t, pool)
 	admission := newAdmission(t, 1, nil)
 	const root = "LEGION-837"
-	// The root as the park left it, with the architect claim of the run that was parked: the
-	// shape parkedRoot records, under a key a claim token can be minted from, since the sweep
+	// The root as the move to backlog left it, with the architect claim of the run it stopped: the
+	// shape rootInBacklog records, under a key a claim token can be minted from, since the sweep
 	// reads no run of an issue whose key yields none.
 	until := fixedNow.Add(72 * time.Hour)
 	putIssue(t, pool, record.Issue{Key: root, Tree: root, Project: testProject, Title: "root", Phase: phase.Done,
@@ -321,7 +321,7 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 	putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateIdle, "")
 	applyArchitectUpgrade(t, pool)
 	if row := architectRow(t, pool, root); row.Entry != 1 {
-		t.Fatalf("the architect row of the parked %s = entry %d, want the 1 the fill wrote", root, row.Entry)
+		t.Fatalf("the architect row of %s in backlog = entry %d, want the 1 the fill wrote", root, row.Entry)
 	}
 
 	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 5,
@@ -357,7 +357,7 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 	}
 }
 
-// A tree of the release before that a person parked at admitted after its architect had released
+// A tree of the release before that a person moved to backlog at admitted after its architect had released
 // a child, re-admitted after the upgrade, is a tree whose architect has run. That release's start
 // of an architect carried a task only where a person had decided something, so where nobody had
 // the claim served no run (serving_generation 0), and the fill settles it at given and served

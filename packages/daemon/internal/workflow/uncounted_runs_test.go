@@ -27,8 +27,8 @@ import (
 //     starts the member again. The control is the same root holding its slot, whose member's run
 //     the boot opens.
 //
-// A fact that writes the issue — the member's rank, the person's park of the root or of the
-// member — writes no record of the run that was not open.
+// A fact that writes the issue — the member's rank, the person's move of the root or of the
+// member to backlog — writes no record of the run that was not open.
 func TestNoRunTheEndRuleHoldsOverOrNoStartBeganIsOpenedOrRecorded(t *testing.T) {
 	t.Parallel()
 	t.Run("a member of a lingering tree", func(t *testing.T) {
@@ -104,10 +104,10 @@ func TestNoRunTheEndRuleHoldsOverOrNoStartBeganIsOpenedOrRecorded(t *testing.T) 
 				if tc.promoted {
 					return
 				}
-				applyFacts(t, pool, engine)("park", intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+				applyFacts(t, pool, engine)("backlog", intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 					Status: "backlog", Title: "carried", Rank: "W"})
 				if writes := stepWrites(t, pool, "LEGION-300"); len(writes) != 0 || countStepStarts(t, pool, "LEGION-300") != 0 {
-					t.Fatalf("the park of the carried root left step rows %+v and %d step_starts rows, want none: its generation started no run",
+					t.Fatalf("the move to backlog of the carried root left step rows %+v and %d step_starts rows, want none: its generation started no run",
 						writes, countStepStarts(t, pool, "LEGION-300"))
 				}
 			})
@@ -138,13 +138,13 @@ func TestNoRunTheEndRuleHoldsOverOrNoStartBeganIsOpenedOrRecorded(t *testing.T) 
 			if slotted {
 				continue
 			}
-			applyFacts(t, pool, engine)("park", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+			applyFacts(t, pool, engine)("backlog", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 				Status: "backlog", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V"})
 			if got := issueAt(t, pool, "LEGION-209"); got == phase.Testing {
-				t.Fatalf("the park left LEGION-209 at %s, want it out of testing", got)
+				t.Fatalf("the move to backlog left LEGION-209 at %s, want it out of testing", got)
 			}
 			if writes := stepWrites(t, pool, "LEGION-209"); len(writes) != 0 || countStepStarts(t, pool, "LEGION-209") != 0 {
-				t.Fatalf("the park of the member before its promotion left step rows %+v and %d step_starts rows, want none: its run ended with the linger",
+				t.Fatalf("the move to backlog of the member before its promotion left step rows %+v and %d step_starts rows, want none: its run ended with the linger",
 					writes, countStepStarts(t, pool, "LEGION-209"))
 			}
 		}

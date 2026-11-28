@@ -5,7 +5,7 @@ body: |-
     since the process's memory goes on rising past the registration, and no role ahead of it waits;
     a load whose agent has not registered two minutes after its process started lets the next role
     start all the same. Two roles that resumed long sessions together could pass the pod's memory
-    limit and have the whole pod stopped, every role's turn with it. A waiting start is parked on
+    limit and have the whole pod stopped, every role's turn with it. A waiting start is recorded on
     its claim, so a suspension, a release, a close or a pause's stop of a waiting role acts at once
     and its process never starts; a waiting start the gate lets through while the project is
     paused starts nothing, and the pause stops the role, owed a launch at the resume. The first

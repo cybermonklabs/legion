@@ -22,7 +22,7 @@ import (
 )
 
 // The windows both of the controller's claim recoveries are read in, and the fixtures that
-// build them. A claim stored working under a parked relaunch and one a suspension is held over
+// build them. A claim stored working under a delayed relaunch and one a suspension is held over
 // read the same to the compaction and to the fresh session, and each is answered by one
 // sentence both of them give (api's refuseWorkingClaim, refuseInATurn, refuseHeldSuspension).
 // A claim stored working that no process stands behind is where the two part: the fresh
@@ -54,7 +54,7 @@ const (
 )
 
 // inATurnRefusal is the sentence both recoveries give a claim stored working that neither the
-// parked relaunch nor the read of its process answers, with what the asking operation would do
+// delayed relaunch nor the read of its process answers, with what the asking operation would do
 // to a turn of that claim that is running and the states it reaches (api's refuseInATurn). It
 // says the claim is stored working and no more, because that is the whole of what the record
 // holds: the process is there, and whether a turn of it is running is the agent's own and not
@@ -64,9 +64,9 @@ func inATurnRefusal(token claim.Token, cutsTheTurn, reaches string) string {
 		reaches + ". " + wantAskAgainLater
 }
 
-// parkedRelaunchRefusal is the sentence both recoveries give a claim stored working while a
-// launch the daemon's wake pacing holds waits over it (api's refuseParkedRelaunch).
-func parkedRelaunchRefusal(token claim.Token, reaches string) string {
+// delayedRelaunchRefusal is the sentence both recoveries give a claim stored working while a
+// launch the daemon's wake pacing holds waits over it (api's refuseDelayedRelaunch).
+func delayedRelaunchRefusal(token claim.Token, reaches string) string {
 	return string(token) + " has a relaunch in flight: the daemon is starting its process again, " +
 		"and that relaunch waits its turn in the wake pacing. " + reaches + ". " + wantAskAgainLater
 }
@@ -78,54 +78,54 @@ func unsettledRefusal(token claim.Token, state supervise.ClaimState, reaches str
 	return string(token) + " is " + string(state) + ". " + reaches + ". " + wantAskAgainLater
 }
 
-// parkedRelaunchCause is one of the three runtime verdicts that leave a claim with a relaunch
-// the daemon's wake pacing parks over it: a process found gone, one the daemon's own
+// delayedRelaunchCause is one of the three runtime verdicts that leave a claim with a relaunch
+// the daemon's wake pacing delays over it: a process found gone, one the daemon's own
 // replacement of its pod ended, and one still running at an address a process launched now is
 // not handed (supervise's died, displaced, repoint). Every refusal of that window is asked for
-// after each of them, because no door can tell them apart: the park writes nothing of the
+// after each of them, because no door can tell them apart: the delay writes nothing of the
 // claim, and the process it holds over is kept until the launch's turn whether it is dead or
 // alive (api's relaunchWaits).
-type parkedRelaunchCause struct {
+type delayedRelaunchCause struct {
 	name string
 	// observation is the runtime's verdict as the daemon posts it, less the locator the window
 	// below reads off the claim (supervise.RuntimeObservation, supervise's observeDisplaced).
 	observation runtime.Observation
 }
 
-func parkedRelaunchCauses() []parkedRelaunchCause {
-	return []parkedRelaunchCause{
+func delayedRelaunchCauses() []delayedRelaunchCause {
+	return []delayedRelaunchCause{
 		{"a death", runtime.Observation{Kind: runtime.Gone}},
 		{"a displacement", runtime.Observation{Kind: runtime.Gone, Displaced: true}},
 		{"a repoint over a live process", runtime.Observation{Kind: runtime.StaleAddress}},
 	}
 }
 
-// workingUnderAParkedRelaunch is the window the refusals below are asked in: a worker idle on
+// workingUnderADelayedRelaunch is the window the refusals below are asked in: a worker idle on
 // the provider-error ladder whose process the runtime gave its verdict on while the session was
 // being compacted, with the relaunch that replaces it held by the daemon's wake pacing. What is
 // left is a claim stored working, not being compacted, with a launch waiting its turn: that
 // turn is what the claim waits for, and it comes by itself. Nothing is held over the claim,
-// which is the window the fixture below adds (suspensionHeldOverTheParkedRelaunch).
+// which is the window the fixture below adds (suspensionHeldOverTheDelayedRelaunch).
 //
 // observation is the verdict, less the locator this reads off the claim
-// (parkedRelaunchCauses). The two that lose the process drop the compaction in flight with it,
+// (delayedRelaunchCauses). The two that lose the process drop the compaction in flight with it,
 // so the request answers that loss and the claim is left stored working over the process it
 // records (supervise's compactionLostProcess,
 // TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn). The stale address
 // replaces a process that is still running, so the compaction is the claim's own to the end and
 // gives it back idle (supervise's
-// TestACompactionUnderAParkedRepointGivesTheClaimBackAndLeavesTheTaskToThatTurn); what leaves
-// that claim working under the park is the turn its live process takes of its own account,
+// TestACompactionUnderADelayedRepointGivesTheClaimBackAndLeavesTheTaskToThatTurn); what leaves
+// that claim working under the delay is the turn its live process takes of its own account,
 // which is the half of this window no door can tell from the other (supervise's
 // TestATurnTheReplacedProcessConfirmedIsTakenBackAtTheLaunchsTurn).
 //
 // The pacing is installed before the claim is created, because a machine takes its deps where
 // it is built, and it holds nothing until the verdict below: the launches that make the claim
 // ready run as they are raised. The turn it then gives is minutes away and this harness's clock
-// fires no timer at all (stillClock), so the wake stays parked for the rest of the test.
-func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
+// fires no timer at all (stillClock), so the wake stays delayed for the rest of the test.
+func workingUnderADelayedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
-	park := pacedUntilParked(h)
+	delay := pacedUntilDelayed(h)
 	token := idleOnTheLadder(t, h)
 	conn := connected(h, token)
 	release := conn.HoldCompact()
@@ -135,7 +135,7 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 	}()
 	waitForCompacting(t, h, token)
 
-	park()
+	delay()
 	m, _ := h.supervisor.Machine(token)
 	locator := m.Claim().Locator
 	if locator == nil {
@@ -155,7 +155,7 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 				recorder.Code, recorder.Body)
 		}
 		if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
-			t.Fatalf("the turn %s's live process takes under the park: %v", token, err)
+			t.Fatalf("the turn %s's live process takes under the delay: %v", token, err)
 		}
 	} else if recorder.Code != http.StatusConflict {
 		t.Fatalf("the compaction whose claim lost its process = %d, want the 409 of a claim not given back; body %s",
@@ -163,7 +163,7 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 	}
 	view := m.View()
 	if view.State != supervise.StateWorking || view.Compacting {
-		t.Fatalf("the claim is %s and reports Compacting %v, want the working claim the park kept over the process it records",
+		t.Fatalf("the claim is %s and reports Compacting %v, want the working claim the delay kept over the process it records",
 			view.State, view.Compacting)
 	}
 	if view.WakeWaiting == nil || view.WakeWaiting.Kind != supervise.WakeLaunch {
@@ -176,14 +176,14 @@ func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.O
 	return token
 }
 
-// pacedUntilParked sets the harness's wake pacing to a pacer on the machines' own clock that lets
-// every paced launch out at its join until park is called, and parks every one after it: the
-// limiter's burst holds every launch the fixtures make before the park, and park reserves a whole
+// pacedUntilDelayed sets the harness's wake pacing to a pacer on the machines' own clock that lets
+// every paced launch out at its join until delay is called, and delays every one after it: the
+// limiter's burst holds every launch the fixtures make before the delay, and delay reserves a whole
 // burst more, so every token is spent and a place joined after waits for a turn minutes out (one
 // for each launch the fixtures made, and one more), which a harness clock that fires no timer
 // (stillClock) never gives. It is set before any claim is created, because a machine takes its
 // deps where it is built. The burst is the pace the wake lines name.
-func pacedUntilParked(h *harness) (park func()) {
+func pacedUntilDelayed(h *harness) (delay func()) {
 	const burst = 64
 	limiter := wakepace.New(1, burst, nil)
 	clock := h.supervisor.deps.Clock
@@ -202,16 +202,16 @@ func pacedUntilParked(h *harness) (park func()) {
 // brings. Answered "in a turn", a controller would ask again after a turn nothing will end, in
 // the one window the compaction exists to recover from.
 func TestACompactionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled(t *testing.T) {
-	for _, cause := range parkedRelaunchCauses() {
+	for _, cause := range delayedRelaunchCauses() {
 		for _, door := range compactDoors() {
 			t.Run(cause.name+": "+door.name, func(t *testing.T) {
 				h := compactHarness(t, nil)
-				token := workingUnderAParkedRelaunch(t, h, cause.observation)
+				token := workingUnderADelayedRelaunch(t, h, cause.observation)
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 				refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
-					parkedRelaunchRefusal(token, wantCompactionReaches))
+					delayedRelaunchRefusal(token, wantCompactionReaches))
 			})
 		}
 	}
@@ -220,20 +220,20 @@ func TestACompactionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled(t
 // The other door answers the same window in the same code and names itself: a fresh session of
 // such a claim is refused here too, so a caller sent to the other recovery would be sent in a
 // circle. What it names is the launch in flight, as the compaction's refusal does.
-// The claim is left exactly as the park left it, its session included.
+// The claim is left exactly as the delay left it, its session included.
 func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled(t *testing.T) {
-	for _, cause := range parkedRelaunchCauses() {
+	for _, cause := range delayedRelaunchCauses() {
 		for _, door := range freshSessionDoors() {
 			t.Run(cause.name+": "+door.name, func(t *testing.T) {
 				h := compactHarness(t, nil)
-				token := workingUnderAParkedRelaunch(t, h, cause.observation)
+				token := workingUnderADelayedRelaunch(t, h, cause.observation)
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 				refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
-					parkedRelaunchRefusal(token, wantFreshSessionReaches))
+					delayedRelaunchRefusal(token, wantFreshSessionReaches))
 				if after := h.stored(token); after.State != supervise.StateWorking || after.Session != "ses_implementer" {
-					t.Errorf("the refused claim is %s recording session %q, want the working claim the park left on the session it had",
+					t.Errorf("the refused claim is %s recording session %q, want the working claim the delay left on the session it had",
 						after.State, after.Session)
 				}
 			})
@@ -241,7 +241,7 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 	}
 }
 
-// workingUnderAParkedRefresh is the other wake a machine parks over a live process: the
+// workingUnderADelayedRefresh is the other wake a machine delays over a live process: the
 // relaunch the stale-plugin refresh lane raises, which carries a kind of its own so that a
 // reader of the daemon's state can tell a fleet's refresh from the work it holds up
 // (supervise.WakePluginRefresh, dispatch://INFRA-2712 R4). Everything else about it is a
@@ -251,16 +251,16 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 // The claim is seeded stale as the API's own stale-caller fixture seeds one — written at an
 // earlier contract and its machine rebuilt from the store (harness.makeStale) — but with the
 // capability it registered with left as it is, since nothing here calls as the claim. The sweep
-// then finds it, the pacing parks its relaunch over the process it still runs
+// then finds it, the pacing delays its relaunch over the process it still runs
 // (supervise.refreshPlugin), and the live process takes a turn of its own, which is what leaves
-// the claim stored working under the park (TestATurnTheReplacedProcessConfirmedIsTakenBackAt
+// the claim stored working under the delay (TestATurnTheReplacedProcessConfirmedIsTakenBackAt
 // TheLaunchsTurn in supervise).
-func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
+func workingUnderADelayedRefresh(t *testing.T, h *harness) claim.Token {
 	t.Helper()
-	park := pacedUntilParked(h)
+	delay := pacedUntilDelayed(h)
 	token := idleOnTheLadder(t, h)
 
-	park()
+	delay()
 	m, _ := h.supervisor.Machine(token)
 	stale := m.Claim()
 	stale.PluginContract = DaemonAPIVersion() - 1
@@ -273,13 +273,13 @@ func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
 	}
 	m.Wait()
 	if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
-		t.Fatalf("the turn %s's live process takes under the park: %v", token, err)
+		t.Fatalf("the turn %s's live process takes under the delay: %v", token, err)
 	}
 	settled(h, token)
 
 	view := m.View()
 	if view.State != supervise.StateWorking {
-		t.Fatalf("the claim is %s, want the working claim the park kept over the process it records", view.State)
+		t.Fatalf("the claim is %s, want the working claim the delay kept over the process it records", view.State)
 	}
 	if view.WakeWaiting == nil || view.WakeWaiting.Kind != supervise.WakePluginRefresh {
 		t.Fatalf("the claim's waiting wake is %+v, want the refresh lane's relaunch the pacing holds", view.WakeWaiting)
@@ -287,7 +287,7 @@ func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
 	return token
 }
 
-// Both recoveries answer that window exactly as they answer a parked launch: a relaunch is in
+// Both recoveries answer that window exactly as they answer a delayed launch: a relaunch is in
 // flight, which is what the refresh's relaunch is. The kind tells a reader of the state body
 // which lane holds the pacing and nothing else, so a door that read it as anything but a launch
 // would answer "in a turn" and send a controller back to wait out a turn the launch is about to
@@ -296,23 +296,23 @@ func TestARecoveryRefusedWhileTheStalePluginRefreshWaitsItsTurnNamesTheLaunchInF
 	for _, door := range compactDoors() {
 		t.Run("the compaction: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			token := workingUnderAParkedRefresh(t, h)
+			token := workingUnderADelayedRefresh(t, h)
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
-				parkedRelaunchRefusal(token, wantCompactionReaches))
+				delayedRelaunchRefusal(token, wantCompactionReaches))
 		})
 	}
 	for _, door := range freshSessionDoors() {
 		t.Run("the fresh session: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			token := workingUnderAParkedRefresh(t, h)
+			token := workingUnderADelayedRefresh(t, h)
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
 			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
-				parkedRelaunchRefusal(token, wantFreshSessionReaches))
+				delayedRelaunchRefusal(token, wantFreshSessionReaches))
 		})
 	}
 }
@@ -336,7 +336,7 @@ func (s *refusingCheckLaunchStore) CheckLaunch(ctx context.Context, c supervise.
 }
 
 // refusedRelaunchCause is the runtime verdict that raises a relaunch over a process the claim
-// still records (parkedRelaunchCauses), with what the claim reports of that process once the
+// still records (delayedRelaunchCauses), with what the claim reports of that process once the
 // relaunch has been refused: a verdict that found the process gone leaves a claim stored
 // working over a process nothing is replacing, and the stale address leaves a process that is
 // running and takes a turn of its own under the claim (supervise.Claim.ProcessGone). The two
@@ -410,11 +410,11 @@ func movedClaimRefusal(token claim.Token, reaches string) string {
 // (refusingCheckLaunchStore). That relaunch started nothing and wrote nothing, so the claim is
 // left over the process it records with no launch coming for it (supervise's relaunchRefused).
 //
-// It is the window a parked relaunch refused at its turn leaves, reached without the pacing:
-// one refusal serves every launch there is, the park's turn included, and it leaves the same
+// It is the window a delayed relaunch refused at its turn leaves, reached without the pacing:
+// one refusal serves every launch there is, the delay's turn included, and it leaves the same
 // claim either way (supervise's launchAfter and runWake, which share relaunchRefused). The
-// parked turn itself is driven where the clock can be advanced (supervise's
-// TestAParkedRelaunchRefusedAtItsTurnRecordsThatItsProcessIsGone); this harness's clock fires
+// delayed turn itself is driven where the clock can be advanced (supervise's
+// TestADelayedRelaunchRefusedAtItsTurnRecordsThatItsProcessIsGone); this harness's clock fires
 // no timer at all (stillClock).
 //
 // The two verdicts that find the process gone drop the compaction with it, so the request
@@ -1149,23 +1149,23 @@ func routeServer(h *harness) *server {
 	}
 }
 
-// A launch the wake pacing parks can be raised between the route's view of the claim and the
-// machine's lock, and both steps that meet such a claim there answer it as the parked relaunch
-// it is (api's refuseParkedRelaunch, claimUnsettled), never as a claim in a turn.
+// A launch the wake pacing delays can be raised between the route's view of the claim and the
+// machine's lock, and both steps that meet such a claim there answer it as the delayed relaunch
+// it is (api's refuseDelayedRelaunch, claimUnsettled), never as a claim in a turn.
 //
 //   - The read (refuseWorkingClaim): the view was taken of a claim in a turn, and the sweep's
-//     death of its process parked the relaunch before the read; the machine asks nothing of a
-//     process a parked launch replaces and says so under its lock
-//     (supervise.ProcessReplacedByLaunch), which the step answers as the park, with no second
+//     death of its process delayed the relaunch before the read; the machine asks nothing of a
+//     process a delayed launch replaces and says so under its lock
+//     (supervise.ProcessReplacedByLaunch), which the step answers as the delay, with no second
 //     view of the machine. Both doors make this read, so both are asked.
 //   - The suspension (suspendForFreshSession): the read found the process gone, and the same
-//     death parked the relaunch before the suspension arrived; the machine leaves that claim to
+//     death delayed the relaunch before the suspension arrived; the machine leaves that claim to
 //     the launch and refuses the suspension, which may not be held, and the read the step makes
-//     again after that refusal meets the park first (refuseWorkingClaim).
+//     again after that refusal meets the delay first (refuseWorkingClaim).
 //
 // Neither changes the claim: it stays working under the launch the pacing holds. The negative
 // control is the step's own default put back, which answers both CLAIM_IN_A_TURN.
-func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *testing.T) {
+func TestARecoveryStepThatMeetsADelayRaisedAfterItsViewNamesTheLaunchInFlight(t *testing.T) {
 	for _, door := range []struct {
 		name    string
 		op      agentAction
@@ -1176,7 +1176,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 	} {
 		t.Run("the read: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			park := pacedUntilParked(h)
+			delay := pacedUntilDelayed(h)
 			token := readyImplementer(t, h)
 			m, _ := h.supervisor.Machine(token)
 			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
@@ -1184,16 +1184,16 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 			}
 			before := m.View()
 			if before.State != supervise.StateWorking || before.WakeWaiting != nil {
-				t.Fatalf("the view is of a claim %s with wake %+v, want one in a turn with nothing parked", before.State, before.WakeWaiting)
+				t.Fatalf("the view is of a claim %s with wake %+v, want one in a turn with nothing delayed", before.State, before.WakeWaiting)
 			}
-			park()
+			delay()
 			if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
 				Locator: *before.Locator, Kind: runtime.Gone, At: stillClock{}.Now(),
 			}}); err != nil {
 				t.Fatalf("post the death of %s's process: %v", token, err)
 			}
 			if now := m.View(); now.State != supervise.StateWorking || !relaunchWaits(now) {
-				t.Fatalf("the claim is %s with wake %+v, want it working under the relaunch the pacing parked", now.State, now.WakeWaiting)
+				t.Fatalf("the claim is %s with wake %+v, want it working under the relaunch the pacing delayed", now.State, now.WakeWaiting)
 			}
 			reads := processReads(h)
 			recorder := httptest.NewRecorder()
@@ -1201,20 +1201,20 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 			answered := routeServer(h).refuseWorkingClaim(recorder, httptest.NewRequest(http.MethodPost, "/", nil), m, token, before, door.op)
 
 			if !answered {
-				t.Fatal("the read answered nothing, want the refusal of the parked relaunch")
+				t.Fatal("the read answered nothing, want the refusal of the delayed relaunch")
 			}
-			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled, parkedRelaunchRefusal(token, door.reaches))
+			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled, delayedRelaunchRefusal(token, door.reaches))
 			if got := processReads(h) - reads; got != 0 {
-				t.Errorf("the runtime was asked %d times, want nothing asked of a process a parked launch replaces", got)
+				t.Errorf("the runtime was asked %d times, want nothing asked of a process a delayed launch replaces", got)
 			}
 			if now := m.View(); now.State != supervise.StateWorking || !relaunchWaits(now) {
-				t.Errorf("the claim is %s with wake %+v, want it left working under the parked relaunch", now.State, now.WakeWaiting)
+				t.Errorf("the claim is %s with wake %+v, want it left working under the delayed relaunch", now.State, now.WakeWaiting)
 			}
 		})
 	}
 	t.Run("the suspension", func(t *testing.T) {
 		h := compactHarness(t, nil)
-		token := workingUnderAParkedRelaunch(t, h, runtime.Observation{Kind: runtime.Gone})
+		token := workingUnderADelayedRelaunch(t, h, runtime.Observation{Kind: runtime.Gone})
 		m, _ := h.supervisor.Machine(token)
 		recorder := httptest.NewRecorder()
 
@@ -1222,11 +1222,11 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 			supervise.SuspendedByOperator)
 
 		if suspended {
-			t.Fatal("the suspension landed, want it refused for the parked relaunch")
+			t.Fatal("the suspension landed, want it refused for the delayed relaunch")
 		}
-		refusedSaying(t, recorder, http.StatusConflict, claimUnsettled, parkedRelaunchRefusal(token, wantFreshSessionReaches))
+		refusedSaying(t, recorder, http.StatusConflict, claimUnsettled, delayedRelaunchRefusal(token, wantFreshSessionReaches))
 		if now := m.View(); now.State != supervise.StateWorking || !relaunchWaits(now) || now.SuspensionHeld {
-			t.Errorf("the claim is %s with wake %+v and a suspension held %v, want it left working under the parked relaunch with nothing held",
+			t.Errorf("the claim is %s with wake %+v and a suspension held %v, want it left working under the delayed relaunch with nothing held",
 				now.State, now.WakeWaiting, now.SuspensionHeld)
 		}
 	})
@@ -1275,7 +1275,7 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 				t.Fatalf("start %s's turn: %v", token, err)
 			}
 			if view := m.View(); view.State != supervise.StateWorking || view.WakeWaiting != nil || view.Compacting {
-				t.Fatalf("the claim is %s with wake %+v and compacting %v, want it in a turn with nothing parked over it",
+				t.Fatalf("the claim is %s with wake %+v and compacting %v, want it in a turn with nothing delayed over it",
 					view.State, view.WakeWaiting, view.Compacting)
 			}
 			h.runtime.ScriptProbe(row.probe)
@@ -1311,7 +1311,7 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 // every launch records the process it starts, and every step that lets a process go moves the
 // claim out of working (supervise's letGo) — so the shared step is called directly, with the
 // view of a claim stored working handed to it over a machine whose claim records no process,
-// as the park raised after the view is above.
+// as the delay raised after the view is above.
 func TestARecoveryStepRefusesAWorkingClaimThatRecordsNoProcessAsUnsettled(t *testing.T) {
 	for _, door := range []struct {
 		name    string
@@ -1401,17 +1401,17 @@ func TestARecoveryRefusedAsWorkingWhoseLaterViewIsNotWorkingAnswersThatTheClaimM
 	}
 }
 
-// suspensionHeldOverTheParkedRelaunch is that window with an operator's suspension held over
+// suspensionHeldOverTheDelayedRelaunch is that window with an operator's suspension held over
 // it: the suspend arrives while the claim is stored working, so the machine holds it for the
-// turn's end rather than stopping anything, and the park keeps its launch. The launch's turn
+// turn's end rather than stopping anything, and the delay keeps its launch. The launch's turn
 // ends the held suspension instead of launching (supervise's wakeNow, endHeld), so this claim
 // comes out suspended rather than running.
-func suspensionHeldOverTheParkedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
+func suspensionHeldOverTheDelayedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
-	token := workingUnderAParkedRelaunch(t, h, observation)
+	token := workingUnderADelayedRelaunch(t, h, observation)
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil)
 	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("the suspend of the parked claim = %d, want the 202 of one held for the turn's end; body %s",
+		t.Fatalf("the suspend of the delayed claim = %d, want the 202 of one held for the turn's end; body %s",
 			recorder.Code, recorder.Body)
 	}
 	m, _ := h.supervisor.Machine(token)
@@ -1426,11 +1426,11 @@ func suspensionHeldOverTheParkedRelaunch(t *testing.T, h *harness, observation r
 	return token
 }
 
-// suspensionHeldOverATurn is the commonest held suspension and the one nothing is parked over:
+// suspensionHeldOverATurn is the commonest held suspension and the one nothing is delayed over:
 // an ordinary worker in a turn, which the operator suspends, so the machine holds the stop for
 // the turn's end rather than cutting the turn off (supervise's holdSuspension). That end lands
 // the suspension, as the operator's stop deadline does when the turn outlasts it, and the claim
-// it leaves is suspended — the landing the parked window has, brought by a turn's end rather
+// it leaves is suspended — the landing the delayed window has, brought by a turn's end rather
 // than by a launch's turn. It is the operator's hold that lands so; the daemon's own is the
 // row below (suspensionHeldOverATurnByTheDaemon).
 func suspensionHeldOverATurn(t *testing.T, h *harness) claim.Token {
@@ -1572,12 +1572,12 @@ func heldSuspensionCases() []heldSuspensionCase {
 		{"a compaction in flight", claimInATurn, suspensionHeldOverACompaction},
 		{"a launch that has not registered", claimUnsettled, suspensionHeldOverALaunchThatHasNotRegistered},
 	}
-	for _, cause := range parkedRelaunchCauses() {
+	for _, cause := range delayedRelaunchCauses() {
 		cases = append(cases, heldSuspensionCase{
-			name: "a relaunch parked by " + cause.name,
+			name: "a relaunch delayed after " + cause.name,
 			code: claimInATurn,
 			start: func(t *testing.T, h *harness) claim.Token {
-				return suspensionHeldOverTheParkedRelaunch(t, h, cause.observation)
+				return suspensionHeldOverTheDelayedRelaunch(t, h, cause.observation)
 			},
 		})
 	}

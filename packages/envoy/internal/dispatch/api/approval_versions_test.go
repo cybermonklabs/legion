@@ -410,7 +410,7 @@ func TestARewordlessHandBackKeepsTheQuestionsRevision(t *testing.T) {
 
 // A reply whose transaction begins while a hand-back holds the owner row waits for that row and
 // commits after the hand-back, so it is the thread's newest reply and its turn decides the request.
-// The test parks the hand-back after it has taken the owner row, with a lock on the ask row that
+// The test pauses the hand-back after it has taken the owner row, with a lock on the ask row that
 // OpenApprovalAsk waits for, then starts the human's comment, which queues on the owner row.
 func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 	t.Parallel()

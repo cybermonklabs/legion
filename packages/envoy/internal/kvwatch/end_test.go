@@ -231,13 +231,13 @@ func TestADeleteConsumerAnsweredErrDisconnectedDuringEndIsAWarning(t *testing.T)
 	}
 }
 
-// endsWaiting counts the goroutines parked inside End: waiting for a watch, or for another End.
+// endsWaiting counts the goroutines blocked inside End: waiting for a watch, or for another End.
 func endsWaiting() int {
 	n := 0
 	for _, goroutine := range goroutinetest.Traces() {
 		header, _, _ := strings.Cut(goroutine, "\n")
-		parked := strings.Contains(header, "[select") || strings.Contains(header, "[sync.Mutex.Lock")
-		if parked && strings.Contains(goroutine, "kvwatch.(*Watcher).End(") {
+		blocked := strings.Contains(header, "[select") || strings.Contains(header, "[sync.Mutex.Lock")
+		if blocked && strings.Contains(goroutine, "kvwatch.(*Watcher).End(") {
 			n++
 		}
 	}

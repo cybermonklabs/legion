@@ -20,7 +20,7 @@ func TestLiveFollowsAGoroutineUntilItReturns(t *testing.T) {
 	}()
 	id := <-ids
 	if !goroutinetest.Live(id) {
-		t.Fatalf("goroutine %d is parked on a channel, and Live reports it returned", id)
+		t.Fatalf("goroutine %d is blocked on a channel, and Live reports it returned", id)
 	}
 	close(release)
 	<-returned

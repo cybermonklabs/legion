@@ -1,4 +1,4 @@
 kind: Changed
 body: |-
-  The legion-controller skill's references (`parked-decisions.md`, `wakes.md`) name
+  The legion-controller skill's references on decisions for a tree out of the workflow and on wakes (`wakes.md`) name
   `legion issue status <issue> <status>`, the command that replaced `legion status <issue> <status>`.

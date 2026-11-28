@@ -639,15 +639,15 @@ type LineFacts struct {
 	Parents map[string]Issue
 	// Roots is the record of each tree root the pass's own issues do not hold, by tree key
 	// (ReadTreeRoots): the tick reads the project's live issues, which hold no root that is
-	// done and no parked one, and without their records it could not tell a closed tree from a
-	// parked one. Their gates are read beside them (ReadLineFacts), so the two words that speak
+	// done and none in backlog or icebox, and without their records it could not tell a closed
+	// tree from one whose root is in backlog or icebox. Their gates are read beside them (ReadLineFacts), so the two words that speak
 	// of a root read one record and one gate of it. Waiting's placement reads this map nowhere
 	// — classification alone does (HeldFacts.treeRoot) — and the gates it reads are the gates
 	// of roots among the pass's own issues, so the line cannot change for either read.
 	Roots map[string]Issue
 	// Now is the moment the pass reads the record, which classification alone reads: the
 	// tree_closed word asks whether a root's linger is still running at it (Lingering,
-	// HeldReasonOf), so that a parked root's members read tree_parked once its linger has run
+	// HeldReasonOf), so that the members of a root in backlog or icebox read tree_in_backlog_or_icebox once its linger has run
 	// out rather than tree_closed for ever. The one caller that fills it is the judgement every
 	// reader of the line comes through (blockers.JudgeLine), which takes the clock of the pass
 	// that called it. The zero moment reads every armed linger as still running, which is what a
@@ -794,9 +794,9 @@ func ReadParents(ctx context.Context, tx pgx.Tx, store Store, project string, is
 }
 
 // ReadTreeRoots is the record of each tree root the issues themselves leave out, by tree key
-// (LineFacts.Roots): a pass whose read holds no root that is done and no parked one — the
-// tick's live read — would otherwise have no record of the tree a member stands in, and could
-// not say whether that tree is closed or parked (HeldReasonOf). It collects the trees no issue
+// (LineFacts.Roots): a pass whose read holds no root that is done and none in backlog or icebox
+// — the tick's live read — would otherwise have no record of the tree a member stands in, and
+// could not say whether that tree is closed or its root in backlog or icebox (HeldReasonOf). It collects the trees no issue
 // in hand roots and reads them in one query whatever their number, as ReadParents collects the
 // parents its records leave out, and no read at all for a pass whose records hold every root
 // they name.
@@ -879,7 +879,7 @@ func gatesOf(ctx context.Context, tx pgx.Tx, store Store, roots []string, steps 
 // among the pass's own issues (treeRoots) and the roots those issues leave out, which this read
 // has just found (LineFacts.Roots). The two readers of the ladder hold different records of one
 // root — the state the project's whole record, the controller's tick the live issues alone
-// (Store.LiveIssues, which leaves out a root that is done or parked) — so a gate read over the
+// (Store.LiveIssues, which leaves out a root that is done, in backlog or in icebox) — so a gate read over the
 // first set alone gave the tick the zero gate for a root it met only here, whose Open() is
 // false, and the member of that tree read design_gate where the state read the ladder's own
 // word. Read over both, one issue reads one word wherever it is read (C1 of
@@ -1222,10 +1222,10 @@ func InSlotlessPhase(issue Issue) bool {
 // them is running this second. Nothing of a tree that has left the workflow works until its
 // re-admission runs it again, which is why the tree's own terms are here.
 //
-// The Dispatch status KeepsSlot reads is asked because a person's park, close or icebox takes
+// The Dispatch status KeepsSlot reads is asked because a person's move to backlog, close or icebox takes
 // the issue out of the workflow before anything moves its phase: the workflow's own leave
 // records the linger in the same fact, but a pass that reads the record between the two would
-// otherwise count a parked root's slot against the cap for good.
+// otherwise count the slot of a root in backlog against the cap for good.
 //
 // It is the one statement of the release of an issue that needs no slot at all, and the two
 // readers that must never disagree both call it: admission releases the slot of every issue it
@@ -1900,10 +1900,10 @@ func TreeRunning(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps 
 // (treelifecycle.ErrAuthorityHeld) and never opens a workflow tree under it. A tree with no
 // lifecycle row is no tree the operator holds, which is the read's own answer for it.
 //
-// It is the one statement of that rule, and every reader that must agree calls it: the park of
-// such a root (workflow.Engine.leave), the claim release row every other park queues
-// (outbox.releaseClaim), and the boot's answer to whether a run no start counted is open
-// (workflow.Engine.uncountedRunOpen).
+// It is the one statement of that rule, and every reader that must agree calls it: the move out
+// of the workflow of such a root (workflow.Engine.leave), the claim release row every other
+// departure short of a close queues (outbox.releaseClaim), and the boot's answer to whether a run
+// no start counted is open (workflow.Engine.uncountedRunOpen).
 func OperatorHoldsTree(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (bool, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {

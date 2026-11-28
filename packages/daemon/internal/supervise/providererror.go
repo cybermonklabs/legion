@@ -465,7 +465,7 @@ func (m *Machine) replaceable(p *Delivery) bool {
 // (replaceable) — the task a provider error took back, or the daemon's own unprompted delivery of
 // a relaunch's record — and reports whether it did. Both places a newer task arrives at a claim
 // that holds one run it: the task queue is given (queue), and the operator's task that runs a
-// launch the pacing parked (runParkedLaunchNow). A pending task no newer one replaces is replaced
+// launch the pacing delayed (runDelayedLaunchNow). A pending task no newer one replaces is replaced
 // by neither, and each caller answers that its own way, so this reports it rather than deciding
 // it. The delivery it replaces is the one the claim holds (m.claim.Pending), which is the one
 // either caller could mean, and a claim holding none replaces none.

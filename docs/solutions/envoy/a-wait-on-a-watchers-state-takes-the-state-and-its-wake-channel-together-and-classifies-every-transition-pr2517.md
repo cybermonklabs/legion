@@ -49,7 +49,7 @@ state. Five rules make it correct; each is a way the obvious version is wrong.
 A wake's only observable effect is that a goroutine stopped waiting, so the naive test passes with
 the wake deleted. Four devices make it bind:
 
-- **Park the waiter before you turn the cause on.** Start the wait in a goroutine and wait until a
+- **Block the waiter before you turn the cause on.** Start the wait in a goroutine and wait until a
   stack trace shows it blocked in that function's `select` (`internal/goroutinetest`), then fire
   the cause. Otherwise the cause can land first and the call returns from its first state read,
   proving nothing.

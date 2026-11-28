@@ -941,7 +941,7 @@ func (s *server) deliverResolvedCommentMention(
 	if orderErr != nil {
 		// Nothing was sent, and whether the session must take an earlier event first is not
 		// known: the send waits as one that waited behind an event does, under the claim this call
-		// renewed, behind no event, and its lane parks it (park).
+		// renewed, behind no event, and its lane schedules its retry (scheduleRetry).
 		slog.Error("dispatch: read whether a comment mention's session must take an earlier event first; the send waits",
 			"comment", stored.ID, "target", target.Target, "attempt", recorded.Attempt, "error", orderErr)
 		return recorded, &mentionHeldForOrder{comment: stored, target: target, claim: held, unread: true}, nil
@@ -981,7 +981,7 @@ const mentionClaimGoneFailure = "the mention's claim on its attempt is no longer
 // its attempt, which stays pending, and the earlier event it waits behind. The caller hands it to
 // the mention sender's lane for that session (send), which writes the claim again while the send
 // waits and makes it again under it. unread is that the read of the rule failed: the send waits
-// all the same, behind no event, so it is no held copy (mentionSend.held, park).
+// all the same, behind no event, so it is no held copy (mentionSend.held, scheduleRetry).
 type mentionHeldForOrder struct {
 	comment model.Comment
 	target  ResolvedMention

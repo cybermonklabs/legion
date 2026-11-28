@@ -2,7 +2,7 @@ kind: Changed
 body: |-
   The architect skill now says that the daemon starts an architect on every child when it starts
   that child's first phase. That architect owns its child. It files its own children under its
-  own issue, releases, parks and reruns them, signs off its own issue, and registers no design
+  own issue, releases them, moves them to backlog and reruns them, signs off its own issue, and registers no design
   gate. The architect above it hears the child's `child-status` and `child-closed`, and that
   architect's `worker-died` and `worker-stalled`. It also hears every other notice of the child
   while that architect does not hold its role, which the daemon's `holdsRole` decides. The

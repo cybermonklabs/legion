@@ -83,7 +83,7 @@ func TestThreeDeathsInTurnsFailTheClaimAndANormalTurnBetweenThemClearsTheCount(t
 	h.wantState(StateLaunching)
 }
 
-// A death with nothing pending and no turn open is the environment killing a parked agent: it is
+// A death with nothing pending and no turn open is the environment killing an idle agent: it is
 // relaunched however often it happens, and nothing is charged against it.
 func TestADeathWithNoTurnOpenAndNothingPendingIsNotCounted(t *testing.T) {
 	h := newHarness(t)
@@ -104,7 +104,7 @@ func TestADeathWithNoTurnOpenAndNothingPendingIsNotCounted(t *testing.T) {
 
 // A death charged against an open turn ends that turn, so the deaths that follow are judged on
 // the turns they find. Nothing else records the end of a turn whose agent died — only the agent's
-// own turn end does — so without this an interrupted turn stayed open for ever and the parked
+// own turn end does — so without this an interrupted turn stayed open for ever and the
 // relaunched agent, idle with nothing pending, had every later death charged against it until the
 // claim failed (dispatch://INFRA-714 finding 6).
 func TestADeathEndsTheTurnItInterruptedSoLaterIdleDeathsAreNotCharged(t *testing.T) {
@@ -127,7 +127,7 @@ func TestADeathEndsTheTurnItInterruptedSoLaterIdleDeathsAreNotCharged(t *testing
 	for death := 2; death <= testLimits().LaunchFailures; death++ {
 		h.observe(runtime.Gone)
 		if got := h.state(); got == StateFailed {
-			t.Fatalf("death %d of the parked agent left the claim %s with budgets %+v, want it relaunched: "+
+			t.Fatalf("death %d of the idle agent left the claim %s with budgets %+v, want it relaunched: "+
 				"the turn the first death interrupted is over", death, got, h.budgets())
 		}
 		h.relaunched()

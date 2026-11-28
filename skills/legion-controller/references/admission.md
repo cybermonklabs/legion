@@ -1,6 +1,6 @@
 # Reading admission
 
-Read this when you need to know where an issue stands in admission, what an `admission.held` word means, or which trees are live, and before you move an issue to `todo`.
+Read this when you need to know where an issue stands in admission or which trees are live, and before you move an issue to `todo`. What an `admission.held` word means: `skill://legion-controller/references/admission-held.md`.
 An issue's `phase` alone does not say it: read its key against the `admission` lists and the root its `tree` names.
 The `read_state` summary prints `admission.active`, `admission.waiting`, `admission.blocked` and `admission.trees` as its `active`, `waiting`, `blocked` and `trees` lines, and each entry of `admission.held` as a `held` line.
 The rules behind them: [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label).
@@ -47,29 +47,6 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
 
 Holding no slot is no fault by itself.
 
-## `admission.held`: what nothing starts
-
-Every issue the record holds in the workflow that is in neither `admission.active` nor `admission.waiting`, with one word for why nothing of it runs and `heldBy`, the issues that hold it.
-The `tick` wake carries it as `held`, and a held issue's record (`read_state` with `issue`) gives its word's sentence in `why`.
-Each waits for what ends it, in the table's last column.
-Name them in the day's report and take nothing for them.
-
-| Word | Meaning | What ends it |
-|---|---|---|
-| `tree_closed` | Its tree's root is `done`, or still lingering after it left the workflow, or waiting in the line, its design gate open, for the promotion that opens its tree again | An architect's `release_children` of the live tree its Dispatch parent reaches, where that release is accepted, the end of the root's linger, a `todo` on the root, or the root's promotion from the waiting line |
-| `tree_parked` | Its tree was parked and the linger ran out | A `todo` on the root; your own hold, the parked-root walk decides |
-| `label_off` | A root whose `legion` label is off | A person's label |
-| `ancestry` | Its Dispatch chain reaches another live root: that tree's unreleased work | That tree's architect releasing it or its parent, or the chain leaving that tree |
-| `root_awaiting_person` | Its root waits on a person | The root's resume |
-| `design_gate` | Its root's design gate is not open at every step that holds the tree: each gated step, and `criteria` where the root registered it | A person's approval of each step's document |
-| `dispatch_blocker` | A `blocked_by` issue is not `done` | Each blocker `done`, or the link taken off |
-| `children_first` | An open child under it | The last open child leaving the workflow |
-| `accepted_ancestor` | The daemon has accepted the head an ancestor's last step passed | That ancestor standing in neither `retro` nor `merging` (a `held` ancestor stands in the phase it was held from) |
-| `children_before_retro` | A parent whose task's last step is not `acceptance:owner` is held before retro while its children run | The last `heldBy` issue leaves the workflow, then Legion starts retro |
-| `task_stopped` | A task is stopped and no step of it runs | A later `register_plan` version that changes the task, a root's `todo`, or a child's restart (`backlog`, then `rerun_child`) starts its first step, and an issue whose experiment's group runs the project's default steps takes no later version |
-| `at_work` | In `accepting`, `retro` or `merging`, not `held`, on no slot | Its own sign-off, retro and merge |
-| `unclassified` | None of the above | Nothing of yours: name it with its `phase` and `status` |
-
 ## Free slots
 
 A slot is one issue the daemon started, a root or a child.
@@ -81,10 +58,10 @@ Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request, or filed for a clear defect;
 
-- an issue a person asks you to start, a parked one included;
+- an issue a person asks you to start, one in `backlog` or `icebox` included;
 
 - a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
 
-- a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
+- a tree you moved to `backlog` with your wait mark (`skill://legion-controller/references/backlog-asks.md` step 4), once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
 
 - stopped-session work a person's directive in the weekly plan moves to Legion.

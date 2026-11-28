@@ -198,7 +198,7 @@ func TestACloseOrReopenCarriesItsHead(t *testing.T) {
 	}
 }
 
-// A branch can carry a second pull request: after a merge, or once park and rerun open a new one
+// A branch can carry a second pull request: after a merge, or once a move to backlog and a rerun open a new one
 // from the same branch. A late opened or reopened of the earlier pull request, older than the
 // newer one's clock, is a redelivery and changes nothing: the record stays the newer pull request,
 // whose later events still apply. The same holds for an older pull request's late opened while the

@@ -346,7 +346,7 @@ func jetStreamEntry(t *testing.T, kv bus.KeyValue, key string) jetstream.KeyValu
 // connection mutex, further down the call tree (bus.ReadStreamState, WatchAll), shows nats.go frames.
 var lockedInWatch = regexp.MustCompile(`sync\.\(\*Mutex\)\.Lock\([^\n]*\n\t[^\n]*\n[^\n]*kvwatch\.\(\*Watcher\)\.watch\(`)
 
-// waitingForTheApplyLock reports whether a watch is parked on applyMu: a goroutine whose wait reason
+// waitingForTheApplyLock reports whether a watch is blocked on applyMu: a goroutine whose wait reason
 // is sync.Mutex.Lock and whose Lock frame (*Watcher).watch called. A test that holds an apply open
 // waits for this before it releases the apply, so the watch is already queued for the lock the
 // release frees.
@@ -1244,7 +1244,7 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 //
 // The first watcher's apply of late1 is held while late2..late41 queue in its updates. The Rewatch
 // arms its watcher and then waits for that apply, because the switch takes applyMu, and the test
-// releases late1 only once the Rewatch is parked on that lock. Every other apply takes 10 ms, so
+// releases late1 only once the Rewatch is blocked on that lock. Every other apply takes 10 ms, so
 // once late1's is released the first watcher applies at most an entry or two before the Rewatch,
 // blocked for longer than sync.Mutex's 1 ms starvation threshold, is handed the lock; every entry
 // the first watcher delivers after the switch must be dropped.
@@ -1320,13 +1320,13 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	// The premise the lock wait sets up: the switch came while the first watcher still held most of
-	// its queue. If the wait released late1 before the Rewatch was parked on applyMu, the first
+	// its queue. If the wait released late1 before the Rewatch was blocked on applyMu, the first
 	// watcher applied the whole queue first and nothing below would test the dropped entries.
 	mu.Lock()
 	allBeforeSwitch := appliedBeforeSwitch == queued
 	mu.Unlock()
 	if allBeforeSwitch {
-		t.Fatalf("all %d queued keys were applied before the Rewatch switched: the lock wait did not hold late1 until the Rewatch was parked on applyMu", queued)
+		t.Fatalf("all %d queued keys were applied before the Rewatch switched: the lock wait did not hold late1 until the Rewatch was blocked on applyMu", queued)
 	}
 
 	last := keys[len(keys)-1]
@@ -1547,7 +1547,7 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 // A discarded watch's watcher is read until it ends. nats.go delivers into a watcher's 256-entry
 // Updates buffer and blocks when it is full, holding the watcher's lock, and Stop only
 // unsubscribes, so a watcher of an old bucket holding more keys than that, stopped with nothing
-// reading it, keeps its subscription's goroutine parked for the life of the process.
+// reading it, keeps its subscription's goroutine blocked for the life of the process.
 func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	_, uri := testnats.Start(t)
 	conn, first := bucket(t, uri)
@@ -1585,7 +1585,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	close(held.release)
 	released = true
 
-	testwait.Receive(t, "the discarded watcher to end: left unread (its delivery goroutine parks on a full buffer) or never stopped, it never does", held.ended)
+	testwait.Receive(t, "the discarded watcher to end: left unread (its delivery goroutine blocks on a full buffer) or never stopped, it never does", held.ended)
 }
 
 // Readiness is the current watcher's to release. A watcher a Rewatch replaced mid-scan still reads
@@ -1628,7 +1628,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	testwait.Receive(t, "the first watcher to apply k000", entered)
 	// The first watcher is held on its first key; its buffer holds the rest of its scan and its
 	// sentinel. The Rewatch's scan sees 200 keys. The first watcher is released only once the
-	// Rewatch is parked on applyMu, so the switch comes before the first watcher's sentinel.
+	// Rewatch is blocked on applyMu, so the switch comes before the first watcher's sentinel.
 	for i := 10; i < 200; i++ {
 		if _, err := first.Put(fmt.Sprintf("k%03d", i), []byte("1")); err != nil {
 			t.Fatalf("put: %v", err)
@@ -1644,11 +1644,11 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 		t.Fatalf("rewatch: %v", err)
 	}
 	// The premise the lock wait sets up: the switch came while the first watcher still held the rest
-	// of its scan. If the wait released k000 before the Rewatch was parked on applyMu, the first
+	// of its scan. If the wait released k000 before the Rewatch was blocked on applyMu, the first
 	// watcher applied k001..k009 and read its own sentinel while it was still current, and the
 	// assertion below would pass without testing the sentinel at all.
 	if firstScanApplied.Load() == 9 {
-		t.Fatal("the first watcher applied all of k001..k009 before the Rewatch switched: the lock wait did not hold k000 until the Rewatch was parked on applyMu")
+		t.Fatal("the first watcher applied all of k001..k009 before the Rewatch switched: the lock wait did not hold k000 until the Rewatch was blocked on applyMu")
 	}
 	eventually(t, "readiness", w.Ready)
 	if !into.has("k199") {

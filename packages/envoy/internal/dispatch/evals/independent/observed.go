@@ -31,12 +31,12 @@ import (
 
 // sighting is what an issue's observations and its newest status write say as of one moment: the
 // phase the daemon observed ("" for none), whether the issue held a slot of its own, whether it sat
-// parked in `backlog` or `icebox`, and each role whose newest claim observation is `working`.
+// in `backlog` or `icebox`, and each role whose newest claim observation is `working`.
 type sighting struct {
-	phase   string
-	holds   bool
-	parked  bool
-	working map[string]bool
+	phase     string
+	holds     bool
+	inBacklog bool
+	working   map[string]bool
 }
 
 // sightingAt is what the issue's observations and status writes recorded at or before at say.
@@ -47,7 +47,7 @@ func (i *issue) sightingAt(at time.Time) sighting {
 		working: map[string]bool{},
 	}
 	if newest, held := newestAt(i.statusMarks, at); held {
-		seen.parked = slices.Contains(parkedStatuses, newest.value)
+		seen.inBacklog = slices.Contains(backlogStatuses, newest.value)
 	}
 	for field, marks := range i.observed {
 		role, claim := strings.CutPrefix(field, fieldClaimPrefix)
@@ -173,7 +173,7 @@ func (r *reading) slotWait(key string) float64 {
 	held := r.population.issues[key]
 	var waited time.Duration
 	for _, piece := range pieces(held.created, r.population.end(key), held.cuts()) {
-		if seen := held.sightingAt(piece.from); seen.phase == phaseAdmitted && !seen.holds && !seen.parked {
+		if seen := held.sightingAt(piece.from); seen.phase == phaseAdmitted && !seen.holds && !seen.inBacklog {
 			waited += piece.length()
 		}
 	}

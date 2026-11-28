@@ -28,7 +28,7 @@ func seedStarted(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, s
 // stands in and whatever rule other deciders exempt it by, and leaves the row of every issue
 // that waits on nothing.
 //
-// Two waits count. A Dispatch blocker of the issue that is not done — in_progress, parked, or an
+// Two waits count. A Dispatch blocker of the issue that is not done — in_progress, in backlog, or an
 // issue the daemon holds no mirror row of at all, which is the safe reading
 // (blockers.Unfinished) — and an open Dispatch child the issue's own first phase waits for
 // (record.LineFacts.ChildWaits). The phase the issue stands in does not enter it while that phase

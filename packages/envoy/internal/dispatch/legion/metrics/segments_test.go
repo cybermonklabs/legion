@@ -171,12 +171,13 @@ func TestAnAskTurnEndsAtTheWaitTheDaemonRecordedAsAnswered(t *testing.T) {
 	}
 }
 
-// TestAChildMakesItsRootWaitOnlyThroughItsOwnWorkTime: "A child counts as in a phase only during
-// its own work time, as work time to merge defines it: not while it is parked, back in the
-// queue, or before its first worker event" (the spec's "Rule details — When a child makes its
-// root wait on children"). The child below reads as `implementing` for eleven of its root's
-// twelve hours, and seven of them are its own work time: two run before its first worker event,
-// two in `backlog`, and one back in the queue. The root's five other hours are idle.
+// TestAChildMakesItsRootWaitOnlyThroughItsOwnWorkTime: a child counts as in a phase only during
+// its own work time as work time to merge defines it, so never while it is in backlog or icebox,
+// back in the queue, or before its first worker event (the spec's rule of when a child makes its
+// root wait on children, dispatch://INFRA-1077/spec#b-b9aae78c-0d9c-4a57-aa0c-9015502f0a51). The
+// child below reads as `implementing` for eleven of its root's twelve hours, and seven of them
+// are its own work time: two run before its first worker event, two in `backlog`, and one back in
+// the queue. The root's five other hours are idle.
 func TestAChildMakesItsRootWaitOnlyThroughItsOwnWorkTime(t *testing.T) {
 	root := newIssue("INFRA-1").worked("planner", hour(0)).closedAt(hour(12)).
 		observeString(legion.FieldPhase, hour(0), "planning").

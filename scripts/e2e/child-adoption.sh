@@ -3,8 +3,9 @@
 # of a live tree, joins that tree and runs there (INFRA-252): admission's sweep adopts it once its
 # recorded parent is in the tree, an architect's release_children adopts it from todo, from backlog
 # and from the state INFRA-214 reached before it answers, a todo root under an unreleased child of
-# the tree waits in no line, past a root of its own parked on its chain too, and a child recorded in
-# another tree, the child of a root held under an unreleased child among them, is refused by name.
+# the tree waits in no line, past a root of its own in backlog on its chain too, and a child
+# recorded in another tree, the child of a root held under an unreleased child among them, is
+# refused by name.
 # The tree's root gives its slot back while a child of it is open and takes one again once none is
 # (dispatch://INFRA-3320 R9, R11, R12), so the child the sweep adopts runs on the slot the root gave
 # back, and each child a release adopts waits for a slot of its own.

@@ -6,8 +6,9 @@ declare module "@oh-my-pi/pi-coding-agent" {
   export interface AgentRef {
     readonly id: string;
     readonly kind: AgentKind;
-    /** Null exactly when parked or aborted. These are `AgentSession` getters, absent on a build
-     *  older than them. The pin's file commands and prompt templates both require descriptions. */
+    /** Null exactly when the host disposed of the session, whether the agent ended and can be
+     *  resumed or was aborted. These are `AgentSession` getters, absent on a build older than
+     *  them. The pin's file commands and prompt templates both require descriptions. */
     readonly session: {
       readonly sessionManager: { getSessionId(): string };
       readonly slashCommands?: readonly { readonly name: string; readonly description: string }[];

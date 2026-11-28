@@ -1143,7 +1143,7 @@ func TestWithNoPacingTheDisplacedWaveGoesOutInOneTick(t *testing.T) {
 //
 // The negative control is the two exemptions reverted, which no configuration reaches: with the
 // rate at 0 the whole wave goes out in one tick (TestWithNoPacingTheBootWaveGoesOutInOneTick), and
-// a non-exempt operator resume would leave the resumed claim parked launching with the state
+// a non-exempt operator resume would leave the resumed claim launching under a delayed wake, with the state
 // naming its wake, which this test's own assertions would then read.
 func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 	t.Parallel()
@@ -1265,7 +1265,7 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 // the stop a claim that is no tree's root, so each of the three takes one wake and no more; the
 // selection below says why.
 //
-// The suspend is the one that waited until this issue's tester found it. A claim the gate parked
+// The suspend is the one that waited until this issue's tester found it. A claim the gate delayed
 // launching with no process holds no process for a suspension to protect, and over a wave its turn
 // is tens of minutes out, so a drain answered 202 and applied only at that turn leaves the
 // operator waiting that long — and a restart inside it forgets the hold, which lives in memory
@@ -1347,7 +1347,7 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 		}
 	}
 
-	// What a decision that asks whether the claim runs something sees: a claim parked with no
+	// What a decision that asks whether the claim runs something sees: a claim delayed with no
 	// process is written launching with no locator, which is a launch in flight, so the task is
 	// queued for the ready that follows rather than ignored or launched a second time.
 	status, body = d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(delivered)+"/deliver",
@@ -1355,12 +1355,12 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 	if status != http.StatusOK {
 		t.Fatalf("the deliver to a waiting claim = %d; body %s", status, body)
 	}
-	parked := d.claim(delivered)
-	if parked.State != string(supervise.StateLaunching) || parked.Locator != nil || parked.Generation != 1 {
-		t.Fatalf("the waiting claim is %+v, want launching at its generation with no process: what a launch in flight looks like", parked)
+	delayed := d.claim(delivered)
+	if delayed.State != string(supervise.StateLaunching) || delayed.Locator != nil || delayed.Generation != 1 {
+		t.Fatalf("the waiting claim is %+v, want launching at its generation with no process: what a launch in flight looks like", delayed)
 	}
-	if parked.Pending == nil || parked.Pending.DeliveredAt != nil {
-		t.Fatalf("the task delivered to a waiting claim is %+v, want it queued for the ready that follows", parked.Pending)
+	if delayed.Pending == nil || delayed.Pending.DeliveredAt != nil {
+		t.Fatalf("the task delivered to a waiting claim is %+v, want it queued for the ready that follows", delayed.Pending)
 	}
 
 	// Nothing waited for a turn: the clock is where the wave left it, and every wake still in the
@@ -1488,7 +1488,7 @@ func TestAnOperatorsCloseOfATreeTakesTheWakesOfItsRootAndItsWorker(t *testing.T)
 // sweep takes it for an orphan meanwhile: the claim still records it, so every reconciliation the
 // sweep runs knows it. The wave here is the stale-plugin lane's own: one relaunch for each stale
 // claim, raised by no request at all, and each of them waits under the kind that lane alone
-// parks (supervise.WakePluginRefresh), which is how a reader of the state body tells a fleet's
+// delays (supervise.WakePluginRefresh), which is how a reader of the state body tells a fleet's
 // refresh from the launches that start a tree's work.
 //
 // The wave is one gate's worth of claims rather than the file's forty, because the lane may hold
@@ -1643,7 +1643,7 @@ func staleController(t *testing.T, cfg config.Config) claim.Token {
 }
 
 // refreshWakesWaiting is the wakes of the stale-plugin lane the pacing holds, by the kind that
-// lane alone parks: what the gate bounds, read where the operator reads it
+// lane alone delays: what the gate bounds, read where the operator reads it
 // (supervise.WakePluginRefresh, api.State.WakesWaiting).
 func refreshWakesWaiting(t *testing.T, d *daemon) []api.WakeWaiting {
 	t.Helper()
@@ -1821,7 +1821,7 @@ func TestTheRefreshGateAdmitsTheRateAtEachSweepAndPostsTheControllerWhateverItHo
 
 // staleRelaunchHeldLine is the line a machine writes where it takes the lane's post over a claim
 // in a turn and holds the relaunch for that turn's end (supervise's holdStaleRelaunch). It is
-// how the case below reads that such a claim was posted at all: it parks no wake and relaunches
+// how the case below reads that such a claim was posted at all: it delays no wake and relaunches
 // nothing until its turn ends, so the line is the only thing the post leaves behind.
 const staleRelaunchHeldLine = "supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end"
 
@@ -1999,8 +1999,8 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 // dispatch://INFRA-5472: a restart while the pacing holds the relaunch of a process the daemon
 // found dead raises that relaunch again in the restart's own wave, beside the unfinished launches,
 // and does not wait for the runtime to report the death a second time. Such a claim records the
-// dead process (the park writes nothing of it), so boot restores it as live rather than as an
-// unfinished launch, and before this the only path that raised its relaunch again was the
+// dead process (the pacing's delay writes nothing of it), so boot restores it as live rather than
+// as an unfinished launch, and before this the only path that raised its relaunch again was the
 // sweep's next report of the death. In an issue pod whose roles container restarted, that report
 // waits for the pod's launcher to reconnect and say it runs no child, which is a probe interval
 // after boot: by then the boot wave holds the pacing, and the relaunch went in behind all of it
@@ -2023,7 +2023,7 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
 	awaitWave(t, d, rt, tokens)
 	// The roles container of the dead claim's pod restarted: the runtime reports its process gone,
-	// and the daemon charges the death and parks the relaunch behind the wave.
+	// and the daemon charges the death and delays the relaunch behind the wave.
 	recorded := d.claim(dead)
 	death := runtime.Observation{Locator: *recorded.Locator, Kind: runtime.Gone, At: clock.Now(), OutOfMemory: true,
 		Detail: "pod legion-acme-1 (uid 1) role implementer's launcher reports no child; container roles restarted 1 times"}

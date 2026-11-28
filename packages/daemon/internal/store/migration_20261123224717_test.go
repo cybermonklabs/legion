@@ -34,9 +34,9 @@ const membersOwedRelease = "the release that brings a re-admitted tree's members
 // promotion has opened (dispatch://INFRA-5471): a root standing in todo at admitted on a
 // generation a re-admission started, holding no slot, released for no wait and with no linger. A
 // root the release before promoted (in progress, holding its slot, or released for a wait), a root
-// that never ran, a root parked again, a root whose first phase started and a child all stay
-// unmarked, so the first pass after the upgrade brings nothing of a promoted generation back. The
-// mark reads no design gate, which only the deployment's steps can judge: a root still queued
+// that never ran, a root moved to backlog again, a root whose first phase started and a child all
+// stay unmarked, so the first pass after the upgrade brings nothing of a promoted generation back.
+// The mark reads no design gate, which only the deployment's steps can judge: a root still queued
 // behind its gate, a root whose gate opened before its promotion while its tree's lifecycle stood
 // open, one whose spec opened while its Verification document waits, and one whose gate opened
 // while its tree's lifecycle was not open are all marked, since no promotion has brought their
@@ -82,7 +82,7 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 		root("LEGION-5", "todo", 1, phase.Admitted, nil),         // a root that never ran
 		root("LEGION-6", "todo", 2, phase.Admitted, nil),         // promoted, then set back to todo, holding its slot
 		root("LEGION-62", "todo", 2, phase.Admitted, nil),        // promoted, then released for a wait and set back to todo
-		root("LEGION-7", "backlog", 2, phase.Admitted, &lingers), // parked again, lingering
+		root("LEGION-7", "backlog", 2, phase.Admitted, &lingers), // moved to backlog again, lingering
 		root("LEGION-8", "todo", 2, phase.Planning, nil),         // its first phase started
 		{Key: "LEGION-9", Tree: "LEGION-1", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Admitted, Generation: 1,
 			Status: "todo", DispatchStatus: "todo", Rank: "B", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},

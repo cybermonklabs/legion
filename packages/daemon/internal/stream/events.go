@@ -191,7 +191,7 @@ func (Drained) isEvent()      {}
 // channel Events() returns.
 //
 // Unbounded because a connection's reader is also the goroutine that answers its requests: a
-// reader parked on a full channel would leave a GetState answer unread behind it, and a consumer
+// reader blocked on a full channel would leave a GetState answer unread behind it, and a consumer
 // that asked for that state before draining the channel would wait on itself. The shipped
 // listener has the same property by construction — its callbacks never wait on a consumer. What
 // grows it is one small struct per turn boundary, not per frame.

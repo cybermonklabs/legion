@@ -67,7 +67,7 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 		return record.Issue{Key: key, Tree: key, Project: treeRunsProject, Title: key, Phase: at, Generation: generation, Status: status,
 			Rank: rank, HandedOver: true, LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	}
-	const running, lingering, readmitted, answered, child, parked = "LEGION-300", "LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-305"
+	const running, lingering, readmitted, answered, child, inBacklog = "LEGION-300", "LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-305"
 	lingerUntil := treeRunsNow.Add(time.Hour)
 	answeredAt := treeRunsNow.Add(-10 * time.Minute)
 	parent := running
@@ -79,7 +79,7 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 		root(answered, phase.AwaitingPerson, "in_progress", 1, "D"),
 		{Key: child, Tree: running, Parent: &parent, Project: treeRunsProject, Title: child, Phase: phase.Admitted, Generation: 1,
 			Status: "todo", Rank: "E", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
-		root(parked, phase.Done, "backlog", 1, "F"),
+		root(inBacklog, phase.Done, "backlog", 1, "F"),
 	}
 	issues[1].LingerUntil = &lingerUntil
 	issues[3].Awaiting = &record.Awaiting{Ask: "ask-303", Since: record.EventMark{Seq: 5, At: treeRunsNow.Add(-time.Hour)},
@@ -92,9 +92,9 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 			}
 		}
 		// Every one of the five trees once opened, and none has been cleaned up: the lingering
-		// tree, the parked one and the re-admitted one stand open from the run that ended, which
+		// tree, the one in backlog and the re-admitted one stand open from the run that ended, which
 		// is why the lifecycle alone would call each of them running.
-		for _, tree := range []string{running, lingering, readmitted, answered, parked} {
+		for _, tree := range []string{running, lingering, readmitted, answered, inBacklog} {
 			if _, err := records.OpenTreeLifecycle(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow); err != nil {
 				return err
 			}
@@ -144,7 +144,7 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 	}{
 		{running, true},
 		{lingering, false},
-		{parked, false},
+		{inBacklog, false},
 		{readmitted, false},
 		{answered, true},
 	} {

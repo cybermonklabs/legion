@@ -54,7 +54,7 @@ func stallWithMarker(t *testing.T, relay *testnats.StallRelay, conn *nats.Conn, 
 		t.Fatalf("publish the filler: %v", err)
 	}
 	awaitWritten(t, conn, "the filler")
-	relay.AwaitParked(t)
+	relay.AwaitStopped(t)
 	if err := conn.Publish(subject, marker); err != nil {
 		t.Fatalf("publish the marker: %v", err)
 	}

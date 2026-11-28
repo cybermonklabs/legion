@@ -610,7 +610,7 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	// the sentence the supervisor wrote beside it, the counts that failure left against the
 	// deployment's limits, and the two the claim itself recorded — why its process was last found
 	// gone and why its last start produced no agent (record.NoticeFailure, workflow's
-	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
+	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — an idle agent
 	// holding no task dies uncounted — which the record says in as many words.
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
 		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
@@ -733,7 +733,7 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 }
 
 // A child a human moves out of the workflow (here backlog, mid-test) leaves the table: its claims
-// are suspended and its phase parked, so its tester's next completion advances nothing and no
+// are suspended and its phase set at done, so its tester's next completion advances nothing and no
 // status write lands over the human's backlog.
 func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testing.T) {
 	t.Parallel()
@@ -779,7 +779,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 		t.Fatal(err)
 	}
 	if childPhase != phase.Done {
-		t.Fatalf("backlogged child phase = %s after its tester's completion, want parked in done", childPhase)
+		t.Fatalf("backlogged child phase = %s after its tester's completion, want its phase at done", childPhase)
 	}
 	rows, err := pool.Query(ctx, "select id, kind, issue, payload from outbox where kind = 'dispatch_status' order by id")
 	if err != nil {
@@ -1012,7 +1012,7 @@ func TestAStopSupersededByANewerStartNeverActs(t *testing.T) {
 	}
 }
 
-// A root a human moves out of the workflow lingers: only the root is parked in done, and every
+// A root a human moves out of the workflow lingers: only the root has its phase set at done, and every
 // claim of every tree member is suspended, the root's own worker and its children's. A child keeps
 // its phase, so its running worker is one whose role works the child's phase, and its suspend must
 // act all the same: nothing else stops that worker before the linger's tree close, and a completion

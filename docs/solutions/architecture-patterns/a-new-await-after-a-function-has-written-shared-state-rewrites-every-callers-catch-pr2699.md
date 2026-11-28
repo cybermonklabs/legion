@@ -27,7 +27,7 @@ happened".
   each entry as you write it, and when you undo, check the shared slot still holds your own value.
   Two calls can both pass an "is it already there" check and both write, when the check and the
   write are separated by an await; the loser must not close the winner's work.
-- When a call parks on the new await, a second call for the same key must wait for the first
+- When a call waits on the new await, a second call for the same key must wait for the first
   rather than reading the shared state as it stands and reporting it done. Keep the in-flight
   promise per key and await it at the head of the function.
 - Then read the callers' catches rather than assuming they are fine. The expensive ones are the

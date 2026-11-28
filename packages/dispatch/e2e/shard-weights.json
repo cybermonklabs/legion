@@ -976,7 +976,7 @@
       "attention.e2e.ts": {
         "Jump to latest stays away while any part of a tall newest card is on the screen": 3.03,
         "a read mark moving in a narrow Conversation keeps the lower card fixed": 2.84,
-        "a read mark moving under a reader parked in a Conversation gap keeps the lower card fixed": 2.8,
+        "a read mark moving under a reader scrolled to a Conversation gap keeps the lower card fixed": 2.8,
         "a reader at the Conversation top follows a new card": 3.41,
         "a reader scrolled up keeps their Conversation viewport when a new card arrives @pr": 3.72,
         "loading older Activity rows keeps the reader anchor": 6.19
@@ -1692,7 +1692,7 @@
         "a person hands an ask to another person and it moves between the two Inboxes": 23.73,
         "a pin's link to an agents' turn lands the outline on its nearest drawn ancestor with the note and opens Details at the turn marked": 6.97,
         "a read mark moving in a narrow history keeps the lower entry fixed": 4.44,
-        "a read mark moving under a reader parked in a history gap keeps the lower entry fixed": 4.51,
+        "a read mark moving under a reader scrolled to a history gap keeps the lower entry fixed": 4.51,
         "a reader at the top of Details finds a new entry at the history's head": 4.06,
         "a reader scrolled down the history keeps their place when a new entry arrives": 3.47,
         "a reference in a question the history quotes is drawn in the words' ink, not the old application's blue": 1.93,

@@ -430,7 +430,7 @@ func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *t
 	}
 }
 
-// The close of a parked tree's linger ends the merge of a member it does not hand over whose pull
+// The close of the linger of a tree whose root is in backlog ends the merge of a member it does not hand over whose pull
 // request can no longer land, and the unmerged close of that pull request after it ends one the
 // close left open (workflow's lingerExpired and closed). An earlier release makes the close and
 // writes no end, and nothing of the member's witness moves, so the roll forward reads the close

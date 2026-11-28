@@ -33,7 +33,7 @@ const (
 	awaiting     = "LEGION-5" // in merging, not merged yet: handed over
 	inAccepting  = "LEGION-6" // waiting on its architect's acceptance: handed over
 	finished     = "LEGION-7" // done: stays
-	parked       = "LEGION-8" // parked by a person: stays
+	inBacklog    = "LEGION-8" // moved to backlog by a person: stays
 	unstarted    = "LEGION-9" // still admitted, held there by its accepted root: handed over
 	lingerOfRoot = uint64(1)
 )
@@ -45,7 +45,7 @@ const (
 // label and the todo do when a person sets them. Before, the child stayed suspended, unlabelled
 // and with no architect, and nothing ran it again (LEGION-624). Every phase carries into the new
 // generation, since re-planning a child that is past its review would lose completed work. A
-// child that is finished or parked stays with the tree: what a person took out of the workflow
+// child that is finished or moved to backlog stays with the tree: what a person took out of the workflow
 // is what a closed tree keeps. The child still at admitted is handed over with the rest — its
 // tree closed and it never started, so nothing would start it where it stands — and this one was
 // the daemon's own to hold besides, since the root stands in merging, a phase the daemon has
@@ -53,12 +53,12 @@ const (
 // the merge or a person made it by hand (the workflow's unfinishedHandOvers). The close itself
 // hands nothing over, so
 // a root that comes back inside its linger resumes its children where they stood and hands none
-// over. The close here is a person's — parked, then closed — where a merged root's close waits
+// over. The close here is a person's — moved to backlog, then closed — where a merged root's close waits
 // for the rest of its tree instead (the workflow's closeMerged) and leaves no child mid-run to
 // hand over.
 func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
-	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
+	apply(t, pool, admission, "root-backlog", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 	apply(t, pool, admission, "root-closed", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.closed", Status: "done", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 	if got := handOvers(t, pool); len(got) != 0 {
 		t.Fatalf("hand-overs while the tree lingers = %v, want none: the root can still come back", got)
@@ -79,7 +79,7 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 	if got.Tree != planning || got.Phase != phase.Planning || got.Generation != 2 || got.Status != "in_progress" || architectStarts(t, pool, planning) != 1 {
 		t.Fatalf("the handed-over child = %#v with %d architect starts, want its own planning root, generation 2, with its architect started once", got, architectStarts(t, pool, planning))
 	}
-	for _, key := range []string{heldTesting, inRetro, awaiting, inAccepting, finished, parked, unstarted} {
+	for _, key := range []string{heldTesting, inRetro, awaiting, inAccepting, finished, inBacklog, unstarted} {
 		if got := issue(t, pool, key); got.Tree != finishedRoot || got.Generation != 1 {
 			t.Fatalf("%s = %#v, want it left in %s's tree until its own hand-over event", key, got, finishedRoot)
 		}
@@ -88,7 +88,7 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 
 // A merged root's close waits for the rest of its tree: the merge leaves the root in merging,
 // holding no slot, since merging is past the root's own review (record.KeepsSlot). No child is
-// disturbed, and the close comes once the last of them leaves — here the architect parking each.
+// disturbed, and the close comes once the last of them leaves — here the architect moving each to backlog.
 // That close lingers the tree and opens the root's production check, whose first look its
 // implementer reports, since the tree's close waits for an open check (the workflow's check
 // tests). Nothing is left mid-run by then, so the linger's end hands no child over. A pull
@@ -101,7 +101,7 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 // merging (record.AcceptedAncestor) — and a child the daemon pins is left out of the set the close
 // waits on (record.OpenBeneath). Counting it would deadlock the pair: the child waits for the
 // root to leave merging and the root waits for the child to leave, and no act of a person short of
-// parking the child breaks it. This is the one recorded departure from the spec of
+// moving the child out of the workflow breaks it. This is the one recorded departure from the spec of
 // dispatch://INFRA-980, decided on dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
@@ -134,22 +134,22 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 
 	// Every member that ran but the last leaves the root waiting. The released child that has
 	// never started a phase (unstarted) is the departure above: the daemon holds it at admitted
-	// beneath this accepted root, so it does not hold the close, and parking it afterwards finds
+	// beneath this accepted root, so it does not hold the close, and moving it to backlog afterwards finds
 	// the root already done.
-	park := func(seq int, key string) {
+	toBacklog := func(seq int, key string) {
 		t.Helper()
-		apply(t, pool, admission, "park-"+key, intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: int64(seq) + 4, Type: "issue.updated", Status: "backlog", Title: key, Parent: finishedRoot, Rank: "B"}, engine)
+		apply(t, pool, admission, "backlog-"+key, intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: int64(seq) + 4, Type: "issue.updated", Status: "backlog", Title: key, Parent: finishedRoot, Rank: "B"}, engine)
 	}
 	for seq, key := range []string{planning, heldTesting, inRetro, awaiting} {
-		park(seq, key)
+		toBacklog(seq, key)
 		if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging {
-			t.Fatalf("the root once %s was parked = %#v, want it still waiting for the rest of its tree", key, got)
+			t.Fatalf("the root once %s moved to backlog = %#v, want it still waiting for the rest of its tree", key, got)
 		}
 	}
 	if got := issue(t, pool, unstarted); got.Phase != phase.Admitted || !record.InWorkflow(got) {
 		t.Fatalf("the unstarted child while its root waits = %#v, want it still in the workflow at admitted, held there by its accepted root", got)
 	}
-	park(4, inAccepting)
+	toBacklog(4, inAccepting)
 	if got := issue(t, pool, finishedRoot); got.Phase != phase.Done || !got.Lingers() {
 		t.Fatalf("the root once its last started child left = %#v, want it done and lingering, with the child it holds at admitted not counted", got)
 	}
@@ -168,9 +168,9 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	// The child the exclusion kept out of the close is the child the linger hands over. It is
 	// the other half of the departure above: leaving it where it stands would leave it todo at
 	// admitted in a closed tree for ever, with nobody told. Nothing else of this tree is handed
-	// over — every member that ran was parked before the close.
+	// over — every member that ran was moved to backlog before the close.
 	if got := handOvers(t, pool); len(got) != 1 || got[0] != unstarted {
-		t.Fatalf("hand-overs once the linger ended = %v, want %s alone: the child this root's close left at admitted runs as a root of its own, and every member that ran was parked", got, unstarted)
+		t.Fatalf("hand-overs once the linger ended = %v, want %s alone: the child this root's close left at admitted runs as a root of its own, and every member that ran was moved to backlog", got, unstarted)
 	}
 }
 
@@ -760,7 +760,7 @@ func TestAStrandedMidRunChildHandedToLegionByAPersonCarriesItsState(t *testing.T
 // rest of its tree (the workflow's closeMerged).
 func TestARootReopenedInItsLingerKeepsItsChildren(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
-	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
+	apply(t, pool, admission, "root-backlog", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 	apply(t, pool, admission, "root-closed", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.closed", Status: "done", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 	apply(t, pool, admission, "root-reopened", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated", Status: "todo", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 	if root := issue(t, pool, finishedRoot); root.Generation != 2 || root.Lingers() {
@@ -804,7 +804,7 @@ func seedFinishingTree(t *testing.T) (*pgxpool.Pool, *Admission, intake.Handler)
 			records.PutIssue(ctx, tx, child(awaiting, phase.Merging, "retro")),
 			records.PutIssue(ctx, tx, child(inAccepting, phase.Accepting, "needs_review")),
 			records.PutIssue(ctx, tx, child(finished, phase.Done, "done")),
-			records.PutIssue(ctx, tx, child(parked, phase.Done, "backlog")),
+			records.PutIssue(ctx, tx, child(inBacklog, phase.Done, "backlog")),
 			records.PutIssue(ctx, tx, child(unstarted, phase.Admitted, "todo")),
 		} {
 			if put != nil {

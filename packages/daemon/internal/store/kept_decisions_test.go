@@ -64,9 +64,9 @@ func (r *keptRig) startRow(tree string) int64 {
 // keep keeps a person's decision ref on issue, claimed by row when row is not zero.
 func (r *keptRig) keep(issue, ref string, row int64) {
 	r.t.Helper()
-	r.exec(`insert into parked_decisions (issue, ref, decision, actor, at) values ($1, $2, 'ask-answered', 'user:alice', $3)`, issue, ref, r.at)
+	r.exec(`insert into kept_decisions (issue, ref, decision, actor, at) values ($1, $2, 'ask-answered', 'user:alice', $3)`, issue, ref, r.at)
 	if row != 0 {
-		r.exec(`update parked_decisions set claimed_by = $2 where ref = $1`, ref, row)
+		r.exec(`update kept_decisions set claimed_by = $2 where ref = $1`, ref, row)
 	}
 }
 
@@ -97,7 +97,7 @@ func (r *keptRig) task(id, issue, ref string) supervise.Delivery {
 func (r *keptRig) row(ref string) (stands bool, claimedBy int64, heldBy, heldDelivery string) {
 	r.t.Helper()
 	err := r.store.Pool().QueryRow(r.ctx, `select coalesce(claimed_by, 0), coalesce(held_by_claim, ''), coalesce(held_by_delivery, '')
-		from parked_decisions where ref = $1`, ref).Scan(&claimedBy, &heldBy, &heldDelivery)
+		from kept_decisions where ref = $1`, ref).Scan(&claimedBy, &heldBy, &heldDelivery)
 	if err == pgx.ErrNoRows {
 		return false, 0, "", ""
 	}
@@ -153,7 +153,7 @@ func TestADecisionPutBackKeepsItsReviewsSequenceDocumentAndVersion(t *testing.T)
 	const tree, ref = "LEGION-320", "dispatch://LEGION-320/spec"
 	r.issue(tree, tree)
 	start := r.startRow(tree)
-	r.exec(`insert into parked_decisions (issue, ref, decision, actor, at, seq, artifact, version, claimed_by)
+	r.exec(`insert into kept_decisions (issue, ref, decision, actor, at, seq, artifact, version, claimed_by)
 		values ($1, $2, 'design-changes-requested', 'user:alice', $3, 8, 'artifact-1', 2, $4)`, tree, ref, r.at, start)
 	architect := r.architect(tree, start)
 	kept, err := json.Marshal(record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at, Issue: tree,
@@ -179,7 +179,7 @@ func TestADecisionPutBackKeepsItsReviewsSequenceDocumentAndVersion(t *testing.T)
 	var seq int64
 	var artifact string
 	var version int
-	if err := r.store.Pool().QueryRow(r.ctx, `select coalesce(seq, 0), artifact, coalesce(version, 0) from parked_decisions
+	if err := r.store.Pool().QueryRow(r.ctx, `select coalesce(seq, 0), artifact, coalesce(version, 0) from kept_decisions
 		where ref = $1`, ref).Scan(&seq, &artifact, &version); err != nil {
 		t.Fatalf("read the decision put back: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestAHoldReleaseLeavesAClaimThatCounts(t *testing.T) {
 	// The release's own rule, apart from the claim's: put the old hold back beside the new claim,
 	// as no writer does any more, so the retirement has a hold to release on a row a claim counts
 	// on. It releases the hold and leaves the claim.
-	r.exec(`update parked_decisions set held_by_claim = $2, held_by_delivery = $3 where ref = $1`,
+	r.exec(`update kept_decisions set held_by_claim = $2, held_by_delivery = $3 where ref = $1`,
 		ref, string(oldArchitect.Token), oldTask.ID)
 	if err := r.store.RetireDelivery(r.ctx, oldArchitect, oldTask.ID); err != nil {
 		t.Fatalf("retire the old tree's task: %v", err)
@@ -278,7 +278,7 @@ func TestAHoldReleaseLeavesAClaimThatCounts(t *testing.T) {
 }
 
 // compose is what a composer of a start or catch-up of tree does in tx (workflow's
-// ParkedDecisionTask, then EnqueueNaming): it reads what tree is owed and nothing claims, enqueues
+// UnclaimedKeptTask, then EnqueueNaming): it reads what tree is owed and nothing claims, enqueues
 // a row naming it and claims it for that row. It returns what the row names and the row's own id,
 // which is what a later telling of that row forgets (record.Store.ForgetKeptDecisions).
 func (r *keptRig) compose(tx pgx.Tx, tree string) (record.KeptDecisions, int64, error) {

@@ -619,7 +619,7 @@ func (c *blockedClose) Close() error {
 //
 // SetReadDeadline does nothing once the row has armed it, and passes through before that.
 // That is the poller's own answer made certain rather than waited for: the read the cut has
-// to stop is parked in the poller, and a deadline in the past does not end a read whose socket
+// to stop waits in the poller, and a deadline in the past does not end a read whose socket
 // became readable before the deadline was set, which is what happens about one run in two
 // hundred on a loaded machine. Armed, it is what happens in every run.
 //
@@ -671,7 +671,7 @@ func (c *heldConn) signal() {
 }
 
 // waitReading waits until a read of the socket is in flight - the join's copy of the command's
-// side, parked with nothing to read, which is the one read the cut has to stop - and answers
+// side, waiting with nothing to read, which is the one read the cut has to stop - and answers
 // which read that is.
 func (c *heldConn) waitReading(t *testing.T) int {
 	t.Helper()
@@ -949,7 +949,7 @@ func TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst(t *testing.T) {
 // the stream had ended. The cut decides that frame is carried nowhere, and the service reads
 // only what crossed before it.
 //
-// Every wait here is for something another goroutine makes happen: a read parked on the
+// Every wait here is for something another goroutine makes happen: a read blocked on the
 // socket, that read returning, the close_notify arriving, the call's line being written, the
 // service's answer returning. Nothing is waited out.
 func TestAJoinedConnectionIsClosedCarryingNoFrameWrittenAfterTheCut(t *testing.T) {
@@ -985,7 +985,7 @@ func TestAJoinedConnectionIsClosedCarryingNoFrameWrittenAfterTheCut(t *testing.T
 	frame(t, conn, reader, carried)
 	socket := <-held
 
-	// The join's copy of the command's side, parked in a read of the socket with nothing to
+	// The join's copy of the command's side, waiting in a read of the socket with nothing to
 	// read: the one read that is in flight when the cut is decided.
 	reading := socket.waitReading(t)
 	socket.arm()
@@ -998,7 +998,7 @@ func TestAJoinedConnectionIsClosedCarryingNoFrameWrittenAfterTheCut(t *testing.T
 	if _, err := conn.Write([]byte(late + "\n")); err != nil {
 		t.Fatalf("write the frame after the cut: %v", err)
 	}
-	// Nothing else can wake the parked read - the deadline does nothing and the socket is
+	// Nothing else can wake the waiting read - the deadline does nothing and the socket is
 	// held open - so what wakes it is that frame, and its return is the proxy having read
 	// the frame and decided what to do with it.
 	socket.waitReturned(t, reading)

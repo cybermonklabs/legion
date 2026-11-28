@@ -58,7 +58,7 @@ const READS = {
   advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
   // A fault list of the Priorities page: the work under any priority standing in backlog or
   // icebox, with its move there, as that page's Issues table reads it.
-  parkedWork: {
+  backlogWork: {
     key: advancesIssuesQuery(
       { advances: "any", statuses: ["backlog", "icebox"], moved: true },
       true
@@ -596,7 +596,7 @@ const rules: Record<string, Rule> = {
       "priorities",
       "prioritySummary",
       "advancesWork",
-      "parkedWork",
+      "backlogWork",
     ],
     spares: ["unrelatedPanel", "issuePanel", "summary", "projects", "inbox", "pinned"],
   },
@@ -736,13 +736,13 @@ const rules: Record<string, Rule> = {
   "an advances change refreshes the priorities body, the summary and the work under a priority, and no backlink panel":
     {
       event: event("issue.updated", issue({ ancestors: [], changed: ["advances"] })),
-      refreshes: ["detail", "priorities", "prioritySummary", "advancesWork", "parkedWork"],
+      refreshes: ["detail", "priorities", "prioritySummary", "advancesWork", "backlogWork"],
       spares: ["issuePanel", "parentPanel", "referencesTab", "summary", "components"],
     },
   "an assignee move leaves the work under a priority where it is": {
     event: event("issue.updated", issue({ ancestors: [], changed: ["assignee"] })),
     refreshes: ["detail"],
-    spares: ["advancesWork", "parkedWork", "priorities", "prioritySummary"],
+    spares: ["advancesWork", "backlogWork", "priorities", "prioritySummary"],
   },
   "a new issue refreshes its ancestors' rollups and the Agents page's issue picker, not every detail or the project counts":
     {
@@ -1914,16 +1914,16 @@ function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent
 }
 
 /** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, the Agents
- *  page's issue picker, the parked fault list and the work under linkage-closure - hold it
- *  advancing linkage-closure, beside an issue read, a project's list and the work under
+ *  page's issue picker, the fault list in backlog or icebox and the work under linkage-closure -
+ *  hold it advancing linkage-closure, beside an issue read, a project's list and the work under
  *  oss-verify that advance oss-verify alone. */
 const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
   advancesWork: ["linkage-closure"],
   agentsPicker: ["linkage-closure"],
+  backlogWork: ["linkage-closure"],
   detail: ["linkage-closure", "oss-verify"],
   otherAdvancesWork: ["oss-verify"],
   otherProjectList: ["oss-verify"],
-  parkedWork: ["linkage-closure"],
   pinned: ["linkage-closure"],
   projectList: ["linkage-closure"],
   unrelatedDetail: ["oss-verify"],
@@ -1964,9 +1964,9 @@ test("a priority.updated of a deleted priority refreshes its work, the work unde
   expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
     "advancesWork",
     "agentsPicker",
+    "backlogWork",
     "detail",
     "noPriorityWork",
-    "parkedWork",
     "pinned",
     "priorities",
     "priorityHistory",
@@ -1980,8 +1980,8 @@ test("a priority.updated of a deleted priority refreshes its work, the work unde
 test("a priority.updated of a deleted priority refetches no issue read that does not advance it", () => {
   const otherOnly: NonNullable<PageOptions["advances"]> = {
     agentsPicker: ["oss-verify"],
+    backlogWork: ["oss-verify"],
     detail: ["oss-verify"],
-    parkedWork: ["oss-verify"],
     pinned: ["oss-verify"],
     projectList: ["oss-verify"],
   };

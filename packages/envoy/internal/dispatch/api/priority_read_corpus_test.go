@@ -54,8 +54,8 @@ const (
 	readCorpusStating        = 1600
 	// readCorpusDepth is how far below the issue that states its relation the deepest member
 	// stands: four levels, at least one chain of which R1 names.
-	readCorpusDepth  = 4
-	readCorpusParked = 729
+	readCorpusDepth             = 4
+	readCorpusInBacklogOrIcebox = 729
 	// The spread of events per issue: production's median and mean, and its most, which no issue
 	// of the corpus passes.
 	readCorpusEventsMedian = 16
@@ -66,11 +66,12 @@ const (
 // What the full read and the summary with no project answer over the corpus, by its
 // construction: the open pairs of an issue and a priority by status, the claimed ones, the open
 // asks on them and the pairs closed in the last seven days, the 115 open issues in flight under
-// no priority, and the second fault. Of the 729 parked issues, the second fault holds the 393 that
-// state a priority no issue above them carries (priorityBacklogTerms): the 386 roots that stand in
-// backlog (269) or icebox (117), which have no parent, and the 7 issues four levels down that
-// state a second priority beside the one they inherit, which no issue above them states. Each
-// of them states one priority of its own, so the fault's counts by priority add to 393 too.
+// no priority, and the second fault. Of the 729 issues in backlog or icebox, the second fault
+// holds the 393 that state a priority no issue above them carries (priorityBacklogTerms): the 386
+// roots that stand in backlog (269) or icebox (117), which have no parent, and the 7 issues four
+// levels down that state a second priority beside the one they inherit, which no issue above them
+// states. Each of them states one priority of its own, so the fault's counts by priority add to
+// 393 too.
 var readCorpusOpenPairs = map[string]int{
 	"in_progress": 972, "todo": 826, "backlog": 525, "triage": 217, "icebox": 211, "needs_review": 119, "testing": 104, "retro": 21,
 }
@@ -204,19 +205,19 @@ func requireReadCorpusJITOff(t *testing.T, database *store.Store, what string) {
 // built: the counts R1 names, the spread of events per issue, and the issues whose events do not
 // rise in created_at with seq or whose last_seq is not their newest seq.
 type readCorpusCensus struct {
-	issues, livePriorities, advancing, stating, deepest, parked int
-	events, eventsMedian, eventsMost                            int
-	eventsMean                                                  float64
-	unordered, lastSeqOff                                       int
-	took                                                        time.Duration
+	issues, livePriorities, advancing, stating, deepest, inBacklog int
+	events, eventsMedian, eventsMost                               int
+	eventsMean                                                     float64
+	unordered, lastSeqOff                                          int
+	took                                                           time.Duration
 }
 
 func (c readCorpusCensus) String() string {
 	return fmt.Sprintf("corpus: %d issues, %d live priorities, %d issues that advance a priority, %d of them by a relation of their own, "+
-		"the deepest %d levels below the issue that states its relation, %d parked issues that advance a priority; "+
+		"the deepest %d levels below the issue that states its relation, %d issues in backlog or icebox that advance a priority; "+
 		"%d events, per issue median %d, mean %.2f, at most %d; %d issues whose events do not rise in created_at with seq, "+
 		"%d whose last_seq is not their newest seq; written in %s",
-		c.issues, c.livePriorities, c.advancing, c.stating, c.deepest, c.parked,
+		c.issues, c.livePriorities, c.advancing, c.stating, c.deepest, c.inBacklog,
 		c.events, c.eventsMedian, c.eventsMean, c.eventsMost, c.unordered, c.lastSeqOff, c.took.Round(time.Second))
 }
 
@@ -233,7 +234,7 @@ func (c readCorpusCensus) hold(t *testing.T) {
 		{"live priorities", c.livePriorities, readCorpusLivePriorities},
 		{"issues that advance a priority", c.advancing, readCorpusAdvancing},
 		{"issues that advance one by a relation of their own", c.stating, readCorpusStating},
-		{"parked issues that advance a priority", c.parked, readCorpusParked},
+		{"issues in backlog or icebox that advance a priority", c.inBacklog, readCorpusInBacklogOrIcebox},
 		{"events per issue at the median", c.eventsMedian, readCorpusEventsMedian},
 		{"events per issue on average, rounded", int(math.Round(c.eventsMean)), readCorpusEventsMean},
 		{"issues whose events do not rise in created_at with seq", c.unordered, 0},
@@ -295,7 +296,7 @@ func readCorpusCensusOf(t *testing.T, database *store.Store) readCorpusCensus {
 	t.Helper()
 	var c readCorpusCensus
 	if err := database.Pool.QueryRow(context.Background(), readCorpusCensusQuery).Scan(
-		&c.issues, &c.livePriorities, &c.advancing, &c.stating, &c.deepest, &c.parked,
+		&c.issues, &c.livePriorities, &c.advancing, &c.stating, &c.deepest, &c.inBacklog,
 		&c.events, &c.eventsMedian, &c.eventsMean, &c.eventsMost, &c.unordered, &c.lastSeqOff); err != nil {
 		t.Fatalf("read the corpus's counts: %v", err)
 	}
@@ -334,14 +335,14 @@ func readCorpusAnswerFaults(body model.Priorities, summary bool) []string {
 	if body.WorkUnderNoPriority.Count != readCorpusUnplaced {
 		faults = append(faults, fmt.Sprintf("%d issues in flight under no priority, want %d", body.WorkUnderNoPriority.Count, readCorpusUnplaced))
 	}
-	if body.PriorityWorkParked.Count != readCorpusBacklog {
+	if body.PriorityWorkInBacklogOrIcebox.Count != readCorpusBacklog {
 		faults = append(faults, fmt.Sprintf("%d issues in backlog or icebox that state a priority no issue above them carries, want %d",
-			body.PriorityWorkParked.Count, readCorpusBacklog))
+			body.PriorityWorkInBacklogOrIcebox.Count, readCorpusBacklog))
 	}
 	if summary {
-		if len(body.Priorities) != 0 || len(body.WorkUnderNoPriority.Issues) != 0 || len(body.PriorityWorkParked.Issues) != 0 {
+		if len(body.Priorities) != 0 || len(body.WorkUnderNoPriority.Issues) != 0 || len(body.PriorityWorkInBacklogOrIcebox.Issues) != 0 {
 			faults = append(faults, fmt.Sprintf("%d priorities and %d and %d fault rows, want none of them in a summary",
-				len(body.Priorities), len(body.WorkUnderNoPriority.Issues), len(body.PriorityWorkParked.Issues)))
+				len(body.Priorities), len(body.WorkUnderNoPriority.Issues), len(body.PriorityWorkInBacklogOrIcebox.Issues)))
 		}
 		return faults
 	}
@@ -375,9 +376,9 @@ func readCorpusAnswerFaults(body model.Priorities, summary bool) []string {
 		{"pairs closed in the last seven days", closed, readCorpusClosedRecently},
 		{"priorities with no newest event", undated, 0},
 		{"issues in flight under no priority by project", sumCounts(body.WorkUnderNoPriority.ByProject), readCorpusUnplaced},
-		{"pairs in backlog or icebox by priority", sumCounts(body.PriorityWorkParked.ByPriority), readCorpusBacklogPairs},
+		{"pairs in backlog or icebox by priority", sumCounts(body.PriorityWorkInBacklogOrIcebox.ByPriority), readCorpusBacklogPairs},
 		{"rows of work in flight under no priority", len(body.WorkUnderNoPriority.Issues), priorityFaultRows},
-		{"rows of work in backlog or icebox", len(body.PriorityWorkParked.Issues), priorityFaultRows},
+		{"rows of work in backlog or icebox", len(body.PriorityWorkInBacklogOrIcebox.Issues), priorityFaultRows},
 	} {
 		if count.got != count.want {
 			faults = append(faults, fmt.Sprintf("%d %s, want %d", count.got, count.what, count.want))

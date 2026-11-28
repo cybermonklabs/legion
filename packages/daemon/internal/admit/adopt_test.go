@@ -498,29 +498,29 @@ func TestAnAncestryHoldStandsWhileAQueuedRootOnItsChainIsAdoptedIntoTheLiveTree(
 	}
 }
 
-// A labelled todo issue whose Dispatch chain reaches a live tree past a recorded root parked out of
-// the workflow (INFRA-214's state: a once-queued root a person moved under the live tree and did
-// not release) is held under the live tree, whose release would reach it, not passed by the parked
-// root, which is not live: it takes no slot and no architect with one free. Once the live tree
+// A labelled todo issue whose Dispatch chain reaches a live tree past a recorded root that left
+// the workflow for backlog (INFRA-214's state: a once-queued root a person moved under the live tree and did
+// not release) is held under the live tree, whose release would reach it, not passed by the root
+// in backlog, which is not live: it takes no slot and no architect with one free. Once the live tree
 // lingers, no live root is left on its chain, and it waits as its own root and takes the slot.
-func TestARootHeldPastAParkedRootOnItsChainQueuesOnceTheTreeLingers(t *testing.T) {
+func TestARootHeldPastARootInBacklogOnItsChainQueuesOnceTheTreeLingers(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	const tree, parked, parent, child = "LEGION-168", "LEGION-180", "LEGION-169", "LEGION-214"
+	const tree, inBacklog, parent, child = "LEGION-168", "LEGION-180", "LEGION-169", "LEGION-214"
 	seedOpenTree(t, pool, tree)
-	recorded := queuedRoot(parked, tree, "C", 1)
+	recorded := queuedRoot(inBacklog, tree, "C", 1)
 	recorded.Status, recorded.DispatchStatus, recorded.Phase, recorded.HandedOver = "backlog", "backlog", phase.Done, false
 	putIssue(t, pool, recorded)
 
-	// The preparation read the parent's chain from Dispatch: parent is not recorded, then the parked
-	// root, then the live tree.
+	// The preparation read the parent's chain from Dispatch: parent is not recorded, then the root
+	// in backlog, then the live tree.
 	apply(t, pool, admission, "queued", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo",
-		Title: child, Parent: parent, Rank: "B", HandedOver: handed, Ancestry: []string{parent, parked, tree}}, admission.engine)
+		Title: child, Parent: parent, Rank: "B", HandedOver: handed, Ancestry: []string{parent, inBacklog, tree}}, admission.engine)
 	applyFact(t, pool, admission, "tick", intake.ControllerTick{})
 	assertWaiting(t, pool, nil)
 	assertSlots(t, pool, []record.Slot{{Issue: tree, Index: 0, AdmittedAt: fixedNow}})
 	if starts := architectStarts(t, pool, child); starts != 0 {
-		t.Fatalf("%s has %d architect starts queued, want none while %s runs above %s", child, starts, tree, parked)
+		t.Fatalf("%s has %d architect starts queued, want none while %s runs above %s", child, starts, tree, inBacklog)
 	}
 
 	apply(t, pool, admission, "tree-done", intake.DispatchIssue{Key: tree, ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "done",

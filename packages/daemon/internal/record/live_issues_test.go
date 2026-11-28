@@ -14,7 +14,7 @@ import (
 // records it can act on: every record of the project not in phase done, a done root a person set
 // back to todo (re-admission reads it from the line), and a done record still holding a slot
 // (the next release of slots frees it, and the cap counts it until then). A finished record, a
-// parked child and another project's record are read only by key.
+// child moved to backlog and another project's record are read only by key.
 func TestLiveIssuesReadsTheRecordsOfTheProjectThatAreNotFinished(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()

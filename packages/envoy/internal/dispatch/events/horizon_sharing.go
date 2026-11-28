@@ -64,8 +64,8 @@ func (h *Horizon) observe(ctx context.Context, after uint64) (uint64, uint64, er
 		if run {
 			h.run(ctx, flight)
 		} else {
-			if h.afterObservationParked != nil {
-				h.afterObservationParked()
+			if h.afterObservationJoined != nil {
+				h.afterObservationJoined()
 			}
 			select {
 			case <-flight.done:

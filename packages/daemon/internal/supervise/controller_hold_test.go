@@ -7,8 +7,8 @@ import (
 )
 
 // The ranks run released, daemon, controller, operator, weakest first: the controller's suspension
-// outranks the daemon's, which is a park, a linger, a close or a carry of the claim's issue, since
-// it holds against every rule, and ranks under the operator's.
+// outranks the daemon's, which is a move to backlog or icebox, a linger, a close or a carry of the
+// claim's issue, since it holds against every rule, and ranks under the operator's.
 func TestSuspensionRankPutsTheControllerUnderTheOperator(t *testing.T) {
 	ordered := []SuspendSource{SuspendedByReleased, SuspendedByDaemon, SuspendedByController, SuspendedByOperator}
 	for i, source := range ordered {
@@ -258,10 +258,10 @@ func TestAForgetIsRefusedForAnAgentASuspensionAboveTheAskerTookOver(t *testing.T
 	}
 }
 
-// The daemon's own suspension — a park, a linger, a close, a carry, a production check's suspend
-// between looks — takes over no source that holds: an agent the controller or the operator
-// suspended stays that holder's, and its resume still lifts it. A released agent is taken over, as
-// every daemon suspension takes it over.
+// The daemon's own suspension — a move to backlog or icebox, a linger, a close, a carry, a
+// production check's suspend between looks — takes over no source that holds: an agent the
+// controller or the operator suspended stays that holder's, and its resume still lifts it. A
+// released agent is taken over, as every daemon suspension takes it over.
 func TestTheDaemonsSuspensionTakesOverNoSourceThatHolds(t *testing.T) {
 	daemons := RequestSuspend{Claim: testToken, Reason: "LEGION-209's production check waits for its next look", By: SuspendedByDaemon}
 	for _, by := range []SuspendSource{SuspendedByController, SuspendedByOperator} {

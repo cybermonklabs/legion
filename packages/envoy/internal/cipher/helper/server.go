@@ -591,18 +591,18 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 	return s.registerReply(sess, wait)
 }
 
-// dormantRecord is the park function Registry.Retire takes: the record a named session leaves
+// dormantRecord is the dormantFor function Registry.Retire takes: the record a named session leaves
 // behind, built from the identity reading Retire makes under its own lock, so nothing can land
 // between the reading and the record. A session with no omp session id leaves none — nothing
 // could ever claim it — and its enrollment is revoked by the caller instead.
 //
-// A named session is parked whether or not it has an enrollment yet. One that went away while
+// A named session is kept dormant whether or not it has an enrollment yet. One that went away while
 // it was still enrolling — the helper holding no launcher credential, a resume interrupted —
 // would otherwise have its KEY dropped, and the identity the broker still holds could never be
 // reclaimed by the session coming back.
 //
 // A key that will not marshal (Registry.record's error, which a generated P-256 key never
-// gives) parks the session without one: the record still names the enrollments the sweep must
+// gives) keeps the session dormant without one: the record still names the enrollments the sweep must
 // end, and the session coming back is given a fresh identity rather than this one's. That is
 // the whole of what the record was keeping, so it is logged here.
 func (s *Server) dormantRecord(sess *Session) func(identity) (Record, bool) {
@@ -613,7 +613,7 @@ func (s *Server) dormantRecord(sess *Session) func(identity) (Record, bool) {
 		gone := time.Now()
 		rec, err := s.Registry.record(sess, cur)
 		if err != nil {
-			s.Log.Error("this session is parked without its signing key, so coming back under its name gets it a new identity, not the requests and grants of the one it had",
+			s.Log.Error("this session is kept dormant without its signing key, so coming back under its name gets it a new identity, not the requests and grants of the one it had",
 				"runtime_id", cur.RuntimeID, "session_id", cur.SessionID, "error", err)
 		}
 		rec.GoneAt = &gone
@@ -723,7 +723,7 @@ func (s *Server) adoptSessionID(ctx context.Context, sess *Session, sessionID st
 		// runs. The walk that found this session is a reading of a moment, and an unregister
 		// or its exit watch can retire it before the reply goes out; answering OK then would
 		// tell a launcher its session has a broker identity when nothing live holds the name
-		// and the identity is parked for the sweep.
+		// and the identity is kept dormant for the sweep.
 		if !s.Registry.Holds(sess) {
 			return Response{Code: CodeNotASession, Error: sessionGoneMsg}, true
 		}
@@ -769,7 +769,7 @@ func (s *Server) adoptSessionID(ctx context.Context, sess *Session, sessionID st
 // session holds an enrollment inherited from a record whose first confirmation is in flight. Such
 // an enrollment is confirmed by a renew signed with the session's own key alone
 // (Broker.renewIdentity), which needs no launcher credential, so a session that comes back for a
-// parked identity reaches enrolled on a helper nobody logged in — and a caller that asked to wait
+// dormant identity reaches enrolled on a helper nobody logged in — and a caller that asked to wait
 // must be given that answer rather than the snapshot from before it. A credential the broker
 // revoked early, or one an older broker named no expiry for, stays held until a call is refused,
 // so the first register after that still waits the full N. A session the helper cannot
@@ -1774,7 +1774,7 @@ func (s *Server) renewLoop(ctx context.Context, sess *Session, lease time.Time, 
 //
 // Returns false only when the session ended or ctx was canceled first. Retire does not end the
 // id for it: an unnamed session's retire revokes both the ids its identity held, the live one
-// and this lapsed one (nonEmpty(cur.EnrollmentID, cur.LapsedID)), while a named one's parks both
+// and this lapsed one (nonEmpty(cur.EnrollmentID, cur.LapsedID)), while a named one's keeps both
 // on the dormant record instead, for the session coming back to take or the sweep to revoke.
 // Either way this revoke is not left half-done: the id goes to the same bounded, independent
 // revoke retire uses, decoupled from the session — three tries, 2 s apart. Revoking an id twice
@@ -1908,7 +1908,7 @@ func (s *Server) setFirstConfirmTimer(arm func(bound time.Duration, end func()))
 // the bounded revoke (three tries; the lease is the fallback), fired off on goroutines of their
 // own as every sibling path fires it (SweepDormant), so an unregister answers at once with what
 // it decides, the session retired, and the revoke goes on and logs its own failure. A named one
-// is parked instead, for DormantGrace, so the same session coming back takes its identity — and
+// is kept dormant instead, for DormantGrace, so the same session coming back takes its identity — and
 // its pending requests and grants — rather than a new one; sweepDormant revokes it if it does
 // not.
 // Idempotent: an unregister followed by the exit watch firing retires once.
@@ -1916,14 +1916,14 @@ func (s *Server) setFirstConfirmTimer(arm func(bound time.Duration, end func()))
 // Leaving the live set and entering the dormant one are ONE registry step (Registry.Retire),
 // and the identity the record is built from is read inside it. Done in two, a process coming
 // back in between would find neither a live owner of the name nor a record kept for it, make
-// itself a fresh identity, and leave the old one parked beside it where nothing can reclaim it
+// itself a fresh identity, and leave the old one dormant beside it where nothing can reclaim it
 // and only the sweep can end it.
 func (s *Server) retire(ctx context.Context, sess *Session, why string) {
 	var cur identity
-	park := s.dormantRecord(sess)
+	dormant := s.dormantRecord(sess)
 	retired := s.Registry.Retire(sess, func(read identity) (Record, bool) {
 		cur = read
-		return park(read)
+		return dormant(read)
 	})
 	if !retired {
 		return
@@ -1958,8 +1958,8 @@ func (s *Server) SweepDormant(ctx context.Context) {
 		for _, id := range ids {
 			// Fired off, never waited for here: this runs on the one goroutine SweepLoop owns,
 			// and a revoke that fails costs about four seconds of bounded retries on top of its
-			// own HTTP timeouts, with nothing to interrupt it. A reboot parks every recorded
-			// session, so one batch of twenty records — up to two ids each — is potentially
+			// own HTTP timeouts, with nothing to interrupt it. A reboot leaves every recorded
+			// session dormant, so one batch of twenty records — up to two ids each — is potentially
 			// eighty seconds in which this loop sweeps nothing, the ticker drops its ticks and
 			// the save below does not run. revoke returns nothing, logs its own failure, and
 			// touches no registry state. ctx bounds these goroutines exactly as it bounded the
@@ -2050,7 +2050,7 @@ func (s *Server) save() {
 // three tries cannot succeed either, and the id ends with its lease (see revokeLapsed's doc
 // comment).
 //
-// A recorded process that is gone — every one of them after a reboot — is parked dormant when
+// A recorded process that is gone — every one of them after a reboot — is kept dormant when
 // the record names an omp session id, so the session resuming under that id takes its identity
 // back (reclaimIdentity) and SweepDormant revokes it only if DormantGrace passes without it; one
 // with no session id has its enrollment revoked here, as before, since nothing could claim it.
@@ -2061,7 +2061,7 @@ func (s *Server) save() {
 // that stranger with the recorded private key and the recorded enrollment, handing it the
 // session's grants without it ever knowing the session id — the one secret this rests on. A
 // record from any other boot, and one written before records named a boot at all, therefore
-// takes the gone-process branch (Registry.SameBoot), which parks a named identity for the
+// takes the gone-process branch (Registry.SameBoot), which keeps a named identity dormant for the
 // session itself to reclaim and revokes an unnamed one.
 func (s *Server) Recover(ctx context.Context) {
 	recs, err := LoadRecords(s.Registry.path)
@@ -2090,12 +2090,12 @@ func (s *Server) Recover(ctx context.Context) {
 			}
 			gone := time.Now()
 			rec.GoneAt = &gone
-			// A named record is parked whether or not it has an enrollment yet, exactly as
-			// retire parks one: a session saved before its first enroll landed — the helper
+			// A named record is kept dormant whether or not it has an enrollment yet, exactly as
+			// retire keeps one: a session saved before its first enroll landed — the helper
 			// holding no launcher credential, a resume interrupted — still has a KEY the
 			// broker may already know, and dropping it here would leave an identity nothing
 			// could ever reclaim.
-			if s.Registry.Park(rec) {
+			if s.Registry.KeepDormant(rec) {
 				s.Log.Info("recorded session is gone; its identity is kept for it to come back to", "runtime_id", rec.RuntimeID, "session_id", rec.SessionID, "for", s.dormantGrace())
 				continue
 			}

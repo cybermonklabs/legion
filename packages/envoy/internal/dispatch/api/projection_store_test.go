@@ -536,7 +536,7 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {},
 	// The settle of one source an owed-index queue held: block_grammar_owed or refs_grammar_owed.
 	"packages/envoy/internal/dispatch/refs/rebuild.go#refs.OwedQueue.settleOwedStatement: delete from queue.table": {},
-	// The daemon's kept decisions and approvals, parked_decisions and readmitted_approvals, in a
+	// The daemon's kept decisions and approvals, kept_decisions and readmitted_approvals, in a
 	// database of its own.
 	"packages/daemon/internal/record/store.go#record.*Postgres.MoveKeptClaims: update table":      {},
 	"packages/daemon/internal/store/kept_decisions.go#store.tellKeptDecisions: delete from table": {},

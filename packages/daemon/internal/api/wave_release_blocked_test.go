@@ -316,12 +316,12 @@ func TestWaveReleaseRecordsABacklogChildFromItsOwnWrite(t *testing.T) {
 	}
 }
 
-// A parked child — its record at done, Dispatch at backlog — released again is re-entered by the
+// A child out of the workflow — its record at done, Dispatch at backlog — released again is re-entered by the
 // release's own write, as its todo event would re-enter it: a new run, held at admitted while it
 // waits on an unfinished issue (so not started), or started at planning when it waits on nothing.
-// Before, the record stayed parked at done until that event came back through the consumer. The
+// Before, the record stayed out of the workflow at done until that event came back through the consumer. The
 // event itself, delivered later, changes nothing.
-func TestWaveReleaseReentersAParkedChildFromItsOwnWrite(t *testing.T) {
+func TestWaveReleaseReentersABacklogChildFromItsOwnWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		waits   []string
@@ -368,8 +368,8 @@ func TestWaveReleaseReentersAParkedChildFromItsOwnWrite(t *testing.T) {
 
 // A release names a child started only for a first phase it began: the record after the release
 // runs a phase of a run that had none before it. A run already under way, a child still waiting at
-// admitted, and a parked child its todo event has not re-entered yet were started by nothing here;
-// a parked child that event did re-enter, as a new run, was.
+// admitted, and a child out of the workflow that its todo event has not re-entered yet were started by nothing here;
+// a child out of the workflow that event did re-enter, as a new run, was.
 func TestStartedByReleaseIsAFirstPhaseTheReleaseBegan(t *testing.T) {
 	at := func(p phase.Phase, generation uint64) *record.Issue {
 		return &record.Issue{Key: "LEGION-209", Phase: p, Generation: generation}
@@ -385,8 +385,8 @@ func TestStartedByReleaseIsAFirstPhaseTheReleaseBegan(t *testing.T) {
 		{"admitted and started", at(phase.Admitted, 1), at(phase.Planning, 1), true},
 		{"admitted and still admitted", at(phase.Admitted, 1), at(phase.Admitted, 1), false},
 		{"already running", at(phase.Implementing, 1), at(phase.Implementing, 1), false},
-		{"parked and not yet re-entered", at(phase.Done, 1), at(phase.Done, 1), false},
-		{"parked and re-entered as a new run", at(phase.Done, 1), at(phase.Planning, 2), true},
+		{"out of the workflow and not yet re-entered", at(phase.Done, 1), at(phase.Done, 1), false},
+		{"out of the workflow and re-entered as a new run", at(phase.Done, 1), at(phase.Planning, 2), true},
 	} {
 		if got := startedByRelease(tc.before, tc.after); got != tc.want {
 			t.Errorf("%s: startedByRelease = %v, want %v", tc.name, got, tc.want)

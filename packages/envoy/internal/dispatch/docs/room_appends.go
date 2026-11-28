@@ -61,7 +61,7 @@ const (
 // document's rendered content, its browser edit's in-flight credit (nil for none), and Observed,
 // when the room's observer took it, which gateAppend judges against the document's issue close in
 // a browser's append (appendBrowser, observedBeforeClose). Observed is zero for an update that
-// carries no observed time, such as the parked bytes AppendParkedUpdate stores; once the issue has
+// carries no observed time, such as the pending bytes AppendPendingBytes stores; once the issue has
 // closed, gateAppend does not admit such an update to a browser's append. Its fields are exported
 // so a test store in another package can hand a batch on.
 type BrowserUpdate struct {
@@ -96,7 +96,7 @@ func (p *PgVersioned) AppendUpdatesWithCredit(ctx context.Context, room string, 
 }
 
 // appendUpdates is AppendUpdatesWithCredit with owes, whether the transaction marks the document
-// owing a settlement; AppendParkedUpdate calls it with owes false.
+// owing a settlement; AppendPendingBytes calls it with owes false.
 func (p *PgVersioned) appendUpdates(ctx context.Context, room string, updates []BrowserUpdate, owes bool) (persistence.Version, error) {
 	if len(updates) == 0 {
 		return 0, fmt.Errorf("append document updates: no update to append")

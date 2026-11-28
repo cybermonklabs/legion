@@ -190,7 +190,7 @@ func CancelPodBackstops(ctx context.Context, tx pgx.Tx, project, issue string, r
 // armed, and every open backstop of the issue when role is empty (CancelPodBackstops), for a
 // caller outside one. The outbox's `suspend` row takes one role of a released pod over and drops
 // that role's backstop alone (decision 17 of dispatch://INFRA-3759), so a stop of another role of
-// the issue — a pause's, a park's of the architect — never cancels a worker's backstop. The close
+// the issue — a pause's, a move to backlog's of the architect — never cancels a worker's backstop. The close
 // of an issue or of its tree takes the whole released pod over, and the arming of a release's
 // backstops drops what the release before it armed; both name no role. Dropping the backstops is
 // the whole of what taking a released pod over leaves to do, since a wake's own record is the

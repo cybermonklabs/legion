@@ -79,7 +79,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	harness.Fact("work-item-lock-this-run-used", WorkflowLockTimeout.String())
 
 	// 1. Two recorded runs under the code as it stood before the change, both
-	// parked on the wait for a person, which is where a change finds them.
+	// waiting for a person, which is where a change finds them.
 	recordedRegistry, err := Registry(RecordedWorkflow)
 	if err != nil {
 		return err
@@ -97,7 +97,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 		}
 	}
 	for _, id := range []string{unguarded, patched} {
-		if err := waitParked(ctx, db, id, recordWait); err != nil {
+		if err := waitUntilWaiting(ctx, db, id, recordWait); err != nil {
 			old.Stop(ctx)
 			return err
 		}
@@ -234,7 +234,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 		v1.Stop(ctx)
 		return fmt.Errorf("create instance %s: %w", pinned, err)
 	}
-	if err := waitParked(ctx, db, pinned, recordWait); err != nil {
+	if err := waitUntilWaiting(ctx, db, pinned, recordWait); err != nil {
 		v1.Stop(ctx)
 		return err
 	}
@@ -274,7 +274,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 		v2.Stop(ctx)
 		return fmt.Errorf("create instance %s: %w", fresh, err)
 	}
-	if err := waitParked(ctx, db, fresh, recordWait); err != nil {
+	if err := waitUntilWaiting(ctx, db, fresh, recordWait); err != nil {
 		v2.Stop(ctx)
 		return err
 	}
@@ -398,9 +398,9 @@ func repeatedSteps(steps string) string {
 	return strings.Join(again, " ")
 }
 
-// waitParked blocks until an instance has run its recorded steps and is waiting for
+// waitUntilWaiting blocks until an instance has run its recorded steps and is waiting for
 // the person, which is the state a change has to meet.
-func waitParked(ctx context.Context, db *sql.DB, instanceID string, timeout time.Duration) error {
+func waitUntilWaiting(ctx context.Context, db *sql.DB, instanceID string, timeout time.Duration) error {
 	_, err := dtx.WaitForInstance(ctx, db, instanceID, timeout, func(i dtx.Instance) bool {
 		if !i.Found || i.Completed() || i.LockExpiration != nil {
 			return false

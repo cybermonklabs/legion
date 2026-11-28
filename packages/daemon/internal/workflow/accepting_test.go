@@ -290,7 +290,7 @@ func seedAcceptingChild(t *testing.T, pool *pgxpool.Pool, key, parent string, at
 }
 
 // A sign-off of an issue with nothing beneath it is taken whatever the rest of the tree does: a
-// child done, a child parked, a sibling elsewhere. The rule that nothing beneath an issue held
+// child done, a child moved to backlog, a sibling elsewhere. The rule that nothing beneath an issue held
 // its acceptance is gone (dispatch://INFRA-980, "A parent is accepted after its children"): an
 // issue beneath that is still in the workflow now refuses the sign-off
 // (TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow), since a parent is accepted only once
@@ -306,7 +306,7 @@ func TestSignOffIsAcceptedWhenNothingBeneathIsInTheWorkflow(t *testing.T) {
 		{"a child done", func(t *testing.T, pool *pgxpool.Pool) {
 			seedAcceptingChild(t, pool, "LEGION-209", "LEGION-208", phase.Done, "done")
 		}},
-		{"a child parked in backlog", func(t *testing.T, pool *pgxpool.Pool) {
+		{"a child moved to backlog", func(t *testing.T, pool *pgxpool.Pool) {
 			seedAcceptingChild(t, pool, "LEGION-209", "LEGION-208", phase.Implementing, "backlog")
 		}},
 	} {

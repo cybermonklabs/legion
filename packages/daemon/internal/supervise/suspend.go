@@ -165,16 +165,16 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // its retry runs it.
 //
 // One claim here does not wait: the one whose paced wake is still waiting over no process at all,
-// which the gate wrote launching and parked before it had launched anything (reserveWake,
+// which the gate wrote launching and delayed before it had launched anything (reserveWake,
 // waitOnMachine). A hold protects a turn and a process, and this claim has neither — the launch
 // its wake holds has not been made — so the suspension has nothing to wait for, and the wait is
 // dear. A wave's queue is hundreds of claims let out at a few wakes a minute, so a claim far down
 // it waits tens of minutes, and for that long both halves of R2 of dispatch://INFRA-976/spec fail:
-// the claim does not "still decide" the suspend, since an operator's drain, a park or a tree close
-// lands only at the wake's turn (wakeNow), and it loses it as well, since the hold lives in memory
-// alone (holdSuspension) and an operator's suspend writes no outbox row — a restart inside those
-// minutes forgets the drain while the claim stands persisted launching, and the boot relaunches
-// the very claim the operator told it to drain (the daemon's launchUnfinished).
+// the claim does not "still decide" the suspend, since an operator's drain, a move to backlog or
+// icebox or a tree close lands only at the wake's turn (wakeNow), and it loses it as well, since
+// the hold lives in memory alone (holdSuspension) and an operator's suspend writes no outbox row —
+// a restart inside those minutes forgets the drain while the claim stands persisted launching, and
+// the boot relaunches the very claim the operator told it to drain (the daemon's launchUnfinished).
 //
 // So that suspension is decided where it arrives: the claim is suspended with the request's own
 // source and reason and written (suspendedFor), which is why this row names StateSuspended among
@@ -182,33 +182,33 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // here). The wake goes with the process the claim never had (letGo clears it and disarms
 // TimerWake), which gives its place in the pacing up: the place had drawn no token, so the turn it
 // would have taken goes to the wake behind it, as a dropped wake's place does when the decision it
-// was dropped for takes it up no more (placeTimer, reparkWake).
+// was dropped for takes it up no more (placeTimer, delayWakeAgain).
 //
-// A claim whose launch waits for its issue pod's start does not wait either (askPod, wake.park):
-// the launch has let its process go and parked on the machine with no process started, waiting
-// only for another role's session load, and a suspension, a release or a deletion of the pod
-// never waits (dispatch://INFRA-5297). It is decided where it arrives by the same branch, and the
-// suspension takes its start out of the pod's gate as a suspension at the end of its decision
-// (suspended, endPodPark), where the launch writes that it was cut short.
+// A claim whose launch waits for its issue pod's start does not wait either (askPod,
+// wake.podStartWait): the launch has let its process go and waits on the machine with no process
+// started, waiting only for another role's session load, and a suspension, a release or a
+// deletion of the pod never waits (dispatch://INFRA-5297). It is decided where it arrives by the
+// same branch, and the suspension takes its start out of the pod's gate as a suspension at the
+// end of its decision (suspended, endPodStartWait), where the launch writes that it was cut short.
 //
 // A claim whose process still runs is untouched by any of this. The gate left such a claim exactly
 // as it stood (waitOnMachine), so its suspend is decided by the row of the state it still holds —
 // and a launch that did start a process reaches the hold here as it always did, since that process
 // is what the hold is for.
 //
-// A project pause's stop of a claim whose relaunch waits parked over the process it still records
-// — one that died and whose relaunch the pacing parked before letting it go (the gate sits before
-// letGo, launchAfter) — is decided where it arrives too: the parked relaunch is what the pause
+// A project pause's stop of a claim whose relaunch waits delayed over the process it still records
+// — one that died and whose relaunch the pacing delayed before letting it go (the gate sits before
+// letGo, launchAfter) — is decided where it arrives too: the delayed relaunch is what the pause
 // holds, and the process it records is the one that relaunch was to replace, so the process is
-// stopped (letProcessGoFor) and the claim suspended now, with the parked launch owed, as the
+// stopped (letProcessGoFor) and the claim suspended now, with the delayed launch owed, as the
 // pause's gate stops a process it held a launch over (pauseStopDue). Held until a ready instead,
 // the stop would land only at the wake's turn, which over a wave is tens of minutes out, and a
 // restart inside them would forget it and leave the claim to the boot (decision 4 of
-// dispatch://INFRA-3759's plan: a parked wake with no process is stopped at once).
+// dispatch://INFRA-3759's plan: a delayed wake with no process is stopped at once).
 //
 // Each of them meets a launch, which a project pause's stop owes the role at the resume
 // (PauseStop.LaunchOwed, decision 6 of dispatch://INFRA-3759's plan): the start this suspension
-// cancelled, the wake parked over no process or over the process it would replace, and the launch
+// cancelled, the wake delayed over no process or over the process it would replace, and the launch
 // the hold waits on until ready (Machine.heldLaunch).
 //
 // A hold already standing is replaced by the newest request, as it always was, with two
@@ -230,7 +230,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 			Reason: "the claim's launch has not registered, and this suspension is not one that is held for it"}
 	}
 	if m.wake != nil && m.claim.Locator == nil {
-		if m.wake.park == nil {
+		if m.wake.podStartWait == nil {
 			m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
 				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.due())
 		}
@@ -261,9 +261,10 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // agent the daemon suspended, so the rule resumes it no more until a resume lifts it, an
 // operator's suspend of an agent the controller suspended, so the controller's resume_agent lifts
 // it no more, and a daemon's, the controller's or an operator's suspend of an agent whose idle pod
-// was released, so the linger, park, close, hand-over or hold that asked for it owns the agent and no
-// later wake acts on it. Anything else changes nothing, and the controller's suspend of an agent
-// the operator holds is refused before it gets here (suspendRequest, Claim.HeldAgainst).
+// was released, so the linger, move to backlog or icebox, close, hand-over or hold that asked for it
+// owns the agent and no later wake acts on it. Anything else changes nothing, and the controller's
+// suspend of an agent the operator holds is refused before it gets here (suspendRequest,
+// Claim.HeldAgainst).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -280,11 +281,11 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released
 // claim's suspension is the weakest, because the release ended no phase and every wake may
-// resume it; the daemon's is stronger, since it is a park, a linger, a close or a carry; the
-// controller's is stronger again, since it holds against every rule (SuspendSource.Holds) and is
-// project-wide work no rule lifts; the operator's is strongest and nothing takes it over. An
-// exit's, and one recorded before sources existed, are the daemon's own and rank with its
-// suspension, so that suspension leaves them where they are.
+// resume it; the daemon's is stronger, since it is a move to backlog or icebox, a linger, a close
+// or a carry; the controller's is stronger again, since it holds against every rule
+// (SuspendSource.Holds) and is project-wide work no rule lifts; the operator's is strongest and
+// nothing takes it over. An exit's, and one recorded before sources existed, are the daemon's own
+// and rank with its suspension, so that suspension leaves them where they are.
 func suspensionRank(source SuspendSource) int {
 	switch source {
 	case SuspendedByReleased:
@@ -402,9 +403,9 @@ func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch
 // stopOwesLaunch is whether a stop of the claim's process owes the role a launch, which a project
 // pause's stop records for the resume (suspendedFor, PauseStop.LaunchOwed): a launch still waiting
 // on the machine (launchMet), or the relaunch of the death the claim's record charges
-// (Claim.DeathCharged). A restart forgets the wake that death parked, and the boot's stop of a
-// paused project can reach the claim before the boot replays the death (RecordedDeath), so the
-// record is what says the launch is owed.
+// (Claim.DeathCharged). A restart forgets the wake the pacing delayed for that death's relaunch,
+// and the boot's stop of a paused project can reach the claim before the boot replays the death
+// (RecordedDeath), so the record is what says the launch is owed.
 func (m *Machine) stopOwesLaunch() bool {
 	return m.launchMet() || m.claim.DeathCharged
 }
@@ -457,7 +458,7 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, laun
 //
 // A launch its issue pod's gate holds leaves the gate as this suspension's at the end of the
 // decision, so the start the gate grants next names a suspension as what ended its wait
-// (endPodPark, podSuspension).
+// (endPodStartWait, podSuspension).
 func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by

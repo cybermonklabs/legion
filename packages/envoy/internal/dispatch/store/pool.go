@@ -253,7 +253,7 @@ func NewPool(pool *pgxpool.Pool) *Pool {
 
 // sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
 // max(4, NumCPU), is four on production's one Fargate task at cpu="512", and a connection per
-// blocked writer is all it takes to starve everything else: with four writers parked on one
+// blocked writer is all it takes to starve everything else: with four writers blocked on one
 // issue's row lock, a read of an unrelated issue waited the whole seventeen seconds the lock
 // was held, where sixteen connections served 3,853 such reads at a four-millisecond median.
 // The ceiling is picked here rather than derived from the task's CPU allotment or read out of
@@ -285,9 +285,9 @@ const roomsApplicationName = "dispatch-rooms"
 
 // roomAppendsPoolSize bounds the connections the document rooms' browser updates are stored on
 // (Pool.RoomAppends). The docs package's appendRoomTx takes one for each transaction it runs, a
-// room's batch of browser updates and the append of its parked bytes among them, and a room's load
-// can open one ahead of its first batch (warmRoomAppends). A room's queued browser updates are
-// stored together, in one transaction, so a room holds a connection for its batch's few round
+// room's batch of browser updates and the append of its pending bytes among them, and a room's
+// load can open one ahead of its first batch (warmRoomAppends). A room's queued browser updates
+// are stored together, in one transaction, so a room holds a connection for its batch's few round
 // trips, and a handful of connections serve many rooms writing at once. Eight is twice the rooms
 // pool and an eighth of the shared one: every connection here is one more in the server's total
 // against the database's limit, so it is small on purpose, and a room that finds all eight held

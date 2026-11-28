@@ -18,16 +18,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A person parks an unrecorded labelled root at 5, approves its spec at 9, moves it to todo at 10
-// and parks it again at 11. The approval's preparation and the todo's both read Dispatch, so a
-// failed read sends each back for a later delivery, or gives each up, while the park at 11, which
-// reads nothing, applies first. Each event here goes through the daemon's own preparation
-// (prepareRepository, prepareArtifact), with Dispatch showing the root as the person left it, in
-// icebox at sequence 11, and is then applied through the copy of Dispatch's issues, the workflow
-// and admission, as the intake applies it. Whether the late todo applies before the approval or
-// after it, as the operator's replay of both in stream order does, the approval must queue no
-// handover: the person parked the root after approving it.
-func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *testing.T) {
+// A person moves an unrecorded labelled root to icebox at 5, approves its spec at 9, moves it to
+// todo at 10 and to icebox again at 11. The approval's preparation and the todo's both read
+// Dispatch, so a failed read sends each back for a later delivery, or gives each up, while the
+// move at 11, which reads nothing, applies first. Each event here goes through the daemon's own
+// preparation (prepareRepository, prepareArtifact), with Dispatch showing the root as the person
+// left it, in icebox at sequence 11, and is then applied through the copy of Dispatch's issues,
+// the workflow and admission, as the intake applies it. Whether the late todo applies before the
+// approval or after it, as the operator's replay of both in stream order does, the approval must
+// queue no handover: the person moved the root back to icebox after approving it.
+func TestAnApprovalAppliedAfterThePersonMovedTheRootToIceboxAgainQueuesNoHandover(t *testing.T) {
 	t.Parallel()
 	const key = "LEGION-755"
 	person := dispatch.Actor{Kind: "user", ID: "sami"}
@@ -49,7 +49,7 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 		return logEvent(seq, typ, fmt.Sprintf(`{"key":%q,"status":%q,"title":%q,"labels":[%q]}`, key, status, title, dispatch.LegionLabel))
 	}
 	approvalEvent := logEvent(9, "artifact.approved", `{"artifact_id":"art-1","version":1}`)
-	parkedAgain := []json.RawMessage{issueEvent(1, "issue.created", "triage", key), issueEvent(5, "issue.updated", "icebox", key), approvalEvent,
+	movedToIceboxAgain := []json.RawMessage{issueEvent(1, "issue.created", "triage", key), issueEvent(5, "issue.updated", "icebox", key), approvalEvent,
 		issueEvent(10, "issue.updated", "todo", key), issueEvent(11, "issue.updated", "icebox", key)}
 	for _, tc := range []struct {
 		name  string
@@ -63,10 +63,10 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 			order: []intake.Fact{event(5, "icebox"), approval}, want: 1,
 			log: []json.RawMessage{issueEvent(1, "issue.created", "triage", key), issueEvent(5, "issue.updated", "icebox", key), approvalEvent,
 				issueEvent(11, "issue.updated", "icebox", key+", renamed")}},
-		{name: "the todo applies after the second park, then the approval",
-			order: []intake.Fact{event(5, "icebox"), event(11, "icebox"), event(10, "todo"), approval}, log: parkedAgain},
+		{name: "the todo applies after the second move to icebox, then the approval",
+			order: []intake.Fact{event(5, "icebox"), event(11, "icebox"), event(10, "todo"), approval}, log: movedToIceboxAgain},
 		{name: "the replay applies the approval, then the todo",
-			order: []intake.Fact{event(5, "icebox"), event(11, "icebox"), approval, event(10, "todo")}, log: parkedAgain},
+			order: []intake.Fact{event(5, "icebox"), event(11, "icebox"), approval, event(10, "todo")}, log: movedToIceboxAgain},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

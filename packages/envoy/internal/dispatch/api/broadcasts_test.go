@@ -792,9 +792,9 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
-	// The worker announces itself when it parks, so the takeover below happens while it is
+	// The worker announces itself when it is held, so the takeover below happens while it is
 	// held rather than at a moment this test guessed.
-	parked := make(chan struct{}, 1)
+	held := make(chan struct{}, 1)
 	var listenerState struct {
 		sync.Mutex
 		seenCreate bool
@@ -813,7 +813,7 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 			hold := listenerState.holding && !first
 			listenerState.Unlock()
 			if hold {
-				parked <- struct{}{}
+				held <- struct{}{}
 				<-release
 			}
 			writeSessionRecord(t, w, broadcastSessions, strings.TrimPrefix(r.URL.Path, "/v1/registry/"))
@@ -840,7 +840,7 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	}, "alice"))
 	message := created.Recipients[0].Message.ID
 
-	testwait.Receive(t, "the broadcast's worker to park on its attempt", parked)
+	testwait.Receive(t, "the broadcast's worker to be held on its attempt", held)
 	// The worker is held. From here the listener answers everyone else at once, so the human's
 	// own send is never the one being held.
 	listenerState.Lock()

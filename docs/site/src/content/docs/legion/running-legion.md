@@ -1006,7 +1006,7 @@ What each part is for:
   their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
   daemon has released. A wait on a child an architect has not released is no such wait. Where
   the issue waited on is in this project and its own tree has stopped, that tree is told; a
-  wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
+  wait on a blocker no tree runs (in `backlog`, never admitted, in `icebox`) brings no stall notice,
   and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
   under `admission.blocked` and in the tick notice's `blocked` list.
   No value turns the notice off,
@@ -1564,8 +1564,8 @@ Closing the terminal leaves the project without one, and the daemon logs
    ends with the operator resuming every agent they suspended, one `legion claims resume` each;
    `legion claims list --json` names each one's `suspendedBy` (`operator`, `controller`, `daemon`, `exit`, `released` for one whose idle pod the daemon released, or
    `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
-   left the workflow waits for its current turn to finish, with no stop timeout: a child parked
-   in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,
+   left the workflow waits for its current turn to finish, with no stop timeout: a child moved to
+   `backlog` or `icebox` in Dispatch stops its worker only once the worker's current turn ends,
    and a lingering tree's claims stay suspended until the tree is re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
@@ -1589,7 +1589,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    claim). Otherwise it comes back on a workflow start, for example a start of the phase it owns
    or, for an architect, a start of its issue's run (its tree's admission for a root's, its child's
    first phase start for a child's own), as that page's `needsWorkflowStart` shows. Never resume
-   or retry by hand a claim of a lingering tree or of an issue parked out of the workflow:
+   or retry by hand a claim of a lingering tree or of an issue moved out of the workflow:
    re-admission or the issue's return to `todo` starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
@@ -1782,7 +1782,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   same shape, in its last column, the controller's included.
   A shell command Oh My Pi backgrounded (a plain one still running after about a minute, or at
   once when a message is steered into the turn) is an ended call here while its process runs on:
-  `none` says no agent is parked in a call, not that nothing runs on its machine.
+  `none` says no agent waits in a call, not that nothing runs on its machine.
 
   The `webhook App missing` lines name each served repository Dispatch's GitHub App is not known
   to be installed on, one line each with why (`webhook App missing on <repo>: <reason>`), or say

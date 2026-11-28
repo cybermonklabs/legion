@@ -98,7 +98,7 @@ type crowdedCPU struct {
 // is preempted by the runtime every 10 ms, and each preemption of a goroutine locked to its thread
 // is a handoff between threads of this process, which crowding goroutines turned into a storm of
 // handoffs the measured thread's own had to wait in (traced at a load of about 300 on a 288-CPU
-// machine, 2026-11-20: a measured thread parked 7 ms for a P that one of them, itself waiting for
+// machine, 2026-11-20: a measured thread slept 7 ms waiting for a P that one of them, itself waiting for
 // the crowded CPU, was to hand back). Each shell spins only while this test process lives: its
 // loop tests the test's pid with kill -0, a builtin, so a test process that dies, killed or
 // panicking past its cleanups, leaves no busy loop pinned to a CPU of a shared machine. All of it

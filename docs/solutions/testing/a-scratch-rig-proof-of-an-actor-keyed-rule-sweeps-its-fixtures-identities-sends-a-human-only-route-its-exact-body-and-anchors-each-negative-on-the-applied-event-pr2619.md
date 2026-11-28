@@ -71,5 +71,5 @@ unless named otherwise:
   `personHandoverLogLines` at `:590`; the boot proof's `listing` = 1 and `event` = 0 at
   `TestABootListingQueuesAPersonsLabelAgainstScratchDispatch` (`:956`).
 - The tester's independent rig (the `E2E (tester)` line of sjawhar/legion#2619) re-ran the three
-  tests and added live negatives on the same anchors: a park and a label removal between the queue
+  tests and added live negatives on the same anchors: a move to backlog and a label removal between the queue
   and the delivery, each read after the delivery's own log line.

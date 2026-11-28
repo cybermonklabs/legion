@@ -147,15 +147,15 @@ func (t phaseTimeline) statusesBefore(issue *Issue) []Mark {
 }
 
 // workTimeRow is one memoised answer of workedOf: when the work time started (the first worker
-// event), its hours and the parked and queued hours taken out of the issue's life, the spans its
-// hours are the measure of, and whether the issue has a work time at all. The hours out of the
-// workflow it takes out too are no fact of the issue's (computeWorkTime): IssueFacts has no field
-// for them, and the work time and the bars already leave them out.
+// event), its hours and the hours in backlog or icebox and queued hours taken out of the issue's
+// life, the spans its hours are the measure of, and whether the issue has a work time at all. The
+// hours out of the workflow it takes out too are no fact of the issue's (computeWorkTime):
+// IssueFacts has no field for them, and the work time and the bars already leave them out.
 type workTimeRow struct {
-	started               time.Time
-	hours, parked, queued float64
-	worked                []Span
-	ok                    bool
+	started                  time.Time
+	hours, inBacklog, queued float64
+	worked                   []Span
+	ok                       bool
 }
 
 // treeRoot is the issue's tree root (Population.TreeRoot), computed once per key: the walk is a
@@ -294,11 +294,12 @@ func (c *computation) workedOf(issue *Issue) workTimeRow {
 	return held
 }
 
-// computeWorkTime is the work time itself: the issue's life, less the time it sat parked, the
-// time it sat back in the queue and the time it was out of the workflow. The spans that are left
-// are the answer's second half, because they are what the issue's bars of phase time are shared
-// out over. The queue and the time out of the workflow are read off the issue's own timeline
-// (queuedSpans, outOfWorkflowSpans), the one the bars read, so the two cannot disagree on them.
+// computeWorkTime is the work time itself: the issue's life, less the time it sat in backlog or
+// icebox, the time it sat back in the queue and the time it was out of the workflow. The spans
+// that are left are the answer's second half, because they are what the issue's bars of phase
+// time are shared out over. The queue and the time out of the workflow are read off the issue's
+// own timeline (queuedSpans, outOfWorkflowSpans), the one the bars read, so the two cannot
+// disagree on them.
 //
 // A closed issue's life ends at its close. A child still open has a work time too, which its
 // root's waiting-on-children rule reads: its life runs to the population's end, as every other
@@ -310,20 +311,20 @@ func (c *computation) computeWorkTime(issue *Issue) workTimeRow {
 	}
 	end := c.population.issueEnd(issue)
 	timeline := c.phasesOf(issue)
-	// A life of no length leaves no span to park, to queue or to put on a bar, which the span
+	// A life of no length leaves no span to take out, to queue or to put on a bar, which the span
 	// algebra below answers on its own.
 	life := []Span{{From: start, To: end}}
-	parked := intersect(c.population.parkedSpans(issue), life)
+	inBacklog := intersect(c.population.backlogSpans(issue), life)
 	queued := intersect(queuedSpans(timeline), life)
 	out := intersect(outOfWorkflowSpans(timeline), life)
-	worked := subtract(subtract(subtract(life, parked), queued), out)
+	worked := subtract(subtract(subtract(life, inBacklog), queued), out)
 	return workTimeRow{
-		started: start,
-		hours:   hours(totalOf(worked)),
-		parked:  hours(totalOf(parked)),
-		queued:  hours(totalOf(queued)),
-		worked:  worked,
-		ok:      true,
+		started:   start,
+		hours:     hours(totalOf(worked)),
+		inBacklog: hours(totalOf(inBacklog)),
+		queued:    hours(totalOf(queued)),
+		worked:    worked,
+		ok:        true,
 	}
 }
 
@@ -358,14 +359,14 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 // precedence that holds. The per-issue facts store these parts (ProjectFactsClosed) and
 // PhaseTimeDay adds them up across the finished issues.
 //
-// The hours shared out are the issue's work time and nothing else (the spec's "Rule details —
-// Parked and pre-work hours in phase time": "An hour that work time to merge leaves out is on no
-// bar of phase time ... So the bars of an issue add up to its work time, and the two cards
-// agree"). Each bar takes the phases it holds, so the seven are a partition of the work time: the
-// timeline leaves no hour between two phases (the spec's "Phase boundaries before observations"),
-// and every phase an issue can be in is on one of the seven bars but `queued` and `done`, the
-// queue and the time out of the workflow before the close, whose hours the work time leaves out
-// (queuedSpans, outOfWorkflowSpans).
+// The hours shared out are the issue's work time and nothing else (the spec's rule on hours out of
+// the work time in phase time (dispatch://INFRA-1077/spec#b-8b535995-9f2e-415e-9db6-ce1ff5977645):
+// "An hour that work time to merge leaves out is on no bar of phase time ... So the bars of an
+// issue add up to its work time, and the two cards agree"). Each bar takes the phases it holds, so
+// the seven are a partition of the work time: the timeline leaves no hour between two phases (the
+// spec's "Phase boundaries before observations"), and every phase an issue can be in is on one of
+// the seven bars but `queued` and `done`, the queue and the time out of the workflow before the
+// close, whose hours the work time leaves out (queuedSpans, outOfWorkflowSpans).
 //
 // A bar's spans are the issue's bar spans (barSpansOf) in the phases the bar holds. HoldsHours
 // is whether there are any, which is what a bar's issue count counts, kept apart from Hours
@@ -404,27 +405,28 @@ func (c *computation) reworkOf(issue *Issue) reworkRow {
 	return row
 }
 
-// slotWaitHours is the issue's slot wait (dispatch://INFRA-2916, D3): "the hours of the issue's
+// slotWaitHours is the issue's slot wait (dispatch://INFRA-2916, D3): the hours of the issue's
 // observed life in which its phase is `admitted` and it holds no slot, over the whole life, with
-// parked hours left out".
+// the hours in backlog or icebox left out.
 //
 // The phase is the observed one alone, the timeline the issue's own `phase` observations draw
 // (sampledPhases), whose `queued` stretches are the admitted hours in which the issue held no
 // slot of its own: the one queue definition the work time subtracts too (queuedSpans). Work time
 // counts that queue from the first worker event on; this counts it over the whole life, from the
 // issue's creation to its end, because a wait for a slot before any worker started is a wait all
-// the same. The parked hours are the ones the work time leaves out (parkedSpans). An issue
-// Dispatch never observed has no observed phase, and so no slot wait.
+// the same. The hours in backlog or icebox are the ones the work time leaves out (backlogSpans).
+// An issue Dispatch never observed has no observed phase, and so no slot wait.
 func (c *computation) slotWaitHours(issue *Issue, sampled []PhaseSpan) float64 {
 	life := []Span{{From: issue.CreatedAt, To: c.population.issueEnd(issue)}}
 	waited := intersect(phaseSpansOf(sampled, phaseQueued), life)
-	return hours(totalOf(subtract(waited, c.population.parkedSpans(issue))))
+	return hours(totalOf(subtract(waited, c.population.backlogSpans(issue))))
 }
 
-// idleByRole is the issue's idle hours by role (dispatch://INFRA-2916, D3): for role R, "the hours
-// of the issue's worked spans (life − parked − queued) in which the issue holds its own slot, its
-// observed phase is in R's bar ..., and R's newest observed claim state is not `working` (no claim
-// counts as not working)". Each of the six roles has an entry, zero where no hour qualifies.
+// idleByRole is the issue's idle hours by role (dispatch://INFRA-2916, D3): for role R, the hours
+// of the issue's worked spans (life, less the hours in backlog or icebox and the hours queued) in
+// which the issue holds its own slot, its observed phase is in R's bar, and R's newest observed
+// claim state is not `working` (no claim counts as not working). Each of the six roles has an
+// entry, zero where no hour qualifies.
 //
 // The worked spans are the ones the work time counts (workedSpansOf), which leave out the hours
 // out of the workflow before the close as well (outOfWorkflowSpans). The slot is the issue's own

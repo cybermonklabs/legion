@@ -1393,9 +1393,10 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/priorities`: every live priority in rank order, each with the work that
    *  advances it, and the two faults the page draws beside them - the open work under no
-   *  priority and the work parked under one. A priority belongs to no project, so this reads the
-   *  whole deployment; `project`, repeatable, counts only the work of those projects, and
-   *  `summary: true` answers the two fault counts alone, with no row and no issue list. */
+   *  priority and the work in backlog or icebox under one. A priority belongs to no project, so
+   *  this reads the whole deployment; `project`, repeatable, counts only the work of those
+   *  projects, and `summary: true` answers the two fault counts alone, with no row and no issue
+   *  list. */
   listPriorities(query: Query<"/api/v1/priorities", "get"> = {}) {
     return this.read("/api/v1/priorities", {}, query);
   }

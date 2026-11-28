@@ -97,8 +97,8 @@ export function useMarginListeners({
 
   // Opening a composer is the reader taking part, so the corrections above stand down - and the
   // composer itself has to be shown. It renders at the top of the margin's scroll content, and
-  // the reader who opened it from the document never touched the margin, so a margin parked on
-  // a linked card would keep the form off screen entirely. A collapsed compact sheet has no
+  // the reader who opened it from the document never touched the margin, so a margin scrolled
+  // to a linked card would keep the form off screen entirely. A collapsed compact sheet has no
   // scrollport and no composer laid out yet; opening one expands the sheet, and that expansion
   // is what brings the reader here.
   useEffect(() => {

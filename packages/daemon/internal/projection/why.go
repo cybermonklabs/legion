@@ -294,12 +294,12 @@ func linkReason(waitsOn []string) string {
 //
 // The tree is this arm's own term: running is the roots whose trees run (record.RunningRoots,
 // over record.TreeRuns), and nothing of a tree that does not run is being worked on, whatever
-// phase its members stand in. A root a person parked is the shape that proves it: its linger
+// phase its members stand in. A root a person moved to backlog is the shape that proves it: its linger
 // suspends every claim of its members while their Dispatch status stands, so the record holds
 // them in the workflow (record.InWorkflow) and whyStates reads them, and nothing of them runs
 // again until the root is admitted afresh. Such a member is served `unlisted` with its held
-// word's sentence, as it was before accepting, retro and merging stopped holding a slot: the park
-// takes the slot of every member of the tree it stops back whatever the phase
+// word's sentence, as it was before accepting, retro and merging stopped holding a slot: the move
+// to backlog takes the slot of every member of the tree it stops back whatever the phase
 // (record.NeedsSlot), so such a member stood in none of the three lists then either.
 //
 // The claim is the first arm's and is not read again here. A claim nothing will wake is the
@@ -375,8 +375,8 @@ var heldSentences = map[record.HeldReason]heldSentence{
 			"or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; " +
 			"in the last case that root's promotion ends this hold."
 	}},
-	record.HeldTreeParked: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
-		return "Its tree is parked: " + heldBy + " stands in backlog or icebox, " +
+	record.HeldTreeInBacklogOrIcebox: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "Its tree's root " + heldBy + " stands in backlog or icebox, " +
 			"and the daemon starts no issue of that tree until that root is put back at todo."
 	}},
 	record.HeldLabelOff: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(string) string {

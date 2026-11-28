@@ -30,8 +30,9 @@
 --     root, at most four levels down: the roots in order hold capacities of 1, 2, 1, 3, 2, 1, 4, 2,
 --     3 and 21 issues below them, ten at a time, and each takes the next issues in the md5 order of
 --     their keys as a binary heap, so a root of 21 reaches four levels. The other 7 own relations
---     are on parked issues four levels down that state a second priority beside the one they
---     inherit: the backlog and icebox pairs (525 + 211) are 7 more than the parked issues (729).
+--     are on issues in backlog or icebox four levels down that state a second priority beside the
+--     one they inherit: the backlog and icebox pairs (525 + 211) are 7 more than the issues in
+--     backlog or icebox (729).
 --     The first of them is <advances project>-2. Every own relation whose place is a multiple of 8
 --     is preceded by an assert and a retraction of another priority on the same issue. All 4,663
 --     finished issues advance a priority, 601 in each of the three other projects and 2,860 in the
@@ -40,7 +41,7 @@
 --   * The open pairs of an issue and a priority by status are production's: in_progress 972, todo
 --     826, backlog 525, triage 217, icebox 211, needs_review 119, testing 104 and retro 21. 622
 --     of them are claimed by a session, 78 open asks stand on them, one each, and 1,461 finished
---     pairs closed in the last 7 days. Parked (backlog or icebox, advancing a priority): 729.
+--     pairs closed in the last 7 days. In backlog or icebox, advancing a priority: 729.
 --   * The open issues of the second and third projects, numbered after their finished ones,
 --     advance no priority: 115 in in_progress (production's unplaced issues), and as many in todo
 --     and backlog as bring all issues to production's 17% and 32%; the rest are in icebox and
@@ -59,17 +60,20 @@ with production as (
   select now() as written_at, 13 as priorities, 4 as firsts, 13298 as issues,
          601 as finished_each, 2860 as finished_advances,
          972 as in_progress, 104 as testing, 119 as needs_review, 21 as retro, 826 as todo, 217 as triage,
-         211 as icebox, 525 as backlog_pairs, 729 as parked, 1600 as own, 115 as unplaced,
+         211 as icebox, 525 as backlog_pairs, 729 as in_backlog_or_icebox, 1600 as own, 115 as unplaced,
          round(0.17 * 13298)::int as todo_all, round(0.32 * 13298)::int as backlog_all,
          round(0.68 * 13298)::int as with_parent,
          622 as claimed, 78 as asks, 1461 as closed_recently
 ), members as (
-  -- The open members by status, the parked ones that advance two priorities among the backlog's,
-  -- the roots that state the rest of the own relations, and the finished issues: finished_each in
-  -- each of the three other projects and finished_advances in the advances project.
-  select p.*, p.backlog_pairs + p.icebox - p.parked as doubled, p.parked - p.icebox as backlog,
-         p.in_progress + p.testing + p.needs_review + p.retro + p.todo + p.triage + p.parked as open_members,
-         p.own - (p.backlog_pairs + p.icebox - p.parked) as roots,
+  -- The open members by status, the ones in backlog or icebox that advance two priorities among
+  -- the backlog's, the roots that state the rest of the own relations, and the finished issues:
+  -- finished_each in each of the three other projects and finished_advances in the advances
+  -- project.
+  select p.*, p.backlog_pairs + p.icebox - p.in_backlog_or_icebox as doubled,
+         p.in_backlog_or_icebox - p.icebox as backlog,
+         p.in_progress + p.testing + p.needs_review + p.retro + p.todo + p.triage + p.in_backlog_or_icebox
+           as open_members,
+         p.own - (p.backlog_pairs + p.icebox - p.in_backlog_or_icebox) as roots,
          3 * p.finished_each + p.finished_advances as done
   from production p
 ), rest as (

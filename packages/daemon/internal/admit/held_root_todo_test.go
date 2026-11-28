@@ -235,7 +235,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	// Before its promotion a person moves the carried root to in_progress, then back to todo. The
 	// in_progress takes it out of the line (record.QueuedRoot needs todo), and admission's pass then
 	// finds a waiting root at a status only a running tree has, in no tree that runs: it leaves the
-	// workflow as a parked root does (releaseUnslotted, workflow's LeaveUnslotted), done and
+	// workflow as a root moved to backlog does (releaseUnslotted, workflow's LeaveUnslotted), done and
 	// lingering, with nothing started and nothing told to the controller, which reads the root from
 	// the state (#4065). The person's todo with the label then queues it again (readmit), so it
 	// never reaches the release of a hold (workflow's releaseHeldRoot) and no worker starts in a

@@ -92,17 +92,17 @@ test("an ended row's late flush leaves the failure the next row armed to that ro
   }
 });
 
-test("a flush parked before its row ended leaves the failure the next row armed to that row's own flush", async () => {
+test("a flush held before its row ended leaves the failure the next row armed to that row's own flush", async () => {
   startRow();
   resetNatsStandIn();
-  const parked = Promise.withResolvers<void>();
+  const hold = Promise.withResolvers<void>();
   try {
     const endedRow = currentRow;
     const ended = await natsStandInConnect({ name: "ended-row", servers });
 
-    // The flush starts while its row is the current one, and parks inside the stand-in.
-    natsState.heldFlush = parked.promise;
-    const parkedFlush = rowScope.run(endedRow, () => ended.flush());
+    // The flush starts while its row is the current one, and waits inside the stand-in.
+    natsState.heldFlush = hold.promise;
+    const waitingFlush = rowScope.run(endedRow, () => ended.flush());
 
     // The next row starts, subscribes, and arms one failure for its own flush of that subject.
     startRow();
@@ -111,13 +111,13 @@ test("a flush parked before its row ended leaves the failure the next row armed 
     current.subscribe("current.own");
     natsState.failFlushOnSubject = "current.own";
 
-    // The parked flush comes back after the row that started it has ended.
-    parked.resolve();
-    await expect(parkedFlush).resolves.toBeUndefined();
+    // The held flush comes back after the row that started it has ended.
+    hold.resolve();
+    await expect(waitingFlush).resolves.toBeUndefined();
     await expect(current.flush()).rejects.toThrow("FLUSH_FAILED current.own");
     expect(natsState.failFlushOnSubject).toBeUndefined();
   } finally {
-    parked.resolve();
+    hold.resolve();
     resetNatsStandIn();
     startRow();
   }

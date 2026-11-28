@@ -753,7 +753,7 @@ func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
 
 // Every design decision a notice carries names the document the person reviewed, because a
 // decision nobody in its tree hears is kept and relayed under that reference, newest per
-// reference (the outbox's parkDecision, record.Store.AddParkedDecision): two steps of one root
+// reference (the outbox's relaySpecDecision, record.Store.KeepDecision): two steps of one root
 // that answered to one reference would replace each other's decision. The spec step keeps the
 // reference it has always had, so a one-step deployment's decisions are keyed as before.
 func TestGatedStepsNameEachStepsOwnDocumentOnItsDecision(t *testing.T) {

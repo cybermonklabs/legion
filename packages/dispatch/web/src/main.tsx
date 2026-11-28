@@ -6,6 +6,7 @@ import { BrowserRouter } from "react-router-dom";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { App } from "./app";
 import { KeepNewIssuePage } from "./features/issue-page/new-page-parameter";
+import { moveFormerPriorityLayouts } from "./features/priorities/former-layouts";
 import {
   DeploymentResilience,
   installChunkFailureRecovery,
@@ -39,6 +40,10 @@ if (root === null) {
 }
 
 installChunkFailureRecovery();
+// The layouts the priorities page's tables kept under the names of the release before move to
+// the names they have now once, before anything renders and reads them
+// (`moveFormerPriorityLayouts`).
+moveFormerPriorityLayouts();
 
 createRoot(root).render(
   <StrictMode>

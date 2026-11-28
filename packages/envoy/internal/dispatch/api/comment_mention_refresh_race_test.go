@@ -95,22 +95,22 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	}
 }
 
-// A claim refresh that lands while a parked send's try is in flight - a try that reads the rule
+// A claim refresh that lands while a waiting send's try is in flight - a try that reads the rule
 // alone, which writes no claim - must leave the sender recording the claim the refresh wrote on
 // the row. The refresh writes a row only where it carries the claim the sender records
 // (refreshMentionClaims), so a record left behind its row is never written again: the row's claim
-// lapses with the send still parked, the lane's own send is then refused as another sender's,
+// lapses with the send still waiting, the lane's own send is then refused as another sender's,
 // and the issue's next mention reaches the session first (TestTheMentionSenderClaimModel finds
 // all three). The send, the refresh and the rule are the server's own, on the database; only
-// their order is the test's. The control row runs the refresh while the send is parked.
-func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *testing.T) {
+// their order is the test's. The control row runs the refresh while the send waits for its retry.
+func TestARefreshDuringAWaitingSendsTryLeavesTheSenderHoldingTheRowsClaim(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		across bool
 	}{
-		{name: "control: the refresh runs while the send is parked"},
-		{name: "the refresh runs while the parked send's try is in flight", across: true},
+		{name: "control: the refresh runs while the send waits for its retry"},
+		{name: "the refresh runs while the waiting send's try is in flight", across: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener, _ := newMentionListener(t)
@@ -144,11 +144,11 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 			served.mentions = sender
 
 			// No outbox runs, so the issue's earlier events stay unsent and the comment's send
-			// waits behind them: its first try claims and parks, and each later try reads the
+			// waits behind them: its first try claims and waits for its retry, and each later try reads the
 			// rule alone.
-			issue := createInteractionIssue(t, handler, "TEST", "A refresh across a parked send's try", "before")
-			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			unpark := <-timers
+			issue := createInteractionIssue(t, handler, "TEST", "A refresh across a waiting send's try", "before")
+			comment := postMentionOfS1(t, handler, issue.Key, "the waiting one")
+			runRetry := <-timers
 			if tc.across {
 				gated.Store(true)
 				refreshed := make(chan struct{})
@@ -156,16 +156,16 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 					sender.refreshHeldClaims(context.Background())
 					close(refreshed)
 				}()
-				<-refreshEntered // the refresh holds its snapshot, the parked send in it
-				go unpark()
+				<-refreshEntered // the refresh holds its snapshot, the waiting send in it
+				go runRetry()
 				<-tryEntered // the lane has started the send's try
 				close(refreshGo)
 				<-refreshed // the refresh wrote the row and recorded what it wrote
 				gated.Store(false)
-				close(tryGo) // the try reads the rule alone and parks again
+				close(tryGo) // the try reads the rule alone and waits for its retry again
 			} else {
 				sender.refreshHeldClaims(context.Background())
-				go unpark()
+				go runRetry()
 			}
 			<-timers
 
@@ -175,14 +175,14 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 			sender.mu.Unlock()
 			recorded := state.claimed
 			row := attemptClaimedAt(t, database, comment, "session:s1")
-			t.Logf("parked again: the sender records claim %v (held %t), the row carries %v", recorded, holds, row)
+			t.Logf("waiting for its retry again: the sender records claim %v (held %t), the row carries %v", recorded, holds, row)
 			if !holds || !recorded.Equal(row) {
-				t.Fatalf("the sender records the parked send's claim as %v (held %t) while its row carries %v: the refresh writes only a row that carries the claim the sender records, so this one is never written again and lapses with the send still parked",
+				t.Fatalf("the sender records the waiting send's claim as %v (held %t) while its row carries %v: the refresh writes only a row that carries the claim the sender records, so this one is never written again and lapses with the send still waiting",
 					recorded, holds, row)
 			}
 			sender.refreshHeldClaims(context.Background())
 			if again := attemptClaimedAt(t, database, comment, "session:s1"); !again.After(row) {
-				t.Fatalf("the parked send's claim is still %v after the next refresh, want it written again", again)
+				t.Fatalf("the waiting send's claim is still %v after the next refresh, want it written again", again)
 			}
 		})
 	}
@@ -224,11 +224,11 @@ func publishIssueEvents(t *testing.T, database *store.Store, issueKey string) {
 	}
 }
 
-// parkGate is the sender's lock with a gate before park's: once armed, the first Lock park calls
+// retryGate is the sender's lock with a gate before scheduleRetry's: once armed, the first Lock scheduleRetry calls
 // tells the test it has arrived and waits, holding no lock, until the test releases the gate.
 // Every other Lock takes the mutex alone. The gate is released when the test ends at the latest,
 // so no lane goroutine is left waiting at it.
-type parkGate struct {
+type retryGate struct {
 	sync.Mutex
 	armed    atomic.Bool
 	arrived  chan struct{}
@@ -236,27 +236,27 @@ type parkGate struct {
 	releases sync.Once
 }
 
-func newParkGate(t *testing.T) *parkGate {
-	gate := &parkGate{arrived: make(chan struct{}), open: make(chan struct{})}
+func newRetryGate(t *testing.T) *retryGate {
+	gate := &retryGate{arrived: make(chan struct{}), open: make(chan struct{})}
 	t.Cleanup(gate.release)
 	return gate
 }
 
 //go:noinline
-func (g *parkGate) Lock() {
-	if g.armed.Load() && lockCaller() == parkLockSite && g.armed.CompareAndSwap(true, false) {
+func (g *retryGate) Lock() {
+	if g.armed.Load() && lockCaller() == retryLockSite && g.armed.CompareAndSwap(true, false) {
 		close(g.arrived)
 		<-g.open
 	}
 	g.Mutex.Lock()
 }
 
-func (g *parkGate) release() {
+func (g *retryGate) release() {
 	g.releases.Do(func() { close(g.open) })
 }
 
 // lockCaller is the name of the function that called the Lock that calls lockCaller, which the
-// list of the sender's lock sites names (mentionSenderLockSites, parkLockSite).
+// list of the sender's lock sites names (mentionSenderLockSites, retryLockSite).
 //
 //go:noinline
 func lockCaller() string {
@@ -269,30 +269,30 @@ func lockCaller() string {
 }
 
 // A refresh that lands while a send's first try is in flight - after the try took the attempt's
-// claim for itself and before its park records that claim - and one after the park leave the
+// claim for itself and before its scheduleRetry records that claim - and one after the scheduled retry leave the
 // sender recording the claim the row carries: its refreshes go on writing the row through a
-// lease, the delivery sweep finds the attempt held, and s1 takes the parked comment before the
+// lease, the delivery sweep finds the attempt held, and s1 takes the waiting comment before the
 // one posted after it. The send, the refreshes and the rule are the server's own, on the
-// database. The control row runs the refresh after the park alone.
+// database. The control row runs the refresh after the scheduled retry alone.
 //
 // The last row lands the refresh in the window's last step: the try has answered and serve has
-// gone on to park, which waits at the sender's lock (parkGate) while the refresh runs, a refresh
+// gone on to scheduleRetry, which waits at the sender's lock (retryGate) while the refresh runs, a refresh
 // whose answer was lost during the try having left the claim unknown. A serve that marked the try
-// done (trying(false)) before park took that lock to record the try's claim let this refresh
-// re-read the row, record the try's claim and write the row past it, and park then set the record
+// done (trying(false)) before scheduleRetry took that lock to record the try's claim let this refresh
+// re-read the row, record the try's claim and write the row past it, and scheduleRetry then set the record
 // back to the try's claim: the sender trusted a claim the row no longer carried, and no refresh
-// wrote that row again. The try stays marked in flight until park records its claim under that
-// lock (mentionSender.park), so the refresh re-reads nothing there.
-func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark(t *testing.T) {
+// wrote that row again. The try stays marked in flight until scheduleRetry records its claim under that
+// lock (mentionSender.scheduleRetry), so the refresh re-reads nothing there.
+func TestAWaitingSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsRetrySchedule(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		during  bool
 		between bool
 	}{
-		{name: "control: the refresh runs after the park alone"},
-		{name: "a refresh whose answer is lost and another land during the try, then one after the park", during: true},
-		{name: "a refresh whose answer is lost lands during the try, another as park waits for the lock, then one after the park", between: true},
+		{name: "control: the refresh runs after the scheduled retry alone"},
+		{name: "a refresh whose answer is lost and another land during the try, then one after the scheduled retry", during: true},
+		{name: "a refresh whose answer is lost lands during the try, another as scheduleRetry waits for the lock, then one after the scheduled retry", between: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -303,9 +303,9 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			served.mentions.wait()
 			var lose, refreshed atomic.Bool
 			// unsureDuring is whether the lost refresh left the claim unsure while the try was in
-			// flight; park's timer, which the test receives, orders its write before the read.
+			// flight; the retry's timer, which the test receives, orders its write before the read.
 			var unsureDuring bool
-			gate := newParkGate(t)
+			gate := newRetryGate(t)
 			var sender *mentionSender
 			sender = newMentionSender(served.lifetime, time.Hour,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
@@ -341,28 +341,28 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			served.mentions = sender
 
 			// No outbox runs, so the issue's earlier events stay unsent and A-1's first try
-			// claims its attempt and parks, its timer left to the test.
-			issue := createInteractionIssue(t, handler, "TEST", "A refresh beside a try and its park", "before")
+			// claims its attempt and waits for its retry, its timer left to the test.
+			issue := createInteractionIssue(t, handler, "TEST", "A refresh beside a try and its retry schedule", "before")
 			a1 := postMentionOfS1(t, handler, issue.Key, "first")
 			key := mentionKey{comment: a1, target: "session:s1", attempt: 1}
 			if tc.between {
-				testwait.Receive(t, "A-1's park reaching the sender's lock after its try", gate.arrived)
+				testwait.Receive(t, "A-1's scheduleRetry reaching the sender's lock after its try", gate.arrived)
 				sender.refreshHeldClaims(ctx)
 				recorded, unsure := recordedClaim(sender, key)
-				t.Logf("as park waits for the lock, the refresh leaves the sender recording %v (unsure %t), the row carrying %v",
+				t.Logf("as scheduleRetry waits for the lock, the refresh leaves the sender recording %v (unsure %t), the row carrying %v",
 					recorded, unsure, attemptClaimedAt(t, database, a1, "session:s1"))
 				gate.release()
 			}
-			unpark := <-timers
+			runRetry := <-timers
 			if (tc.during || tc.between) && !unsureDuring {
 				t.Fatal("the refresh whose answer was lost during the try left A-1's claim known: the case is not the one under test")
 			}
 			sender.refreshHeldClaims(ctx)
 			recorded, unsure := recordedClaim(sender, key)
 			row := attemptClaimedAt(t, database, a1, "session:s1")
-			t.Logf("parked; after the refresh the sender records %v (unsure %t), the row carries %v", recorded, unsure, row)
+			t.Logf("waiting for its retry; after the refresh the sender records %v (unsure %t), the row carries %v", recorded, unsure, row)
 			if unsure || !recorded.Equal(row) {
-				t.Fatalf("the sender trusts claim %v (unsure %t) for A-1 while its row carries %v: the refresh writes only a row that carries the claim the sender records, so this one lapses with the send still parked",
+				t.Fatalf("the sender trusts claim %v (unsure %t) for A-1 while its row carries %v: the refresh writes only a row that carries the claim the sender records, so this one lapses with the send still waiting",
 					recorded, unsure, row)
 			}
 
@@ -379,14 +379,14 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			}
 			for _, delivery := range owed {
 				if delivery.commentID == a1 {
-					t.Fatalf("a lease on, the delivery sweep finds A-1 owed while the sender holds it parked: its claim lapsed (row %v)",
+					t.Fatalf("a lease on, the delivery sweep finds A-1 owed while the sender holds it waiting for its retry: its claim lapsed (row %v)",
 						attemptClaimedAt(t, database, a1, "session:s1"))
 				}
 			}
 
 			a2 := postMentionOfS1(t, handler, issue.Key, "second")
 			publishIssueEvents(t, database, issue.Key)
-			unpark()
+			runRetry()
 			settledCommentDeliveries(t, database, a2)
 			states := attemptStates(t, database, "comment_deliveries", "comment_id", a1)
 			bodies := state.bodiesTo("s1")
@@ -398,8 +398,8 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 	}
 }
 
-// A delivery sweep that takes a parked send's attempt while that send's try is in flight - the
-// claim the send parked under lapsed on the row - hands the send back to the sender under the
+// A delivery sweep that takes a waiting send's attempt while that send's try is in flight - the
+// claim the send waited under lapsed on the row - hands the send back to the sender under the
 // claim the sweep took (resumeOwedDelivery, queueLocked). The try, carrying the claim from before,
 // is refused as another sender's; the sender must try the send again under the hand-off's claim
 // and send it, rather than let it go with its attempt pending under a claim no sender holds, which
@@ -407,14 +407,14 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 // server's own, on the database; only their order is the test's: the try is held inside the
 // sender's send until the sweep has handed the send over and the earlier events are sent. The
 // control row has no hand-off: the try, under the sender's own claim, waits behind the earlier
-// events and parks again.
+// events and waits for its retry again.
 func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		handOff bool
 	}{
-		{name: "control: no hand-off, the try waits and parks again"},
+		{name: "control: no hand-off, the try waits for its retry again"},
 		{name: "the delivery sweep hands the send over while its try is in flight", handOff: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -426,7 +426,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			served.mentions.wait()
 			var gated atomic.Bool
 			tryEntered, tryGo := make(chan struct{}), make(chan struct{})
-			// tried is the claim each try of the parked send carried, in order.
+			// tried is the claim each try of the waiting send carried, in order.
 			var mu sync.Mutex
 			var tried []time.Time
 			sender := newMentionSender(served.lifetime, time.Hour,
@@ -450,21 +450,21 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			served.mentions = sender
 
 			// No outbox runs, so the issue's earlier events stay unsent and the comment's send
-			// parks under the claim its first try took, its timer left to the test.
+			// waits for its retry under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A hand-off during a try", "before")
-			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			unpark := <-timers
+			comment := postMentionOfS1(t, handler, issue.Key, "the waiting one")
+			runRetry := <-timers
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
-			// A lease and a second with no refresh: the claim the send parked under lapsed, on
+			// A lease and a second with no refresh: the claim the send waited under lapsed, on
 			// its row and in the sender's record alike, and the attempt is old enough to be owed.
 			ageAttempts(t, database, comment)
 			ageClaimAndRecord(t, database, sender, key, model.DeliveryClaimLapse+time.Second)
-			parked, _ := recordedClaim(sender, key)
+			waitClaim, _ := recordedClaim(sender, key)
 
 			gated.Store(true)
-			go unpark()
+			go runRetry()
 			<-tryEntered // the lane has started the send's try, carrying the lapsed claim
-			want := []time.Time{parked}
+			want := []time.Time{waitClaim}
 			if tc.handOff {
 				owed, err := served.owedDeliveries(ctx)
 				if err != nil {
@@ -472,39 +472,39 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 				}
 				index := slices.IndexFunc(owed, func(delivery owedDelivery) bool { return delivery.commentID == comment })
 				if index < 0 {
-					t.Fatalf("the delivery sweep does not find the parked send's attempt owed under its lapsed claim: %+v", owed)
+					t.Fatalf("the delivery sweep does not find the waiting send's attempt owed under its lapsed claim: %+v", owed)
 				}
 				// The sweep claims the attempt, finds the earlier events still owed and hands
 				// the send to the sender under the claim it took.
 				if err := served.resumeOwedDelivery(ctx, owed[index]); err != nil {
-					t.Fatalf("the sweep's send of the parked one: %v", err)
+					t.Fatalf("the sweep's send of the waiting one: %v", err)
 				}
 				handedOver := attemptClaimedAt(t, database, comment, "session:s1")
 				recorded, _ := recordedClaim(sender, key)
-				t.Logf("parked under %v; the sweep handed the send over under %v, and the sender records %v",
-					parked, handedOver, recorded)
-				if !handedOver.After(parked) || !recorded.Equal(handedOver) {
+				t.Logf("waiting under %v; the sweep handed the send over under %v, and the sender records %v",
+					waitClaim, handedOver, recorded)
+				if !handedOver.After(waitClaim) || !recorded.Equal(handedOver) {
 					t.Fatalf("the sweep's hand-off left the row's claim at %v and the sender's record at %v, want both at a claim past %v",
-						handedOver, recorded, parked)
+						handedOver, recorded, waitClaim)
 				}
 				want = append(want, handedOver)
 				publishIssueEvents(t, database, issue.Key)
 			}
 			close(tryGo)
 			if !tc.handOff {
-				unpark = <-timers // the try read the rule alone, waited and parked again
+				runRetry = <-timers // the try read the rule alone and waits for its retry again
 				recorded, unsure := recordedClaim(sender, key)
 				row := attemptClaimedAt(t, database, comment, "session:s1")
-				t.Logf("parked again: the sender records %v (unsure %t), the row carries %v", recorded, unsure, row)
-				if unsure || !recorded.Equal(row) || !row.Equal(parked) {
-					t.Fatalf("parked again, the sender records %v (unsure %t) and the row carries %v, want both the claim it parked under, %v",
-						recorded, unsure, row, parked)
+				t.Logf("waiting for its retry again: the sender records %v (unsure %t), the row carries %v", recorded, unsure, row)
+				if unsure || !recorded.Equal(row) || !row.Equal(waitClaim) {
+					t.Fatalf("waiting for its retry again, the sender records %v (unsure %t) and the row carries %v, want both the claim it waited under, %v",
+						recorded, unsure, row, waitClaim)
 				}
 				publishIssueEvents(t, database, issue.Key)
-				want = append(want, parked)
-				go unpark()
+				want = append(want, waitClaim)
+				go runRetry()
 			}
-			waitUntil(t, "the sender done with the parked send", func() bool {
+			waitUntil(t, "the sender done with the waiting send", func() bool {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				_, holds := sender.held[key]
@@ -518,10 +518,10 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			mu.Unlock()
 			t.Logf("the tries carried %v; the attempts are %v, and s1 took %q", carried, states, bodies)
 			if !slices.EqualFunc(carried, want, time.Time.Equal) {
-				t.Errorf("the parked send's tries carried %v, want %v", carried, want)
+				t.Errorf("the waiting send's tries carried %v, want %v", carried, want)
 			}
-			if !slices.Equal(states, []string{"1:sent"}) || !slices.Equal(bodies, []string{"the parked one"}) {
-				t.Fatalf("the sender let the parked send go with its attempts %v and s1 taking %q, want it sent once: a send let go under the hand-off's claim leaves the attempt pending under a claim no sender holds",
+			if !slices.Equal(states, []string{"1:sent"}) || !slices.Equal(bodies, []string{"the waiting one"}) {
+				t.Fatalf("the sender let the waiting send go with its attempts %v and s1 taking %q, want it sent once: a send let go under the hand-off's claim leaves the attempt pending under a claim no sender holds",
 					states, bodies)
 			}
 		})

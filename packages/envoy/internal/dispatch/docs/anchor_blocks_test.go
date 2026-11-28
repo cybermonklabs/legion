@@ -68,7 +68,7 @@ func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
 // inside that window and the test ran it there, under the name it had then
 // ("...KeepsABlockIDPinnedAfterItReadTheRow"); now both writers take the row's owner lock - the
 // settlement through its version write (lockArtifactOwner), the backfill through
-// refs.LockItemOwner - so the interleaving cannot happen at all and the backfill parks on that
+// refs.LockItemOwner - so the interleaving cannot happen at all and the backfill blocks on that
 // lock until the settlement commits. What the test proves is that they serialise on the owner and
 // that both writes stand: the refresh clears the orphan flag, the backfill pins the block, and
 // the row carries both at the end.
@@ -158,7 +158,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 
 	// The backfill runs beside the held settlement, in a goroutine, because it no longer runs
 	// past it: it takes the comment's owner lock, which the settlement's version write holds
-	// (lockArtifactOwner, refs.LockItemOwner), so it parks there until the settlement commits.
+	// (lockArtifactOwner, refs.LockItemOwner), so it blocks there until the settlement commits.
 	// Its own wait is the proof, read off pg_locks rather than off a clock.
 	type backfillResult struct {
 		report AnchorBlockBackfill
@@ -231,7 +231,7 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 }
 
 // waitForHeldOwnerLock returns once a transaction is waiting on owner's lock, which is where a
-// writer that takes it parks while another transaction holds it (store.LockOwner). The lock's own
+// writer that takes it blocks while another transaction holds it (store.LockOwner). The lock's own
 // wait queue is that writer's observable position, read as waitForHeldAnchorRefresh reads the
 // test's own key, so nothing here waits a fixed length for a step to happen; the deadline bounds
 // the wait and the failure names the lock it waited for.

@@ -34,7 +34,7 @@ import (
 // holds the right way. Project P has role A of issue X in a turn whose session reports background
 // work, role B of X idle, role C of Y and role F of U released (F's backstop due twenty minutes
 // after the pause), role D of W in a turn a provider will refuse, role E of V whose relaunch the
-// wake pacing has parked, the controller, and, once the pause stands, issue Z admissible in the
+// wake pacing has delayed, the controller, and, once the pause stands, issue Z admissible in the
 // admission line; the same database holds a queued row of project Q. The test pauses P, then
 // delivers a listener wake for B, a CI settlement for C, a notice for A, a handoff of A that moves
 // X to implementing and a task for the controller, ends A's turn and D's turn, and advances the
@@ -90,7 +90,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	dShim := r.dialShim(pauseRigBootToken(D))
 	dPrompt := r.startTurn(dShim, "Resume the existing phase work.")
 	r.awaitState(D, supervise.StateWorking, "D's turn has started")
-	r.parkRelaunch(E)
+	r.delayRelaunch(E)
 	if started := r.linesOf(turnStartedLine(), A); len(started) != 0 {
 		t.Fatalf("A's turn started in this daemon's life %d times, want none: A's turn is the one the boot found", len(started))
 	}
@@ -99,7 +99,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	paused := r.mark()
 	pause := r.pauseProject()
 
-	// B stops at once, its session kept; E's parked launch is stopped with the launch owed; A and
+	// B stops at once, its session kept; E's delayed launch is stopped with the launch owed; A and
 	// D stay in their turns.
 	b := r.awaitState(B, supervise.StateSuspended, "the pause stops an idle role at once")
 	if !b.Released() || b.Session != "ses-"+string(B) || b.SessionFile != "/sessions/"+string(B)+".jsonl" {
@@ -109,7 +109,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	if got := r.rt.suspendedOf(B); got != 1 {
 		t.Fatalf("B's process was stopped %d times, want once", got)
 	}
-	if e := r.awaitState(E, supervise.StateSuspended, "the pause stops a launch the pacing parked"); !e.Released() {
+	if e := r.awaitState(E, supervise.StateSuspended, "the pause stops a launch the pacing delayed"); !e.Released() {
 		t.Fatalf("E after its stop is suspended by %s, want released", e.SuspendedBy)
 	}
 	for _, token := range []claim.Token{A, D} {
@@ -174,12 +174,12 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	}
 	r.noPrompt(dShim, "D's task is not sent again while the project is paused")
 
-	// No role launched since the pause, E's parked launch included.
+	// No role launched since the pause, E's delayed launch included.
 	if launched := r.rt.launches()[launchesBefore:]; len(launched) != 0 {
 		t.Fatalf("%d launches since the pause (%+v), want none: the pause holds every start", len(launched), launched)
 	}
 	if launched := r.rt.launchesOf(E); len(launched) != 1 {
-		t.Fatalf("E was launched %d times, want only its boot launch: its parked relaunch does not run", len(launched))
+		t.Fatalf("E was launched %d times, want only its boot launch: its delayed relaunch does not run", len(launched))
 	}
 
 	// The pods of X and W stay, held by the pause, and no rule deletes them or reads their workspace.
@@ -283,7 +283,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 // 1 to 90 are each given one held wake (a listener's report of a message to the role), roles 1 to
 // 3 a held notice as well and role 91 a held notice only (a hook's prompt, as k1's), role 92 stops
 // with a task it did not finish (its phase's task, which no shim's hello let it read), role 93
-// had a relaunch the pacing parked when the pause began, and roles 94 to 101 are given nothing;
+// had a relaunch the pacing delayed when the pause began, and roles 94 to 101 are given nothing;
 // issue 102 is queued in the admission line. The test resumes, and moves the clock through each
 // launch's turn and on to twenty minutes after the resume.
 //
@@ -298,7 +298,7 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 		woken      = 90
 		noticeOnly = 91
 		unfinished = 92
-		parked     = 93
+		delayed    = 93
 		// launches is every launch the resume owes: the 93 roles with held work, and the first
 		// launch of the admitted issue, its architect's.
 		launches = 94
@@ -311,7 +311,7 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 		switch n {
 		case unfinished:
 			c = r.running(r.issue(n), claim.RoleImplementer, supervise.StateReady)
-		case parked:
+		case delayed:
 			c = r.unfinished(r.issue(n), claim.RoleImplementer)
 		}
 		r.seed(r.root(r.issue(n), phase.Implementing), c)
@@ -321,7 +321,7 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 	r.boot()
 
 	testwait.Eventually(t, "the boot to hand role 92 its phase's task", func() bool { return r.claim(worker(unfinished)).Pending != nil })
-	r.parkRelaunch(worker(parked))
+	r.delayRelaunch(worker(delayed))
 
 	r.pauseProject()
 	testwait.WithinPolling(t, 3*time.Minute, 100*time.Millisecond, "the pause to stop all 101 roles", func() bool {
@@ -396,7 +396,7 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 	}
 	for n := 1; n <= roles; n++ {
 		want := 1
-		if n > parked {
+		if n > delayed {
 			want = 0
 		}
 		if got := count[worker(n)]; got != want {
@@ -497,8 +497,8 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 	}
 
 	// Each held notice is delivered after its role's one launch. A hook's prompt whose role's
-	// launch the pacing held waits for that launch (outbox.parkedWait): it is due at the launch's
-	// turn, or parkedWakeBound on, whichever comes first. The machines read the test clock and the
+	// launch the pacing held waits for that launch (outbox.delayedWait): it is due at the launch's
+	// turn, or delayedWakeBound on, whichever comes first. The machines read the test clock and the
 	// outbox the wall clock, so here the turn is a moment of the test clock and the bound is five
 	// minutes of wall time, either of which can be minutes of wall time away although the test
 	// clock has passed every launch. Every launch is made by now, so the test makes each such row
@@ -568,7 +568,7 @@ func (r *pauseDaemonRig) runPacing(since, want int, made func(waveLaunch), read 
 // row (a listener's wake taken while the project is paused), the worker S of an open phase that
 // the pause stopped with nothing held for it, role T that stopped with a task it did not finish
 // (the phase's task the boot handed it, which no shim's hello has let it read yet), and role R
-// whose relaunch the pacing had parked at the pause. The test pauses, stops the daemon and boots
+// whose relaunch the pacing had delayed at the pause. The test pauses, stops the daemon and boots
 // it again on the same store, ends G's turn, and resumes.
 //
 // The negative control is the pause's stops made as the daemon's own suspension (SuspendedByDaemon),
@@ -593,7 +593,7 @@ func TestPauseHoldsAcrossRestart(t *testing.T) {
 	r.boot()
 
 	testwait.Eventually(t, "the boot to hand T its phase's task", func() bool { return r.claim(T).Pending != nil })
-	r.parkRelaunch(R)
+	r.delayRelaunch(R)
 
 	pause := r.pauseProject()
 	for _, token := range []claim.Token{H, S, T, R} {

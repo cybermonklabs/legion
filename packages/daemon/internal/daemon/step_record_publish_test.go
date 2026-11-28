@@ -812,7 +812,7 @@ func TestAStepRecordHoldsNoStatusWrite(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	putOutboxIssue(t, pool, record.NewStore(), claimReleaseRoot())
-	putOutboxIssue(t, pool, record.NewStore(), parkedIssue())
+	putOutboxIssue(t, pool, record.NewStore(), outOfWorkflowIssue())
 	clock := microClock()
 	hold := make(chan struct{})
 	client := &stepRecordDispatch{outboxDispatch: &outboxDispatch{issue: dispatch.Issue{Key: claimIssue, Status: "backlog"}}, hold: hold}

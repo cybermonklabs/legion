@@ -86,7 +86,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	harness.Fact("workflow-task-lock-this-run-used", WorkflowLockTimeout.String())
 
 	// 1. The recorded runs, under the code as it stood before the change. Both are
-	// parked on the wait for a person, which is where a change finds them.
+	// waiting for a person, which is where a change finds them.
 	recorder := gwx.Backend(db, Options("exp15-old-deployment"))
 	defer recorder.Close() //nolint:errcheck // the backend does not own the pool
 	recorderClient := client.New(recorder)
@@ -105,7 +105,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 		}
 	}
 	for _, id := range []string{changed, sideBySide} {
-		if err := waitParked(ctx, db, id, recordWait); err != nil {
+		if err := waitUntilWaiting(ctx, db, id, recordWait); err != nil {
 			return err
 		}
 	}
@@ -251,7 +251,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	}, WorkflowName, Params{SideEffectFile: steps, Instance: fresh}); err != nil {
 		return fmt.Errorf("create instance %s: %w", fresh, err)
 	}
-	if err := waitParked(ctx, db, fresh, recordWait); err != nil {
+	if err := waitUntilWaiting(ctx, db, fresh, recordWait); err != nil {
 		return err
 	}
 	if err := freshClient.SignalWorkflow(ctx, fresh, ReleaseSignal, "approved"); err != nil {
@@ -329,9 +329,9 @@ func startWorker(ctx context.Context, be backend.Backend, body workflow.Workflow
 	return nil
 }
 
-// waitParked blocks until an instance has run its recorded steps and is waiting for
+// waitUntilWaiting blocks until an instance has run its recorded steps and is waiting for
 // the person, which is the state a change has to meet.
-func waitParked(ctx context.Context, db *sql.DB, instanceID string, timeout time.Duration) error {
+func waitUntilWaiting(ctx context.Context, db *sql.DB, instanceID string, timeout time.Duration) error {
 	_, err := gwx.WaitForInstance(ctx, db, instanceID, timeout, func(i gwx.Instance) bool {
 		if !i.Found || i.Finished() || i.LockedUntil != nil {
 			return false

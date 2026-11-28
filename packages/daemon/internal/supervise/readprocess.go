@@ -34,7 +34,7 @@ const (
 	// record is all the caller has of the claim it is given for (ReadProcess, api's
 	// refuseWorkingClaim).
 	ProcessNotRecorded ProcessRead = "not recorded"
-	// ProcessReplacedByLaunch is no read having been made because a launch the wake pacing parks
+	// ProcessReplacedByLaunch is no read having been made because a launch the wake pacing delays
 	// waits over the process the claim records: that launch's turn lets the process go and
 	// starts the next, so what the process is doing now decides nothing (wakeNow, launchNow). It
 	// is not an answer about the process either; it says the claim is between states, with that
@@ -66,8 +66,8 @@ const processReadBound = 5 * time.Second
 // starts the next (ProcessReplacedByLaunch, wakeNow, launchNow). probe leaves both alone for
 // those same reasons. The reason is told apart here, under the lock, because this is the one
 // moment it is true of the claim the caller asked about: a view read after the lock is released
-// can find the parked launch already run and the claim launching. The route reads the parked
-// launch before it calls this (api's relaunchWaits), and a park raised between its view and this
+// can find the delayed launch already run and the claim launching. The route reads the delayed
+// launch before it calls this (api's relaunchWaits), and a delay raised between its view and this
 // lock is what ProcessReplacedByLaunch answers; a claim recording no process is no claim anyone
 // asks this about.
 //

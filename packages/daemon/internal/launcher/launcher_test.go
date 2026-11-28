@@ -59,7 +59,7 @@ func TestLauncherChild(t *testing.T) {
 	if err := os.WriteFile(marker, []byte(strconv.Itoa(child.Process.Pid)+" "+socket+" "+seen), 0o600); err != nil {
 		os.Exit(4)
 	}
-	// Wait on the descendant rather than block in select{}: a goroutine parked forever with nothing
+	// Wait on the descendant rather than block in select{}: a goroutine blocked forever with nothing
 	// else outstanding is the Go runtime's deadlock, fatal under gVisor, while a blocking wait is not.
 	_ = child.Wait()
 	exitHelper(t)

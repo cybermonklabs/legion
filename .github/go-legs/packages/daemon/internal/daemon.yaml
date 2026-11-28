@@ -68,14 +68,15 @@
   - TestAHeldMergeForwardMessageWakesARoleReleasedBeforeThePauseWithThatPause  # 1.2 s
   - TestAHeldRestartsTaskCarriesTheNews  # 0.3 s
   - TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired  # 0.4 s
-  - TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod  # 0.3 s
+  - TestAHookPromptWaitsOutTheDelayedWakeOfItsReleasedPod  # 0.3 s
+  - TestAKeptDecisionIsPublishedOnTheControllersRoleTopic  # 0.2 s
   - TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget  # 35.8 s
   - TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot  # 0.5 s
   - TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater  # 0.4 s
   - TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot  # 1.5 s
   - TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses  # 1.6 s
   - TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery  # 1.0 s
-  - TestALateChangesRequestLeavesTheNewerParkedDecision  # 0.1 s
+  - TestALateChangesRequestLeavesTheNewerKeptDecision  # 0.1 s
   - TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt  # 0.3 s
   - TestALateReportOfASpentCatchUpNamesWhatItsRowReleased  # 0.8 s
   - TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed  # 0.6 s
@@ -112,7 +113,6 @@
   - TestANoticeToAnArchitectStoppedWithItsFinishedTreeIsNotSentAgain  # 0.4 s
   - TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy  # 0.9 s
   - TestAPairADispatchWithoutTheChangesRouteRefusesIsRetriedWithinTheRowsAttempts  # 1.2 s
-  - TestAParkedDecisionIsPublishedOnTheControllerTopic  # 0.2 s
   - TestAPauseStopMadeAgainWritesItsRecordsOnce  # 0.3 s
   - TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork  # 2.5 s
   - TestAPauseStopsAndHoldsAClaimOfAnotherProjectsIssue  # 2.4 s
@@ -146,7 +146,7 @@
   - TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses  # 0.3 s
   - TestARefusedReadingLeaseForTheLeakCheckAsksForNoWiderToken  # 0.2 s
   - TestAReheldCatchUpNeverFollowsANewerOne  # 0.9 s
-  - TestARelaunchParkedOverALiveProcessHoldsNoRow  # 0.7 s
+  - TestARelaunchDelayedOverALiveProcessHoldsNoRow  # 0.7 s
   - TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask  # 0.4 s
   - TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask  # 0.5 s
   - TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp  # 0.2 s
@@ -183,7 +183,7 @@
   - TestAReviewerToldTheGateClosedGetsOneDeliveryOfAnUnchangedOpening  # 0.4 s
   - TestAReviewersPermissionIsReadOncePerWindow  # 1.7 s
   - TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain  # 0.3 s
-  - TestARootHeldPastAParkedRootOnItsChainTakesNoSlot  # 0.5 s
+  - TestARootHeldPastARootInBacklogOnItsChainTakesNoSlot  # 0.5 s
   - TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired  # 3.8 s
   - TestARunOfFailedReadsIsRetriedThenRecordedUnavailable  # 0.3 s
   - TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces  # 0.2 s
@@ -487,6 +487,7 @@
   - TestWhenACopyIsDueAtOnce  # 1.1 s
   - TestWorkerBackgroundInsideTheBoundTellsNobodyAndPromptsNobody  # 0.3 s
 2:
+  - TestABacklogChildsCatchUpEndsAfterAPersonMovesItToARunningStatus  # 0.5 s
   - TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts  # 0.3 s
   - TestABasePushReadsItsOwedPullRequestsByNumberInChunks  # 0.2 s
   - TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRegisters  # 2.3 s
@@ -598,7 +599,6 @@
   - TestANoticeReleaseWhoseCommitReplyComesAfterTheCancelWakesItsLanes  # 0.5 s
   - TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule  # 0.3 s
   - TestAPairOfADocumentDispatchNoLongerHoldsIsRecordedUnavailableWithNoRetry  # 0.2 s
-  - TestAParkedChildsCatchUpEndsAfterAPersonMovesItToARunningStatus  # 0.5 s
   - TestAPauseStopTheResumeOvertakesStopsNothing  # 0.2 s
   - TestAPendingReconcileHoldsTheMergerOffAnUnreadHistoryUntilItReadsItAgain  # 0.4 s
   - TestAPermanentBrokerRefusalRefusesTheBoot  # 0.1 s
@@ -770,7 +770,7 @@
   - TestBootLeavesALaunchingClaimToItsRegistration  # 0.0 s
   - TestBootQueuesEveryRecentIssue  # 0.3 s
   - TestBootReconcileLeavesOutATriageRootWhoseEventLogCannotBeRead  # 0.7 s
-  - TestBootReleasesParkedClaims  # 1.2 s
+  - TestBootReleasesOutOfWorkflowClaims  # 1.2 s
   - TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne  # 0.0 s
   - TestBootsPruneTakesTheGhDirectoriesOfClaimsWithNoProcess  # 0.0 s
   - TestCatchUpAwaitingStopsTheStartOnATLSFailureOfDispatch  # 1.4 s
@@ -1004,7 +1004,7 @@
   - TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd  # 3.3 s
   - TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime  # 1.6 s
   - TestTheLoadProbeStopsWithTheDaemon  # 0.0 s
-  - TestTheMachinerysNoticeToAStoppedTreeWritesNoParkedDecision  # 0.2 s
+  - TestTheMachinerysNoticeToAStoppedTreeKeepsNoDecision  # 0.2 s
   - TestTheMergeStateFollowsGitHubAcrossARestart  # 0.8 s
   - TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown  # 5.0 s
   - TestTheMergeStateReadMovesAnApprovedIssueToAccepting  # 0.2 s
@@ -1051,7 +1051,7 @@
   - TestTheShareKindProofBuildsItsRuntimesFromItsConfigurations  # 0.7 s
   - TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch  # 0.0 s
   - TestTheStallBackstopEndsAStalledControllerAndWritesOnNoIssue  # 0.0 s
-  - TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles  # 0.0 s
+  - TestTheStallBackstopTellsADelayedRelaunchAsWhatTheDelaySettles  # 0.0 s
   - TestTheStallBackstopTellsNobodyOfATurnItDidNotEnd  # 0.0 s
   - TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused  # 0.0 s
   - TestTheStallBackstopWritesNothingForAClaimOnNoIssue  # 0.0 s
@@ -1081,6 +1081,7 @@
   - TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing  # 0.3 s
   - TestWorkflowBootLogsItsDependencyOrder  # 1.4 s
 3:
+  - TestABacklogIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive  # 0.5 s
   - TestABootGivesBothAppsKeyProofsOneRetryBudget  # 1.5 s
   - TestABootKeepsEachIssueWhoseWorkspaceTheRuntimeMayStillHold  # 0.2 s
   - TestABootOverARecordOnAMissingRepositoryServes  # 3.5 s
@@ -1140,7 +1141,7 @@
   - TestAHeldRoleMessageForARoleAnOperatorSuspendedDuringThePauseEndsUndelivered  # 2.1 s
   - TestAHeldTaskIsSentWithoutTheDecisionsAHandOverGaveToTheChild  # 0.8 s
   - TestAHelloTheBootHoldsWhenTheStopComesClosesUnrefused  # 1.9 s
-  - TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound  # 0.2 s
+  - TestAHookPromptFollowsAnOperatorsResumeOfItsDelayedWakeWithinTheBound  # 0.2 s
   - TestAHookPromptForAReleasedPodIsKeptForItsWokenSession  # 0.3 s
   - TestAHookPromptForAReleasedPodWakesItAndWaits  # 0.3 s
   - TestAHookPromptNoSessionHoldsEndsTheRow  # 0.7 s
@@ -1181,11 +1182,10 @@
   - TestAPairConfiguredBeforeItsTransferIsLeftUntilGitHubShowsIt  # 0.2 s
   - TestAPairWhoseNewNameARoleAppIsNotInstalledOnIsLeft  # 0.2 s
   - TestAPairWhoseReadsDoNotAnswerIsLeft  # 0.3 s
-  - TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive  # 0.5 s
   - TestAPauseLineOfACommittedWriteIsWrittenOnlyOnceItsTransactionCommits  # 1.9 s
   - TestAPauseStopEndsItsStopRowByWhatTheClaimAnswers  # 0.3 s
   - TestAPermanentlyRefusedHandOverDropsItsFence  # 0.3 s
-  - TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch  # 15.7 s
+  - TestAPersonsApprovalOfABacklogRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch  # 15.7 s
   - TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch  # 8.8 s
   - TestAPersonsOwnTodoIssueOnARepositoryNoRecordNamesAsksGitHubNothing  # 0.2 s
   - TestAPhaseNeverWaitsForDispatch  # 34.0 s
@@ -1292,7 +1292,7 @@
   - TestAWorkspaceCheckThatCannotShowACleanWorkspaceDeclinesTheRelease  # 0.6 s
   - TestAnAdmissionsReadOfANameGitHubNeverAnswersIsBounded  # 0.3 s
   - TestAnAlreadyTodoAndLabelledChildConsumesItsHandover  # 0.2 s
-  - TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover  # 0.5 s
+  - TestAnApprovalAppliedAfterThePersonMovedTheRootToIceboxAgainQueuesNoHandover  # 0.5 s
   - TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast  # 12.9 s
   - TestAnArchitectsRetryOfARefusedClaimResumesItsSessionWithThePhaseTask  # 0.5 s
   - TestAnEarlierLingersRowsActOnNothingInALaterLinger  # 0.2 s

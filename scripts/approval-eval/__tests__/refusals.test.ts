@@ -417,7 +417,7 @@ describe("the root case the run drives", () => {
   });
 
   test("a draw that records no root's facts stops the run and names the key looked for", async () => {
-    const directory = await corpusWithDraw({ parkedLegionRoots: { issues: [ROOT_ISSUE] } });
+    const directory = await corpusWithDraw({ legionRoots: { issues: [ROOT_ISSUE] } });
     await expect(rootCaseOf(directory)).rejects.toThrow(/`backlogLegionRoots`/);
     await expect(rootCaseOf(directory)).rejects.toThrow(/records a root's facts/);
   });

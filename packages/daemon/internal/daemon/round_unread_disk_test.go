@@ -168,20 +168,20 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 
 	// (1) The replacement through a process, with one claim of the issue failed, the open phase's
 	// worker (the implementer, the rig's issue being in implementing) a claim whose launch the wake
-	// pacing parked with no process, and every live role answered. The round ends with no
+	// pacing delayed with no process, and every live role answered. The round ends with no
 	// replacement, the architect's held task goes out and starts a turn, the architect is told
 	// once, and no new round opens while the commit stands. The workspace is read once after that
 	// turn has ended, and again after the next; once the commit is pushed that read finds nothing,
 	// and the next round replaces the pod.
 	t.Run("through a process", func(t *testing.T) {
 		t.Parallel()
-		parked := podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, contract: api.DaemonAPIVersion(),
+		delayed := podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, contract: api.DaemonAPIVersion(),
 			suspendedBy: supervise.SuspendedByReleased}
 		failed := podUpdateRole{role: claim.RoleTester, state: supervise.StateFailed, session: true, contract: api.DaemonAPIVersion()}
 		rig := newPodUpdateRigWith(t, podUpdateRigOptions{wakePace: pacedUntil(podUpdateBound.Add(time.Hour))},
-			readyWorker(claim.RoleArchitect), readyWorker(claim.RoleReviewer), failed, parked)
+			readyWorker(claim.RoleArchitect), readyWorker(claim.RoleReviewer), failed, delayed)
 		rig.heldStart(claim.RoleImplementer)
-		rig.wantLaunchParked(claim.RoleImplementer, podUpdateBound.Add(time.Hour))
+		rig.wantLaunchDelayed(claim.RoleImplementer, podUpdateBound.Add(time.Hour))
 		rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
 		live := []claim.Role{claim.RoleArchitect, claim.RoleReviewer}
 

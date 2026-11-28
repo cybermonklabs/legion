@@ -65,7 +65,7 @@ const (
 	//
 	// It is half a second rather than the tenth the rig next door uses. It was set when the gate's
 	// correction floored its count at the admissions granted since the previous correction, so a
-	// wake still unparked two corrections after its admission was counted by neither, and at a
+	// wake its machine has not yet delayed two corrections after its admission was counted by neither, and at a
 	// tenth of a second the lane was measured holding the rate and one (reading 6 and decision P2
 	// of dispatch://INFRA-2712/artifact/plan-md). The gate now keeps every credit it granted until
 	// that credit comes back (supervise.RefreshGate.Correct), so that reason no longer stands; the
@@ -295,7 +295,7 @@ func settledRefreshes(t *testing.T, d *daemon, what string) []api.WakeWaiting {
 func awaitFullGate(t *testing.T, d *daemon) bool {
 	t.Helper()
 	// The bound is generous rather than a few sweeps, because what it waits on is a pass over
-	// every machine of the rig and then each admitted machine's own park, published through each
+	// every machine of the rig and then each admitted machine's own delay of its refresh wake, published through each
 	// machine's view: a run of this package whole, with the race detector on and every other
 	// test's goroutines beside it, takes that longer than a run of this test alone. A tight
 	// bound read a gate the pass had not finished filling and reported a run that never filled
@@ -603,7 +603,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		//
 		// What does take a credit out of the gate is every path that drops a waiting wake
 		// without running it (letGo), and an operator's suspension of such a claim is one of
-		// them: it ends the very process the refresh wake was parked over. The credit comes
+		// them: it ends the very process the refresh wake was delayed over. The credit comes
 		// back inside that same decision, which ends with no refresh wake of this machine's own
 		// waiting (supervise's endRefreshLane, Machine.unlock), and the next sweep's pass is
 		// what spends it, posting another stale claim on it. The correction stays the backstop
@@ -892,19 +892,19 @@ func TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst(t *testing.
 		return done
 	}
 	// The boot places the roots before their launches reach the gate (launchUnfinished,
-	// supervise.RequestSpawn.Place), so a root can park after the drive has read the queue while
-	// holding a place ahead of every wake that read held. Advancing the clock past that place's
-	// turn would fire it in the instant of a later wake, a pile-up the daemon never makes on a
-	// clock that moves on its own; every root is therefore parked or launched before the first
-	// advance. The stale claims join their places at their gates, in the order they park, so none
-	// of them can hold a place ahead of a wake the drive has read.
-	testwait.Eventually(t, "every root's relaunch to park at its turn or launch", func() bool {
-		parked := map[claim.Token]bool{}
+	// supervise.RequestSpawn.Place), so a root's relaunch can be delayed after the drive has read
+	// the queue while holding a place ahead of every wake that read held. Advancing the clock past
+	// that place's turn would fire it in the instant of a later wake, a pile-up the daemon never
+	// makes on a clock that moves on its own; every root's relaunch is therefore delayed or
+	// launched before the first advance. The stale claims join their places at their gates, in the
+	// order they are delayed, so none of them can hold a place ahead of a wake the drive has read.
+	testwait.Eventually(t, "every root's relaunch to be delayed to its turn or launched", func() bool {
+		delayed := map[claim.Token]bool{}
 		for _, wake := range waitingWakes(t, d) {
-			parked[wake.Claim] = true
+			delayed[wake.Claim] = true
 		}
 		for _, root := range roots {
-			if !parked[root] && rt.launchesOf(root) == 0 {
+			if !delayed[root] && rt.launchesOf(root) == 0 {
 				return false
 			}
 		}

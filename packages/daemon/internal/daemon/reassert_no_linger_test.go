@@ -39,8 +39,8 @@ func TestAReassertLeavesItsRecordedIssueInTheWorkflow(t *testing.T) {
 		wrote string
 	}{
 		{name: "a session closed its own issue", key: "LEGION-771", wrote: "done"},
-		{name: "a session parked its own issue to backlog", key: "LEGION-772", wrote: "backlog"},
-		{name: "a session parked its own issue to icebox", key: "LEGION-773", wrote: "icebox"},
+		{name: "a session moved its own issue to backlog", key: "LEGION-772", wrote: "backlog"},
+		{name: "a session moved its own issue to icebox", key: "LEGION-773", wrote: "icebox"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The issue the daemon is running: in the workflow, at the status the record kept

@@ -80,8 +80,8 @@ func checkStoredOrderEquivalence(t *testing.T, updates [][]byte, gapped bool, si
 	}
 }
 
-// Resending an overlapping parked update leaves emptied pending-queue slots. A later update
-// must still apply when a comparison copies that prefix, including its unrelated parked content.
+// Resending an overlapping pending update leaves emptied pending-queue slots. A later update
+// must still apply when a comparison copies that prefix, including its unrelated pending content.
 func storedOrderOverlappingHistory(t *testing.T) [][]byte {
 	t.Helper()
 	seed := newDocumentCopy(crdt.WithClientID(100))
@@ -98,7 +98,7 @@ func storedOrderOverlappingHistory(t *testing.T) [][]byte {
 	}
 }
 
-func TestStoredOrderReplayWithOverlappingParkedUpdates(t *testing.T) {
+func TestStoredOrderReplayWithOverlappingPendingUpdates(t *testing.T) {
 	t.Parallel()
 	checkStoredOrderEquivalence(t, storedOrderOverlappingHistory(t), false, time.Time{})
 }
@@ -132,8 +132,8 @@ func TestStoredOrderReplayMatchesFullPrefixReplay(t *testing.T) {
 		})
 		checks++
 	}
-	// All orderings of two three-update chains include reverse resolutions, multiple parked
-	// rows, and parked rows that depend on other parked rows. Repeat them with duplicates and gaps.
+	// All orderings of two three-update chains include reverse resolutions, multiple pending
+	// rows, and pending rows that depend on other pending rows. Repeat them with duplicates and gaps.
 	perm := []int{0, 1, 2, 5, 6, 7}
 	var visit func(int)
 	visit = func(at int) {
@@ -171,7 +171,7 @@ func TestStoredOrderReplayMatchesFullPrefixReplay(t *testing.T) {
 	t.Logf("%d histories matched the full-prefix replay", checks)
 }
 
-func TestBuildForkPreservesOverlappingParkedUpdates(t *testing.T) {
+func TestBuildForkPreservesOverlappingPendingUpdates(t *testing.T) {
 	t.Parallel()
 	updates := storedOrderOverlappingHistory(t)
 	full := newDocumentCopy()
@@ -199,7 +199,7 @@ func TestBuildForkPreservesOverlappingParkedUpdates(t *testing.T) {
 				}
 			}
 			if !sameStoredState(fork, full) || fork.GetText("t").ToString() != full.GetText("t").ToString() {
-				t.Fatal("fork lost overlapping parked content")
+				t.Fatal("fork lost overlapping pending content")
 			}
 		})
 	}

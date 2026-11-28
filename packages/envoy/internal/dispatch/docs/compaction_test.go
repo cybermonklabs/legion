@@ -384,7 +384,7 @@ func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	// Each later row leans on an insert no row holds ("x"), so the fold parks more than its
+	// Each later row leans on an insert no row holds ("x"), so the fold leaves more pending than its
 	// pending queue holds; the writer writes the update that changes the log below.
 	rows, writer := unfoldableHistory()
 	text := writer.GetText("t")

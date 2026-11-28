@@ -7,14 +7,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife: slot wait is "the hours of
-// the issue's observed life in which its phase is `admitted` and it holds no slot, over the whole
-// life, with parked hours left out" (dispatch://INFRA-2916, D3). Each issue below stands admitted
-// for a while: one with no slot through the first part of it and parked for an hour of that part,
-// before its first worker event; one holding a slot the whole time; and one Dispatch never observed.
+// TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife: slot wait
+// (dispatch://INFRA-2916, D3) is the hours of the issue's observed life in which its phase is
+// `admitted` and it holds no slot, over the whole life, with the hours in backlog or icebox left
+// out. Each issue below stands admitted for a while: one with no slot through the first part of it
+// and in backlog for an hour of that part, before its first worker event; one holding a slot the
+// whole time; and one Dispatch never observed.
 func TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife(t *testing.T) {
-	// Created at hour -4, admitted from hour -3 with no slot until it takes one at hour 1, parked
-	// from hour -2 to hour -1, its architect's first event at hour 0, planning from hour 5.
+	// Created at hour -4, admitted from hour -3 with no slot until it takes one at hour 1, in
+	// backlog from hour -2 to hour -1, its architect's first event at hour 0, planning from hour 5.
 	waited := newIssue("INFRA-10").openedAt(hour(-4)).worked("architect", hour(0)).closedAt(hour(10)).
 		statusAt(hour(-3), "todo").
 		statusAt(hour(-2), "backlog").
@@ -43,9 +44,9 @@ func TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife(t *tes
 		queued   float64
 		why      string
 	}{
-		// Four hours admitted with no slot (-3 to 1), one of them parked: three. The work time's
+		// Four hours admitted with no slot (-3 to 1), one of them in backlog: three. The work time's
 		// queue is the one hour of those four after the first worker event.
-		{"INFRA-10", 3, 1, "admitted with no slot from -3 to 1, parked from -2 to -1"},
+		{"INFRA-10", 3, 1, "admitted with no slot from -3 to 1, in backlog from -2 to -1"},
 		{"INFRA-11", 0, 0, "admitted holding its own slot throughout"},
 		{"INFRA-12", 0, 0, "never observed, so no observed phase"},
 	} {
@@ -63,14 +64,15 @@ func TestSlotWaitCountsTheObservedAdmittedHoursWithNoSlotOverTheWholeLife(t *tes
 }
 
 // TestIdleByRoleCountsTheHoursAnIssueHeldItsOwnSlotInARolesBarWithThatRoleOutOfATurn: for role R,
-// idle time is "the hours of the issue's worked spans (life − parked − queued) in which the issue
-// holds its own slot, its observed phase is in R's bar ..., and R's newest observed claim state
-// is not `working` (no claim counts as not working)" (dispatch://INFRA-2916, D3).
+// idle time (dispatch://INFRA-2916, D3) is the hours of the issue's worked spans (life, less the
+// hours in backlog or icebox and the hours queued) in which the issue holds its own slot, its
+// observed phase is in R's bar, and R's newest observed claim state is not `working` (no claim
+// counts as not working).
 //
 // The root holds its own slot through its whole life and walks through four bars. Each role's
 // claim history is one of the cases the rule names: the architect works an hour of its two of
 // design; the implementer works one hour of four and then stands idle and then suspended; the
-// reviewer has no claim at all, and an hour of its phase is parked; the tester stands idle all
+// reviewer has no claim at all, and an hour of its phase is in backlog; the tester stands idle all
 // along while its bar never comes; the merger works the whole of its phase. The child holds no
 // slot of its own although its root holds one, so it has no idle hour whatever its claims say.
 func TestIdleByRoleCountsTheHoursAnIssueHeldItsOwnSlotInARolesBarWithThatRoleOutOfATurn(t *testing.T) {
@@ -113,7 +115,7 @@ func TestIdleByRoleCountsTheHoursAnIssueHeldItsOwnSlotInARolesBarWithThatRoleOut
 			"implementer": 3,
 			// `idle` from hour 0, but never in testing: the phase is outside the tester's bar.
 			"tester": 0,
-			// No claim at all from 6 to 10, less the parked hour from 8 to 9.
+			// No claim at all from 6 to 10, less the hour in backlog from 8 to 9.
 			"reviewer": 3,
 			// Merging from 10 to 12, working throughout.
 			"merger": 0,

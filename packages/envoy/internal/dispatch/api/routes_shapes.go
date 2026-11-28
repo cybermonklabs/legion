@@ -678,7 +678,7 @@ type publishFrameQuery struct {
 
 // liveWritePauseQuery is GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}'s query.
 type liveWritePauseQuery struct {
-	// Wait is how long to wait for a write to park, a positive Go duration such as "10s".
+	// Wait is how long to wait for a write to pause, a positive Go duration such as "10s".
 	Wait string `query:"wait"`
 }
 

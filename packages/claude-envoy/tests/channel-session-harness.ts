@@ -355,7 +355,7 @@ export class FakeNats implements ChannelConnection {
     return true
   }
 
-  /** Hands `message` to the iterator parked on `queue`, or queues it for the next pull. */
+  /** Hands `message` to the iterator waiting on `queue`, or queues it for the next pull. */
   private deliver(queue: Queue, message: ChannelBrokerMessage): void {
     if (queue.waiter === undefined) {
       queue.messages.push(message)

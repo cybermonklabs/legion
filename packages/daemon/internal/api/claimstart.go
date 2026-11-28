@@ -238,7 +238,7 @@ func (w slotWait) runs(token claim.Token) string {
 // (supervise.RequestAskedRetry.By).
 //
 // The retry is answered once its start is under way (startUnderWay), 202 with the claim launching,
-// and 200 where it wrote no launch, such as one the wake pacing parked; a relaunch the machine
+// and 200 where it wrote no launch, such as one the wake pacing delayed; a relaunch the machine
 // holds for the agent's turn answers 202, as every operator request on an agent answers one
 // (claimRequest).
 func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,

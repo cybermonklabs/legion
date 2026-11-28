@@ -354,8 +354,8 @@ func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
 //
 // idle_release: the idle release's check reads the workspace and the release goes on.
 //
-// left_pod: the close of a parked child whose planner an operator's resume brought back reads the
-// workspace through the planner, and the close goes on.
+// left_pod: the close of a child in backlog whose planner an operator's resume brought back reads
+// the workspace through the planner, and the close goes on.
 func TestACleanReadForgetsTheDecline(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -389,7 +389,7 @@ func TestACleanReadForgetsTheDecline(t *testing.T) {
 
 	t.Run("left_pod", func(t *testing.T) {
 		rig := newLeftPodRig(t, false)
-		parkChild(t, rig)
+		moveChildToBacklog(t, rig)
 		rig.drain(t)
 		leftPodGone(rig)
 		resumeAsOperator(t, rig)

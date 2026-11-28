@@ -234,12 +234,12 @@ func TestTheListingReadsOpenAsksThroughTheirIndex(t *testing.T) {
 // `?moved=true` never runs the events read, whichever plan it gets: a plan made for its own
 // arguments drops the read, and the generic plan a prepared statement settles on after five runs
 // holds it under a one-time filter that is false. A request with the key runs it once for each
-// of the two parked rows and for no other of the several hundred it lists.
-func TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows(t *testing.T) {
+// of the two rows in backlog and for no other of the several hundred it lists.
+func TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForBacklogRows(t *testing.T) {
 	t.Parallel()
 	fixture := newIssueListFixture(t)
-	parked := []string{fixture.keys[4], fixture.keys[5]}
-	for _, key := range parked {
+	inBacklog := []string{fixture.keys[4], fixture.keys[5]}
+	for _, key := range inBacklog {
 		moveTestIssue(t, fixture.handler, key, "backlog", "alice")
 	}
 	for _, listing := range []struct {
@@ -250,8 +250,8 @@ func TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows(t *testing.T) {
 	}{
 		{name: "a listing that does not ask for the move", moved: false, loops: 0},
 		{name: "a listing that does not ask for the move, under the generic plan", moved: false, generic: true, loops: 0},
-		{name: "a listing that asks for the move", moved: true, loops: float64(len(parked))},
-		{name: "a listing that asks for the move, under the generic plan", moved: true, generic: true, loops: float64(len(parked))},
+		{name: "a listing that asks for the move", moved: true, loops: float64(len(inBacklog))},
+		{name: "a listing that asks for the move, under the generic plan", moved: true, generic: true, loops: float64(len(inBacklog))},
 	} {
 		var plan analyzedNode
 		var text string

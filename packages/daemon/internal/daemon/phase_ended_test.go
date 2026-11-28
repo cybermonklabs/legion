@@ -31,36 +31,36 @@ func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T)
 	keptAcrossTheWake(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
-// A phase-ended message to a released role waits out the resume the wake pacing parks, as a hook
-// prompt does (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod): the row reads the claim
-// again at the wake's turn or parkedWakeBound on, whichever comes first, as a routine wait, and
-// publishes nothing while the park holds, and the attempt after the turn has launched the resume
+// A phase-ended message to a released role waits out the resume the wake pacing delays, as a hook
+// prompt does (TestAHookPromptWaitsOutTheDelayedWakeOfItsReleasedPod): the row reads the claim
+// again at the wake's turn or delayedWakeBound on, whichever comes first, as a routine wait, and
+// publishes nothing while the delay holds, and the attempt after the turn has launched the resume
 // publishes the message with keep, once, and ends the row.
-func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
+func TestAPhaseEndedMessageWaitsOutTheDelayedWakeOfItsReleasedPod(t *testing.T) {
 	t.Parallel()
-	keptAfterTheParkedWake(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
+	keptAfterTheDelayedWake(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
-// An operator's resume of a released role whose resume the wake pacing parked launches the claim
+// An operator's resume of a released role whose resume the wake pacing delayed launches the claim
 // at once (supervise's dropWakeFor), and the turn the row read goes with the dropped wake: the
 // row, which reads the claim again at the bound rather than sleeping to that turn, publishes the
 // message with keep, once, at its next attempt, and ends, as a hook prompt does
-// (TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound).
-func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
+// (TestAHookPromptFollowsAnOperatorsResumeOfItsDelayedWakeWithinTheBound).
+func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsDelayedWakeWithinTheBound(t *testing.T) {
 	t.Parallel()
 	keptAfterAnOperatorsResume(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
-// A relaunch the wake pacing parks over a process the claim still records holds no phase-ended
-// row, as it holds no hook prompt (TestARelaunchParkedOverALiveProcessHoldsNoRow): the claim's live
+// A relaunch the wake pacing delays over a process the claim still records holds no phase-ended
+// row, as it holds no hook prompt (TestARelaunchDelayedOverALiveProcessHoldsNoRow): the claim's live
 // session can take a publish now, so the row's first attempt publishes the message to the
 // stopped worker's topic and ends.
-func TestAPhaseEndedMessageToARelaunchParkedOverALiveProcessPublishesAtOnce(t *testing.T) {
+func TestAPhaseEndedMessageToARelaunchDelayedOverALiveProcessPublishesAtOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	publisher := &holderPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
-	parkedOverItsProcess(t, sup, "LEGION-208", claim.RoleTester)
+	delayedOverItsProcess(t, sup, "LEGION-208", claim.RoleTester)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", endedByTheWait, time.Now().Add(-time.Minute)))
 
 	if err := runner.RunOnce(ctx); err != nil {

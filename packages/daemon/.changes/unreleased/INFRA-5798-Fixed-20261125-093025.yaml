@@ -13,7 +13,7 @@ body: |-
   changed.` for a success whose data is no object. A task whose prompt Oh My Pi has accepted when
   the compaction is asked for is now sent once: the handoff aborts no turn, so the daemon no
   longer takes the task back and sends it again after the compaction. A prompt that reaches Oh My
-  Pi while the handoff runs is sent once too: Oh My Pi parks it until the handoff ends, so the
+  Pi while the handoff runs is sent once too: Oh My Pi holds it until the handoff ends, so the
   daemon keeps a send whose prompt it wrote and whose wait ran out under the handoff as the task's
   prompt, and that prompt's turn confirms the task whether it starts before or after the
   compaction's end. A send that runs out before its prompt is written, such as an adoption of the

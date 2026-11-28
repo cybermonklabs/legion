@@ -428,9 +428,9 @@ func (round *liveFleetRound) names() []string {
 // both its workers still probe Alive. Only when its own two answer is it replaced in turn. No
 // architect — a root's own claim — is ended uncharged between its task and its answer
 // (assertNoTurnCut), which is this layer's whole say on a round leaving a root where it was: what
-// a completion, a park or a wait on a person does to an issue record is the daemon's, and
-// internal/daemon's own round tests hold it. Each worker's pushed work is on GitHub after the pod
-// that held it is gone, read as that role's own App.
+// a completion, a move to backlog or icebox or a wait on a person does to an issue record is the
+// daemon's, and internal/daemon's own round tests hold it. Each worker's pushed work is on GitHub
+// after the pod that held it is gone, read as that role's own App.
 func (r *liveRig) checkPodUpdateFleet() error {
 	var rounds []*liveFleetRound
 	for _, pair := range [][]string{{"update-a", "update-b"}, {"fleet-a", "fleet-b"}} {

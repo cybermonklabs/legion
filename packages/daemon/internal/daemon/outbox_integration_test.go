@@ -597,8 +597,8 @@ func (d *boardDispatch) PutDesignGates(context.Context, string, []dispatch.Desig
 
 // A person's handover row (dispatch://LEGION-755) is the one status row that brings its issue
 // into the workflow rather than moving one along inside it: a todo observed at the `triage` a
-// person's legion label found, or at the `backlog` or `icebox` their approval of a parked root's
-// spec found, marked PersonHandover. When Dispatch refuses its fenced write because an event
+// person's legion label found, or at the `backlog` or `icebox` their approval of the spec of such a
+// root found, marked PersonHandover. When Dispatch refuses its fenced write because an event
 // landed between the row's read and that write (ISSUE_CHANGED) — an interleaved comment, an edit
 // — the retry is judged by the handover's own rule, that the label is still there
 // (personHandoverStands), and nothing of the re-read is applied.
@@ -697,8 +697,8 @@ func TestTheDaemonsReassertIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing
 		wrote string
 	}{
 		{name: "a session closed its own issue", key: "LEGION-761", wrote: "done"},
-		{name: "a session parked its own issue to backlog", key: "LEGION-762", wrote: "backlog"},
-		{name: "a session parked its own issue to icebox", key: "LEGION-763", wrote: "icebox"},
+		{name: "a session moved its own issue to backlog", key: "LEGION-762", wrote: "backlog"},
+		{name: "a session moved its own issue to icebox", key: "LEGION-763", wrote: "icebox"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The issue as the daemon is running it: recorded, in the workflow, at the status the
@@ -971,7 +971,7 @@ func TestAMigratedStatusRowRunsUnderItsOwnRule(t *testing.T) {
 		{name: "an unmarked re-assert, as the release before this one queued one", issue: "LEGION-212",
 			want: record.ReassertStatusRow, wanted: true,
 			payload: `{"status":"retro","observedStatus":"done"}`},
-		{name: "a person's handover of a parked root, which the re-assert arm would also match", issue: "LEGION-215",
+		{name: "a person's handover of a root in backlog, which the re-assert arm would also match", issue: "LEGION-215",
 			want: record.PersonHandoverStatusRow, wanted: true,
 			payload: `{"status":"todo","observedStatus":"backlog","personHandover":true}`},
 		{name: "an unmarked close, as a merge queued one", issue: "LEGION-214", want: record.CloseStatusRow, wanted: true,

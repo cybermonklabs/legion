@@ -559,7 +559,7 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 		if got == nil || got.Generation != 2 || got.Tree != root {
 			t.Fatalf("%s = %+v after its todo, want generation 2 in the tree of %s: the re-entry this row is about never happened", child, got, root)
 		}
-		// Its own run alone: the tree's root and the sibling that stayed parked keep their rows and
+		// Its own run alone: the tree's root and the sibling that stayed in backlog keep their rows and
 		// are told nothing.
 		r.wantPublished("the child's re-entry", r.published(), gatePublished{Issue: child, Gates: empty})
 		if pairs := r.gatesOf(root); len(pairs) != 2 {

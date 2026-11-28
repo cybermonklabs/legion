@@ -51,21 +51,21 @@ type goldenReports struct {
 // goldenReport is one scope's report in the shape the base head's route wrote it, in the fields
 // this comparison reads: the issues that finished, the work time with its table of issues, the
 // seven bars and the idle share, the rework figures with their table, and the splitting weeks,
-// table and root figures.
+// table and root figures. The JSON tag on BacklogOrIceboxHours is the name the recorded files hold.
 type goldenReport struct {
 	Finished int `json:"finished"`
 	WorkTime struct {
 		MedianHours float64 `json:"median_hours"`
 		P90Hours    float64 `json:"p90_hours"`
 		Issues      []struct {
-			Key         string     `json:"key"`
-			Root        bool       `json:"root"`
-			StartedAt   time.Time  `json:"started_at"`
-			ClosedAt    time.Time  `json:"closed_at"`
-			MergedAt    *time.Time `json:"merged_at"`
-			Hours       float64    `json:"hours"`
-			ParkedHours float64    `json:"parked_hours"`
-			QueuedHours float64    `json:"queued_hours"`
+			Key                  string     `json:"key"`
+			Root                 bool       `json:"root"`
+			StartedAt            time.Time  `json:"started_at"`
+			ClosedAt             time.Time  `json:"closed_at"`
+			MergedAt             *time.Time `json:"merged_at"`
+			Hours                float64    `json:"hours"`
+			BacklogOrIceboxHours float64    `json:"parked_hours"`
+			QueuedHours          float64    `json:"queued_hours"`
 		} `json:"issues"`
 	} `json:"work_time"`
 	PhaseTime struct {
@@ -472,7 +472,7 @@ func compareGoldenTables(check *goldenCheck, facts map[string]IssueFacts, closed
 		check.moment(issue.Key+"'s close", row.ClosedAt, &issue.ClosedAt)
 		check.moment(issue.Key+"'s merge", row.MergedAt, issue.MergedAt)
 		check.hours(issue.Key+"'s hours", &row.WorkHours, issue.Hours)
-		check.hours(issue.Key+"'s parked hours", &row.ParkedHours, issue.ParkedHours)
+		check.hours(issue.Key+"'s hours in backlog or icebox", &row.BacklogOrIceboxHours, issue.BacklogOrIceboxHours)
 		check.hours(issue.Key+"'s queued hours", &row.QueuedHours, issue.QueuedHours)
 	}
 	check.exact("rework rows", len(rows), len(report.Rework.Issues))

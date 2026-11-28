@@ -743,7 +743,7 @@ interface MentionComposerProps {
   /** What the host says in the composer, as the composer says where an upload went, drawn as the
    *  host draws it: the Conversation's note that a phone thread reply the reader cancelled over
    *  this composer's own draft is kept, and how to go on with it, or that reply itself once its
-   *  comment is no longer listed, or is deleted (`usePhoneThread`'s `parked`). */
+   *  comment is no longer listed, or is deleted (`usePhoneThread`'s `putAway`). */
   readonly notice?: ReactNode;
   /** Ends the reply, handed the draft the field holds as the reader ends it. Cancel reply drops
    *  nothing itself: an inline reply's draft stays under its send name - typed, as a standing

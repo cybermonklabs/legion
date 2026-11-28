@@ -470,8 +470,8 @@ export const prioritiesQuery = (projects: readonly string[] = []) =>
   });
 
 /** The two fault counts alone (`GET /api/v1/priorities?summary=true`): the work under no
- *  priority and the work parked under one, which the navigation rail shows without reading a
- *  row or an issue of either list. */
+ *  priority and the work in backlog or icebox under one, which the navigation rail shows without
+ *  reading a row or an issue of either list. */
 export const prioritySummaryQuery = (projects: readonly string[] = []) =>
   queryOptions({
     queryKey: ["priorities", "summary", ...projects],

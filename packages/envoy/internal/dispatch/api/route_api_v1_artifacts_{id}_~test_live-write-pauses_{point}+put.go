@@ -8,7 +8,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodPut,
 	Pattern:     "/api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
 	Auth:        authAny,
-	Description: "Test hook: park the document's next live write at a point (after-first-append, after-commit).",
+	Description: "Test hook: pause the document's next live write at a point (after-first-append, after-commit).",
 	Handler:     (*server).armLiveWritePause,
 	TestHook:    true,
 	WriteClass:  scopeProject,

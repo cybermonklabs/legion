@@ -25,7 +25,7 @@ const closingTolerance = 0.1
 //     input, so the root's time waiting on its children runs on an input of another issue;
 //   - an ask a Legion session opened on an open issue and nobody answered;
 //   - an open issue admitted with no slot of its own, waiting for one;
-//   - an open issue a person parked;
+//   - an open issue a person moved to backlog;
 //   - an open issue holding a slot of its own in its implementer's bar with the implementer out of
 //     a turn, so its idle hours by role run;
 //   - an open child whose root is recorded in `awaiting_person` and then read with no phase (the
@@ -97,9 +97,9 @@ func seedClosingHistory(t *testing.T) closingHistory {
 	observe(waiting, "phase", `"admitted"`, now.Add(-3*time.Hour))
 	seeded.cases["an open slot wait"] = waiting
 
-	parked := fixture.Open[3]
-	event(parked, "issue.updated", `{"kind":"user","id":"alice"}`, `{"status":"backlog"}`, now.Add(-2*time.Hour))
-	seeded.cases["a parked spell"] = parked
+	inBacklog := fixture.Open[3]
+	event(inBacklog, "issue.updated", `{"kind":"user","id":"alice"}`, `{"status":"backlog"}`, now.Add(-2*time.Hour))
+	seeded.cases["a spell in backlog"] = inBacklog
 
 	idle := fixture.Open[4]
 	observe(idle, "slot", `3`, now.Add(-5*time.Hour))
@@ -317,7 +317,7 @@ func growthDifferences(closed ClosedFacts, want IssueFacts, moment time.Time) []
 // difference of (a).
 func flatHours(facts IssueFacts) map[string]float64 {
 	flat := map[string]float64{
-		"work_hours": facts.WorkHours, "slot_hours": facts.SlotHours, "parked_hours": facts.ParkedHours,
+		"work_hours": facts.WorkHours, "slot_hours": facts.SlotHours, "backlog_or_icebox_hours": facts.BacklogOrIceboxHours,
 		"queued_hours": facts.QueuedHours, "slot_wait_hours": facts.SlotWaitHours,
 		"implementing_hours_after_first_review": facts.ImplementingHoursAfterFirstReview,
 		"testing_hours_after_first_review":      facts.TestingHoursAfterFirstReview,

@@ -98,12 +98,12 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 		{Key: other, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: other, Project: "LEGION",
 			Title: "Another tree", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "W"},
 	}
-	kept := []ParkedDecision{
+	kept := []KeptDecision{
 		{Issue: root, Ref: "dispatch://LEGION-300/spec", Decision: DecisionDesignChangesRequested, Actor: "user:alice", At: at, Seq: 8},
 		{Issue: child, Ref: "dispatch://LEGION-301/spec", Decision: DecisionDesignChangesRequested, Actor: "user:bob", At: at.Add(time.Minute), Seq: 9},
 		{Issue: other, Ref: "dispatch://LEGION-302/spec", Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: at.Add(2 * time.Minute), Seq: 10},
 	}
-	// changes is the changes request each issue's notice carries, and relay the parked-decision
+	// changes is the changes request each issue's notice carries, and relay the kept-decision
 	// controller notice that relays it, read as the Notice it is.
 	changes := func(issue Issue) Notice {
 		return Notice{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path",
@@ -115,7 +115,7 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 		if decision != DecisionDesignChangesRequested {
 			notice.Reason = ""
 		}
-		notice.Kind, notice.Decision, notice.Root = ParkedDecisionNotice, decision, issue.Tree
+		notice.Kind, notice.Decision, notice.Root = KeptDecisionNotice, decision, issue.Tree
 		return notice
 	}
 	queuedOn := func(keys ...string) map[string]Notice {
@@ -149,7 +149,7 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 					must(t, records.PutIssue(ctx, tx, issue))
 					must(t, records.PutGate(ctx, tx, DesignGate{Issue: issue.Key, ArtifactID: "artifact-" + issue.Key, LatestVersion: 3,
 						ApprovedVersion: &approved}))
-					must(t, records.AddParkedDecision(ctx, tx, kept[i]))
+					must(t, records.KeepDecision(ctx, tx, kept[i]))
 					request := changes(issue)
 					approval := request
 					approval.Kind, approval.Reason = "design-approved", ""
@@ -230,7 +230,7 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 // changes requests it hands its forget (queuedChanges) names the same rows by the payload's own
 // fields. Were they to part, a request one of them asks again would be left by the other to be
 // asked of no gate once the clear deleted it. One row of every notice kind, as an architect's
-// notice and as a controller's, one relay of every decision a parked-decision notice may carry,
+// notice and as a controller's, one relay of every decision a kept-decision notice may carry,
 // and a row of another outbox kind are queued on one issue; a payload the outbox refuses is not
 // queued, since no row like it can stand there. The select names exactly the rows the rule
 // accepts, and the rule accepts some row of each of the two notice kinds, so the comparison is
@@ -251,7 +251,7 @@ func TestTheClearsSelectOfChangesRequestsNamesTheRowsChangesRequestAccepts(t *te
 		payloads = append(payloads, notice, ControllerNotice{Kind: kind})
 	}
 	for _, decision := range validDecisionKinds {
-		payloads = append(payloads, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision,
+		payloads = append(payloads, ControllerNotice{Kind: KeptDecisionNotice, Decision: decision,
 			Root: key, Ref: ref, Actor: "user:alice", Version: 3})
 	}
 	payloads = append(payloads, ControllerNotice{Kind: TickNotice}, MessagePost{Body: "a message"})

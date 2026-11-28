@@ -3611,7 +3611,7 @@ test("the add menu opened by the keyboard takes the focus, walks by the arrows a
 const noLivePriorities = {
   empty: "No priority is live now, so the list is empty.",
   priorities: [],
-  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+  priority_work_in_backlog_or_icebox: { by_priority: {}, count: 0, issues: [] },
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
 
@@ -3637,7 +3637,7 @@ const oneLivePriority: Priorities = {
       },
     },
   ],
-  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+  priority_work_in_backlog_or_icebox: { by_priority: {}, count: 0, issues: [] },
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
 

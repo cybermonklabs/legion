@@ -14,8 +14,8 @@ import (
 const mentionSendLanes = 8
 
 // maxQueuedMentionSends bounds the sends the mention sender holds: those that have not started and
-// those in flight, each of which keeps its place so it can park if it must wait for an earlier
-// event (mentionSender.held, park). A send past it is not queued: the claim its attempt
+// those in flight, each of which keeps its place so it can wait for a retry if it must wait for an
+// earlier event (mentionSender.held, scheduleRetry). A send past it is not queued: the claim its attempt
 // committed with is given back, so the attempt is pending and unclaimed, and the delivery sweep
 // sends it once it has waited a claim lease (resumeOwedDeliveries).
 const maxQueuedMentionSends = 4096
@@ -32,13 +32,13 @@ const mentionDrainTimeout = 10 * time.Second
 const mentionReleaseTimeout = 5 * time.Second
 
 // mentionOrderRetryFirst and mentionOrderRetryMax pace a lane whose head send waits for an earlier
-// event of its comment's owner (mentionHeldForOrder): the lane is parked, with no goroutine on
-// it, and ready again after mentionOrderRetryFirst, a wait that doubles at each park of the same
+// event of its comment's owner (mentionHeldForOrder): the lane waits for its retry, with no goroutine
+// on it, and is ready again after mentionOrderRetryFirst, a wait that doubles at each retry of the same
 // send up to mentionOrderRetryMax. The first is short because the outbox publishes an event some
 // milliseconds after it commits, so a comment written directly after another event of its issue
 // usually waits one retry. The longest is the outbox's own wait before it reads a copy it holds
-// for a mention again (mentionPendingDelay in internal/dispatch/outbox): a lane parked through an
-// outage reads once each two seconds. Nothing bounds the parks themselves: a bound would let the
+// for a mention again (mentionPendingDelay in internal/dispatch/outbox): a lane retried through an
+// outage reads once each two seconds. Nothing bounds the retries themselves: a bound would let the
 // send pass the earlier event, and the wait ends when the outbox sends that event, as the
 // outbox's own later sends of the owner wait for it.
 const (
@@ -46,12 +46,12 @@ const (
 	mentionOrderRetryMax   = 2 * time.Second
 )
 
-// mentionOrderRetry is how long a lane parks after its head send waited for an earlier event the
-// parks'th time: mentionOrderRetryFirst doubled for each park before it, at most
+// mentionOrderRetry is how long a lane waits for its retry after its head send waited for an earlier
+// event the retries'th time: mentionOrderRetryFirst doubled for each retry before it, at most
 // mentionOrderRetryMax.
-func mentionOrderRetry(parks int) time.Duration {
+func mentionOrderRetry(retries int) time.Duration {
 	delay := mentionOrderRetryFirst
-	for park := 1; park < parks && delay < mentionOrderRetryMax; park++ {
+	for n := 1; n < retries && delay < mentionOrderRetryMax; n++ {
 		delay *= 2
 	}
 	return min(delay, mentionOrderRetryMax)
@@ -87,13 +87,13 @@ type mentionSend struct {
 	// fromHeldLane is that the lane this send was last taken from is a held lane (next), so its
 	// whole delivery starts its take-over window again (takeover).
 	fromHeldLane bool
-	// parks is how many times this send has waited for an earlier event of its comment's owner,
+	// orderRetries is how many times this send has waited for an earlier event of its comment's owner,
 	// which paces its lane's next try (mentionOrderRetry).
-	parks int
+	orderRetries int
 	// heldFor is the session this send last waited to reach, behind an earlier event or, its read of
 	// the rule having failed, behind none; heldBy is the earlier event it last waited behind, and
-	// heldSince when it first waited behind one, both zero until it has; warned is that a park
-	// logged its WARN (mentionSender.park, reportLate). A send that waited reads the rule again
+	// heldSince when it first waited behind one, both zero until it has; warned is that a scheduled
+	// retry logged its WARN (mentionSender.scheduleRetry, reportLate). A send that waited reads the rule again
 	// for heldFor, alone, before it tries once more (sendCommentMention). heldFor is the session the
 	// send's attempt is pinned to: the one its last whole delivery resolved and recorded on the
 	// attempt's row. A later whole delivery rechecks that session and resolves no role again
@@ -106,7 +106,7 @@ type mentionSend struct {
 	warned    bool
 	// unread is that this send's last try could not read the copy rule, in its whole delivery
 	// (mentionHeldForOrder.unread) or alone (sendCommentMention): it waits all the same, behind no
-	// event, so its park is no held copy's (serve, park).
+	// event, so its retry is no held copy's (serve, scheduleRetry).
 	unread bool
 }
 
@@ -192,12 +192,12 @@ func (m mentionSend) lane() laneKey {
 // mentioned session (mentionHeldForOrder, model.MentionCopyHolderSQL), so the session takes the
 // comment after them. Such a send makes no try: it hands its claim back and goes, with every send
 // of the same owner queued behind it on its lane, to a held lane of that owner and recipient
-// (heldLane), which parks, with no goroutine on it, until mentionOrderRetry of that send's parks
-// has passed (park, unpark). The owner's later sends to the recipient queue behind it there; the
+// (heldLane), which waits for its retry, with no goroutine on it, until mentionOrderRetry of that send's
+// retries has passed (scheduleRetry, retryLane). The owner's later sends to the recipient queue behind it there; the
 // recipient's sends of other owners stay on its lane and go on, since one owner's earlier event
 // holds back no other owner's. While a held lane exists the recipient can have two sends in
 // flight, one of each lane, and the order between two owners' comments is the order they went in.
-// A parked lane sends nothing, so it counts against mentionSendLanes no more than a lane with
+// A lane waiting for its retry sends nothing, so it counts against mentionSendLanes no more than a lane with
 // nothing queued, and its sends stay among the queued ones maxQueuedMentionSends bounds, their
 // claims written again as every queued send's are.
 //
@@ -246,10 +246,10 @@ type mentionSender struct {
 	// claimRefresh is how often keepClaims writes the claims of the queued sends again:
 	// mentionClaimRefresh, which only a test shortens.
 	claimRefresh time.Duration
-	// heldWarnAfter is how long a send waits behind an earlier event before park logs its one WARN:
+	// heldWarnAfter is how long a send waits behind an earlier event before scheduleRetry logs its one WARN:
 	// model.MentionCopyHeldWarnAfter, which only a test shortens.
 	heldWarnAfter time.Duration
-	// after starts the timer that ends a park (unpark), once no goroutine serves the parked lane
+	// after starts the timer that ends a lane's wait for its retry (retryLane), once no goroutine serves that lane
 	// (serve): time.AfterFunc, which only a test replaces.
 	after func(time.Duration, func())
 
@@ -258,11 +258,11 @@ type mentionSender struct {
 	// sender's locked sections a step of the model (TestTheMentionSenderClaimModel).
 	mu sync.Locker
 	// lanes holds each lane's sends that have not started. A key is present while its lane is
-	// served, waiting in ready or parked - no goroutine on it, its timer to run (park, unpark) -
+	// served, waiting in ready or for its retry - no goroutine on it, its timer to run (scheduleRetry, retryLane) -
 	// even once its last send has started.
 	lanes map[laneKey][]mentionSend
 	// waits is, for each held lane (heldLane), what its sends wait behind: the session and the
-	// earlier event its head send last found the session must take first (park). It goes with the
+	// earlier event its head send last found the session must take first (scheduleRetry). It goes with the
 	// lane (next); the held gauges count its lanes' sends (heldSamples), and each send's WARN names
 	// it (warnHeld).
 	waits map[laneKey]heldWait
@@ -270,11 +270,11 @@ type mentionSender struct {
 	ready []laneKey
 	// serving is how many goroutines serve lanes.
 	serving int
-	// held is every attempt this sender queued whose send has not finished - queued, parked or in
+	// held is every attempt this sender queued whose send has not finished - queued, waiting for a retry or in
 	// flight - and what it records of each (mentionClaimState), so that one attempt is never queued
 	// twice: a keyed repeat of a comment answers while its first send is still queued. Its size is
 	// what capacity bounds, so a send in flight keeps its place, a send that must wait always has
-	// room to park (park), and the owner's later sends never pass it.
+	// room to wait for its retry (scheduleRetry), and the owner's later sends never pass it.
 	held map[mentionKey]mentionClaimState
 	// closed is set by wait; nothing starts after it, and stopped is closed with it.
 	closed  bool
@@ -352,8 +352,8 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 	if state, mine := m.held[key]; mine {
 		// A keyed repeat claimed the attempt anew before it asked (claimQueuedMention), so the
 		// claim its send waits under is the one that repeat just wrote, and the refreshes and the
-		// drain's release move that one. A send in flight is among them too, and parks under that
-		// claim unless its try claims the attempt for itself (park).
+		// drain's release move that one. A send in flight is among them too, and waits for its retry under
+		// that claim unless its try claims the attempt for itself (scheduleRetry).
 		state.claimed, state.unsure = item.claimed, false
 		m.held[key] = state
 		return true, false
@@ -366,7 +366,7 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 	if held := heldLane(lane, item.owner()); held != lane {
 		if _, waits := m.lanes[held]; waits {
 			// The owner's sends to this recipient wait behind one of them that waits for an
-			// earlier event (park), or whose claim could not be read: this one goes behind them,
+			// earlier event (scheduleRetry), or whose claim could not be read: this one goes behind them,
 			// so the owner's order holds, and waits from now (heldSamples) when the lane waits
 			// behind an event.
 			lane = held
@@ -391,18 +391,19 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 
 // serve sends lane's queue, then any lane waiting for a goroutine, until none waits. A send whose
 // recorded claim is unsure is tried only once its row's claim is read (claimKnown); one whose
-// read fails makes no try and parks as a send that waited does, behind no event, and so does one
+// read fails makes no try and waits for a retry as a send that waited does, behind no event, and so does one
 // whose try could not read the copy rule (mentionSend.unread). A send that waited for an earlier
-// event of its comment's owner parks the owner's sends to its recipient (park), and the timer that
-// ends the park (unpark) starts only once no goroutine serves the parked lane: at once when the
-// park made a held lane beside the one this goroutine serves, and, when the parked lane is the one
+// event of its comment's owner moves the owner's sends to its recipient to a lane that waits for its
+// retry (scheduleRetry), and the timer that ends that wait (retryLane) starts only once no goroutine
+// serves the waiting lane: at once when the retry made a held lane beside the one this goroutine
+// serves, and, when the waiting lane is the one
 // this goroutine serves - a held lane whose head waited again - only once this goroutine has given
 // it up (next) and taken a lane that waits, or ended. So no two goroutines ever serve one lane,
-// and a parked lane's timer is pending exactly while no goroutine is on it. A send that leaves a
+// and a waiting lane's retry timer is pending exactly while no goroutine is on it. A send that leaves a
 // held lane past heldWarnAfter with no WARN logged for it logs its WARN as it goes (reportLate).
 func (m *mentionSender) serve(lane laneKey) {
 	defer m.done.Done()
-	// givenUp starts the timer of the lane this goroutine parked and gives up, once it has.
+	// givenUp starts the retry timer of the lane this goroutine left waiting and gives up, once it has.
 	var givenUp func()
 	for {
 		item, next, ok := m.next(lane)
@@ -417,8 +418,8 @@ func (m *mentionSender) serve(lane laneKey) {
 		item, known := m.claimKnown(item)
 		again, waits := item, true
 		for known {
-			// The try stays marked in flight until park records its claim, under park's lock, so
-			// no re-read records the try's own claim in between (markTrying, park).
+			// The try stays marked in flight until scheduleRetry records its claim, under scheduleRetry's
+			// lock, so no re-read records the try's own claim in between (markTrying, scheduleRetry).
 			m.markTrying(item.key())
 			if again, waits = m.send(m.ctx, item); waits {
 				break
@@ -438,8 +439,8 @@ func (m *mentionSender) serve(lane laneKey) {
 			continue
 		}
 		claimed := !again.claimed.Equal(item.claimed)
-		held, delay := m.park(lane, again, claimed, known && !again.unread)
-		wake := func() { m.after(delay, func() { m.unpark(held) }) }
+		held, delay := m.scheduleRetry(lane, again, claimed, known && !again.unread)
+		wake := func() { m.after(delay, func() { m.retryLane(held) }) }
 		if held == lane {
 			lane, givenUp = laneKey{}, wake
 			continue
@@ -449,7 +450,7 @@ func (m *mentionSender) serve(lane laneKey) {
 }
 
 // next takes the next send of the goroutine serving lane, and the lane it now serves. lane is the
-// zero laneKey when the goroutine gave its lane up to a park (serve), and it then takes a lane that
+// zero laneKey when the goroutine gave its lane up to a retry (serve), and it then takes a lane that
 // waits. The send it takes carries the claim this sender records for it, which stays among the
 // claims the refresh writes again until the send ends (claimedDuring): a try that reads the rule
 // alone writes no claim, so the claim its row carries is still that one, and a refresh that writes
@@ -504,7 +505,7 @@ func (m *mentionSender) claimedDuring(item mentionSend) (time.Time, bool) {
 }
 
 // heldLane is the lane the sends of owner to lane's recipient wait on while one of them waits for
-// an earlier event of owner (park): a lane of its own beside lane, so a recipient's sends of other
+// an earlier event of owner (scheduleRetry): a lane of its own beside lane, so a recipient's sends of other
 // owners pass them. A lane that is one already is its own.
 func heldLane(lane laneKey, owner string) laneKey {
 	if lane.held {
@@ -513,10 +514,10 @@ func heldLane(lane laneKey, owner string) laneKey {
 	return laneKey{recipient: lane.recipient, owner: owner, held: true}
 }
 
-// park puts item, the send lane just started that waited for an earlier event of its comment's
+// scheduleRetry puts item, the send lane just started that waited for an earlier event of its comment's
 // owner, or whose unsure claim could not be read (serve), at the head of that owner's held lane
 // for the recipient (heldLane), and leaves the held lane with no goroutine until
-// mentionOrderRetry of item's parks has passed (unpark). Its claim is the one its try took for
+// mentionOrderRetry of item's retries has passed (retryLane). Its claim is the one its try took for
 // itself when claimed is set, which this sender records and writes again from here as it writes
 // every queued send's (refreshHeldClaims), and otherwise the one it records already: a try that
 // read the rule alone took none, and a refresh that wrote its row while it was in flight recorded
@@ -526,11 +527,11 @@ func heldLane(lane laneKey, owner string) laneKey {
 // other owners stay on lane and go on, as an earlier event of one owner holds no event of
 // another (planChains keeps order per owner). The held lane is deleted once it is empty and
 // served (next), after which the owner's sends join lane again. Its attempt stays held, so a
-// keyed repeat of the comment queues it no second time. A park once the sender stopped still
+// keyed repeat of the comment queues it no second time. A retry scheduled once the sender stopped still
 // records the claim, which the drain gives back with the rest (wait). Its send kept its place in
-// the queue while it was in flight (held), so the park never passes the queue's capacity and
+// the queue while it was in flight (held), so the retry never passes the queue's capacity and
 // never has to give its place to the owner's later sends. It answers the held lane and how long
-// it parks: its caller starts the timer that ends the park (unpark) once no goroutine serves that
+// it waits: its caller starts the timer that ends the wait (retryLane) once no goroutine serves that
 // lane, which is at once unless it is lane itself (serve).
 //
 // The wait has no bound, so it shows instead: the held gauges count every send on a held lane
@@ -538,17 +539,17 @@ func heldLane(lane laneKey, owner string) laneKey {
 // each send held heldWarnAfter since it first waited - the one that waited and every send of its
 // owner queued behind it - is logged once at WARN (warnHeld), naming its owner, the earlier event
 // it waits behind and that event's last publish error, beside the ERROR the outbox writes for that
-// event's own failed publish, which is the cause: here when a park finds it past the threshold,
-// else as it leaves the lane (reportLate). A send parked because its claim could not be read waits
-// behind no event: it is stamped as waiting (heldSince) only once a park behind one finds it on the
+// event's own failed publish, which is the cause: here when a scheduled retry finds it past the threshold,
+// else as it leaves the lane (reportLate). A send retried because its claim could not be read waits
+// behind no event: it is stamped as waiting (heldSince) only once a retry behind one finds it on the
 // held lane, so it is counted and warned of only from then.
-func (m *mentionSender) park(lane laneKey, item mentionSend, claimed, waited bool) (held laneKey, delay time.Duration) {
-	item.parks++
+func (m *mentionSender) scheduleRetry(lane laneKey, item mentionSend, claimed, waited bool) (held laneKey, delay time.Duration) {
+	item.orderRetries++
 	now := time.Now()
 	if waited && item.heldSince.IsZero() {
 		item.heldSince = now
 	}
-	delay = mentionOrderRetry(item.parks)
+	delay = mentionOrderRetry(item.orderRetries)
 	owner := item.owner()
 	held = heldLane(lane, owner)
 	m.mu.Lock()
@@ -578,7 +579,7 @@ func (m *mentionSender) park(lane laneKey, item mentionSend, claimed, waited boo
 		m.lanes[lane] = kept
 		m.lanes[held] = moved
 	}
-	// A send parked because its claim could not be read waited behind no event: it is no held
+	// A send retried because its claim could not be read waited behind no event: it is no held
 	// copy the gauges count, and it logs no WARN naming an earlier event.
 	wait := heldWait{session: item.heldFor, by: item.heldBy}
 	var warned []mentionSend
@@ -602,10 +603,10 @@ func (m *mentionSender) park(lane laneKey, item mentionSend, claimed, waited boo
 	return held, delay
 }
 
-// unpark makes a parked lane ready again: a goroutine starts on it when fewer than
+// retryLane makes a lane that waited for its retry ready again: a goroutine starts on it when fewer than
 // mentionSendLanes run, and otherwise it waits in ready behind the lanes already there. Once the
 // sender stopped it starts nothing, the lane's claims being the drain's to give back (wait).
-func (m *mentionSender) unpark(lane laneKey) {
+func (m *mentionSender) retryLane(lane laneKey) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.stoppedLocked() {
@@ -662,17 +663,17 @@ func (m *mentionSender) wait() {
 // failure is logged and leaves the attempt pending, as deliverBroadcast's does, for the delivery
 // sweep once the claim it took lapses. A send that waited for an earlier event of its comment's
 // owner, or whose read of that rule failed (mentionHeldForOrder), answers the send to take up
-// again, which its lane parks (park) on a held lane: the same attempt, under the claim that send
+// again, which its lane moves (scheduleRetry) to a held lane: the same attempt, under the claim that send
 // renewed. A send taken from a held lane starts its take-over window when its whole delivery
 // starts (mentionSend.takeover), since its wait there has no bound.
 //
 // A send that waited before - behind an earlier event, or behind none because its read of the rule
 // failed - reads the rule alone first, for the session it waited to reach (mentionCopyHolderFor),
-// and parks again while the earlier event still owes its send, or while that read fails: a parked
+// and waits for a retry again while the earlier event still owes its send, or while that read fails: a waiting
 // lane's try then costs the rule's one statement (copyrule.Holder) and, for each role route the
 // earlier events owe, one listener lookup of the role's holder (roleHolderMayBe, within
 // mentionLookupTimeout); no claim and no write, while its claim is the one the sender writes again
-// for every queued send. A read that fails parks the send as one whose whole delivery could not
+// for every queued send. A read that fails schedules a retry of the send as one whose whole delivery could not
 // read the rule does (mentionSend.unread): behind no event, keeping its claim and its place, so
 // the owner's later comments to the session stay behind it. Only a send the rule lets go makes the
 // whole delivery, which claims, resolves and asks the rule once more.

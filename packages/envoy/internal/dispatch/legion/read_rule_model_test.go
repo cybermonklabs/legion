@@ -1080,25 +1080,25 @@ func (m *readRuleModel) intakeIdle() bool {
 // intake from being idle for up to ReadRetryAfter.
 func (m *readRuleModel) checkIdleCursor(index int, quiet time.Duration) {
 	var floor uint64
-	var parked bool
+	var delayed bool
 	idle := func() bool {
 		info := m.rig.consumerInfo()
 		floor = info.AckFloor.Stream
 		inHand := !m.intakeIdle()
-		parked = info.NumPending == 0 && info.NumAckPending > 0 && !inHand
+		delayed = info.NumPending == 0 && info.NumAckPending > 0 && !inHand
 		return info.NumPending == 0 && info.NumAckPending == 0 && !inHand
 	}
-	parkedPolls := 0
+	delayedPolls := 0
 	if !testwait.Holds(quiet, 20*time.Millisecond, func() bool {
 		if idle() {
 			return true
 		}
-		if parked {
-			parkedPolls++
+		if delayed {
+			delayedPolls++
 		} else {
-			parkedPolls = 0
+			delayedPolls = 0
 		}
-		return parkedPolls >= 5
+		return delayedPolls >= 5
 	}) || !idle() {
 		return
 	}

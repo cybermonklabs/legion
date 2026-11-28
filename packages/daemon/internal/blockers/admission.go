@@ -39,7 +39,7 @@ type AdmissionJudgement struct {
 // leave out a done record holding no slot, so the route judges the block from that read as well,
 // and the two cannot differ for any record of the project. The records a live read leaves out
 // still reach the judgement where it needs them: a done parent on a chain (LineFacts.Parents) and
-// a done or parked root (LineFacts.Roots), each read by ReadLineFacts.
+// a root that is done or in backlog or icebox (LineFacts.Roots), each read by ReadLineFacts.
 func JudgeAdmission(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep,
 	slots []record.Slot, cap int, now time.Time,
 ) (AdmissionJudgement, error) {

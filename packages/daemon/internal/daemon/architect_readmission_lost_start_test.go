@@ -11,7 +11,7 @@ import (
 // A re-admitted root whose re-admission start was lost is sent that start again, although its
 // architect's claim still holds the unconfirmed task of the run before (dispatch://INFRA-2614 R4,
 // R5). The root ran at generation 1 and its architect was sent that run's task and confirmed none
-// of it; a person parked the root and set it todo again, which re-admits it at generation 2 and
+// of it; a person moved the root to backlog and set it todo again, which re-admits it at generation 2 and
 // raises its architect's entry to 2 in the same pass. The start that pass wrote is lost before any
 // lane runs it.
 //
@@ -28,10 +28,10 @@ func TestALostReadmissionStartIsWrittenAgainPastTheTaskOfTheRunBefore(t *testing
 	r.runStarts()
 	r.bringUp()
 	if held := r.machine().Claim().Pending; held == nil || held.Generation != 1 || held.Entry != 1 || !held.ConfirmedAt.IsZero() {
-		t.Fatalf("the architect's task before the park = %#v, want its generation-1 task of entry 1, sent and unconfirmed", held)
+		t.Fatalf("the architect's task before the move to backlog = %#v, want its generation-1 task of entry 1, sent and unconfirmed", held)
 	}
 
-	r.park()
+	r.toBacklog()
 	r.runSuspend()
 	r.handBack()
 	dropArchitectStarts(t, r)

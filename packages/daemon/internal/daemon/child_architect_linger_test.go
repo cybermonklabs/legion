@@ -37,7 +37,7 @@ func TestAChildsArchitectFirstStartHeldByALingerIsQueuedWhenTheTreeReopens(t *te
 
 	// The root leaves the workflow before the outbox runs the child's rows: its tree lingers, and
 	// the outbox holds the child's architect start with no claim created.
-	rig.apply("root-parked", intake.DispatchIssue{Key: doorRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "backlog", HandedOver: true,
+	rig.apply("root-backlog", intake.DispatchIssue{Key: doorRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "backlog", HandedOver: true,
 		Title: "root", Rank: "U"})
 	rig.drain()
 	if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {

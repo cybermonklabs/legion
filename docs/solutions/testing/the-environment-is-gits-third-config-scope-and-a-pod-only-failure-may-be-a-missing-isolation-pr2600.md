@@ -46,7 +46,7 @@ That page's rule — a test that reads a repository's configuration with real gi
   where the clone's file holds two, and `TestTmuxBootRewritesEveryOlderClonesCredentialHelper`
   failed. Restoring the base commit's copy of that file in a scratch tree reproduced the same
   failure, so it pre-dated this change — and it was the test's own gap, fixed here with
-  `t.Setenv("GIT_CONFIG_COUNT", "0")` rather than parked. It is not in
+  `t.Setenv("GIT_CONFIG_COUNT", "0")` rather than set aside. It is not in
   `docs/solutions/testing/go-test-in-a-worker-pod-leaves-gowork-to-go-work-and-names-the-packages-the-pod-cannot-run-LEGION-630.md`'s
   list, and it should not be.
 

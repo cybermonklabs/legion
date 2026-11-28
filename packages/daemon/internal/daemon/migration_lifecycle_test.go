@@ -27,14 +27,14 @@ func TestTheMigrationCarriesEachRunningTreesLivenessAndKeepsTheRowsItFinds(t *te
 	st := preReleaseStore(t)
 	pool := st.Pool()
 	records := record.NewStore()
-	fresh, known, parked := bootProject+"-1", bootProject+"-3", bootProject+"-2"
+	fresh, known, inBacklog := bootProject+"-1", bootProject+"-3", bootProject+"-2"
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		// A root whose architect is writing the spec, with a child a person parked, and no
+		// A root whose architect is writing the spec, with a child a person moved to backlog, and no
 		// lifecycle row of its own.
 		if err := records.PutIssue(ctx, tx, bootIssue(fresh, fresh, "in_progress", phase.Admitted)); err != nil {
 			return err
 		}
-		if err := records.PutIssue(ctx, tx, bootIssue(parked, fresh, "backlog", phase.Done)); err != nil {
+		if err := records.PutIssue(ctx, tx, bootIssue(inBacklog, fresh, "backlog", phase.Done)); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `insert into design_gates (issue, artifact_id, latest_version, approved_version)

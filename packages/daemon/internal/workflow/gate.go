@@ -334,8 +334,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // With notify false the review is marked processed and nothing is sent: a root waiting on a person
 // has the review named by the task that resumes it, and the mark keeps a redelivery after that
 // resume from telling it again. reviewer is the person who asked the changes, named on the notice:
-// the decision a parked tree's undelivered notice carries goes to the controller (the outbox's
-// parkDecision), which needs to know who made it.
+// the decision an undelivered notice of a tree out of the workflow carries goes to the controller (the outbox's
+// relaySpecDecision), which needs to know who made it.
 //
 // Before anything is marked or sent, the gates as the record holds them now are asked whether an
 // approval of the document followed the review (SupersedingApproval), whichever path carried the review
@@ -765,14 +765,14 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // whichever it is.
 //
 // An artifact event comes to one of three outcomes as the handover of its root (personHandover).
-// A person's approval of the primary document of a labelled root parked on the backlog or the
-// icebox, whose tree is not live, is that person's handover of the root: it queues the root
-// (handoverQueued), or a change of the root's status after it refuses it (handoverRefused, below).
-// Every other event is no handover (handoverNone), and its gates take it as above. For a queued
-// handover the daemon queues the root's todo itself, as admission does for a person's legion label
-// on a root in triage (admit's queuePersonHandover): a dispatch_status row observed at the status
-// the approval found, so its delivery writes nothing once the status moved, marked as a person's
-// handover so that one such row at a time is pending for the issue
+// A person's approval of the primary document of a labelled root in backlog or icebox, whose tree
+// is not live, is that person's handover of the root: it queues the root (handoverQueued), or a
+// change of the root's status after it refuses it (handoverRefused, below). Every other event is
+// no handover (handoverNone), and its gates take it as above. For a queued handover the daemon
+// queues the root's todo itself, as admission does for a person's legion label on a root in
+// triage (admit's queuePersonHandover): a dispatch_status row observed at the status the approval
+// found, so its delivery writes nothing once the status moved, marked as a person's handover so
+// that one such row at a time is pending for the issue
 // (record.Store.PersonHandoverPending) — a redelivery of the event, or a second approval while the
 // row waits, queues nothing, since the pending row carries the same write, and the issue's other
 // status rows suppress nothing. The root's own gate takes the approval quietly (recordHandover): it
@@ -788,10 +788,10 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // status after it, which the issue's Dispatch event log showed when the fact was prepared
 // (fact.StatusChangedSeq). It queues nothing, and is no silent drop: the root's own gate takes it
 // as quietly (recordHandover), and the controller is told (refuseHandover). Through applyArtifact
-// the root's own gate would write a design-approved notice that nobody in the parked tree hears,
-// which the outbox would relay to the controller (its parkDecision) with no word of the refusal,
-// so the gate's quiet record is what leaves refuseHandover's relay the one parked-decision of the
-// approval.
+// the root's own gate would write a design-approved notice that nobody in the tree out of the
+// workflow hears, which the outbox would relay to the controller (its relaySpecDecision) with no
+// word of the refusal, so the gate's quiet record is what leaves refuseHandover's relay the one
+// kept-decision of the approval.
 func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (intake.Result, error) {
 	if err := e.basisArtifact(ctx, tx, fact); err != nil {
 		return intake.Result{}, err
@@ -840,22 +840,22 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 }
 
 // refuseHandover tells of a refused handover (handoverRefused): a person's approval that a later
-// change of its parked root's status kept from queuing the root (fact.StatusChangedSeq). It logs
-// a warning once the fact commits, naming the approval's sequence and the sequence of the Dispatch
-// event that changed the root's status after it, and hands the approval to the one rule for a
-// decision nobody in its tree hears (record.RelayParkedDecision): the controller is sent the
-// parked-decision a person's approval on a parked tree takes, under the reference of the
-// document's step (stepRef), whose reason says the approval came before a change of the root's
-// status and that todo on the root brings it back, and the approval is kept for the root's next
-// architect start. It is kept at Dispatch's time of the approval (decidedAt), so it replaces no
-// newer decision kept under the same reference. It is relayed only while it is still the person's
-// word, which the one predicate decides as it does for the outbox's relay of any other person's
-// decision (RefSuperseded, SupersedingApproval): the root's own gate took the approval just now
-// (recordHandover) unless it ignored a stale one, and an approval the gate no longer holds, since
-// a later review took its place, is warned of and not relayed. A root the daemon does not record
-// has no tree to relay for, as the rule's other callers find, so it is told by the warning alone.
-// The writes are the event's own transaction's, which ApplyFact keys by the Dispatch event's id,
-// so a replay writes neither again.
+// change of the status of its root in backlog or icebox kept from queuing the root
+// (fact.StatusChangedSeq). It logs a warning once the fact commits, naming the approval's sequence
+// and the sequence of the Dispatch event that changed the root's status after it, and hands the
+// approval to the one rule for a decision nobody in its tree hears (record.RelayKeptDecision): the
+// controller is sent the kept-decision a person's approval on a tree that does not run takes,
+// under the reference of the document's step (stepRef), whose reason says the approval came
+// before a change of the root's status and that todo on the root brings it back, and the approval
+// is kept for the root's next architect start. It is kept at Dispatch's time of the approval
+// (decidedAt), so it replaces no newer decision kept under the same reference. It is relayed only
+// while it is still the person's word, which the one predicate decides as it does for the outbox's
+// relay of any other person's decision (RefSuperseded, SupersedingApproval): the root's own gate
+// took the approval just now (recordHandover) unless it ignored a stale one, and an approval the
+// gate no longer holds, since a later review took its place, is warned of and not relayed. A root
+// the daemon does not record has no tree to relay for, as the rule's other callers find, so it is
+// told by the warning alone. The writes are the event's own transaction's, which ApplyFact keys by
+// the Dispatch event's id, so a replay writes neither again.
 func (e *Engine) refuseHandover(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact, handover handoverDecision, step record.DesignStep) error {
 	outcome := record.RelayNone
 	ref := stepRef(fact.Key, step)
@@ -871,7 +871,7 @@ func (e *Engine) refuseHandover(ctx context.Context, tx pgx.Tx, fact intake.Disp
 			}
 		}
 	}
-	e.warnOnCommit(ctx, "workflow: a person's approval of a parked root is older than a change of the root's status; the root is not queued as their handover",
+	e.warnOnCommit(ctx, "workflow: a person's approval of a root in backlog or icebox is older than a change of the root's status; the root is not queued as their handover",
 		"issue", fact.Key, "artifact", fact.ArtifactID, "version", fact.Version, "actor", fact.Actor.Name(),
 		"approval_seq", fact.Mark.Seq, "status_change_seq", fact.StatusChangedSeq, "controller_told", outcome == record.RelaySent)
 	return nil
@@ -883,22 +883,22 @@ func (e *Engine) refuseHandover(ctx context.Context, tx pgx.Tx, fact intake.Disp
 func (e *Engine) relayRefusedHandover(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact, root record.Issue, ref string) (record.RelayOutcome, error) {
 	reason := fmt.Sprintf("the approval, at Dispatch event %d, came before a change of %s's status: its status changed after the approval, by event %d, "+
 		"so Legion did not queue %s as the person's handover; set %s to todo to bring it back", fact.Mark.Seq, fact.Key, fact.StatusChangedSeq, fact.Key, fact.Key)
-	return record.RelayParkedDecision(ctx, tx, e.store, fact.Key, root, true,
-		record.ParkedDecision{Ref: ref, Decision: record.DecisionDesignApproved, Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark),
+	return record.RelayKeptDecision(ctx, tx, e.store, fact.Key, root, true,
+		record.KeptDecision{Ref: ref, Decision: record.DecisionDesignApproved, Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark),
 			Seq: fact.Mark.Seq, Artifact: fact.ArtifactID, Version: fact.Version},
 		record.Notice{Version: fact.Version, Reason: reason}, e.cfg.Steps)
 }
 
-// recordHandover records on a parked root's own gate the person's approval that is their handover
-// of the root (personHandover), whether it queues the root (handoverQueued) or a later change of
-// the root's status refuses it (handoverRefused), with nothing else applyArtifact does: no notice,
-// no answered wait, no log of a gate opened, since the tree has no architect to hear any of it.
-// What reads the gate before the new architect registers is everything that reads a gate: among
-// them the re-admission the queued todo brings, whose keepStaleApproval would otherwise find the
-// approval the gate held before the spec's last revision and have the new architect told to
-// request approval of the version the person has just approved, and a later review of the same
-// document, whose artifactIgnored reads the approval's mark. An event artifactIgnored ignores
-// records nothing here either.
+// recordHandover records on the gate of a root in backlog or icebox the person's approval that is
+// their handover of the root (personHandover), whether it queues the root (handoverQueued) or a
+// later change of the root's status refuses it (handoverRefused), with nothing else applyArtifact
+// does: no notice, no answered wait, no log of a gate opened, since the tree has no architect to
+// hear any of it. What reads the gate before the new architect registers is everything that reads
+// a gate: among them the re-admission the queued todo brings, whose keepStaleApproval would
+// otherwise find the approval the gate held before the spec's last revision and have the new
+// architect told to request approval of the version the person has just approved, and a later
+// review of the same document, whose artifactIgnored reads the approval's mark. An event
+// artifactIgnored ignores records nothing here either.
 func (e *Engine) recordHandover(ctx context.Context, tx pgx.Tx, gate record.DesignGate, fact intake.DispatchArtifact) error {
 	if ungated, stale := e.artifactIgnored(gate, fact); ungated || stale {
 		return nil
@@ -938,18 +938,18 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // personHandover says which of three outcomes fact comes to as a person's handover of its root
 // (handoverDecision). A person's handover is an approval (not a changes request or a version) that
 // Dispatch names a person as having made (Actor.Person()), of the primary document of a root — no
-// parent — that carries the legion label and is parked (backlog or icebox) in Dispatch's view
+// parent — that carries the legion label and stands in backlog or icebox in Dispatch's view
 // (intake.DispatchArtifact.MayQueueHandover), whose tree is not live: it queues the root
 // (handoverQueued) unless the root's status changed after it, which refuses it (handoverRefused,
 // below). Every other fact is no handover (handoverNone). The approval is the person's newer act
-// than the park: a person who approves a parked labelled root's spec wants it run, whoever parked
-// it and whether or not it ran before. An unrecorded root is queued by the write; a recorded root
-// whose tree finished is re-admitted by it as a new generation, as a person's own todo re-admits
-// one today, and its tree lingering or long closed makes no difference. A root whose tree is live
-// — its lifecycle stands open under the workflow, or it waits in the line for its tree to be
-// opened, or it waits on a person — is no handover, whatever Dispatch shows: its gate takes the
-// approval as today, and the park's own event, when the daemon applies it, takes the tree out
-// (leave).
+// than the move to backlog or icebox: a person who approves the spec of such a root wants it run,
+// whoever moved it there and whether or not it ran before. An unrecorded root is queued by the
+// write; a recorded root whose tree finished is re-admitted by it as a new generation, as a
+// person's own todo re-admits one today, and its tree lingering or long closed makes no
+// difference. A root whose tree is live — its lifecycle stands open under the workflow, or it
+// waits in the line for its tree to be opened, or it waits on a person — is no handover, whatever
+// Dispatch shows: its gate takes the approval as today, and the move's own event, when the daemon
+// applies it, takes the tree out (leave).
 //
 // The decision reads Dispatch's view of the issue (fact.Issue), which the daemon's prepare stage
 // sets for a person's non-carried approval and nothing else: a nil view — the gate seed's or the
@@ -960,28 +960,30 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // when a later version's text is that version's, Dispatch's bookkeeping of an earlier approval and
 // not a new act of theirs.
 //
-// The controller's parked-root walk (skill://legion-controller/references/parked-decisions.md,
-// "The walk", step 3) repeats this decision in prose to skip the approvals it queues: a change to
-// what queues changes that step too.
+// The controller's walk of roots in backlog or icebox
+// (skill://legion-controller/references/kept-decisions.md, "The walk", step 3) repeats this
+// decision in prose to skip the approvals it queues: a change to what queues changes that step
+// too.
 //
 // The view is Dispatch's issue as it is when the fact is prepared, not as it was at the approval,
-// so it cannot say whether the park it shows came before the approval or after it. Dispatch's own
-// event log of the issue says, and the preparation reads it for an approval that may queue its
-// root (intake.DispatchArtifact.NeedsEventLog): the first event after the approval that changed
-// the issue's status (fact.StatusChangedSeq). An approval after which the status changed —
-// delivered late, or replayed from a message the intake gave up on, however late — queues
-// nothing: a person who approved and then parked the root again keeps it parked. The log is read
-// when the fact is prepared, so a replay reads Dispatch at replay time, and the order in which the
-// daemon applies the issue's other events changes nothing. It is refused rather than dropped
-// (handoverRefused), so dispatchArtifact tells the controller of it, and only for a root the
-// approval would otherwise queue: a live tree's gate hears the approval itself. Any other later
-// event, a rename say, changes no status and leaves the approval queuing the root, as the walk
-// expects.
+// so it cannot say whether the move to backlog or icebox it shows came before the approval or
+// after it. Dispatch's own event log of the issue says, and the preparation reads it for an
+// approval that may queue its root (intake.DispatchArtifact.NeedsEventLog): the first event after
+// the approval that changed the issue's status (fact.StatusChangedSeq). An approval after which
+// the status changed — delivered late, or replayed from a message the intake gave up on, however
+// late — queues nothing: a person who approved and then moved the root back to backlog or icebox
+// keeps it there. The log is read when the fact is prepared, so a replay reads Dispatch at replay
+// time, and the order in which the daemon applies the issue's other events changes nothing. It is
+// refused rather than dropped (handoverRefused), so dispatchArtifact tells the controller of it,
+// and only for a root the approval would otherwise queue: a live tree's gate hears the approval
+// itself. Any other later event, a rename say, changes no status and leaves the approval queuing
+// the root, as the walk expects.
 //
 // dispatchArtifact ties its skip of the root's own gate to this decision, any outcome but
-// handoverNone, rather than to the tree being live: a lingering root that is not parked — closed
-// as done, or still in triage — is no handover and keeps today's behaviour, its gate taking the
-// event, so a reopen inside the linger sees the approvals given while it lingered.
+// handoverNone, rather than to the tree being live: a lingering root that stands in neither
+// backlog nor icebox — closed as done, or still in triage — is no handover and keeps today's
+// behaviour, its gate taking the event, so a reopen inside the linger sees the approvals given
+// while it lingered.
 func (e *Engine) personHandover(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (handoverDecision, error) {
 	if !fact.MayQueueHandover() {
 		return handoverDecision{}, nil
@@ -1010,17 +1012,18 @@ type handoverDecision struct {
 }
 
 // handoverKind is which of three outcomes an artifact event comes to as a person's handover of
-// its parked root (personHandover).
+// its root in backlog or icebox (personHandover).
 type handoverKind int
 
 const (
 	// handoverNone is an event that is no person's handover: anything but a person's approval of
-	// a parked labelled root's primary document, or such an approval of a root whose tree is live.
+	// the primary document of a labelled root in backlog or icebox, or such an approval of a root
+	// whose tree is live.
 	handoverNone handoverKind = iota
-	// handoverQueued is a person's approval of a parked labelled root's primary document, whose
-	// tree is not live, with no change of the root's status after it: the root's own gate takes it
-	// quietly (recordHandover), and dispatchArtifact queues the root's todo as the person's
-	// handover.
+	// handoverQueued is a person's approval of the primary document of a labelled root in backlog
+	// or icebox, whose tree is not live, with no change of the root's status after it: the root's
+	// own gate takes it quietly (recordHandover), and dispatchArtifact queues the root's todo as
+	// the person's handover.
 	handoverQueued
 	// handoverRefused is such an approval after which the root's status changed
 	// (intake.DispatchArtifact.StatusChangedSeq): the root's own gate takes it as quietly
@@ -1181,8 +1184,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// slotFor), and where it stands in the line is the `waitingLine` on its own state,
 		// which the projection writes (api.WaitingLineView). An architect reads the rule in its
 		// role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
-		// Who approved is named on the notice, since nobody in a parked tree hears it and the
-		// decision then goes to the controller instead (the outbox's parkDecision).
+		// Who approved is named on the notice, since nobody in a tree out of the workflow hears it and the
+		// decision then goes to the controller instead (the outbox's relaySpecDecision).
 		reviewer := fact.Actor.Name()
 		opened := &record.Notice{Kind: "design-approved", Version: fact.Version, Actor: reviewer,
 			Ref: stepRef(key, gate.Step), Review: fact.Mark, Artifact: gate.ArtifactID}
@@ -1543,7 +1546,7 @@ func gateClosedSentence(tree string, step record.DesignStep, document string, ve
 // (dispatch://INFRA-714/spec R5).
 //
 // Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record
-// of a person's approval on a parked root (recordHandover), whose roles are suspended and whose
+// of a person's approval on a root in backlog or icebox (recordHandover), whose roles are suspended and whose
 // decision goes to the controller instead, and the carry of a gate onto a re-admitted orphan
 // (admit's own write), which is a tree that has not started. The clearing of a told changes
 // request (untellUnresumedChanges) writes a row that cannot move the standing gate at all, since

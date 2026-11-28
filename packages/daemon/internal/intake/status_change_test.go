@@ -188,9 +188,9 @@ func approvalLogEvent(seq int) json.RawMessage {
 // The status changed after an approval at seq when an issue event after it (issue.created,
 // issue.updated or issue.closed) carries another status than the issue event before it, and
 // statusChangedAfter is the first such event's sequence. A rename keeps the status, so it is no
-// change, and a todo and a park again after the approval is a change at the todo, though the
-// status ends where it stood. Events of other kinds count for nothing. With no issue event at or
-// before seq, only a change between the later ones counts.
+// change, and a todo and a move to icebox again after the approval is a change at the todo,
+// though the status ends where it stood. Events of other kinds count for nothing. With no issue
+// event at or before seq, only a change between the later ones counts.
 func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -200,7 +200,7 @@ func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T
 		want   int64
 	}{
 		{
-			name: "a park before the approval and a rename after it",
+			name: "a move to icebox before the approval and a rename after it",
 			events: []json.RawMessage{
 				statusLogEvent(1, "issue.created", "triage", "root"),
 				statusLogEvent(5, "issue.updated", "icebox", "root"),
@@ -210,7 +210,7 @@ func TestStatusChangedAfterIsTheFirstLaterIssueEventOfAnotherStatus(t *testing.T
 			seq: 9,
 		},
 		{
-			name: "a todo after the approval, then a park again in the same status",
+			name: "a todo after the approval, then a move to icebox again in the same status",
 			events: []json.RawMessage{
 				statusLogEvent(1, "issue.created", "triage", "root"),
 				statusLogEvent(5, "issue.updated", "icebox", "root"),

@@ -21,12 +21,12 @@ import (
 // holding no connection of the rooms pool, which every room load and cold read waits on; a load of
 // a larger log folds it while it streams it inside the transaction, holding that one connection.
 // Either way a room's load (Load) and a cold read (LoadDocument) read the state the log makes: a
-// single row as stored, a folded log as its merge reads, a log with parked items keeping them, and
+// single row as stored, a folded log as its merge reads, a log with pending items keeping them, and
 // a log the fold cannot apply served merged, which a cold read refuses as ErrDocumentUnloadable.
 func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) {
 	t.Parallel()
 	fixtures := readHistoryFixtures(t)
-	parked, lost, gone := parkedHistory(t)
+	pending, lost, gone := pendingHistory(t)
 	unfoldable, _ := unfoldableHistory()
 	unfoldableMerged, err := crdt.MergeUpdatesV1(unfoldable...)
 	if err != nil {
@@ -100,14 +100,14 @@ func TestALoadReadsOneStateWhetherItFoldsTheLogInMemoryOrStreamed(t *testing.T) 
 					requireReadsAs(t, fixture.Name+": the cold read", coldRead(t, artifactID), want)
 				}
 			})
-			t.Run("parked items", func(t *testing.T) {
-				artifactID := stored(t, parked)
-				requireParkedArrive(t, "the load", load(t, artifactID), lost, gone)
-				requireParkedArrive(t, "the cold read", coldRead(t, artifactID), lost, gone)
+			t.Run("pending items", func(t *testing.T) {
+				artifactID := stored(t, pending)
+				requirePendingArrive(t, "the load", load(t, artifactID), lost, gone)
+				requirePendingArrive(t, "the cold read", coldRead(t, artifactID), lost, gone)
 			})
 			t.Run("a log the fold cannot apply", func(t *testing.T) {
 				// The log is built for a small pending queue, which the other fixtures above
-				// park more than: shrink the store only here, and only once they are read.
+				// leave more pending than: shrink the store only here, and only once they are read.
 				shrinkPendingItems(t, nil, versioned)
 				artifactID := stored(t, unfoldable)
 				if got := load(t, artifactID); !bytes.Equal(got, unfoldableMerged) {
@@ -407,14 +407,14 @@ func TestARoomLoadDecodesItsStoredStateOnceInTheRoom(t *testing.T) {
 // A history that does not decode in the room fails the room as the check before the room's
 // decode (validateUpdate) failed it: the caller gets the error that check gives for the same bytes,
 // the room's failure holds it, its failed-room eviction runs, no room is published, and the next
-// access loads the history afresh and fails the same way. A single stored row that parks more
+// access loads the history afresh and fails the same way. A single stored row that leaves more pending
 // than the server's pending cap does not load, nor does a log the fold cannot apply, served
 // merged.
 func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) {
 	t.Parallel()
 	service, versioned, decodes := roomLoadService(t)
 	// Before any room opens: ygo reads the server's cap as each room loads, and the log below is
-	// built to park more than that cap holds.
+	// built to leave more pending than that cap holds.
 	shrinkPendingItems(t, service, versioned)
 	ctx := context.Background()
 	evicting := make(chan string, 1)

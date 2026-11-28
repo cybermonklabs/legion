@@ -177,10 +177,10 @@ func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testi
 	if got := recordedIssue(t, w, child); got != nil {
 		t.Fatalf("%s is %s while its parent is unrecorded and GitHub does not answer for zeta/tools, want it unrecorded", child, recordedAs(t, w, child))
 	}
-	// GitHub answers for zeta/tools while the refresher is parked; its next turn reads zeta/tools
+	// GitHub answers for zeta/tools while the refresher is stopped in the hook; its next turn reads zeta/tools
 	// again, which moves it among the repositories to recover, and the pass that recovers it holds
 	// the next listing, read before the two events below.
-	refresher.park(t, w)
+	refresher.stopInHook(t, w)
 	installs.setFailing(nil, "implement zeta/tools")
 	release := client.holdListing()
 	t.Cleanup(release)

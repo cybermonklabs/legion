@@ -630,15 +630,14 @@ var lineKinds = []EnumeratedValue{
 	{Value: "waiting_on_issue", Since: waitingOnIssueContract},
 }
 
-// heldReasons is every word of a held row's `reason`. The field arrived at heldContract with
-// eleven words, and its list grew: `children_before_retro`, a parent whose task's last step is
-// not the owner's acceptance, held before its retro for the issues beneath it, and
-// `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
-// it is written out value by value, sorted by value, as waitAnswers is. The gate-basis entry adds
-// `awaiting_children`, a parent waiting on its open children (record.HeldAwaitingChildren), in its
-// own file. It names each constant rather than
-// reading record.HeldReasons, because a word added to the ladder later arrives at its own
-// contract.
+// heldReasons records the words numbered contracts admitted for a held row's `reason`.
+// `children_before_retro` and `task_stopped` arrived at OwnerPlanContract (version.go's 219);
+// the others arrived with the field. The gate-basis entry adds `awaiting_children`, a parent
+// waiting on its open children (record.HeldAwaitingChildren), in its own file. This history
+// includes the retired word, even though the daemon no longer writes it and the current
+// contract's domain no longer admits it. Entry 20261125161823 registers that retirement in its
+// test rows (`contract_20261125161823_tree-in-backlog-or-icebox_test.go`), and its registerEntry
+// row adds the word that took the retired word's place.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
@@ -651,7 +650,7 @@ var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldRootAwaitingPerson), Since: heldContract},
 	{Value: string(record.HeldTaskStopped), Since: OwnerPlanContract},
 	{Value: string(record.HeldTreeClosed), Since: heldContract},
-	{Value: string(record.HeldTreeParked), Since: heldContract},
+	{Value: "tree_parked", Since: heldContract},
 	{Value: string(record.HeldUnclassified), Since: heldContract},
 }
 

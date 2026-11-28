@@ -187,7 +187,7 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	parkedRoot(t, pool)
+	rootInBacklog(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
 		for _, put := range []error{

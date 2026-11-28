@@ -23,7 +23,7 @@ related_issues:
 
 ## Evidence
 
-Round 27 tried to run the parked-decision devbox proof with one GitHub App in both `github_apps` slots.
+Round 27 tried to run the kept-decision devbox proof with one GitHub App in both `github_apps` slots.
 `legion start --check-config` printed `Config OK`;
 the real boot passed the plugin gate and the store, config and Dispatch stages, then exited:
 `the review App names bot login "legion-implementer[bot]" and the implement App "legion-implementer[bot]"; the workflow needs two different Apps`.

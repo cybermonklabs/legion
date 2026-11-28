@@ -143,11 +143,11 @@ func TestARootWaitsForTheChildrenItFiledBeforeItsGateOpened(t *testing.T) {
 	}
 
 	// Each child leaves the workflow. The root starts its own planning only once the last has.
-	moveChild(t, pool, admission, "park-first", cfFirst, cfRoot, "backlog", 7)
+	moveChild(t, pool, admission, "backlog-first", cfFirst, cfRoot, "backlog", 7)
 	if got := issue(t, pool, cfRoot).Phase; got != phase.Admitted {
 		t.Fatalf("the root with one child still open = %s, want it still at admitted", got)
 	}
-	moveChild(t, pool, admission, "park-second", cfSecond, cfRoot, "backlog", 8)
+	moveChild(t, pool, admission, "backlog-second", cfSecond, cfRoot, "backlog", 8)
 	if got := issue(t, pool, cfRoot); got.Phase != phase.Planning {
 		t.Fatalf("the root once both children left = %#v, want it planning", got)
 	}
@@ -189,19 +189,19 @@ func TestAParentBelowTheRootWaitsForItsOwnChild(t *testing.T) {
 
 // A5. A mirror row written before the release — the boot listing's view of a child the daemon
 // has never recorded — holds the parent just as a live event's row does: the parent comes from
-// that listing, and the wait is complete from it. A parked child, one the tree ran and took out
+// that listing, and the wait is complete from it. A child in backlog, one the tree ran and took out
 // of the workflow, holds nothing.
-func TestAListedChildHoldsItsParentAndAParkedOneDoesNot(t *testing.T) {
+func TestAListedChildHoldsItsParentAndOneInBacklogDoesNot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
-	const parked = "LEGION-5"
+	const inBacklog = "LEGION-5"
 	seedMirrorChild(t, pool, cfFirst, "backlog", cfRoot)
-	seedMirrorChild(t, pool, parked, "backlog", cfRoot)
-	// The parked child is a member of the root's tree that already left the workflow: the record
+	seedMirrorChild(t, pool, inBacklog, "backlog", cfRoot)
+	// The child in backlog is a member of the root's tree that already left the workflow: the record
 	// says so, and the identical backlog row of the mirror must not be read as unreleased work.
 	parent := cfRoot
-	putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: testProject, Title: parked, Tree: cfRoot, Parent: &parent, Phase: phase.Admitted, Generation: 1,
+	putIssue(t, pool, record.Issue{Key: inBacklog, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: testProject, Title: inBacklog, Tree: cfRoot, Parent: &parent, Phase: phase.Admitted, Generation: 1,
 		Status: "backlog", DispatchStatus: "backlog", Rank: "E", LastDispatchSeq: 1})
 
 	openGate(t, pool, admission, "gate-approved")
@@ -210,8 +210,8 @@ func TestAListedChildHoldsItsParentAndAParkedOneDoesNot(t *testing.T) {
 	if len(told) != 1 {
 		t.Fatalf("children-first notices = %+v, want exactly one", told)
 	}
-	if strings.Contains(told[0].Reason, parked) {
-		t.Fatalf("the children-first notice %q names the parked child %s, which holds nothing", told[0].Reason, parked)
+	if strings.Contains(told[0].Reason, inBacklog) {
+		t.Fatalf("the children-first notice %q names the child in backlog %s, which holds nothing", told[0].Reason, inBacklog)
 	}
 	if want := []record.BlockedIssue{{Issue: cfRoot, BlockedBy: []string{cfFirst}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
 		t.Fatalf("blocked = %#v, want %#v", blockedNow(t, pool, admission), want)

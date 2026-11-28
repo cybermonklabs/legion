@@ -740,7 +740,7 @@ both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 ## forced-order.sh
 
 Runs the forced-order tests of each package named, every `TestForcedOrder…` test, on a
-nats-server whose own code carries hold points: places where a test parks the server's goroutine
+nats-server whose own code carries hold points: places where a test holds the server's goroutine
 (`internal/testnats/hooks.go`, `testnats.Hook`) to force an order its scheduling would only
 sometimes produce — a consumer's state write held while a consumer of the same name is deleted
 and created again, a JetStream API request held while its server shuts down, released before
@@ -773,7 +773,7 @@ that has done its work with the dedupe lock held; 2.10.29's purge takes the lock
 across both steps, so no purge runs between them there);
 `hooks.go` says where each one is. A server's shutdown, and its lame duck, report `server.shutdown`
 before they stop anything and `server.down` once the shutdown has waited for its goroutines: the
-hook releases every hold on that server at the first and parks none of its goroutines until the
+hook releases every hold on that server at the first and holds none of its goroutines until the
 second, so a `Stop` or a `LameDuck` with an operation held returns, and the held operation lands
 or fails.
 
@@ -784,7 +784,7 @@ other version is refused, so a module that moves to a new nats-server fails here
 are ported; an empty value is refused too. `-drop <point>` removes the hook calls that pass that
 point, exactly, before the build, which is each test's control: a test holding at a dropped point
 fails waiting for its hold, and with `-drop server.shutdown` the test that stops a held server
-fails at its own deadline, since the stop then waits for the parked goroutine. A name no hook of
+fails at its own deadline, since the stop then waits for the held goroutine. A name no hook of
 that version reports is refused before anything is built, so a mistyped point cannot fail a test
 on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
 test, or runs none because every one skipped. The script reads each package's verdict from its own
@@ -1386,7 +1386,7 @@ reads and (a3) for the listener pin each user of the hub that may publish is map
 is connected as the census runs (a2); between the two readings the listeners' counters and the
 stream's old-form messages see one that writes. So no reading sees a client at an older build that
 no pin names, or older than the pin it is judged by, and that is not connected from the first
-reading to the census: a session started with a custom `--image`, a session parked or on a machine
+reading to the census: a session started with a custom `--image`, a session suspended or on a machine
 that is off, a session on a developer box other than the one `--clients` reads, or an Envoy
 listener outside the pins that connects as a mapped user. The span between the readings bounds it:
 the longer it is, the more such clients come back and write while it runs, and nothing here sets it

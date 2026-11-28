@@ -902,9 +902,9 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	// Handoff line of the implementer's last handoff, which roles/tester.md tells the tester to read.
 	t.Run("the return names the children that merged during the wait and no other", func(t *testing.T) {
 		const (
-			iceboxed = "LEGION-302"
-			parked   = "LEGION-303"
-			late     = "LEGION-304"
+			iceboxed  = "LEGION-302"
+			inBacklog = "LEGION-303"
+			late      = "LEGION-304"
 		)
 		pool := migratedPool(t)
 		admission := pnAdmission(t, pool, 4)
@@ -913,15 +913,15 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 		seedMirrorChild(t, pool, iceboxed, "todo", spParent)
 		// The child its architect moves to the backlog is a released one, which the daemon records in the tree.
-		putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: testProject, Title: parked, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Admitted, Generation: 1,
-			Status: "todo", DispatchStatus: "todo", Rank: parked, HandedOver: true, LastDispatchSeq: 1})
-		seedMirrorChild(t, pool, parked, "todo", spParent)
+		putIssue(t, pool, record.Issue{Key: inBacklog, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Project: testProject, Title: inBacklog, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Admitted, Generation: 1,
+			Status: "todo", DispatchStatus: "todo", Rank: inBacklog, HandedOver: true, LastDispatchSeq: 1})
+		seedMirrorChild(t, pool, inBacklog, "todo", spParent)
 
 		pwApplied(t, pool, admission, "api", "implemented", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleImplementer,
 			Claim: "implementer", Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-2", HandoffVersion: 2})
 		wait := pwHeld(t, pool, spParent, phase.Testing, "the implementer completed implementing",
-			spChild+" (todo)", iceboxed+" (todo)", parked+" (todo)")
+			spChild+" (todo)", iceboxed+" (todo)", inBacklog+" (todo)")
 
 		// The fourth child is filed and released under the waiting parent.
 		pwApplied(t, pool, admission, "dispatch", "released", intake.DispatchIssue{Key: late, ResolvedRepo: "acme/widgets", Seq: 1,
@@ -932,19 +932,19 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 
 		pnChildMerged(t, pool, spChild, spParent, 51)
 		spMirror(t, pool, iceboxed, "icebox", spParent, 2)
-		putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-			Project: testProject, Title: parked, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Done, Generation: 1,
-			Status: "backlog", DispatchStatus: "backlog", Rank: parked, HandedOver: true, LastDispatchSeq: 2})
+		putIssue(t, pool, record.Issue{Key: inBacklog, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Project: testProject, Title: inBacklog, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Done, Generation: 1,
+			Status: "backlog", DispatchStatus: "backlog", Rank: inBacklog, HandedOver: true, LastDispatchSeq: 2})
 		// The child on the backlog had opened a pull request, which did not merge.
-		seedPullRequest(t, pool, parked, 53, record.PullRequestOpen)
-		spMirror(t, pool, parked, "backlog", spParent, 2)
+		seedPullRequest(t, pool, inBacklog, 53, record.PullRequestOpen)
+		spMirror(t, pool, inBacklog, "backlog", spParent, 2)
 		pnChildMerged(t, pool, late, spParent, 54)
 		// Before the pass that takes it back, the wait holds all four children.
 		got := issue(t, pool, spParent)
 		if got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil ||
-			!slices.Equal(slices.Sorted(slices.Values(got.ChildrenWait.Children)), []string{spChild, iceboxed, parked, late}) {
+			!slices.Equal(slices.Sorted(slices.Values(got.ChildrenWait.Children)), []string{spChild, iceboxed, inBacklog, late}) {
 			t.Fatalf("the parent before its return = phase %s, held start %+v; want awaiting_children holding the children %v",
-				got.Phase, got.ChildrenWait, []string{spChild, iceboxed, parked, late})
+				got.Phase, got.ChildrenWait, []string{spChild, iceboxed, inBacklog, late})
 		}
 
 		spPass(t, pool, admission)
@@ -1564,8 +1564,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 
 		state := pnState(t, pool, admission)
 
-		if row, listed := pnHeldRow(state, member); !listed || row.Reason != record.HeldTreeParked || !slices.Equal(row.HeldBy, []string{root}) {
-			t.Fatalf("admission.held names %s as %+v (listed %t), want tree_parked held by %s", member, row, listed, root)
+		if row, listed := pnHeldRow(state, member); !listed || row.Reason != record.HeldTreeInBacklogOrIcebox || !slices.Equal(row.HeldBy, []string{root}) {
+			t.Fatalf("admission.held names %s as %+v (listed %t), want tree_in_backlog_or_icebox held by %s", member, row, listed, root)
 		}
 		pnInNeitherList(t, state, member)
 	})

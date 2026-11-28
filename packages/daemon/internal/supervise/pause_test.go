@@ -406,10 +406,10 @@ func TestAPauseHoldWaitsForTheAnswerOfASendWhoseTurnAlreadyEnded(t *testing.T) {
 
 // A pause's stop of a claim whose relaunch waits in the pacing over the process that died is
 // decided where it arrives (holdSuspendUntilReady): the process the claim still records is
-// stopped, the claim is suspended through the stop transaction with the parked launch owed, and
+// stopped, the claim is suspended through the stop transaction with the delayed launch owed, and
 // the wake's turn, when it comes, launches nothing. Held until a ready instead, the stop landed
 // only at that turn, which a wave puts tens of minutes out (decision 4 of dispatch://INFRA-3759: a
-// parked wake with no process is stopped at once; check k1, role E).
+// delayed wake with no process is stopped at once; check k1, role E).
 func TestAPauseStopsAClaimWhoseRelaunchWaitsOverItsDeadProcessAtOnce(t *testing.T) {
 	h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
 	h.must(RequestSpawn{Claim: h.token})
@@ -1475,10 +1475,10 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		stops.wantStops(t, stopCall{stop: PauseStop{Pause: 8, LaunchOwed: true}, landed: true})
 	})
 
-	// parked is a harness whose pacing parks its first launch a minute out — a pacer over a
+	// delayed is a harness whose pacing delays its first launch a minute out — a pacer over a
 	// limiter of one wake a minute whose one token the test spends before any launch — and the
 	// count of the places joined in it (countedPacer).
-	parked := func(t *testing.T) (*harness, *pauseFlag, *stopTransaction, func() int) {
+	delayed := func(t *testing.T) (*harness, *pauseFlag, *stopTransaction, func() int) {
 		t.Helper()
 		h, flag, stops := pauseHarness(t, queuedClaim())
 		limiter := wakepace.New(1, 1, nil)
@@ -1512,10 +1512,10 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		stops.wantStops(t)
 	}
 
-	// A wake the pacing parked took its place at the wake gate; a pause that meets its let-out at
+	// A wake the pacing delayed took its place at the wake gate; a pause that meets its let-out at
 	// its turn holds it, and its let-out runs it with no second place (wake.paid).
-	t.Run("a wake the pacing parked, met by the pause at its turn", func(t *testing.T) {
-		h, flag, stops, taken := parked(t)
+	t.Run("a wake the pacing delayed, met by the pause at its turn", func(t *testing.T) {
+		h, flag, stops, taken := delayed(t)
 		h.must(RequestSpawn{Claim: h.token})
 		h.wantStarts(h.token, 0)
 
@@ -1523,10 +1523,10 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 	})
 
 	// A launch the gate held at the wake gate took no place there; its let-out joins one for it
-	// and parks it, and a second pause that meets it at that turn holds it again, whose let-out
+	// and delays it, and a second pause that meets it at that turn holds it again, whose let-out
 	// joins no second place (letOutHeldLaunch, wake.paid).
-	t.Run("a let-out the pacing parked, met by a second pause at its turn", func(t *testing.T) {
-		h, flag, stops, taken := parked(t)
+	t.Run("a let-out the pacing delayed, met by a second pause at its turn", func(t *testing.T) {
+		h, flag, stops, taken := delayed(t)
 		flag.set(7)
 		h.must(RequestSpawn{Claim: h.token})
 		flag.set(0)
@@ -1544,8 +1544,8 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 // out (decision 14), and never at its join: the one the pacer lets out at its join is told then,
 // and the one that waits is told only when its turn comes, of that turn's moment. A launch that
 // waits is told that it waits instead (Deps.WakeQueued), which is what the resume's stuck clock
-// reads to stop for the wait. Before the place-based pacing the parked launch was told its
-// reserved moment at the park; a place has no moment until it is let out, so the stamp moves to
+// reads to stop for the wait. Before the place-based pacing the delayed launch was told its
+// reserved moment at the delay; a place has no moment until it is let out, so the stamp moves to
 // the let-out.
 func TestTheWakeLetOutStampIsTheMomentOfEachLetOut(t *testing.T) {
 	type stamp struct {
@@ -1575,7 +1575,7 @@ func TestTheWakeLetOutStampIsTheMomentOfEachLetOut(t *testing.T) {
 
 	waiting := second.View().WakeWaiting
 	if waiting == nil || !waiting.At.After(h.clock.Now()) {
-		t.Fatalf("the second claim holds wake %+v, want one parked behind the first", waiting)
+		t.Fatalf("the second claim holds wake %+v, want one delayed behind the first", waiting)
 	}
 	want := func(t *testing.T, want ...stamp) {
 		t.Helper()

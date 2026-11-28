@@ -415,8 +415,8 @@ func TestAnIdleReleaseKeepsAKeptVolumesSandbox(t *testing.T) {
 		engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 			Linger: time.Hour}, quietLogger())
 		rig.runner.handlers = []intake.Handler{engine}
-		// A person parks the root: the close stops its role and queues the issue's suspension.
-		if _, err := intake.ApplyFact(ctx, rig.pool, "dispatch", "park", intake.DispatchIssue{
+		// A person moves the root to backlog: the close stops its role and queues the issue's suspension.
+		if _, err := intake.ApplyFact(ctx, rig.pool, "dispatch", "backlog", intake.DispatchIssue{
 			Key: rig.issue.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 			Status: "backlog", Title: rig.issue.Title, Rank: rig.issue.Rank}, engine); err != nil {
 			t.Fatal(err)
@@ -449,7 +449,7 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 // A child closed as done gives its Sandbox back at once while its parent keeps running: the
 // close's issue_close rows retire the child's claims, keeping their sessions, and its
 // issue_suspend row foreground-deletes the child's Sandbox — taking what it owns with it, with no
-// PVC request from the restricted daemon; the root's Sandbox stays Running. A child parked in
+// PVC request from the restricted daemon; the root's Sandbox stays Running. A child moved to
 // backlog keeps its claims suspended with their sessions, and its Sandbox goes the same way,
 // since the pod it ran in, and the disk with it, go either way. The done child set back to todo
 // starts again on a new Sandbox and resumes the sessions its claims kept: the close cleared
@@ -457,18 +457,18 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	t.Parallel()
 	// Two children under the running root: the one closed as done, whose planner is stopped with
-	// its session kept, and the one parked in backlog, whose tester is. The root's own implementer
+	// its session kept, and the one moved to backlog, whose tester is. The root's own implementer
 	// works the phase the root stands in, so admission's pass starts no worker of the root's while
 	// the children depart.
 	rig := newFenceRig(t, fenceSetup{rootImplementer: true, children: []fenceChild{
 		{status: "testing", at: phase.Testing, role: claim.RolePlanner, uid: "sandbox-uid-done"},
-		{status: "in_progress", at: phase.Planning, role: claim.RoleTester, uid: "sandbox-uid-parked"},
+		{status: "in_progress", at: phase.Planning, role: claim.RoleTester, uid: "sandbox-uid-backlog"},
 	}})
 	ctx, pool, api, st, logs := rig.ctx, rig.pool, rig.api, rig.st, rig.logs
 	engine, admission := rig.engine, rig.admission
-	root, done, parked := rig.root, rig.children[0], rig.children[1]
-	rootSandbox, doneSandbox, parkedSandbox := rig.rootSandbox, done.sandbox, parked.sandbox
-	architect, planner, tester := rig.architect, done.suspended, parked.suspended
+	root, done, inBacklog := rig.root, rig.children[0], rig.children[1]
+	rootSandbox, doneSandbox, backlogSandbox := rig.rootSandbox, done.sandbox, inBacklog.sandbox
+	architect, planner, tester := rig.architect, done.suspended, inBacklog.suspended
 	run, storedClaim, effectsLeft := rig.run, rig.storedClaim, rig.effectsLeft
 
 	// (a) The done child: its claims closed, its Sandbox and its pod's disk gone, its parent untouched.
@@ -517,23 +517,23 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 		t.Fatal("the close logged no line naming the issue's Sandbox")
 	}
 
-	// (c) The parked child: its claims suspended with their sessions, and its Sandbox deleted as
+	// (c) The child in backlog: its claims suspended with their sessions, and its Sandbox deleted as
 	// the done child's was, since its pod and the disk under it go either way.
-	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: parked.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: parked.Title, Parent: root.Key, Rank: "W"}, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: inBacklog.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: inBacklog.Title, Parent: root.Key, Rank: "W"}, engine, admission); err != nil {
 		t.Fatal(err)
 	}
-	run("the parked child's move to backlog")
-	if got := api.mode(parkedSandbox); got != "deleted" {
-		t.Fatalf("parked child's Sandbox = %s, want it suspended and then deleted", got)
+	run("the child's move to backlog")
+	if got := api.mode(backlogSandbox); got != "deleted" {
+		t.Fatalf("the Sandbox of the child in backlog = %s, want it suspended and then deleted", got)
 	}
-	if options, deleted := api.deleted(parkedSandbox); !deleted || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground {
-		t.Fatalf("parked child's Sandbox delete = %+v (requested %t), want foreground propagation", options, deleted)
+	if options, deleted := api.deleted(backlogSandbox); !deleted || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground {
+		t.Fatalf("the Sandbox delete of the child in backlog = %+v (requested %t), want foreground propagation", options, deleted)
 	}
 	if got := storedClaim(tester.Token); got.State != supervise.StateSuspended || got.Session != "saved-tester" || got.SessionFile != "/legion/sessions/tester.jsonl" {
-		t.Fatalf("parked child's tester = %+v, want it suspended with its session kept", got)
+		t.Fatalf("the tester of the child in backlog = %+v, want it suspended with its session kept", got)
 	}
-	if left := effectsLeft(parked.Key); left != 0 {
-		t.Fatalf("%d supervise/issue_suspend rows of the parked child remain, want every one finished", left)
+	if left := effectsLeft(inBacklog.Key); left != 0 {
+		t.Fatalf("%d supervise/issue_suspend rows of the child in backlog remain, want every one finished", left)
 	}
 
 	// (b) The done child set back to todo re-enters under its live tree and its planner starts
@@ -700,7 +700,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	}
 	t.Cleanup(sup.stop)
 	// The root's architect works on, with its session, so the tree runs and never lingers. Each
-	// child's role stands stopped with its session kept, as a phase's end or a park leaves it.
+	// child's role stands stopped with its session kept, as a phase's end or a move to backlog leaves it.
 	architect := supervise.Claim{Token: "legion-legion-legion-208-architect", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: root.Key, Role: claim.RoleArchitect,
 		State: supervise.StateWorking, Generation: 1, Session: "saved-architect", SessionFile: "/legion/sessions/architect.jsonl"}
 	seeded := []supervise.Claim{architect}
@@ -794,11 +794,11 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 
 // A start that outlives its issue's departure from the workflow starts nothing. The workflow
 // writes a role's start while its issue is still in the workflow, and the row can reach the runner
-// after the close or the park that took that issue out: it serves the same generation, it names
+// after the close or the move to backlog that took that issue out: it serves the same generation, it names
 // the same tree, and a start that names no phase has no phase to be held to, so none of the
 // start's own fences stands between it and the claim. The departure has already given the issue's
 // Sandbox back, so a start acted on here builds the pod again behind an issue the board shows
-// closed or parked, and brings back the claim that departure had just put down. Which of the two
+// closed or in backlog, and brings back the claim that departure had just put down. Which of the two
 // rows was written first decides nothing: a stop is fenced by the newest start run against its
 // claim and not by the row ids, so a start queued before the departure and one queued after it
 // both reach the runner behind it, and both must be declined. The Sandbox goes exactly once
@@ -872,20 +872,20 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 		}
 	})
 
-	// A park is the same departure by another op: the child moved to backlog has stopped rather
+	// A move to backlog is the same departure by another op: the child moved to backlog has stopped rather
 	// than finished, so the departure suspends its roles where a close retires them, and both keep
 	// their sessions. Its Sandbox goes either way, and so does the start.
-	t.Run("a start queued before the park runs after it", func(t *testing.T) {
+	t.Run("a start queued before the move to backlog runs after it", func(t *testing.T) {
 		rig := newFenceRig(t, oneFenceChild("in_progress", phase.Planning, claim.RolePlanner))
 		child := rig.children[0]
 		start := rig.enqueueStart(child.Key, claim.RolePlanner, rig.base.Add(time.Second))
 		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
 			t.Fatal(err)
 		}
-		rig.run("the child's park, with a start queued before it")
+		rig.run("the child's move to backlog, with a start queued before it")
 		departed(t, rig, child, start)
 		if got := rig.storedClaim(child.suspended.Token); got.State != supervise.StateSuspended || got.Session != "saved-planner" || got.SessionFile != "/legion/sessions/planner.jsonl" {
-			t.Fatalf("the parked issue's planner = %+v, want it left suspended with its session kept", got)
+			t.Fatalf("the planner of the issue in backlog = %+v, want it left suspended with its session kept", got)
 		}
 	})
 
@@ -930,14 +930,14 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 }
 
 // An issue that comes back is not stranded by the start fence. record.OutOfWorkflow, the rule the
-// fence is held to, names the parked statuses as well as done, so the start of a parked issue is
-// declined with the rest (TestAStartThatOutlivesItsIssuesDepartureStartsNothing above). What that
-// must never cost is the way back. The way back is the way in: an issue a person brings back is
-// started by the run that brings it and never by the row the fence declined, and there are two
-// doors it comes in through. A parked child moved to todo re-enters under its live tree
-// (Engine.ReenterChild), which clears the run the park left and hands the waiting line its first
-// phase to start again. A tree whose linger expired and whose root a person sets back to todo is
-// re-admitted, and its promotion starts every member where it stood (admit's
+// fence is held to, names triage, icebox and backlog as well as done, so the start of an issue in
+// backlog is declined with the rest (TestAStartThatOutlivesItsIssuesDepartureStartsNothing above).
+// What that must never cost is the way back. The way back is the way in: an issue a person brings
+// back is started by the run that brings it and never by the row the fence declined, and there are
+// two doors it comes in through. A child in backlog moved to todo re-enters under its live tree
+// (Engine.ReenterChild), which clears the run the move to backlog left and hands the waiting line
+// its first phase to start again. A tree whose linger expired and whose root a person sets back to
+// todo is re-admitted, and its promotion starts every member where it stood (admit's
 // startMidPhaseMembers). Each door is read in the lighter rig that can express it: the first over
 // the real Sandbox runtime, because what it must show is the pod built again behind the issue that
 // came back, and the second over the stand-in runtime, because what it must show is which rows the
@@ -946,36 +946,36 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 	t.Parallel()
 	// Door one. The rig is newFenceRig's, the one
 	// TestAStartThatOutlivesItsIssuesDepartureStartsNothing reads the fence in, cut to the single
-	// park this door needs: a running root holding its admission slot, the tree's one child under
+	// move to backlog this door needs: a running root holding its admission slot, the tree's one child under
 	// it standing mid-run in implementing with its implementer stopped and its session kept, a
 	// Sandbox apiece, and the outbox over the real Sandbox runtime.
-	t.Run("a parked child moved back to todo re-enters and starts its first phase", func(t *testing.T) {
+	t.Run("a child in backlog moved back to todo re-enters and starts its first phase", func(t *testing.T) {
 		rig := newFenceRig(t, oneFenceChild("in_progress", phase.Implementing, claim.RoleImplementer))
 		child := rig.children[0]
 
 		// The implementer's start, written while the child still stood in the workflow and reaching
-		// the runner behind the park that took it out: its next_at puts it behind the park's own
+		// the runner behind the move to backlog that took it out: its next_at puts it behind the move's own
 		// rows in the drain (record.Store.DueRows).
 		startID := rig.enqueueStart(child.Key, claim.RoleImplementer, rig.base.Add(time.Second))
 		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: child.Title, Parent: rig.root.Key, Rank: "V"}, rig.engine, rig.admission); err != nil {
 			t.Fatal(err)
 		}
-		rig.run("the child's park, with its implementer's start queued behind it")
+		rig.run("the child's move to backlog, with its implementer's start queued behind it")
 		if slices.Contains(rig.api.created, child.sandbox) {
-			t.Fatalf("the park's drain created %v, want the start of the parked child declined and no pod built behind it", rig.api.created)
+			t.Fatalf("the drain of the move to backlog created %v, want the start of the child in backlog declined and no pod built behind it", rig.api.created)
 		}
 		if got := rig.storedClaim(child.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.SessionFile != child.suspended.SessionFile {
-			t.Fatalf("the parked child's implementer = %s with last start %d and session file %q, want start row %d declined and the claim left suspended with its session",
+			t.Fatalf("the implementer of the child in backlog = %s with last start %d and session file %q, want start row %d declined and the claim left suspended with its session",
 				got.State, got.LastStartRow, got.SessionFile, startID)
 		}
 		if left := rig.effectsLeft(child.Key); left != 0 {
-			t.Fatalf("%d supervise/issue_suspend rows of the parked child remain, want the declined start finished with the park's own", left)
+			t.Fatalf("%d supervise/issue_suspend rows of the child in backlog remain, want the declined start finished with the move's own", left)
 		}
 
-		// The person moves the parked child back to todo. Engine.ReenterChild clears the run the
-		// park left and enters the child again under its live tree at the next generation, standing
+		// The person moves the child in backlog back to todo. Engine.ReenterChild clears the run the
+		// move to backlog left and enters the child again under its live tree at the next generation, standing
 		// at admitted; the waiting line promotes it in the same pass, and what it starts is the
-		// child's first phase (record.LineFirstPhase), not the phase the park interrupted.
+		// child's first phase (record.LineFirstPhase), not the phase the move to backlog interrupted.
 		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-todo", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: child.Title, Parent: rig.root.Key, Rank: "V"}, rig.engine, rig.admission); err != nil {
 			t.Fatal(err)
 		}
@@ -984,13 +984,13 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatalf("the re-entered child %s is gone from the records", child.Key)
 		}
 		if back.Generation != child.Generation+1 || back.Phase != phase.Planning || back.Tree != rig.root.Key {
-			t.Fatalf("the re-entered child = %s at generation %d in tree %s, want its first phase at generation %d under the tree it was parked in",
+			t.Fatalf("the re-entered child = %s at generation %d in tree %s, want its first phase at generation %d under the tree it was moved to backlog in",
 				back.Phase, back.Generation, back.Tree, child.Generation+1)
 		}
 		// Nothing of the old run's phase work is wanted back: the re-entry queued two starts, the
 		// plain start of the child's own architect, which every child's first phase start queues
 		// ahead of its planner's (workflow's Engine.StartFirstPhase) and which resumes an architect
-		// claim the park suspended (none is seeded here), and the planner's, of the new generation
+		// claim the move to backlog suspended (none is seeded here), and the planner's, of the new generation
 		// and the new run's first phase, carrying that phase's own task at the entry the transition
 		// raised on the planner's phases row, which is no resume of anything (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
@@ -1016,13 +1016,13 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 			t.Fatalf("the re-entered child's start created %v, want the Sandbox %s built again: the way back is the way in", rig.api.created, child.sandbox)
 		}
 		if uid := rig.api.uid(child.sandbox); uid == "" || uid == "sandbox-uid-child" {
-			t.Fatalf("the re-entered child's Sandbox uid = %q, want one other than the Sandbox its park deleted", uid)
+			t.Fatalf("the re-entered child's Sandbox uid = %q, want one other than the Sandbox its move to backlog deleted", uid)
 		}
 		if got := rig.storedClaim("legion-legion-legion-209-planner"); got.LastStartRow == 0 || got.SessionFile != "" {
 			t.Fatalf("the re-entered child's planner = %+v, want a fresh launch of the new run's first phase", got)
 		}
 		// The old run's implementer is not resumed: the implementer whose start the fence declined
-		// is left exactly as the park left it, and the run that came back never asked for it. A
+		// is left exactly as the move to backlog left it, and the run that came back never asked for it. A
 		// planner claim of the old run (none is seeded here) would be resumed by the new run's
 		// planner start.
 		if got := rig.storedClaim(child.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.Session != child.suspended.Session {
@@ -1104,14 +1104,14 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		worker := started(member.Key, claim.RoleImplementer, member.Generation, "/tmp/implementer.jsonl")
 		earlier := started(member.Key, claim.RolePlanner, member.Generation, "/tmp/planner.jsonl")
 
-		// A person parks the root, which begins the tree's linger and suspends every member's
-		// claims where they stand (workflow's beginLinger). A root parked rather than finished
+		// A person moves the root to backlog, which begins the tree's linger and suspends every member's
+		// claims where they stand (workflow's beginLinger). A root moved to backlog rather than finished
 		// hands no member to Legion when the linger ends (workflow's unfinishedHandOvers), so the
 		// member is still this tree's when the tree comes back.
 		if _, err := intake.ApplyFact(ctx, pool, "dispatch", "root-backlog", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "backlog", Title: root.Title, Rank: root.Rank}, engine, admission); err != nil {
 			t.Fatal(err)
 		}
-		run("the root's park")
+		run("the root's move to backlog")
 		// The linger runs out: every role of every member is retired, keeping its session, and the
 		// tree's workspaces go.
 		if _, err := intake.ApplyFact(ctx, pool, "outbox", "linger:LEGION-308:3", intake.LingerExpired{Issue: root.Key, Generation: root.Generation}, engine, admission); err != nil {

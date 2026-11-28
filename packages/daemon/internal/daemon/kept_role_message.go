@@ -125,7 +125,7 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 //     and its pod is one wake away, so the row wakes it and waits on its backoff, and the row's
 //     first attempt after that resume has launched publishes (deliveryWake). A launch the wake
 //     pacing holds is waited for until it runs, the claim read again at its turn or
-//     parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
+//     delayedWakeBound on, whichever comes first (delayedWait). The daemon's own wake brings the pod
 //     back whatever the listener does with the publish; the listener's own report of a publish to
 //     a role with no live holder meets the role's open resume, and the pod starts once.
 //   - The publish, with keep, to the Envoy topic of the role's claim (notify.RoleTopicPrefix and
@@ -197,7 +197,7 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 	if waits, turn, err := r.deliveryWake(ctx, token, wake, m.subject, row.HeldByPause); err != nil {
 		return nil, err
 	} else if !turn.IsZero() {
-		return nil, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
+		return nil, r.delayedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
 			m.subject, m.role, turn.UTC().Format(time.RFC3339)))
 	} else if waits {
 		return nil, wait.Errorf("%s waits for its %s's released pod to come back", m.subject, m.role)

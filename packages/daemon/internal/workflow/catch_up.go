@@ -22,7 +22,7 @@ import (
 // is the first instruction: a child's first phase start launches that architect with no task, and
 // a re-entered child resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
-// nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
+// nobody in its tree could hear them (UnclaimedKeptTask), or with none where the derivation gives
 // none, and a re-admitted tree resumes its session. A retry that asks for a new session starts
 // one (supervise's freshSession), as does any launch whose session no store holds any more
 // (startFresh). So at each launch's ready the daemon sends it a catch-up notice of the issues it
@@ -133,7 +133,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // while any row of its telling — itself, the row it copies, or a re-held copy of either — is under
 // a live lease: that row may be publishing now, and the decisions the catch-up claims are that
 // telling's to settle, so this one names only what nobody claims. A child's names no decision: what
-// a person decided while nobody could hear it is kept for the tree (ParkedDecisionTask keys it by
+// a person decided while nobody could hear it is kept for the tree (UnclaimedKeptTask keys it by
 // tree) and stays the root architect's, so a child's catch-up carries no Decided and no Kept. The
 // notice goes through the outbox like any other, so it is held and re-held as they are.
 //
@@ -172,7 +172,7 @@ func queueCatchUp(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 		// in this transaction; its publish forgets those rows (the outbox's notice), and a
 		// catch-up a newer one supersedes hands them to a fresh catch-up (HandOverKept).
 		var decided string
-		if decided, kept, err = ParkedDecisionTask(ctx, tx, records, steps, issue); err != nil {
+		if decided, kept, err = UnclaimedKeptTask(ctx, tx, records, steps, issue); err != nil {
 			return err
 		}
 		catchUp.Decided, catchUp.Kept = decided, kept

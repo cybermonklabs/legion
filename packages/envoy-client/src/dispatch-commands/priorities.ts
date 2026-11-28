@@ -75,7 +75,7 @@ function priorityFaultLines(
  *  with the sentence saying so, which is printed as it came and is not an error. */
 function formatPriorities(response: Priorities, agents: LiveAgents | undefined): string {
   const priorities = response.priorities ?? [];
-  const backlog = response.priority_work_parked;
+  const backlog = response.priority_work_in_backlog_or_icebox;
   const unplaced = response.work_under_no_priority;
   // The server writes this field only for a deployment holding no live priority (`omitempty`).
   if (response.empty !== undefined) return response.empty;
@@ -107,7 +107,7 @@ export async function prioritiesCommand(context: CommandContext): Promise<Dispat
   const response = await client.priorities(projects);
   const faulted = [
     ...(response.work_under_no_priority.issues ?? []),
-    ...(response.priority_work_parked.issues ?? []),
+    ...(response.priority_work_in_backlog_or_icebox.issues ?? []),
   ];
   const agents = await liveAgents(
     client,
@@ -118,7 +118,7 @@ export async function prioritiesCommand(context: CommandContext): Promise<Dispat
     details: {
       priorities: (response.priorities ?? []).map((priority) => priority.id),
       work_under_no_priority: response.work_under_no_priority.count,
-      priority_work_parked: response.priority_work_parked.count,
+      priority_work_in_backlog_or_icebox: response.priority_work_in_backlog_or_icebox.count,
       ...(projects.length === 0 ? {} : { project: projects }),
     },
   };

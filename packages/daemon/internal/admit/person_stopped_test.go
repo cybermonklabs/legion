@@ -26,7 +26,7 @@ func rowsOf(t *testing.T, pool *pgxpool.Pool, key string) []effect {
 }
 
 // The daemon starts nothing a person stopped: C5 of dispatch://INFRA-3107. A member of a tree
-// parked to backlog, a root whose record says the Legion label is off and a member of a closed
+// moved to backlog, a root whose record says the Legion label is off and a member of a closed
 // tree no architect has released get no route out of where they stand — one admission pass writes
 // no Dispatch status for any of them, moves no record of them and makes a tree root of none of
 // them — and each stands in admission.held with the one word for why. A person's own act is what
@@ -38,7 +38,7 @@ func rowsOf(t *testing.T, pool *pgxpool.Pool, key string) []effect {
 // slot, its record and every claim it holds, because taking the label off is a pause the label
 // ends (admit's unslotted, which this change leaves exactly as it was).
 func TestNothingAPersonStoppedIsStarted(t *testing.T) {
-	const parkedTree, parkedMember = "LEGION-700", "LEGION-701"
+	const backlogTree, backlogMember = "LEGION-700", "LEGION-701"
 	const labelOffRoot, labelOffMember = "LEGION-710", "LEGION-711"
 	const closedTreeOfItsOwn, closedMember = "LEGION-720", "LEGION-721"
 	pool := migratedPool(t)
@@ -47,12 +47,12 @@ func TestNothingAPersonStoppedIsStarted(t *testing.T) {
 	admission := quiet(t, 2)
 	seedOpenTree(t, pool, liveTree)
 
-	// A tree a person parked to backlog, with the member the park left behind at admitted.
-	parked := closedRoot(parkedTree, 1)
-	parked.Status, parked.DispatchStatus = "backlog", "backlog"
-	putIssue(t, pool, parked)
-	seedLifecycle(t, pool, parkedTree)
-	putIssue(t, pool, treeMember(parkedMember, parkedTree, parkedTree, "B", 1))
+	// A tree a person moved to backlog, with the member the move left behind at admitted.
+	backlogRoot := closedRoot(backlogTree, 1)
+	backlogRoot.Status, backlogRoot.DispatchStatus = "backlog", "backlog"
+	putIssue(t, pool, backlogRoot)
+	seedLifecycle(t, pool, backlogTree)
+	putIssue(t, pool, treeMember(backlogMember, backlogTree, backlogTree, "B", 1))
 
 	// A root of its own tree whose record says the Legion label is off, standing at admitted,
 	// with its tree running under it: a member mid-phase, holding the slot it started on.
@@ -74,7 +74,7 @@ func TestNothingAPersonStoppedIsStarted(t *testing.T) {
 	putIssue(t, pool, closedRoot(closedTreeOfItsOwn, 3))
 	putIssue(t, pool, treeMember(closedMember, closedTreeOfItsOwn, closedTreeOfItsOwn, "D", 3))
 
-	stopped := []string{parkedMember, labelOffRoot, closedMember}
+	stopped := []string{backlogMember, labelOffRoot, closedMember}
 	before := snapshot(t, pool, append(stopped, labelOffMember)...)
 	slotsBefore := slots(t, pool)
 	// The lifecycle rows as they stand: the two trees that ran have one each, and the two
@@ -98,9 +98,9 @@ func TestNothingAPersonStoppedIsStarted(t *testing.T) {
 		}
 	}
 	for key, want := range map[string]record.HeldReason{
-		parkedMember: record.HeldTreeParked,
-		labelOffRoot: record.HeldLabelOff,
-		closedMember: record.HeldTreeClosed,
+		backlogMember: record.HeldTreeInBacklogOrIcebox,
+		labelOffRoot:  record.HeldLabelOff,
+		closedMember:  record.HeldTreeClosed,
 	} {
 		assertHeld(t, pool, admission, want, key)
 	}
@@ -127,12 +127,12 @@ func TestNothingAPersonStoppedIsStarted(t *testing.T) {
 	if got := issue(t, pool, closedMember); got.Tree != liveTree || got.Phase != phase.Admitted || got.Generation != before[closedMember].Generation+1 {
 		t.Fatalf("%s = %#v, want it admitted in the tree of %s at generation %d", closedMember, got, liveTree, before[closedMember].Generation+1)
 	}
-	for _, key := range []string{parkedMember, labelOffRoot, labelOffMember} {
+	for _, key := range []string{backlogMember, labelOffRoot, labelOffMember} {
 		if got := issue(t, pool, key); !reflect.DeepEqual(got, before[key]) {
 			t.Fatalf("%s after the release = %#v, want it as it stood, %#v", key, got, before[key])
 		}
 	}
-	assertHeld(t, pool, admission, record.HeldTreeParked, parkedMember)
+	assertHeld(t, pool, admission, record.HeldTreeInBacklogOrIcebox, backlogMember)
 	assertHeld(t, pool, admission, record.HeldLabelOff, labelOffRoot)
 	if writes := dispatchWrites(t, pool); writes != 0 {
 		t.Fatalf("Dispatch writes = %d, want none: C5 writes no status for a held issue, and the adoption writes the record alone", writes)

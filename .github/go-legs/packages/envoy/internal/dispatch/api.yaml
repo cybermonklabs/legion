@@ -141,7 +141,7 @@
   - TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame  # 0.6 s
   - TestAParagraphEditBeforeTheAnswerDoesNotCarry  # 1.4 s
   - TestAParentsComponentChangeReachesPagesHoldingItsChildren  # 1.9 s
-  - TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark  # 3.3 s
+  - TestAWaitingSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsRetrySchedule  # 3.3 s
   - TestAPassDropsTheQueuedChangesThatNameNoProject  # 0.3 s
   - TestAPersonlessTokenWritesAsItsAccount  # 0.4 s
   - TestAPersonsTokenRewordsAnAskItDidNotAsk  # 0.7 s
@@ -172,7 +172,7 @@
   - TestAReconnectCatchesUpWhatTheListenerMissed  # 4.1 s
   - TestAReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore  # 0.8 s
   - TestAReferencesReadAfterACitedDocumentIsRenamedAnswersTheNewName  # 1.4 s
-  - TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim  # 1.8 s
+  - TestARefreshDuringAWaitingSendsTryLeavesTheSenderHoldingTheRowsClaim  # 1.8 s
   - TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead  # 1.2 s
   - TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses  # 1.0 s
   - TestARefusalNamesAtMostTheBoundOfLinkedPullRequestsDispatchCannotRead  # 1.1 s
@@ -184,7 +184,7 @@
   - TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt  # 1.9 s
   - TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument  # 3.5 s
   - TestAReparentAndACreateAreCheckedToo  # 0.6 s
-  - TestAReparkedHeldLaneHasOneGoroutine  # 0.1 s
+  - TestAHeldLaneScheduledForRetryAgainHasOneGoroutine  # 0.1 s
   - TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived  # 0.2 s
   - TestARepeatOfAKeyedMessageReplyAnswersItsBlockAgain  # 0.6 s
   - TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft  # 8.5 s
@@ -215,8 +215,8 @@
   - TestARunsSessionReportAndGenerationComeBackAsWritten  # 0.7 s
   - TestASearchHitCarriesTheTreeOfItsSnippet  # 0.7 s
   - TestASendInFlightAtShutdownStillSettles  # 0.9 s
-  - TestASendParkedForAFailedClaimReadIsNoHeldCopy  # 0.0 s
-  - TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes  # 1.5 s
+  - TestASendRetriedForAFailedClaimReadIsNoHeldCopy  # 0.0 s
+  - TestASendRetriedForAFailedClaimReadLogsNoHeldWarnAsItGoes  # 1.5 s
   - TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery  # 8.5 s
   - TestASendThatLostItsKeyCommitsNothing  # 0.3 s
   - TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers  # 0.6 s
@@ -1075,7 +1075,7 @@
   - TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope  # 6.3 s
   - TestAParentInAnotherProjectPassesOnNoAssignee  # 14.5 s
   - TestAParentsResultsStandAtItsHeadThoughAChildRecordedOnTheSameCheck  # 1.3 s
-  - TestAParkedLanesTimerStartsOnceNoGoroutineServesIt  # 0.4 s
+  - TestALanesRetryTimerStartsOnceNoGoroutineServesIt  # 0.4 s
   - TestAPassKeepsItsChecksWordsAcrossAnotherRenderersSpelling  # 0.5 s
   - TestAPatchThatWaitedNeverMovesUpdatedAtBackward  # 1.1 s
   - TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn  # 2.1 s
@@ -1579,7 +1579,7 @@
   - TestListSubscribersReportsARefillingListenerAsRefilling  # 0.7 s
   - TestListUsersReturnsSignedInPeopleToThePersonScope  # 0.2 s
   - TestLiveAskEventFrameCarriesTheReadTimeFields  # 1.3 s
-  - TestManyParkedLanesTryAtMostOncePerRetryMax  # 0.2 s
+  - TestManyLanesWaitingForTheirRetryTryAtMostOncePerRetryMax  # 0.2 s
   - TestMarkAnchorMissingAfterWaitIs409  # 0.6 s
   - TestMarkAnchorSuggestionProjectsBrowserKind  # 0.7 s
   - TestMarkThreadReadClearsTheRowUntilTheNextReply  # 1.1 s
@@ -2027,7 +2027,7 @@
   - TestAPIWritesStoredTimestampsInUTC  # 1.8 s
   - TestAParentIsDoneOnlyWhenEachChildIsDone  # 0.8 s
   - TestAParentWriteTakesTheParentsProjectLock  # 0.4 s
-  - TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds  # 0.0 s
+  - TestALaneWaitingForItsRetryHoldsNoGoroutineAndKeepsTheLanesBounds  # 0.0 s
   - TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee  # 0.6 s
   - TestAPersonPageMarksAnEditedCommentAndADeletedOne  # 0.7 s
   - TestAPersonTokenWithProjectsLimitsNoWriteYet  # 1.6 s
@@ -2845,7 +2845,7 @@
   - TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure  # 0.7 s
   - TestTheLegionReadMatchesACapturedDaemonState  # 0.0 s
   - TestTheListingAnswersTheFaultLists  # 3.8 s
-  - TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows  # 3.5 s
+  - TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForBacklogRows  # 3.5 s
   - TestTheLiveFixturesAreWhatTheDiffWrites  # 0.0 s
   - TestTheLockTablePlacesEveryWriterTheCensusNames  # 0.0 s
   - TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled  # 0.0 s

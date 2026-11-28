@@ -145,7 +145,7 @@ architect-exclusion rationale said a retired sub-architect's wakes "arrive by a 
 rejected with no live holder, never by the dead-worker recovery path." Review round 1 traced the
 code: `onUndeliverable` (index.ts) and `handleException` (processes.ts) route a sub-architect's
 404 to `resumeWorker` — the recovery path *does* reach it. The behaviour (exclude architects) was
-right for a different reason (an architect has no phase of its own, parks for the life of its
+right for a different reason (an architect has no phase of its own, idles for the life of its
 subtree, and a relaunch per wake costs more than one idle process). The spec was corrected to v7
 and three doc sites reworded. Rule: before writing "X never happens" in a doc comment, find the
 code that would make X happen and quote the line that prevents it; if you cannot, the sentence is

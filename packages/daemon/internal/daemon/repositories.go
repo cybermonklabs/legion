@@ -2722,8 +2722,8 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 
 // prepareArtifact readies a Dispatch review event before it is applied (intake's
 // ConsumerSpec.PrepareArtifact), and is the event to apply. The workflow performs no I/O, and
-// decides from Dispatch's view of the issue the review is on whether a person's approval of a
-// parked labelled root's primary document queues that root (intake.DispatchArtifact.Issue), so for
+// decides from Dispatch's view of the issue the review is on whether a person's approval of the
+// primary document of a labelled root in backlog or icebox queues that root (intake.DispatchArtifact.Issue), so for
 // an approval a person made that is not Dispatch's carry of an earlier one (CarriedApproval) the
 // issue is read from Dispatch's detail, one read per such event, a read that fails leaving the
 // event to be retried. Every other review or version event — a session's or Dispatch's own review,
@@ -2736,11 +2736,12 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // sequence to place it by), a second read takes that log, and the first change of the issue's
 // status after the approval is set on the fact (StatusChangedSeq, by
 // intake.DispatchArtifact.WithStatusChange), so the workflow refuses an approval after which the
-// person parked the root again, however late it is applied or replayed. That read is one paged
-// read of the issue's whole log, the same read labelSetter makes for an unrecorded issue's
-// admission event, made under the same AckWait bound the intake puts on the whole preparation, the
-// issue read's included. A failed read, or a log the daemon cannot decode, fails the preparation
-// with an error naming the key, so the event is delivered again, as a failed issue read is.
+// person moved the root back to backlog or icebox, however late it is applied or replayed. That
+// read is one paged read of the issue's whole log, the same read labelSetter makes for an
+// unrecorded issue's admission event, made under the same AckWait bound the intake puts on the
+// whole preparation, the issue read's included. A failed read, or a log the daemon cannot decode,
+// fails the preparation with an error naming the key, so the event is delivered again, as a
+// failed issue read is.
 func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.DispatchArtifact) (intake.DispatchArtifact, error) {
 	if !fact.PersonApproval() {
 		return fact, nil

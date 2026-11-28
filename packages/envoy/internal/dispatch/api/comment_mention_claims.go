@@ -34,7 +34,7 @@ type mentionClaimState struct {
 	// claimed is the claim this sender holds on the attempt, as it last wrote it, so one statement
 	// writes the claims of every attempt it holds again: every send that has not started, and a
 	// send in flight until it ends (claimedDuring). A try that claims the attempt for itself takes that
-	// claim out of the statements' reach, as each matches only the claim recorded here, and park
+	// claim out of the statements' reach, as each matches only the claim recorded here, and scheduleRetry
 	// records the try's; a try that reads the rule alone (sendCommentMention) writes no claim, so
 	// its send's row still carries the one recorded here, and a refresh that writes it meanwhile
 	// records what it wrote (refreshHeldClaims).
@@ -48,14 +48,14 @@ type mentionClaimState struct {
 	// its answer after the read took the row may have written a claim the read never saw.
 	lost uint64
 	// trying is that a try of the attempt is in flight (mentionSender.markTrying), from before the try
-	// until its park records its claim or the send ends (claimedDuring), which the re-read of the unsure
+	// until its scheduleRetry records its claim or the send ends (claimedDuring), which the re-read of the unsure
 	// claims leaves alone (rereadUnsure).
 	trying bool
 }
 
 // markTrying marks key's try in flight: the one writer of this sender's own its row can have
 // beside the refresh, which rereadUnsure leaves alone while it runs. The mark stays until the try's
-// park clears it, under the lock it records the try's claim under (park), or the send ends
+// scheduleRetry clears it, under the lock it records the try's claim under (scheduleRetry), or the send ends
 // (claimedDuring). A send that only reads its claim (claimKnown) writes nothing, and is not marked.
 func (m *mentionSender) markTrying(key mentionKey) {
 	m.mu.Lock()
@@ -145,7 +145,7 @@ func (m *mentionSender) keepClaims() {
 // A statement that answers an error may have committed all the same, so it leaves every claim it
 // named that the map still holds unknown (mentionClaimState.unsure), never assumed, and the
 // refresh re-reads those rows at once (rereadUnsure), leaving a send whose try is in flight to
-// its park, which records the claim that try took; the next refresh or try re-reads whatever is
+// its scheduleRetry, which records the claim that try took; the next refresh or try re-reads whatever is
 // still unknown before it acts on it (claimKnown). A read proves a row's claim this sender's own
 // while it is less than a lease after the claim recorded (model.DeliveryClaimSinceSQL), and a lost
 // refresh wrote at most one claim past the one recorded, less than a lease after it, since it
@@ -196,7 +196,7 @@ func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 // it is this sender's own - at or past the claim recorded and less than a lease after it
 // (model.DeliveryClaimSinceSQL) - and a claim is recorded only while its attempt is no try's and
 // its record is the one the read named, so a try's own claim, which a try that started after the
-// read began may have taken, is never recorded here: that try records its own (park), or ends
+// read began may have taken, is never recorded here: that try records its own (scheduleRetry), or ends
 // (claimedDuring). An attempt it answers no row for is no longer this sender's to write, and stays as it
 // is. A read that fails leaves every one unsure for the next refresh.
 func (m *mentionSender) rereadUnsure(ctx context.Context) {

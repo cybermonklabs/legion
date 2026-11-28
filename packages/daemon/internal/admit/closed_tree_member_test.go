@@ -160,7 +160,7 @@ func seedClosedTreeAndItsTaker(t *testing.T, pool *pgxpool.Pool) string {
 // with the word tree_closed.
 //
 // The refusals the route keeps are read beside it: a member of a tree that is live is another
-// architect's work, a member of a parked tree and one of a tree still in its linger are their own
+// architect's work, a member of a tree whose root is in backlog and one of a tree still in its linger are their own
 // trees' to answer, a member that already started a phase is not covered, a member the linger's
 // hand-over made a root of its own stays one, and a member holding an admission slot is work the
 // daemon started. Each refuses the whole wave it stands in, which writes nothing at all.
@@ -246,33 +246,33 @@ func TestAClosedTreesMemberIsAdoptedByTheTreeThatTakesIt(t *testing.T) {
 	})
 
 	// A release may name a child Dispatch shows in triage, backlog or icebox (api's
-	// releasableChild). Such a member enters the live tree as a parked child at done, which a
+	// releasableChild). Such a member enters the live tree as a child out of the workflow at done, which a
 	// person's todo runs again (workflow's ReenterChild), rather than at admitted with a status
 	// that is out of the workflow, which no list of the state would name and nothing would start.
 	// It is Adopt's own branch for the same record, and AdoptMember keeps it.
-	t.Run("a member a person parked enters the tree parked", func(t *testing.T) {
-		const parked = "LEGION-505"
+	t.Run("a member a person moved to backlog enters the tree out of the workflow", func(t *testing.T) {
+		const inBacklog = "LEGION-505"
 		pool := migratedPool(t)
 		admission := quiet(t, 1)
 		seedClosedTreeAndItsTaker(t, pool)
-		member := treeMember(parked, closedTree, closedTree, "E", 2)
+		member := treeMember(inBacklog, closedTree, closedTree, "E", 2)
 		member.Status, member.DispatchStatus = "backlog", "backlog"
 		putIssue(t, pool, member)
 
-		if refusal := releaseInto(t, pool, admission, "release-parked", liveTree,
-			intake.AdoptedChild{Issue: parked, Parent: liveTree}); refusal != nil {
-			t.Fatalf("the release of %s = %#v, want it accepted", parked, refusal)
+		if refusal := releaseInto(t, pool, admission, "release-backlog", liveTree,
+			intake.AdoptedChild{Issue: inBacklog, Parent: liveTree}); refusal != nil {
+			t.Fatalf("the release of %s = %#v, want it accepted", inBacklog, refusal)
 		}
 
-		got := issue(t, pool, parked)
+		got := issue(t, pool, inBacklog)
 		if got.Tree != liveTree || got.Phase != phase.Done || got.Generation != member.Generation+1 {
-			t.Fatalf("%s = %#v, want it done in the tree of %s at generation %d", parked, got, liveTree, member.Generation+1)
+			t.Fatalf("%s = %#v, want it done in the tree of %s at generation %d", inBacklog, got, liveTree, member.Generation+1)
 		}
 		if got.Status != "backlog" || got.Repo != closedTreeRepo {
-			t.Fatalf("%s = %#v, want the status a person gave it and the repository it was recorded with", parked, got)
+			t.Fatalf("%s = %#v, want the status a person gave it and the repository it was recorded with", inBacklog, got)
 		}
 		if writes := dispatchWrites(t, pool); writes != 0 {
-			t.Fatalf("Dispatch writes after the release = %d, want none: a parked member is recorded, never started", writes)
+			t.Fatalf("Dispatch writes after the release = %d, want none: a member in backlog is recorded, never started", writes)
 		}
 		assertWaiting(t, pool, nil)
 	})
@@ -290,11 +290,11 @@ func TestAClosedTreesMemberIsAdoptedByTheTreeThatTakesIt(t *testing.T) {
 					seedSlotted(t, pool, "LEGION-600", "E")
 					putIssue(t, pool, treeMember(refused, "LEGION-600", "LEGION-600", "E1", 1))
 				}},
-			{name: "a member of a parked tree", code: "CHILD_IN_OTHER_TREE", reason: "runs in the tree of LEGION-600, not " + liveTree,
+			{name: "a member of a tree whose root is in backlog", code: "CHILD_IN_OTHER_TREE", reason: "runs in the tree of LEGION-600, not " + liveTree,
 				seed: func(t *testing.T, pool *pgxpool.Pool) {
-					parked := closedRoot("LEGION-600", 2)
-					parked.Status, parked.DispatchStatus = "backlog", "backlog"
-					putIssue(t, pool, parked)
+					inBacklog := closedRoot("LEGION-600", 2)
+					inBacklog.Status, inBacklog.DispatchStatus = "backlog", "backlog"
+					putIssue(t, pool, inBacklog)
 					putIssue(t, pool, treeMember(refused, "LEGION-600", "LEGION-600", "E1", 1))
 				}},
 			{name: "a member of a tree still in its linger", code: "CHILD_IN_OTHER_TREE", reason: "runs in the tree of LEGION-600, not " + liveTree,

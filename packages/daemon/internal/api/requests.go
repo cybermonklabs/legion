@@ -55,28 +55,25 @@ var frozenAcceptedByName = []AcceptedField{
 }
 
 // childRouteRemovedContract is the contract of version.go's entry for dispatch://INFRA-3178,
-// which removed the child route removedChildRoute now answers: the owning architect writes the
-// child's status in Dispatch instead. frozenContracts names it, as the entry's constant.
+// which removed the child route of the operation that moved a child out of the workflow: the
+// owning architect writes the child's status in Dispatch instead. frozenContracts names it.
 const childRouteRemovedContract = 205
 
-// RemovedRoutes is every route a recorded contract's plugin sends a body to that this daemon
-// reads no body at any more, with the first contract whose plugin does not call it: the rows of
-// the numbered entries (frozenRemovedRoutes) and then each entry's (contracts.go). The daemon
-// still registers each such route and answers every call with a refusal of its own that says what
-// the caller does instead, so a plugin below that contract is told why its call did nothing, where
-// an unregistered route would answer "no route". The route reads no body, so no body it is sent
-// is refused as an unknown member.
+// RemovedRoutes is every route pattern that answers a recorded request with a refusal and reads
+// no body, with the first contract whose plugin no longer sends that request. It holds the rows
+// of the numbered entries (frozenRemovedRoutes) and then each entry's (contracts.go). The refusal
+// tells an older caller what to do instead, and refuses no body as an unknown member.
 //
-// The request gate reads it (request_shapes_test.go). A record of a route that no row of
-// pluginRequests reads passes only where this table names the route at a contract above the
-// record's, so the record of this daemon's own contract never holds the route, and each route
-// here is held to routesReadingNoBody. The map is the registry's own, which no caller writes to.
+// The request gate (request_shapes_test.go) resolves each recorded route through the server's mux.
+// If the pattern reads no plugin request, the record passes only where this table names that
+// pattern at a contract above the record's. Each pattern is held to routesReadingNoBody. The map
+// is the registry's own, which no caller writes to.
 func RemovedRoutes() map[string]int { return registry().removedRoutes }
 
 // frozenRemovedRoutes is the rows of RemovedRoutes that the numbered entries removed.
 var frozenRemovedRoutes = map[string]int{
-	// The child route removedChildRoute answers.
-	"POST /legion/v1/children/park": childRouteRemovedContract,
+	// The route recorded at 193, 199 and 202 was removed at 205 and now resolves to this pattern.
+	"POST /legion/v1/children/{op}": childRouteRemovedContract,
 }
 
 // requestDecoded is told the pattern of the route and the Go type of every body decodeJSON

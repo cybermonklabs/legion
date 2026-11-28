@@ -256,9 +256,9 @@ func TestTheBackstopWithAHeldSuspensionSuspendsTheClaim(t *testing.T) {
 // A claim already queued for a wake is decided nothing at all, as refreshPlugin decides nothing
 // over one (plugin.go's guard): the wake is this same claim's launch waiting its turn in the
 // pacing, and a replacement raised over it would take a second token and replace the wake with
-// a launch that does what the parked one was already going to do. A replacement the pacing
-// parked leaves the claim working, so without the guard every tick of the sweep would raise
-// another over it — the first post below parks the launch, and the next tick's post is the one
+// a launch that does what the delayed one was already going to do. A replacement the pacing
+// delayed leaves the claim working, so without the guard every tick of the sweep would raise
+// another over it — the first post below delays the launch, and the next tick's post is the one
 // this guard answers.
 func TestTheBackstopLeavesAClaimAlreadyQueuedForAWake(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
@@ -271,21 +271,21 @@ func TestTheBackstopLeavesAClaimAlreadyQueuedForAWake(t *testing.T) {
 		Deadline: stepped.Add(backstopBound), Step: working.Step}
 
 	// The harness's own claim takes the limiter's one token, so the backstop's own relaunch
-	// parks rather than running where it is raised.
+	// is delayed rather than running where it is raised.
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(stalled, backstop)
-	parked := stalled.View().WakeWaiting
-	if parked == nil || parked.Kind != WakeLaunch {
-		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
+	delayed := stalled.View().WakeWaiting
+	if delayed == nil || delayed.Kind != WakeLaunch {
+		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", delayed)
 	}
 
 	h.mustPostTo(stalled, backstop)
 
-	if held := stalled.View().WakeWaiting; held == nil || *held != *parked {
-		t.Fatalf("the claim holds wake %+v, want the one it held, %+v: the second post took no second token", held, parked)
+	if held := stalled.View().WakeWaiting; held == nil || *held != *delayed {
+		t.Fatalf("the claim holds wake %+v, want the one it held, %+v: the second post took no second token", held, delayed)
 	}
 	if got := stalled.Claim().State; got != StateWorking {
-		t.Fatalf("the claim is %s, want it left %s: its turn is the parked wake's to end", got, StateWorking)
+		t.Fatalf("the claim is %s, want it left %s: its turn is the delayed wake's to end", got, StateWorking)
 	}
 	h.wantStarts(secondToken, 0)
 	if lines := h.logs.lines("supervise: the stall backstop found this claim already queued for a wake"); len(lines) != 1 {
@@ -486,15 +486,15 @@ func TestTheBackstopTellsNobodyOfAnEndTheStoreRefusedBeforeItWasMade(t *testing.
 	}
 }
 
-// A replacement the pacing parked is an end of its own, and it is told as that
-// (EndRelaunchParked). The take-back has already run, so the task the stalled agent was serving
+// A replacement the pacing delayed is an end of its own, and it is told as that
+// (EndRelaunchDelayed). The take-back has already run, so the task the stalled agent was serving
 // is owed to it again; the claim keeps the process and the wake's own turn is what stops it and
 // brings the session back (reserveWake, wakeNow). An owner told nothing here is an owner who
 // hears of this stall never — the claim leaves StateWorking at that turn, and the sweep that
 // would post again skips it — and an owner told "its session was brought back" is told of a
 // process that does not exist yet. The wake's turn tells nobody again: the end this notice
 // named is the one that turn carries out.
-func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T) {
+func TestTheBackstopTellsTheOwnerOfAReplacementThePacingDelayedOnce(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	var stops []StallBackstopStop
 	h.deps.StallBackstopped = func(_ Claim, stop StallBackstopStop) { stops = append(stops, stop) }
@@ -507,28 +507,28 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	stalled := h.machineFor(working)
 
 	// The harness's own claim takes the limiter's one token, so the backstop's own relaunch
-	// parks rather than running where it is raised.
+	// is delayed rather than running where it is raised.
 	h.must(RequestSpawn{Claim: h.token})
 
 	h.mustPostTo(stalled, StallBackstop{Claim: secondToken, Bound: backstopBound,
 		Deadline: stepped.Add(backstopBound), Step: working.Step})
 
-	parked := stalled.View().WakeWaiting
-	if parked == nil || parked.Kind != WakeLaunch {
-		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
+	delayed := stalled.View().WakeWaiting
+	if delayed == nil || delayed.Kind != WakeLaunch {
+		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", delayed)
 	}
 	if c := stalled.Claim(); c.State != StateWorking || c.Locator == nil {
 		t.Fatalf("the claim is %s with locator %+v, want it left in its turn until the wake's turn comes", c.State, c.Locator)
 	}
 	if c := stalled.Claim(); c.Pending == nil || !c.Pending.Interrupted || !c.Pending.ConfirmedAt.IsZero() {
-		t.Fatalf("the claim's task after the park = %+v, want it taken back and owed: this is what the owner is told of", c.Pending)
+		t.Fatalf("the claim's task after the delay = %+v, want it taken back and owed: this is what the owner is told of", c.Pending)
 	}
 	h.wantStarts(secondToken, 0)
 	// The due time goes with the report: the owner's notice names the moment that launch's turn
 	// comes rather than guessing at the wait (the daemon's stallBackstopEnds).
-	want := StallBackstopStop{Step: working.Step, LastStep: stepped, Bound: backstopBound, End: EndRelaunchParked, WakeDue: parked.At}
+	want := StallBackstopStop{Step: working.Step, LastStep: stepped, Bound: backstopBound, End: EndRelaunchDelayed, WakeDue: delayed.At}
 	if len(stops) != 1 || stops[0] != want {
-		t.Fatalf("the backstop reported %+v over a replacement the pacing parked, want the one end it made, %+v", stops, want)
+		t.Fatalf("the backstop reported %+v over a replacement the pacing delayed, want the one end it made, %+v", stops, want)
 	}
 
 	h.clock.Advance(wakeInterval + wakePart)
@@ -568,7 +568,7 @@ func podBackstopReports(t *testing.T) (*harness, *[]StallBackstopStop, time.Time
 // A replacement whose launch waits at its issue pod's gate, while another role of the pod loads
 // its session, is an end of its own (EndRelaunchWaitsForPod), told as that once. The claim alone
 // reads as a relaunch still to make — launching, with no process — but nothing refused or cut it
-// short: the stalled process was let go and stopped at the park (askPod, stopPrevious), and the
+// short: the stalled process was let go and stopped at the gate (askPod, stopPrevious), and the
 // replacement starts at the gate's grant. Told the relaunch pending, the owner would read that no
 // replacement was started and wait for a retry nobody makes; and the end is told before the
 // grant, which tells nobody again.
@@ -593,7 +593,7 @@ func TestTheBackstopTellsTheOwnerOfAReplacementWaitingForItsIssuePod(t *testing.
 	}
 	h.wantStarts(h.token, 1)
 	if stopped := h.wantCalls("Suspend", 1)[0]; stopped.Locator != stalledLoc {
-		t.Fatalf("stopped %+v, want the stalled process %+v, stopped where the replacement parked", stopped.Locator, stalledLoc)
+		t.Fatalf("stopped %+v, want the stalled process %+v, stopped where the replacement waited", stopped.Locator, stalledLoc)
 	}
 
 	// The other role's load ends and the gate grants the replacement, which brings the session
@@ -666,7 +666,7 @@ func TestEveryProcessEndTellsItsOwnerExactlyOnce(t *testing.T) {
 			h.wantState(StateLaunching)
 			return *stops
 		},
-		EndRelaunchParked: func(t *testing.T) []StallBackstopStop {
+		EndRelaunchDelayed: func(t *testing.T) []StallBackstopStop {
 			h := pacedHarness(t, wakeRate)
 			var stops []StallBackstopStop
 			h.deps.StallBackstopped = func(_ Claim, stop StallBackstopStop) { stops = append(stops, stop) }
@@ -678,8 +678,8 @@ func TestEveryProcessEndTellsItsOwnerExactlyOnce(t *testing.T) {
 			h.must(RequestSpawn{Claim: h.token})
 			h.mustPostTo(stalled, StallBackstop{Claim: secondToken, Bound: backstopBound,
 				Deadline: stepped.Add(backstopBound), Step: working.Step})
-			if parked := stalled.View().WakeWaiting; parked == nil || parked.Kind != WakeLaunch {
-				t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
+			if delayed := stalled.View().WakeWaiting; delayed == nil || delayed.Kind != WakeLaunch {
+				t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", delayed)
 			}
 			return stops
 		},

@@ -2373,7 +2373,7 @@ function longTurnBody(parts: number): string {
 // The read mark draws one line in the history, "New since you last read", where the mark falls
 // among its entries (`history-model.ts`): a mark that moves back adds that line under the
 // entries the reader has not read, above the reader's place, so the reader's own entry has to
-// stay where it was. The reader is parked over a gap between two entries, where
+// stay where it was. The reader is scrolled to a gap between two entries, where
 // `ViewportAnchor`'s probe has to fall back to the entry below. One day's entries are drawn flush,
 // one rule down their left (the prototype's `.hev`), so the gap between two entries is where one
 // day ends and the next opens with its line: the first ten comments and the issue's creation are
@@ -2419,7 +2419,7 @@ async function verifyGapDetection(
   // Far beyond the issue's head, so nothing is unread and the history draws no line yet.
   await putIssueState(issue.key, { last_read_seq: 10_000 }, { login: "alice" });
   // The mark moves back to the twelfth comment below: the eight after it are unread, so the line
-  // comes in today's list, two entries above the gap the reader is parked on.
+  // comes in today's list, two entries above the gap the reader is scrolled to.
   const twelfth = events.find(
     (event) => event.type === "comment.created" && event.payload.id === comments[11]?.id
   )?.seq;
@@ -2526,7 +2526,7 @@ async function verifyGapDetection(
   }
 }
 
-test("a read mark moving under a reader parked in a history gap keeps the lower entry fixed", async ({
+test("a read mark moving under a reader scrolled to a history gap keeps the lower entry fixed", async ({
   browser,
 }) => {
   await verifyGapDetection(browser);

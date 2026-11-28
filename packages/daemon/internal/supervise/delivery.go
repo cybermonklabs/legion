@@ -548,7 +548,7 @@ func pendingID(p *Delivery) string {
 // Of a task an operator gave the claim, which carries no id of its own and no outbox row
 // (operatorDelivery), neither thing accepted above can be true, so the second refusal below is
 // exactly a claim that holds a pending delivery its worker has not finished with and that no
-// newer task replaces. runParkedLaunchNow reads the same pending delivery before it runs a parked
+// newer task replaces. runDelayedLaunchNow reads the same pending delivery before it runs a delayed
 // launch for such a task, so nothing runs for one this refuses; a task that replaces one runs that
 // launch where it arrives, and retires the replaced delivery itself before it does — the launch
 // takes the ladder's wait with the claim's timers and every prompt's wait for a result with the
@@ -789,7 +789,7 @@ func (c Claim) openRoundHoldsTask() bool {
 // daemon's own contract, which takes the claim out of the set this hold reads.
 //
 // One task never waits on that third hold: an operator's own, which runs the launch the pacing
-// holds before the row that queues it is reached (runParkedLaunchNow). A person is waiting on
+// holds before the row that queues it is reached (runDelayedLaunchNow). A person is waiting on
 // that task and the paced turn is tens of minutes away in a wave, so the claim this sees is one
 // whose launch has run: it is launching over the process that launch let go, and the task is
 // queued for the process it started, which is where every task held here goes. A task the claim
@@ -799,7 +799,7 @@ func (c Claim) openRoundHoldsTask() bool {
 // is holding stays for that turn.
 //
 // It waits on the fourth all the same, and that is the spec as written (dispatch://INFRA-2712
-// P6): a stale claim whose credit the gate has not granted holds no parked launch for that task
+// P6): a stale claim whose credit the gate has not granted holds no delayed launch for that task
 // to run, and the process it would reach refuses the operator's task every `legion` call it
 // could be worked with. So such a task waits for the credit and then for the replacement
 // process's ready, which is the same wait every other task of that claim is already in.
@@ -1118,10 +1118,11 @@ func (m *Machine) askFirstNeverTakes(d Delivery) bool { return m.asksRoot(d) || 
 // rootHears asks whether the root of this claim's tree has an architect to hear the task now
 // (Deps.RootHears). Only a root architect's task of a run is put to the answer (asksRoot): it names
 // no phase, so the phase check never drops it, and the decisions it names are told at its own
-// confirmation, so a prompt while the tree is parked, lingering or waiting for its slot would tell
-// them to an architect no run of the root owns. Every other delivery — a phase worker's, an
-// operator's, a production check's look, the controller's start message — is sent as it always was,
-// and a daemon with no workflow configured supplies no answer, where every delivery is sent.
+// confirmation, so a prompt while the tree is in backlog or icebox, lingering or waiting for its
+// slot would tell them to an architect no run of the root owns. Every other delivery — a phase
+// worker's, an operator's, a production check's look, the controller's start message — is sent as
+// it always was, and a daemon with no workflow configured supplies no answer, where every delivery
+// is sent.
 func (m *Machine) rootHears(ctx context.Context, d Delivery) (bool, error) {
 	if !m.asksRoot(d) {
 		return true, nil
@@ -1928,7 +1929,7 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 //     that prompt's news. An acknowledged prompt is one Oh My Pi admitted, and the pinned Oh My Pi
 //     runs one admitted prompt at a time, so the turn is that prompt's. A held prompt is one whose
 //     frame the daemon wrote while a compaction held the send and whose reply did not come:
-//     written, not known to be received, and parked by Oh My Pi until the handoff ends if it was.
+//     written, not known to be received, and held by Oh My Pi until the handoff ends if it was.
 //     The turn confirms it only tentatively, since a turn is no proof that Oh My Pi admitted it: a
 //     confirmation that rests on held prompts alone is unproven, and a let-go takes it back
 //     (sendUnproven). A later send Oh My Pi answered busy carried nothing that turn reads, so a
@@ -2364,7 +2365,7 @@ func (m *Machine) awaitResult(id string, news []byte) {
 // keepHeldPrompt keeps the prompt of a send the compaction held, whose frame the daemon wrote and
 // whose wait ran out with no answer, as a held prompt of the pending task (heldSend,
 // awaitedPrompt's held). The write proves the frame went out, not that Oh My Pi received it. Where
-// it did, the pinned Oh My Pi parks a prompt that reaches it while a handoff runs, and admits and
+// it did, the pinned Oh My Pi holds a prompt that reaches it while a handoff runs, and admits and
 // acknowledges it only once the handoff ends, so the turn that prompt starts is taken for the
 // task's, tentatively, whichever comes first, that turn's start or the compaction's end
 // (turnAnswers, sendUnproven, compactEnded). The acknowledgement Oh My Pi then writes reaches no

@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// blockedInWaitComplete reports whether a goroutine is parked in WaitComplete, which is the select
+// blockedInWaitComplete reports whether a goroutine is blocked in WaitComplete, which is the select
 // it waits on: a wait that has read the state and found the copy not servable.
 func blockedInWaitComplete() bool {
 	for _, goroutine := range goroutinetest.Traces() {
@@ -29,7 +29,7 @@ func blockedInWaitComplete() bool {
 }
 
 // waitCompleteBlocked starts WaitComplete under ctx in the background and returns the channel its
-// answer arrives on, once that call is parked on its wake-up. Each test turns on its cause only
+// answer arrives on, once that call is blocked on its wake-up. Each test turns on its cause only
 // after that, so the answer it reads is the wake the cause makes, never a state the call found
 // already changed before it waited.
 func waitCompleteBlocked(t *testing.T, ctx context.Context, w *kvwatch.Watcher) <-chan error {

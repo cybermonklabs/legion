@@ -291,8 +291,8 @@ func suspendedBefore0038(t *testing.T, sup *supervisor, tree, issue string, role
 
 // A claim suspended before migration 0038 recorded who suspended it is resumed by every trigger
 // main resumed it on, here its phase's start, as on re-admission or a child's re-entry. Most such
-// rows are the daemon's own (a lingering tree, a parked child, a re-entry's interrupted worker), so
-// holding them for the operator would leave the trees main ran again parked.
+// rows are the daemon's own (a lingering tree, a child out of the workflow, a re-entry's interrupted worker), so
+// holding them for the operator would leave the trees main ran again stopped.
 func TestAStartResumesAClaimSuspendedBeforeItsSourceWasRecorded(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -438,7 +438,7 @@ func TestReadmissionResumesTheClaimsTheTreesCloseSuspended(t *testing.T) {
 	}
 }
 
-// A root parked after its architect exhausted the launch budget keeps that failed claim and its
+// A root moved to backlog after its architect exhausted the launch budget keeps that failed claim and its
 // session into re-admission. Forgetting that stopped claim's session before the root is admitted
 // again makes the workflow start a fresh architect rather than repeat the failed resume. The
 // re-admission relaunches every role of each member it carries (admit's startMidPhaseMembers),
@@ -464,14 +464,14 @@ func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T)
 			return
 		}
 		if err := machine.Handle(context.Background(), supervise.RequestSuspend{
-			Claim: token, Reason: "the tree of LEGION-208 is parked", By: supervise.SuspendedByDaemon,
+			Claim: token, Reason: "the tree of LEGION-208 is in backlog", By: supervise.SuspendedByDaemon,
 		}); err != nil {
-			t.Fatalf("park %s: %v", token, err)
+			t.Fatalf("suspend %s: %v", token, err)
 		}
 	})
 	architectMachine, _ := sup.Machine(architect)
 	if failed := architectMachine.Claim(); failed.State != supervise.StateFailed || failed.SessionFile == "" {
-		t.Fatalf("parked architect = %+v, want failed with its session still recorded", failed)
+		t.Fatalf("architect of the root in backlog = %+v, want failed with its session still recorded", failed)
 	}
 	if err := architectMachine.Handle(context.Background(), supervise.RequestForgetSession{
 		Claim: architect, Session: architectMachine.Claim().Session, By: supervise.SuspendedByOperator,

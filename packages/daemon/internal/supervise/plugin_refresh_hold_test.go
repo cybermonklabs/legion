@@ -23,7 +23,7 @@ package supervise
 
 import "testing"
 
-// A stale claim with no wake parked over it yet — the gate has admitted it nothing, which at a
+// A stale claim with no wake delayed over it yet — the gate has admitted it nothing, which at a
 // fleet's worth of claims is most of them for most of a wave — holds the task it is handed, and
 // is sent it once the process its relaunch starts has registered on this daemon's contract and
 // said it is ready. Nothing new carries it there: the ready of every launch sends the task the

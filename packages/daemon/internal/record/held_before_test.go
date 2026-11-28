@@ -19,7 +19,7 @@ func TestTheHeldWordsThatTakeTheBlockedArmAreTheSevenTheLadderReadsBeforeTheLink
 			before = append(before, word)
 		}
 	}
-	want := []HeldReason{HeldTreeClosed, HeldTreeParked, HeldLabelOff, HeldAncestry, HeldRootAwaitingPerson, HeldAwaitingChildren, HeldDesignGate}
+	want := []HeldReason{HeldTreeClosed, HeldTreeInBacklogOrIcebox, HeldLabelOff, HeldAncestry, HeldRootAwaitingPerson, HeldAwaitingChildren, HeldDesignGate}
 	if !slices.Equal(before, want) {
 		t.Errorf("the words HeldBefore reads before dispatch_blocker = %v, want %v", before, want)
 	}

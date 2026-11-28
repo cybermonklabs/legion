@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// keepParkedDecision keeps one person's decision on an ask of issue, under the root of its tree,
-// by the one rule both paths that find such a decision follow (record.RelayParkedDecision).
-func keepParkedDecision(t *testing.T, pool *pgxpool.Pool, root, issue, ref string) {
+// keepDecision keeps one person's decision on an ask of issue, under the root of its tree,
+// by the one rule both paths that find such a decision follow (record.RelayKeptDecision).
+func keepDecision(t *testing.T, pool *pgxpool.Pool, root, issue, ref string) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
@@ -26,8 +26,8 @@ func keepParkedDecision(t *testing.T, pool *pgxpool.Pool, root, issue, ref strin
 		if err != nil || stored == nil {
 			t.Fatalf("read the root %s: %v", root, err)
 		}
-		outcome, err := record.RelayParkedDecision(ctx, tx, records, issue, *stored, true,
-			record.ParkedDecision{Ref: ref, Decision: record.DecisionAskAnswered,
+		outcome, err := record.RelayKeptDecision(ctx, tx, records, issue, *stored, true,
+			record.KeptDecision{Ref: ref, Decision: record.DecisionAskAnswered,
 				Actor: "user:alice", At: fixedNow}, record.Notice{}, nil)
 		if err != nil {
 			t.Fatalf("keep the decision %s: %v", ref, err)
@@ -60,7 +60,7 @@ func keptRefs(t *testing.T, pool *pgxpool.Pool, root string) []string {
 	ctx := context.Background()
 	var refs []string
 	inTx(t, pool, func(tx pgx.Tx) {
-		kept, err := record.NewStore().ParkedDecisions(ctx, tx, root)
+		kept, err := record.NewStore().KeptDecisionsOf(ctx, tx, root)
 		if err != nil {
 			t.Fatalf("read the decisions kept for %s: %v", root, err)
 		}
@@ -88,9 +88,9 @@ func TestAHandedOverChildTakesTheDecisionsKeptOnIt(t *testing.T) {
 		Tree: old, Project: testProject, Title: grandchild, Parent: &parent, Phase: phase.Implementing, Generation: 1,
 		Status: "in_progress", Rank: "C", LastDispatchSeq: 1})
 	childAsk, grandAsk, rootAsk := "dispatch://LEGION-209/ask/ask-1", "dispatch://LEGION-210/ask/ask-2", "dispatch://LEGION-208/ask/ask-3"
-	keepParkedDecision(t, pool, old, child, childAsk)
-	keepParkedDecision(t, pool, old, grandchild, grandAsk)
-	keepParkedDecision(t, pool, old, old, rootAsk)
+	keepDecision(t, pool, old, child, childAsk)
+	keepDecision(t, pool, old, grandchild, grandAsk)
+	keepDecision(t, pool, old, old, rootAsk)
 
 	// The linger's end hands the child over, which admission re-admits as an orphan carrying its run
 	// and promotes into a tree of its own, writing its architect's start.
@@ -181,7 +181,7 @@ func seedHeldArchitectTask(t *testing.T, pool *pgxpool.Pool, root string, kept r
 		t.Fatalf("record the architect's held task of %s: %v", root, err)
 	}
 	for _, named := range kept.Decisions {
-		if _, err := pool.Exec(context.Background(), `insert into parked_decisions (issue, ref, decision, actor, at,
+		if _, err := pool.Exec(context.Background(), `insert into kept_decisions (issue, ref, decision, actor, at,
 			held_by_claim, held_by_delivery) values ($1, $2, $3, $4, $5, $6, 'outbox:7')`,
 			named.Issue, named.Ref, string(named.Decision), named.Actor, named.At, string(token)); err != nil {
 			t.Fatalf("hold the decision %s on the architect's task of %s: %v", named.Ref, root, err)

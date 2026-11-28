@@ -418,7 +418,7 @@ func (p *projectPause) writeResumeClock(token claim.Token, issue string, role cl
 // startStoppedResumeClocks starts, at the boot, the stuck clock of every open resume the previous
 // daemon left stopped for a launch waiting in its pacing's queue (store.Store.StartQueuedResumeClocks).
 // That queue went with that daemon, so none of those launches waits in one now. It runs before a
-// claim is restored, so a machine that parks one of those launches again stops its clock again
+// claim is restored, so a machine that delays one of those launches again stops its clock again
 // after this (wakeQueued), and a resume whose launch this boot does not raise again is not left
 // with a clock that never runs.
 func (p *projectPause) startStoppedResumeClocks(ctx context.Context) error {
@@ -729,7 +729,7 @@ func (r *outbox) pauseStopEnded(row record.OutboxRow, issue string, role claim.R
 // pauseStopAnswered ends the pause's stop row of a claim that answered its stop with nil, by what
 // the claim holds now. A suspended claim's stop row is ended `taken_over` where it is still open:
 // one this pause's own suspension stopped was ended by its stop transaction, so what is left open
-// was stopped first by a park, a close, the operator, an earlier pause's late stop or an idle
+// was stopped first by a move out of the workflow, a close, the operator, an earlier pause's late stop or an idle
 // release — or by this pause's suspension whose write the machine still owes, whose stop
 // transaction then records the stop in a row of its own (store.RecordPauseStopTx), with its
 // hold, its owed launch or its backstop, when it lands.

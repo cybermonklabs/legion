@@ -1180,17 +1180,18 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the words of `admission.held`, in `record.HeldReasons`' order.
- * `children_before_retro` and `task_stopped` came with contract 219; a caller below it is served
- * each such row as `unclassified` with no `heldBy` (the daemon's value strip
- * `withoutUnadmittedHeldWords`). `awaiting_children` came with entry 20261125161152 (gate-basis); a caller below it is
- * served each such row as `children_first`, the one word that strip stands another in for
- * (`heldReasonStandIn`).
+ * `children_before_retro` and `task_stopped` came with contract 219, and
+ * `tree_in_backlog_or_icebox` with entry `20261125161823`. A caller below the contract
+ * that added a word is served each such row as `unclassified` with no `heldBy` (the
+ * daemon's value strip `withoutUnadmittedHeldWords`). `awaiting_children` came with entry
+ * 20261125161152 (gate-basis); a caller below it is served each such row as `children_first`,
+ * the one word that strip stands another in for (`heldReasonStandIn`).
  * `at_work` names an issue in `accepting`, `retro` or `merging`, which keeps no admission slot;
  * `record.HeldAtWork` says which issues read it.
  */
 export const LEGION_HELD_REASONS = [
   "tree_closed",
-  "tree_parked",
+  "tree_in_backlog_or_icebox",
   "label_off",
   "ancestry",
   "root_awaiting_person",
@@ -1277,7 +1278,7 @@ const legionP0Bound = z.object({
  * took it out of the workflow with, are in neither list. A started issue that waits on another
  * issue in a phase that keeps a slot is missing from `active` too, other than the three roots that keep
  * their slot through such a wait: it holds no slot while it waits and stands in `waiting` and in
- * `blocked`, which is how a reader tells it from an issue a person parked, which stands in none
+ * `blocked`, which is how a reader tells it from an issue a person moved to backlog, which stands in none
  * of the three (the rule: "Admission and the `legion` label" in
  * docs/site/src/content/docs/legion/concepts.md). An issue holding a slot is in
  * `waiting` as well while its work comes back to it, an answered root until the pass that

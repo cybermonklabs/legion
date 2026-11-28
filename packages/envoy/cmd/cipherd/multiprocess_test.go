@@ -604,7 +604,7 @@ func describeRefusal(err error) string {
 }
 
 // race runs step against each process of the fleet at the same moment: every goroutine is
-// parked on the barrier before any of them is released, so no process is given a head start.
+// blocked on the barrier before any of them is released, so no process is given a head start.
 func race[T any](fleet *brokerFleet, step func(client *ciphertest.Client) T) []T {
 	answers := make([]T, len(fleet.Processes))
 	var ready, done sync.WaitGroup

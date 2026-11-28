@@ -86,7 +86,7 @@ func (f *fakeWatcher) stopCount(t *testing.T, want int32, when string) {
 }
 
 // released fails the test unless the context f's watch was created in is cancelled, which is what
-// releases the goroutine nats.go parks on it for the subscription's life.
+// releases the goroutine nats.go leaves waiting on it for the subscription's life.
 func (f *fakeWatcher) released(t *testing.T, when string) {
 	t.Helper()
 	f.mu.Lock()

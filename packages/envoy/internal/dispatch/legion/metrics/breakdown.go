@@ -136,15 +136,15 @@ type IssueFacts struct {
 	WorkFirstAt *time.Time
 	WorkLastAt  *time.Time
 
-	// ParkedHours and QueuedHours are two of the three things the work time took out of the
+	// BacklogOrIceboxHours and QueuedHours are two of the three things the work time took out of the
 	// issue's life; the third, its hours out of the workflow before the close, is stored nowhere
 	// (workTimeRow). StartedAt and MergedAt are its first worker event and the earliest merge of
 	// the pull requests Dispatch holds for it. Both are nil for an issue with no work time, and
 	// MergedAt for one whose merge Dispatch holds none of.
-	ParkedHours float64
-	QueuedHours float64
-	StartedAt   *time.Time
-	MergedAt    *time.Time
+	BacklogOrIceboxHours float64
+	QueuedHours          float64
+	StartedAt            *time.Time
+	MergedAt             *time.Time
 
 	// Bars is the issue's part of each of the seven bars of metric 2, keyed by role, every bar
 	// present (barPartsOf).
@@ -161,7 +161,7 @@ type IssueFacts struct {
 	Children int
 
 	// SlotWaitHours is the hours of the issue's observed life it stood admitted with no slot of
-	// its own, parked hours left out (slotWaitHours), and IdleByRole the hours of its worked spans
+	// its own, hours in backlog or icebox left out (slotWaitHours), and IdleByRole the hours of its worked spans
 	// it held its own slot in a role's bar with that role out of a turn, for each of the six roles
 	// (idleByRole).
 	SlotWaitHours float64
@@ -221,7 +221,7 @@ func (c *computation) factsOf(issue *Issue) IssueFacts {
 		Tree:                              c.treeRoot(key),
 		TreeDepth:                         c.treeDepth(key),
 		SlotHours:                         hours(totalOf(population.slotSpans(issue, population.To))),
-		ParkedHours:                       work.parked,
+		BacklogOrIceboxHours:              work.inBacklog,
 		QueuedHours:                       work.queued,
 		Bars:                              c.barPartsOf(issue),
 		SentBack:                          rework.sentBack,

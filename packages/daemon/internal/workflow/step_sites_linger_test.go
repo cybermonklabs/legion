@@ -63,7 +63,7 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	}
 }
 
-// A merge event closes a held merging phase too, both in a live tree and after its root parks.
+// A merge event closes a held merging phase too, both in a live tree and after its root moves to backlog.
 // Calling closeMerged directly would miss the event handler's choice of which phases it closes.
 func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 	t.Parallel()
@@ -80,7 +80,7 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 			holdFrom(t, pool, "LEGION-209", phase.Merging)
 			apply := applyFacts(t, pool, engine)
 			if lingering {
-				apply("park-root", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+				apply("backlog-root", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 					Status: "backlog", Title: "root", Rank: "U"})
 			}
 			apply("merge-held", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"})
@@ -96,7 +96,7 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 	}
 }
 
-// A parked tree hands over only an unheld member with an open pull request. The close of its
+// A tree whose root is in backlog hands over only an unheld member with an open pull request. The close of its
 // linger retires the other merge workers too, and ends the merge of one whose pull request can no
 // longer land: its record ends rather than staying running. A held merger's open pull request
 // can still land, so its merge stays open until it does, and ends passed (the one end no move of
@@ -133,7 +133,7 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 				holdFrom(t, pool, "LEGION-209", phase.Merging)
 			}
 			apply := applyFacts(t, pool, engine)
-			apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+			apply("backlog-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 				Status: "backlog", Title: "root", Rank: "U"})
 			if tc.closedPR {
 				apply("close-unmerged", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"})
@@ -142,8 +142,8 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 				t.Fatalf("before expiry the merge must still be open: %+v", writes)
 			}
 			// The close comes at the linger's deadline, and the engine's clock with it.
-			parked := issueRecord(t, pool, root.Key)
-			engine.cfg.Clock = func() time.Time { return parked.LingerUntil.Add(time.Second) }
+			inBacklog := issueRecord(t, pool, root.Key)
+			engine.cfg.Clock = func() time.Time { return inBacklog.LingerUntil.Add(time.Second) }
 			apply("expire-linger", intake.LingerExpired{Issue: root.Key, Generation: root.Generation})
 			apply("expire-linger-again", intake.LingerExpired{Issue: root.Key, Generation: root.Generation})
 			writes := stepWrites(t, pool, "LEGION-209")

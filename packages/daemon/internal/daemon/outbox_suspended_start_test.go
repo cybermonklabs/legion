@@ -18,7 +18,7 @@ import (
 // issue's slot comes, and then that row does the whole start.
 //
 // A member's start is delivered while its Sandbox launches, and the task is still unconfirmed
-// when the tree stops: a person parks it, and the claim is suspended holding that generation and
+// when the tree stops: a person moves it to backlog, and the claim is suspended holding that generation and
 // phase's task, or the linger closes the tree and retires the claim, which keeps what it held
 // (supervise's retire). The person reopens the root — inside the linger, or after the close — and
 // re-admission starts the member again (admit's startMidPhaseMembers). Bringing such a claim

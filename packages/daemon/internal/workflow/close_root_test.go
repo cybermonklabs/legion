@@ -47,7 +47,7 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 		t.Fatalf("read the root: %v", err)
 	}
 	if status != "done" || rootPhase != phase.Done || until == nil {
-		t.Fatalf("root status=%s phase=%s linger=%v; want done, parked in done, lingering", status, rootPhase, until)
+		t.Fatalf("root status=%s phase=%s linger=%v; want done, its phase set at done, lingering", status, rootPhase, until)
 	}
 	var write record.StatusWrite
 	if err := pool.QueryRow(context.Background(), `select payload->>'kind', payload->>'status', payload->>'observedStatus', payload->>'reason',
@@ -110,7 +110,7 @@ func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 		t.Fatalf("read the root: %v", err)
 	}
 	if status != "done" || rootPhase != phase.Done || until == nil {
-		t.Fatalf("root status=%s phase=%s linger=%v; want done, parked in done, lingering", status, rootPhase, until)
+		t.Fatalf("root status=%s phase=%s linger=%v; want done, its phase set at done, lingering", status, rootPhase, until)
 	}
 	var write record.StatusWrite
 	if err := pool.QueryRow(context.Background(), `select payload->>'kind', payload->>'status', payload->>'observedStatus', payload->>'reason',

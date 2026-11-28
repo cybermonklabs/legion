@@ -118,17 +118,17 @@ func TestCompactionLeavesTheStateNotTheContentItDeleted(t *testing.T) {
 	requireLoadReadsAs(t, versioned, artifactID, "the compacted load", want)
 }
 
-// A room parks an update whose dependency has not arrived, and a delete of an item it does not
+// A room keeps pending an update whose dependency has not arrived, and a delete of an item it does not
 // hold, until a peer sends what they wait on. A stored log can hold both - an update its writer
 // persisted before one it depends on that never was - so a load and a compaction keep them, and
-// once the missing updates arrive the parked insert shows and the parked delete holds.
-func TestALoadAndACompactionKeepWhatTheDocumentParked(t *testing.T) {
+// once the missing updates arrive the pending insert shows and the pending delete holds.
+func TestALoadAndACompactionKeepWhatTheDocumentHoldsPending(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
 	ctx := context.Background()
-	stored, lost, gone := parkedHistory(t)
-	artifactID := createDocument(t, database, "parked")
+	stored, lost, gone := pendingHistory(t)
+	artifactID := createDocument(t, database, "pending")
 	for _, update := range stored {
 		if _, err := versioned.AppendUpdate(ctx, artifactID, update); err != nil {
 			t.Fatalf("append update: %v", err)
@@ -136,7 +136,7 @@ func TestALoadAndACompactionKeepWhatTheDocumentParked(t *testing.T) {
 	}
 	arrive := func(t *testing.T, what string, state []byte) {
 		t.Helper()
-		requireParkedArrive(t, what, state, lost, gone)
+		requirePendingArrive(t, what, state, lost, gone)
 	}
 	merged, err := crdt.MergeUpdatesV1(stored...)
 	if err != nil {
@@ -156,10 +156,10 @@ func TestALoadAndACompactionKeepWhatTheDocumentParked(t *testing.T) {
 	arrive(t, "the compacted load", compacted.Update)
 }
 
-// parkedHistory is a stored log that parks an insert whose dependency was never stored and a
+// pendingHistory is a stored log that leaves pending an insert whose dependency was never stored and a
 // delete of an item the log does not hold, and the two updates it lacks: lost, which the insert
 // depends on, and gone, which inserted what the delete deletes.
-func parkedHistory(t *testing.T) (stored [][]byte, lost, gone []byte) {
+func pendingHistory(t *testing.T) (stored [][]byte, lost, gone []byte) {
 	t.Helper()
 	writer := crdt.New(crdt.WithClientID(7))
 	text := writer.GetText("t")
@@ -170,7 +170,7 @@ func parkedHistory(t *testing.T) (stored [][]byte, lost, gone []byte) {
 	lost = crdt.EncodeStateAsUpdateV1(writer, afterBase)
 	afterLost := writer.StateVector()
 	writer.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 9, " kept", nil) })
-	parkedInsert := crdt.EncodeStateAsUpdateV1(writer, afterLost)
+	pendingInsert := crdt.EncodeStateAsUpdateV1(writer, afterLost)
 
 	other := crdt.New(crdt.WithClientID(8))
 	if err := crdt.ApplyUpdateV1(other, base, nil); err != nil {
@@ -181,13 +181,13 @@ func parkedHistory(t *testing.T) (stored [][]byte, lost, gone []byte) {
 	gone = crdt.EncodeStateAsUpdateV1(other, afterBase)
 	afterGone := other.StateVector()
 	other.Transact(func(txn *crdt.Transaction) { otherText.Delete(txn, 0, 5) })
-	parkedDelete := crdt.EncodeStateAsUpdateV1(other, afterGone)
-	return [][]byte{base, parkedInsert, parkedDelete}, lost, gone
+	pendingDelete := crdt.EncodeStateAsUpdateV1(other, afterGone)
+	return [][]byte{base, pendingInsert, pendingDelete}, lost, gone
 }
 
-// requireParkedArrive fails t unless state, a state of parkedHistory's log, shows the parked
-// insert and holds the parked delete once lost and gone arrive.
-func requireParkedArrive(t *testing.T, what string, state, lost, gone []byte) {
+// requirePendingArrive fails t unless state, a state of pendingHistory's log, shows the pending
+// insert and holds the pending delete once lost and gone arrive.
+func requirePendingArrive(t *testing.T, what string, state, lost, gone []byte) {
 	t.Helper()
 	doc := crdt.New()
 	for _, update := range [][]byte{state, lost, gone} {
@@ -394,7 +394,7 @@ func TestACompactedDocumentKeepsItsOrderThroughLaterUpdates(t *testing.T) {
 	}
 }
 
-// A log whose updates park more items than the fold's pending queue holds is not folded: the load
+// A log whose updates leave more items pending than the fold's pending queue holds is not folded: the load
 // serves the stored updates merged whole, and compaction leaves every row stored.
 func TestALogTheFoldCannotApplyIsLoadedMergedAndKept(t *testing.T) {
 	t.Parallel()
@@ -428,9 +428,9 @@ func TestALogTheFoldCannotApplyIsLoadedMergedAndKept(t *testing.T) {
 	}
 }
 
-// unfoldableHistory is a log whose updates park more items than a fold's pending queue holds: each
+// unfoldableHistory is a log whose updates leave more items pending than a fold's pending queue holds: each
 // of its two later rows holds testPendingItems/2+1 inserts and depends on an insert no row holds,
-// so the fold parks both rows and refuses the second. It returns the rows and the writer that
+// so the fold keeps both rows pending and refuses the second. It returns the rows and the writer that
 // wrote them, whose later updates a test appends to change the log.
 //
 // Its rows are built for testPendingItems, the queue a test shrinks a store or a service to
@@ -457,7 +457,7 @@ func unfoldableHistory() ([][]byte, *crdt.Doc) {
 
 // testPendingItems is the pending queue shrinkPendingItems sets: small enough that a log the fold
 // cannot apply (unfoldableHistory) is a few dozen items, and far above what any other fixture of
-// the tests that shrink parks.
+// the tests that shrink it leaves pending.
 const testPendingItems = 64
 
 // shrinkPendingItems lowers to testPendingItems the pending queue the decodes of service - its
@@ -465,7 +465,7 @@ const testPendingItems = 64
 // they are compared with - and of versioned - its folds, their read-backs and the documents their
 // states decode into - take, and restores both when the test ends. Either may be nil. Call it
 // before anything decodes under them: before any room of service opens, and before any fixture
-// that parks more than testPendingItems is stored or read.
+// that leaves more than testPendingItems pending is stored or read.
 func shrinkPendingItems(t *testing.T, service *Service, versioned *PgVersioned) {
 	t.Helper()
 	if service != nil {

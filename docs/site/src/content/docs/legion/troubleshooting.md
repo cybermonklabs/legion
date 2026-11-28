@@ -471,7 +471,7 @@ its `kind` `answered`, its `holdsSlot` true and a `reason` saying a person answe
 its slot already, and its `why.state` is `waiting`. Nothing is sent to its architect about
 the wait, and the daemon resumes the root by itself on that pass, so neither the
 place nor the wait is anything to act on.
-Do not park it or
+Do not move it to `backlog` or
 start it by hand. Without `answeredAt`, check, in order:
 
 1. **The question is still with the person.** `dispatch read <KEY>` shows the root's asks. A
@@ -533,59 +533,61 @@ ancestor, not an approval request on the root. On a root, `treeRuns` says whethe
 `false` on a root that lingers, or that waits in the line for its tree to open after a
 re-admission, whatever its architect's claim reads.
 
-## A parked tree did not come back after a decision
+## A tree in backlog or icebox did not come back after a decision
 
 A root in `backlog` or `icebox` runs again when a person sets it to `todo` with its `legion` label
 on, when a person asks the controller to start it, when a person approves its spec and it keeps its
 `legion` label and has no parent (the daemon then sets it to `todo` itself; an approval Dispatch
 carries from an earlier one does not count, and neither does an approval the daemon applies after
 the root's status changed again, because it reached the daemon late or the operator replayed it),
-or, when the controller parked it for a hold of its own, once the controller judges that a
-person's decision gives its work a next step or its walk finds the hold's cause gone or its event
-happened. The controller marks such a park with a comment on the root that begins
-`Parked by Legion while it waits on:`. First find whether the daemon relayed the decision. Its
-JSON log names the issue and the root on each of these lines but one, which the list says:
+or, when the controller moved it to backlog for a hold of its own, once the controller judges that
+a person's decision gives its work a next step or its walk finds the hold's cause gone or its event
+happened. The controller marks such a move with a comment on the root that begins
+`Moved to backlog by Legion while it waits on:`. First find whether the daemon relayed the
+decision. Its JSON log names the issue and the root on each of these lines but one, which the list
+says:
 
-- `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
-  tree goes to the controller`: the daemon queued the decision for the controller, which receives
-  it once a session holds the controller's claim. A changes request's publish first asks again
-  whether the person's approval followed it; when it did, the row ends with `outbox relayed changes
-  request finished without publishing: the person's approval followed it`, which names the
+- `outbox kept decision sent to the controller` or `workflow: a person's decision on a tree that
+  does not run goes to the controller`: the daemon queued the decision for the controller, which
+  receives it once a session holds the controller's claim. A changes request's publish first asks
+  again whether the person's approval followed it; when it did, the row ends with `outbox relayed
+  changes request finished without publishing: the person's approval followed it`, which names the
   approved version, and the controller is not told. When that approval sets the root back to
   `todo` before the row runs, the re-admission's clear of the tree's generation ends the row
   instead, with `workflow: a queued changes request finished unpublished at its generation's
   clear: the person's approval followed it`, which names the approved version too.
-- `workflow: a person's approval of a parked root is older than a change of the root's status; the
-  root is not queued as their handover` (a warning with `approval_seq`, `status_change_seq` and
-  `controller_told`): the root's status changed after a person approved its spec, so the approval
-  queues nothing. `approval_seq` is the Dispatch event of the approval, and `status_change_seq` is
-  the later event that changed the status. `controller_told=true` says that the controller also
-  got a parked decision whose reason says this. For a root the daemon does not record,
-  `controller_told` is `false` and the warning is the only notice. Set the root to `todo` to run it.
-- `outbox parked decision not relayed: the person's approval followed it`: the person approved
+- `workflow: a person's approval of a root in backlog or icebox is older than a change of the
+  root's status; the root is not queued as their handover` (a warning with `approval_seq`,
+  `status_change_seq` and `controller_told`): the root's status changed after a person approved
+  its spec, so the approval queues nothing. `approval_seq` is the Dispatch event of the approval,
+  and `status_change_seq` is the later event that changed the status. `controller_told=true` says
+  that the controller also got a kept decision whose reason says this. For a root the daemon does
+  not record, `controller_told` is `false` and the warning is the only notice. Set the root to
+  `todo` to run it.
+- `outbox kept decision not relayed: the person's approval followed it`: the person approved
   that version or a later one after the decision, so the controller is not told of a decision the
   approval replaced. The line names the approved version. The same rule ends a changes request
   queued for a tree's own architect, with `outbox changes request finished without publishing:
   the person's approval followed it`, the one line here that names the issue and not the root.
-- `outbox parked decision not relayed: the gate no longer holds the approval it reports`: the
+- `outbox kept decision not relayed: the gate no longer holds the approval it reports`: the
   decision is an approval, and the gate holds it no more: a later changes request cleared it, or
   another document was registered on its step. The line names the approval's version.
-- `outbox parked decision not relayed: a newer changes request of its document replaced it`: a
+- `outbox kept decision not relayed: a newer changes request of its document replaced it`: a
   later changes request of the same document is kept under the same reference, so the controller
   is told that one and not this one. The line names the reference and the version.
-- `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
+- `outbox kept decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
-- `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
-  lingering root someone moved back into the workflow is not relayed`: someone moved the
-  lingering root back to a status of the workflow (`in_progress` and the like), so it is nobody's
-  parked tree.
-- `outbox parked decision not relayed: its tree hears it` or `outbox parked decision not relayed:
+- `outbox kept decision not relayed: its root is back in the workflow` or `workflow: a decision on
+  a lingering root someone moved back into the workflow is not relayed`: someone moved the
+  lingering root back to a status of the workflow (`in_progress` and the like), so its tree is no
+  longer out of the workflow.
+- `outbox kept decision not relayed: its tree hears it` or `outbox kept decision not relayed:
   its root has no record`: the tree runs and its architect hears the decision, or the daemon keeps
   no record of the root.
-- `outbox parked decision handled before under this key`: the same notice came through again (a
+- `outbox kept decision handled before under this key`: the same notice came through again (a
   re-held copy, or a run of its row again); the first line logged under that key says what became
   of it.
-- `outbox parked decision kept for its root's start, which waits for its slot` or `workflow: a
+- `outbox kept decision left for its root's start, which waits for its slot` or `workflow: a
   person's decision on a tree waiting for its slot is kept for its architect's start`: the root was
   set to `todo` already, so no controller is told, and its architect's start names the decision.
   The daemon keeps the decision under the issue it was made on, so the architect it is owed to is
@@ -595,29 +597,31 @@ JSON log names the issue and the root on each of these lines but one, which the 
   that tree — a catch-up at its publish, a start's task at the moment the turn that takes it
   starts — and one that reaches no architect hands it to a fresh catch-up of that tree's current
   architect (`outbox start finished without giving its claim the task; the decisions it named are
-  handed over`), or leaves it for the next start while the tree is parked.
+  handed over`), or leaves it for the next start while the tree is in backlog or icebox.
 - `supervise: the root of this task's tree has no architect to hear it; the task stays pending`: a
-  root architect's start task met a parked, lingering or waiting tree. It is sent when the tree's
-  next start runs; nothing to do.
+  root architect's start task met a tree in backlog or icebox, or a lingering or waiting tree. It
+  is sent when the tree's next start runs; nothing to do.
 - `supervise: a decision this held task named is owed to another tree now; the task is sent without
   it`, or `supervise: everything this held task named is owed to another tree now; it is retired
   rather than sent`: while the task waited, an issue it named left this tree. What left is owed to
   the tree it stands in now, whose architect is written a catch-up naming it at once; nothing to do.
-- `workflow: a session's reply on a parked tree is not relayed`, `workflow: a session's answer or
-  resolution on a parked tree is not relayed`, or `workflow: a session's decision on a tree waiting
-  for its slot is not kept`: an agent wrote it. It stays on the ask for the person who asked.
+- `workflow: a session's reply on a tree that does not run is not relayed`, `workflow: a session's
+  answer or resolution on a tree that does not run is not relayed`, or `workflow: a session's
+  decision on a tree waiting for its slot is not kept`: an agent wrote it. It stays on the ask for
+  the person who asked.
 
-Then read the controller's comment that begins `Parked decision read:`, on the root and on the issue
+Then read the controller's comment that begins `Kept decision read:`, on the root and on the issue
 where the decision was made. For a question, it is a reply on the question's own ask, which answers
 it or says that `todo` on the root brings the architect back to answer. It says what the controller
-judged. The tree stays parked when the park is not the controller's own hold, the park with its
-`Parked by Legion while it waits on:` comment beside it: a person's park, another agent's session's,
-or an operator's `legion issue status` (the comment names who, and the tree runs when a person sets
-it to `todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
-parked too when the decision is older than the park, when the root is `done` or `triage`, or when
-the decision only questions the work. When the controller was down, its next start walks the parked
-roots. That walk reads only the last 10 events of each issue. The walk runs at each start and on
-each `tick`, and its `todo` on the controller's own hold comes with a comment that cites the mark.
+judged. The tree stays in backlog or icebox when the move is not the controller's own hold, the
+move with its `Moved to backlog by Legion while it waits on:` comment beside it: a person's move,
+another agent's session's, or an operator's `legion issue status` (the comment names who, and the
+tree runs when a person sets it to `todo`, approves its spec when it has no parent, or asks the
+controller to start it). It stays there too when the decision is older than the move, when the root
+is `done` or `triage`, or when the decision only questions the work. When the controller was down,
+its next start walks the roots in backlog or icebox. That walk reads only the last 10 events of
+each issue. The walk runs at each start and on each `tick`, and its `todo` on the controller's own
+hold comes with a comment that cites the mark.
 
 ## An issue is held
 
@@ -923,10 +927,10 @@ rest on its approval or its open Dispatch children, and the refusal names which)
 and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
-restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
-it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
-the architect above it is told with a `worker-died` and takes the child's notices, and the child's
-next phase start starts it again. What brings a root's architect back depends on where its tree
+restarts the tree when it finds no cause or the cause is gone, and asks a person whether to move
+it to backlog when the cause stays. A child's own architect that failed holds nothing and wakes no
+controller: the architect above it is told with a `worker-died` and takes the child's notices, and
+the child's next phase start starts it again. What brings a root's architect back depends on where its tree
 stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
@@ -934,8 +938,8 @@ stands:
   restart](#a-tree-does-not-move-after-a-restart) shows: the daemon relaunches it on the session
   it kept, or on a new one once supervise's `forgetSession` has dropped that, with fresh budgets,
   and the tree carries on at the generation and phase it stands at.
-- **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
-  in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
+- **Its root is in backlog or icebox or lingers, or the controller restarted the tree**
+  (`backlog`, then `todo` in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
   generation; a retry by hand would run it outside the admission cap, and it would be sent no
   catch-up. To restart the tree by hand, write the same pair:
 
@@ -985,7 +989,7 @@ role, and the daemon's controller keeper for the project's own controller claim,
 `cyber_policy`, which its keeper retries no more, it names `legion claims retry --claim <token>`.
 It also refuses a claim a suspension is held over, a claim whose launch is in flight, a claim
 whose agent has registered and is not ready yet, which `--fresh-session` reaches, a claim left
-working under a relaunch the wake pacing parked, and a claim whose role runs on Claude Code,
+working under a relaunch the wake pacing delayed, and a claim whose role runs on Claude Code,
 which has no Oh My Pi session.
 For a claim the daemon records as working it reads that claim's process at the runtime, at the
 moment of the request, rather than the daemon's memory of an older report, which a daemon restart
@@ -1052,8 +1056,8 @@ legion claims forget-session --config legion.yaml --operator-token-file operator
 ```
 
 The daemon does not read or change the session database, so the old session row remains. A root
-that was parked should be re-admitted after this command, not retried by hand; its next workflow
-start spawns a fresh session. To replace a session of a claim that is still live, suspend it first;
+that was moved to backlog or icebox should be re-admitted after this command, not retried by hand;
+its next workflow start spawns a fresh session. To replace a session of a claim that is still live, suspend it first;
 the command refuses every live claim and any `--session` that does not equal the recorded session.
 The resumed claim starts fresh with its pending task.
 
@@ -1311,11 +1315,11 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that
 something will still start: a worker whose phase is not its own is started again when its phase
-comes, a parked tree's claims wait for its re-admission, and an issue whose start waits for a free
-slot has that start queued already. A root in
+comes, the claims of a tree in backlog or icebox wait for its re-admission, and an issue whose
+start waits for a free slot has that start queued already. A root in
 `awaiting_person` is different: its architect stays live while it waits for the person's answer,
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
-claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
+claim of a lingering tree or of an issue moved out of the workflow; re-admission or the issue's
 return to `todo` starts it.
 The list never names a child's own architect: while that architect does not hold its role, the
 architect above it takes the child's notices, and a later start of the role brings it back, as the
@@ -1897,7 +1901,7 @@ These arrive as messages on the Dispatch issue:
   for a change to the change's own logic, or tell the architect what only a person can change. A pull
   request a person already merged needs nothing: the daemon reads that merge and closes the
   issue — or, for a root whose tree still runs, once the last other issue of that tree is done or
-  parked.
+  in backlog or icebox.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
   branch, `legion/<KEY>`. The issue moves on only on an open pull request, or one the daemon

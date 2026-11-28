@@ -67,7 +67,7 @@ func TestForcedOrderARepeatIsStoredThoughThePurgeRanAtTheCut(t *testing.T) {
 		testnats.Where("under the deployed window "+deployed.String(), func(e testnats.Event) bool { return e.Window == deployed })}
 	hold := hooks.Hold(testnats.DedupeReset, onTheStream...)
 
-	// The cut runs in a goroutine of its own: its first update is the one the hold parks, and the
+	// The cut runs in a goroutine of its own: its first update is the one the hold pauses, and the
 	// stream answers that update only once the hold is released.
 	cut := make(chan error, 1)
 	go func() { cut <- cutTheDuplicateWindow(js, info.Config, forgottenIdWindow) }()

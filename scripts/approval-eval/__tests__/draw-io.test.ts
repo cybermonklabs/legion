@@ -512,7 +512,7 @@ describe("readSlices", () => {
  * `backlogLegionRoots`, the issue list route, and the file `--backlog-roots` names. Its policy
  * is refusal and never a value dropped, because a root dropped is a root the never-decide rule
  * is never told about: the issue list's loop used to pass over an entry whose key or status it
- * could not read, and a parked `legion` root passed over that way is a hold that silently does
+ * could not read, and a `legion` root in backlog passed over that way is a hold that silently does
  * not happen. Every field is held to that policy, the labels among them.
  */
 describe("the facts a reader takes out of a draw", () => {

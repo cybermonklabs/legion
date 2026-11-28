@@ -57,7 +57,7 @@ promise — whose `.finally` has already deleted the map entry by the time the o
 continues — and only then, when a slot was released, awaits `beginPromotionSweep()`. Nothing the
 fence protects needs it any longer at that point: every claim is deleted, the record reads
 `closed`, and `isTreeGone` refuses launches on status alone. `releaseSlot`'s other callers
-(`beginLinger`, `recordRootExit`, `spawnTree`'s human-parked rollback) are untouched: none of them
+(`beginLinger`, `recordRootExit`, `spawnTree`'s rollback after a person's move to backlog) are untouched: none of them
 runs inside a frame the map names.
 
 The general rule: a promise you put in a map for others to await must not, from inside its own
@@ -116,7 +116,7 @@ write, so the LEGION-143 fix will not have to unpin them.
 
 - **The gate is the stop's timeout sleep.** Inject `sleep` and resolve a `stopArmed` promise from
   it: when the root's shim never confirms shutdown (`stuckRootClient.shutdown = () => {}`), the
-  close is parked inside `awaitShutdown` exactly when `stopArmed` resolves, and `stopGate` (what
+  close is blocked inside `awaitShutdown` exactly when `stopArmed` resolves, and `stopGate` (what
   the fake `sleep` returns) is released when the test says. The re-admit (`processes.admit(root)`)
   lands between the two. No tick budget is needed for the positive waits.
 - **Answer `split-window`, not only `new-window`.** The re-admitted root's spawn splits into the

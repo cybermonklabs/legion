@@ -69,7 +69,7 @@ func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
 			seedIssue(t, pool, other)
 			seedSlot(t, pool, record.Slot{Issue: "OTHER-1", Index: 0})
 		}},
-		{name: "an issue a person parked, which the daemon no longer works", seed: func(t *testing.T, pool *pgxpool.Pool) {
+		{name: "an issue a person moved to backlog, which the daemon no longer works", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "backlog", "backlog"))
 			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
 		}},
@@ -131,7 +131,7 @@ func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
 
 // A recorded Dispatch status out of the workflow is left alone whatever the phase says. The row it
 // would queue could never be written: the outbox writes a status only where Dispatch shows the
-// row's observed or target status, and a park the record holds is the park Dispatch shows.
+// row's observed or target status, and a status out of the workflow the record holds is the status Dispatch shows.
 func TestTheStatusRepairSkipsARecordedStatusOutOfTheWorkflow(t *testing.T) {
 	t.Parallel()
 	for _, shown := range []string{"backlog", "icebox", "triage", "done"} {

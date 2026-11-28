@@ -1,6 +1,6 @@
 # The verbs of an instruction (R49.2): each word that opens an instruction sentence, one a line, in its base form and in lower case.
 # Reviewed data: the rule instructions reads a verb only from this list, so a change of the list is a change of the rule, and a person reviews it as code.
-# Its 86 verbs were first read from the sentences that open an instruction in the repository's skills at b456e85bc5 and in the live procedures of The Spec; no test reads either.
+# Its verbs were first read from the sentences that open an instruction in the repository's skills at b456e85bc5 and in the live procedures of The Spec; no test reads either.
 accept
 answer
 append
@@ -49,7 +49,6 @@ open
 optimise
 order
 output
-park
 pass
 pick
 post

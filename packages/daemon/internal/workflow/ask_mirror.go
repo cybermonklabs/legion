@@ -236,7 +236,7 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 // the seed's read of Dispatch opens or ends that wait, whatever issue the ask is on and whether or
 // not the daemon records it; applies the close to the ask's mirror row
 // and the root's wait (closeAsk); and relays a person's answer or resolution of a question on a
-// tree Legion is not running to the controller (relayParkedDecision): nobody inside such a tree
+// tree Legion is not running to the controller (relayKeptDecision): nobody inside such a tree
 // hears it. An approval ask's answer arrives again as the document's review, which the gate
 // relays, so it is not relayed as an ask.
 //
@@ -264,12 +264,12 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 	if fact.State == "answered" {
 		decision = record.DecisionAskAnswered
 	}
-	return intake.Result{}, e.relayParkedDecision(ctx, tx, fact.Key, fact.Ask, record.ParkedDecision{Ref: itemRef(fact.Key, "ask", fact.Ask),
+	return intake.Result{}, e.relayKeptDecision(ctx, tx, fact.Key, fact.Ask, record.KeptDecision{Ref: itemRef(fact.Key, "ask", fact.Ask),
 		Decision: decision, Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark)})
 }
 
 // decidedAt is the time a person's decision at mark is kept at among the decisions of its ref
-// (record.Store.AddParkedDecision keeps the latest): Dispatch's time of the event, so a decision
+// (record.Store.KeepDecision keeps the latest): Dispatch's time of the event, so a decision
 // the daemon applies after a newer one on the same ref stays the older, and the engine's now for
 // an event that carries no time.
 func (e *Engine) decidedAt(mark record.EventMark) time.Time {
@@ -340,7 +340,7 @@ func (e *Engine) closer(ctx context.Context, tx pgx.Tx, root record.Issue, actor
 
 // dispatchAskReply applies the reply to the ask's mirror row and the root's wait (replyToAsk), and,
 // on a tree Legion is not running, relays a person's reply that leaves the turn with the agent, or
-// one under a closed ask, to the controller (relayParkedDecision): nobody inside such a tree hears
+// one under a closed ask, to the controller (relayKeptDecision): nobody inside such a tree hears
 // it. A reply that leaves the turn with the human asks the person again, so it is no decision of
 // theirs. A reply that names no comment is kept under its ask's ref, beside the ask's close, so
 // it is kept at Dispatch's time of the reply (decidedAt): one the daemon applies after a newer
@@ -353,7 +353,7 @@ func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.Di
 	if fact.Comment != "" {
 		ref = itemRef(fact.Key, "comment", fact.Comment)
 	}
-	return intake.Result{}, e.relayParkedDecision(ctx, tx, fact.Key, fact.Ask, record.ParkedDecision{Ref: ref, Decision: record.DecisionAskReply,
+	return intake.Result{}, e.relayKeptDecision(ctx, tx, fact.Key, fact.Ask, record.KeptDecision{Ref: ref, Decision: record.DecisionAskReply,
 		Actor: fact.Actor.Name(), At: e.decidedAt(fact.Mark)})
 }
 

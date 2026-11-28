@@ -24,7 +24,7 @@ Extends docs/solutions/github/a-pull-request-github-calls-mergeable-can-still-be
 
 ## Evidence
 
-Round 24 (`702c4ee9`) renamed this change's two migrations to main's timestamp rule (`20261101163106_parked_decisions`, `20261101163107_claim_delivered_rows`) without merging main.
+Round 24 (`702c4ee9`) renamed this change's two migrations to main's timestamp rule (`20261101163106`, the kept decisions' table, and `20261101163107_claim_delivered_rows`) without merging main.
 The branch's `0001_init.up.sql:4` still declared `version integer primary key`, and main's widening of that column (`widenSchemaVersion`, `packages/daemon/internal/store/store.go:238`) was not on the branch.
 At the branch head every database-backed test failed with `unable to encode 20261101163106 into binary format for int4`;
 CI, testing the merge with main, was green.

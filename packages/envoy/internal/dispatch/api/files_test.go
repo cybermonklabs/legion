@@ -403,7 +403,7 @@ func (p uploadLockProbe) heldBy() string {
 // transaction, and "" when it is anything else. What names it is the issue read, not the lock:
 // the two go out in one batch (store.LockOwnerAndRead), the server runs the lock first and the
 // read after it, and pg_stat_activity shows a backend at the last statement it ran, so a
-// transaction parked under that lock shows the read. Matching the lock's own statement could
+// transaction waiting under that lock shows the read. Matching the lock's own statement could
 // never fire. The read is the first statement an upload's transaction makes (storeArtifact's
 // issue branch, through requireOpenOwnerStatus), so an upload that opened its transaction before
 // writing its object would sit on it for the whole of Put, and it is no statement of this test's
@@ -440,7 +440,7 @@ func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string) uplo
 			return "taken", true
 		}
 		// Read once, at the first refusal: a reading per attempt would bury the one that
-		// matters, and a holder parked in Put is still there to be named at any later attempt.
+		// matters, and a holder waiting in Put is still there to be named at any later attempt.
 		if !probe.looked {
 			probe.looked = true
 			probe.holder = readIssueOwnerLockHolder(t, database, issue)
@@ -456,7 +456,7 @@ func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string) uplo
 
 // The negative control of that fast arm: a transaction of this test's own takes the issue's owner
 // lock and makes the read every upload makes under it (store.LockOwnerAndRead, issueStatusRead),
-// which is what pg_stat_activity shows of an upload's transaction parked in Put, and then holds
+// which is what pg_stat_activity shows of an upload's transaction waiting in Put, and then holds
 // both. The probe must name that holder and answer there, rather than wait for ever on a lock it
 // will never take. Without this nothing shows the arm can fire, and the test below could only
 // ever fail by timing out.
@@ -502,7 +502,7 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 // row for no key update (docs.lockArtifactOwner) for the ten-odd milliseconds its transaction
 // runs - so this test keeps it out of the window, as the other lock-order tests of an upload do
 // (upload_lock_test.go): under the default delay it fires about twenty milliseconds after the
-// issue is created, which lands inside the park here often enough to fail the nowait below on a
+// issue is created, which lands inside the wait here often enough to fail the nowait below on a
 // loaded machine, naming a lock that is not the upload's.
 //
 // The upload stays in Put until this test releases it, so a lock the upload holds is held for
@@ -556,7 +556,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 		uploaded <- response
 	}()
 	// Registered after the server's own cleanups, so it runs before them: a failure below must
-	// not leave the upload parked in Put while the server's shutdown waits for it.
+	// not leave the upload waiting in Put while the server's shutdown waits for it.
 	t.Cleanup(func() {
 		release()
 		<-finished

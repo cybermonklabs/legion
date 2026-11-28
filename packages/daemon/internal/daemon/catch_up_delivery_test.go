@@ -316,7 +316,7 @@ func TestACatchUpDeliveredAfterAnApprovalNamesNoChangesRequestTheApprovalFollowe
 			requested := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
 			d.putSpecGate(t, "artifact-1", 3)
 			d.write(t, "keep the person's changes request", func(ctx context.Context, tx pgx.Tx) error {
-				return d.records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: ref,
+				return d.records.KeepDecision(ctx, tx, record.KeptDecision{Issue: "LEGION-1", Ref: ref,
 					Decision: record.DecisionDesignChangesRequested, Actor: "user:alice", At: requested, Seq: 10})
 			})
 			keptCatchUp(t, d.pool, d.records, "LEGION-1", 1, d.now)

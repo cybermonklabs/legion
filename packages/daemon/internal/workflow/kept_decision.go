@@ -14,22 +14,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// relayParkedDecision hands a person's answer, resolution or reply on ask of key to the one rule
-// for a decision nobody in its tree hears (record.RelayParkedDecision), and logs one line for what
+// relayKeptDecision hands a person's answer, resolution or reply on ask of key to the one rule
+// for a decision nobody in its tree hears (record.RelayKeptDecision), and logs one line for what
 // became of it: relayed to the project's controller, which decides whether the tree runs again
-// (skill://legion-controller/references/parked-decisions.md); kept alone for the next architect
+// (skill://legion-controller/references/kept-decisions.md); kept alone for the next architect
 // start of a root that waits for its slot, whose tree already runs again; not relayed, for a
-// session's write on a parked tree or on a root waiting for its slot, or for a lingering root
-// someone moved back into the workflow. A decision on a tree that runs, which hears it itself, and
-// an ask of an issue Legion does not record log nothing: that is every ordinary ask. The writes are
-// in the event's own transaction, which ApplyFact keys by the Dispatch event's id, so a replay
-// writes none of them again.
-func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask string, decision record.ParkedDecision) error {
+// session's write on a tree that does not run or on a root waiting for its slot, or for a
+// lingering root someone moved back into the workflow. A decision on a tree that runs, which
+// hears it itself, and an ask of an issue Legion does not record log nothing: that is every
+// ordinary ask. The writes are in the event's own transaction, which ApplyFact keys by the
+// Dispatch event's id, so a replay writes none of them again.
+func (e *Engine) relayKeptDecision(ctx context.Context, tx pgx.Tx, key, ask string, decision record.KeptDecision) error {
 	root, err := e.treeRoot(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
 	}
-	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(),
+	outcome, err := record.RelayKeptDecision(ctx, tx, e.store, key, *root, root.Lingers(),
 		decision, record.Notice{}, e.cfg.Steps)
 	if err != nil {
 		return err
@@ -37,18 +37,18 @@ func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask st
 	args := []any{"issue", key, "root", root.Key, "ask", ask, "decision", decision.Decision, "ref", decision.Ref, "actor", decision.Actor}
 	switch outcome {
 	case record.RelaySent:
-		e.logOnCommit(ctx, "workflow: a person's decision on a parked tree goes to the controller", args...)
+		e.logOnCommit(ctx, "workflow: a person's decision on a tree that does not run goes to the controller", args...)
 	case record.RelayKept:
 		e.logOnCommit(ctx, "workflow: a person's decision on a tree waiting for its slot is kept for its architect's start", args...)
 	case record.RelayNoPerson:
 		if decision.Decision == record.DecisionAskReply {
-			e.logOnCommit(ctx, "workflow: a session's reply on a parked tree is not relayed", args...)
+			e.logOnCommit(ctx, "workflow: a session's reply on a tree that does not run is not relayed", args...)
 		} else {
-			e.logOnCommit(ctx, "workflow: a session's answer or resolution on a parked tree is not relayed", args...)
+			e.logOnCommit(ctx, "workflow: a session's answer or resolution on a tree that does not run is not relayed", args...)
 		}
 	case record.RelayNoPersonWaiting:
 		e.logOnCommit(ctx, "workflow: a session's decision on a tree waiting for its slot is not kept", args...)
-	case record.RelayNotParked:
+	case record.RelayBackInWorkflow:
 		e.logOnCommit(ctx, "workflow: a decision on a lingering root someone moved back into the workflow is not relayed", args...)
 	}
 	return nil
@@ -64,22 +64,23 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 	return e.store.Issue(ctx, tx, issue.Tree)
 }
 
-// ParkedDecisionTask is what root's architect is told at its start when the daemon kept a person's
-// decision on an issue of its tree while nobody in the tree could hear it (relayParkedDecision,
-// the outbox's parkDecision): each decision's ref, kind and author, newest first, so the architect
-// reads what brought it back, as ResumeAwaitedRoot names an answered root's answer. Admission's
-// start carries it as its task; every later launch's ready (claimReady: a relaunch, `legion claims
-// retry`) adds what was kept since to its catch-up. When the re-admission found the root's spec
-// approved at a version below its latest (the admission's readmit, Store.KeepReadmittedApproval: a
-// person approved a version the spec has since moved past), it also names both versions, so the
-// architect requests approval of the latest. It first forgets what is no longer the person's word
-// (ForgetSuperseded), then renders what is left (KeptDecisionsTask).
+// UnclaimedKeptTask is what root's architect is told at its start when the daemon kept a person's
+// decision on an issue of its tree while nobody in the tree could hear it (relayKeptDecision,
+// the outbox's relaySpecDecision): each decision's ref, kind and author, newest first, so the
+// architect reads what brought it back, as ResumeAwaitedRoot names an answered root's answer.
+// Admission's start carries it as its task; every later launch's ready (claimReady: a relaunch,
+// `legion claims retry`) adds what was kept since to its catch-up. When the re-admission found
+// the root's spec approved at a version below its latest (the admission's readmit,
+// Store.KeepReadmittedApproval: a person approved a version the spec has since moved past), it
+// also names both versions, so the architect requests approval of the latest. It first forgets
+// what is no longer the person's word (ForgetSuperseded), then renders what is left
+// (KeptDecisionsTask).
 //
 // What it may name is what root's tree is owed now: every row whose issue stands in that tree and
 // that no counting claim or hold holds (Store.UnclaimedKept). A claim or a hold an issue left
-// behind in another tree counts for nothing, so a child handed over, a parked child orphaned, a
-// grandchild handed over beside its parent and a queued root adopted each bring what was decided
-// on them to this task with nothing moved, in whatever order their admissions run.
+// behind in another tree counts for nothing, so a child handed over, a child in backlog orphaned,
+// a grandchild handed over beside its parent and a queued root adopted each bring what was
+// decided on them to this task with nothing moved, in whatever order their admissions run.
 //
 // The text names no generation: a start's task waits on its claim and is prompted whenever that
 // claim is next ready, which can be generations later, and the one architect session of the root
@@ -90,7 +91,7 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // a start's task tells it at the confirmation of the delivery the claim queued it as; one that
 // reached no architect hands it over (HandOverKept). Both results are zero when there is nothing
 // to name.
-func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
+func UnclaimedKeptTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
 	decisions, approval, err := store.UnclaimedKept(ctx, tx, root.Key)
 	if err != nil {
 		return "", nil, err
@@ -171,7 +172,7 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 
 // KeptDecisionsTask is the text that names owed to the architect of tree, and the part of owed it
 // names (kept), rendered from gates (ReadKeptGates) and writing nothing. It is the one wording a
-// start task and a catch-up both use (ParkedDecisionTask), the one a held task is written back to
+// start task and a catch-up both use (UnclaimedKeptTask), the one a held task is written back to
 // when the task waits to be sent (supervise's Deps.RootTask, the daemon's rootTask, NarrowRootTask),
 // beside the roots that rest on the root's approval (ArchitectStart.Resting), and the one a
 // catch-up is written again in when it is delivered (the daemon's readNoticeTree): a task that
@@ -181,7 +182,7 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // (SupersedingApproval), so no task can name a kept decision that nobody asked about. A kept
 // decision is asked as its relay is: at the version reviewed, at its own place in Dispatch's log
 // and of the document reviewed (record.DecisionMark.Version, Seq, At and Artifact, which the
-// outbox's parkDecision keeps from the notice's Version, Review and Artifact). The approval is
+// outbox's relaySpecDecision keeps from the notice's Version, Review and Artifact). The approval is
 // the root's own, and it is named only while a person approves its step (record.TakesStep:
 // gates.design off asks no person, and a step the deployment stopped gating asks no person either,
 // unless it is criteria the root registered beside a deployment that gates spec and not criteria),
@@ -258,13 +259,13 @@ func keptSuperseded(gates map[record.DesignStep]record.DesignGate, steps []recor
 		Version: mark.Version, Mark: record.EventMark{Seq: mark.Seq, At: mark.At}})
 }
 
-// ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.
-func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
-	return ParkedDecisionTask(ctx, tx, e.store, e.cfg.Steps, root)
+// UnclaimedKeptTask is UnclaimedKeptTask over the engine's store and gated steps.
+func (e *Engine) UnclaimedKeptTask(ctx context.Context, tx pgx.Tx, root record.Issue) (string, *record.KeptDecisions, error) {
+	return UnclaimedKeptTask(ctx, tx, e.store, e.cfg.Steps, root)
 }
 
 // EnqueueNaming enqueues payload for issue, due at, a root-architect start or a catch-up notice
-// whose task names kept of what tree is owed (ParkedDecisionTask), and claims those rows for that
+// whose task names kept of what tree is owed (UnclaimedKeptTask), and claims those rows for that
 // outbox row in the same transaction (Store.ClaimKeptDecisions), so no other start or catch-up of
 // that tree names them until that row settles them: a catch-up that published tells them, a start
 // whose task the claim queued leaves them to that delivery's confirmation, and a row that reached
@@ -410,8 +411,8 @@ func (e *Engine) GatedSteps() []record.DesignStep { return e.cfg.Steps }
 // stepRef is the Dispatch reference of the document a design-gate step reviews on issue key: the
 // issue's spec for the spec step, which is the reference every design decision carried before a
 // deployment could gate more than one step, and the slug Dispatch files the document under for
-// the other two. A person's decision is kept and relayed under it (record.ParkedDecision.Ref,
-// the outbox's parkDecision), and the newest decision per reference is the one kept, so two
+// the other two. A person's decision is kept and relayed under it (record.KeptDecision.Ref,
+// the outbox's relaySpecDecision), and the newest decision per reference is the one kept, so two
 // steps of one root must answer to two references or each person's decision would replace the
 // other's.
 func stepRef(key string, step record.DesignStep) string {
@@ -426,7 +427,7 @@ func stepRef(key string, step record.DesignStep) string {
 
 // refStep is the design-gate step whose document ref names on issue key, the one stepRef gives
 // it, and false for a reference that names no step's document (an ask's or a comment's). It is
-// how a sender that holds only a decision's reference (record.ParkedDecision.Ref,
+// how a sender that holds only a decision's reference (record.KeptDecision.Ref,
 // record.Notice.Ref) finds the step SupersedingApproval asks of (RefSuperseded).
 func refStep(key, ref string) (record.DesignStep, bool) {
 	for _, step := range record.DesignSteps {
@@ -443,11 +444,11 @@ func refStep(key, ref string) (record.DesignStep, bool) {
 // records every changes request it applies as told (applyArtifact), and tells one a newer review
 // already replaced without recording it, as the person's words, when no approval followed it; so a
 // notice the gate's record does not match is of a request the person has since replaced. The
-// outbox's parkDecision relays no such notice to the controller: kept, it would take the place of
-// the newer decision kept under the same document's ref, and of the claim a start holds on it. A
+// outbox's relaySpecDecision relays no such notice to the controller: kept, it would take the place
+// of the newer decision kept under the same document's ref, and of the claim a start holds on it. A
 // gate that records no request, or no gate of the notice's document, says nothing against it.
 // It does not decide whether the request is still the person's word, which SupersedingApproval
-// decides and parkDecision asks first (NoticeSuperseded): a request a newer one replaced
+// decides and relaySpecDecision asks first (NoticeSuperseded): a request a newer one replaced
 // still is, and the workflow tells it. It decides only which request holds the document's place
 // among what is kept and relayed.
 func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {

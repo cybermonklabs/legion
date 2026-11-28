@@ -150,7 +150,7 @@ func owedStarts(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart 
 // member of it, key, standing in stands at generation. The root waits in accepting while its
 // member works and this fixture gives it no row of its own, so the member's is the one row of
 // the tree and nothing of the root competes for another. A root that lingers stands in done
-// instead, with its deadline still ahead of it, which is how a parked tree reads.
+// instead, with its deadline still ahead of it, which is how a tree whose root is in backlog reads.
 //
 // What each caller adds after it is its own: seedSlotRepairRow takes the member's slot and writes
 // the role's phases row, the task its claim holds and the start it already has; seedOwedRepairRow
@@ -188,7 +188,7 @@ type slotRepairRow struct {
 	stands phase.Phase
 	// generation is the member's, which the start names and the claim's task is read against.
 	generation uint64
-	// lingers records the root as a park left it: phase done at a status that is not todo, with
+	// lingers records the root as a move to backlog left it: phase done at a status that is not todo, with
 	// a linger deadline ahead, which the project's live read leaves out.
 	lingers bool
 	// state and suspendedBy are the claim's.
@@ -246,7 +246,7 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 }
 
 // owedRepairRow is one row of the repair of a start that can no longer act. Every row is the same
-// fixture as parked_owed_start_test.go's — a running tree and a member of it, holding no slot,
+// fixture as backlog_owed_start_test.go's — a running tree and a member of it, holding no slot,
 // owing its worker the start row the transition wrote — with the claim that start would reach.
 type owedRepairRow struct {
 	name string
@@ -372,7 +372,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 			{name: "a slot whose root lingers", root: "LEGION-570", key: "LEGION-571", stands: phase.Testing,
 				generation: 1, lingers: true, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, slotGivenBack: true,
-				why: "this row changes the root's own record alone, to the one a park left: nothing of a tree that has left the workflow is started again until its re-admission. The pass answers before the repair reads the slots — a member of a lingering tree is at work for nothing — so what this row reads is the pass's whole answer rather than the repair's own skip of the root"},
+				why: "this row changes the root's own record alone, to the one a move to backlog left: nothing of a tree that has left the workflow is started again until its re-admission. The pass answers before the repair reads the slots — a member of a lingering tree is at work for nothing — so what this row reads is the pass's whole answer rather than the repair's own skip of the root"},
 			{name: "a role with a start already queued", root: "LEGION-580", key: "LEGION-581", stands: phase.Testing,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, queuedStart: true,

@@ -216,7 +216,7 @@ func TestARestartKeepsANamedSessionsEnrollment(t *testing.T) {
 }
 
 // TestARebootGivesTheResumedSessionItsIdentityBack: the recorded process is gone — every one of
-// them is, after a reboot — so the record is parked, and the session resuming under the same id
+// them is, after a reboot — so the record is kept dormant, and the session resuming under the same id
 // registers with the same key under the same runtime id, which is what makes the broker answer
 // with the enrollment it already has. Nothing is revoked in between.
 func TestARebootGivesTheResumedSessionItsIdentityBack(t *testing.T) {
@@ -232,7 +232,7 @@ func TestARebootGivesTheResumedSessionItsIdentityBack(t *testing.T) {
 	r := startRig(t, state)
 	seedEnrollment(r.fake, "enr-before", thumbprintOf(t, key), SessionRuntimeID(testSessionID))
 	if _, ok := r.srv.Registry.Dormant(testSessionID); !ok {
-		t.Fatal("a named session whose process is gone must be parked, not revoked")
+		t.Fatal("a named session whose process is gone must be kept dormant, not revoked")
 	}
 	if got := r.revokes(t); len(got) != 0 {
 		t.Fatalf("the reboot revoked %v before the session had a chance to come back", got)
@@ -258,7 +258,7 @@ func TestARebootGivesTheResumedSessionItsIdentityBack(t *testing.T) {
 	}
 }
 
-// TestASessionThatDoesNotComeBackLosesItsGrants: the other half of the bargain. A parked
+// TestASessionThatDoesNotComeBackLosesItsGrants: the other half of the bargain. A dormant
 // identity is not kept indefinitely — DormantGrace after its process went away, the helper
 // revokes its enrollment and forgets the record, so nothing on this box can sign as that
 // session again. What the enrollment held is then the broker's to settle: a launcher's revoke
@@ -276,7 +276,7 @@ func TestASessionThatDoesNotComeBackLosesItsGrants(t *testing.T) {
 
 	r := startRig(t, state)
 	if _, ok := r.srv.Registry.Dormant(testSessionID); !ok {
-		t.Fatal("the record must be parked first")
+		t.Fatal("the record must be kept dormant first")
 	}
 	r.srv.SweepDormant(context.Background()) // inside the grace: nothing yet
 	if got := r.revokes(t); len(got) != 0 {
@@ -397,7 +397,7 @@ func TestAnUnnamedSessionIsStillRevokedWhenItEnds(t *testing.T) {
 }
 
 // TestANamedSessionThatEndsIsKeptForTheGraceThenRevoked: the same end, for a named session, is
-// parked — an omp restarted in its pane, a box move and a reboot all look exactly like this —
+// kept dormant — an omp restarted in its pane, a box move and a reboot all look exactly like this —
 // and revoked only when the grace passes without it.
 func TestANamedSessionThatEndsIsKeptForTheGraceThenRevoked(t *testing.T) {
 	t.Parallel()

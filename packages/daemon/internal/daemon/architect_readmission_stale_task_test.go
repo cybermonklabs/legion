@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A root whose architect was given its first task and never confirmed it, then parked and handed
+// A root whose architect was given its first task and never confirmed it, then moved to backlog and handed
 // back, is re-admitted at the next generation, and its architect is given that generation's task
 // (dispatch://INFRA-2614, R3: each task the architect is given says what is true of its root).
 // The task the claim still held from the run before is no such task: it says the tree is open at
@@ -16,7 +16,7 @@ import (
 // architect is sent is the new generation's task, and the claim holds nothing of the old run.
 //
 // The path is the one the first stall arm leads to: an architect that took nothing is reported to
-// the controller, and a person parks its root and sets it todo again. Measured on the whole daemon
+// the controller, and a person moves its root to backlog and sets it todo again. Measured on the whole daemon
 // at c28f2ea12f32: the relaunch sent the old task first (outbox:5, "open at generation 1"), and the
 // re-admission's start only after the architect worked that one through a whole turn.
 func TestAReadmittedArchitectIsNotSentTheUnconfirmedTaskOfTheRunBefore(t *testing.T) {
@@ -28,10 +28,10 @@ func TestAReadmittedArchitectIsNotSentTheUnconfirmedTaskOfTheRunBefore(t *testin
 	r.bringUp()
 	held := r.machine().Claim().Pending
 	if held == nil || held.Generation != 1 || !held.ConfirmedAt.IsZero() {
-		t.Fatalf("the architect's task before the park = %#v, want its generation-1 task, sent and unconfirmed", held)
+		t.Fatalf("the architect's task before the move to backlog = %#v, want its generation-1 task, sent and unconfirmed", held)
 	}
 
-	r.park()
+	r.toBacklog()
 	r.runSuspend()
 	r.handBack()
 	r.runStarts()

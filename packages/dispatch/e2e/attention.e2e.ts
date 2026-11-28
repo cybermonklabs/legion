@@ -201,7 +201,7 @@ test("loading older Activity rows keeps the reader anchor", async ({ browser }) 
 
 // The read mark is the Conversation's, and the only thing it draws is each card's own `New`:
 // a mark that moves adds or removes a row above every unread card, so the reader's own card has
-// to stay where it was. The reader is parked over a gap between two cards, where
+// to stay where it was. The reader is scrolled to a gap between two cards, where
 // `ViewportAnchor`'s probe has to fall back to the card below.
 async function verifyGapDetection(
   browser: Parameters<typeof asUser>[0],
@@ -308,7 +308,7 @@ async function verifyGapDetection(
   }
 }
 
-test("a read mark moving under a reader parked in a Conversation gap keeps the lower card fixed", async ({
+test("a read mark moving under a reader scrolled to a Conversation gap keeps the lower card fixed", async ({
   browser,
 }) => {
   await verifyGapDetection(browser);

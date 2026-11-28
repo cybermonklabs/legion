@@ -216,9 +216,9 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 	// the start executor would retry it, but nothing queues that start.
 	retired := key("7")
 	until := time.Now().Add(time.Hour)
-	parked := record.Issue{Key: lingering, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: lingering, Project: cfg.Project, Title: lingering, Phase: phase.Done, Generation: 1, Status: "backlog", Rank: "n", HandedOver: true, LingerUntil: &until}
+	inBacklog := record.Issue{Key: lingering, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: lingering, Project: cfg.Project, Title: lingering, Phase: phase.Done, Generation: 1, Status: "backlog", Rank: "n", HandedOver: true, LingerUntil: &until}
 	child := runningRoot(lingeringChild, phase.Retro)
-	child.Tree, child.Parent = lingering, &parked.Key
+	child.Tree, child.Parent = lingering, &inBacklog.Key
 	// The tester's start for its phase is due in an hour: the outbox holds it, but the operator
 	// suspended the tester, so the start waits for the operator's resume and wakes nothing. The
 	// planner's is due then too, so the planning root's slot holds a worker whose start is owed
@@ -232,7 +232,7 @@ func TestABootNamesTheClaimsNothingWillWake(t *testing.T) {
 		t.Fatal(err)
 	}
 	putPreviousRun(t, cfg, previousRun{
-		issues: []record.Issue{runningRoot(implementing, phase.Implementing), runningRoot(reviewing, phase.Reviewing), runningRoot(tested, phase.Testing), parked, child, runningRoot(planning, phase.Planning), runningRoot(retired, phase.Testing)},
+		issues: []record.Issue{runningRoot(implementing, phase.Implementing), runningRoot(reviewing, phase.Reviewing), runningRoot(tested, phase.Testing), inBacklog, child, runningRoot(planning, phase.Planning), runningRoot(retired, phase.Testing)},
 		slots:  []string{implementing, reviewing, tested, planning, retired},
 		claims: []supervise.Claim{
 			previousClaim(t, cfg, implementing, implementing, claim.RoleArchitect, supervise.StateSuspended),
@@ -299,11 +299,11 @@ func TestABootWithOnlyIdleSuspendedClaimsReportsNothing(t *testing.T) {
 	key := func(n string) string { return cfg.Project + "-" + n }
 	root, lingering, lingeringChild := key("1"), key("2"), key("3")
 	until := time.Now().Add(time.Hour)
-	parked := record.Issue{Key: lingering, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: lingering, Project: cfg.Project, Title: lingering, Phase: phase.Done, Generation: 1, Status: "backlog", Rank: "n", HandedOver: true, LingerUntil: &until}
+	inBacklog := record.Issue{Key: lingering, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: lingering, Project: cfg.Project, Title: lingering, Phase: phase.Done, Generation: 1, Status: "backlog", Rank: "n", HandedOver: true, LingerUntil: &until}
 	child := runningRoot(lingeringChild, phase.Implementing)
-	child.Tree, child.Parent = lingering, &parked.Key
+	child.Tree, child.Parent = lingering, &inBacklog.Key
 	putPreviousRun(t, cfg, previousRun{
-		issues: []record.Issue{runningRoot(root, phase.Implementing), parked, child},
+		issues: []record.Issue{runningRoot(root, phase.Implementing), inBacklog, child},
 		slots:  []string{root},
 		claims: []supervise.Claim{
 			previousClaim(t, cfg, root, root, claim.RolePlanner, supervise.StateSuspended),

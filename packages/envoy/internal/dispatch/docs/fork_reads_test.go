@@ -791,15 +791,15 @@ func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 	})
 }
 
-// storeBeforePublish holds the write of artifactID that parks after its commit
+// storeBeforePublish holds the write of artifactID that pauses after its commit
 // (PauseAfterCommit) until the room has stored every update it took - the browser's commit the
-// transaction's advisory lock held back - and lets it go on. It fails unless the write parked,
+// transaction's advisory lock held back - and lets it go on. It fails unless the write paused,
 // the room's appends landed meanwhile, and the room's shadow, the write's fork, holds text by then
 // (roomShadow.measure): the order the caller exists to make.
 func storeBeforePublish(service *Service, artifactID, text string, wait time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
-	err := service.AwaitLiveWriteParked(ctx, artifactID, PauseAfterCommit)
+	err := service.AwaitLiveWritePaused(ctx, artifactID, PauseAfterCommit)
 	if err == nil {
 		err = service.waitForPendingUpdates(ctx, artifactID)
 	}

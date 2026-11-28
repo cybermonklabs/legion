@@ -222,7 +222,7 @@ func TestClearGenerationClearsTheWaitTheArchitectsEntryKept(t *testing.T) {
 // A clear of a generation forgets exactly the kept decisions a start forgets, because both run the
 // one forget (ForgetSuperseded): the engine hands it to the record's clear (forgetSuperseded,
 // record.KeptForget), and the start task's read runs it before it names anything
-// (ParkedDecisionTask). The same decisions, kept on two issues of one tree, go through each path
+// (UnclaimedKeptTask). The same decisions, kept on two issues of one tree, go through each path
 // on a record of their own: a changes request on the root that the root's gate's later approval
 // superseded, and one on the child made after the child's gate's approval, which is still the
 // person's word. The start, the clear of the tree and the clear of each issue in turn all forget
@@ -231,9 +231,9 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 	t.Parallel()
 	approvedAt := time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC)
 	approved := record.EventMark{Seq: 10, At: approvedAt}
-	superseded := record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Decision: record.DecisionDesignChangesRequested,
+	superseded := record.KeptDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Decision: record.DecisionDesignChangesRequested,
 		Actor: "user:alice", At: approvedAt.Add(-time.Hour), Seq: 8}
-	stands := record.ParkedDecision{Issue: "LEGION-2", Ref: "dispatch://LEGION-2/spec", Decision: record.DecisionDesignChangesRequested,
+	stands := record.KeptDecision{Issue: "LEGION-2", Ref: "dispatch://LEGION-2/spec", Decision: record.DecisionDesignChangesRequested,
 		Actor: "user:bob", At: approvedAt.Add(time.Hour), Seq: 12}
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	records := record.NewStore()
@@ -245,12 +245,12 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 		root := seedAdmittedTree(t, pool, 1)
 		version := 2
 		seedRecord(t, pool, func(tx pgx.Tx) error {
-			for _, d := range []record.ParkedDecision{superseded, stands} {
+			for _, d := range []record.KeptDecision{superseded, stands} {
 				if err := records.PutGate(t.Context(), tx, record.DesignGate{Issue: d.Issue, Step: record.DesignStepSpec, ArtifactID: "artifact-" + d.Issue,
 					LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true}); err != nil {
 					return err
 				}
-				if err := records.AddParkedDecision(t.Context(), tx, d); err != nil {
+				if err := records.KeepDecision(t.Context(), tx, d); err != nil {
 					return err
 				}
 			}
@@ -259,7 +259,7 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return path(ctx, tx, root.Tree) })
 		var refs []string
 		seedRecord(t, pool, func(tx pgx.Tx) error {
-			kept, err := records.ParkedDecisions(t.Context(), tx, root.Tree)
+			kept, err := records.KeptDecisionsOf(t.Context(), tx, root.Tree)
 			for _, d := range kept {
 				refs = append(refs, d.Ref)
 			}
@@ -274,7 +274,7 @@ func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, _, err = engine.ParkedDecisionTask(ctx, tx, *root)
+		_, _, err = engine.UnclaimedKeptTask(ctx, tx, *root)
 		return err
 	})
 	if want := []string{stands.Ref}; !slices.Equal(start, want) {

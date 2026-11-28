@@ -821,7 +821,7 @@ set_status "$root2" todo
 set_status "$root3" todo
 until_true 240 "three roots admitted" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg a '$root1' --arg b '$root2' --arg c '$root3' '(.admission.active | sort) == ([\$a,\$b,\$c] | sort)'"
-child=$(new_issue "Parked child leaf" "$root1")
+child=$(new_issue "Backlog child leaf" "$root1")
 set_status "$child" todo
 until_true 180 "$child recorded under $root1" sh -c \
   "'$work/legion' state --json --port '$port_daemon' | jq -e --arg c '$child' '.issues[\$c].phase == \"admitted\"'"

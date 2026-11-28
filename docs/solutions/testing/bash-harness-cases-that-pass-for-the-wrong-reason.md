@@ -134,15 +134,15 @@ label is a coverage gap even when no mutation is tried.
 Smoke checkpoint 3 with the design gate armed asserted two things about the root: the spec
 document is *awaiting* approval (the architect asked), and the tree has *moved past the gate*
 (a child issue exists or a phase worker is claimed). Those cannot both be true of a compliant
-architect: it parks the moment it asks, and once a human approves the document is no longer
+architect: it idles the moment it asks, and once a human approves the document is no longer
 awaiting. The assertion had been ruled in by the architect and the harness case passed — on a
 fixture whose daemon state showed a planner claimed on the root while the document still awaited,
 a state no compliant agent produces. The tester ran the real armed-gate exercise on the rig and
 checkpoint 3 could never pass (#975, tester round 1, acceptance 7). The corrected checkpoint
 asserts the opposite: with the gate armed and the document awaiting, *nothing* has moved
-(`architect_parked`: no child at `todo` or later, no non-architect claim on the root or a child),
+(a check that no child is at `todo` or later and no non-architect claim is on the root or a child),
 and it fails naming the early move; the progress assertion belongs to checkpoint 4, after the
-approval. The harness now carries the reachable states — parked single-issue, parked with a
+approval. The harness now carries the reachable states — an idle single issue, an idle root with a
 `triage` child — plus the two early-move negatives.
 
 Two checks before a fixture is written: (a) walk the state machine the checkpoint tests and

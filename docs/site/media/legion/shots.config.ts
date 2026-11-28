@@ -263,7 +263,7 @@ const legion: ShotSet<LegionJourney> = {
     },
     {
       id: "daily-report",
-      alt: "The project's Legion daily report issue, parked in Icebox, with the controller's report for the day: the issue Legion finished and its pull request, nothing running, and the free slots.",
+      alt: "The project's Legion daily report issue, in Icebox, with the controller's report for the day: the issue Legion finished and its pull request, nothing running, and the free slots.",
       route: (journey) => `/issues/${journey.report}/conversation`,
       viewport: "desktop",
       theme: "light",

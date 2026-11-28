@@ -17,7 +17,7 @@ body: |-
   run and which is in no turn
   (`CLAIM_IN_A_TURN`); a claim between states — one queued, one whose launch is in flight, one
   whose agent has registered and is not ready yet, which `fresh_session` reaches, and one
-  left working under a relaunch the wake pacing parked
+  left working under a relaunch the wake pacing delayed
   (`CLAIM_UNSETTLED`); a claim a suspension is held over, which
   takes the first of those two codes where the daemon records it working and the second where it
   does not; a claim whose role runs on Claude Code (`CLAIM_NOT_ON_OMP`);

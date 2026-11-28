@@ -26,7 +26,7 @@ nothing else could match it. Dispatch never re-emits that approval: `dispatch re
 on an already-approved document answers "already approved" and opens nothing. So a human who
 approved the spec from the document header while the architect was still writing, or who answered
 the Inbox question during the model turn between `dispatch request-approval` and `register_gate`,
-produced an approval the daemon threw away, and the architect parked forever on a wake that could
+produced an approval the daemon threw away, and the architect waited forever on a wake that could
 not come. The ask-based gate this replaced had the same window; the reviewer found it in round 1
 (the one blocking thread on PR #975).
 

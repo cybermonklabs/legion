@@ -88,8 +88,8 @@ func TestARestartBetweenTheKeptPodRecordAndTheRoundsEndStillNamesTheRoles(t *tes
 	}
 }
 
-// Parking one role keeps the pod disk records because the issue can come back.
-// Closing the issue deletes both the marked and unmarked rows (forgetIdleRelease).
+// Suspending one role, as a move to backlog does, keeps the pod disk records because the issue
+// can come back. Closing the issue deletes both the marked and unmarked rows (forgetIdleRelease).
 func TestTheKeptPodRecordsGoWithTheIssuesWork(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -121,10 +121,10 @@ func TestTheKeptPodRecordsGoWithTheIssuesWork(t *testing.T) {
 	}
 
 	if err := runner.execute(ctx, mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "suspend", Tree: pauseIssue,
-		Role: claim.RoleArchitect, Generation: 1, Reason: "the tree was parked"}, time.Now())); err != nil {
+		Role: claim.RoleArchitect, Generation: 1, Reason: "the tree moved to backlog"}, time.Now())); err != nil {
 		t.Fatalf("the architect's suspend: %v", err)
 	}
-	wantRows("after parking a role", 2)
+	wantRows("after a move to backlog suspends a role", 2)
 
 	if err := runner.execute(ctx, mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "issue_close", Tree: pauseIssue,
 		Role: claim.RoleImplementer, Generation: 1}, time.Now())); err != nil {

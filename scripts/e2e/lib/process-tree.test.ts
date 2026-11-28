@@ -349,7 +349,7 @@ echo "none: status $st: \${why%%:*}"
 
 // The rig helpers' process-scan rows: signalable and stop_tree (lib/process-tree.sh) and the proc_*
 // reads they use each read only the /proc entries of the processes they ask about (the failure note
-// of parked-decision-devbox.sh's wait_for_run_processes is parked-decision-cleanup.test.ts's). Each
+// of kept-decision-devbox.sh's wait_for_run_processes is kept-decision-cleanup.test.ts's). Each
 // row puts a stand-in for ps, pgrep and pkill first on PATH that logs every call and runs nothing:
 // those read every process on the machine (procps-ng's `ps -p` included), so a helper that still
 // calls one is named in the log, and the row fails. The traced row, where strace is on the host,

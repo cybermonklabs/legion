@@ -92,7 +92,7 @@ p6 is `done` driven in production (`skills/dispatch/SKILL.md:45`) against `done`
 
 p7 is the two readings of `unresponsive` that `skills/envoy/SKILL.md:49` sets against each other: "it has not answered yet", not "it ended" [s-pair-p7-source].
 
-p8 is the two readings of a parked child that `skills/legion-architect/SKILL.md:45` sets against each other: "a parked child is stopped, not done" [s-pair-p8-source].
+p8 is the two readings of a child moved to the backlog that `skills/legion-architect/SKILL.md:45` sets against each other: "a parked child is stopped, not done" [s-pair-p8-source].
 
 p9 is the two readings of a message's `from` that `skills/envoy/SKILL.md:35` sets against each other: the sender's own claim, and never proof of who wrote the message [s-pair-p9-source].
 

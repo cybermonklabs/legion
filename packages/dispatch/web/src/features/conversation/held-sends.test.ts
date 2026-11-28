@@ -834,7 +834,7 @@ test("leaving asks for confirmation only while a send is unconfirmed", async () 
   }
 });
 
-// A send pressed while the browser is offline is tried, not parked: its own retries wait out the
+// A send pressed while the browser is offline is tried, not paused: its own retries wait out the
 // network, it goes late at its deadline - where Stop trying is offered - and a host's hold on its
 // name counts it the whole time (`useSending`), until it lands once the network is back.
 test("a send pressed offline is tried, goes late, holds its name, and lands", async () => {

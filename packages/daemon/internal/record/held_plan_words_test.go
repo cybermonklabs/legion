@@ -78,7 +78,7 @@ func planChild(key, tree, parent, status string, stands phase.Phase) Issue {
 // active set and its absence from it is the gap unclassified reports. A word above the two new
 // ones that is true of the issue still answers first.
 func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
-	parked := linePartIssue("LEGION-73", "LEGION-73", "backlog", phase.Admitted, "LEGION-73")
+	inBacklog := linePartIssue("LEGION-73", "LEGION-73", "backlog", phase.Admitted, "LEGION-73")
 	doneChild := planChild("LEGION-42", "LEGION-40", "LEGION-41", DoneStatus, phase.Done)
 	issues := []Issue{
 		// A root held before its retro for its children: one still in the workflow, one done.
@@ -100,10 +100,10 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 		planHeld("LEGION-61", "LEGION-61", nil, phase.Retro, HoldEscalated),
 		planHeld("LEGION-62", "LEGION-62", nil, phase.Retro, ""),
 		planHeld("LEGION-63", "LEGION-63", nil, phase.Implementing, ""),
-		// Earlier words: a Dispatch blocker, and a tree a person parked.
+		// Earlier words: a Dispatch blocker, and a tree a person moved to backlog.
 		planHeld("LEGION-70", "LEGION-70", nil, phase.Retro, HoldForChildren),
 		planChild("LEGION-71", "LEGION-70", "LEGION-70", "in_progress", phase.Implementing),
-		parked,
+		inBacklog,
 		planHeld("LEGION-72", "LEGION-73", new("LEGION-73"), phase.Merging, HoldTaskStopped),
 		// Roots held before their retro with nothing beneath them in the workflow: one a root of
 		// another tree rests on, one an open Dispatch child holds, and one held by both, which
@@ -141,7 +141,7 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 		{"control: a failed claim from retro, the hold of an issue with no plan rows", "LEGION-62", HeldUnclassified, nil},
 		{"control: a failed claim from implementing, the hold of an issue with no plan rows", "LEGION-63", HeldUnclassified, nil},
 		{"a Dispatch blocker answers before the hold for children", "LEGION-70", HeldDispatchBlocker, []string{"LEGION-900"}},
-		{"a parked tree answers before the stopped task", "LEGION-72", HeldTreeParked, []string{"LEGION-73"}},
+		{"a tree in backlog answers before the stopped task", "LEGION-72", HeldTreeInBacklogOrIcebox, []string{"LEGION-73"}},
 		{"a root held before its retro names the root resting on it", "LEGION-80", HeldChildrenBeforeRetro, []string{"LEGION-90"}},
 		{"a root held before its retro names its open Dispatch child", "LEGION-81", HeldChildrenBeforeRetro, []string{"LEGION-91"}},
 		{"a resting root comes before an open Dispatch child", "LEGION-82", HeldChildrenBeforeRetro, []string{"LEGION-92"}},

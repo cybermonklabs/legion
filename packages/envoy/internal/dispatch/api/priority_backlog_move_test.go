@@ -581,7 +581,7 @@ func backlogMoveAnswers(t *testing.T, database *store.Store, priorities, setup [
 	if err := tx.QueryRow(ctx, priorityReadQuery, priorities, []string{}).Scan(read.targets()...); err != nil {
 		t.Fatalf("run the priorities read's statement: %v", err)
 	}
-	answer.Count, answer.ByPriority, answer.Backlog = read.parked.resolve(true)
+	answer.Count, answer.ByPriority, answer.Backlog = read.inBacklog.resolve(true)
 	listed, err := tx.Query(ctx, listIssuesQuery, projectListingArguments(backlogMoveProject, true)...)
 	if err != nil {
 		t.Fatalf("run the listing: %v", err)

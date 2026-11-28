@@ -52,7 +52,7 @@ func (e *Engine) checkRole() claim.Role { return e.cfg.ProductionCheckRole }
 // handed to that role's live session; the rows are the same, since the start resumes either. One check
 // per issue: a second merge of the same issue — a rerun's, after a re-entry closed the first —
 // replaces the earlier record, whose bound row the new check then defers to its own bound
-// (checkBound); the same merge seen again — a done child a person parks and sets done again, each
+// (checkBound); the same merge seen again — a done child a person moves to backlog and sets done again, each
 // move a leave — opens nothing, since the check it has, open or recorded, is that merge's. The
 // check's OpenedAt is its identity (record.ProductionCheck.ID), so it is the clock truncated to the
 // microsecond, Postgres's timestamptz precision: the value the rows and facts of this transaction

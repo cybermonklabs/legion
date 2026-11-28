@@ -1,9 +1,9 @@
 kind: Changed
 body: |-
-  `release_children`, `park_child` and `rerun_child` now refuse, with 403 `ISSUE_NOT_OWNED`
+  `release_children`, the operation that moves a running child to `backlog`, and `rerun_child` now refuse, with 403 `ISSUE_NOT_OWNED`
   and before any write, an issue that is not under the calling sub-architect's own issue: the
   tree root, the sub-architect's own issue, a sibling, or an issue under a sibling. The root
-  architect can still release, park and rerun every child of its tree, with the same status
+  architect can still release, move to backlog and rerun every child of its tree, with the same status
   codes as before. The message of the 409 `CHILD_RELEASE_STALLED` now names the architect told
   (`the architect of <issue> was notified`) for the call that queued the notice, and, for a later
   call, says that a notice was queued when the attempts ran out, where it said `the tree architect

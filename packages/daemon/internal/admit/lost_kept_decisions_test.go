@@ -17,7 +17,7 @@ import (
 
 // namings is everything the architect of tree is told of what a person decided while nobody in
 // that tree could hear it: the task of each architect start queued for it
-// (workflow.Engine.ParkedDecisionTask) and what each of its catch-ups says was decided
+// (workflow.Engine.UnclaimedKeptTask) and what each of its catch-ups says was decided
 // (record.CatchUp.Decided). Those are the only two texts that name a kept decision to an
 // architect, so a decision named in none of them reaches that architect never.
 func namings(t *testing.T, pool *pgxpool.Pool, tree string) []string {
@@ -71,7 +71,7 @@ func TestAChildHandedOverWithoutItsRunTakesTheDecisionKeptOnIt(t *testing.T) {
 	seedMirror(t, pool, blocker, "in_progress")
 	seedMirror(t, pool, child, "in_progress", blocker)
 	childAsk := "dispatch://LEGION-209/ask/ask-1"
-	keepParkedDecision(t, pool, old, child, childAsk)
+	keepDecision(t, pool, old, child, childAsk)
 
 	// The linger's end hands the child over, which admission re-admits as a root of its own.
 	applyMirrored(t, pool, admission, "handover", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets",
@@ -96,11 +96,11 @@ func TestAChildHandedOverWithoutItsRunTakesTheDecisionKeptOnIt(t *testing.T) {
 	}
 }
 
-// A person who sets a parked child of a closed tree back to todo makes it an orphan root of its
+// A person who sets a child in backlog of a closed tree back to todo makes it an orphan root of its
 // own, carrying no run (its phase is done). The decisions a person made on it while that tree was
 // nobody's to hear are owed to the architect of the root it becomes: its start names them. Left
 // under the closed root, they stand where nothing names them again.
-func TestAnOrphanedParkedChildTakesTheDecisionKeptOnIt(t *testing.T) {
+func TestAnOrphanedChildInBacklogTakesTheDecisionKeptOnIt(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	const old, child = "LEGION-208", "LEGION-209"
@@ -112,7 +112,7 @@ func TestAnOrphanedParkedChildTakesTheDecisionKeptOnIt(t *testing.T) {
 		Tree: old, Project: testProject, Parent: &parent, Title: child, Phase: phase.Done, Generation: 1,
 		Status: "backlog", Rank: "B", LastDispatchSeq: 1})
 	childAsk := "dispatch://LEGION-209/ask/ask-1"
-	keepParkedDecision(t, pool, old, child, childAsk)
+	keepDecision(t, pool, old, child, childAsk)
 
 	applyMirrored(t, pool, admission, "person-labels", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets",
 		Seq: 2, Type: "issue.updated", Status: "todo", Title: child, Parent: old, Rank: "B", HandedOver: handed},
@@ -133,7 +133,7 @@ func TestAnOrphanedParkedChildTakesTheDecisionKeptOnIt(t *testing.T) {
 }
 
 // A root that waits for its slot keeps a person's decision for the start its admission will queue
-// (record.RelayParkedDecision, RelayKept). When a person makes that root a child of a live tree
+// (record.RelayKeptDecision, RelayKept). When a person makes that root a child of a live tree
 // instead, admission adopts it into that tree (adoptQueuedRoots) and it takes no start of its own
 // ever again: the decision is owed to the architect of the tree it joined. That architect already
 // runs and no ready follows the adoption, so the adoption itself writes it a catch-up naming the
@@ -146,7 +146,7 @@ func TestAnAdoptionIntoATreeWhoseArchitectRunsWritesItACatchUp(t *testing.T) {
 	seedOpenTree(t, pool, tree)
 	putIssue(t, pool, queuedRoot(queued, tree, "B", 1))
 	ask := "dispatch://LEGION-214/ask/ask-1"
-	keepParkedDecision(t, pool, queued, queued, ask)
+	keepDecision(t, pool, queued, queued, ask)
 
 	applyFact(t, pool, admission, "tick", intake.ControllerTick{})
 	if got := issue(t, pool, queued); got.Tree != tree {
@@ -172,7 +172,7 @@ func TestAnAdoptionIntoATreeWhoseArchitectRunsWritesItACatchUp(t *testing.T) {
 func keptOwner(t *testing.T, pool *pgxpool.Pool, ref string) (issue, claimTree string) {
 	t.Helper()
 	err := pool.QueryRow(context.Background(), `select kept.issue, coalesce(claimed.tree, '')
-		from parked_decisions kept
+		from kept_decisions kept
 		left join outbox claimer on claimer.id = kept.claimed_by
 		left join issues claimed on claimed.key = claimer.issue
 		where kept.ref = $1`, ref).Scan(&issue, &claimTree)
@@ -213,8 +213,8 @@ func TestAGrandchildHandedOverBesideItsParentTakesTheDecisionKeptOnIt(t *testing
 					t.Fatalf("seed the grandchild's fence: %v", err)
 				}
 			})
-			keepParkedDecision(t, pool, old, child, childAsk)
-			keepParkedDecision(t, pool, old, grand, grandAsk)
+			keepDecision(t, pool, old, child, childAsk)
+			keepDecision(t, pool, old, grand, grandAsk)
 
 			for _, key := range tc.order {
 				handOverParent := old

@@ -356,7 +356,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// Before, each was recorded only once its write's todo event came back through the daemon's
 	// Dispatch consumer, after the answer, so a consumer running half an hour behind left both
 	// unrecorded, and the free one unstarted, for that half hour.
-	stalled := createBlockersIssue(t, baseURL, cfg.Project, "Parked schema cleanup", free, []string{blocked})
+	stalled := createBlockersIssue(t, baseURL, cfg.Project, "Schema cleanup in backlog", free, []string{blocked})
 	ready := createBlockersIssue(t, baseURL, cfg.Project, "Queued logging refactor", free, nil)
 	for _, key := range []string{stalled, ready} {
 		setDispatchStatus(t, baseURL, key, "backlog")

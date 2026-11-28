@@ -22,7 +22,7 @@ const (
 	// statuses. The done a merge or an architect's close writes is a CloseStatusRow.
 	OrdinaryStatusRow StatusRowKind = "ordinary"
 	// PersonHandoverStatusRow is a person's handover: a person's legion label on an unrecorded
-	// root in triage, or a person's approval of a parked labelled root's primary document. It is
+	// root in triage, or a person's approval of the primary document of a labelled root in backlog or icebox. It is
 	// queued at the triage, backlog or icebox that act found, to bring the issue into the
 	// workflow. The pending-row rule (Store.PersonHandoverPending) reads the kind to tell such a
 	// row from the workflow's other status rows, which suppress nothing: while one is pending for

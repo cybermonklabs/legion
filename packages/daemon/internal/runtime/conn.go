@@ -69,7 +69,7 @@ var ErrNoAnswer = errors.New("no answer on the worker stream within the request'
 // received it. It is the one no-answer of a send that says a prompt frame went out: an adoption,
 // an identity mint or a protocol negotiation that times out comes before the prompt is written,
 // and carries ErrNoAnswer or the context's error alone. Oh My Pi can hold a prompt it was handed
-// and answer it only later — it parks a prompt that reaches it while a handoff runs until the
+// and answer it only later — it holds a prompt that reaches it while a handoff runs until the
 // handoff ends — so the prompt this names may still run.
 var ErrPromptUnanswered = errors.New("the prompt was written and no answer came within its wait")
 

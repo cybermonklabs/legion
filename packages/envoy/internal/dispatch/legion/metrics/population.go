@@ -616,8 +616,8 @@ func (p *Population) readRoleEvents(ctx context.Context, pool *store.Pool, keys 
 	return nil
 }
 
-// readStatusMarks reads every status the issues' own events snapshotted: what the parked
-// subtraction and the pre-observation review rounds read.
+// readStatusMarks reads every status the issues' own events snapshotted: what the subtraction of
+// the time in backlog or icebox and the pre-observation review rounds read.
 func (p *Population) readStatusMarks(ctx context.Context, pool *store.Pool, keys []string) error {
 	rows, err := pool.Query(ctx, `
 		select issue_key, created_at, payload->>'status'

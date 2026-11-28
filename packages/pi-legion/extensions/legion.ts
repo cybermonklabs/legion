@@ -630,7 +630,7 @@ export default function legionExtension(pi: PiApi): void {
   // Both ends of a call close its record, the error end of a call the host failed closed before
   // it ran among them — and the end of a call the host backgrounded, whose command keeps
   // running. That call leaves this book while its process lives, and that is the record this
-  // watch wants rather than a gap in it: the agent is no longer parked in the call, since the
+  // watch wants rather than a gap in it: the agent no longer waits in the call, since the
   // host freed its turn and handed it the job, so the ladder's steps would end the processes of
   // a call nobody waits on and abort a turn that is working. What the agent does with the job
   // next is a call of its own with a clock of its own, and a session that goes quiet altogether

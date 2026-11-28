@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// RelayOutcome is what RelayParkedDecision did with one decision, which is what its caller logs.
+// RelayOutcome is what RelayKeptDecision did with one decision, which is what its caller logs.
 type RelayOutcome int
 
 const (
@@ -20,22 +20,22 @@ const (
 	// Nothing is kept and nobody is told.
 	RelayNone RelayOutcome = iota
 	// RelayKept is a person's decision on a tree whose root waits for its slot: it is kept for the
-	// root's next architect start, which names it (workflow.Engine.ParkedDecisionTask), and the
+	// root's next architect start, which names it (workflow.Engine.UnclaimedKeptTask), and the
 	// controller is not told, since the tree already runs again.
 	RelayKept
-	// RelaySent is a person's decision on a parked tree: kept for the root's next start and relayed
-	// to the project's controller, which decides whether the tree runs again.
+	// RelaySent is a person's decision on a tree that does not run: kept for the root's next start
+	// and relayed to the project's controller, which decides whether the tree runs again.
 	RelaySent
-	// RelayNoPerson is a decision on a parked tree that no person made — a session's, or the
-	// daemon's own — which is nobody's to relay.
+	// RelayNoPerson is a decision on a tree that does not run that no person made — a session's,
+	// or the daemon's own — which is nobody's to relay.
 	RelayNoPerson
 	// RelayNoPersonWaiting is a decision no person made on a tree whose root waits for its slot:
 	// nothing is kept, since only a person decides, and nobody is told.
 	RelayNoPersonWaiting
-	// RelayNotParked is a decision on a lingering root someone has since moved to a status of the
-	// workflow (admission's releaseUnslotted leaves one at in_progress): it is nobody's parked
-	// tree, so nothing is kept and nobody is told.
-	RelayNotParked
+	// RelayBackInWorkflow is a decision on a lingering root someone has since moved to a status of
+	// the workflow (admission's releaseUnslotted leaves one at in_progress): its tree is back in
+	// the workflow, so nothing is kept and nobody is told.
+	RelayBackInWorkflow
 )
 
 // WaitsForSlot says whether root is a root handed to Legion that waits in the line for its tree
@@ -48,7 +48,7 @@ const (
 // root handed over in accepting carries the row it held in the tree it left (Waiting's
 // queued-root loop states why), so a person's todo on such a root read here as a root with no
 // architect, and every decision a person made on its tree was kept for a start that is never
-// queued instead of reaching the architect that is running (RelayParkedDecision, workflow's
+// queued instead of reaching the architect that is running (RelayKeptDecision, workflow's
 // CatchUpTheTreesOwed). The slot is still asked, after the rule rather than instead of it: a
 // root at admitted whose gate has never opened is a queued root by its record and holds the
 // slot its architect is writing the design in, and that architect hears a decision itself.
@@ -70,44 +70,45 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 	return !slices.ContainsFunc(slots, func(slot Slot) bool { return slot.Issue == root.Key }), nil
 }
 
-// RelayParkedDecision is the one rule for a decision made where nobody in its tree hears it, which
+// RelayKeptDecision is the one rule for a decision made where nobody in its tree hears it, which
 // both paths that find one follow: the workflow's answer, resolution or reply on an ask of a tree
 // nobody runs (workflow's ask_mirror.go), and the outbox's spec decision whose notice no architect
-// took (the daemon's parkDecision). issue is where in Dispatch the decision was made, root its
+// took (the daemon's relaySpecDecision). issue is where in Dispatch the decision was made, root its
 // tree's root, and nobodyHears says the caller found nobody inside the tree to hear it. The rules,
 // in order:
 //
 //   - A root that waits for its slot (WaitsForSlot) keeps a person's decision for the start its
 //     admission will queue, and the controller is told nothing: the tree already runs again.
 //   - A tree that runs hears the decision itself (RelayNone), and a lingering root someone has
-//     moved back into the workflow is nobody's parked tree (RelayNotParked): either keeps nothing.
+//     moved back into the workflow is a tree that runs again (RelayBackInWorkflow): either keeps
+//     nothing.
 //   - Only a person decides (PersonActor): a session's write, the daemon's own included, is no
 //     decision to relay (RelayNoPerson).
 //   - What is kept is kept under issue, the issue it was decided on, never under a root: the tree
 //     that owes the person an answer is the tree that issue stands in whenever a start or a
-//     catch-up names it, so a child handed over into a tree of its own, a parked child a person
+//     catch-up names it, so a child handed over into a tree of its own, a child in backlog a person
 //     orphans and a queued root adopted into a live tree take what was decided on them with them,
 //     with nothing to move. It is kept until the start or catch-up that named it reached an
 //     architect of that tree (Store.ForgetKeptDecisions, or the confirmation of the delivery
 //     holding it); one that reached none hands it over to a fresh catch-up
 //     (workflow.HandOverKept), so it is never left unclaimed while its tree has an architect to
 //     tell. The root is read for the two answers that are the root's own: whether it waits for its
-//     slot, and the one parked-decision controller notice that names it, the decision, where in
+//     slot, and the one kept-decision controller notice that names it, the decision, where in
 //     Dispatch, who made it, and what spec says of it.
 //
-// spec is the notice that reported a spec decision (the daemon's parkDecision passes the one no
-// architect took), and the controller notice carries what it says as it says it: the version, a
+// spec is the notice that reported a spec decision (the daemon's relaySpecDecision passes the one
+// no architect took), and the controller notice carries what it says as it says it: the version, a
 // changes request's reason, and Dispatch's mark of the review with the document reviewed
 // (Notice.Review, Notice.Artifact). A decision no notice reported, an ask's, passes the zero
 // Notice. The mark is the notice's own and never the time the decision is kept at, which is the
-// daemon's clock where the notice gave none (ParkedDecision.At), because the publish of a relayed
+// daemon's clock where the notice gave none (KeptDecision.At), because the publish of a relayed
 // changes request asks again whether the person's approval followed it (the daemon's
 // controllerNotice), and asks it of that mark and that document.
 //
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
 // them again.
-func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
-	decision ParkedDecision, spec Notice, steps []DesignStep) (RelayOutcome, error) {
+func RelayKeptDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
+	decision KeptDecision, spec Notice, steps []DesignStep) (RelayOutcome, error) {
 	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
 	if err != nil {
 		return RelayNone, err
@@ -117,7 +118,7 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 			return RelayNone, nil
 		}
 		if root.Lingers() && !OutOfWorkflow(root.Status) {
-			return RelayNotParked, nil
+			return RelayBackInWorkflow, nil
 		}
 	}
 	if !PersonActor(decision.Actor) {
@@ -127,13 +128,13 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 		return RelayNoPerson, nil
 	}
 	decision.Issue = issue
-	if err := store.AddParkedDecision(ctx, tx, decision); err != nil {
+	if err := store.KeepDecision(ctx, tx, decision); err != nil {
 		return RelayNone, err
 	}
 	if waiting {
 		return RelayKept, nil
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice,
+	row, err := NewOutboxRow(issue, ControllerNotice{Kind: KeptDecisionNotice,
 		Decision: decision.Decision, Root: root.Key, Ref: decision.Ref, Actor: decision.Actor,
 		Version: spec.Version, Reason: spec.Reason, Review: spec.Review, Artifact: spec.Artifact},
 		decision.At)
@@ -148,7 +149,7 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 
 // DecisionMark identifies one kept decision an architect's start task or catch-up named: the
 // issue it was decided on, its Dispatch reference and the time of the decision the row held then
-// (ParkedDecision.At) are the row's identity — a newer decision a person made on the same
+// (KeptDecision.At) are the row's identity — a newer decision a person made on the same
 // reference since replaces that row with a later time, so the telling leaves it for the next
 // start or catch-up to name — and its kind and its author are what the task's text says of it
 // (workflow.KeptDecisionsTask), which is rewritten from these marks whenever a held task is
@@ -160,9 +161,9 @@ type DecisionMark struct {
 	Issue    string       `json:"issue,omitempty"`
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
-	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), Artifact the
-	// document reviewed (ParkedDecision.Artifact) and Version its version reviewed
-	// (ParkedDecision.Version), which a send asks the gate with (workflow.SupersedingApproval);
+	// Seq is Dispatch's sequence of the spec decision's review (KeptDecision.Seq), Artifact the
+	// document reviewed (KeptDecision.Artifact) and Version its version reviewed
+	// (KeptDecision.Version), which a send asks the gate with (workflow.SupersedingApproval);
 	// none is part of the row's identity.
 	Seq      int64  `json:"seq,omitempty"`
 	Artifact string `json:"artifact,omitempty"`
@@ -182,7 +183,7 @@ type KeptForget func(ctx context.Context, tx pgx.Tx, tree string, owed KeptDecis
 
 // QueuedChanges is a person's changes request the outbox still holds, a row a runner has leased
 // included: a design-changes-requested or basis-changes-requested notice for an architect, or the
-// parked-decision controller notice that relays a changes request (Kind, the row's kind, says
+// kept-decision controller notice that relays a changes request (Kind, the row's kind, says
 // which). Row is the row's id, Issue the row's issue, whose gates the request is asked of, and
 // Notice the decision the row carries, a relay read as the Notice it is.
 type QueuedChanges struct {
@@ -212,7 +213,7 @@ type KeptApproval struct {
 }
 
 // KeptDecisions is what one architect start task or catch-up named of what its tree is owed
-// (workflow.Engine.ParkedDecisionTask): each decision, and the step and the pair of approved and
+// (workflow.Engine.UnclaimedKeptTask): each decision, and the step and the pair of approved and
 // latest versions of the document a person approved when it named one. It travels with the task
 // (SuperviseRequest.Kept, CatchUp.Kept) and is persisted with the delivery a claim queues it as,
 // which is what says which rows that delivery holds. A published catch-up tells exactly what it
@@ -259,7 +260,7 @@ func (k KeptDecisions) validate() error {
 	return nil
 }
 
-// DecisionKind is what a person did that a parked-decision notice relays.
+// DecisionKind is what a person did that a kept-decision notice relays.
 type DecisionKind string
 
 const (
@@ -290,7 +291,7 @@ func SpecDecision(kind NoticeKind) (DecisionKind, bool) {
 	}
 }
 
-// validDecisionKinds is every decision a parked-decision notice may relay, which is what
+// validDecisionKinds is every decision a kept-decision notice may relay, which is what
 // validDecisionKind decides from. It is a list rather than a switch so a test can range over it,
 // as validNoticeKinds is.
 var validDecisionKinds = []DecisionKind{

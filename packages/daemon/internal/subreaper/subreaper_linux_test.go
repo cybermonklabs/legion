@@ -60,7 +60,7 @@ func runHelper(helper string) int {
 	}
 	if h.delay != nil {
 		// Release the reaper before it is stopped: on an error path together and orphan return
-		// without releasing it, and a reaper parked in record on the delay would make h.stop hang.
+		// without releasing it, and a reaper blocked in record on the delay would make h.stop hang.
 		h.delay.done()
 	}
 	if h.stop != nil {
@@ -76,7 +76,7 @@ func runHelper(helper string) int {
 // helperRun.record, which records the pid the pass reaped. It makes the order in the flaky
 // together and orphan cases certain: an orphan can be gone before the test has seen the callback's
 // record. done is idempotent (sync.Once), and runHelper calls it before it stops the reaper, so a
-// helper that returns an error while the reaper is parked in record never leaves it stuck.
+// helper that returns an error while the reaper is blocked in record never leaves it stuck.
 type recordDelay struct {
 	entered chan struct{}
 	release chan struct{}
@@ -234,11 +234,11 @@ func (h *helperRun) together(delay *recordDelay, injectError bool) error {
 				return fmt.Errorf("round %d: the reaper made the orphan gone but did not enter its record in %s", round, helperBound)
 			}
 			if injectError {
-				// The reaper is parked in record on the delay's release. This returns the error
+				// The reaper is blocked in record on the delay's release. This returns the error
 				// path's own way (without delay.done()), so the control proves runHelper releases
 				// the delay before it stops the reaper; otherwise stop would hang and this error
 				// line would never be printed.
-				return fmt.Errorf("round %d: a forced helper error while the reaper is parked in its record", round)
+				return fmt.Errorf("round %d: a forced helper error while the reaper is blocked in its record", round)
 			}
 			delay.done()
 		}
@@ -475,12 +475,12 @@ func TestAGuardedChildAndAnOrphanEndingTogetherAreEachReapedOnce(t *testing.T) {
 	}
 }
 
-// A helper that returns an error while the reaper is parked in its record (the delayed round of
+// A helper that returns an error while the reaper is blocked in its record (the delayed round of
 // the together case, forced by together-delayed-error) reaches the test with its error line, and
 // within a short bound: runHelper releases the delay before it stops the reaper, so h.stop does not
-// hang on the parked reaper. A runHelper that stopped the reaper without releasing it would hang
+// hang on the blocked reaper. A runHelper that stopped the reaper without releasing it would hang
 // until runCase's own context killed the helper, and the error line would be lost.
-func TestAHelperErrorWithTheReaperParkedReachesTheTest(t *testing.T) {
+func TestAHelperErrorWithTheReaperBlockedReachesTheTest(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -493,7 +493,7 @@ func TestAHelperErrorWithTheReaperParkedReachesTheTest(t *testing.T) {
 	out, err := helper.CombinedOutput()
 	elapsed := time.Since(started)
 	if ctx.Err() != nil {
-		t.Fatalf("the helper did not exit on its own in %s, so h.stop hung on the parked reaper: %v\n%s", helperBound, err, out)
+		t.Fatalf("the helper did not exit on its own in %s, so h.stop hung on the blocked reaper: %v\n%s", helperBound, err, out)
 	}
 	if err != nil {
 		t.Fatalf("the helper: %v\n%s", err, out)

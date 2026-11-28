@@ -17,7 +17,9 @@ import {
   matchesPrioritySearch,
   PRIORITY_COLUMNS,
   PRIORITY_COLUMNS_BY_ID,
+  PRIORITY_FORMER_IDS,
   PRIORITY_LAYOUT,
+  PRIORITY_LAYOUT_KEY,
   PRIORITY_PHONE_HIDDEN,
   PRIORITY_SORTING,
   type PriorityItem,
@@ -32,8 +34,6 @@ import { type EditedText, textWriteLabel, usePriorityWrites } from "./priority-w
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** What a row of this table is, which its pager and its group headings count in. */
 const NOUN: RowNoun = { many: "priorities", one: "priority" };
-/** The layout key of the priorities table: one table, one deployment, one stored layout. */
-const LAYOUT_KEY = "priorities";
 /** The address prefix of this table's own view, so the two fault lists keep their own. */
 const VIEW_PREFIX = "p";
 /** The priorities a table draws while it draws none. */
@@ -60,13 +60,13 @@ const ROW_TEXTS: readonly EditedText[] = ["description"];
  */
 export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): ReactNode {
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
-    useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
+    useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING, PRIORITY_FORMER_IDS);
   // On a desktop the title fills the box: it takes the width the other shown columns leave, so
   // the table fits the window and nothing scrolls sideways (`PRIORITY_LAYOUT`'s `fills`). A
   // phone's box draws the place and the title alone, whatever the reader shows, and the title's
   // cell names what the others hold (`PRIORITY_PHONE_HIDDEN`); what the reader shows stays
   // theirs, since a change under Columns writes the reader's own visibility, never this one.
-  const stored = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
+  const stored = useTableLayout(PRIORITY_LAYOUT_KEY, PRIORITY_LAYOUT);
   const { compact } = stored.responsive;
   const visibility = useMemo(
     () => (compact ? { ...stored.visibility, ...PRIORITY_PHONE_HIDDEN } : stored.visibility),

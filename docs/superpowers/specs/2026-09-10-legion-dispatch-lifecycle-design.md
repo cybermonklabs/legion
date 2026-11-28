@@ -60,7 +60,7 @@ flowchart LR
     status `triage` with no parent → controller `triage` wake; with a parent → `child-adopted` to the
     parent's active role.
   - `issue.updated` → diff `status` against `state.issues[key].status` (payload is the full issue,
-    no from/to): `todo` → `processManager.admit(key)`; `backlog`/`icebox` → park (replaces the
+    no from/to): `todo` → `processManager.admit(key)`; `backlog`/`icebox` → suspend its workers (replaces the
     backlog marker); `in_progress`/`testing`/`needs_review`/`retro` set by the daemon are echoes and
     no-op; a human moving a running tree to `icebox` → linger.
   - `issue.closed` (status `done`) → root: `linger`; child: `child-closed` / `children-complete`.
@@ -141,7 +141,7 @@ threads, `comment.created.ask_id`).
 
 - Reducer unit tests per event type (created/updated/closed/child.status/ask.answered) with the real
   envelope shapes captured from a running Dispatch.
-- Resync drift test: state says `todo`, Dispatch says `backlog` → parked.
+- Resync drift test: state says `todo`, Dispatch says `backlog` → its workers suspended.
 - Migration test v17→v18 on a tree-less state; loud failure with trees.
 - Real-surface e2e (LEGION_E2E): scratch daemon + the local Dispatch server from `packages/dispatch/e2e/run-server.sh`
   + a NATS container: create an issue in the project → daemon triages → controller sets `todo` →

@@ -12,14 +12,14 @@ import (
 
 // A lame duck is a shutdown too: nats-server v2.15.1's lameDuckMode shuts JetStream down, which
 // waits for each clustered stream's monitor goroutine (stream.go stop, stopMonitoring), before it
-// calls Shutdown (server.go:4516, 4608). A committed entry held at stream.apply parks that
-// goroutine, so a hold the hook released only at Shutdown's server.shutdown would never be
+// calls Shutdown (server.go:4516, 4608). A committed entry held at stream.apply keeps that
+// goroutine waiting, so a hold the hook released only at Shutdown's server.shutdown would never be
 // released, and testnats.Server.LameDuck would give up after its 30 s connectTimeout, force a
-// Shutdown and return an error. The lame duck of a server with a hold parked must return, as its
+// Shutdown and return an error. The lame duck of a server with a goroutine held must return, as its
 // Stop does.
 //
 // The lame duck runs on a goroutine of its own and the test waits stopWithin for it. Without any
-// release (forced-order.sh -drop server.shutdown) the forced Shutdown waits for the parked
+// release (forced-order.sh -drop server.shutdown) the forced Shutdown waits for the held
 // goroutine for ever, so a direct call would hold the test until go test's -timeout. On that
 // bound the test releases the hold itself, waits for the lame duck to end so the cleanups do not
 // remove its store under it, and fails.
@@ -56,10 +56,10 @@ func TestForcedOrderALameDuckReleasesTheHoldOnItsServer(t *testing.T) {
 	case err := <-returned:
 		took := time.Since(start)
 		if err != nil {
-			t.Fatalf("the lame duck of a server with a hold parked failed after %s: %v", took.Round(time.Millisecond), err)
+			t.Fatalf("the lame duck of a server with a goroutine held failed after %s: %v", took.Round(time.Millisecond), err)
 		}
 		if took > stopWithin {
-			t.Fatalf("the lame duck of a server with a hold parked took %s, more than %s", took.Round(time.Millisecond), stopWithin)
+			t.Fatalf("the lame duck of a server with a goroutine held took %s, more than %s", took.Round(time.Millisecond), stopWithin)
 		}
 	case <-time.After(stopWithin):
 		released := hold.Released()
@@ -69,7 +69,7 @@ func TestForcedOrderALameDuckReleasesTheHoldOnItsServer(t *testing.T) {
 		case <-time.After(stopWithin):
 			t.Errorf("the lame duck did not end within %s of the test's own release either", stopWithin)
 		}
-		t.Fatalf("the lame duck of a server with a hold parked did not return within %s (hold released by then: %t)", stopWithin, released)
+		t.Fatalf("the lame duck of a server with a goroutine held did not return within %s (hold released by then: %t)", stopWithin, released)
 	}
 	if !hold.Released() {
 		t.Fatal("the lame duck returned and the hold is not released")

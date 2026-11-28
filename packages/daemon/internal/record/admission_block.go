@@ -24,8 +24,9 @@ import (
 // board's header copies (dispatch://INFRA-5636), 0 included. No field holds a time, so a block
 // judged twice over the same records encodes the same. One word of the held list does read the
 // clock: HeldTreeClosed asks whether a root's linger still runs at the pass's moment
-// (LineFacts.Now), so a member of a parked tree moves from tree_closed to tree_parked when that
-// linger runs out, with no write (admit's queueAdmissionBlock says when that change is written).
+// (LineFacts.Now), so a member of a tree whose root is in backlog or icebox moves from tree_closed
+// to tree_in_backlog_or_icebox when that linger runs out, with no write (admit's
+// queueAdmissionBlock says when that change is written).
 type AdmissionBlock struct {
 	Cap       int            `json:"cap"`
 	P0Holders int            `json:"p0Holders"`

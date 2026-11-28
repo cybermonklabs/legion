@@ -361,8 +361,8 @@ func TestResponseShapes(t *testing.T) {
 		},
 		{
 			name:   "liveWritePauseState",
-			named:  liveWritePauseState{Parked: true},
-			before: map[string]bool{"parked": true},
+			named:  liveWritePauseState{Paused: true},
+			before: map[string]bool{"paused": true},
 		},
 		{
 			name: "issueComponentsInput",

@@ -25,11 +25,11 @@ import (
 // preempts a goroutine that has run for 10 ms of the clock (sysmon's forcePreemptNS), and stops
 // every goroutine for a stop of the world. A goroutine locked to its thread, as a marked
 // transaction's is (XidTracer.lockTransaction), cannot be run again by the thread that was running
-// it: the thread parks until another thread picks the goroutine up and hands its P back. That
+// it: the thread sleeps until another thread picks the goroutine up and hands its P back. That
 // wait is the time another thread takes to be given a CPU - on a loaded machine, milliseconds -
 // and the measured thread spends it asleep, which its scheduler clocks cannot tell from a sleep
 // the code asked for (traced at a load of 250 to 350 on a 288-CPU machine, 2026-11-20: a thread
-// parked 4.4 and 7.1 ms in runtime.stoplockedm after its goroutine was preempted). A gap the
+// slept 4.4 and 7.1 ms in runtime.stoplockedm after its goroutine was preempted). A gap the
 // machine's load stretched past the runtime's 10 ms slice meets it every time.
 //
 // So the rig takes an execution trace of the operation (runtime/trace) and reads, for the

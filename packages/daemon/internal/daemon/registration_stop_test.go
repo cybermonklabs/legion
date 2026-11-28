@@ -117,14 +117,14 @@ func (r renewingRegistrar) ReleasePodSessions(ctx context.Context, names []strin
 // registration's renewal is reading the pod's token over the real worker stream (stream.Conn's
 // AgentSecretsToken), with the stream's events handed to the machine by a pump that calls Handle
 // itself, so it waits on the lock the stopping decision holds. The shim sends a tool step, waits
-// until the pump has taken it and called Handle — parked on that lock — then sends a second step
+// until the pump has taken it and called Handle — blocked on that lock — then sends a second step
 // behind it, and only then the token's answer.
 //
 // The stop waits for the write in flight, by design (TestANewIncarnationsFirstWriteFollowsThe
 // OldOnesLastWrite). What it must not do is wait out the RPC timeout because the answer it waits
 // for is stuck behind the lock it holds. It cannot: a connection's reader hands its events to an
 // unbounded queue (stream.eventQueue) and never waits on whoever consumes them, so it reads past
-// the step the parked pump has not taken and hands the token's answer to the write; the write is
+// the step the blocked pump has not taken and hands the token's answer to the write; the write is
 // sent, and the stop returns once the broker answers, a small fraction of the RPC timeout. A
 // reader that waited on its consumer would hold the answer until the write's own deadline, the
 // RPC timeout, ended the write unsent.
@@ -137,21 +137,21 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 		bootToken  = "boot-stopwait"
 		rpc        = 5 * time.Second
 		// hold is how long the shim sits on the renewal's token request once the stopping decision
-		// holds the lock, before it answers: long enough that the pump is parked on the lock.
+		// holds the lock, before it answers: long enough that the pump is blocked on the lock.
 		hold = 300 * time.Millisecond
 	)
 	// The pump's state, which the broker reads as the renewal's write (the second) arrives:
 	// waitingOnStep is when the pump called Handle with the first tool step, and leftStep when
-	// that call returned; later steps change neither. parkedAtRenewal is whether, as the
+	// that call returned; later steps change neither. blockedAtRenewal is whether, as the
 	// renewal's write reached the broker, the pump had called Handle and not yet left it — so the
 	// write landed while the stop held the lock the pump waited on. The stop waits for that
 	// write's answer while it holds the lock, so the pump cannot have left; unlike the moment the
 	// test reads after the stop returns, which Handle's deferred unlock precedes.
 	var waitingOnStep, leftStep atomic.Int64
-	var renewalArrived, parkedAtRenewal atomic.Bool
+	var renewalArrived, blockedAtRenewal atomic.Bool
 	broker := &answeringBroker{pod: pod, atWrite: func(n int) {
 		if n == 2 {
-			parkedAtRenewal.Store(waitingOnStep.Load() != 0 && leftStep.Load() == 0)
+			blockedAtRenewal.Store(waitingOnStep.Load() != 0 && leftStep.Load() == 0)
 			renewalArrived.Store(true)
 		}
 	}}
@@ -293,7 +293,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 						time.Sleep(5 * time.Millisecond)
 					}
 					// A second frame behind the one the pump holds: the reader has it to hand on
-					// while the pump is parked, before it reads the token's answer.
+					// while the pump is blocked, before it reads the token's answer.
 					send(shimwire.ToolExecutionEnd{ToolCallID: "call-1", ToolName: "bash"})
 					answeredAt.Store(time.Now().UnixNano())
 				}
@@ -357,10 +357,10 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 		t.Fatalf("the pump never waited on the machine's lock with the tool step while the stop held it (entered %d, the stop returned %d): the test proves nothing", entered, stopReturned.UnixNano())
 	}
 	// Not leftStep against stopReturned: Handle's deferred unlock frees the lock before the stop's
-	// Handle returns, so the parked pump may legally leave first. Whether the write in flight
-	// landed while the pump was parked is read at the write itself.
-	if renewalArrived.Load() && !parkedAtRenewal.Load() {
-		t.Errorf("the renewal's write of %s reached the broker when the pump was not parked on the lock the stop held (it had not called Handle, or had left it): the stop did not hold the lock while its write was in flight", session)
+	// Handle returns, so the blocked pump may legally leave first. Whether the write in flight
+	// landed while the pump was blocked is read at the write itself.
+	if renewalArrived.Load() && !blockedAtRenewal.Load() {
+		t.Errorf("the renewal's write of %s reached the broker when the pump was not blocked on the lock the stop held (it had not called Handle, or had left it): the stop did not hold the lock while its write was in flight", session)
 	}
 	if sinceAnswer > rpc/5 {
 		t.Errorf("the stop of %s waited %s after the shim answered the token, against an RPC timeout of %s: the answer was stuck behind the lock the stop held", session, sinceAnswer, rpc)

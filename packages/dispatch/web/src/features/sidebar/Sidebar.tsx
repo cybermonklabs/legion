@@ -198,7 +198,7 @@ export function Sidebar({
   });
   const projects = useQuery(projectsQuery());
   // The number beside Priorities (INFRA-2947, R8): the two faults added - the work in flight
-  // under no priority and the priority work parked in `backlog` or `icebox` - read from the
+  // under no priority and the priority work in `backlog` or `icebox` - read from the
   // summary call alone, which answers neither list. An event that moves a relation, a status or
   // a parent refreshes it with the page (`api/event-refresh.ts`). A deployment that has written
   // no priority answers `empty` and no number is drawn, since nothing is yet off a list that
@@ -207,7 +207,8 @@ export function Sidebar({
   const priorityFaults =
     prioritySummary === undefined || (prioritySummary.empty ?? "") !== ""
       ? undefined
-      : prioritySummary.work_under_no_priority.count + prioritySummary.priority_work_parked.count;
+      : prioritySummary.work_under_no_priority.count +
+        prioritySummary.priority_work_in_backlog_or_icebox.count;
   // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
   // the reader plus the threads they have not read, which the Inbox lists beside those asks now.
   const inboxCount = useInboxCount();

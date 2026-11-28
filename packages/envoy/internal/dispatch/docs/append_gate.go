@@ -300,26 +300,26 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 
 // storedHistoryHolds reports whether room's stored history through head holds every item updates,
 // the run the append would store, builds on: applied in the room's commit order to the document
-// that history decodes into (documentThrough), no update parks anything, neither an item whose
-// origin or predecessor is missing nor a delete of an item the history lacks. The history is
+// that history decodes into (documentThrough), no update leaves anything pending, neither an item
+// whose origin or predecessor is missing nor a delete of an item the history lacks. The history is
 // decoded once for the whole run, not once per update. A compaction's fold keeps every item it
 // folds, so it holds what a room's update was made on; a rebuild's seed is a document of other
-// items, which a room's update parks on. A history that already parks something answers false, as
-// does a run it cannot apply: the run is admitted whole or not at all.
+// items, on which a room's update leaves its items pending. A history that already holds something
+// pending answers false, as does a run it cannot apply: the run is admitted whole or not at all.
 func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
 	version := persistence.Version(head)
 	doc, err := documentThrough(room, version, storedUpdates(ctx, q, room, version), maxPending)
 	if err != nil || doc == nil {
 		return false, err
 	}
-	if parks(doc) {
+	if holdsPending(doc) {
 		return false, nil
 	}
 	for _, update := range updates {
 		if err := crdt.ApplyUpdateV1(doc, update.Update, nil); err != nil {
 			return false, nil
 		}
-		if parks(doc) {
+		if holdsPending(doc) {
 			return false, nil
 		}
 	}

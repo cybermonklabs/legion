@@ -35,26 +35,26 @@ import (
 // tree no transaction left.
 //
 // A logged commit is two parts, and the replica takes both: the update ygo handed the room's
-// observers (crdt.LoggedUpdate.Update), what the transaction integrated, and what it parked
+// observers (crdt.LoggedUpdate.Update), what the transaction integrated, and what it left pending
 // (Parked) - the structs and deletions waiting for something the document lacks, which the room
 // holds and the update leaves out, as Yjs's update event does. So the replica is the room's copy,
-// what the room holds parked included, and when the commit that fills a gap arrives the replica
-// integrates what waited behind it just as the room does. Without the parked part the replica
+// what the room holds pending included, and when the commit that fills a gap arrives the replica
+// integrates what waited behind it just as the room does. Without the pending part the replica
 // would not be the room: what a reader takes from it (readLive) and its encoded state, which
-// carries parked structs (crdt.EncodeStateAsUpdateV1), would both leave out what the room is
+// carries pending structs (crdt.EncodeStateAsUpdateV1), would both leave out what the room is
 // holding, and the commit that fills the gap - whose update carries only what that commit's own
 // transaction integrated - would integrate nothing of what waited, so the replica would never
-// hold it. A commit that only parked has no update observer (ygo calls none for a transaction
+// hold it. A commit that only left bytes pending has no update observer (ygo calls none for a transaction
 // that changes nothing), so the room drains its entry right after the transaction instead, from
 // ygo's after-transaction callback (onLoadDocument), whatever path the update reached the room by.
 //
-// Applying the parked part integrates nothing, so it renders nothing new: its transaction names
+// Applying the pending part integrates nothing, so it renders nothing new: its transaction names
 // no changed type (crdt.Transaction.ChangedTypes), so it touches no block of the record the
 // update is classified against (noteChangedTypes, touchedBlocks), which takeLocked resets before
 // the update's own apply and again once the update is classified. Both transactions therefore
 // record into the one update's record, which is what the classification is of: the room's state
-// as the commit left it, what it parked included. One commit is consumed, classified and
-// recorded once, whether it parked anything or not (takeLocked).
+// as the commit left it, what it left pending included. One commit is consumed, classified and
+// recorded once, whether it left anything pending or not (takeLocked).
 //
 // The observer renders the replica after an update only when it can neither know the update is a
 // margin write's publish into the room its fork was warm-built from (liveWriteOrigin.marginOnly
@@ -363,8 +363,8 @@ func (r *renderedReplica) drainLocked(room string) (settles, changed, local bool
 // forward in commit order.
 //
 // Each update is applied in the two parts the log hands over: Update, the structs and deletions
-// the transaction integrated, and then what it parked (crdt.LoggedUpdate.Parked), nil when it
-// parked nothing. Either failing leaves the replica holding a state the room never had, so it
+// the transaction integrated, and then what it left pending (crdt.LoggedUpdate.Parked), nil when it
+// left nothing pending. Either failing leaves the replica holding a state the room never had, so it
 // goes to recover with the rest of the drain. The two are one commit: it is consumed, classified
 // and recorded once, and renderedReplica says why the second apply changes no rendering.
 func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.LoggedUpdate) (settles, changed, local bool) {
@@ -394,7 +394,7 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 		}
 		if update.Parked != nil {
 			if err := crdt.ApplyUpdateV1(r.doc, update.Parked, nil); err != nil {
-				slog.Error("dispatch: apply what a committed update parked to the document's rendered copy", "room", room, "error", err)
+				slog.Error("dispatch: apply what a committed update left pending to the document's rendered copy", "room", room, "error", err)
 				r.recover(room, updates[i:], note)
 				return settles, changed, local
 			}

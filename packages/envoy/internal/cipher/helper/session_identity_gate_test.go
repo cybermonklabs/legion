@@ -102,7 +102,7 @@ func TestOnlyARecordOfThisBootRePinsItsProcess(t *testing.T) {
 			recs[0].BootID = tc.bootID(recs[0].BootID)
 			writeRecords(t, state, recs)
 
-			// This test asserts only whether the process was re-pinned or parked, so the
+			// This test asserts only whether the process was re-pinned or kept dormant, so the
 			// fake broker needs no enrollment seeded for it.
 			r := startRig(t, state) // startRig runs Recover
 			sess := r.srv.Registry.Get(pid)
@@ -116,7 +116,7 @@ func TestOnlyARecordOfThisBootRePinsItsProcess(t *testing.T) {
 				t.Fatal("a record from another boot must never re-pin a process that happens to match its pid and start ticks: that process would be handed the recorded key and enrollment without knowing the session id")
 			}
 			if _, ok := r.srv.Registry.Dormant(testSessionID); !ok {
-				t.Fatal("the identity must be parked for the session itself to reclaim, not re-pinned and not revoked")
+				t.Fatal("the identity must be kept dormant for the session itself to reclaim, not re-pinned and not revoked")
 			}
 		})
 	}
@@ -136,7 +136,7 @@ func TestTwoRootsRacingForOneNameLeaveOneWinner(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		reg.Park(dormantRecordFor(t, 1000, testSessionID, "enr-before", key))
+		reg.KeepDormant(dormantRecordFor(t, 1000, testSessionID, "enr-before", key))
 
 		var wins, took atomic.Int64
 		start := make(chan struct{})
@@ -181,8 +181,8 @@ func TestTwoRootsRacingForOneNameLeaveOneWinner(t *testing.T) {
 // half of defect 2. A session's process ends and the same session registers again at a new pid
 // at that very moment. Whatever the interleaving, the returning process must find EITHER the
 // live session still holding the name or the record kept for it — never neither, which is what
-// a retire that removed the session before parking it allowed, and which would leave the
-// returning process a fresh identity and the old one parked beside it where nothing could
+// a retire that removed the session before keeping it dormant allowed, and which would leave the
+// returning process a fresh identity and the old one dormant beside it where nothing could
 // reclaim it and only the sweep could end it.
 func TestAProcessComingBackWhileItsSessionRetiresFindsTheIdentity(t *testing.T) {
 	t.Parallel()
@@ -206,8 +206,8 @@ func TestAProcessComingBackWhileItsSessionRetiresFindsTheIdentity(t *testing.T) 
 			defer wg.Done()
 			<-start
 			reg.Retire(old, func(cur identity) (Record, bool) {
-				// The record the helper's own park function builds (Server.dormantRecord),
-				// so this race runs against the record production parks, key and all.
+				// The record the helper's own dormantFor function builds (Server.dormantRecord),
+				// so this race runs against the record production keeps dormant, key and all.
 				gone := time.Now()
 				rec, err := reg.record(old, cur)
 				if err != nil {
@@ -234,7 +234,7 @@ func TestAProcessComingBackWhileItsSessionRetiresFindsTheIdentity(t *testing.T) 
 		switch {
 		case adm.Held:
 			// The live session still held the name; the caller is told to retry, and the
-			// retire that follows parks the identity for it.
+			// retire that follows keeps the identity dormant for it.
 		case adm.Won:
 			if !adm.Took {
 				t.Fatal("a process coming back after its session retired was admitted with NO record: the identity it left behind is stranded")
@@ -268,7 +268,7 @@ func TestAReclaimedIdentityKeepsItsEnrollmentID(t *testing.T) {
 	t.Parallel()
 	r, key, state, release := reclaimedIdentityRig(t)
 	if _, ok := r.srv.Registry.Dormant(testSessionID); !ok {
-		t.Fatal("the record must be parked first")
+		t.Fatal("the record must be kept dormant first")
 	}
 	id := testSessionID
 	resp := r.call(t, Request{Op: "register", SessionID: &id})
@@ -309,12 +309,12 @@ func TestAReclaimedIdentityKeepsItsEnrollmentID(t *testing.T) {
 	})
 }
 
-// TestANamedRecordWithNoEnrollmentIsStillParked: a named session saved before its first enroll
+// TestANamedRecordWithNoEnrollmentIsStillKeptDormant: a named session saved before its first enroll
 // landed — the helper holding no launcher credential, a resume interrupted — has a key the
-// broker may already know and no enrollment id. Recover must park it like any other named
+// broker may already know and no enrollment id. Recover must keep it dormant like any other named
 // record; dropping it for want of an id would leave an identity nothing could ever reclaim,
 // which is the gap retire's own fix left behind in the recovery path.
-func TestANamedRecordWithNoEnrollmentIsStillParked(t *testing.T) {
+func TestANamedRecordWithNoEnrollmentIsStillKeptDormant(t *testing.T) {
 	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
 	gone := sleeper(t)
@@ -333,11 +333,11 @@ func TestANamedRecordWithNoEnrollmentIsStillParked(t *testing.T) {
 	r := startRig(t, state)
 	rec, ok := r.srv.Registry.Dormant(testSessionID)
 	if !ok {
-		t.Fatal("a named record with no enrollment yet must be parked, not dropped")
+		t.Fatal("a named record with no enrollment yet must be kept dormant, not dropped")
 	}
 	kept, err := rec.PrivateKey()
 	if err != nil || kept == nil || !kept.Equal(key) {
-		t.Fatalf("the parked record must still carry the session's key (%v)", err)
+		t.Fatalf("the dormant record must still carry the session's key (%v)", err)
 	}
 	// And the session coming back takes it: the broker's idempotent enroll answers that key
 	// under that runtime id with whatever row it already has.
@@ -359,7 +359,7 @@ func TestARegisterThatFailsLeavesTheIdentityWhereItWas(t *testing.T) {
 	t.Parallel()
 	t.Run("a draining helper", func(t *testing.T) {
 		state := filepath.Join(t.TempDir(), "sessions.json")
-		key := parkedRecord(t, state)
+		key := writeDormantRecord(t, state)
 		r := startRig(t, state)
 		seedEnrollment(r.fake, "enr-before", thumbprintOf(t, key), SessionRuntimeID(testSessionID))
 		if d := r.call(t, Request{Op: "drain"}); !d.OK || !r.srv.Registry.Draining() {
@@ -375,7 +375,7 @@ func TestARegisterThatFailsLeavesTheIdentityWhereItWas(t *testing.T) {
 
 	t.Run("a peer whose pid changed", func(t *testing.T) {
 		state := filepath.Join(t.TempDir(), "sessions.json")
-		key := parkedRecord(t, state)
+		key := writeDormantRecord(t, state)
 		r := startRig(t, state)
 		seedEnrollment(r.fake, "enr-before", thumbprintOf(t, key), SessionRuntimeID(testSessionID))
 		// register resolves and admits the victim pid, then re-reads the peer and finds it
@@ -402,7 +402,7 @@ func TestARegisterThatFailsLeavesTheIdentityWhereItWas(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		reg.Park(dormantRecordFor(t, 1000, testSessionID, "enr-before", key))
+		reg.KeepDormant(dormantRecordFor(t, 1000, testSessionID, "enr-before", key))
 		// A root that already owns the pid's tree: the registration loses the race and gets
 		// that session's reply instead, having built nothing and taken nothing.
 		root := namedSession(t, 3000, "other-session", nil)
@@ -431,10 +431,10 @@ func TestARegisterThatFailsLeavesTheIdentityWhereItWas(t *testing.T) {
 	})
 }
 
-// parkedRecord leaves state holding one dormant named record enrolled as enr-before, by
-// recording a process that is already gone; a rig started on state parks it at Recover. It
+// writeDormantRecord leaves state holding one dormant named record enrolled as enr-before, by
+// recording a process that is already gone; a rig started on state keeps it dormant at Recover. It
 // returns the key the record carries.
-func parkedRecord(t *testing.T, state string) *ecdsa.PrivateKey {
+func writeDormantRecord(t *testing.T, state string) *ecdsa.PrivateKey {
 	t.Helper()
 	gone := sleeper(t)
 	pid := gone.Process.Pid
@@ -444,7 +444,7 @@ func parkedRecord(t *testing.T, state string) *ecdsa.PrivateKey {
 }
 
 // reclaimedIdentityRig builds the fixture the rows that read a reclaimed identity share: a
-// helper that was never logged in, one parked record enrolled as enr-before whose key the fake
+// helper that was never logged in, one dormant record enrolled as enr-before whose key the fake
 // broker knows, and that record's confirming renew held at the fake's renew gate until the
 // returned release is called. It returns the rig, the key the record carries, the state path its
 // records are saved to, and that release.
@@ -463,17 +463,17 @@ func reclaimedIdentityRig(t *testing.T) (*rig, *ecdsa.PrivateKey, string, func()
 }
 
 // reclaimedIdentityRigAmending is reclaimedIdentityRig's body, with amend — when it is not nil
-// — changing the parked record after parkedRecord has written it and before the rig recovers
-// it. It is how a variant gets a record parkedRecord does not write, such as one carrying a
+// — changing the dormant record after writeDormantRecord has written it and before the rig recovers
+// it. It is how a variant gets a record writeDormantRecord does not write, such as one carrying a
 // lapsed enrollment beside the one to reclaim.
 func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record)) (*rig, *ecdsa.PrivateKey, string, func()) {
 	t.Helper()
 	state := filepath.Join(t.TempDir(), "sessions.json")
-	key := parkedRecord(t, state)
+	key := writeDormantRecord(t, state)
 	if amend != nil {
 		recs, err := LoadRecords(state)
 		if err != nil || len(recs) != 1 {
-			t.Fatalf("the parked state must hold exactly one record to amend: %+v (%v)", recs, err)
+			t.Fatalf("the state must hold exactly one dormant record to amend: %+v (%v)", recs, err)
 		}
 		amend(&recs[0])
 		writeRecords(t, state, recs)
@@ -496,7 +496,7 @@ func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record)) (*rig, *ecd
 	return r, key, state, release
 }
 
-// reclaimedIdentityRigWithLapsedID is that same fixture with the parked record carrying a
+// reclaimedIdentityRigWithLapsedID is that same fixture with the dormant record carrying a
 // LAPSED enrollment as well as the one to reclaim — the shape Recover's re-pin and a reclaim
 // both leave (reclaimIdentity's Revoke) — so the session comes back with an id enrollLoop must
 // revoke before it may renew anything. The gate is opened here: no renew can reach it anyway,
@@ -568,7 +568,7 @@ func reclaimedIdentityRigLoggedInNeverAnswering(t *testing.T, bound time.Duratio
 	return r
 }
 
-// requireReclaimable fails unless the identity parked for testSessionID is still whole: the
+// requireReclaimable fails unless the identity kept dormant for testSessionID is still whole: the
 // record, its key and its enrollment, all where the session itself can take them back.
 func requireReclaimable(t *testing.T, r *rig, key *ecdsa.PrivateKey) {
 	t.Helper()
@@ -600,7 +600,7 @@ func requireReclaimable(t *testing.T, r *rig, key *ecdsa.PrivateKey) {
 func TestTheAncestryWinnerIsRefusedToAPeerWhosePIDChanged(t *testing.T) {
 	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
-	key := parkedRecord(t, state)
+	key := writeDormantRecord(t, state)
 	r := startRig(t, state)
 	seedEnrollment(r.fake, "enr-before", thumbprintOf(t, key), SessionRuntimeID(testSessionID))
 	if root := r.call(t, Request{Op: "register", WaitSeconds: 5}); !root.OK { // this test process
@@ -742,7 +742,7 @@ func TestNamingASessionThatHasLeftIsNotASuccess(t *testing.T) {
 func TestATransientRenewFailureDoesNotCostTheInheritedEnrollment(t *testing.T) {
 	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
-	key := parkedRecord(t, state)
+	key := writeDormantRecord(t, state)
 	r := startRig(t, state)
 	// The broker holds enr-before for this runtime id but will NOT answer an enroll with it:
 	// its conflict is keyed on (launcher credential, runtime id), not on the key's thumbprint,

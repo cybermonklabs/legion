@@ -249,7 +249,7 @@ export const natsState = {
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
   realConnect: false,
-  /** A connect a test parks on, so a pass can be abandoned at its deadline while its connection
+  /** A connect a test holds, so a pass can be abandoned at its deadline while its connection
    *  is still being made and what its late continuation writes can be watched. */
   heldConnect: undefined as Promise<void> | undefined,
   drainHangs: false,
@@ -260,7 +260,7 @@ export const natsState = {
   /** Every subject the connection had been asked to subscribe to when a `flush()` was called:
    *  the round trip the server answers, which is what makes a subscription live. */
   flushes: [] as string[][],
-  /** A `flush()` a test parks on, so what the extension does before the server confirms a
+  /** A `flush()` a test holds, so what the extension does before the server confirms a
    *  subscription can be watched. */
   heldFlush: undefined as Promise<void> | undefined,
   /** The subject whose round trip rejects: the next `flush()` taken once that subject's SUB has
@@ -300,8 +300,8 @@ export const natsStandInConnect = async (options: {
       natsState.presented.push(String(credential.auth_token));
     }
   };
-  // An ended row's late connect takes nothing the running row armed (a refusal, a parked dial, a
-  // real server) and is not counted among that row's connections. A dial parked by `heldConnect`
+  // An ended row's late connect takes nothing the running row armed (a refusal, a held dial, a
+  // real server) and is not counted among that row's connections. A dial held by `heldConnect`
   // is asked again when it comes back: the row that started it can have ended while it waited, and
   // what it does from here is the new row's state.
   let late = fromEndedRow();
@@ -313,7 +313,7 @@ export const natsStandInConnect = async (options: {
     natsState.connectedNames.push(name);
     natsState.connects.push({ servers, authenticated: authenticator !== undefined });
     connectWith("stand-in-nonce");
-    // Parked only where a test asks for it: every other connect answers at once.
+    // Held only where a test asks for it: every other connect answers at once.
     if (natsState.heldConnect !== undefined) {
       await natsState.heldConnect;
       late = fromEndedRow();
@@ -384,7 +384,7 @@ export const natsStandInConnect = async (options: {
     // unless the connection is closed with it, which is the one case the extension gives up on.
     flush: async () => {
       // An ended row's late flush takes nothing the running row armed: no failure, no hold. A
-      // flush parked by `heldFlush` is asked again when it comes back, because the row that
+      // flush held by `heldFlush` is asked again when it comes back, because the row that
       // started it can have ended while it waited.
       if (fromEndedRow()) return;
       natsState.flushes.push([...natsState.subscriptions.keys()]);
@@ -459,7 +459,7 @@ export const natsStandInConnect = async (options: {
           // nats.js ends the async iterator on unsubscribe(), which is what
           // makes a deliberate close indistinguishable from a dropped
           // connection inside the pump. A mock that leaves the iterator
-          // parked cannot observe that, and lets resubscribe bugs ship green.
+          // waiting cannot observe that, and lets resubscribe bugs ship green.
           notify();
         },
         [Symbol.asyncIterator]: () => ({
@@ -596,8 +596,8 @@ export function resetNatsStandIn(): void {
   natsState.timeline.length = 0;
   natsState.closedNames.length = 0;
   natsState.connections.length = 0;
-  // A test aborted at Bun's own timeout never runs its `finally`: a connect left parked here
-  // would park every later test's connect for the rest of the process.
+  // A test aborted at Bun's own timeout never runs its `finally`: a connect left held here
+  // would hold every later test's connect for the rest of the process.
   natsState.heldConnect = undefined;
   natsState.published.length = 0;
   natsState.onPublish = undefined;
@@ -615,7 +615,7 @@ export function resetNatsStandIn(): void {
   natsState.drainHangs = false;
   natsState.drainStarted = false;
   natsState.statusReaders.length = 0;
-  // As for `heldConnect`: a parked flush left behind would park every later test's subscribe.
+  // As for `heldConnect`: a held flush left behind would hold every later test's subscribe.
   natsState.heldFlush = undefined;
   natsState.flushes.length = 0;
   natsState.failFlushOnSubject = undefined;

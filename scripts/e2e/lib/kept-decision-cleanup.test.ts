@@ -5,16 +5,16 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { scriptFunctions } from "./script-functions";
 
 // wait_for_run_processes, the cleanup-is-complete checkpoint's wait for every process of the run to
-// end (parked-decision-devbox.sh). Each case takes the function from the script by name and runs it
+// end (kept-decision-devbox.sh). Each case takes the function from the script by name and runs it
 // under the script's own `set` line, with stubs for the helpers it calls: run_processes, which
 // counts its calls in a file, and note, fail and since. proc_describe, which names each survivor
 // in the failure, is lib/process-tree.sh's own, which the script sources through lib/rig.sh.
-const scriptPath = join(import.meta.dir, "..", "parked-decision-devbox.sh");
+const scriptPath = join(import.meta.dir, "..", "kept-decision-devbox.sh");
 const fn = scriptFunctions(scriptPath);
 const tree = scriptFunctions(join(import.meta.dir, "process-tree.sh"));
 const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
-const dir = temporaryDirectory("parked-decision-cleanup-test");
+const dir = temporaryDirectory("kept-decision-cleanup-test");
 
 let runs = 0;
 // wait runs `wait_for_run_processes ARGS` with RUN_PROCESSES as run_processes's body; the body sees

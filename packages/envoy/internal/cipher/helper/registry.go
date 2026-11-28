@@ -663,17 +663,17 @@ func (r *Registry) Dormant(sessionID string) (Record, bool) {
 	return rec, ok
 }
 
-// Park keeps rec for its session id, so the same session coming back gets its identity rather
-// than a new one. A record with no session id is not parked: nothing could ever claim it.
-func (r *Registry) Park(rec Record) bool {
+// KeepDormant keeps rec in the dormant set for its session id, so the same session coming back gets its identity rather
+// than a new one. A record with no session id is not kept: nothing could ever claim it.
+func (r *Registry) KeepDormant(rec Record) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.parkLocked(rec)
+	return r.keepDormantLocked(rec)
 }
 
-// parkLocked is Park's body, for a caller already holding r.mu: Retire parks the record its park
+// keepDormantLocked is KeepDormant's body, for a caller already holding r.mu: Retire keeps the record its dormantFor
 // function built in the very critical section that takes the session out of the live set.
-func (r *Registry) parkLocked(rec Record) bool {
+func (r *Registry) keepDormantLocked(rec Record) bool {
 	if rec.SessionID == "" {
 		return false
 	}
@@ -821,18 +821,18 @@ func (r *Registry) Add(s *Session) {
 	r.byPID[s.PID] = s
 }
 
-// Retire takes s out of the live sessions and, when park answers a record to keep, puts that
+// Retire takes s out of the live sessions and, when dormantFor answers a record to keep, puts that
 // record in the dormant set — both in ONE critical section. Between the two a process coming
 // back under the same omp session id would find neither a live owner nor a dormant record, make
 // itself a new identity, and strand the old one beside it where nothing could ever reclaim it.
-// park is given the session's identity read under the same mutex, so a rename cannot land
+// dormantFor is given the session's identity read under the same mutex, so a rename cannot land
 // between that reading and the record built from it.
 //
 // It closes s.stop, which ends the session's enroll and exit-watch goroutines, and it removes
 // only that very session (a later session may hold the same pid once the pidfd is released), so
 // retiring twice — an unregister followed by the exit watch firing — does nothing the second
 // time, which is what the false answer says.
-func (r *Registry) Retire(s *Session, park func(cur identity) (Record, bool)) bool {
+func (r *Registry) Retire(s *Session, dormantFor func(cur identity) (Record, bool)) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cur, ok := r.byPID[s.PID]; !ok || cur != s {
@@ -840,16 +840,16 @@ func (r *Registry) Retire(s *Session, park func(cur identity) (Record, bool)) bo
 	}
 	close(s.stop)
 	delete(r.byPID, s.PID)
-	if park == nil {
+	if dormantFor == nil {
 		return true
 	}
-	if rec, keep := park(s.identity()); keep {
-		r.parkLocked(rec)
+	if rec, keep := dormantFor(s.identity()); keep {
+		r.keepDormantLocked(rec)
 	}
 	return true
 }
 
-// Remove is Retire for a caller with nothing to park: an unnamed session ending, a registration
+// Remove is Retire for a caller with nothing to keep dormant: an unnamed session ending, a registration
 // rolled back before it ever reached the dormant set, and a test's cleanup.
 func (r *Registry) Remove(s *Session) bool { return r.Retire(s, nil) }
 
@@ -1048,7 +1048,7 @@ func (r *Registry) Draining() bool {
 // and boot id that together name the process incarnation a restart may re-pin (SameBoot), the
 // identity's runtime id, session id and both enrollment ids, and its key — the key only for a
 // named session, since an unnamed one's runtime id dies with its process and keeping the key
-// would be exposure that buys nothing. Save writes it for every live session and retire's park
+// would be exposure that buys nothing. Save writes it for every live session and retire's dormantFor
 // function builds the dormant record from it (Server.dormantRecord, which adds GoneAt), so a
 // record a restart re-pins and one a returning session reclaims carry the same fields.
 //

@@ -210,7 +210,7 @@ func (w *Watcher) watchDone() {
 
 // subscription is one jetstream watcher and the cancel of the context its subscription lives in
 // (watch). Whoever stops it, or reads it to its end, cancels that context, which releases the
-// goroutine nats.go parks on it.
+// goroutine nats.go leaves waiting on it.
 type subscription struct {
 	watcher jetstream.KeyWatcher
 	cancel  context.CancelFunc
@@ -229,7 +229,7 @@ func (s *subscription) stop() error {
 }
 
 // discard reads and drops the watcher's entries until nats.go closes them, then cancels its
-// context. A watcher nothing reads keeps its subscription's goroutine parked on a full buffer for
+// context. A watcher nothing reads keeps its subscription's goroutine blocked on a full buffer for
 // the life of the process.
 func (s *subscription) discard() {
 	bus.DrainWatcher(s.watcher)
@@ -241,7 +241,7 @@ func (s *subscription) discard() {
 // holds, which a stopped subscription does well inside this. But a watch whose run ended after the
 // server answered its consumer's create and before nats.go's WatchFiltered set the handler that
 // closes the updates (jetstream/kv.go 1356-1368) gets a watcher whose updates nothing ever closes,
-// and a read that waited for their close would park for the life of the process. That watcher was
+// and a read that waited for their close would block for the life of the process. That watcher was
 // never installed, so what it delivers is dropped either way: the bound only ends the read
 // (TestAnAbandonedWatchersDiscardEnds).
 const abandonedDrain = time.Second
@@ -263,7 +263,7 @@ func (s *subscription) retireWithin(run context.Context, bound time.Duration) {
 }
 
 // drainWithin stops the watcher (stop, which unsubscribes it, deleting its consumer, then cancels
-// its context, releasing the goroutine nats.go parks on it) and closes stopped when that returns.
+// its context, releasing the goroutine nats.go leaves waiting on it) and closes stopped when that returns.
 // It reads and drops the watcher's entries while the stop runs, as discard does, and after it until
 // nats.go closes them or bound passes, whichever comes first. So nothing of the watcher outlives
 // the stop by more than bound.

@@ -44,7 +44,7 @@ tree fence holds any more. These are the rules that made it safe.
   `admitted` and `held`, exactly where a root reopened inside its linger stands (`admit.readmit`),
   so a look would resume the implementer and relaunch the Sandbox under the run. Apply the
   predicate at every site that starts, ends or closes a look and in the outbox's start row.
-- **Seeing the same merge again opens nothing.** A done child a person parks and sets done again
+- **Seeing the same merge again opens nothing.** A done child a person moves to backlog and sets done again
   leaves twice more; `openCheck` keeps the check it has for the same pull request (repo, number,
   the merge where both are known), open or recorded, and only a rerun's other pull request
   replaces it.

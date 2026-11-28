@@ -51,7 +51,7 @@ var pauseQueue = []pauseQueued{
 	{name: "a check's bound", issue: "LEGION-310", held: true, payload: CheckBound{}},
 	{name: "the controller's notice", issue: "LEGION", payload: ControllerNotice{Kind: TickNotice}},
 	{name: "a suspend", issue: "LEGION-311",
-		payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-311", Role: claim.RoleImplementer, Generation: 1, Reason: "parked"}},
+		payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-311", Role: claim.RoleImplementer, Generation: 1, Reason: "backlog"}},
 	{name: "a pause's stop", issue: "LEGION-312",
 		payload: SuperviseRequest{Op: "pause_stop", Tree: "LEGION-312", Role: claim.RoleTester, Generation: 1, Pause: 1}},
 	{name: "another project's notice", issue: "INFRA-5",

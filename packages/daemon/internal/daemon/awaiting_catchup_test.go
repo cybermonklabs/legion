@@ -1011,7 +1011,7 @@ func TestTheCatchUpReadsNoRootWhoseArchitectDoesNotHoldTheWork(t *testing.T) {
 	})
 }
 
-// A root a person parked, iceboxed or closed has left the workflow, so ReconcileAwaiting moves
+// A root a person moved to backlog, iceboxed or closed has left the workflow, so ReconcileAwaiting moves
 // it nowhere however long its slot row outlives that act — admission releases the row in its
 // next pass, and the workflow records the linger. The catch-up reads the roots that pass can
 // move (record.CanWaitOnPerson), so it opens no Dispatch window for such a root either: the
@@ -1025,9 +1025,9 @@ func TestTheCatchUpReadsNoRootThatLeftTheWorkflow(t *testing.T) {
 	pool, w := catchUpRig(t, client, 1)
 	slottedCapture(t, pool, nil, &cursor)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
-		parked := captureRoot(phase.Admitted, nil)
-		parked.Status, parked.DispatchStatus = "backlog", "backlog"
-		return records.PutIssue(ctx, tx, parked)
+		inBacklog := captureRoot(phase.Admitted, nil)
+		inBacklog.Status, inBacklog.DispatchStatus = "backlog", "backlog"
+		return records.PutIssue(ctx, tx, inBacklog)
 	})
 	if err := bootCatchUp(t, w); err != nil {
 		t.Fatalf("catch up: %v", err)

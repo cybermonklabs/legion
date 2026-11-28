@@ -549,8 +549,8 @@ func TestASuspensionKeepsItsClaimsRoleOnlyWhereItsSourceDoes(t *testing.T) {
 // A claim the idle release suspended holds its role until the claim ends or its role moves to
 // another session, and each of those changes queues its publication: a failure and a retirement
 // send the set without the session; a suspension by any other source over the released claim,
-// which changes its source alone (supervise's suspendedAgain: a linger, a leave, a park, an
-// operator's or the controller's suspend), sends the set without it too, one row for each such
+// which changes its source alone (supervise's suspendedAgain: a linger, a leave, a move to backlog or
+// icebox, an operator's or the controller's suspend), sends the set without it too, one row for each such
 // source (suspensionsKeepTheirRole); a session the claim forgot, as a fresh start forgets it,
 // sends the set without it; and a resume whose agent registers under another session sends the
 // set naming the new session in the old one's place, with no empty set between them.

@@ -1051,28 +1051,28 @@ func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *te
 	}
 }
 
-// A replacement the wake pacing parked is the one end whose turn was not ended: the take-back
+// A replacement the wake pacing delayed is the one end whose turn was not ended: the take-back
 // has run, so the task is owed again, and the claim goes on recording the stalled process
 // until the launch comes due (supervise's reserveWake, waitOnMachine). The notice says exactly that
 // much and no more. Its opening never says the turn was ended, because it was not — the
 // opening cannot say it, since the daemon derives that clause from the end's own record of the
 // process (stallTurnClause), and the kept process is the daemon's own sentence too, which says
 // that the daemon made no stop of it and says nothing of whether it is alive, which the daemon
-// has not looked at (stallStopClause). The row's own clause says what the park settled and
+// has not looked at (stallStopClause). The row's own clause says what the delay settled and
 // then names what can change it, as an open list rather than a closed one: a suspension that
 // arrived while the launch waited ends the turn in a stop
 // (supervise's wakeNow, endHeld), a lifecycle recheck refuses the launch when it comes due and
 // keeps the process (runWake, relaunchRefused), a tree close drops the wake with the process
 // (letGo), the take-back the launch itself makes can be refused by the store (runWake), the
 // launch can fail its own write or its start (launchTries, relaunchLater, fail), and an
-// operator's task can run the launch before it is due (runParkedLaunchNow). None of them
+// operator's task can run the launch before it is due (runDelayedLaunchNow). None of them
 // writes this owner a second notice. And the moment it names is the pacer's estimate for the
 // wake's place when the stop was built, which the machine carries on its report
 // (supervise.StallBackstopStop.WakeDue), not a guess at how long a wave takes; the notice says
 // it is an estimate, which a change to the pacing's queues or to its pace can move earlier or
 // later, and so says the claim waits until the pacing lets the launch out rather than until that
 // moment.
-func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T) {
+func TestTheStallBackstopTellsADelayedRelaunchAsWhatTheDelaySettles(t *testing.T) {
 	t.Parallel()
 	rig := newBackstopRig(t)
 	limiter := pacedWakes()
@@ -1101,18 +1101,18 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 	if c := m.Claim(); c.State != supervise.StateWorking || c.Locator == nil {
 		t.Fatalf("the claim is %s with locator %+v, want it still running the stalled process until the launch's turn", c.State, c.Locator)
 	}
-	parked := m.View().WakeWaiting
-	if parked == nil || parked.Kind != supervise.WakeLaunch {
-		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
+	delayed := m.View().WakeWaiting
+	if delayed == nil || delayed.Kind != supervise.WakeLaunch {
+		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", delayed)
 	}
 	for _, want := range []string{
 		"the daemon took back the implementer's task without ending its turn and queued the replacement launch",
 		"still owed",
-		"the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallInstant(parked.At),
+		"the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallInstant(delayed.At),
 		"a change to the pacing's queues or to its pace can move that moment earlier or later",
 		"for example a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later",
-		"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out",
-		"What the pacing lets out then may be nothing at all, or not the launch the park queued",
+		"What the delay settled is that launch queued and the claim waiting on it until the pacing lets it out",
+		"What the pacing lets out then may be nothing at all, or not the launch the delay queued",
 		"a suspension waiting for this claim",
 		"the lifecycle recheck every launch makes refusing this one",
 		"the tree's close dropping the queued launch",
@@ -1141,7 +1141,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 
 // A replacement whose launch waits at its issue pod's gate, while another role of the issue's
 // pod loads its session, is told as that (supervise.EndRelaunchWaitsForPod): the stalled turn
-// ended and its process stopped where the launch parked (supervise's askPod), the task still
+// ended and its process stopped where the launch waited (supervise's askPod), the task still
 // owed, and the replacement starting when the gate grants it its start, behind whichever roles
 // of the issue start or load before it, one load at a time. The claim alone —
 // launching, with no process — reads as the relaunch still to make, and an owner told that no
@@ -1188,7 +1188,7 @@ func TestTheStallBackstopTellsAReplacementWaitingForItsIssuePod(t *testing.T) {
 		stopped = stopped || call.Locator == *stalled.Locator
 	}
 	if !stopped {
-		t.Fatalf("the runtime's stops = %+v, want the stalled process stopped where its replacement parked", rig.rt.CallsOf("Suspend"))
+		t.Fatalf("the runtime's stops = %+v, want the stalled process stopped where its replacement waited", rig.rt.CallsOf("Suspend"))
 	}
 	for _, want := range []string{
 		"the daemon ended the implementer's turn and queued the replacement launch at its issue's start gate",

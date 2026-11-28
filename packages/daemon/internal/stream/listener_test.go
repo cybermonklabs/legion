@@ -622,7 +622,7 @@ func TestALauncherHelloBeforeTheAcceptorIsServedAfterIt(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := dial(t, h.listener.Addr())
 	p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
-	// While no acceptor exists the hello is neither answered nor refused: it is parked.
+	// While no acceptor exists the hello is neither answered nor refused: it waits.
 	select {
 	case frame := <-p.frames:
 		t.Fatalf("a hello sent before the acceptor was answered with %s", frame.FrameType())

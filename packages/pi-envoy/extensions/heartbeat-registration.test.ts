@@ -211,11 +211,11 @@ describe("envoy OMP extension", () => {
       await fixture.tools.find((tool) => tool.name === "envoy_role_set")?.execute("", { role });
       expect(registrations).toBe(1);
 
-      // This tick registers, then parks in the role move its pass awaits.
+      // This tick registers, then waits in the role move its pass awaits.
       wedgeRoleRead = true;
       intervals[0]?.();
       await until(
-        "the tick's registration, before its pass parks in the role move",
+        "the tick's registration, before its pass waits in the role move",
         () => registrations === 2
       );
       expect(registrations).toBe(2);
@@ -281,7 +281,7 @@ describe("envoy OMP extension", () => {
 
         wedgePass = true;
         intervals[0]?.();
-        await until("the registration the stalled pass parks in", () => registrations === 3);
+        await until("the registration the stalled pass is held in", () => registrations === 3);
         // Three refreshes of the one stall, each a tick past the refresh interval posting the
         // registration on its own.
         for (let refresh = 1; refresh <= 3; refresh += 1) {

@@ -373,7 +373,7 @@ function stringAt(record: Record<string, unknown>, name: string, where: string):
  * or status was absent or of the wrong type, and the loop over a page passed that entry over,
  * so the root never reached the never-decide rule (`waitingLegionRoot` in `never-decide.ts`)
  * and the draw recorded a list shorter than the one Dispatch answered without saying so. A
- * parked `legion` root dropped that way is a hold that silently does not happen and nobody is
+ * `legion` root in backlog dropped that way is a hold that silently does not happen and nobody is
  * told. A refusal stops the run and names the root and the field it is wrong in, the labels
  * among the rest.
  *

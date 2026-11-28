@@ -50,8 +50,8 @@ what to make the input when the poll itself is the expensive part.
 
 ## Evidence (INFRA-251, sjawhar/legion#2163)
 
-The devbox proof `scripts/e2e/parked-decision-devbox.sh` ended
-`parked decision devbox e2e: FAIL (check cleanup-is-complete)` on a developer machine after every
+The devbox proof `scripts/e2e/kept-decision-devbox.sh` ended
+`kept decision devbox e2e: FAIL (check cleanup-is-complete)` on a developer machine after every
 behavioural checkpoint had passed. The wait was
 `until_true 30 "every process of the run to end" no_run_processes`, and `until_true`
 (`scripts/e2e/lib/rig.sh:70-88`) loops only `while ((SECONDS - started < limit))`. Its poll was
@@ -62,7 +62,7 @@ processes ended four minutes later. One checkpoint of a forty-minute run was los
 not to the change under test.
 
 The fix is `wait_for_run_processes [DEADLINE_SECONDS] [MIN_POLLS]`
-(`scripts/e2e/parked-decision-devbox.sh`), defaults 600 and 10, called with no arguments, giving up
+(`scripts/e2e/kept-decision-devbox.sh`), defaults 600 and 10, called with no arguments, giving up
 only on `((SECONDS - started >= limit && polls >= floor))` and naming the pids that remain.
 `scripts/e2e/lib/rig.sh` was left alone: `until_true` serves every other proof, whose polls are a
 `gh` read or a `jq` over a log.

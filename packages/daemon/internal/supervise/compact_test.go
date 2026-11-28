@@ -430,9 +430,9 @@ func TestACompactionWhoseClaimLosesItsProcessLeavesTheOwedTaskToTheRelaunch(t *t
 	}
 }
 
-// A death the wake pacing parks the relaunch of leaves the claim exactly as the park found it:
+// A death the wake pacing delays the relaunch of leaves the claim exactly as the delay found it:
 // working, over the dead process it still records, at the generation the compaction was taken
-// at. The park writes nothing of the claim at all, so the compaction is dropped where the death
+// at. The delay writes nothing of the claim at all, so the compaction is dropped where the death
 // is read (compactionLostProcess) and the end of the compaction finds none to give back
 // (ownsCompaction). Taken for a compaction that ran, the end would give the claim back idle and
 // prompt a process that is gone, and the answer would promise its caller both.
@@ -459,7 +459,7 @@ func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *test
 	h.m.Wait()
 	h.wantState(StateWorking)
 	if got := h.claim().Locator; got == nil || *got != dead {
-		t.Fatalf("the claim records %+v, want the dead process the park kept, %+v", got, dead)
+		t.Fatalf("the claim records %+v, want the dead process the delay kept, %+v", got, dead)
 	}
 	h.wantWakeDueAt(waiting)
 	h.wantPrompts(ladderSends)
@@ -493,10 +493,10 @@ func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *test
 // refuseWorkingClaim). What ends this window is a launch, raised by the next report of that
 // process or by the fresh session that stops the claim and starts it again.
 //
-// This case was TestAParkedRelaunchRefusedAtItsTurnRecordsNothingThatTellsItFromATurn, which
+// This case was TestADelayedRelaunchRefusedAtItsTurnRecordsNothingThatTellsItFromATurn, which
 // held that nothing of the claim told the two apart: that is the gap this round closes, so the
 // case is rewritten to read the fact that closes it rather than kept beside it.
-func TestAParkedRelaunchRefusedAtItsTurnRecordsThatItsProcessIsGone(t *testing.T) {
+func TestADelayedRelaunchRefusedAtItsTurnRecordsThatItsProcessIsGone(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices, pacedDeps(wakeRate))
 	dead := h.locator()
@@ -534,7 +534,7 @@ func TestAParkedRelaunchRefusedAtItsTurnRecordsThatItsProcessIsGone(t *testing.T
 	}
 }
 
-// A displacement the pacing parks the relaunch of is the same loss: the process the compaction
+// A displacement the pacing delays the relaunch of is the same loss: the process the compaction
 // ran over is gone, however the daemon recovers the claim, so its end gives the claim back
 // nothing and the owed task waits for the wake's turn. The drop is made where the runtime's
 // verdict is read, before a death is told from a displacement (judge), so both judgements carry
@@ -580,17 +580,17 @@ func TestACompactionWhoseDisplacedRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTur
 }
 
 // A process found alive at a stale address is replaced rather than lost (repoint), and the wake
-// pacing can park that replacement over a session being compacted. The compaction ran on a
+// pacing can delay that replacement over a session being compacted. The compaction ran on a
 // process that is still running, so it is the claim's own to the end: the claim is given back,
 // its run of provider-error turns starts again, and the answer is the compaction's own. What
-// waits is the owed task, which goes at the turn of the launch parked over the process a send
+// waits is the owed task, which goes at the turn of the launch delayed over the process a send
 // would reach (sendPending), not into a process that turn is about to replace.
 //
-// Read as a lost process — which a parked launch alone says nothing about — the caller would be
+// Read as a lost process — which a delayed launch alone says nothing about — the caller would be
 // told its compaction failed for a compaction that ran, the claim would be left working with
 // its run of provider errors still at providerErrorRunTold, and the notice, which goes only as the
 // run reaches that count, could never go a second time.
-func TestACompactionUnderAParkedRepointGivesTheClaimBackAndLeavesTheTaskToThatTurn(t *testing.T) {
+func TestACompactionUnderADelayedRepointGivesTheClaimBackAndLeavesTheTaskToThatTurn(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices, pacedDeps(wakeRate))
 	owed := h.pending().ID
@@ -607,7 +607,7 @@ func TestACompactionUnderAParkedRepointGivesTheClaimBackAndLeavesTheTaskToThatTu
 	release()
 
 	if err := <-compacted; err != nil {
-		t.Fatalf("a compaction under a parked repoint answered %v, want the claim given back", err)
+		t.Fatalf("a compaction under a delayed repoint answered %v, want the claim given back", err)
 	}
 	h.m.Wait()
 	h.wantState(StateIdle)
@@ -664,7 +664,7 @@ func TestACompactionAskedOverALaunchWaitingItsTurnIsNotTaken(t *testing.T) {
 		t.Fatal("the claim reports itself being compacted, want no compaction: the take did not happen")
 	}
 	if got := h.claim().Locator; got == nil || *got != stale {
-		t.Fatalf("the claim records %+v, want the process the parked launch replaces, %+v", got, stale)
+		t.Fatalf("the claim records %+v, want the process the delayed launch replaces, %+v", got, stale)
 	}
 	h.wantWakeDueAt(waiting)
 	h.wantPrompts(ladderSends)
@@ -976,7 +976,7 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 
 // The same restart, and the agent does not answer the question: its get_state fails, so the
 // restored claim stays working with the question armed. Then a turn starts that names no delivery
-// — an Envoy follow-up, or the turn of the task's prompt that Oh My Pi parked, which start alike —
+// — an Envoy follow-up, or the turn of the task's prompt that Oh My Pi held, which start alike —
 // and ends. The task stays pending and unconfirmed through the turn, and the turn's end sends it.
 // The row guards `m.askFirst = false` in turnStartedWhileBusy: without it the start confirms the
 // task, the end retires it as served, and no prompt after the restart carries it.

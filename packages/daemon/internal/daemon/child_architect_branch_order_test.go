@@ -18,7 +18,7 @@ func TestAWaitingChildArchitectStartWaitsForTheReadmissionsBranch(t *testing.T) 
 	t.Parallel()
 	rig := newChildArchitectRig(t)
 	token := mustClaimToken(t, doorChild, claim.RoleArchitect)
-	parkTheRootBeforeTheChildsRowsRun(rig)
+	moveTheRootToBacklogBeforeTheChildsRowsRun(rig)
 
 	// GitHub fails every create of a ref from now on, as an outage does, so the branch row retries.
 	gh := newBranchGitHub(t, nil, func() (int, string) { return http.StatusBadGateway, `{"message":"bad gateway"}` })

@@ -50,7 +50,7 @@
  * the comments without the one a kept reply answers, so the Reply its line names is gone. A reply
  * the thread composer keeps for that comment, as it answers another, is drawn there with its text,
  * a line saying the comment is no longer listed, and Discard my draft. A reply put away by Cancel
- * reply over the docked composer's own draft (`usePhoneThread`'s `parked`) is drawn so in the
+ * reply over the docked composer's own draft (`usePhoneThread`'s `putAway`) is drawn so in the
  * docked composer, in place of the line that names that comment's Reply; it offers no Use it
  * here, since the docked composer's field holds a draft of its own.
  *
@@ -425,7 +425,7 @@ test(`${HOST} · the comment replied to leaves the list · typed`, async () => {
 const DOCKED_DRAFT = "Docked draft of the reader's own";
 
 // Cancel reply in the thread over a docked composer that holds a draft of its own puts the reply
-// away as it stands (`usePhoneThread`'s `parked`), and the docked composer says so and names the
+// away as it stands (`usePhoneThread`'s `putAway`), and the docked composer says so and names the
 // comment's Reply as the way back. A refetch then answers the comments without Comment A, and
 // that Reply goes. The docked composer draws the reply put away itself then, saying A is no
 // longer listed, with Discard my draft, which drops it, a refused or stopped send with it, in the
@@ -478,7 +478,7 @@ for (const held of HELD) {
 }
 
 // Cancel reply in the thread over a docked composer that holds a draft of its own puts the reply
-// away (`usePhoneThread`'s `parked`), and the docked composer names Comment A's Reply as the way
+// away (`usePhoneThread`'s `putAway`), and the docked composer names Comment A's Reply as the way
 // back. A refetch then answers A deleted by its author: A keeps its place, but Dispatch takes no
 // reply to it, so no Reply goes on with the reply put away. The docked composer draws it itself
 // then, saying A was deleted and giving no word of A, with Discard my draft, which drops it, a

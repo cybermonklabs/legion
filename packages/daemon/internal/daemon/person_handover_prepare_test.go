@@ -148,11 +148,11 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 // request and a version event read nothing and carry no view, and a read that fails fails the
 // preparation, so the event is delivered again. The issue's Dispatch event log is read, once, only
 // for such an approval that carries a sequence and that the view shows can queue its root
-// (intake.DispatchArtifact.MayQueueHandover: here a parked labelled root whose primary document is
-// the one approved): a person's approval of a root Dispatch shows in todo, and one with no
-// sequence, read the issue alone, and a failed read of the log fails the preparation, naming the
-// issue. The log served here is empty, so it leaves StatusChangedSeq at 0, and every prepared fact
-// is the decoded one apart from its view.
+// (intake.DispatchArtifact.MayQueueHandover: here a labelled root in backlog or icebox whose
+// primary document is the one approved): a person's approval of a root Dispatch shows in todo,
+// and one with no sequence, read the issue alone, and a failed read of the log fails the
+// preparation, naming the issue. The log served here is empty, so it leaves StatusChangedSeq at 0,
+// and every prepared fact is the decoded one apart from its view.
 func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
 	t.Parallel()
 	const key = "LEGION-755"

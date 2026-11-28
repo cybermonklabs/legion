@@ -282,7 +282,7 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 		}
 	})
 
-	t.Run("a person's park of a waiting issue takes the mark of its release with it", func(t *testing.T) {
+	t.Run("a person's move of a waiting issue to backlog takes the mark of its release with it", func(t *testing.T) {
 		const (
 			waiter  = "LEGION-50"
 			atWork  = "LEGION-51"
@@ -302,13 +302,13 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 			t.Fatalf("%s carries no mark of its release while it waits, want the moment its row was taken away", waiter)
 		}
 
-		// A person parks both: the one that waits, which holds no row for the release to find,
+		// A person moves both to backlog: the one that waits, which holds no row for the release to find,
 		// and the one at work, whose row the ordinary release takes.
-		dispatchEvent(t, pool, admission, "the-waiting-issue-is-parked", waiter, "backlog", blocker)
-		dispatchEvent(t, pool, admission, "the-working-issue-is-parked", atWork, "backlog")
+		dispatchEvent(t, pool, admission, "the-waiting-issue-moves-to-backlog", waiter, "backlog", blocker)
+		dispatchEvent(t, pool, admission, "the-working-issue-moves-to-backlog", atWork, "backlog")
 
 		if got := issue(t, pool, waiter); got.ReleasedForWaitAt != nil {
-			t.Fatalf("%s is parked and still marked released for a wait at %v, want no mark: it needs no row at all, so no record of it may say it stands in the line for one",
+			t.Fatalf("%s is in backlog and still marked released for a wait at %v, want no mark: it needs no row at all, so no record of it may say it stands in the line for one",
 				waiter, got.ReleasedForWaitAt)
 		}
 		if got := issue(t, pool, atWork); got.ReleasedForWaitAt != nil {
@@ -316,7 +316,7 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 		}
 		assertRowHolders(t, pool)
 		if got := issue(t, pool, waiter).Phase; got != phase.Implementing {
-			t.Errorf("%s stands in %s, want implementing: a park takes the row and the mark, and moves nothing of the work", waiter, got)
+			t.Errorf("%s stands in %s, want implementing: a move to backlog takes the row and the mark, and moves nothing of the work", waiter, got)
 		}
 	})
 }

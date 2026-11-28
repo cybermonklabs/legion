@@ -10,7 +10,7 @@
       "addValues": { "kind": ["plain", "urgent"] }
     }
   ],
-  "routes": [{ "route": "POST /legion/v1/children/park", "change": "remove" }],
+  "routes": [{ "route": "POST /legion/v1/issues/retired", "change": "remove" }],
   "answerRows": [
     { "id": "health", "routes": ["GET /legion/v1/health"], "noBody": false },
     { "id": "note", "routes": ["POST /legion/v1/issues/note"], "noBody": false }

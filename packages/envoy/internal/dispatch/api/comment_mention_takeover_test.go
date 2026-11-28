@@ -543,11 +543,11 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 // would close before the try it paces, so the listener's first take-over answer ("no live
 // session") would settle the attempt failed with no try again, and the session would get the
 // outbox's plain copy instead of the mention. Two comments to s1 wait behind the issue's earlier
-// events on one held lane - the first's send parked, the second's queued behind it - and the
+// events on one held lane - the first's send waiting for its retry, the second's queued behind it - and the
 // events are then published. In one row the first's send meets one take-over answer, in the other
 // the second's does, each after a wait longer than the window: each send must try again and be
 // sent, and s1 takes the two in order. The control in the same run waits no time. The code before
-// started the first's window when its send parked and the second's when its comment was written,
+// started the first's window when its send began to wait for its retry and the second's when its comment was written,
 // so both rows past the window settle that attempt failed.
 func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.T) {
 	t.Parallel()
@@ -560,7 +560,7 @@ func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.
 		refused string
 	}{
 		{name: "control: the first's send, after no wait", wait: 0, refused: "the first"},
-		{name: "the first's send, parked past the window", wait: window + 500*time.Millisecond, refused: "the first"},
+		{name: "the first's send, waiting for its retry past the window", wait: window + 500*time.Millisecond, refused: "the first"},
 		{name: "the second's send, queued past the window", wait: window + 500*time.Millisecond, refused: "the second"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -606,11 +606,11 @@ func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.
 			served.mentions = sender
 
 			// No outbox runs, so the issue's earlier events stay unsent: the first comment's send
-			// parks behind them, its timer left to the test, and the second queues behind it on
+			// waits for its retry behind them, its timer left to the test, and the second queues behind it on
 			// the held lane.
 			issue := createInteractionIssue(t, handler, "TEST", "A held lane's take-over windows", "before")
 			first := postMentionOfS1(t, handler, issue.Key, "the first")
-			unpark := <-timers
+			runRetry := <-timers
 			second := postMentionOfS1(t, handler, issue.Key, "the second")
 			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
 			waitUntil(t, "both sends on the issue's held lane", func() bool {
@@ -620,7 +620,7 @@ func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.
 			})
 			time.Sleep(row.wait)
 			publishIssueEvents(t, database, issue.Key)
-			unpark()
+			runRetry()
 			settledCommentDeliveries(t, database, first)
 			settledCommentDeliveries(t, database, second)
 

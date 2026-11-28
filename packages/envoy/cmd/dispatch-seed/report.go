@@ -180,7 +180,7 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			         select count(*) from issues i
 			         where i.closed_at is null and i.status in (` + priorityInFlightStatuses + `)
 			           and not exists (select 1 from members m where m.key = i.key)) ||
-			       ' priority work parked=' || (
+			       ' priority work in backlog or icebox=' || (
 			         select count(distinct i.key) from issues i join stated s on s.key = i.key
 			         where i.closed_at is null and i.status in (` + priorityBacklogStatuses + `)
 			           and not exists (select 1 from members_spread m

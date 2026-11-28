@@ -128,7 +128,8 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	// The operator is waiting on this answer, so the wake pacing never holds this launch
 	// (supervise's reserveWake): one person's spawn is not the wave the pacing exists for, and a
-	// route that answered with a claim parked launching would read as a daemon that did nothing.
+	// route that answered with a claim left launching under a delayed wake would read as a daemon
+	// that did nothing.
 	if err := m.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true}); err != nil {
 		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
 		return
@@ -215,7 +216,7 @@ func (s *server) answeredStatus(w http.ResponseWriter, r *http.Request, m *super
 // startedStatus posts ev, a request of the operator's that starts the claim, through
 // startUnderWay, answers every refusal itself, and reports the status of its success answer: 202
 // for a start this request wrote launching and for a request the machine held, 200 for one that
-// wrote no launch, such as a launch the wake pacing parked.
+// wrote no launch, such as a launch the wake pacing delayed.
 func (s *server) startedStatus(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	request string, ev supervise.Event) (int, bool) {
 	underWay, stopping, err := s.startUnderWay(r, m, token, request, ev)
@@ -282,7 +283,7 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 // published view then shows the launch, which is what the caller is answered with, and the start
 // goes on or has just ended. The route answers at that write, never later, so a start that hangs
 // holds nobody. A decision that ended without writing a launch reports false, with err what the
-// machine answered, as Handle answers it: a refusal, or nil for a launch the wake pacing parked.
+// machine answered, as Handle answers it: a refusal, or nil for a launch the wake pacing delayed.
 // One whose answer, an error, had arrived by the moment the route answers reports that error, as
 // Handle would, since that is the fuller answer. That the launch was written, not whether its
 // start has ended, decides underWay, so one request answers alike however fast its runtime

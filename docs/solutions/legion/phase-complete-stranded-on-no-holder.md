@@ -43,7 +43,7 @@ daemon does **not** drop the completion and does **not** clear the phase — it 
 
 - Routing already treats the issue as having no active phase (`reducers.ts` `routeActive`: a completed
   phase routes to the architect), and the Dispatch status has already moved. The tree looks advanced.
-- The parked record is invisible from outside the daemon: `GET /legion/v1/state` is an explicit allowlist
+- The stored, undelivered record is invisible from outside the daemon: `GET /legion/v1/state` is an explicit allowlist
   (`api/state.ts` `buildLegionStateResponse`) and `phases` is not in it. `legion state` cannot show it.
 - The only daemon path that replays it is `overseerCatchup` (`catchup.ts`, `phaseCompletions`), which runs
   from `/process/ready` — the root's ready call — never from a role claim.
@@ -64,8 +64,8 @@ A hand-run `envoy_role_set` is a hard claim (`envoy.ts` `claimEnvoyRole`). It re
   daemon's own event. `handlePhaseComplete`'s 404 is the listener API refusing synchronously, not an
   exception-lane delivery, so it never reaches that path.
 
-So with the pre-#970 plugin in the architect's pane — or after any manual claim — the parked completion stays
-parked until the root is resurrected or `/process/ready` runs again for some other reason.
+So with the pre-#970 plugin in the architect's pane — or after any manual claim — the stored completion stays
+undelivered until the root is resurrected or `/process/ready` runs again for some other reason.
 
 ## The designed recovery: the worker reports again
 
@@ -87,13 +87,13 @@ Operationally, after an architect re-claims its role by hand:
    else — no second handoff record (`dispatch handoff-write` has already written this phase's), and no new
    commit.
 3. Alternatively the worker sends the summary straight to the architect's session (what LEGION-13's workers
-   did; gotchas § 7) — that informs the architect but leaves `phases[<KEY>].completed` parked until the
+   did; gotchas § 7) — that informs the architect but leaves `phases[<KEY>].completed` stored until the
    next assignment or `/process/ready` overwrites it. Prefer the repeat: it clears the daemon's record too.
 
 ## Why the fix that landed did not cover this
 
 `sjawhar/legion#970` makes the heartbeat re-assert a dropped claim and re-run `/process/ready` for the root
-architect, which replays the parked completion. It reaches a pane only when the `legion` profile's plugin pin
+architect, which replays the stored completion. It reaches a pane only when the `legion` profile's plugin pin
 moves (see the heartbeat note's § 8); a root architect launched before that runs the old plugin for its whole
 life, and a human's `envoy_role_set` in the meantime is exactly the case that fires no hook. Until every
 long-lived architect has been relaunched on a plugin with #970, the manual step above is the recovery.

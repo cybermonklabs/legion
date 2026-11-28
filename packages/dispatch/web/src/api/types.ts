@@ -246,7 +246,7 @@ export type {
   PriorityIssue,
   PriorityRow,
   PriorityWork,
-  PriorityWorkParked,
+  PriorityWorkInBacklogOrIcebox,
   ProgressCount,
   Project,
   ProjectDefaultAssignee,

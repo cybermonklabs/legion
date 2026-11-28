@@ -52,17 +52,17 @@ func (w Window) String() string {
 
 // Reading is one run of this reading: the project and the window it covered, how many issues
 // finished in the window and how many filings the project's Legion sessions made in it, the
-// moments the project's claim and slot observations begin, and the six measures. ParkedHours and
-// FilingsByClass state what the history the measures were read over holds: the hours the
-// window's finished issues sat in each parked status inside their work time, which the work time
-// leaves out, and the window's filings of each class.
+// moments the project's claim and slot observations begin, and the six measures.
+// BacklogOrIceboxHours and FilingsByClass state what the history the measures were read over
+// holds: the hours the window's finished issues sat in each of `backlog` and `icebox` inside their
+// work time, which the work time leaves out, and the window's filings of each class.
 type Reading struct {
 	Project               string             `json:"project"`
 	WindowFrom            string             `json:"window_from"`
 	WindowTo              string             `json:"window_to"`
 	Issues                int                `json:"issues"`
 	Filings               int                `json:"filings"`
-	ParkedHours           map[string]float64 `json:"parked_hours"`
+	BacklogOrIceboxHours  map[string]float64 `json:"backlog_or_icebox_hours"`
 	FilingsByClass        map[string]int     `json:"filings_by_class"`
 	FirstClaimObservation *time.Time         `json:"first_claim_observation"`
 	FirstSlotObservation  *time.Time         `json:"first_slot_observation"`
@@ -91,10 +91,10 @@ func Read(ctx context.Context, db Querier, project string, window Window) (Readi
 		}
 	}
 	slices.SortFunc(m.closes, func(a, b time.Time) int { return a.Compare(b) })
-	parked := map[string]float64{}
+	inBacklog := map[string]float64{}
 	for _, one := range m.finished {
-		for status, hours := range one.parked {
-			parked[status] = rounded(parked[status] + hours)
+		for status, hours := range one.inBacklog {
+			inBacklog[status] = rounded(inBacklog[status] + hours)
 		}
 	}
 	byClass := map[string]int{}
@@ -118,7 +118,7 @@ func Read(ctx context.Context, db Querier, project string, window Window) (Readi
 		WindowTo:              window.To.Format(time.RFC3339),
 		Issues:                len(m.finished),
 		Filings:               len(m.filed),
-		ParkedHours:           parked,
+		BacklogOrIceboxHours:  inBacklog,
 		FilingsByClass:        byClass,
 		FirstClaimObservation: held.firstClaim,
 		FirstSlotObservation:  held.firstSlot,

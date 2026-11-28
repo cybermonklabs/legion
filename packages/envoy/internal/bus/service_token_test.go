@@ -128,8 +128,8 @@ type natscredDump struct {
 	// (asyncCBDispatcher), which runs a connection's ClosedCB.
 	dispatchers int
 	// stuck is whether some natscred goroutine runs and nothing the dump shows is on its way to end
-	// any of them: every natscred goroutine is parked, and every dispatcher is idle, parked waiting
-	// for a callback (sync.Cond.Wait).
+	// any of them: every natscred goroutine waits on an event (waitsOnEvent), and every dispatcher
+	// is idle, waiting for a callback (sync.Cond.Wait).
 	stuck bool
 }
 
@@ -160,7 +160,7 @@ func natscredGoroutines() natscredDump {
 			// dispatcher: a keeper started there without its go waits in its own select, and the
 			// dispatcher's rule would keep it from ever being stuck.
 			dump.all++
-			dump.stuck = dump.stuck && parked(state)
+			dump.stuck = dump.stuck && waitsOnEvent(state)
 			if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.(*serviceCredential).Keep(") {
 				dump.keepers++
 			}
@@ -174,13 +174,13 @@ func natscredGoroutines() natscredDump {
 	return dump
 }
 
-// parked reports whether a goroutine in state waits on an event no running code is about to
-// bring: a select, a channel's receive or send, a sleep, a condition or a wait group, whatever
-// timer it waits with. A goroutine waiting on a lock (sync.Mutex, sync.RWMutex, semacquire) is not
-// parked, since the lock's holder lets it go: a correct keeper takes its connection's lock on its
-// way out (RemoveStatusListener), which nats.go's own goroutines also take. Neither is one running,
-// runnable, preempted, in a system call or in IO wait, which the kernel ends.
-func parked(state string) bool {
+// waitsOnEvent reports whether a goroutine in state waits on an event no running code is about
+// to bring: a select, a channel's receive or send, a sleep, a condition or a wait group, whatever
+// timer it waits with. A goroutine waiting on a lock (sync.Mutex, sync.RWMutex, semacquire) does
+// not, since the lock's holder lets it go: a correct keeper takes its connection's lock on its
+// way out (RemoveStatusListener), which nats.go's own goroutines also take. Neither does one
+// running, runnable, preempted, in a system call or in IO wait, which the kernel ends.
+func waitsOnEvent(state string) bool {
 	switch state {
 	case "select", "select (no cases)", "chan receive", "chan send", "chan receive (nil chan)", "chan send (nil chan)",
 		"sleep", "sync.Cond.Wait", "sync.WaitGroup.Wait":
@@ -206,8 +206,8 @@ func traceState(trace string) string {
 // file's 50-minute tokens (natscred.ServiceRenewBefore is 10), so a wait that ended only on the
 // count would pass that keeper under any deadline past that, and a span short of it would be a
 // guess at how slow a keeper's exit may be. The test binary's deadline (testwait.Until) is
-// only a hang guard, for a natscred goroutine that never parks and never ends: one that runs for
-// ever, or waits on a lock its holder never lets go.
+// only a hang guard, for a natscred goroutine that never waits on an event and never ends: one
+// that runs for ever, or waits on a lock its holder never lets go.
 func requireNoNatscredGoroutine(t *testing.T, when string) {
 	t.Helper()
 	var last natscredDump
@@ -216,7 +216,7 @@ func requireNoNatscredGoroutine(t *testing.T, when string) {
 		return fmt.Sprintf("%+v", last), last.all == 0 || last.stuck
 	})
 	if last.all != 0 {
-		t.Fatalf("%d natscred goroutines, %d of them service keepers, still run %s, each parked where no running code can wake it, want none", last.all, last.keepers, when)
+		t.Fatalf("%d natscred goroutines, %d of them service keepers, still run %s, each blocked where no running code can wake it, want none", last.all, last.keepers, when)
 	}
 }
 
@@ -227,7 +227,7 @@ func requireNoNatscredGoroutine(t *testing.T, when string) {
 // connection presenting a service token and sees its keeper, so the count can see one, then runs
 // the client of TestAClosedConnectionIsReplacedOnceAndCloseLeavesNoneOpen on that token until a
 // replacement is discarded and the client closed, and requires every natscred goroutine gone. The
-// control is the keeper stopped by ClosedCB alone, as at ac2334299e: one keeper is left, parked
+// control is the keeper stopped by ClosedCB alone, as at ac2334299e: one keeper is left, blocked
 // until its token's renewal, and the row fails on it as soon as the client's Close has returned
 // (requireNoNatscredGoroutine), not when a span runs out.
 func TestADiscardedReplacementConnectionLeavesNoKeeperRunning(t *testing.T) {

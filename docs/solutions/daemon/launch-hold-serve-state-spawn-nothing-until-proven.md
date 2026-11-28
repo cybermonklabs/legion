@@ -87,8 +87,8 @@ when it is neither. The first version dropped everything that was not `active`, 
 the one request the hold exists to defer: a root that survived the restart and exited during the
 hold reports it (`POST /process/exit` → `markProcessDead` → `status = "dead"`), and `dead` is
 precisely what a resurrection recovers from. Write the predicate against the statuses that
-actually exist (`queued | active | lingering | dead | launch-failed | closed`) — "parked" is an
-issue status, not a tree status.
+actually exist (`queued | active | lingering | dead | launch-failed | closed`) — `backlog` and
+`icebox` are issue statuses, not tree statuses.
 
 ### Abort the dependency check when boot fails for another reason
 

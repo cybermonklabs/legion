@@ -146,8 +146,8 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 }
 
 // listPriorities is GET /api/v1/priorities: every live priority in rank order, the work that
-// advances each, and the two faults — work in flight under no priority, and priority work parked
-// in `backlog` or `icebox`. The reads are priority_queries.go's, which says what each one costs.
+// advances each, and the two faults — work in flight under no priority, and priority work in
+// `backlog` or `icebox`. The reads are priority_queries.go's, which says what each one costs.
 //
 // The route's two parameters are the ones declared on it (prioritiesQuery, routes_shapes.go).
 // ?project=, repeatable, narrows the counts and the two fault lists to those projects and leaves

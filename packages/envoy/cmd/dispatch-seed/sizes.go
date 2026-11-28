@@ -87,7 +87,7 @@ type sizes struct {
 	// grows, a deployment holds a couple of dozen of them however much work hangs under them,
 	// and the measurement corpus the api package builds for the same read holds twenty
 	// (api/priority_speed_seed_test.go). A scale that rounded them to one would leave the one
-	// order with nothing to sort and the parked fault with one priority to group by.
+	// order with nothing to sort and the fault in backlog or icebox with one priority to group by.
 	//
 	// Advances scales with the work: a tenth of the issues state a relation of their own, two
 	// priorities each (advancesPerIssue), and every issue below one of them inherits what it

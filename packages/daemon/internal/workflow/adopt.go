@@ -24,7 +24,7 @@ import (
 // C4 of dispatch://INFRA-3107 is the one clause that takes a member rather than a root: a member
 // of a closed tree that never started a phase joins the tree whose architect releases it
 // (AdoptMember), and nothing else about a member is adoptable. A member of a tree that is live is
-// another architect's work and keeps its refusal, as does one of a parked tree, one of a tree
+// another architect's work and keeps its refusal, as does one of a tree whose root is in backlog or icebox, one of a tree
 // still in its linger and one in any phase past admitted.
 //
 // Admission's sweep of its queue (adoptQueuedRoots) leaves a refused root queueing as a root of
@@ -258,7 +258,7 @@ func reparentedWords(issue, parent, tree, ran string, version int) string {
 // phase.Admitted on the mirror's row, which the release's own read wrote before the adoption ran
 // (the mirror's intake.ChildAdoption arm), and StartUnblockedChildren starts it once nothing
 // holds it. Only the adopted root itself carries that read: a member of its tree was named by no
-// release, and waits on what the mirror says. Any other status keeps it as a parked child at
+// release, and waits on what the mirror says. Any other status keeps it as a child out of the workflow at
 // done, which a todo runs again (ReenterChild). The architect that owns its parent is told with a
 // child-status notice. Everything is written in the caller's transaction.
 func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue, child intake.AdoptedChild) error {
@@ -296,8 +296,8 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // A todo record enters the tree admitted on the repository it was first recorded with (enterChild,
 // RecordedFact, recordedResolution), as an unrecorded todo child does. It starts its first phase at
 // the slot the waiting line gives it, or is held at admitted while an unfinished Dispatch issue
-// holds it. Any other status is written as a parked
-// child at done, which a todo runs again (ReenterChild), with no linger, hold or Dispatch chain
+// holds it. Any other status is written as a child out of the workflow
+// at done, which a todo runs again (ReenterChild), with no linger, hold or Dispatch chain
 // (record.Issue.Ancestry: a member waits in no line).
 //
 // child is the release's own read of the issue it names (intake.AdoptedChild). The member it
@@ -330,7 +330,7 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	if member.Status == "todo" {
 		return e.enterChild(ctx, tx, root, fact, next, recordedResolution(member))
 	}
-	// The member is parked at done at its next run, and no task moves (moveTask): the write takes it
+	// The member is out of the workflow at done at its next run, and no task moves (moveTask): the write takes it
 	// out of the workflow without ending a task. The run it leaves keeps its task where it stood,
 	// with that run's step ended above, and the run it enters has started none. A todo runs it
 	// again at a run of its own (ReenterChild).
@@ -392,7 +392,7 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 // tree_closed until an architect releases it too.
 //
 // The record is written as moveIntoTree writes every adopted record, a todo one entering the
-// tree admitted and any other standing as a parked child at done, which a todo runs again
+// tree admitted and any other standing as a child out of the workflow at done, which a todo runs again
 // (ReenterChild). That branch is what a member a person took out of the workflow needs: a
 // release may name a child Dispatch shows in triage, backlog or icebox (api's releasableChild),
 // and a record at admitted carrying such a status would be an issue in the live tree that no
