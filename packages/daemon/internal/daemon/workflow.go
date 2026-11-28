@@ -965,9 +965,20 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // publication. A restart loop that queues a second seed beside one still waiting costs one more
 // read of Dispatch: the seed's fact is the step, the request, the registration it reads for and
 // what the read found, so it applies once.
+//
+// It queues as well one gate seed (record.GateSeed) for each registered step of a gated document
+// that reads closed (record.GateOpen false), carried copies and steps pending on an ancestor's
+// request among them, of each issue whose tree's root is in the workflow (record.InWorkflow), so
+// a verdict an older daemon dropped (it reads no artifact.digest) or the intake lost is read again
+// from Dispatch (R2 of dispatch://INFRA-6065): a row such a daemon moved reads closed until then. A
+// gate open on the record is read before the starts it holds (the outbox's
+// designGateStandsInDispatch), and a step no person approves (record.TakesStep) holds nothing. The
+// seeds read their issues' generations, and their roots' records, in the same query as the
+// pending-basis seeds, and a seed still pending from the boot before is that read, so a restart
+// loop queues none beside it (record.EnqueueGateSeed).
 func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	now := time.Now().UTC()
-	queued := 0
+	queued, seeded := 0, 0
 	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		live, err := w.records.GatedIssues(ctx, tx, w.dispatchProject)
 		if err != nil {
@@ -977,39 +988,39 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		var pending []record.DesignGate
+		var pending, closed []record.DesignGate
+		var keys []string
 		for _, issue := range live {
 			publish := record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(w.gatedSteps, gates[issue])}
 			if err := w.records.EnqueueDesignGates(ctx, tx, publish, now); err != nil {
 				return err
 			}
 			for _, gate := range gates[issue] {
+				wanted := false
 				if gate.PendingOnBasis() {
-					pending = append(pending, gate)
+					pending, wanted = append(pending, gate), true
+				}
+				if record.TakesStep(w.gatedSteps, gate.Step.OrSpec()) && !record.GateOpen(gate) {
+					closed, wanted = append(closed, gate), true
+				}
+				if wanted {
+					keys = append(keys, issue)
 				}
 			}
 		}
-		if len(pending) == 0 {
+		if len(keys) == 0 {
 			return nil
 		}
-		keys := make([]string, 0, len(pending))
-		for _, gate := range pending {
-			keys = append(keys, gate.Issue)
-		}
-		roots, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, slices.Compact(keys))
+		issues, err := w.issuesWithRoots(ctx, tx, slices.Compact(keys))
 		if err != nil {
 			return err
 		}
-		generations := make(map[string]uint64, len(roots))
-		for _, root := range roots {
-			generations[root.Key] = root.Generation
-		}
 		for _, gate := range pending {
-			generation, recorded := generations[gate.Issue]
+			issue, recorded := issues[gate.Issue]
 			if !recorded {
 				continue
 			}
-			row, err := record.NewOutboxRow(gate.Issue, record.PendingBasisSeedOf(gate, generation), now)
+			row, err := record.NewOutboxRow(gate.Issue, record.PendingBasisSeedOf(gate, issue.Generation), now)
 			if err != nil {
 				return err
 			}
@@ -1018,14 +1029,62 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 			}
 			queued++
 		}
+		for _, gate := range closed {
+			issue, recorded := issues[gate.Issue]
+			if root, ok := issues[issue.Tree]; !recorded || !ok || !record.InWorkflow(root) {
+				continue
+			}
+			seed := record.GateSeed{ArtifactID: gate.ArtifactID, Step: gate.Step.OrSpec(), Version: gate.LatestVersion, Generation: issue.Generation}
+			added, err := record.EnqueueGateSeed(ctx, tx, w.records, gate.Issue, seed, now)
+			if err != nil {
+				return err
+			}
+			if added {
+				seeded++
+			}
+		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("queue the recorded design-gates publications and pending-basis seeds of %s: %w", w.dispatchProject, err)
+		return fmt.Errorf("queue the recorded design-gates publications, pending-basis seeds and gate seeds of %s: %w", w.dispatchProject, err)
 	}
 	if queued > 0 {
 		w.log.Info("legion workflow boot queued a pending-basis seed for each step waiting on an ancestor's request", "steps", queued)
 	}
+	if seeded > 0 {
+		w.log.Info("legion workflow boot queued a gate seed for each closed step of a gated document in a tree in the workflow", "steps", seeded)
+	}
 	return nil
+}
+
+// issuesWithRoots is the record of each of keys and of each of their trees' roots, by key, read
+// in one query where every key is a root of its own tree (as a gate's issue is) and in two
+// otherwise; a key with no record is left out.
+func (w *workflowRuntime) issuesWithRoots(ctx context.Context, tx pgx.Tx, keys []string) (map[string]record.Issue, error) {
+	read, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, keys)
+	if err != nil {
+		return nil, err
+	}
+	issues := make(map[string]record.Issue, len(read))
+	for _, issue := range read {
+		issues[issue.Key] = issue
+	}
+	var trees []string
+	for _, issue := range read {
+		if _, ok := issues[issue.Tree]; !ok && !slices.Contains(trees, issue.Tree) {
+			trees = append(trees, issue.Tree)
+		}
+	}
+	if len(trees) == 0 {
+		return issues, nil
+	}
+	roots, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, trees)
+	if err != nil {
+		return nil, err
+	}
+	for _, root := range roots {
+		issues[root.Key] = root
+	}
+	return issues, nil
 }
 
 // roleHoldersPublishWindow is how far back the boot looks for a claim change that a release

@@ -343,6 +343,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.nothingPublished(t, issue)
 		rig.recordChanges(t, issue)
 		approved := 2
+		rig.approvals.approve("spec-"+issue.key, approved, 2)
 		putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
 			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
 		rig.await(t, "the merger woken for the message once the gate opened", func() bool {
@@ -420,16 +421,18 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 // dequeueRig is the daemon this test drives and the stand-ins it reads back from: GitHub, Envoy's
 // listener, the runtime the claims launch in, and the daemon's own log.
 type dequeueRig struct {
-	cfg      config.Config
-	o        overrides
-	project  string
-	pool     *store.Pool
-	records  *record.Postgres
-	js       jetstream.JetStream
-	github   *dequeueGitHub
-	listener *dequeueListener
-	rt       *fake.Runtime
-	logs     *syncBuffer
+	// approvals is the approval of each spec the board shows, as the case's gate row stands.
+	approvals *shownApprovals
+	cfg       config.Config
+	o         overrides
+	project   string
+	pool      *store.Pool
+	records   *record.Postgres
+	js        jetstream.JetStream
+	github    *dequeueGitHub
+	listener  *dequeueListener
+	rt        *fake.Runtime
+	logs      *syncBuffer
 	// engine is the workflow engine the daemon runs, built as the daemon builds it, which applies
 	// the one fact a case applies of its own (startedAgainEngine).
 	engine *workflow.Engine
@@ -483,7 +486,8 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 	pool := isolatedOutboxPool(t)
 	recordOutboxWrites(t, pool)
 	natsURL := workflowNATS(t)
-	cfg := workflowConfigOn(t, natsURL, startedAgainDispatch)
+	approvals := &shownApprovals{}
+	cfg := workflowConfigOn(t, natsURL, func(t *testing.T, project string) string { return startedAgainDispatchShowing(t, project, approvals) })
 	cfg.PostgresDSN = pool.Config().ConnString()
 	// Room for every case's tree, so the cap holds no issue of the record back.
 	cfg.AdmissionCap = 20
@@ -491,7 +495,7 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig := &dequeueRig{cfg: cfg, project: project, pool: pool, records: record.NewStore(), js: workflowJetStream(t, natsURL),
+	rig := &dequeueRig{approvals: approvals, cfg: cfg, project: project, pool: pool, records: record.NewStore(), js: workflowJetStream(t, natsURL),
 		github: newDequeueGitHub(t), rt: fake.NewRuntime(), logs: &syncBuffer{}, engine: startedAgainEngine(cfg)}
 	rig.listener = newDequeueListener(t, &rig.cfg)
 	rig.rt.InPod = true
@@ -536,6 +540,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 			return nil
 		}
 		approved := 1
+		r.approvals.approve("spec-"+key, approved, 2)
 		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "spec-" + key,
 			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
 			return err
@@ -626,6 +631,7 @@ func (r *dequeueRig) oweNews(t *testing.T, issue dequeueIssue) {
 	if err := store.Transact(context.Background(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		ctx := context.Background()
 		approved := 2
+		r.approvals.approve("spec-"+issue.key, approved, 2)
 		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
 			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
 			return err

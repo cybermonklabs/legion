@@ -310,14 +310,13 @@ func newReleaseBeforeRig(t *testing.T) *inFlightRig {
 	status := workflow.PhaseStatus(phase.Reviewing)
 	// Two titles of the in-flight run, which Dispatch takes as two issues of no near-copy title.
 	for place, title := range []string{inFlightTitles[3], inFlightTitles[7]} {
-		var created createdIssue
-		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title}, http.StatusCreated, &created)
+		created, spec := r.approvedIssue(title)
 		r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": status, "labels": []string{"legion"}}, http.StatusOK, &created)
 		issue := &inFlightIssue{walkIssue: walkIssue{key: created.Key, title: title, number: int(number) + 1 + place},
 			stands: phase.Reviewing, sessions: map[claim.Role]inFlightSession{}}
 		r.issues = append(r.issues, issue.walkIssue)
 		r.github.open("legion/"+issue.key, issue.number)
-		r.seedInFlight(issue, phase.Reviewing, status, created)
+		r.seedInFlight(issue, phase.Reviewing, status, created, spec)
 		r.seedPlanInReviewing(issue)
 		r.walks = append(r.walks, issue)
 	}

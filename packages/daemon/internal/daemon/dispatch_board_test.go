@@ -58,6 +58,44 @@ type liveDispatch struct {
 	stepOrder []string
 	// plans is each plan the daemon wrote, by its id, its fields as the first write set them.
 	plans map[string]map[string]any
+	// approvals is the approval of each document a test showed (shownApprovals.approve).
+	approvals shownApprovals
+}
+
+// approve shows Dispatch's approval of version approved of artifact at its latest version latest.
+func (b *liveDispatch) approve(artifact string, approved, latest int) {
+	b.approvals.approve(artifact, approved, latest)
+}
+
+// approved is the GET body of artifact a test showed (approve), "" for none.
+func (b *liveDispatch) approved(artifact string) string { return b.approvals.body(artifact) }
+
+// shownApprovals is the approval a test shows Dispatch holding of each document, as Dispatch
+// answers GET /api/v1/artifacts/{id} with no hash-gate field: the answer the read before each
+// start the design gate holds (the outbox's designGateStandsInDispatch), and the gate seed, read.
+// A test that opens or closes a gate by writing its row shows the same approval here, as Dispatch
+// would hold it, so the read finds what the record says and a seed changes nothing.
+type shownApprovals struct {
+	mu     sync.Mutex
+	bodies map[string]string
+}
+
+// approve shows the approval of version approved of artifact at its latest version latest: it
+// stands only where approved is latest (dispatch.Approval.Stands).
+func (s *shownApprovals) approve(artifact string, approved, latest int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bodies == nil {
+		s.bodies = map[string]string{}
+	}
+	s.bodies[artifact] = fmt.Sprintf(`{"approval":{"state":"approved","version":%d,"latest_version":%d}}`, approved, latest)
+}
+
+// body is the GET body of artifact the test showed, "" for none.
+func (s *shownApprovals) body(artifact string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bodies[artifact]
 }
 
 // liveDispatchIssue is one issue as the board holds it: its status, its parent ("" for none),
@@ -160,6 +198,16 @@ func (b *liveDispatch) handoff(key, word, session string) string {
 }
 
 func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// A document's approval the test showed (approve), as Dispatch answers it with no hash-gate
+	// field: the read before each start the design gate holds (the outbox's
+	// designGateStandsInDispatch), the boot's gate seed and the catch-up read it. It goes ahead of
+	// servedBootCall, whose answer for a document is one nobody has asked to approve.
+	if shown := b.approved(strings.TrimPrefix(req.URL.Path, "/api/v1/artifacts/")); req.Method == http.MethodGet &&
+		strings.HasPrefix(req.URL.Path, "/api/v1/artifacts/") && shown != "" {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, shown)
+		return
+	}
 	if servedBootCall(b.t, w, req, b.project) {
 		return
 	}

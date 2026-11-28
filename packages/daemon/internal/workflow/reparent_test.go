@@ -115,7 +115,7 @@ func TestAReparentReadNamesR1sPathOnlyWhereItIsOpen(t *testing.T) {
 		", so the tree of LEGION-208 cannot take it in and no architect of that tree can release it."
 	today := stays + " It runs under its own architect, and its work reaches the tree of LEGION-208 only through that tree's own issues."
 	path := stays + " It runs under its own architect. LEGION-208 carries the legion label and marks requirement blocks in its primary document. " +
-		"A person approved version 7 of that document, which is its latest version. So the architect of LEGION-500 can write it as a view on LEGION-208. " +
+		"A person's approval of that document stands for its version 7, which is its latest version. So the architect of LEGION-500 can write it as a view on LEGION-208. " +
 		"Then that architect can register the design gate of LEGION-500 on that approval, with no approval of its own, " +
 		"with register_gate's basis."
 	for _, tc := range []struct {

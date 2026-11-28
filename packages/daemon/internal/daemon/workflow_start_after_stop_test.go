@@ -46,8 +46,21 @@ const startedAgainRepo = "acme/widgets"
 // second row while one stands (workflow's correctStatuses).
 func startedAgainDispatch(t *testing.T, project string) string {
 	t.Helper()
+	return startedAgainDispatchShowing(t, project, &shownApprovals{})
+}
+
+// startedAgainDispatchShowing is startedAgainDispatch that answers the approval of each document
+// shown (shownApprovals), for a test whose gate the read before a start the design gate holds
+// reads.
+func startedAgainDispatchShowing(t *testing.T, project string, shown *shownApprovals) string {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := shown.body(strings.TrimPrefix(r.URL.Path, "/api/v1/artifacts/"))
 		switch {
+		// Ahead of servedBootCall, whose answer for a document is one nobody has asked to approve.
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/artifacts/") && body != "":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, body)
 		case servedBootCall(t, w, r, project):
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			w.Header().Set("Content-Type", "application/json")

@@ -175,6 +175,9 @@ func (r *admissionIssuesLive) seedTrees() {
 	ctx := context.Background()
 	r.board.show(r.root, "in_progress")
 	r.board.show(r.accepting, "needs_review")
+	// Dispatch shows the root's spec approved at its latest version, as its gate row records it, for
+	// the read before the root's first phase starts (the outbox's designGateStandsInDispatch).
+	r.board.approve("spec-"+r.root, 1, 1)
 	for _, child := range []string{r.childOne, r.childTwo} {
 		r.board.place(child, "backlog", r.root, false)
 	}

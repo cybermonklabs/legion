@@ -1486,7 +1486,8 @@ func deferredVersion(fact intake.DispatchArtifact, version int) intake.DispatchA
 
 // seedOlderReview queues the gate seed of gate's step for fact, a review of a version below the
 // latest that a row in hash mode gives no verdict for (classify.GateFactResult.SeedWanted): only a
-// read of Dispatch can say whether that approval covers the latest version's digest.
+// read of Dispatch can say whether that approval covers the latest version's digest. A seed of the
+// step still pending is that read, so a second such review queues none (record.EnqueueGateSeed).
 func (e *Engine) seedOlderReview(ctx context.Context, tx pgx.Tx, gate record.DesignGate, fact intake.DispatchArtifact) error {
 	issue, err := e.store.Issue(ctx, tx, gate.Issue)
 	if err != nil || issue == nil {
@@ -1494,7 +1495,9 @@ func (e *Engine) seedOlderReview(ctx context.Context, tx pgx.Tx, gate record.Des
 	}
 	e.logOnCommit(ctx, "workflow: a review of a version older than the gate's latest gives no verdict, so the gate seed reads Dispatch", "issue", gate.Issue,
 		"artifact", gate.ArtifactID, "step", gate.Step.OrSpec(), "version", fact.Version, "gate_version", gate.LatestVersion)
-	return e.enqueue(ctx, tx, gate.Issue, record.GateSeed{ArtifactID: gate.ArtifactID, Step: gate.Step.OrSpec(), Version: gate.LatestVersion, Generation: issue.Generation})
+	_, err = record.EnqueueGateSeed(ctx, tx, e.store, gate.Issue,
+		record.GateSeed{ArtifactID: gate.ArtifactID, Step: gate.Step.OrSpec(), Version: gate.LatestVersion, Generation: issue.Generation}, e.now())
+	return err
 }
 
 // openedNotice is the notice of an opening of gate, the row of key's step, that fact left as

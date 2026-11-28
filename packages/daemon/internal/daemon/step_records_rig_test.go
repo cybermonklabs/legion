@@ -118,13 +118,12 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Step records"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	for place := range issues {
-		var created createdIssue
-		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": walkTitles[place]}, http.StatusCreated, &created)
+		created, spec := r.approvedIssue(walkTitles[place])
 		r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
 		r.issues = append(r.issues, walkIssue{key: created.Key, title: walkTitles[place], number: int(number) + 1 + place})
 		r.on(created.Key)
 		r.github.open("legion/"+r.key, r.number)
-		r.seed(created.Rank, created.LastSeq)
+		r.seed(created.Rank, created.LastSeq, spec)
 	}
 	r.boot()
 	// The architect's pane is met at the boot's relaunch, so it is a live session before any
@@ -162,6 +161,28 @@ type createdIssue struct {
 	LastSeq int64  `json:"last_seq"`
 }
 
+// approvedIssue creates an issue of the run titled title with its spec, which the person then
+// approves at its version 1, and answers the issue as Dispatch created it and the spec's id. The
+// rigs seed each issue's gate open on that spec before the daemon boots, so the gate stands on a
+// real approved document: the read before each start the design gate holds reads it (the outbox's
+// designGateStandsInDispatch), as the owner's rig reads its specs (newOwnerStepsRig). The approval
+// comes before the caller's own write of the issue, whose answer carries the sequence the store
+// records, so the boot's catch-up replays none of it.
+func (r *stepRecordsRig) approvedIssue(title string) (createdIssue, string) {
+	r.t.Helper()
+	var created struct {
+		createdIssue
+		PrimaryArtifactID string `json:"primary_artifact_id"`
+	}
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title,
+		"spec": "The issue's change, as its owner states it.\n"}, http.StatusCreated, &created)
+	if created.PrimaryArtifactID == "" {
+		r.t.Fatalf("Dispatch created %s with no primary document", created.Key)
+	}
+	r.person(http.MethodPost, "/api/v1/artifacts/"+created.PrimaryArtifactID+"/reviews", map[string]any{"state": "approved"}, http.StatusCreated, nil)
+	return created.createdIssue, created.PrimaryArtifactID
+}
+
 // stepRecordsPullRequest is pull request number of issue, open at stepRecordsHead on the branch
 // legion/<issue>, which GitHub reports clean, as the daemon's store records it.
 func stepRecordsPullRequest(issue string, number int) record.PullRequest {
@@ -170,11 +191,12 @@ func stepRecordsPullRequest(issue string, number int) record.PullRequest {
 }
 
 // seed records the issue as the daemon holds it the moment its architect's spec is approved: a
-// root handed to Legion at admitted, its gate opened, its lifecycle under the workflow and its
-// architect's claim a launch a previous daemon began and never recorded, which the boot relaunches.
+// root handed to Legion at admitted, its gate opened on spec, its primary document, which the
+// person approved at version 1, its lifecycle under the workflow and its architect's claim a
+// launch a previous daemon began and never recorded, which the boot relaunches.
 // Its pull request is recorded open at stepRecordsHead, which GitHub reports clean, so a review
 // that approves that head ends its round and the implementer's completions find it.
-func (r *stepRecordsRig) seed(rank string, seq int64) {
+func (r *stepRecordsRig) seed(rank string, seq int64, spec string) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
@@ -188,7 +210,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 			return err
 		}
 		if err := r.records.PutGate(ctx, tx, record.DesignGate{
-			Issue: r.key, ArtifactID: "spec-" + r.key, LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true,
+			Issue: r.key, ArtifactID: spec, LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true,
 		}); err != nil {
 			return err
 		}

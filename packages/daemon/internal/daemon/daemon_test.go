@@ -2236,7 +2236,12 @@ func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole
 // read of a gate's own document, which the boot's catch-up makes for every root it reads
 // (bindGateRequest through dispatch.Client.Approval). It reports whether it answered r. A board
 // that leaves one of these to its own default arm fails the test with an unexpected request,
-// which is what this helper exists to stop: none of them belongs to a test here.
+// which is what this helper exists to stop: none of them belongs to a test here. A gate's
+// document is read too before each start the design gate holds and by the boot's gate seed of each
+// closed step (the outbox's designGateStandsInDispatch and seedGate), where a document nobody was
+// asked to approve holds the start, and a version below the gate's resets it: a board whose test
+// seeds a gate row it runs a member or a merger on shows that document's approval ahead of this
+// helper (shownApprovals).
 // role_holder_publish_test.go and TestRoleHoldersLandInScratchDispatch are the tests of the
 // role-holder publication.
 func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, project string) bool {

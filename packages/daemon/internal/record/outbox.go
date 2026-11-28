@@ -2,6 +2,7 @@ package record
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -1575,6 +1577,31 @@ type GateSeed struct {
 
 func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
 
+// EnqueueGateSeed queues seed, the gate seed of a step of issue, due at at, unless the outbox
+// holds a gate_seed row of issue with the same payload that no live lease holds: that row reads
+// Dispatch when it runs, the read this one would make, so it queues nothing. A row a lane holds
+// may have read Dispatch already, so a row is queued beside it. It answers whether it queued one.
+// Three queues of a seed go through it, each of which can repeat before the row runs: the
+// workflow's seed of a review of an older version in hash mode (dispatch://INFRA-6065 R3), the
+// read of Dispatch before a start the design gate holds, which a held start makes again at each
+// try (R4), and the boot's seed of each closed step, which a restart loop makes again (R2). It
+// adds no kind and no field: the row is the gate seed every queue writes.
+func EnqueueGateSeed(ctx context.Context, tx pgx.Tx, store Store, issue string, seed GateSeed, at time.Time) (bool, error) {
+	row, err := NewOutboxRow(issue, seed, at)
+	if err != nil {
+		return false, err
+	}
+	var pending bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from outbox where kind = $1 and issue = $2 and payload = $3::jsonb
+		and (lease_until is null or lease_until <= $4))`, string(OutboxKindGateSeed), issue, string(row.Payload), at).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether %s has the gate seed of %s pending: %w", issue, seed.Step, err)
+	}
+	if pending {
+		return false, nil
+	}
+	return true, store.Enqueue(ctx, tx, row)
+}
+
 // PendingBasisSeed reads, from Dispatch, the ancestor's document and issue a root's step waits on
 // through the ancestor's approval request (DesignGate.Basis.Pending) and applies what it finds, as
 // a fact of its own rather than the gate seed's: a person's approval of the version opens the
@@ -1624,9 +1651,10 @@ func PendingBasisSeedOf(gate DesignGate, generation uint64) PendingBasisSeed {
 // person has made a child of a live tree (workflow's tellReparented), and applies what it finds
 // as a fact that posts the message on the row's issue, the re-parented root, and queues the
 // child-status notice to the architect of the parent's tree. The engine does no I/O, so the read
-// of whether the parent carries the legion label, holds a person's approval of its primary
-// document's latest version and marks requirement blocks in it, which decides whether the words
-// name the path of a view on that parent, waits on this row.
+// of whether the parent carries the legion label, whether a person's approval of its primary
+// document stands for that document's latest version (dispatch.Approval.Stands, whatever version
+// the person approved), and whether that latest version marks requirement blocks, which decides
+// whether the words name the path of a view on that parent, waits on this row.
 type ReparentSeed struct {
 	// Parent is the root's new Dispatch parent, whose labels and primary document the row reads.
 	Parent string `json:"parent"`
