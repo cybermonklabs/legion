@@ -533,9 +533,10 @@ function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingP
  *  `after`, or at the place the body asked for where the pages hold no child that `after` names
  *  (`placeIn`), in the walk's order, so each later body reads it there, and the node's
  *  `placement_seq` the answer's. The issue's memo, where that parent holds one (`SiblingPlace`'s
- *  `memo`), goes where the walk then stands it: right after the node's subtree, or first among
- *  the issue's children. Where the read holds no such parent, the node keeps its place and takes
- *  the sequence alone. */
+ *  `memo`), goes where the walk then stands it: right after the node's subtree where the place
+ *  stands before it by rank and the read shows that place (`shown`), and first among the issue's
+ *  children otherwise, until a page shows the place. Where the read holds no such parent, the node
+ *  keeps its place and takes the sequence alone. */
 function movedIn(
   held: TreeAnswer,
   node: string,
@@ -561,9 +562,10 @@ function movedIn(
   const { memo } = place;
   if (memo === undefined) return { ...held, nodes: moved };
   const cut = cutSubtree(moved, moved.indexOf(memo.node));
-  const end = memo.first
-    ? cut.rest.indexOf(parent) + 1
-    : subtreeEnd(cut.rest, cut.rest.indexOf(top));
+  const end =
+    memo.first || !place.shown
+      ? cut.rest.indexOf(parent) + 1
+      : subtreeEnd(cut.rest, cut.rest.indexOf(top));
   return { ...held, nodes: [...cut.rest.slice(0, end), ...cut.subtree, ...cut.rest.slice(end)] };
 }
 
