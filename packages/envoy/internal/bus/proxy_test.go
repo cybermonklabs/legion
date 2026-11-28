@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // relayProxy relays NATS connections to a server, so a test can act on the link between a client
@@ -95,7 +96,7 @@ func (p *relayProxy) relay(client net.Conn) {
 	p.mu.Unlock()
 	if delay := time.Duration(p.delay.Load()); delay > 0 {
 		p.held <- struct{}{}
-		time.Sleep(delay)
+		testwait.Pause(delay)
 	}
 	if p.refuse.Load() {
 		_ = client.Close()

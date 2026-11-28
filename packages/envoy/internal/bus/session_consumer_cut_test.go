@@ -6,6 +6,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -35,6 +36,8 @@ func reconnectsBeforeCut(owner *Client, consumers *SessionConsumers) (uint64, ui
 // the test does both.
 func awaitReconnectsAfterCut(t *testing.T, owner *Client, consumers *SessionConsumers, ownerBefore, consumersBefore uint64) {
 	t.Helper()
+	// Reuse one context across retries so they do not register a cleanup per flush.
+	flushed := testnats.Context(t)
 	testwait.Until(t, "the stream's owner and the session consumers to reconnect after the cut", func() (string, bool) {
 		ownerReconnects := owner.Conn.Stats().Reconnects
 		ownerStatus := owner.Conn.Status()
@@ -49,10 +52,10 @@ func awaitReconnectsAfterCut(t *testing.T, owner *Client, consumers *SessionCons
 			return fmt.Sprintf("owner: status %v, %d reconnect(s) above before; consumers: status %v, %d above before",
 				ownerStatus, ownerReconnects-ownerBefore, consumersStatus, consumersReconnects-consumersBefore), false
 		}
-		if err := owner.Conn.Flush(); err != nil {
+		if err := owner.Conn.FlushWithContext(flushed); err != nil {
 			return fmt.Sprintf("owner flush: %v", err), false
 		}
-		if err := consumers.client.Conn.Flush(); err != nil {
+		if err := consumers.client.Conn.FlushWithContext(flushed); err != nil {
 			return fmt.Sprintf("consumers flush: %v", err), false
 		}
 		return fmt.Sprintf("owner: status %v, %d reconnect(s) above before; consumers: status %v, %d above before",

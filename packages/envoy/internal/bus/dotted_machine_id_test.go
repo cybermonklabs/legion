@@ -59,7 +59,7 @@ func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
 
 		conn := testnats.Connect(t, testnats.URL(t))
 		t.Cleanup(conn.Close)
-		js, err := conn.JetStream()
+		js, err := conn.JetStream(testnats.MaxWait(t))
 		if err != nil {
 			t.Fatalf("open JetStream: %v", err)
 		}
@@ -81,7 +81,7 @@ func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
 			t.Fatalf("subscribe in the queue group %q: %v", queue, err)
 		}
 		t.Cleanup(func() { _ = subscription.Unsubscribe() })
-		if err := conn.Flush(); err != nil {
+		if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 			t.Fatalf("flush the subscription in %q: %v", queue, err)
 		}
 		if err := conn.LastError(); err != nil {

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -76,7 +77,7 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 // its own clock (cmd/listener/role_keep.go, walkKeptRole).
 func TestAKeptRoleCursorsClaimIsOutstandingOnlyWhileItIsYoungerThanTheWindow(t *testing.T) {
 	t.Parallel()
-	stored := time.Now()
+	stored := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	claimed := bus.KeptRoleCursor{Kept: 4, Claiming: 5}
 	for _, age := range []time.Duration{0, bus.KeptRoleClaimWindow - time.Millisecond} {
 		if !claimed.ClaimOutstanding(stored, func() time.Time { return stored.Add(age) }) {
@@ -123,7 +124,6 @@ func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 		t.Fatalf("the cursor of a lane no walk has drained is %+v, want the zero cursor", unwritten)
 	}
 
-	before := time.Now()
 	claimed, err := json.Marshal(bus.KeptRoleCursor{Kept: 17, Claiming: 18})
 	if err != nil {
 		t.Fatalf("encode the claim a walk writes: %v", err)
@@ -143,10 +143,14 @@ func TestReadKeptRoleCursorAnswersTheCursorTheStreamHolds(t *testing.T) {
 	if read.Sequence != seq {
 		t.Fatalf("the cursor is at sequence %d, want the %d the write answered: the next compare-and-swap names it", read.Sequence, seq)
 	}
-	if read.Written.Before(before) || read.Written.After(time.Now()) {
-		t.Fatalf("the stream stored the cursor at %s, want a time within the write: the claim's age is measured from it", read.Written)
+	stored, err := client.JS().GetMsg(bus.Stream, seq, natsgo.Context(ctx))
+	if err != nil {
+		t.Fatalf("read the cursor's message at sequence %d: %v", seq, err)
 	}
-	if !read.Cursor.ClaimOutstanding(read.Written, time.Now) {
+	if !read.Written.Equal(stored.Time) {
+		t.Fatalf("the cursor reads as stored at %s, want %s, the time the stream stored its message at sequence %d: the claim's age is measured from it", read.Written, stored.Time, seq)
+	}
+	if !read.Cursor.ClaimOutstanding(read.Written, func() time.Time { return read.Written }) {
 		t.Fatal("the claim just written is not outstanding, want the lane held by the walk that wrote it")
 	}
 

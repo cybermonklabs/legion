@@ -116,7 +116,7 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 				t.Fatalf("connect to the fake server: %v", err)
 			}
 			t.Cleanup(nc.Close)
-			_ = (<-connected).Close()
+			_ = testwait.Receive(t, "the fake server's first connection, its handshake answered", connected).Close()
 
 			lines := func() []string {
 				var out []string
@@ -130,7 +130,7 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 				}
 				return out
 			}
-			testwait.UntilPolling(t, 20*time.Millisecond, "the client to report the handshake the server "+row.name, func() ([]string, bool) {
+			testwait.Until(t, "the client to report the handshake the server "+row.name, func() ([]string, bool) {
 				reported := lines()
 				return reported, len(reported) > 0
 			})
@@ -184,7 +184,7 @@ func TestAHandshakeReadFailsTheWaysARealReadFails(t *testing.T) {
 			t.Fatalf("dial: %v", err)
 		}
 		t.Cleanup(func() { _ = conn.Close() })
-		server := <-accepted
+		server := testwait.Receive(t, "the listener to accept the dialed connection", accepted)
 		t.Cleanup(func() { _ = server.Close() })
 		peer(server)
 		if !deadline.IsZero() {
@@ -198,7 +198,7 @@ func TestAHandshakeReadFailsTheWaysARealReadFails(t *testing.T) {
 		_ = conn.(*net.TCPConn).SetLinger(0)
 		_ = conn.Close()
 	}, time.Time{})
-	timedOut := readOf(t, func(net.Conn) {}, time.Now().Add(-time.Second))
+	timedOut := readOf(t, func(net.Conn) {}, time.Unix(1, 0)) // a moment long past, read from no clock
 	for _, row := range []struct {
 		name string
 		err  error
