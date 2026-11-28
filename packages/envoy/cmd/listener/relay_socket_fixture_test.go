@@ -1306,14 +1306,3 @@ func flood(t *testing.T, url, session string, n int) {
 		t.Fatalf("flush the frames: %v", err)
 	}
 }
-
-// awaitBlockedWrite returns once socket holds a frame behind the one it is writing to its client,
-// bounded only by the test binary's deadline. A row whose write could fail first and clear the
-// queue does not call it.
-func awaitBlockedWrite(t *testing.T, socket *relaySocket) {
-	t.Helper()
-	testwait.Until(t, "the socket to hold a frame behind the one it is writing", func() (int, bool) {
-		frames, _ := socket.held()
-		return frames, frames > 1
-	})
-}

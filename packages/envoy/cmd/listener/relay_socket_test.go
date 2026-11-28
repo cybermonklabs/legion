@@ -521,25 +521,32 @@ func TestARelaySocketRefusesASessionThatIsNotOneSubjectToken(t *testing.T) {
 // waiting for that write: after a revoke, its connection is dropped once the check that reads the
 // revoke has run, and the listener's stop returns. A write blocked on such a client holds the
 // connection's write lock until its own deadline, so neither the close nor the watch's ping may
-// wait for it. The row holds that write blocked for its whole run: its deadline (withWriteWait) and
+// wait for it. The row holds the socket's writer inside its write of a frame's first fragment at
+// the gate (heldWrites), so that write holds the lock for as long as the row wants: a client that
+// reads nothing through the kernel's buffers holds it only while the kernel blocks a write, and a
+// ping that came between two fragments was written at once, before the row could read it pending.
+// The data write's deadline (withWriteWait), which also bounds the ping's wait for the lock, and
 // the reader's (pongWait, three check intervals, with the check a day away) are both past the test
 // binary's, so no deadline but the close frame's own ends anything. With the token still live, the
-// row moves the rig's clock to the socket's first check, whose ping waits behind the blocked write,
-// and waits for that ping to be pending; only then does it close the socket. The close frame,
-// behind the same write, is not written by its deadline, which the row reads through the sockets'
+// row moves the rig's clock to the socket's first check, whose ping waits for the lock, and waits
+// for that ping to be pending; only then does it close the socket. The close frame waits for the
+// same lock and is not written by its deadline, which the row reads through the sockets'
 // writeControl and requires to be the rig's grace past the wall-clock moment the close read,
 // exactly: the grace is short (withCloseGrace), so the write fails soon, and a close frame that
-// could not be written drops the connection at once, with no grace's callback armed. No span is
-// asserted: the row waits for the stop to return and for the replica to release the socket, each
-// bounded only by the test binary's deadline. Controls: end taking the data writers' lock, or the
-// watch writing its ping in line; the close's write, the stop's return and the release never come,
-// and the row fails naming the one it waited for. The close passing its write a deadline ten
-// seconds later; the row fails naming the deadline.
+// could not be written drops the connection at once, with no grace's callback armed. While the
+// data write still waits at the gate, the listener's stop has returned (in its row) and the
+// client, reading only now, reads its connection's end with nothing written since the gate was
+// held, so no close frame; only then does the row let the write go, which fails on the closed
+// connection, and wait for the replica to give the socket's place back. No span is asserted: each
+// wait is bounded only by the test binary's deadline. Controls: end taking the data writers' lock,
+// or the watch writing its ping in line; the close frame's write, the stop's return or the check
+// that reads the revoke never comes, and the row fails naming the one it waited for. The close
+// passing its write a deadline ten seconds later; the row fails naming the deadline.
 func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 	t.Parallel()
 	// closeGrace is the rig's grace: the close frame's write deadline past the moment the close
-	// read, short, since that write waits behind the blocked data write and fails at it. No verdict
-	// reads how soon.
+	// read, short, since that write waits for the lock the held data write holds and fails at it.
+	// No verdict reads how soon.
 	const closeGrace = 100 * time.Millisecond
 	for _, row := range []struct {
 		name string
@@ -555,16 +562,16 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 			return relaySocketCloseRefused, relaySocketReasonRefused
 		}},
 		{name: "the listener's stop", close: func(t *testing.T, rig *relaySocketRig, _ string, _ time.Time) (int, string) {
-			testwait.Returns(t, "the listener's stop, with a data write blocked on a client that reads nothing", rig.sockets.stop)
+			testwait.Returns(t, "the listener's stop, with the socket's data write held at the gate", rig.sockets.stop)
 			return websocket.CloseServiceRestart, relaySocketReasonStopping
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			closes := newCloseWrites(nil)
-			// Limits that hold every frame, so no slow consumer closes the socket first.
-			rig := newRelaySocketRig(t, withPendingLimits(1<<16, 1<<30), withWriteWait(relaySocketPastTheBinary),
-				withCheckEvery(relaySocketPastTheBinary), withCloseGrace(closeGrace), withCloseWrites(closes))
+			held := &heldWrites{}
+			rig := newRelaySocketRig(t, withWriteWait(relaySocketPastTheBinary), withCheckEvery(relaySocketPastTheBinary),
+				withCloseGrace(closeGrace), withCloseWrites(closes), withHeldWrites(held))
 			const session = "ses_edge_reads_nothing"
 			token := "access-token-of-a-client-that-reads-nothing"
 			// The token outlives the second check, so no check reads it expired.
@@ -572,32 +579,53 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 			// The socket's checks fall one interval apart from where the rig's clock stands as its
 			// watch begins, and the clock stands still until the row moves it.
 			first := rig.clock.Now().Add(relaySocketPastTheBinary)
-			// The client sends its sub and reads nothing from here on, and far more than the
-			// connection's buffers hold is published: the socket's write blocks, and the rest wait
-			// in its queue.
-			_, socket := rig.dialStalled(t, session, token)
-			flood(t, rig.owner.url, session, 60)
-			awaitBlockedWrite(t, socket)
+			// The client sends its sub and reads nothing from here on; the server has written it
+			// nothing since the upgrade, and from the hold on, every write waits at the gate.
+			conn, socket := rig.dialStalled(t, session, token)
+			held.hold(t)
+			flood(t, rig.owner.url, session, 1)
+			held.waitHeld(t, "the socket's write of the frame to wait at the gate")
 
 			rig.clock.AwaitArmedAt(t, "the socket's first check", first)
 			rig.clock.Set(first)
-			testwait.Until(t, "the first check's ping, pending behind the blocked data write", func() (bool, bool) {
+			testwait.Until(t, "the first check's ping, pending behind the held data write", func() (bool, bool) {
 				pinging := socket.pinging.Load()
 				return pinging, pinging
 			})
 
 			code, reason := row.close(t, rig, token, first)
-			write := closes.next(t, "the close frame's write, behind the blocked data write", code, reason)
+			write := closes.next(t, "the close frame's write, behind the held data write", code, reason)
 			if got := write.deadline.Sub(write.origin); got != closeGrace {
 				t.Fatalf("the close frame's write was given a deadline %s past the moment the close read, want the rig's grace, %s, exactly", got, closeGrace)
 			}
 			var timedOut net.Error
 			if !errors.As(write.err, &timedOut) || !timedOut.Timeout() {
-				t.Fatalf("the close frame's write behind the blocked data write returned %v, want it to fail at its deadline", write.err)
+				t.Fatalf("the close frame's write behind the held data write returned %v, want it to fail at its deadline", write.err)
 			}
-			testwait.Until(t, "the replica to release the socket whose close frame could not be written", func() (int, bool) {
-				held := rig.holds(session)
-				return held, held == 0
+
+			// The client reads only now: all the server wrote since the gate was held, and the end
+			// of its connection.
+			type readEnd struct {
+				read int64
+				err  error
+			}
+			ended := make(chan readEnd, 1)
+			go func() {
+				read, err := io.Copy(io.Discard, conn.NetConn())
+				ended <- readEnd{read: read, err: err}
+			}()
+			end := testwait.Receive(t, "the client's connection to end while the socket's data write waits at the gate", ended)
+			if end.read != 0 || end.err != nil {
+				t.Fatalf("the client read %d bytes and then %v, want its connection ended (EOF) with nothing written, no close frame", end.read, end.err)
+			}
+			if waiting := held.waiting.Load(); waiting == 0 {
+				t.Fatal("the socket's data write no longer waits at the gate once the client's connection ended: the drop waited for it")
+			}
+
+			held.release()
+			testwait.Until(t, "the replica to give back the place of the socket whose held write failed on its closed connection", func() (int, bool) {
+				holds := rig.holds(session)
+				return holds, holds == 0
 			})
 		})
 	}
