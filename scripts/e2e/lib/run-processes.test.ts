@@ -62,8 +62,9 @@ beforeAll(() => {
 // reaped most of them by then, and a pid the kernel gave to another process since is left alone.
 // Each, and each harness shell, runs in a process group of its own (ownGroup): the sweeps stop what
 // they end, and a stopped member of the test runner's own group hangs the runner up where that group
-// is orphaned. A sweep row waits until what it spawned runs its program (untilRunning), and so leads
-// its own group, before it sweeps.
+// is orphaned. A sweep row waits until what it spawned runs its program, and so leads its own group,
+// before it sweeps: untilExecDone for a process the sweep finds by its mark, since inside its exec
+// its environment reads empty, and untilRunning for any other (lib/own-group.ts).
 // startOf is PID's start time, stat field 22, read past the last `) ` of the whole file, or
 // undefined once PID is gone.
 function startOf(pid: number): string | undefined {
@@ -142,7 +143,7 @@ const pids = (out: string) => out.split("\n").filter(Boolean);
 
 host.test(
   "names each process that carries the run's mark and none that only works under the run's directory or names it, running no command for each /proc entry",
-  () => {
+  async () => {
     const work = join(dir, "work");
     mkdirSync(join(work, "state", "home", ".config"), { recursive: true });
     writeFileSync(join(work, "transcript.log"), "");
@@ -153,6 +154,10 @@ host.test(
       cwd: dir,
       env: { XDG_CONFIG_HOME: join(work, "state", "home", ".config") },
     });
+    // The walk starts once each process it must name has finished its exec of sleep
+    // (untilExecDone): inside the exec its environment reads empty, and the walk names nothing.
+    await untilExecDone(marked, "sleep", waits.end());
+    await untilExecDone(pane, "sleep", waits.end());
     // A person's shell working in the run's directory, and a `tail -f` of its transcript: neither
     // carries the mark, and neither is the run's.
     const shell = spawn(["sleep", "60"], { cwd: work });
@@ -243,7 +248,7 @@ const argMax = hostGate({
 });
 argMax.test(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
-  () => {
+  async () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
     // argument fails with E2BIG, as `find /proc/[0-9]*/cwd` did unforced at about 80,000 processes,
     // while an exec of a few arguments still starts; the root's own synthetic entries, not the host's
@@ -252,6 +257,7 @@ argMax.test(
     const work = join(dir, "e2big");
     mkdirSync(work);
     const inside = spawn(["sleep", "60"], { cwd: work, env: { LEGION_E2E_RUN: work } });
+    await untilExecDone(inside, "sleep", waits.end());
     const r = harness(
       work,
       `arg_max_force environ 6144 "$work" ${JSON.stringify(String.raw`find "$proc_root"/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}
@@ -532,7 +538,7 @@ host.test(
     mkdirSync(work);
     writeFileSync(join(work, "transcript.log"), "");
     const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(marked, "sleep", waits.end());
+    await untilExecDone(marked, "sleep", waits.end());
     const pidFile = join(dir, "sweep-escaped.pid");
     Bun.spawnSync(
       ownGroup([
@@ -610,7 +616,7 @@ host.test(
     const work = join(dir, "reused");
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(pid, "sleep", waits.end());
+    await untilExecDone(pid, "sleep", waits.end());
     // Every signal the sweep sends goes through `kill`, here a function that records it and sends
     // it, so what reached the pid is read from the record rather than from a state that a signal
     // still in flight has not changed yet. A sweep given the pid's own start must then fill the
@@ -707,7 +713,7 @@ host.test(
     const work = join(dir, "reparented");
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(pid, "sleep", waits.end());
+    await untilExecDone(pid, "sleep", waits.end());
     const r = harness(
       work,
       `eval "real_$(declare -f proc_parent)"
