@@ -5562,7 +5562,8 @@ for after in "-test.v" "--test.v" "-v=true" "-args -test.v" "-args --test.v" "-a
   "-args --test.v=true" "-args -test.v=false" "--args -test.v"; do
   replace "$root/.github/workflows/results.yaml" "./mod/... |" "./mod/... $after |"
   run_check "$root"
-  check "fails with $after after the packages" "$(contains "$out" "which passes \`${after##* }\`")"
+  flag=${after##* }
+  check "fails with $after after the packages" "$(contains "$out" "which passes \`$flag\`")"
   replace "$root/.github/workflows/results.yaml" "./mod/... $after |" "./mod/... |"
 done
 # A job that asks for no verbose output passes: go's own -test.v=test2json, which -json passes
