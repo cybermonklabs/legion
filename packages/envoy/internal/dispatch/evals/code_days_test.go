@@ -19,19 +19,10 @@ import (
 
 // codeGroups is the code groups the code evals' tests name, in order: the agents by a head-branch
 // prefix and a login, and a catch-all after them.
-var codeGroups = []survival.Group{{Name: "agents", BranchPrefixes: []string{"agent/"}, AuthorLogins: []string{"agent-app[bot]"}}, {Name: "others"}}
+var codeGroups = []survival.CodeGroup{{Name: "agents", BranchPrefixes: []string{"agent/"}, AuthorLogins: []string{"agent-app[bot]"}}, {Name: "others"}}
 
 // codeRepo is the repository the code evals' tests measure, each project's default repository.
 const codeRepo = "acme/code"
-
-// groupNames is the names of groups, in their order.
-func groupNames(groups []survival.Group) []string {
-	names := make([]string, len(groups))
-	for index, group := range groups {
-		names[index] = group.Name
-	}
-	return names
-}
 
 // codeEvalIDs is project's eval ids of the code evals.
 func codeEvalIDs(project string) []string {
@@ -92,7 +83,7 @@ func (h *codeHistory) pair(adder, remover fold.Change, lines int) fold.Pair {
 // rows is the code evals' rows of the history's three days under groups, each day measured but
 // those states names otherwise, in the project's own cut and in codeRepo's (CodeDayRows), as
 // fold.BuildDays builds them.
-func (h *codeHistory) rows(groups []survival.Group, states map[int]survival.DayState) []DayRow {
+func (h *codeHistory) rows(groups []survival.CodeGroup, states map[int]survival.DayState) []DayRow {
 	input := fold.BuildInput{Project: fold.Project{Key: h.project, DefaultRepo: codeRepo}, Groups: groups, Changes: h.changes, Pairs: h.pairs}
 	for n := range 3 {
 		state, held := states[n]
@@ -116,7 +107,7 @@ func (h *codeHistory) window() Range { return Range{From: h.day(0), To: h.day(28
 // project's code evals (WriteCodeGroupSeriesTx), then rows, the rows of the evals on days
 // (WriteCodeDaysTx), and after the commit it moves the changes into the log. It answers how many
 // series versions it wrote.
-func (r *refresherRig) writeCode(t *testing.T, project string, groups []survival.Group, days []time.Time, rows []DayRow) int {
+func (r *refresherRig) writeCode(t *testing.T, project string, groups []survival.CodeGroup, days []time.Time, rows []DayRow) int {
 	t.Helper()
 	ctx := t.Context()
 	tx, err := r.database.Pool.Begin(ctx)
@@ -124,7 +115,7 @@ func (r *refresherRig) writeCode(t *testing.T, project string, groups []survival
 		t.Fatalf("begin the code rows of %s: %v", project, err)
 	}
 	defer tx.Rollback(ctx)
-	written, err := WriteCodeGroupSeriesTx(ctx, tx, project, groupNames(groups))
+	written, err := WriteCodeGroupSeriesTx(ctx, tx, project, delivery.CodeGroupNames(groups))
 	if err != nil {
 		t.Fatalf("write the code group series of %s: %v", project, err)
 	}
@@ -469,7 +460,7 @@ func TestTheSeedKeepsTheCodeGroupSeries(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		written, err := WriteCodeGroupSeriesTx(ctx, tx, r.project, groupNames(codeGroups))
+		written, err := WriteCodeGroupSeriesTx(ctx, tx, r.project, delivery.CodeGroupNames(codeGroups))
 		if err != nil {
 			t.Fatalf("write the code group series of %s: %v", r.project, err)
 		}

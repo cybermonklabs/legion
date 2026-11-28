@@ -289,7 +289,7 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 			continue
 		}
 		got := seriesNames(entry)
-		for _, series := range entry.groupSeries(groupNames(codeGroups)) {
+		for _, series := range entry.groupSeries(delivery.CodeGroupNames(codeGroups)) {
 			got = append(got, series.Series)
 		}
 		slices.Sort(got)
@@ -316,7 +316,7 @@ func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
 	days := Range{From: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)}
 	checked := 0
 	for _, entry := range catalogue {
-		held := append(slices.Clone(entry.series), entry.groupSeries(groupNames(codeGroups))...)
+		held := append(slices.Clone(entry.series), entry.groupSeries(delivery.CodeGroupNames(codeGroups))...)
 		folded := FoldStatistics(entry.definition, held, nil, days)
 		for _, series := range held {
 			if !series.Listed {

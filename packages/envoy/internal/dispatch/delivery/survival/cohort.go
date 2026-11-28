@@ -2,11 +2,12 @@ package survival
 
 import "strings"
 
-// Group is one of a project's code groups (dispatch://INFRA-3206 R10): a name, the head-branch
+// CodeGroup is one of a project's code groups (dispatch://INFRA-3206 R10): a name, the head-branch
 // prefixes and the author logins of its changes. A group with neither takes every change that no
 // group before it took. The project names its groups in its delivery settings, in order; none is
-// written here.
-type Group struct {
+// written here. delivery.CodeGroup is this type, and the settings route's OpenAPI schema takes its
+// name from it (CodeGroup, which the web app imports).
+type CodeGroup struct {
 	Name           string   `json:"name"`
 	BranchPrefixes []string `json:"branch_prefixes"`
 	AuthorLogins   []string `json:"author_logins"`
@@ -42,7 +43,7 @@ const (
 // head branch or a login equal to its author, case aside; a group with no prefix and no login
 // takes every change no earlier group took. A commit that merged no pull request is no change and
 // has no group, and a change no group takes has none.
-func GroupOf(change ChangeFacts, groups []Group) (name string, ok bool) {
+func GroupOf(change ChangeFacts, groups []CodeGroup) (name string, ok bool) {
 	if change.PR == 0 {
 		return "", false
 	}
@@ -68,7 +69,7 @@ func GroupOf(change ChangeFacts, groups []Group) (name string, ok bool) {
 // scripts/15_rework.py's join and replaylib.py's classify read a pair: other when the remover is
 // in no group or in another than group; then no issue when either has none, iteration when both
 // have the same, and rework when they differ.
-func KindOf(group string, adder, remover ChangeFacts, groups []Group) Kind {
+func KindOf(group string, adder, remover ChangeFacts, groups []CodeGroup) Kind {
 	if name, ok := GroupOf(remover, groups); !ok || name != group {
 		return KindOther
 	}

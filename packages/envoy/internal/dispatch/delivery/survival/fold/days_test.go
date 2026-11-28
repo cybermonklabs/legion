@@ -20,7 +20,7 @@ var epoch = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 func day(n int) time.Time { return epoch.AddDate(0, 0, n) }
 
 // groups is the two groups the tests name: the agents by their branch prefix, and the rest.
-var groups = []survival.Group{{Name: "agents", BranchPrefixes: []string{"agent/"}}, {Name: "others", BranchPrefixes: []string{"other/"}}}
+var groups = []survival.CodeGroup{{Name: "agents", BranchPrefixes: []string{"agent/"}}, {Name: "others", BranchPrefixes: []string{"other/"}}}
 
 // project is the project the tests build rows for, whose default repository is owner/repo.
 var project = fold.Project{Key: "PROJ", DefaultRepo: "owner/repo"}

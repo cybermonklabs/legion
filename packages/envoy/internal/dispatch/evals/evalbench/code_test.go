@@ -99,10 +99,9 @@ func TestTheCodeHistoryHoldsTheMeasuredRates(t *testing.T) {
 	}
 
 	// Every way a group takes a change is held, and the agents' share is the reference window's.
-	groups := delivery.SurvivalGroups(codeGroups)
 	ways := map[string]int{}
 	for _, change := range plan.changes {
-		group, ok := survival.GroupOf(survival.ChangeFacts{PR: change.pr, HeadRef: change.headRef, Author: change.author, IssueKey: change.issue}, groups)
+		group, ok := survival.GroupOf(survival.ChangeFacts{PR: change.pr, HeadRef: change.headRef, Author: change.author, IssueKey: change.issue}, codeGroups)
 		if !ok {
 			t.Fatalf("no group takes the change of %s by %s", change.headRef, change.author)
 		}

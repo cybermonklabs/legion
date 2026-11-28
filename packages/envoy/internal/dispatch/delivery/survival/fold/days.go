@@ -78,7 +78,7 @@ type Day struct {
 // the repositories that hold changes for it.
 type BuildInput struct {
 	Project        Project
-	Groups         []survival.Group
+	Groups         []survival.CodeGroup
 	RepoUnreadable bool
 	Days           []Day
 	Changes        []Change
@@ -168,14 +168,14 @@ type groupTally struct {
 
 // tallyDay is each group's tally of changes, one day's changes that count for the project, with
 // the pairs of each, in the order of groups. A change in no group is in no tally.
-func tallyDay(changes []*Change, pairs map[changeKey][]*survival.Pair, groups []survival.Group) []groupTally {
+func tallyDay(changes []*Change, pairs map[changeKey][]*survival.Pair, groups []survival.CodeGroup) []groupTally {
 	tallies := make([]groupTally, len(groups))
 	for _, change := range changes {
 		group, ok := survival.GroupOf(change.ChangeFacts, groups)
 		if !ok {
 			continue
 		}
-		tally := &tallies[slices.IndexFunc(groups, func(g survival.Group) bool { return g.Name == group })]
+		tally := &tallies[slices.IndexFunc(groups, func(g survival.CodeGroup) bool { return g.Name == group })]
 		tally.changes++
 		tally.added += change.Added
 		tally.alive += change.AliveAtMark

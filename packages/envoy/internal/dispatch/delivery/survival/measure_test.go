@@ -387,7 +387,7 @@ func TestACommitWithNoPullRequestIsNoChange(t *testing.T) {
 		t.Errorf("measured %+v and the pairs %+v, want the one pull request's change, its removal by no pull request, and no pair: %+v",
 			out.Changes, out.Pairs, want)
 	}
-	if name, ok := survival.GroupOf(r.chain[0].Change, []survival.Group{{Name: "everyone"}}); ok {
+	if name, ok := survival.GroupOf(r.chain[0].Change, []survival.CodeGroup{{Name: "everyone"}}); ok {
 		t.Errorf("a commit with no pull request is in the group %q", name)
 	}
 }

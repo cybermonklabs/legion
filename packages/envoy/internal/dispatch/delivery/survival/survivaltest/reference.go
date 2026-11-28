@@ -224,10 +224,10 @@ func (r Reference) PullIssues(t testing.TB) []PullIssue {
 	return issues
 }
 
-// Group is one code group, as a project's delivery settings name it and survival.Group holds it:
-// its name, the head-branch prefixes and the author logins of its changes, and none of either for
-// the group that takes every change no group before it took. This package imports no package of
-// the module, so its callers convert.
+// Group is one code group, as a project's delivery settings name it and survival.CodeGroup holds
+// it: its name, the head-branch prefixes and the author logins of its changes, and none of either
+// for the group that takes every change no group before it took. This package imports no package
+// of the module, so its callers convert.
 type Group struct {
 	Name           string
 	BranchPrefixes []string

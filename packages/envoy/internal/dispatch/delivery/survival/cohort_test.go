@@ -8,7 +8,7 @@ import (
 
 func TestGroupOfTakesTheFirstMatchingGroup(t *testing.T) {
 	t.Parallel()
-	groups := []survival.Group{
+	groups := []survival.CodeGroup{
 		{Name: "agents", BranchPrefixes: []string{"agent/"}, AuthorLogins: []string{"agent-app[bot]"}},
 		{Name: "bots", AuthorLogins: []string{"Helper-Bot[bot]"}},
 		{Name: "people", BranchPrefixes: []string{"feature/", "fix/"}},
@@ -18,7 +18,7 @@ func TestGroupOfTakesTheFirstMatchingGroup(t *testing.T) {
 	rows := []struct {
 		name   string
 		change survival.ChangeFacts
-		groups []survival.Group
+		groups []survival.CodeGroup
 		want   string
 	}{
 		{"a prefix", pr(1, "agent/KEY-1", "someone", ""), groups, "agents"},
@@ -46,7 +46,7 @@ func TestGroupOfTakesTheFirstMatchingGroup(t *testing.T) {
 
 func TestAChangesIssueIsAnInputAndDecidesItsKind(t *testing.T) {
 	t.Parallel()
-	groups := []survival.Group{{Name: "agents", BranchPrefixes: []string{"agent/"}}, {Name: "rest"}}
+	groups := []survival.CodeGroup{{Name: "agents", BranchPrefixes: []string{"agent/"}}, {Name: "rest"}}
 	adder := pr(1, "agent/KEY-1-work", "agent-app[bot]", "KEY-1")
 	rows := []struct {
 		name           string

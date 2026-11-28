@@ -75,24 +75,11 @@ type ProjectSettings struct {
 // series of each eval, and the head-branch prefixes and author logins of its changes. A change
 // belongs to the first of the project's groups with a prefix that starts its head branch or a
 // login equal to the login that opened it; a group with neither takes every change no group before
-// it took. The column project_delivery_settings.code_groups holds the list, in order (migration
-// 20261126133047), and the settings route holds a group to the rules a regroup can write
-// (api/project_settings_delivery.go, codeGroupsRefusal).
-type CodeGroup struct {
-	Name           string   `json:"name"`
-	BranchPrefixes []string `json:"branch_prefixes"`
-	AuthorLogins   []string `json:"author_logins"`
-}
-
-// SurvivalGroups is groups, in order, as the code survival computation reads them
-// (survival.GroupOf): the run and the regroup hand a project's settings to it through here.
-func SurvivalGroups(groups []CodeGroup) []survival.Group {
-	converted := make([]survival.Group, len(groups))
-	for i, group := range groups {
-		converted[i] = survival.Group(group)
-	}
-	return converted
-}
+// it took (survival.GroupOf). The column project_delivery_settings.code_groups holds the list, in
+// order (migration 20261126133047), and the settings route holds a group to the rules a regroup
+// can write (api/project_settings_delivery.go, codeGroupsRefusal). It is the code survival
+// computation's own type, so the run and the regroup hand a project's groups to it as they are.
+type CodeGroup = survival.CodeGroup
 
 // CodeGroupNames is the names of groups, in order.
 func CodeGroupNames(groups []CodeGroup) []string {

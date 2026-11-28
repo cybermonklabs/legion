@@ -54,7 +54,7 @@ func TestBothCodeEvalsAreInEveryProject(t *testing.T) {
 
 	// The measured project's three days, under two code groups, as the code writer writes them.
 	first := measures.Midnight(time.Now()).AddDate(0, 0, -40)
-	groups := []survival.Group{{Name: "agents", BranchPrefixes: []string{"agent/"}}, {Name: "others"}}
+	groups := []survival.CodeGroup{{Name: "agents", BranchPrefixes: []string{"agent/"}}, {Name: "others"}}
 	change := func(n, number int, head, issue string, added, alive int) fold.Change {
 		issueProject := ""
 		if issue != "" {

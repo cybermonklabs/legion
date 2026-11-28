@@ -34,10 +34,10 @@ const refDay = 24 * time.Hour
 var refColumn = map[string]string{"Legion": "legion", "Other": "other"}
 
 // refGroups is survivaltest.ReferenceGroups as the survival package holds them.
-func refGroups() []survival.Group {
-	var groups []survival.Group
+func refGroups() []survival.CodeGroup {
+	var groups []survival.CodeGroup
 	for _, group := range survivaltest.ReferenceGroups() {
-		groups = append(groups, survival.Group{Name: group.Name, BranchPrefixes: group.BranchPrefixes,
+		groups = append(groups, survival.CodeGroup{Name: group.Name, BranchPrefixes: group.BranchPrefixes,
 			AuthorLogins: group.AuthorLogins})
 	}
 	return groups
@@ -48,7 +48,7 @@ func refGroups() []survival.Group {
 type refLegion struct {
 	ref    survivaltest.Reference
 	chain  []survival.Commit
-	groups []survival.Group
+	groups []survival.CodeGroup
 	// window is every UTC day from the chain's first commit's to its tip's.
 	window []time.Time
 }
@@ -417,7 +417,7 @@ var refCaseOf = map[survival.Kind]string{
 // refReplayPairs is each pair of out whose adder is a change of group and whose kind, by
 // survival.KindOf under groups, is rework, iteration or no issue: a remover of the same group,
 // which is the join rework30.py makes, in its case.
-func refReplayPairs(out survival.MeasureOutput, group string, groups []survival.Group) map[refChangeKey]refScriptPair {
+func refReplayPairs(out survival.MeasureOutput, group string, groups []survival.CodeGroup) map[refChangeKey]refScriptPair {
 	adders := map[string]survival.Change{}
 	for _, change := range out.Changes {
 		if name, ok := survival.GroupOf(change.ChangeFacts, groups); ok && name == group {

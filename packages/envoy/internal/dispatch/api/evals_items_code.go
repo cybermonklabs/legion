@@ -86,7 +86,7 @@ var (
 // the run has read that repository.
 type codeProject struct {
 	fold       fold.Project
-	groups     []survival.Group
+	groups     []survival.CodeGroup
 	repo       codesurvival.Repo
 	repoStored bool
 }
@@ -107,7 +107,7 @@ func codeProjectOf(ctx context.Context, read evalItemsRead) (*codeProject, error
 	case err != nil:
 		return nil, err
 	default:
-		project.groups = delivery.SurvivalGroups(settings.CodeGroups)
+		project.groups = settings.CodeGroups
 	}
 	if project.fold.DefaultRepo != "" {
 		if project.repo, project.repoStored, err = codesurvival.GetRepo(ctx, read.tx, project.fold.DefaultRepo); err != nil {

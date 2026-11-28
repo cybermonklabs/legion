@@ -296,7 +296,7 @@ func TestControl7AnUnresolvedKeyIsCountedApart(t *testing.T) {
 			facts[sha] = remover.facts
 		}
 	}
-	groups := []survival.Group{{Name: "agent", BranchPrefixes: []string{"agent/"}}, {Name: "rest"}}
+	groups := []survival.CodeGroup{{Name: "agent", BranchPrefixes: []string{"agent/"}}, {Name: "rest"}}
 	out := replay(t, repo, facts).measure(t, days(1, 1))
 	kinds := control7Kinds(t, out, cohort, func(adder, remover survival.ChangeFacts) survival.Kind {
 		return survival.KindOf("agent", adder, remover, groups)

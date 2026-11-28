@@ -441,10 +441,9 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 		}
 		held[change.Repo][dayKey(change.Day)] = true
 	}
-	groups := delivery.SurvivalGroups(p.Groups)
 	cut := func(repo string, decided []fold.Day, cutChanges []fold.Change, cutPairs []fold.Pair) []evals.DayRow {
 		survivalParts, reworkParts := fold.BuildDays(fold.BuildInput{
-			Project: fold.Project{Key: p.Key, DefaultRepo: p.DefaultRepo}, Groups: groups, RepoUnreadable: unreadable,
+			Project: fold.Project{Key: p.Key, DefaultRepo: p.DefaultRepo}, Groups: p.Groups, RepoUnreadable: unreadable,
 			Days: decided, Changes: cutChanges, Pairs: cutPairs,
 		})
 		return evals.CodeDayRows(p.Key, repo, survivalParts, reworkParts)
