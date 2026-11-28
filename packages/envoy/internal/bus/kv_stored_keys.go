@@ -2,7 +2,7 @@
 // message on (KeyValue.StoredKeys), and the value of each such key that holds one, read from the
 // stream's leader (KeyValue.HeldEntries). A key another client writes again while the list is read
 // is still listed, where nats.go's Keys and the jetstream watcher's first delivery can leave it
-// out, so every read that must see the whole bucket reads through here.
+// out, so a read that must see the whole bucket reads through here.
 
 package bus
 
@@ -17,6 +17,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"golang.org/x/sync/errgroup"
 )
 
 // ErrIncompleteKeyList is a page of a bucket's keys that cannot be a page of one sorted list: a
@@ -39,6 +40,12 @@ type subjectsPage struct {
 	Cluster *jetstream.ClusterInfo `json:"cluster,omitempty"`
 }
 
+// heldReadsAtOnce is how many listed keys HeldEntries reads from the stream's leader at one time:
+// enough that a long list (HeldEntries says why a list is long) waits about a sixteenth of the
+// round trips a read of one key after another would, all within the caller's bound, and few
+// enough that one read never has more than sixteen requests waiting on the leader.
+const heldReadsAtOnce = 16
+
 // HeldEntries reads every key under the KV key pattern keys that holds a value, with that value:
 // it reads the stream's state (ReadStreamState), which it answers, lists the keys the stream holds
 // a message on through that state's last sequence (StoredKeys), and reads each listed key from the
@@ -47,6 +54,12 @@ type subjectsPage struct {
 // message is a delete or a purge marker or one the leader no longer holds, is left out. The
 // entries come in the list's order.
 //
+// The listed keys are read at once, at most heldReadsAtOnce at a time, each answer kept at its
+// key's place in the list: the list names every key whose newest message is a marker too, and
+// cistore.Writer.VerifyRequests lists the verify requests every five seconds within RecordWait
+// while every request answered in the bucket's last seven days still leaves its marker, so a read
+// of one key after another would make one round trip to the leader per such key, in sequence.
+//
 // It exists for a read that must see every key the bucket holds. A key another client writes
 // again while the read runs is still listed here, where nats.go's Keys and the jetstream watcher's
 // first delivery can leave it out: each reads a consumer that delivers the newest message each key
@@ -54,12 +67,13 @@ type subjectsPage struct {
 // before it is delivered, and its new one can then come after the first delivery has ended. A
 // probe left such a key out of 1,958 of 16,451 reads of Keys and 1,438 of 14,231 of the watcher,
 // and the stream's subject list named every key in 41,352 of 41,352 (INFRA-6356). The witness of
-// cireconcile's tests, cistore.Writer.VerifyRequests and internal/kvwatch read the bucket through
-// it.
+// cireconcile's tests and cistore.Writer.VerifyRequests read the bucket through it.
 //
 // Every listed key is read, so a key this build cannot read (RefusesRead) ends the read with
 // GetFromLeader's refusal, as any error but nats.ErrKeyNotFound does: the answer holds every key
-// holding a value, or it is an error.
+// holding a value, or it is an error. A key's read that fails stops none of the others, and the
+// error answered is that of the first failed key in the list's order, the one a read of one key
+// after another would end at.
 //
 // ctx bounds the whole read, the stream's state, every page of the list and every key's read
 // included. A ctx carrying no deadline is bounded by RequestTimeout, as GetFromLeader is.
@@ -77,14 +91,24 @@ func (kv KeyValue) HeldEntries(ctx context.Context, keys string) (StreamState, [
 	if err != nil {
 		return StreamState{}, nil, err
 	}
+	read := make([]nats.KeyValueEntry, len(listed))
+	failed := make([]error, len(listed))
+	var reading errgroup.Group
+	reading.SetLimit(heldReadsAtOnce)
+	for index, key := range listed {
+		reading.Go(func() error {
+			read[index], failed[index] = kv.GetFromLeader(ctx, key)
+			return nil
+		})
+	}
+	_ = reading.Wait()
 	entries := make([]nats.KeyValueEntry, 0, len(listed))
-	for _, key := range listed {
-		entry, err := kv.GetFromLeader(ctx, key)
-		if errors.Is(err, nats.ErrKeyNotFound) {
+	for index, entry := range read {
+		if errors.Is(failed[index], nats.ErrKeyNotFound) {
 			continue
 		}
-		if err != nil {
-			return StreamState{}, nil, err
+		if failed[index] != nil {
+			return StreamState{}, nil, failed[index]
 		}
 		entries = append(entries, entry)
 	}

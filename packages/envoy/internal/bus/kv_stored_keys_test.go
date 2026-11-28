@@ -188,6 +188,62 @@ func TestHeldEntriesLeavesOutAKeyWhoseNewestMessageIsAMarker(t *testing.T) {
 	}
 }
 
+// HeldEntries reads more listed keys than it reads at once (heldReadsAtOnce) and still answers
+// each key that holds a value, with its revision and value, in the list's order, and leaves out
+// each key whose newest message is a delete marker, spread through the list.
+func TestHeldEntriesAnswersEveryHeldKeyInTheListsOrderPastTheReadsAtOnce(t *testing.T) {
+	t.Parallel()
+	const bucket = "kv_held_entries_many"
+	const put, deleted = 40, 10
+	if put <= heldReadsAtOnce {
+		t.Fatalf("%d keys are no more than the %d HeldEntries reads at once", put, heldReadsAtOnce)
+	}
+	_, kv := leaderReadBucket(t, bucket)
+	ctx := testwait.Context(t)
+	revisions := make(map[string]uint64, put)
+	for i := range put {
+		key := fmt.Sprintf("k%02d", i)
+		revision, err := kv.Put(key, []byte(key))
+		if err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+		revisions[key] = revision
+	}
+	for i := range deleted {
+		key := fmt.Sprintf("k%02d", i*put/deleted)
+		if err := kv.Delete(key); err != nil {
+			t.Fatalf("delete %s: %v", key, err)
+		}
+		delete(revisions, key)
+	}
+	state, err := kv.ReadStreamState(ctx)
+	if err != nil {
+		t.Fatalf("read the stream's state: %v", err)
+	}
+	listed, err := kv.StoredKeys(ctx, ">", state.LastSeq)
+	if err != nil || len(listed) != put {
+		t.Fatalf("StoredKeys = %v, %v; want the %d keys put, the deleted ones' markers included", listed, err, put)
+	}
+	var want []string
+	for _, key := range listed {
+		if revision, held := revisions[key]; held {
+			want = append(want, fmt.Sprintf("%s@%d=%s", key, revision, key))
+		}
+	}
+
+	_, entries, err := kv.HeldEntries(ctx, ">")
+	if err != nil {
+		t.Fatalf("HeldEntries: %v", err)
+	}
+	var got []string
+	for _, entry := range entries {
+		got = append(got, fmt.Sprintf("%s@%d=%s", entry.Key(), entry.Revision(), entry.Value()))
+	}
+	if len(want) != put-deleted || !slices.Equal(got, want) {
+		t.Fatalf("HeldEntries = %v, want the %d keys still held, each at the revision it was put at, in the list's order %v", got, put-deleted, want)
+	}
+}
+
 // captureBucket and captureKeys are the bucket TestCaptureStreamInfoAnswers creates and the keys it
 // puts in it before it captures the two STREAM.INFO answers TestStoredKeysTakesThePageOfTheLeaderAlone
 // reads.
