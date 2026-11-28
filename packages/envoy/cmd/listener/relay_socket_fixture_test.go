@@ -82,6 +82,10 @@ type relaySocketRig struct {
 	// (withSocketNATSLatency, withSocketNATSProxy), nil otherwise: a row cuts it to make that
 	// replica's connection reconnect.
 	proxy *testnats.Proxy
+	// link is the clock the proxy holds each chunk on for half its round trip when a row gave the
+	// socket replica's connection one (withSocketNATSLatency), nil otherwise: a clocktest.New that
+	// stands still, so the link carries nothing until the row carries it (carry).
+	link *clocktest.Fake
 }
 
 // relaySocketRigOption changes how newRelaySocketRig builds the socket's replica.
@@ -89,8 +93,8 @@ type relaySocketRigOption func(*relaySocketRigConfig)
 
 type relaySocketRigConfig struct {
 	// natsLatency is the round trip the socket replica's own connection is given (a
-	// testnats.Proxy with ProxyLatency), so a row can tell a subscribe that reached the server
-	// from one that has not yet; none by default.
+	// testnats.Proxy with ProxyLatency, on a clock of the link's own, ProxyClock), so a row can
+	// tell a subscribe that reached the server from one that has not yet; none by default.
 	natsLatency time.Duration
 	// proxied puts the socket replica's connection behind a proxy with no added latency
 	// (withSocketNATSProxy), which a row can cut.
@@ -123,6 +127,9 @@ type relaySocketRigConfig struct {
 	held *heldWrites
 }
 
+// withSocketNATSLatency puts the socket replica's connection behind a proxy that holds each chunk
+// for half of rtt on a fake clock of its own (relaySocketRig.link), so the chunks the link holds
+// are that clock's pending deadlines and move on only as the row carries the link (carry).
 func withSocketNATSLatency(rtt time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.natsLatency = rtt }
 }
@@ -211,15 +218,17 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 
 	url := owner.url
 	var proxy *testnats.Proxy
+	var link *clocktest.Fake
 	switch {
 	case config.natsLatency > 0:
-		proxy = testnats.StartProxy(t, url, testnats.ProxyLatency(config.natsLatency))
+		link = clocktest.New(time.Now())
+		proxy = testnats.StartProxy(t, url, testnats.ProxyLatency(config.natsLatency), testnats.ProxyClock(link))
 		url = proxy.URL()
 	case config.proxied:
 		proxy = testnats.StartProxy(t, url)
 		url = proxy.URL()
 	}
-	client, err := bus.Connect([]string{url})
+	client, err := connectAcross(t, url, link)
 	if err != nil {
 		t.Fatalf("connect the socket's replica: %v", err)
 	}
@@ -293,8 +302,43 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 	t.Cleanup(sockets.stop)
 	return &relaySocketRig{
 		owner: owner, client: client, sockets: sockets, server: server,
-		broker: broker, caller: ciphertokentest.NewCaller(t), clock: clock, logs: logs, proxy: proxy,
+		broker: broker, caller: ciphertokentest.NewCaller(t), clock: clock, logs: logs, proxy: proxy, link: link,
 	}
+}
+
+// connectAcross connects the socket replica's client to url, carrying its NATS link meanwhile when
+// it has one (carryLink): the connect's handshake and its first read of the deployed stream's
+// subjects cross the link. It carries on until the link holds nothing, so a row's own carry begins
+// on a link that holds no chunk of the connect's.
+func connectAcross(t *testing.T, url string, link *clocktest.Fake) (*bus.Client, error) {
+	t.Helper()
+	if link == nil {
+		return bus.Connect([]string{url})
+	}
+	var client *bus.Client
+	connected := make(chan error, 1)
+	go func() {
+		var err error
+		client, err = bus.Connect([]string{url})
+		connected <- err
+	}()
+	var err error
+	returned := false
+	carryLink(t, link, "the socket replica's connect across its NATS link, and the link idle after it", func() (string, bool) {
+		if !returned {
+			select {
+			case err = <-connected:
+				returned = true
+			default:
+				return "connecting", false
+			}
+		}
+		if armed := link.Armed(); len(armed) > 0 {
+			return fmt.Sprintf("connected; the link holds chunks due at %v", armed), false
+		}
+		return "connected, and the link idle", true
+	})
+	return client, err
 }
 
 // relaySocketAnswer is the broker's answer about a token traded for session acting for the rig's
@@ -502,7 +546,7 @@ func (c *relaySocketClient) subscribeOwn(session string) {
 	c.t.Helper()
 	c.sub(1, bus.DeliverSubject(session))
 	c.ping()
-	<-c.pongs
+	testwait.Receive(c.t, "the pong of a ping sent after the sub of "+bus.DeliverSubject(session), c.pongs)
 }
 
 func (c *relaySocketClient) pub(subject, data string) {
@@ -521,24 +565,32 @@ func (c *relaySocketClient) ping() {
 }
 
 // frame waits for the next frame the server sends, failing the test, naming what it waited for,
-// when the socket closes before one arrives. A frame the reader queued before the close came first
-// on the wire, and is the next frame: the reader puts each frame on frames before it reads on, so
-// once the close is on closed, every frame before it is already on frames. frame takes a queued
-// frame first, and on the close looks at frames once more before it fails, putting the close back
-// for closeNext. It waits through testwait, with no bound of its own.
+// when the socket closes before one arrives (nextFrame). It waits through testwait, with no bound
+// of its own.
 func (c *relaySocketClient) frame(what string) relayFrameRead {
 	c.t.Helper()
 	var got relayFrameRead
-	testwait.Until(c.t, what, func() (string, bool) {
+	testwait.Until(c.t, what, c.nextFrame(what, &got))
+	return got
+}
+
+// nextFrame is frame's question, for a wait to ask: it puts the next frame the server sent in got
+// and holds, or fails the test, naming what, when the socket closed before one arrived. A frame the
+// reader queued before the close came first on the wire, and is the next frame: the reader puts
+// each frame on frames before it reads on, so once the close is on closed, every frame before it is
+// already on frames. The question takes a queued frame first, and on the close looks at frames once
+// more before it fails, putting the close back for closeNext.
+func (c *relaySocketClient) nextFrame(what string, got *relayFrameRead) func() (string, bool) {
+	return func() (string, bool) {
 		select {
-		case got = <-c.frames:
+		case *got = <-c.frames:
 			return got.raw, true
 		default:
 		}
 		select {
 		case err := <-c.closed:
 			select {
-			case got = <-c.frames:
+			case *got = <-c.frames:
 				c.closed <- err
 				return got.raw, true
 			default:
@@ -547,8 +599,7 @@ func (c *relaySocketClient) frame(what string) relayFrameRead {
 		default:
 		}
 		return "no frame and no close yet", false
-	})
-	return got
+	}
 }
 
 // closeQueued waits for the reader to have read the server's close, after every frame before it:
@@ -682,44 +733,34 @@ func (f relayFrameRead) data(t *testing.T) []byte {
 	return data
 }
 
-// openSocket is the socket the rig's replica holds open for session once its upgrade is attached,
-// failing the test when none is within 5 s.
+// openSocket is the socket the rig's replica holds open for session once its upgrade is attached.
+// It waits for it through testwait, with no bound of its own.
 func (rig *relaySocketRig) openSocket(t *testing.T, session string) *relaySocket {
 	t.Helper()
-	var found *relaySocket
-	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
+	return testwait.Until(t, "the replica to hold an open socket of "+session, func() (*relaySocket, bool) {
 		rig.sockets.mu.Lock()
 		defer rig.sockets.mu.Unlock()
 		for socket := range rig.sockets.open[session] {
 			if socket.conn != nil {
-				found = socket
-				return true
+				return socket, true
 			}
 		}
-		return false
-	}) {
-		t.Fatalf("the replica holds no open socket of %s", session)
-	}
-	return found
+		return nil, false
+	})
 }
 
-// awaitSubscription is the subscription the socket holds once its client's sub is taken, failing
-// the test when it holds none within 5 s.
+// awaitSubscription is the subscription the socket holds once its client's sub is taken. It waits
+// for it through testwait, with no bound of its own.
 func (socket *relaySocket) awaitSubscription(t *testing.T) *natsgo.Subscription {
 	t.Helper()
-	var held *natsgo.Subscription
-	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
+	return testwait.Until(t, "the socket of "+socket.session+" to take a subscription", func() (*natsgo.Subscription, bool) {
 		socket.subsMu.Lock()
 		defer socket.subsMu.Unlock()
 		for _, sub := range socket.subs {
-			held = sub
-			return true
+			return sub, true
 		}
-		return false
-	}) {
-		t.Fatalf("the socket of %s took no subscription", socket.session)
-	}
-	return held
+		return nil, false
+	})
 }
 
 // holds is how many sockets of session the rig's replica holds open.
@@ -852,6 +893,68 @@ func (c *socketChecks) closeAt(t *testing.T, at time.Time, what string) (int, st
 	c.rig.clock.AwaitArmedAt(t, what+": the socket's check", at)
 	c.rig.clock.Set(at)
 	return c.client.closeNext(what)
+}
+
+// carryLink waits until read holds and returns its reading, carrying a NATS link meanwhile: link is
+// the clock a testnats.Proxy holds each chunk on for half its round trip (ProxyLatency,
+// ProxyClock), whose pending deadlines are the chunks the link holds. Each time read does not hold,
+// the clock moves to the latest due moment the link held when read was asked the time before,
+// which lets through every chunk due by then, and the latest due moment it holds now is noted for
+// the next time. A chunk taken while the clock stood still is due with every other taken then, so
+// the first chunk the link takes after a move, or on an idle link, moves on only once read has
+// been asked again, a pace of the shared wait later (testwait): a reply the code under test sends
+// without waiting for that chunk, as a control's does, is asked about before the chunk moves on.
+// It waits through testwait, with no bound of its own.
+func carryLink(t *testing.T, link *clocktest.Fake, what string, read func() (string, bool)) string {
+	t.Helper()
+	var held time.Time
+	return testwait.Until(t, what, func() (string, bool) {
+		reading, ok := read()
+		if ok {
+			return reading, true
+		}
+		if held.After(link.Now()) {
+			link.Set(held)
+		}
+		held = time.Time{}
+		if armed := link.Armed(); len(armed) > 0 {
+			held = armed[len(armed)-1]
+		}
+		return reading, false
+	})
+}
+
+// carry is carryLink on the rig's NATS link (withSocketNATSLatency).
+func (rig *relaySocketRig) carry(t *testing.T, what string, read func() (string, bool)) string {
+	t.Helper()
+	return carryLink(t, rig.link, what, read)
+}
+
+// requireAheadOfAMarker requires sent, published on session's relay subject, to reach client as
+// its next frame, a msg under sid 1, carrying the rig's NATS link meanwhile (carry); lost says why
+// it would not have. Once the socket holds sid 1's subscription, which it records only once the
+// sub's flush is answered (subscribe), so once the server holds it too, a marker is published on
+// the same subject: the server routes sent ahead of it, and the socket's one subscription hands
+// them on, and its pump writes them, in that order, so a marker that reaches the client first shows
+// that sent was lost, and the row fails at once.
+func (rig *relaySocketRig) requireAheadOfAMarker(t *testing.T, client *relaySocketClient, session string, sent *natsgo.Msg, what, lost string) {
+	t.Helper()
+	socket := rig.openSocket(t, session)
+	rig.carry(t, "the socket of "+session+" to hold sid 1's subscription", func() (string, bool) {
+		socket.subsMu.Lock()
+		defer socket.subsMu.Unlock()
+		_, held := socket.subs[1]
+		return fmt.Sprintf("the socket holds %d subscriptions, sid 1's among them: %t", len(socket.subs), held), held
+	})
+	marker := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	var frame relayFrameRead
+	rig.carry(t, what, client.nextFrame(what, &frame))
+	switch {
+	case frame.Reply == marker.Reply:
+		t.Fatalf("%s (%s) never reached the socket, which was sent the message published after it first: %s", what, sent.Reply, lost)
+	case frame.Op != "msg" || frame.sid(t) != 1 || frame.Reply != sent.Reply:
+		t.Fatalf("%s reached the socket as %s, want the msg %s under sid 1", what, frame.raw, sent.Reply)
+	}
 }
 
 // relayFrameReceipt is a receipt subject of a relay frame of session, shaped as an edge relay

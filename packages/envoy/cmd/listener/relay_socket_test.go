@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -68,8 +69,13 @@ func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
 
 // A pub on a forwarded frame's receipt subject whose body is no reply word the relay reads
 // (received, progress, done, nak) is refused publish_not_granted and published nothing, so a
-// client publishes nothing on the receipt family but receipts a word long. Control, in the same
-// row: the same subject with done is published, and the owner acks the message.
+// client publishes nothing on the receipt family but receipts a word long. That nothing was
+// published is read by a marker: the client's done on the same subject, which it pubs next, is the
+// first message the subject carries. The socket's reader handles each frame whole before it reads
+// the next (relaySocket.read), and both pubs publish on the sockets' one NATS connection, which
+// the server delivers in order, so whatever the refused pub published would reach the watcher
+// ahead of the done. Control, in the same row: the same subject with done is published, and the
+// owner acks the message.
 func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 	t.Parallel()
 	rig := newRelaySocketRig(t)
@@ -83,8 +89,8 @@ func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 		t.Fatalf("the socket sent %s, want a msg", frame.raw)
 	}
 	watcher := testnats.Connect(t, rig.owner.url)
-	heard, err := watcher.SubscribeSync(frame.Reply)
-	if err != nil {
+	heard := make(chan *natsgo.Msg, 2)
+	if _, err := watcher.ChanSubscribe(frame.Reply, heard); err != nil {
 		t.Fatalf("watch %s: %v", frame.Reply, err)
 	}
 	if err := watcher.Flush(); err != nil {
@@ -94,10 +100,10 @@ func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 	if got := client.frame("the answer to a pub whose body is no reply word"); got.Op != "err" || got.Code != relayErrPublishNotGranted {
 		t.Fatalf("a pub of a body that is no reply word was answered %s, want err %s", got.raw, relayErrPublishNotGranted)
 	}
-	if msg, err := heard.NextMsg(500 * time.Millisecond); err == nil {
-		t.Fatalf("the replica published %d bytes on %s, which is no receipt", len(msg.Data), frame.Reply)
-	}
 	client.pub(frame.Reply, relayReplyDone)
+	if msg := testwait.Receive(t, "the client's done on "+frame.Reply+", after the refused pub", heard); string(msg.Data) != relayReplyDone {
+		t.Fatalf("the replica published %d bytes on %s ahead of the client's done, which is no receipt", len(msg.Data), frame.Reply)
+	}
 	awaitAcked(t, rig.owner.consumers, session, seq)
 }
 
@@ -155,8 +161,14 @@ func TestARelaySocketTakesAReceiptUntilItsReplyWindowEnds(t *testing.T) {
 // agent-stream control subject is answered subject_not_granted under its sid, and the replica
 // holds no subscription to either, so a frame published to the other session never reaches this
 // socket; a pub to a reply subject the socket never forwarded is publish_not_granted, and nothing
-// is published on it. Control: the subject check removed; the other session's frame reaches the
-// socket and the row fails naming it.
+// is published on it. Each absence is read by a marker that comes after it: the socket's reader
+// handles each frame whole before it reads the next (relaySocket.read), so a sub's answer is on the
+// wire ahead of the pong of a ping sent after the sub, and what a pub publishes goes out on the
+// sockets' one NATS connection ahead of what the next pub publishes; and a frame of the other
+// session's, published ahead of one of the session's own on one connection, would reach the client
+// first, since the socket holds one subscription (relaySocketMaxSubscriptions), which hands its
+// frames on in the order the server routed them. Control: the subject check removed; the replica
+// takes the first sub, which is answered nothing ahead of the pong, and the row fails naming it.
 func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 	t.Parallel()
 	rig := newRelaySocketRig(t)
@@ -164,60 +176,75 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 	client, _ := rig.open(t, session)
 	held := rig.client.Connection().NumSubscriptions()
 
-	// refused waits for sid's err, and answers whether one came: a sub answered nothing within the
-	// wait is one the replica took, which the frame below then shows.
-	refused := func(sid int, subject string) bool {
+	// refused sends a sub of subject as sid and a ping after it, and requires sid's err ahead of
+	// the ping's pong: a sub answered nothing by then is one the replica took.
+	refused := func(sid int, subject string) {
 		t.Helper()
+		client.sub(sid, subject)
+		client.ping()
+		testwait.Receive(t, "the pong of a ping sent after the sub of "+subject, client.pongs)
 		select {
 		case frame := <-client.frames:
-			if frame.Op != "err" || frame.Code != "subject_not_granted" || frame.sid(t) != int64(sid) {
-				t.Fatalf("a sub to %s was answered %s, want err subject_not_granted for sid %d", subject, frame.raw, sid)
+			if frame.Op != "err" || frame.Code != relayErrSubjectNotGranted || frame.sid(t) != int64(sid) {
+				t.Fatalf("a sub to %s was answered %s, want err %s for sid %d", subject, frame.raw, relayErrSubjectNotGranted, sid)
 			}
-			return true
-		case <-time.After(listenerWaitBound(t)):
-			t.Errorf("a sub to %s was answered nothing in time, want err subject_not_granted for sid %d", subject, sid)
-			return false
+		default:
+			t.Errorf("a sub to %s was answered nothing ahead of the pong of a ping sent after it, want err %s for sid %d: the replica took it", subject, relayErrSubjectNotGranted, sid)
 		}
 	}
-	client.sub(1, bus.DeliverSubject(other))
 	refused(1, bus.DeliverSubject(other))
-	client.sub(2, "agentstream."+session+".control")
 	refused(2, "agentstream."+session+".control")
 	if now := rig.client.Connection().NumSubscriptions(); now != held {
 		t.Errorf("the replica holds %d subscriptions after two refused subs, want the %d it held before", now, held)
 	}
+
+	client.subscribeOwn(session)
 	publisher := testnats.Connect(t, rig.owner.url)
-	// The frame names an event of the token's project, which the edge's rule passes to this
-	// socket (edgeFrameVerdict), so only the socket's subscriptions keep it away.
-	stray := &natsgo.Msg{Subject: bus.DeliverSubject(other), Reply: bus.RelayReplyPrefix + "stray.1", Data: []byte(`{"stray":true}`),
-		Header: natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}}
-	if err := publisher.PublishMsg(stray); err != nil {
-		t.Fatalf("publish a frame for %s: %v", other, err)
+	// Both frames name an event of the token's project, which the edge's rule passes to this
+	// socket (edgeFrameVerdict), and a receipt of this session's, which its receipt check passes
+	// (relayReceiptOf), so only the socket's subscriptions keep the other session's frame away.
+	header := natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}
+	stray := &natsgo.Msg{Subject: bus.DeliverSubject(other), Reply: relayFrameReceipt(session), Data: []byte(`{"stray":true}`), Header: header}
+	own := &natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: []byte(`{"own":true}`), Header: header}
+	for _, msg := range []*natsgo.Msg{stray, own} {
+		if err := publisher.PublishMsg(msg); err != nil {
+			t.Fatalf("publish a frame on %s: %v", msg.Subject, err)
+		}
 	}
-	select {
-	case frame := <-client.frames:
-		t.Fatalf("the replica subscribed %s for this socket: the other session's frame reached it as %s", bus.DeliverSubject(other), frame.raw)
-	case <-time.After(time.Second):
+	if err := publisher.Flush(); err != nil {
+		t.Fatalf("flush the frames: %v", err)
+	}
+	if frame := client.frame("the first frame after the other session's"); frame.Reply != own.Reply {
+		if frame.Reply == stray.Reply {
+			t.Fatalf("the replica subscribed %s for this socket: the other session's frame reached it as %s", bus.DeliverSubject(other), frame.raw)
+		}
+		t.Fatalf("the socket sent %s, want the msg %s of its own session", frame.raw, own.Reply)
 	}
 	if t.Failed() {
 		return
 	}
 
+	// The marker of the pub on never is the client's done on its own frame's receipt, which it
+	// pubs next: the watcher's subscriptions of the two subjects share one channel, which its
+	// connection fills in the order the server delivers to it.
 	watcher := testnats.Connect(t, rig.owner.url)
 	never := bus.RelayReplyPrefix + "never.forwarded"
-	heard, err := watcher.SubscribeSync(never)
-	if err != nil {
-		t.Fatalf("watch %s: %v", never, err)
+	heard := make(chan *natsgo.Msg, 4)
+	for _, subject := range []string{never, own.Reply} {
+		if _, err := watcher.ChanSubscribe(subject, heard); err != nil {
+			t.Fatalf("watch %s: %v", subject, err)
+		}
 	}
 	if err := watcher.Flush(); err != nil {
 		t.Fatalf("flush the watcher: %v", err)
 	}
 	client.pub(never, relayReplyDone)
-	if frame := client.frame("the answer to a pub to a reply never forwarded"); frame.Op != "err" || frame.Code != "publish_not_granted" || frame.SID != nil {
-		t.Fatalf("a pub to a reply never forwarded was answered %s, want err publish_not_granted naming no sid", frame.raw)
+	if frame := client.frame("the answer to a pub to a reply never forwarded"); frame.Op != "err" || frame.Code != relayErrPublishNotGranted || frame.SID != nil {
+		t.Fatalf("a pub to a reply never forwarded was answered %s, want err %s naming no sid", frame.raw, relayErrPublishNotGranted)
 	}
-	if msg, err := heard.NextMsg(500 * time.Millisecond); err == nil {
-		t.Fatalf("the replica published %q on %s, which it never forwarded", msg.Data, never)
+	client.pub(own.Reply, relayReplyDone)
+	if msg := testwait.Receive(t, "the client's done on its own frame's receipt, after the pub on "+never, heard); msg.Subject != own.Reply {
+		t.Fatalf("the replica published %q on %s, which it never forwarded", msg.Data, msg.Subject)
 	}
 }
 
@@ -919,13 +946,15 @@ func TestARelaySocketsPingGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
 // relay sends that frame again, since it hears no receipt for it. The row holds the queue's lock,
 // so the subscription's goroutine waits in enqueue with the first frame, lowers nats.go's limit on
 // the socket's subscription to 2 frames and sends 6: nats.go keeps 2, that one among them, and
-// drops 4. Once the lock is let go the client reads the 2 kept, and the socket stays open. Control:
-// the socket closing 1013 slow_consumer once its subscription dropped a frame (forward reading
+// drops 4. Once the lock is let go the client reads the 2 kept, and then a frame published after
+// them, so the socket stayed open: a close over the frames dropped would be made by a forward of
+// the socket's one subscription, which hands its frames on in order, at a kept frame or at the
+// frame after them, and a socket that has ended writes no frame after its close. Control: the
+// socket closing 1013 slow_consumer once its subscription dropped a frame (forward reading
 // Subscription.Dropped); the client reads the first frame and then that close, and the row fails
 // naming it.
 func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *testing.T) {
-	// Not parallel: it requires the socket to stay open through a 1 s quiet window
-	// (stillOpen(time.Second)) after nats.go dropped frames ahead of its queue.
+	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session, sent = "ses_edge_nats_drops", 6
 	client, _ := rig.open(t, session)
@@ -940,14 +969,14 @@ func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *tes
 	defer unlock()
 	flood(t, rig.owner.url, session, sent)
 	var kept, dropped int
-	accounted := testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("nats.go to keep or drop each of the %d frames sent", sent), func() (string, bool) {
 		kept, _, _ = sub.Pending()
 		dropped, _ = sub.Dropped()
-		return kept+dropped == sent
+		return fmt.Sprintf("kept %d, dropped %d", kept, dropped), kept+dropped == sent
 	})
 	unlock()
-	if !accounted || dropped == 0 {
-		t.Fatalf("nats.go kept %d and dropped %d of the %d frames sent, want all %d accounted for and some dropped", kept, dropped, sent, sent)
+	if dropped == 0 {
+		t.Fatalf("nats.go kept %d and dropped %d of the %d frames sent, want some dropped", kept, dropped, sent)
 	}
 	t.Logf("nats.go kept %d and dropped %d of the %d frames sent", kept, dropped, sent)
 	for i := range kept {
@@ -955,7 +984,10 @@ func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *tes
 			t.Fatalf("frame %d of the %d nats.go kept reached the client as %s, want a msg", i+1, kept, frame.raw)
 		}
 	}
-	client.stillOpen(time.Second, "frames nats.go dropped ahead of the queue")
+	after := publishRelayFrame(t, rig.owner.url, session, nil)
+	if frame := client.frame("the frame published after the ones nats.go kept"); frame.Op != "msg" || frame.sid(t) != 1 || frame.Reply != after.Reply {
+		t.Fatalf("the socket sent %s after the frames nats.go kept, want the msg %s published after them under sid 1", frame.raw, after.Reply)
+	}
 }
 
 // What a replica's sockets hold for their clients together stays within its budget
@@ -1197,9 +1229,14 @@ func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T
 // relay holds at most relayEdgeInFlight of a session's frames in flight (its consumers'
 // MaxAckPending), within the socket's pending limits, so a restart at the ack floor with 300
 // frames waiting sends them as fast as the client answers them. The backlog is stored while no
-// socket subscribes, and the session's next registration restarts the relay at the floor.
-// Control: the edge's consumers at bus.SessionConsumerMaxAckPending; the restart sends hundreds
-// at once, past the socket's limits, and the socket closes 1013 slow_consumer.
+// socket subscribes, and the session's next registration restarts the relay at the floor. Once
+// the client has answered the whole backlog, the frame of an event stored after it reaches the
+// client, so the socket stayed open: the relay hands the session's frames to the socket's one
+// subscription in the stream's order, that event's last, and the socket writes them in the order
+// they came (relay_socket_queue.go), so a close over the backlog would come ahead of that frame,
+// and a socket that has ended writes no frame after its close. Control: the edge's consumers at
+// bus.SessionConsumerMaxAckPending; the relay holds the whole backlog in flight before the
+// restart, and the row fails naming its wait for relayEdgeInFlight of it in flight.
 func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing.T) {
 	t.Parallel()
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
@@ -1219,27 +1256,30 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 	awaitAckState(t, rig.owner.consumers, session, relayEdgeInFlight, 0)
 	awaitSessionConsumerStored(t, rig.owner.harness.client.Conn, session)
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
-	seen := map[string]bool{}
-	deadline := time.After(listenerWaitBound(t))
-	for len(seen) < backlog {
-		select {
-		case frame := <-client.frames:
-			if frame.Op != "msg" {
-				t.Fatalf("the socket sent %s after %d of %d frames, want only msg frames", frame.raw, len(seen), backlog)
-			}
-			var item contracts.Envelope
-			if err := json.Unmarshal(frame.data(t), &item); err != nil || !stored[item.EventID] {
-				t.Fatalf("the socket sent %q (%v), which is none of the stored backlog", frame.data(t), err)
-			}
-			seen[item.EventID] = true
-			client.pub(frame.Reply, relayReplyDone)
-		case err := <-client.closed:
-			t.Fatalf("the socket of a prompt client closed after %d of %d frames: %v\n%s", len(seen), backlog, err, rig.logs.String())
-		case <-deadline:
-			t.Fatalf("the socket of a prompt client was sent %d of %d frames within the time this package gives a wait", len(seen), backlog)
+	// take waits for the next frame, requires it to be a msg of an event the row stored, answers
+	// it done, as a prompt client does, and returns the event's id.
+	take := func(what string) string {
+		t.Helper()
+		frame := client.frame(what)
+		if frame.Op != "msg" {
+			t.Fatalf("%s: the socket sent %s, want only msg frames", what, frame.raw)
 		}
+		var item contracts.Envelope
+		if err := json.Unmarshal(frame.data(t), &item); err != nil || !stored[item.EventID] {
+			t.Fatalf("%s: the socket sent %q (%v), which is none of the stored events", what, frame.data(t), err)
+		}
+		client.pub(frame.Reply, relayReplyDone)
+		return item.EventID
 	}
-	client.stillOpen(time.Second, "after the backlog")
+	seen := map[string]bool{}
+	for len(seen) < backlog {
+		seen[take(fmt.Sprintf("frame %d of the backlog of %d", len(seen)+1, backlog))] = true
+	}
+	after, _ := rig.owner.storeEvent(t, contracts.LegacyAgentSubject(session))
+	stored[after.EventID] = true
+	// A frame of the backlog the relay sends again comes ahead of it, and is passed over.
+	for take("the frame of the event stored after the backlog") != after.EventID {
+	}
 }
 
 // A frame over 1 MiB closes the socket 1009 (control: a frame just under the bound is read and
@@ -1313,8 +1353,12 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 
 // A socket holds one subscription: a second sub of its relay subject, under another sid, is
 // answered that sid's err subscription_limit and takes no subscription, so every frame reaches the
-// client once; the socket stays open and goes on forwarding under the sid it holds. Control: the
-// first sub is taken.
+// client once; the socket stays open and goes on forwarding under the sid it holds. A frame
+// published after the first is the marker that the first came once and the socket stayed open:
+// the replica holds the one subscription, which hands its frames on in the order the server routed
+// them, and the socket writes them in that order, so a second copy of the first frame would reach
+// the client ahead of the second, and a socket that the sub past the limit closed writes neither.
+// Control: the first sub is taken.
 func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
 	t.Parallel()
 	rig := newRelaySocketRig(t)
@@ -1330,22 +1374,29 @@ func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
 	if now := rig.client.Connection().NumSubscriptions(); now != held+1 {
 		t.Fatalf("the replica holds %d subscriptions for the socket, want the one it took", now-held)
 	}
-	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
-	if got := client.frame("the frame published once"); got.Op != "msg" || got.sid(t) != 1 {
-		t.Fatalf("the socket sent %s, want a msg under sid 1", got.raw)
+	first := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	if got := client.frame("the frame published once"); got.Op != "msg" || got.sid(t) != 1 || got.Reply != first.Reply {
+		t.Fatalf("the socket sent %s, want the msg %s under sid 1", got.raw, first.Reply)
 	}
-	client.none(time.Second, "a frame sent once")
-	client.stillOpen(time.Second, "a sub past the limit")
+	second := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	if got := client.frame("the frame published after the first"); got.Op != "msg" || got.sid(t) != 1 || got.Reply != second.Reply {
+		t.Fatalf("the socket sent %s after the frame published once, want the msg %s published after it, under sid 1", got.raw, second.Reply)
+	}
 }
 
 // Frames are handled in order: a socket's frames are read one at a time, and a sub is handled
 // whole - its subscribe and the flush that makes the server hold it - before the next frame is
-// read. The socket's replica reaches NATS over a link with a 400 ms round trip, so a subscribe
-// takes that long to be held. The row sends a sub of its own relay subject and, at once, a sub of
-// another session's: the second's err is written only once the first is held, so a message
-// published the moment that err arrives reaches the socket. Control: each frame handled on a
-// goroutine of its own; the err arrives before the subscribe is held, the message is lost, and the
-// row fails naming it.
+// read. The socket's replica reaches NATS over a link with a 400 ms round trip, held on a clock of
+// the link's own (withSocketNATSLatency), which moves only as the row carries the link (carry): the
+// row asks for what it waits for before each move, and moves only past chunks the link held when
+// it last asked, so a reply sent without waiting for the subscribe is found while the link still
+// holds the subscribe. The row sends a sub of its own relay subject and, at once, a sub of another
+// session's: the second's err is written only once the first's subscribe is held, so a message
+// published the moment that err arrives, with the link where it stood then, reaches the socket
+// ahead of a marker published once the socket holds the subscription (requireAheadOfAMarker).
+// Control: each frame handled on a goroutine of its own; the err arrives while the link still
+// holds the subscribe, the message is lost, the marker reaches the socket first, and the row fails
+// naming the message.
 func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
 	t.Parallel()
 	rig := newRelaySocketRig(t, withSocketNATSLatency(400*time.Millisecond))
@@ -1353,26 +1404,25 @@ func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
 	client, _ := rig.open(t, session)
 	client.sub(1, bus.DeliverSubject(session))
 	client.sub(2, bus.DeliverSubject("ses_someone_else"))
-	if frame := client.frame("the answer to the second sub"); frame.Code != "subject_not_granted" || frame.sid(t) != 2 {
-		t.Fatalf("the second sub was answered %s, want err subject_not_granted for sid 2", frame.raw)
+	var answer relayFrameRead
+	rig.carry(t, "the answer to the second sub", client.nextFrame("the answer to the second sub", &answer))
+	if answer.Code != relayErrSubjectNotGranted || answer.sid(t) != 2 {
+		t.Fatalf("the second sub was answered %s, want err %s for sid 2", answer.raw, relayErrSubjectNotGranted)
 	}
 	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
-	select {
-	case frame := <-client.frames:
-		if frame.Op != "msg" || frame.sid(t) != 1 || frame.Reply != sent.Reply {
-			t.Fatalf("the message published once the second sub was answered reached the socket as %s, want the msg %s under sid 1", frame.raw, sent.Reply)
-		}
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the message %s published once the second sub was answered never reached the socket: the second sub was answered before the first's subscribe was held", sent.Reply)
-	}
+	rig.requireAheadOfAMarker(t, client, session, sent, "the message published once the second sub was answered",
+		"the second sub was answered before the first's subscribe was held")
 }
 
-// Row 10: the client's flush() is a ping, answered on the socket's one
-// reader only after every frame read before it is handled, so a ping sent right after a sub gets
-// its pong only once that sub's subscribe is held, and a message published the moment the pong
-// arrives reaches the socket. The replica's link has a 400 ms round trip, as above. Control: a
-// ping handler that answers at once, off the reader; the pong precedes the subscribe, the message
-// is lost, and the row fails naming it.
+// Row 10: the client's flush() is a ping, answered on the socket's one reader only after every
+// frame read before it is handled, so a ping sent right after a sub gets its pong only once that
+// sub's subscribe is held, and a message published the moment the pong arrives, with the link
+// where it stood then, reaches the socket ahead of a marker published once the socket holds the
+// subscription (requireAheadOfAMarker). The replica's link has a 400 ms round trip on its own
+// clock, which the row carries, as above. Control: a ping handler that answers at once, off the
+// reader (the reader hands each frame to a goroutine that handles them in order, and reads on, so
+// gorilla answers the ping as it reads it); the pong precedes the subscribe, the message is lost,
+// the marker reaches the socket first, and the row fails naming the message.
 func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 	t.Parallel()
 	rig := newRelaySocketRig(t, withSocketNATSLatency(400*time.Millisecond))
@@ -1380,20 +1430,18 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 	client, _ := rig.open(t, session)
 	client.sub(1, bus.DeliverSubject(session))
 	client.ping()
-	select {
-	case <-client.pongs:
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("no pong within the time this package gives a wait, after the ping")
-	}
-	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
-	select {
-	case frame := <-client.frames:
-		if frame.Op != "msg" || frame.Reply != sent.Reply {
-			t.Fatalf("the socket sent %s, want the msg %s published the moment the pong arrived", frame.raw, sent.Reply)
+	rig.carry(t, "the pong of the ping sent after the sub", func() (string, bool) {
+		select {
+		case <-client.pongs:
+			return "the pong", true
+		default:
 		}
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the message %s published the moment the pong arrived never reached the socket: the pong came before the subscribe was held", sent.Reply)
-	}
+		client.requireNothingYet("the pong of the ping sent after the sub")
+		return "no pong yet", false
+	})
+	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	rig.requireAheadOfAMarker(t, client, session, sent, "the message published the moment the pong arrived",
+		"the pong came before the subscribe was held")
 }
 
 // Headers: msg.headers is always present, a JSON object mapping each header name as
