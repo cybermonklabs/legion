@@ -35,14 +35,7 @@ func sleepUntilOn(ctx context.Context, c clock.Clock, t time.Time) bool {
 	if d <= 0 {
 		return ctx.Err() == nil
 	}
-	timer := c.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C():
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return c.Sleep(ctx, d) == nil
 }
 
 // fetchTo saves the body of a GET of url to path; a failure is logged, not returned.

@@ -114,7 +114,7 @@ func ArtifactRefKey(issueKey, projectKey, session, slug string) string {
 // address id. It is the database's clock as the call runs (clock_timestamp(), never the
 // transaction's start), and one microsecond past the newest statement the store holds about the
 // node where the clock reads no later. A writer reads it once, after it holds the lock that orders
-// every writer of the address - the document's owner lock (api's queueNewArtifact and
+// every writer of the address - the document's owner lock (docs' QueueNewArtifact and api's
 // removeArtifact) - so two writers of one address read it one after the other, the second once the
 // first has committed, and the second's time is strictly later than every statement the first made,
 // by the clock and, should the clock step back, by the greatest(). So every statement about an address is

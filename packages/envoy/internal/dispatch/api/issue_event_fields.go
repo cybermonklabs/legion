@@ -15,11 +15,14 @@ import (
 var unsetIssue = model.Issue{Components: model.IssueComponents{Mode: "inherit"}}
 
 // issueChangedFields is an issue event's changed list: the name of every field whose value differs
-// between before and after, in one fixed order. repo moves with the issue's own repository or the
-// one it resolves to (a reparent can move the second alone), and components with the effective
-// attachment, so an inherited change counts too. closed_at moves only with a close or a reopen
-// (whether the issue is closed, not the time), which a status alone cannot say: a reader learns
-// from it that the issue's open asks entered or left the Inbox and the projects' open-ask counts.
+// between before and after, in one fixed order. resolved_priority and priority_from move with the
+// priority the issue resolves to and the issue it comes from (refs.IssuePriorityTerms), which a
+// write of its own priority or a reparent can move, together or either alone. repo moves with the
+// issue's own repository or the one it resolves to (a reparent can move the second alone), and
+// components with the effective attachment, so an inherited change counts too. closed_at moves
+// only with a close or a reopen (whether the issue is closed, not the time), which a status alone
+// cannot say: a reader learns from it that the issue's open asks entered or left the Inbox and the
+// projects' open-ask counts.
 func issueChangedFields(before, after model.Issue) []string {
 	changed := []string{}
 	add := func(field string, moved bool) {
@@ -32,6 +35,8 @@ func issueChangedFields(before, after model.Issue) []string {
 	add("closed_at", (before.ClosedAt == nil) != (after.ClosedAt == nil))
 	add("rank", before.Rank != after.Rank)
 	add("priority", !intPointersEqual(before.Priority, after.Priority))
+	add("resolved_priority", !intPointersEqual(before.ResolvedPriority, after.ResolvedPriority))
+	add("priority_from", !stringPointersEqual(before.PriorityFrom, after.PriorityFrom))
 	add("assignee", !stringPointersEqual(before.Assignee, after.Assignee))
 	add("parent", !stringPointersEqual(before.Parent, after.Parent))
 	add("labels", !slices.Equal(before.Labels, after.Labels))

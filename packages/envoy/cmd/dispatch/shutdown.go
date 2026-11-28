@@ -32,7 +32,11 @@ const stopGrace = 30 * time.Second
 // 4.5 s at load 90 against a 5 s budget, a 3.4 s overrun past it - is what the reserve is sized to
 // outlast; a worker still running once this whole timeout ends makes Shutdown return the
 // settlements-unconfirmed error instead of reading back what committed.
-const documentShutdownTimeout = docs.ShutdownDrainBudget + 5*time.Second
+const documentShutdownTimeout = docs.ShutdownDrainBudget + documentShutdownReserve
+
+// documentShutdownReserve is how far past its drain budget the document service's own budget
+// runs (documentShutdownTimeout says what it is for).
+const documentShutdownReserve = 5 * time.Second
 
 // httpDrainBeforeDocuments is how long the document service waits for the requests in flight to
 // finish before it settles the documents owed with requests still running, so that its budget ends
@@ -41,39 +45,49 @@ const documentShutdownTimeout = docs.ShutdownDrainBudget + 5*time.Second
 // api.Register takes), which is cancelled before shutdown starts.
 const httpDrainBeforeDocuments = stopGrace - 5*time.Second - documentShutdownTimeout
 
-// silentProbes is how many health probes (store.Pool.Healthy, two seconds each, or a test
-// process's shorter silenceBounds.probeTimeout) in a row must fail, with no connection of the
-// shared, document-rooms or room-appends pool taken back meanwhile, before Dispatch counts the
-// database as having stopped answering. A probe that answers, or a connection taken back while it
-// ran, starts the count again: a slow database that is still finishing work is answering. Three is
-// the count the load balancer waits for before it replaces the task.
+// silentProbes is how many health probes (store.Pool.HealthyOn, each within
+// silenceBounds.probeTimeout: store.HealthProbeTimeout's two seconds, or a test process's shorter
+// bound) in a row must fail, with no connection of the shared, document-rooms or room-appends pool
+// taken back meanwhile, before Dispatch counts the database as having stopped answering. A probe
+// that answers, or a connection taken back while it ran, starts the count again: a slow database
+// that is still finishing work is answering. Three is the count the load balancer waits for before
+// it replaces the task.
 const silentProbes = 3
 
 // drainPollInterval is how often the last phase asks whether the requests in flight and the
-// connections in use are done, and how long waitUntilIdle and closePool pause between the health
-// probes they run, unless a test process's silenceBounds names a pause of its own.
+// connections in use are done, and a deployment's pause between the health probes waitUntilIdle
+// and closePool run (shutdownProbes); a test process's pause is shorter.
 const drainPollInterval = 250 * time.Millisecond
 
 // silenceBounds time the health probes by which waitUntilIdle and closePool learn that the
-// database has stopped answering (silence): probeTimeout bounds each probe, and pause is the wait
-// between two. Their zero values, which every deployment runs with, are production's: the store's
-// own probe bound (store.Pool.Healthy's two seconds) and drainPollInterval. Only a test process
-// sets them (bootConfig.ShutdownProbe), since a test whose database stops answering waits
-// silentProbes probes out before the process exits. A probeTimeout can only shorten a probe:
-// store.Pool.HealthyWithin derives its deadline from the context it is handed, so a probe under a
-// shorter context ends sooner, and none waits past the store's own bound.
+// database has stopped answering (silence): probeTimeout bounds each probe, pause is the wait
+// between two, and clock is what both run on, with the store's own bound on each probe beneath
+// them (store.Pool.HealthyOn arms it on the same clock). shutdownProbes builds it, every field
+// named, for every process: a deployment's is store.HealthProbeTimeout and drainPollInterval on
+// the wall clock, and a test process's (bootConfig.ShutdownProbe) a shorter probe and pause on the
+// wall clock, since a test whose database stops answering waits silentProbes probes out before the
+// process exits. A probeTimeout can only shorten a probe: HealthyOn derives the store's deadline
+// from the context it is handed, so a probe under a shorter context ends sooner, and none waits
+// past the store's own bound. One test sets another clock: closePool's row hands closePool
+// production's probe and pause on a clocktest.Fake and moves the fake through them
+// (TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering).
 type silenceBounds struct {
-	probeTimeout time.Duration
-	pause        time.Duration
+	clock               clock.Clock
+	probeTimeout, pause time.Duration
 }
 
-// betweenProbes is how long waitUntilIdle and closePool pause between two health probes: b.pause,
-// or drainPollInterval when it is zero.
-func (b silenceBounds) betweenProbes() time.Duration {
-	if b.pause > 0 {
-		return b.pause
+// shutdownProbes is the silenceBounds a process's shutdown probes with, from its
+// bootConfig.ShutdownProbe, on the wall clock. Zero, as every deployment leaves it, is
+// production's, named here: each probe within store.HealthProbeTimeout and drainPollInterval
+// between two. A test process's probe bounds each probe, and is never longer than
+// store.HealthProbeTimeout (resolveBootConfig refuses a longer one); the pause between two keeps
+// drainPollInterval's ratio to the store's two-second probe, an eighth, and is never longer than
+// drainPollInterval, so the setting can only shorten the wait.
+func shutdownProbes(probe time.Duration) silenceBounds {
+	if probe <= 0 {
+		return silenceBounds{clock: clock.Real(), probeTimeout: store.HealthProbeTimeout, pause: drainPollInterval}
 	}
-	return drainPollInterval
+	return silenceBounds{clock: clock.Real(), probeTimeout: probe, pause: min(probe/8, drainPollInterval)}
 }
 
 // outboxStopBudget is how long after shutdown starts it waits, at most, for the events outbox to
@@ -86,11 +100,19 @@ func (b silenceBounds) betweenProbes() time.Duration {
 // stopped answering.
 const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
+// processStarted is when this process started, as near as its Go code can say: the moment the
+// package's variables were set, before main ran. The listening line gives the milliseconds since
+// then (since_start_ms), which the fill-length check reads
+// (TestTheServerFillsTheCoverageCountsAtScale): how long a start took to serve, the migrations
+// included.
+var processStarted = time.Now()
+
 // serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown, with
 // httpDrain as its drain before the document service and probes timing the health probes that
 // learn whether the database has stopped answering), deregistering it once HTTP has drained. It
 // logs the address listener is bound to, whether main bound it or inherited it
-// (DISPATCH_LISTEN_FD), so the line names the port a kernel chose. Two things end
+// (DISPATCH_LISTEN_FD), so the line names the port a kernel chose, and the milliseconds since the
+// process started (processStarted). Two things end
 // serving before the signal does, each logged at ERROR and returned once shutdown has run, so main
 // exits 1 and a supervisor never reads either as a clean stop: serving failed, or the registry
 // refused to count this process as live again beside a live process whose signing keys it does not
@@ -101,7 +123,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}, httpDrain time.Duration, probes silenceBounds) error {
 	serveErr := make(chan error, 1)
 	go func() {
-		slog.Info("dispatch: listening", "addr", listener.Addr().String())
+		slog.Info("dispatch: listening", "addr", listener.Addr().String(), "since_start_ms", time.Since(processStarted).Milliseconds())
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("dispatch: serve", "error", err)
 			serveErr <- err
@@ -161,19 +183,18 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // process counts as live until its last request is answered, and before the pool closes. Closing
 // the pool waits by the same rule (closePool): a connection taken after the pools were seen idle
 // holds the close until it comes back, or until the database has stopped answering. A database
-// that has stopped answering (silentProbes health probes in a row, each bounded and paused between
-// by probes: the zero silenceBounds in a deployment, production's two seconds and drainPollInterval)
-// holds its connections forever, so Dispatch exits without them, and the database rolls back
-// whatever they held open; it deregisters nothing then, since the delete would wait on that
-// database too, and its row's heartbeat stops with the process instead. The pauses between the
-// health probes, and each probe's timeout where probes sets one, run on c (waitUntilIdle,
-// closePool), the wall clock in production (serveUntilStopped), so a test moves a fake clock
-// through them (TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering). A probe
-// that probes sets no timeout for runs within the store's own bound, on the wall clock; the HTTP
-// drain's share, the document service's timeout and the wait for the outbox run on the wall clock
-// too.
+// that has stopped answering (silentProbes health probes in a row, each bounded, paused between
+// and timed by probes, shutdownProbes': in a deployment store.HealthProbeTimeout and
+// drainPollInterval on the wall clock) holds its connections forever, so Dispatch exits without
+// them, and the database rolls back whatever they held open; it deregisters nothing then, since
+// the delete would wait on that database too, and its row's heartbeat stops with the process
+// instead. The HTTP drain's share (httpDrain), the document service's timeout and the wait for
+// the outbox run on c, the wall clock in production (serveUntilStopped), so a test moves a fake
+// clock through them (TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget); the health probes
+// and the pauses between them (waitUntilIdle, closePool) run on probes.clock, which every caller
+// of shutdown sets to the wall clock (shutdownProbes).
 func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}, httpDrain time.Duration, probes silenceBounds) {
-	started := time.Now()
+	started := c.Now()
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
@@ -183,34 +204,34 @@ func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service,
 	}()
 	select {
 	case <-drained:
-	case <-time.After(httpDrain):
+	case <-c.After(httpDrain):
 		slog.Warn("dispatch: settle documents with requests still in flight")
 	}
-	documentCtx, cancelDocuments := context.WithTimeout(context.Background(), documentShutdownTimeout)
+	documentCtx, cancelDocuments := c.WithTimeout(context.Background(), documentShutdownTimeout)
 	defer cancelDocuments()
 	if err := documentService.Shutdown(documentCtx); err != nil {
 		slog.Warn("dispatch: shutdown document service", "error", err)
 	}
 	waitBackground()
 	waitIntakes()
-	if waitUntilIdle(c, drained, pool, probes) {
-		waitForOutbox(outboxStopped, started.Add(outboxStopBudget))
+	if waitUntilIdle(drained, pool, probes) {
+		waitForOutbox(c, outboxStopped, started.Add(outboxStopBudget))
 		deregister()
-		closePool(c, pool, probes)
+		closePool(pool, probes)
 	}
 }
 
-// waitForOutbox waits until outboxStopped closes or by passes, whichever comes first; a nil
+// waitForOutbox waits until outboxStopped closes or by passes on c, whichever comes first; a nil
 // outboxStopped is no outbox, and nothing to wait for.
-func waitForOutbox(outboxStopped <-chan struct{}, by time.Time) {
+func waitForOutbox(c clock.Clock, outboxStopped <-chan struct{}, by time.Time) {
 	if outboxStopped == nil {
 		return
 	}
-	timer := time.NewTimer(time.Until(by))
+	timer := c.NewTimer(by.Sub(c.Now()))
 	defer timer.Stop()
 	select {
 	case <-outboxStopped:
-	case <-timer.C:
+	case <-timer.C():
 		slog.Warn("dispatch: close the pool with the events outbox still stopping", "budget", outboxStopBudget)
 	}
 }
@@ -219,10 +240,9 @@ func waitForOutbox(outboxStopped <-chan struct{}, by time.Time) {
 // room-appends pool is in use (store.Pool.Use), and reports whether that happened. It gives up only
 // once the database has stopped answering, when the connections in use never come back: closing
 // the pool would wait on them. bounds times its health probes and the pause after each
-// (silenceBounds; the zero value is production's), and both wait on c: the pause, and each probe's
-// timeout where bounds sets one (silence.probe).
-func waitUntilIdle(c clock.Clock, drained <-chan struct{}, pool *store.Pool, bounds silenceBounds) bool {
-	silent := silence{clock: c, bounds: bounds}
+// (silenceBounds), both on bounds.clock.
+func waitUntilIdle(drained <-chan struct{}, pool *store.Pool, bounds silenceBounds) bool {
+	silent := silence{bounds: bounds}
 	for {
 		before := pool.Use()
 		select {
@@ -235,7 +255,7 @@ func waitUntilIdle(c clock.Clock, drained <-chan struct{}, pool *store.Pool, bou
 		if silent.probe(pool, before) {
 			return false
 		}
-		<-c.After(bounds.betweenProbes())
+		<-bounds.clock.After(bounds.pause)
 	}
 }
 
@@ -246,21 +266,21 @@ func waitUntilIdle(c clock.Clock, drained <-chan struct{}, pool *store.Pool, bou
 // back. So the close waits by waitUntilIdle's rule: for as long as the database answers, and no
 // longer once silentProbes probes in a row have failed with no connection taken back meanwhile,
 // when Dispatch exits with Close still waiting. bounds times those probes and the pause before
-// each, on c, as it does waitUntilIdle's. store.Pool.Close closes the health probe's pool last, so
-// the probe answers while the other pools close.
-func closePool(c clock.Clock, pool *store.Pool, bounds silenceBounds) {
+// each, on bounds.clock, as it does waitUntilIdle's. store.Pool.Close closes the health probe's
+// pool last, so the probe answers while the other pools close.
+func closePool(pool *store.Pool, bounds silenceBounds) {
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
 		pool.Close()
 	}()
-	silent := silence{clock: c, bounds: bounds}
+	silent := silence{bounds: bounds}
 	for {
 		before := pool.Use()
 		select {
 		case <-closed:
 			return
-		case <-c.After(bounds.betweenProbes()):
+		case <-bounds.clock.After(bounds.pause):
 		}
 		if silent.probe(pool, before) {
 			return
@@ -270,30 +290,25 @@ func closePool(c clock.Clock, pool *store.Pool, bounds silenceBounds) {
 
 // silence counts the health probes in a row that have failed with no connection of the shared,
 // document-rooms or room-appends pool taken back meanwhile; silentProbes of them mean the database
-// has stopped answering. bounds is what each probe runs within (silenceBounds.probeTimeout), and
-// clock what that timeout runs on: the c of waitUntilIdle or closePool, which built it.
+// has stopped answering. bounds is what each probe runs within and on (silenceBounds.probeTimeout
+// and clock): the bounds of waitUntilIdle or closePool, which built it.
 type silence struct {
 	failed int
-	clock  clock.Clock
 	bounds silenceBounds
 }
 
 // probe runs one health probe and reports whether the database has stopped answering, logging
 // that Dispatch exits without the connections still in use when it has. before is the pools'
 // ConnectionUse read before the wait this probe ends, so a connection taken back during that wait
-// or the probe starts the count again, as an answered probe does. The probe runs within the
-// store's own bound (store.Pool.Healthy), on the wall clock, or within s.bounds.probeTimeout on
-// s.clock where that is set: a context that ends sooner ends the probe sooner, and HealthyWithin
-// keeps its own bound, on the wall clock, past a later one. So a probe on a clocktest.Fake ends
-// where the test moves the fake past its timeout, which a test does well inside the store's bound.
+// or the probe starts the count again, as an answered probe does. The probe runs within
+// s.bounds.probeTimeout on s.bounds.clock, and store.Pool.HealthyOn arms the store's own bound on
+// that clock beneath it: on the wall clock at store.HealthProbeTimeout, a deployment's, the two
+// end together, and a test process's shorter bound ends the probe sooner. On a clocktest.Fake the
+// probe ends where the test moves the fake, and no bound on the wall clock runs beneath it.
 func (s *silence) probe(pool *store.Pool, before store.ConnectionUse) bool {
-	probing := context.Background()
-	if s.bounds.probeTimeout > 0 {
-		var cancel context.CancelFunc
-		probing, cancel = s.clock.WithTimeout(probing, s.bounds.probeTimeout)
-		defer cancel()
-	}
-	_, err := pool.Healthy(probing)
+	probing, cancel := s.bounds.clock.WithTimeout(context.Background(), s.bounds.probeTimeout)
+	defer cancel()
+	_, err := pool.HealthyOn(probing, s.bounds.clock)
 	after := pool.Use()
 	if err == nil || after.Returned > before.Returned {
 		s.failed = 0

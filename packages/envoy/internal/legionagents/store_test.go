@@ -890,7 +890,7 @@ func (w *stalledWatcher) Stop() error {
 func TestAStalledListingFailsWithinTheReadTimeout(t *testing.T) {
 	uri := testnats.URL(t)
 	r := openRegistryAt(t, uri)
-	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "tester", "ses-stalled", "2026-10-26T03:15:00Z")); err != nil {
+	if _, err := r.store.Put(testwait.Context(t), agent("infra", "INFRA-448", "tester", "ses-stalled", "2026-10-26T03:15:00Z")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	stalled := openRegistryAt(t, uri)

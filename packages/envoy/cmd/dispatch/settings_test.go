@@ -29,6 +29,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -49,6 +50,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
@@ -219,7 +221,9 @@ func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) ht
 		t.Fatalf("build the router: %v", err)
 	}
 	handler, background := routes.New(appCtx)
-	t.Cleanup(background.Wait)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the router's background work (api.Background.Wait: detached work, sockets, hub, relay, mention sender) to end once the test's lifetime ended", background.Wait)
+	})
 	return handler
 }
 
@@ -2185,6 +2189,74 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.SearchFillReadTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT unset: SearchFillReadTimeout = %v, want 0 (searchFillBounds' client deadline, four seconds past the statement timeout)", boot.SearchFillReadTimeout)
+			}
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                    "1",
+				"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": stagedPastTheRun.String(),
+			})
+			if boot.SearchFillReadTimeout != stagedPastTheRun {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT: SearchFillReadTimeout = %v, want %v", boot.SearchFillReadTimeout, stagedPastTheRun)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			// The floor: a deadline that is not past the statement timeout the lock timeout gives
+			// (searchFillBounds) would end a read before Postgres's own timeouts could.
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "6s"},
+				`DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT="6s" (expected longer than 6s`)
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "1.5s"},
+				`DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT="1.5s" (expected longer than 1.5s`)
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "2s"}); boot.SearchFillReadTimeout != 2*time.Second {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=2s past a 1.5s statement timeout: SearchFillReadTimeout = %v, want 2s", boot.SearchFillReadTimeout)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CoverageFillTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_TIMEOUT unset: CoverageFillTimeout = %v, want 0 (embedqueue's own)", boot.CoverageFillTimeout)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": "1s"})
+			if boot.CoverageFillTimeout != time.Second {
+				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_TIMEOUT: CoverageFillTimeout = %v, want 1s", boot.CoverageFillTimeout)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_COVERAGE_FILL_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CoverageStatementTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT unset: CoverageStatementTimeout = %v, want 0 (embedqueue's 10 s)", boot.CoverageStatementTimeout)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": "200ms"})
+			if boot.CoverageStatementTimeout != 200*time.Millisecond {
+				t.Errorf("DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT: CoverageStatementTimeout = %v, want 200ms", boot.CoverageStatementTimeout)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": "200ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_COVERAGE_FILL_FAILURES": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CoverageFillFailures != 0 {
+				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_FAILURES unset: CoverageFillFailures = %d, want 0", boot.CoverageFillFailures)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_FAILURES": "2"})
+			if boot.CoverageFillFailures != 2 {
+				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_FAILURES: CoverageFillFailures = %d, want 2", boot.CoverageFillFailures)
+			}
+			for _, invalid := range []string{"two", "-1", "0", "1.5"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_FAILURES": invalid},
+					fmt.Sprintf("DISPATCH_TEST_COVERAGE_FILL_FAILURES=%q (expected a positive integer)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_FILL_FAILURES": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": func(t *testing.T) {
 			boot := resolveWith(t, map[string]string{})
 			if boot.SearchFillLockTimeout != 0 {
@@ -2236,17 +2308,33 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{}); boot.ShutdownProbe != 0 {
-				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v, want 0 (the store's two-second probe and drainPollInterval between two)", boot.ShutdownProbe)
+			production := silenceBounds{clock: clock.Real(), probeTimeout: store.HealthProbeTimeout, pause: drainPollInterval}
+			if boot := resolveWith(t, map[string]string{}); boot.ShutdownProbe != 0 || shutdownProbes(boot.ShutdownProbe) != production {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v and the shutdown's probes %+v, want 0 and production's %+v (store.HealthProbeTimeout and drainPollInterval between two, on the wall clock)",
+					boot.ShutdownProbe, shutdownProbes(boot.ShutdownProbe), production)
 			}
 			const quick = 120 * time.Millisecond
-			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": quick.String()}); boot.ShutdownProbe != quick {
-				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT: ShutdownProbe = %v, want %v", boot.ShutdownProbe, quick)
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": quick.String()}); boot.ShutdownProbe != quick ||
+				shutdownProbes(boot.ShutdownProbe) != (silenceBounds{clock: clock.Real(), probeTimeout: quick, pause: 15 * time.Millisecond}) {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%s: ShutdownProbe = %v and the shutdown's probes %+v, want %v and a probe of %v with an eighth of it, 15ms, between two, on the wall clock",
+					quick, boot.ShutdownProbe, shutdownProbes(boot.ShutdownProbe), quick, quick)
+			}
+			// shutdownProbes never lengthens the pause past drainPollInterval, even for a probe the
+			// boot refuses.
+			if got, want := shutdownProbes(4*time.Second), (silenceBounds{clock: clock.Real(), probeTimeout: 4 * time.Second, pause: drainPollInterval}); got != want {
+				t.Errorf("a 4s shutdown probe gives the shutdown's probes %+v, want %+v: the pause is never longer than drainPollInterval", got, want)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": invalid},
 					fmt.Sprintf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%q (expected a positive Go duration)", invalid))
 			}
+			// The ceiling: the store's own bound is taken, and anything longer would name a probe
+			// the store cuts to its two seconds (store.HealthProbeTimeout).
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": "2s"}); boot.ShutdownProbe != 2*time.Second {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=2s: ShutdownProbe = %v, want 2s", boot.ShutdownProbe)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": "2.001s"},
+				`DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT="2.001s" (expected at most 2s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": "120ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": func(t *testing.T) {
@@ -2261,6 +2349,13 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": invalid},
 					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT=%q (expected a positive Go duration)", invalid))
 			}
+			// The ceiling: the hold's renewal interval is taken, and anything longer would name a
+			// release the fill cuts to that interval (textversions.MaxReleaseTimeout).
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": "5s"}); boot.SearchFillReleaseTimeout != 5*time.Second {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT=5s: SearchFillReleaseTimeout = %v, want 5s", boot.SearchFillReleaseTimeout)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": "5.001s"},
+				`DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT="5.001s" (expected at most 5s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": "90ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {

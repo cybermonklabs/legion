@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // deliverySweepInterval is how often the maintenance loop runs the delivery sweep
@@ -65,11 +66,7 @@ func TestSIGTERMSettlesTheMentionSendInFlightAndLeavesTheQueuedOnePending(t *tes
 	process.waitHealthy(t)
 	key, _ := process.createIssue(t)
 	inFlight := process.mention(t, key, "In flight at SIGTERM.", "session:s1")
-	select {
-	case <-arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the mention's send never reached the listener:\n%s", process.Output.String())
-	}
+	testwait.Receive(t, "the mention's send to reach the listener", arrived)
 	queued := process.mention(t, key, "Queued behind it.", "session:s1")
 
 	process.Terminate(t)
@@ -258,19 +255,14 @@ func (l *handoverListener) lastSend() time.Time {
 	return l.last
 }
 
-// waitForSent waits until all want attempts of comments are sent, polling the database, and fails
-// the test with process's output once deadline passes first.
+// waitForSent waits until all want attempts of comments are sent, polling the database
+// (sentAttempts), and fails the test with process's output once deadline passes first.
 func waitForSent(
 	t *testing.T, database *store.Store, process *dispatchProcess, comments []string, want int, deadline time.Time,
 ) {
 	t.Helper()
 	for {
-		var settled int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from comment_deliveries where comment_id = any($1) and state = 'sent'
-		`, comments).Scan(&settled); err != nil {
-			t.Fatalf("read the attempts: %v", err)
-		}
+		settled := sentAttempts(t, database, comments)
 		if settled == want {
 			return
 		}
@@ -279,6 +271,19 @@ func waitForSent(
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// sentAttempts counts the delivery attempts of comments that are sent, read from the database:
+// what waitForSent and the rolling update row's wait read.
+func sentAttempts(t *testing.T, database *store.Store, comments []string) int {
+	t.Helper()
+	var sent int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from comment_deliveries where comment_id = any($1) and state = 'sent'
+	`, comments).Scan(&sent); err != nil {
+		t.Fatalf("read the attempts: %v", err)
+	}
+	return sent
 }
 
 // backDatePendingAttempts moves every pending attempt's claim and creation two minutes back, past
@@ -368,9 +373,10 @@ const rollingSweep = 250 * time.Millisecond
 // its first tick after the back-date was already served - by the old process's last pass before
 // it exited, or by the successor's own pass that read what was owed before the attempts were
 // back-dated (one pass per period across the processes, duty.Exclusive) - and 15 s for the pass
-// itself: its request-key, DPoP and going-request sweeps, the sends, each bounded by the listener
-// client's five-second window, and waitForSent's poll that sees them settled. A send that lands
-// past it waited for a sweep that never came, not for a slow one.
+// itself: its request-key, DPoP and going-request sweeps and the sends, each bounded by the
+// listener client's five-second window. It bounds when the listener took the last send, which the
+// row reads once its wait for the sends, which has no bound of its own, has returned. A send that
+// lands past it waited for a sweep that never came, not for a slow one.
 const rollingSweepMargin = rollingSweep + 15*time.Second
 
 // rollingSettle is the settle delay (DISPATCH_TEST_SETTLE_DELAY) of both processes of the rolling
@@ -397,9 +403,12 @@ const rollingSettle = 200 * time.Millisecond
 // process has exited, it back-dates the pending attempts past the claim lease and past the minute
 // an attempt must have been open for (backDatePendingAttempts), so they are owed at once, and both
 // processes sweep every rollingSweep: the successor's next sweep sends them, two ticks at the
-// longest, since a tick whose period a pass already served skips (duty.Exclusive). The bound is
-// read from the moment the attempts became owed. That the sweep leaves an attempt that is not yet
-// owed is held in the api package (TestTheDeliverySweepLeavesWhatIsNotOwed).
+// longest, since a tick whose period a pass already served skips (duty.Exclusive). The row waits
+// for those sends, reading the attempts from the database, and for the answer to the comment the
+// lock held, through internal/testwait with no bound of their own; once the sends are in, it reads
+// its bound from the moment the attempts became owed to when the listener took the last of them.
+// That the sweep leaves an attempt that is not yet owed is held in the api package
+// (TestTheDeliverySweepLeavesWhatIsNotOwed).
 //
 // The old process and its successor run at once, so the test reserves both slots before its first
 // start. It does not pause at t.Parallel: nothing is left for it to wait out while the serial
@@ -437,6 +446,7 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("the old process's output:\n%s", old.Output.String())
+			t.Logf("the successor's output:\n%s", successor.Output.String())
 		}
 	})
 	storetest.WaitForLockWaiters(t, holder, 1)
@@ -446,23 +456,28 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
-	var drained string
-	select {
-	case got := <-answered:
-		if got.err != nil {
-			t.Fatalf("the comment accepted during the HTTP drain: %v:\n%s", got.err, old.Output.String())
-		}
-		drained = got.id
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the comment waiting on the lock had no answer 10s after the lock was released:\n%s", old.Output.String())
+	// The comment waiting on the lock commits once the lock is released, during the HTTP drain, and
+	// its request is answered then. The wait has no bound of its own.
+	got := testwait.Receive(t, "the answer to the comment that waited on the issue lock, once the lock was released", answered)
+	if got.err != nil {
+		t.Fatalf("the comment accepted during the HTTP drain: %v:\n%s", got.err, old.Output.String())
 	}
+	drained := got.id
 	old.WaitForOutput(t, "comment mention not sent: the mention sender has stopped")
 	listener.letAnswer()
 	old.WaitExit(t, "SIGTERM")
 	backDatePendingAttempts(t, database)
 	owedAt := time.Now()
 
-	waitForSent(t, database, successor, []string{inFlight, queued, drained}, 3, owedAt.Add(rollingSweep+rollingSweepMargin))
+	// The successor's next delivery sweep sends the three attempts now owed, and each settles sent.
+	// The wait reads them from the database and has no bound of its own: a sweep that never sends
+	// them fails it naming the count it last read, and how long the sends took is the verdict
+	// below, read off when the listener took the last one.
+	owed := []string{inFlight, queued, drained}
+	testwait.Until(t, "the successor's delivery sweep to send the three attempts the old process left owed (the count sent)", func() (int, bool) {
+		sent := sentAttempts(t, database, owed)
+		return sent, sent == len(owed)
+	})
 	lastSend := listener.lastSend().Sub(owedAt)
 	t.Logf("the last send reached the listener %v after the attempts became owed", lastSend)
 	if bound := rollingSweep + rollingSweepMargin; lastSend > bound {

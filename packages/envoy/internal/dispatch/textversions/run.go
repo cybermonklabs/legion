@@ -15,13 +15,22 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
+// holdRenew is how often the fill's hold is renewed (holdOptions.Renew), and the bound on the
+// holder's own statements of the hold: the take and the release, though a test process may shorten
+// the release's (Config.ReleaseTimeout, MaxReleaseTimeout).
+const holdRenew = 5 * time.Second
+
+// MaxReleaseTimeout is the longest Config.ReleaseTimeout that bounds the holder's release of its
+// hold: one renewal interval, holdRenew, the bound a deployment's release runs within. It is
+// exported for cmd/dispatch, which refuses a DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT longer than
+// it at boot; releaseBound cuts any longer Config.ReleaseTimeout to it.
+const MaxReleaseTimeout = holdRenew
+
 // holdOptions are the fill's hold's TTL, renewal and margin: the delivery intakes' own
 // (delivery.intakeHoldTTL, intakeHoldRenew and intakeHoldMargin). The hold lasts 15 s on the
-// database's clock after each renewal, is renewed every 5 s, and reports itself lost 2 s before it
-// lapses, so the holder stops writing before any standby can take it. The renewal is also the
-// bound on the holder's own statements of the hold: the take and the release, though a test
-// process may shorten the release's (Config.ReleaseTimeout).
-var holdOptions = duty.HoldOptions{TTL: 15 * time.Second, Renew: 5 * time.Second, Margin: 2 * time.Second}
+// database's clock after each renewal, is renewed every 5 s (holdRenew), and reports itself lost
+// 2 s before it lapses, so the holder stops writing before any standby can take it.
+var holdOptions = duty.HoldOptions{TTL: 15 * time.Second, Renew: holdRenew, Margin: 2 * time.Second}
 
 const (
 	// standbyRetry is how often a process that does not hold the fill's hold tries for it with no
@@ -85,20 +94,21 @@ type Config struct {
 	// Logger is where the fill logs; nil is slog.Default.
 	Logger *slog.Logger
 	// ReleaseTimeout bounds the holder's release of its hold as Run stops (runner.end): zero, as
-	// every deployment leaves it, is holdOptions.Renew, five seconds, and a larger value is cut to
-	// holdOptions.Renew, so it can only shorten the release (releaseBound). Only a test process
-	// sets it (cmd/dispatch's DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT), since a test whose
-	// database stops answering at shutdown waits the release out before the process exits.
+	// every deployment leaves it, is MaxReleaseTimeout, five seconds, and a larger value is cut to
+	// MaxReleaseTimeout, so it can only shorten the release (releaseBound). cmd/dispatch sets it in a
+	// test process (DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT), since a test whose database stops
+	// answering at shutdown waits the release out before the process exits, and it refuses a value
+	// longer than MaxReleaseTimeout at boot.
 	ReleaseTimeout time.Duration
 }
 
 // releaseBound is how long the holder's release of its hold may take (runner.end): one renewal
-// interval, holdOptions.Renew, or c.ReleaseTimeout where that is set and shorter.
+// interval, MaxReleaseTimeout, or c.ReleaseTimeout where that is set and shorter.
 func (c Config) releaseBound() time.Duration {
-	if c.ReleaseTimeout > 0 && c.ReleaseTimeout < holdOptions.Renew {
-		return c.ReleaseTimeout
+	if c.ReleaseTimeout > 0 {
+		return min(c.ReleaseTimeout, MaxReleaseTimeout)
 	}
-	return holdOptions.Renew
+	return MaxReleaseTimeout
 }
 
 // Run fills the keyword table in a serving process until ctx ends, under the fill's hold

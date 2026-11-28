@@ -126,6 +126,8 @@ function messageRow(overrides: Partial<MyReplyThreadRow>): MyReplyThreadRow {
     unread: false,
     unread_count: 0,
     version: 1,
+    priority_from: null,
+    resolved_priority: null,
     ...overrides,
   };
 }
