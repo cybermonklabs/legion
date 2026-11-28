@@ -65,7 +65,7 @@ func serveWebhookRoutes(t *testing.T, env map[string]string) (string, *slowBodyP
 	}
 	publisher := &slowBodyPublisher{}
 	openWebhooks(gate, hooks, publisher, nil)
-	server := newHTTPServer(mux)
+	server := newHTTPServer(mux, 10*time.Second)
 	go func() { _ = server.Serve(ln) }()
 	t.Cleanup(func() { _ = server.Close() })
 	return ln.Addr().String(), publisher, refusals

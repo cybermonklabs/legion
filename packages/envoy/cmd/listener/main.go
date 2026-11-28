@@ -942,17 +942,20 @@ func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webho
 	return routes
 }
 
-// newHTTPServer is the listener's HTTP server over handler. Every route reads its header and body
-// within ReadTimeout, 10 s from the request's start, and writes its answer within WriteTimeout,
-// 10 s from the end of the header. The GitHub webhook route alone moves its own connection's
-// deadlines (webhook.GitHubHandler), since a large delivery's body can take longer than that to
-// arrive; every other route keeps these.
-func newHTTPServer(handler http.Handler) *http.Server {
+// newHTTPServer is the listener's HTTP server over handler. Every route reads its header within
+// ReadHeaderTimeout, 10 s, and its body within readTimeout from the request's start (main passes
+// 10 s; slowbody_test.go passes a short one, as INFRA-3149 allowed:
+// dispatch://INFRA-3149/comment/5397eb29-525e-4bac-be18-c5dd7fdcfafa), and writes its answer
+// within WriteTimeout, 10 s from the end of the header. The GitHub webhook route alone moves its
+// own connection's deadlines (webhook.GitHubHandler), since a large delivery's body can take
+// longer than that to arrive; every other route keeps these.
+func newHTTPServer(handler http.Handler, readTimeout time.Duration) *http.Server {
 	return &http.Server{
-		Handler:      handler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 
@@ -1384,7 +1387,7 @@ func runListener(credentialWait time.Duration) {
 	mux.HandleFunc("/readyz", readyzHandler(v1Gate, &v1Deps))
 
 	// Phase 4: Start HTTP server on the listener Phase 2 holds.
-	server := newHTTPServer(mux)
+	server := newHTTPServer(mux, 10*time.Second)
 	fatal := make(chan error, 1)
 	go func() {
 		if err := server.Serve(ln); err != http.ErrServerClosed {
