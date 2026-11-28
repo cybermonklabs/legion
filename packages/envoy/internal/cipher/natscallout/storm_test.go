@@ -3,9 +3,12 @@ package natscallout
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,12 +64,18 @@ func sessionOption(key *ecdsa.PrivateKey, current func() string, signed func(non
 // causes. natscred sets the option on exactly the connections the auth service decides (Session,
 // Service), as a session here is; giveUpOnRefusal leaves it off, which is the control. It answers
 // the connect's error rather than failing the test itself, so a caller may run it on a goroutine
-// of its own. signed is sessionOption's.
+// of its own. signed is sessionOption's. Its connect waits until the moment every wait of the
+// test gives up (testwait.GiveUpAt), and with no end under -timeout 0, where the binary has no
+// deadline; its reconnect wait and jitter are the bus client's own pace.
 func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal bool, signed func(nonce string), options ...nats.Option) (*nats.Conn, error) {
 	t.Helper()
+	connect := time.Duration(math.MaxInt64)
+	if end, ok := testwait.GiveUpAt(t); ok {
+		connect = time.Until(end)
+	}
 	settings := []nats.Option{
 		sessionOption(s.key, func() string { return s.token }, signed),
-		nats.Timeout(10 * time.Second), nats.MaxReconnects(-1),
+		nats.Timeout(connect), nats.MaxReconnects(-1),
 		nats.ReconnectWait(100 * time.Millisecond), nats.ReconnectJitter(200*time.Millisecond, 0),
 	}
 	if !giveUpOnRefusal {
@@ -116,16 +125,11 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	if raceEnabled {
 		connections = 200
 	}
-	const (
-		// How long the service is held off the bus. Each refused attempt costs the client the
-		// server's whole authorization timeout, two seconds, because nobody answers
-		// (nats-server server/auth_callout.go waits it out when no service is subscribed), so a
-		// window of three seconds refuses every client at least once. The control below needs two
-		// refusals in a row, which is what makes a client that does not set the option give up, so
-		// it holds the service off for controlHeldOff instead.
-		heldOff        = 3 * time.Second
-		controlHeldOff = 9 * time.Second
-	)
+	// How long the service is held off the bus. Each refused attempt costs the client the server's
+	// whole authorization timeout, two seconds, because nobody answers (nats-server
+	// server/auth_callout.go waits it out when no service is subscribed), so a window of three
+	// seconds refuses every client at least once.
+	const heldOff = 3 * time.Second
 	keys := testnats.NewCalloutKeys(t)
 	server, url := testnats.StartWithCalloutServer(t, keys)
 	sessions := make([]*session, connections)
@@ -166,7 +170,12 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 				nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
 		}()
 	}
-	wait.Wait()
+	ended := make(chan struct{})
+	go func() {
+		wait.Wait()
+		close(ended)
+	}()
+	testwait.Receive(t, "every first connection attempt to end", ended)
 	require.NoError(t, errors.Join(errs...), "a first connection was not admitted")
 	require.EqualValues(t, connections, decided.Load(), "every first connection was decided")
 
@@ -185,7 +194,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	backDeps.Log = slog.New(slog.NewTextHandler(backLog, nil))
 	back := startService(t, url, keys, backDeps, backDecided.wrap(timed))
 	backUp := time.Now()
-	testwait.WithinPolling(t, 60*time.Second, 50*time.Millisecond, "every connection admitted again", allConnected(conns))
+	testwait.Until(t, "every connection admitted again", allConnected(conns))
 	closed := 0
 	for _, nc := range conns {
 		if nc.IsClosed() {
@@ -212,46 +221,113 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	require.Empty(t, undecided, "back did not decide %d requests the server sent it after it subscribed: it dropped them without answering, refusing or counting them", len(undecided))
 
 	t.Run("control: admissions the server stopped waiting for", func(t *testing.T) {
-		// Each client's first request is decided half a second past the server's authorization
-		// timeout, inside a budget raised past it, so it is admitted after the server has refused
-		// that client; each request after it is decided at once.
+		// This control's server waits controlHubTimeout for an answer (quickCalloutConfig). Each
+		// client's first request is decided only once that client has signed a nonce after the
+		// request's own: a client signs a nonce as the server opens each connection for it, so by
+		// then the server had refused the connection that request was for and stopped waiting for
+		// the answer. The service's budget is raised to twice the deployed hub's timeout
+		// (hubTimeout), which ends long after that, so the service admits a client the server has
+		// already refused; each request after it is decided at once.
 		hubTimeout := testnats.CalloutAuthTimeout * time.Second
 		was := decideBudget
 		decideBudget = 2 * hubTimeout
 		t.Cleanup(func() { decideBudget = was })
 		keys := testnats.NewCalloutKeys(t)
-		_, url := testnats.StartWithCalloutServer(t, keys)
+		server, url := testnats.StartWithCalloutServer(t, keys)
+		server.Restart(t, quickCalloutConfig(t, keys))
+		require.Equal(t, controlHubTimeout.Seconds(), hubAuthTimeout(t, server),
+			"the control's server's authorization timeout, in seconds, is not controlHubTimeout, so the control is not the one it names")
 		const control = 5
 		controls := sessionsNamed(t, "ses_late", control)
+		decidedHere, clientsHere := newDecidedNonces(), newLastNonces()
+		// signedAfter closes, for each nonce a control client signs, once that same client signs
+		// another one; previous is each client's last signed nonce, and unsigned every nonce a held
+		// request named that no control client had signed.
+		var signing sync.Mutex
+		previous := make(map[string]string, control)
+		signedAfter := map[string]chan struct{}{}
+		var unsigned []string
+		signers := make(map[string]func(nonce string), control)
+		for _, s := range controls {
+			sign := clientsHere.signer(s.id)
+			signers[s.id] = func(nonce string) {
+				sign(nonce)
+				signing.Lock()
+				defer signing.Unlock()
+				last, signedBefore := previous[s.id]
+				if signedBefore && last == nonce {
+					// The same nonce signed again is the same connection, not a later one.
+					return
+				}
+				if signedBefore {
+					close(signedAfter[last])
+				}
+				previous[s.id] = nonce
+				signedAfter[nonce] = make(chan struct{})
+			}
+		}
+		// lateFirst runs on the service's own goroutine, so it holds a first request with a select
+		// on the channel that closes once its client signs a nonce after the request's, and on the
+		// decision's own context (decideBudget). The client signed the request's nonce before the
+		// server sent the request, so a nonce with no channel is one no control client signed:
+		// lateFirst answers it with an error naming it, and the control fails naming it below.
 		var seen sync.Map
 		lateFirst := func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 			if _, again := seen.LoadOrStore(req.Token, true); !again {
-				time.Sleep(hubTimeout + 500*time.Millisecond)
+				signing.Lock()
+				next, signed := signedAfter[req.Nonce]
+				if !signed {
+					unsigned = append(unsigned, req.Nonce)
+				}
+				signing.Unlock()
+				if !signed {
+					return Decision{}, fmt.Errorf("lateFirst holds a request on nonce %s, which no control client signed", req.Nonce)
+				}
+				select {
+				case <-next:
+				case <-ctx.Done():
+				}
 			}
 			return Decide(ctx, deps, services, req)
 		}
-		decidedHere, clientsHere := newDecidedNonces(), newLastNonces()
 		late := startService(t, url, keys, Deps{Introspect: introspector(controls...)}, decidedHere.wrap(lateFirst))
 		conns := make([]*nats.Conn, control)
 		errs := make([]error, control)
 		var wait sync.WaitGroup
 		for index, s := range controls {
 			wait.Go(func() {
-				conns[index], errs[index] = reconnectingSession(t, url, s, false, clientsHere.signer(s.id), nats.RetryOnFailedConnect(true))
+				conns[index], errs[index] = reconnectingSession(t, url, s, false, signers[s.id], nats.RetryOnFailedConnect(true))
 			})
 		}
-		wait.Wait()
+		ended := make(chan struct{})
+		go func() {
+			wait.Wait()
+			close(ended)
+		}()
+		testwait.Receive(t, "every control client's first connection attempt to end", ended)
 		require.NoError(t, errors.Join(errs...))
-		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "every control client admitted on its second request", allConnected(conns))
+		testwait.Until(t, "every control client admitted on a request after its held first one", allConnected(conns))
 		late.Close()
+		signing.Lock()
+		heldUnsigned := append([]string(nil), unsigned...)
+		signing.Unlock()
+		require.Empty(t, heldUnsigned, "lateFirst held requests on nonces no control client signed")
 		unheld, held := decidedHere.unheld(clientsHere)
 		require.Equal(t, control, held, "the control clients are not connected on requests the service decided")
 		require.Len(t, unheld, control, "the check above cannot see an admission the server stopped waiting for")
 	})
 
 	t.Run("control: clients that give up on a refused credential", func(t *testing.T) {
+		// A client that does not set IgnoreAuthErrorAbort gives up only after two refusals in a
+		// row, where the main part's heldOff makes sure of one, so here the service stays off the
+		// bus until every client has closed, and only then comes back; every client is still
+		// closed then, for good. This control's server waits controlHubTimeout for an answer
+		// (quickCalloutConfig), before its restart and after it.
 		keys := testnats.NewCalloutKeys(t)
 		server, url := testnats.StartWithCalloutServer(t, keys)
+		server.Restart(t, quickCalloutConfig(t, keys))
+		require.Equal(t, controlHubTimeout.Seconds(), hubAuthTimeout(t, server),
+			"the control's server's authorization timeout, in seconds, is not controlHubTimeout, so the control is not the one it names")
 		const control = 20
 		controls := make([]*session, control)
 		for index := range controls {
@@ -266,19 +342,23 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 			conns[index] = nc
 		}
 		first.Close()
-		server.Restart(t, testnats.CalloutConfig(keys))
-		time.Sleep(controlHeldOff)
-		back := startService(t, url, keys, deps, Decide)
-		t.Cleanup(back.Close)
-
-		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the clients that give up to close", func() bool {
+		server.Restart(t, quickCalloutConfig(t, keys))
+		require.Equal(t, controlHubTimeout.Seconds(), hubAuthTimeout(t, server),
+			"the control's restarted server's authorization timeout, in seconds, is not controlHubTimeout, so the control is not the one it names")
+		open := func() (string, bool) {
+			count := 0
 			for _, nc := range conns {
 				if !nc.IsClosed() {
-					return false
+					count++
 				}
 			}
-			return true
-		})
+			return fmt.Sprintf("%d of %d open", count, len(conns)), count == 0
+		}
+		testwait.Until(t, "every control client to close while no service runs", open)
+		back := startService(t, url, keys, deps, Decide)
+		t.Cleanup(back.Close)
+		reading, closed := open()
+		require.True(t, closed, "a control client came back once the service did: %s", reading)
 	})
 }
 
@@ -344,15 +424,17 @@ func TestConnectionsSurviveTheAuthServiceStoppingUntilTheirUserExpires(t *testin
 	receives("after the service is back")
 }
 
-// allConnected answers whether every one of conns is connected, for testwait to poll.
-func allConnected(conns []*nats.Conn) func() bool {
-	return func() bool {
+// allConnected reads how many of conns are connected, for testwait.Until: it holds once every one
+// of them is.
+func allConnected(conns []*nats.Conn) func() (string, bool) {
+	return func() (string, bool) {
+		connected := 0
 		for _, nc := range conns {
-			if !nc.IsConnected() {
-				return false
+			if nc.IsConnected() {
+				connected++
 			}
 		}
-		return true
+		return fmt.Sprintf("%d of %d connected", connected, len(conns)), connected == len(conns)
 	}
 }
 
@@ -465,6 +547,43 @@ func startDebugCalloutServer(t *testing.T, keys testnats.CalloutKeys) (*testnats
 	server, url := testnats.StartWithCalloutServer(t, keys)
 	server.Restart(t, debugCalloutConfig(keys))
 	return server, url
+}
+
+// controlHubTimeout is the authorization timeout of the storm controls' own servers
+// (quickCalloutConfig): a quarter of the deployed hub's two seconds (testnats.CalloutAuthTimeout).
+// What a control proves does not rest on the timeout's length, only on the server's refusal once
+// it has passed, so a control's server waits this long rather than the hub's whole timeout.
+const controlHubTimeout = 500 * time.Millisecond
+
+// quickCalloutConfig is testnats.CalloutConfig with the server's authorization timeout at
+// controlHubTimeout: its one line "timeout: 2" (testnats.CalloutAuthTimeout) put as "timeout: 0.5".
+// It fails the test where the configuration does not hold that line exactly once, since then the
+// server would not wait what the control names.
+func quickCalloutConfig(t *testing.T, keys testnats.CalloutKeys) string {
+	t.Helper()
+	config := testnats.CalloutConfig(keys)
+	line := fmt.Sprintf("\n  timeout: %d\n", testnats.CalloutAuthTimeout)
+	if count := strings.Count(config, line); count != 1 {
+		t.Fatalf("testnats.CalloutConfig holds the line %q %d times, want once:\n%s", strings.TrimSpace(line), count, config)
+	}
+	return strings.Replace(config, line, fmt.Sprintf("\n  timeout: %g\n", controlHubTimeout.Seconds()), 1)
+}
+
+// hubAuthTimeout is how long server waits for the auth service's answer before it refuses the
+// client, as its /varz reports it: auth_timeout, a JSON number of seconds (2 at
+// testnats.CalloutConfig, 0.5 at quickCalloutConfig).
+func hubAuthTimeout(t *testing.T, server *testnats.Server) float64 {
+	t.Helper()
+	resp, err := http.Get(server.MonitorURL() + "/varz")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "the hub's /varz")
+	var varz struct {
+		AuthTimeout *float64 `json:"auth_timeout"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&varz))
+	require.NotNil(t, varz.AuthTimeout, "the hub's /varz names no auth_timeout")
+	return *varz.AuthTimeout
 }
 
 // refusalCost is what each refusal's work takes here (withRefusalWork): a stand-in, scaled up, for
