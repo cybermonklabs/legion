@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -40,6 +41,9 @@ type rig struct {
 	// served is closed once Serve has returned, so a test that stops the helper (cancel) can
 	// order what Serve does before it returns against what the test reads.
 	served <-chan struct{}
+	// serving is the id of the goroutine Serve runs on (goroutinetest.ID), set before Serve
+	// starts, so a row that must know what a stopping Serve waits on reads that goroutine's state.
+	serving atomic.Uint64
 	// callerPID is the pid PeerOf presents for the next connection; 0 means the real peer.
 	// Atomic: the server goroutine reads it while the test goroutine writes it.
 	callerPID atomic.Int64
@@ -166,7 +170,11 @@ func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logge
 		<-served
 	})
 	r.srv.Recover(ctx)
-	go func() { defer close(served); _ = r.srv.Serve(ctx, ln) }()
+	go func() {
+		defer close(served)
+		r.serving.Store(goroutinetest.ID())
+		_ = r.srv.Serve(ctx, ln)
+	}()
 	return r
 }
 
@@ -235,6 +243,22 @@ func replyOf(t *testing.T, replies <-chan callAnswer, what string) Response {
 		t.Fatalf("%s: %v", what, reply.err)
 	}
 	return reply.resp
+}
+
+// goroutineState is the trace of the goroutine whose id is id (goroutinetest.ID), read from one
+// dump of every goroutine, and the state its header names ("chan receive", "sync.Mutex.Lock", …)
+// without how long it has been in it; both are empty once that goroutine has returned. A row reads
+// it to know that a goroutine waits where nothing but the row's own next action can wake it.
+func goroutineState(id uint64) (trace, state string) {
+	header := fmt.Sprintf("goroutine %d [", id)
+	for _, trace := range goroutinetest.Traces() {
+		if rest, ok := strings.CutPrefix(trace, header); ok {
+			state, _, _ = strings.Cut(rest, "]")
+			state, _, _ = strings.Cut(state, ",")
+			return trace, state
+		}
+	}
+	return "", ""
 }
 
 // TestDrainRefusesARegisterThatArrivesAfterIt: a drain that finds no sessions leaves a helper
@@ -580,7 +604,8 @@ func TestEnrollRetriesUntilTheBrokerAnswers(t *testing.T) {
 	for _, wait := range []time.Duration{time.Second, 2 * time.Second} {
 		fireArmedAt(t, r.clock, r.clock.Now().Add(wait), fmt.Sprintf("the enroll retry's wait after a 503, %s from now", wait))
 	}
-	waitFor(t, func() bool { return r.srv.Registry.Get(os.Getpid()).snapshot().State == "enrolled" })
+	waitUpTo(t, func() bool { return r.srv.Registry.Get(os.Getpid()).snapshot().State == "enrolled" },
+		"two 503s then a 201 must end enrolled (1 s + 2 s backoff)")
 }
 
 // TestRenewRunsAndARefusedRenewReenrolls: the helper renews a session's enrollment at a third
@@ -700,10 +725,9 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	// call (Recover's ordering, from a review of the helper; enrollLoop revokes the session's
 	// lapsed id first): by the time sess reads "enrolled" above, the old id must already be
 	// revoked, so this poll should already find it on the first check.
-	waitFor(t, func() bool {
-		r.fake.mu.Lock()
-		defer r.fake.mu.Unlock()
-		return slices.Contains(r.fake.deletes, first.EnrollmentID)
+	testwait.Until(t, "the old enrollment must be revoked", func() ([]string, bool) {
+		_, deletes, _ := r.fake.snapshot()
+		return deletes, slices.Contains(deletes, first.EnrollmentID)
 	})
 	// Quiesce srv2's own recovered session too, synchronously, before this test returns: its
 	// watchExit is still pinning the same child pid and would otherwise still be live when
@@ -736,7 +760,9 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 // revokeFirstGate holds the old row "live" while the revoke waits, so a concurrent (buggy)
 // enroll would hit that conflict if one were ever attempted; the fixed enrollLoop revokes
 // synchronously before its first Broker.EnrollIdentity call, so no enroll is ever attempted
-// while the gate holds and conflicts stays zero.
+// while the gate holds and conflicts stays zero. The row reads that from the enrollLoop's own
+// state: once the goroutine Recover started it on (adopt) is inside the held revoke, read from
+// the goroutine dump, it can send no enroll until the row lets the revoke go.
 func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	t.Parallel()
 	state := filepath.Join(t.TempDir(), "sessions.json")
@@ -770,17 +796,28 @@ func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	enrolledBefore := func() int { posts, _, _ := r.fake.snapshot(); return len(posts) }()
+	// Recover runs on this goroutine, so adopt starts the recovered session's loops from it.
+	created := fmt.Sprintf(".(*Server).adopt in goroutine %d\n", goroutinetest.ID())
 	srv2.Recover(ctx)
-	// The revoke has reached the fake and waits at the gate, with the old row still live.
-	waitFor(t, func() bool {
+	// The revoke reaches the fake and waits at the gate, with the old row still live. The
+	// session's enroll comes only from the enrollLoop adopt started for it, which revokes the
+	// lapsed id before it enrolls: once that loop is inside the held revoke, it can send no enroll
+	// until the row opens the gate. An enroll that arrives first, or a loop that goes on to enroll
+	// without waiting for its revoke, fails the row by name.
+	testwait.Until(t, "the recovered session's enrollLoop to wait in the revoke of its prior enrollment, held at the fake's gate", func() (string, bool) {
+		if posts, _, _ := r.fake.snapshot(); len(posts) != enrolledBefore {
+			t.Fatalf("the helper sent %d enrolls while the revoke of the prior enrollment was still waiting; it must revoke first", len(posts)-enrolledBefore)
+		}
 		r.fake.mu.Lock()
-		defer r.fake.mu.Unlock()
-		return r.fake.revokeAttempts >= 1
+		reached := r.fake.revokeAttempts >= 1
+		r.fake.mu.Unlock()
+		for _, trace := range goroutinetest.Traces() {
+			if strings.Contains(trace, ".(*Server).enrollLoop(") && strings.Contains(trace, created) {
+				return trace, reached && strings.Contains(trace, ".(*Server).revokeLapsed(")
+			}
+		}
+		return "no enrollLoop adopt started from this row's goroutine", false
 	})
-	testwait.Span(t, 300*time.Millisecond, "an enroll the helper must not send while its revoke waits would come from a goroutine nothing reports: no state of the server says no such goroutine exists, no later action can be ordered after an enroll that should never be sent, and the fake broker is real HTTP, which synctest cannot hold")
-	if posts, _, _ := r.fake.snapshot(); len(posts) != enrolledBefore {
-		t.Fatalf("the helper sent %d enrolls while the revoke of the prior enrollment was still waiting; it must revoke first", len(posts)-enrolledBefore)
-	}
 	open()
 	sess := testwait.Until(t, "the live session to be re-pinned and enrolled once the held revoke lands", func() (*Session, bool) {
 		sess := srv2.Registry.Get(child.Process.Pid)

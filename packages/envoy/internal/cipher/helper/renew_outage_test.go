@@ -182,6 +182,14 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 					t.Fatal("the renew loop gave up on the session instead of enrolling it again")
 				}
 			} else {
+				// A loop that ended before a renewal got through has given its answer: the
+				// lease ran out under it, or it gave the session up.
+				if ended {
+					if got {
+						t.Fatal("the renew loop lapsed the session, want it renewed and held")
+					}
+					t.Fatal("the renew loop gave up on the session before a renewal got through, want it renewed and held")
+				}
 				cancel()
 				if got := testwait.Receive(t, "the renew loop to return once its context ended", lapsed); got {
 					t.Fatal("the renew loop lapsed the session, want it renewed and held")

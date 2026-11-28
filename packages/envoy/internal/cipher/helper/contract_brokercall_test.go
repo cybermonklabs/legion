@@ -77,13 +77,11 @@ func (h *holdingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 // heldContractRig is a logged-in contract rig whose helper sends its broker calls through held
-// and runs its server's timers on held's clock. The helper reads that clock in a broker-call op
-// only once it has read the op's request, which a row writes after this returns, so the write
-// here is ordered before every read.
+// and runs its server's timers on held's clock.
 func heldContractRig(t *testing.T, held *holdingTransport) *contractRig {
 	t.Helper()
-	cr := startContractHelper(t, ciphertest.NewRig(t), filepath.Join(t.TempDir(), "agent-secrets", "machine.json"), &http.Client{Transport: held})
-	cr.srv.Clock = held.clock
+	cr := startContractHelper(t, ciphertest.NewRig(t), filepath.Join(t.TempDir(), "agent-secrets", "machine.json"), &http.Client{Transport: held},
+		func(s *Server) { s.Clock = held.clock })
 	cr.login(t)
 	return cr
 }

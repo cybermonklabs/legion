@@ -50,14 +50,14 @@ func wantSettled(t *testing.T, what string, resp Response, code string) {
 // armBrokerCall waits for a broker-call op to arm what brokerCall arms for it on clock, the
 // server's, and requires each where brokerCall arms it: the end of the op's context at
 // DefaultBrokerCallBound from the clock's present, the timer a second after that, and the
-// connection's deadline 4 s after the timer (connDeadline). A row calls it with no other timer of
-// the server pending, so those three are all the clock holds. It then requires that no reply has
-// come yet, so whatever answers the op comes once the row moves the clock.
+// connection's deadline brokerCallConnSpare after the timer (connDeadline). A row calls it with
+// no other timer of the server pending, so those three are all the clock holds. It then requires
+// that no reply has come yet, so whatever answers the op comes once the row moves the clock.
 func armBrokerCall(t *testing.T, clock *clocktest.Fake, replies <-chan callAnswer, what string) {
 	t.Helper()
 	now := clock.Now()
 	timer := now.Add(DefaultBrokerCallBound + DefaultBrokerCallSlack)
-	want := []time.Time{now.Add(DefaultBrokerCallBound), timer, timer.Add(4 * time.Second)}
+	want := []time.Time{now.Add(DefaultBrokerCallBound), timer, timer.Add(brokerCallConnSpare)}
 	if armed := clock.AwaitArmed(t, what+": the op's bound, brokerCall's timer and the connection's deadline", len(want)); !slices.EqualFunc(armed, want, time.Time.Equal) {
 		t.Fatalf("%s: the server armed %v; want the op's bound at %v, brokerCall's timer at %v and the connection's deadline at %v", what, armed, want[0], want[1], want[2])
 	}

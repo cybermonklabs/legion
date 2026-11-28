@@ -187,9 +187,11 @@ type Broker struct {
 	Log *slog.Logger
 	// Clock is the time the helper's own timers run on: the refresh loop's schedule, the
 	// expiry watch's warning and drop, and the bound Start waits on its first refresh. Nil is
-	// clock.Real; a test hands it a clocktest.Fake and moves it rather than waiting a timer
-	// out. The moments the helper signs proofs and records with stay the wall clock's, since
-	// the broker verifies them against its own.
+	// clock.Real, and production (cmd/cipher-helper) leaves it nil: a fake set there holds those
+	// still until something moves it, so the expiry watch never drops a credential that has
+	// lapsed. A test hands it a clocktest.Fake and moves it rather than waiting a timer out. The
+	// moments the helper signs proofs and records with stay the wall clock's, since the broker
+	// verifies them against its own.
 	Clock clock.Clock
 
 	cred            atomic.Pointer[machineCredential]

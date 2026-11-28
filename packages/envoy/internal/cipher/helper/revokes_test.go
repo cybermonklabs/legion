@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -58,8 +58,10 @@ func (a *armedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // exits when Serve returns, so a revoke still running then is cut off mid-request; in a test
 // binary, where nothing exits, it runs on into the tests that follow and reads what they set.
 // Here the transport holds the revoke's DELETE and does not watch its context, so the revoke is
-// still in flight when the helper is stopped: Serve must not return. It returns once the
-// transport lets the request go.
+// still in flight when the helper is stopped: Serve must not return. Once stopped, Serve's
+// goroutine is parked in awaitRevokes on the channel the revoke's return closes (its state, read
+// from the goroutine dump), so it cannot return before the transport lets the request go; a Serve
+// that returns first fails the row by name. It returns once the transport lets the request go.
 func TestServeWaitsForTheRevokesItFiredOff(t *testing.T) {
 	t.Parallel()
 	f := newFakeBroker(t)
@@ -84,16 +86,25 @@ func TestServeWaitsForTheRevokesItFiredOff(t *testing.T) {
 	}
 	testwait.Receive(t, "the revoke unregister fired off to reach the transport", held.reached)
 	r.cancel()
-	testwait.Quiet(t, "Serve's return while the revoke it fired off is still in flight", r.served, time.Second,
-		"Serve blocked on the revokes it fired off reports nothing: no state of the server tells a Serve waiting there from one that has not reached its return yet, no later action can be ordered after a return that must not happen, and the held DELETE is real HTTP, which synctest cannot hold")
+	testwait.Until(t, "the stopped Serve to wait in awaitRevokes for the revoke it fired off", func() (string, bool) {
+		select {
+		case <-r.served:
+			t.Fatal("Serve returned while the revoke it fired off was still in flight; a helper that exits then cuts the revoke off")
+		default:
+		}
+		trace, state := goroutineState(r.serving.Load())
+		return trace, state == "chan receive" && strings.Contains(trace, ".(*Server).awaitRevokes(")
+	})
 	letGo()
 	testwait.Receive(t, "Serve to return once the revoke's request was let go", r.served)
 }
 
 // TestAStopEndsARevokeAnUnresponsiveBrokerHolds: the wait above cannot hang a stop. Every revoke
 // runs under Serve's context and sends its DELETE with it, so a broker that takes the request and
-// never answers holds the revoke only until that context ends: Serve returns within seconds of
-// its own stop, with the broker still holding the request.
+// never answers holds the revoke only until that context ends: Serve returns once its own stop has
+// ended the revoke's request, with the broker still holding it. The row waits for that return
+// through the shared wait, so what fails it is a Serve that has not returned when the wait gives
+// up.
 func TestAStopEndsARevokeAnUnresponsiveBrokerHolds(t *testing.T) {
 	t.Parallel()
 	r := startRig(t, "")

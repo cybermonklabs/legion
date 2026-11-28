@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -862,8 +863,10 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 // records that the broker refused it in one write under stateMu. A login-status read between the
 // two would find no credential and no refusal, and report the denied re-login before it as the
 // answer, where the answer is the refused credential. The test hook reads login-status between the
-// clear and the record; it waits up to 200 ms for that read, which returns at once unless the lock
-// holds it back until the refusal is recorded.
+// clear and the record, on a goroutine of its own, and holds the drop until that reader is parked
+// on stateMu inside LoginStatus (its goroutine's state, read from the goroutine dump): parked
+// there, it cannot answer until the drop lets the state go. A read that answers before it parks
+// read the state half-written, and fails the row by name.
 func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 	t.Parallel()
 	f := newFakeBroker(t)
@@ -877,10 +880,22 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 	}
 	waitFor(t, func() bool { return b.LoginStatus().State == "denied" })
 	read := make(chan loginState, 1)
+	reader := make(chan uint64, 1)
 	b.testClearHook = func() {
-		go func() { read <- b.LoginStatus() }()
-		testwait.Quiet(t, "a login-status read while the drop holds the state", read, 200*time.Millisecond,
-			"the reader is parked on stateMu, which keeps no count of its waiters: no state of the broker says it has arrived, no later action can reach it while this drop holds the lock, and the login it reads ran over the fake broker's real HTTP, which synctest cannot hold")
+		go func() {
+			reader <- goroutinetest.ID()
+			read <- b.LoginStatus()
+		}()
+		id := testwait.Receive(t, "the login-status reader to start", reader)
+		testwait.Until(t, "the login-status read to wait on stateMu while the drop holds the state", func() (string, bool) {
+			select {
+			case got := <-read:
+				t.Fatalf("a login-status read answered while the drop held the state: %+v; it must wait for the drop's record of why", got)
+			default:
+			}
+			trace, state := goroutineState(id)
+			return trace, state == "sync.Mutex.Lock" && strings.Contains(trace, ".(*Broker).LoginStatus(")
+		})
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {

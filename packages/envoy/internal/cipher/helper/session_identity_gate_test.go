@@ -791,10 +791,18 @@ func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan bool, 1)
-	go func() { done <- r.srv.renewLoop(ctx, sess, r.clock.Now().Add(time.Hour), served) }()
-	// The loop took the left-over wake and went back to its wait: it arms its renew wait a
-	// second time, which a loop that had acted on the wake and returned would never do.
-	r.clock.AwaitArmed(t, "the renew loop's wait, armed again after the left-over wake", 2)
+	start := r.clock.Now()
+	go func() { done <- r.srv.renewLoop(ctx, sess, start.Add(time.Hour), served) }()
+	// The loop waits for its renew a third of the way into the hour's lease.
+	r.clock.AwaitArmedAt(t, "the renew loop's wait, a third of the way into its lease", start.Add(time.Hour/3))
+	// A minute on, a wake for the identity the loop renews comes again, as the one left over did.
+	// Whichever of the two it takes after the move, a loop that went back to its wait arms its
+	// next renew a third of the way into what is left of the lease then: a moment of its own, which
+	// a loop that acted on a wake and returned never arms, and which no wait armed before the move
+	// is due at.
+	r.clock.Advance(time.Minute)
+	sess.wakeEnroll()
+	r.clock.AwaitArmedAt(t, "the renew loop's wait, armed again after the left-over wake", start.Add(time.Minute+(time.Hour-time.Minute)/3))
 	select {
 	case <-done:
 		t.Fatal("a wake left over from before this enrollment sent the session back to the enroll, abandoning a live enrollment")

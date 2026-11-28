@@ -60,9 +60,10 @@ func newContractRig(t *testing.T, options ...ciphertest.Option) *contractRig {
 // recovers its sessions and listens. Every registry/operator artifact lives under its own TempDir
 // and the socket under a short temporary directory of its own, never under $HOME — the caller is
 // expected to have set HOME to a separate, otherwise-untouched TempDir of its own so it can later
-// assert nothing wrote there. Each of configure runs on the Broker before it starts, for a row
-// that sets a field the Broker's start already reads (its Clock, for one).
-func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile string, client *http.Client, configure ...func(*Broker)) *contractRig {
+// assert nothing wrote there. Each tune runs on the Server, its Broker among it, before the
+// Broker starts and the Server recovers or serves, so a field it sets (a Clock, for one) is set
+// before any goroutine of either reads it.
+func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile string, client *http.Client, tune ...func(*Server)) *contractRig {
 	t.Helper()
 	artifacts := t.TempDir()
 	logBuf := &syncBuffer{}
@@ -96,8 +97,8 @@ func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile strin
 		<-served
 		cr.srv.Broker.Close()
 	})
-	for _, c := range configure {
-		c(cr.srv.Broker)
+	for _, apply := range tune {
+		apply(cr.srv)
 	}
 	if err := cr.srv.Broker.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -133,6 +134,16 @@ func waitForIssued(t *testing.T, b *Broker) {
 	testwait.Until(t, "the machine login to reach issued", func() (loginState, bool) {
 		ls := b.LoginStatus()
 		return ls, ls.State == "issued"
+	})
+}
+
+// awaitLogLine waits until the helper's log in buf holds line, and fails saying what, with the
+// log as it stands, when it never does.
+func awaitLogLine(t *testing.T, buf *syncBuffer, line, what string) {
+	t.Helper()
+	testwait.Until(t, what, func() (string, bool) {
+		log := buf.String()
+		return "log:\n" + log, strings.Contains(log, line)
 	})
 }
 
@@ -344,7 +355,7 @@ func TestContractARefusedLauncherCredentialIsAnErrorAndTheHelperKeepsServing(t *
 		t.Fatalf("register after the credential expired: %+v; want OK and not enrolled", reg)
 	}
 	const cannotEnroll = `level=ERROR msg="session cannot enroll: the helper holds no launcher credential; run: agent-secrets machine login, and have a human approve it"`
-	waitFor(t, func() bool { return strings.Contains(cr.logBuf.String(), cannotEnroll) })
+	awaitLogLine(t, cr.logBuf, cannotEnroll, "no ERROR says the session cannot enroll")
 	log := cr.logBuf.String()
 	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
 	why := `why="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch)"`
@@ -414,7 +425,7 @@ func TestContractRevokingTheMachineLoginEndsItsSessionsAndTheHelperDropsIt(t *te
 	}
 
 	refused := `level=ERROR msg="the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it" credential_id=` + credentialID + " code=LAUNCHER_INVALID"
-	waitFor(t, func() bool { return strings.Contains(cr.logBuf.String(), refused) })
+	awaitLogLine(t, cr.logBuf, refused, "the helper never logged its credential refused")
 	log := cr.logBuf.String()
 	if !strings.Contains(log, `msg="renew refused; revoking the lapsed enrollment before enrolling again"`) ||
 		!strings.Contains(log, "code=ENROLLMENT_NOT_LIVE enrollment_id="+reg.EnrollmentID) {

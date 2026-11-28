@@ -50,9 +50,12 @@ type Server struct {
 	// Clock is the time this server's own timers run on: a register's wait, the backoff of every
 	// retry (retryUntilStop) and the enroll retry's held ladder, the first confirming renew's
 	// bound, the renew cadence, a drain's bound, a broker-call op's bound and the timer that
-	// answers it (brokerCall), and each connection's deadline (connDeadline). Nil is clock.Real; a
-	// test hands it a clocktest.Fake and moves it rather than waiting a cadence out. The Broker's
-	// own timers take the clock the Broker is given.
+	// answers it (brokerCall), and each connection's deadline (connDeadline). Nil is clock.Real,
+	// and production (cmd/cipher-helper) leaves it nil: a fake set there holds every one of those
+	// still until something moves it, the 5 s read deadline and the first confirming renew's bound
+	// among them, which then never end a stuck read or a broker that does not answer. A test hands
+	// it a clocktest.Fake and moves it rather than waiting a cadence out. The Broker's own timers
+	// take the clock the Broker is given.
 	Clock clock.Clock
 	// calls counts the connections Serve accepted that may still owe a broker call's answer, and
 	// pending is the same count as a number, for the "connections" attribute of the line Serve
@@ -367,16 +370,22 @@ func (s *Server) brokerCallBound() time.Duration {
 	return DefaultBrokerCallBound
 }
 
+// brokerCallConnSpare is how long past brokerCall's timer (the bound plus DefaultBrokerCallSlack)
+// the connection of a broker-call op stays open: with the slack, the 5 s every op has for its read
+// and its write past the bound, so a late answer is still written before the connection's deadline
+// (connDeadline) ends it.
+const brokerCallConnSpare = 4 * time.Second
+
 // brokerCall runs call, the broker-call op named op, under the bound B (brokerCallBound), and
 // answers by B + S, S the timer's slack (DefaultBrokerCallSlack), whatever the op is doing. It
-// sets the connection's deadline at B + S + 4 s, which is B + 5 s, the 5 s every op has for its
-// read and its write, so the connection stays open past the latest answer. call runs on a
-// goroutine of its own, under ctx (Serve's) ended at B, and the answer is the first of its result
-// and a timer at B + S. The bound, the timer and the connection's deadline all run on the server's
-// clock (Clock, connDeadline), so a test moves its fake past them and the host's own clock cuts
-// none of them. On the timer the answer is brokerCallOps[op](cause), the op's own refusal for an
-// outcome it does not know, and a WARN names the op and the bound; when the op ends after that,
-// its result is logged too, so an operator can see what the broker did.
+// sets the connection's deadline at B + S + brokerCallConnSpare, which is B + 5 s, the 5 s every
+// op has for its read and its write, so the connection stays open past the latest answer. call
+// runs on a goroutine of its own, under ctx (Serve's) ended at B, and the answer is the first of
+// its result and a timer at B + S. The bound, the timer and the connection's deadline all run on
+// the server's clock (Clock, connDeadline), so a test moves its fake past them and the host's own
+// clock cuts none of them. On the timer the answer is brokerCallOps[op](cause), the op's own
+// refusal for an outcome it does not know, and a WARN names the op and the bound; when the op ends
+// after that, its result is logged too, so an operator can see what the broker did.
 //
 // What ends the wait, in each state the op can be in while the client waits:
 //
@@ -418,7 +427,7 @@ func (s *Server) brokerCallBound() time.Duration {
 // op has made.
 func (s *Server) brokerCall(ctx context.Context, deadline *connDeadline, op string, call func(context.Context) Response) Response {
 	bound, slack := s.brokerCallBound(), DefaultBrokerCallSlack
-	deadline.set(bound + slack + 4*time.Second)
+	deadline.set(bound + slack + brokerCallConnSpare)
 	callCtx, cancel := s.clock().WithTimeout(ctx, bound)
 	result := make(chan Response, 1)
 	go func() {
@@ -1652,11 +1661,10 @@ const DefaultFirstConfirmBound = 3 * time.Second
 //
 // The first attempt's renew runs under a bound of its own, DefaultFirstConfirmBound on the
 // server's clock; every attempt after it runs under ctx alone, since only the first can have a
-// register waiting on it. The
-// bound expiring IS the "did not reach the broker" answer above: renewIdentity fails with its
-// context's deadline, which is no ENROLLMENT_NOT_LIVE, so the failure settles the waiting
-// register (Session.settleConfirm) and this loop retries on its own schedule, exactly as it
-// does for a 503.
+// register waiting on it. The bound expiring IS the "did not reach the broker" answer above:
+// renewIdentity fails with its context's deadline, which is no ENROLLMENT_NOT_LIVE, so the failure
+// settles the waiting register (Session.settleConfirm) and this loop retries on its own schedule,
+// exactly as it does for a 503.
 func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass identity) (time.Time, confirmation) {
 	var lease time.Time
 	outcome := confirmStopped
