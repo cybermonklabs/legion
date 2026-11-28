@@ -41,8 +41,9 @@ func (c Config) Backends() []runtime.Backend {
 // (runtime.Backends). A role named twice, a name that is no role a claim can be on
 // (claim.IsRole), a backend there is no entry for, and a backend that does not run the role are
 // each refused naming the entry; a name that holds a token's run (tokenShaped) is refused by its
-// line, whatever grammar it fits; a name that is neither one of Legion's roles nor a role of
-// `roles` is checkDeploymentRoleKeys', once both keys are read.
+// line, whatever grammar it fits, and so is a backend of no key's shape (shapelessWord), which no
+// backend's name lacks; a name that is neither one of Legion's roles nor a role of `roles` is
+// checkDeploymentRoleKeys', once both keys are read.
 func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Backend, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -71,6 +72,8 @@ func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Ba
 		backend := runtime.Backend(name)
 		info, ok := runtime.Backends[backend]
 		switch {
+		case !ok && !keyShape(name):
+			return nil, shapelessWord(lineOf(key+"."+string(role), backendNode), "one of "+names)
 		case !ok:
 			return nil, fmt.Errorf("%s.%s must be one of %s (got %q)", key, role, names, name)
 		case !info.Runs(role):

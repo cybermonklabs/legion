@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,14 +12,15 @@ import (
 // task's first line break (workflow's taskOpening and workingCopyLine). Under tmux the line names
 // a workspace directory under state_dir, so a state_dir that holds a line break would end the line
 // inside its own directory. The load refuses such a state_dir, a carriage return as much as a line
-// feed, and the refusal names the key and says why. The load stores state_dir absolute, resolved
-// against the configuration file's directory and then made absolute against the working
-// directory, and the refusal reads that same path, which the start then uses as it is (cmd/legion's
-// start). So a relative state_dir under a directory that holds a line break is refused, and so is
-// one that a file named by a relative path, from a working directory that holds a line break,
-// leaves relative. A path that holds no line break loads as it resolves, one that holds a full stop
-// and a space included, and one that a file named by a relative path leaves relative loads made
-// absolute.
+// feed, and the refusal names the key and says why, never the path: a path holding a line break is
+// no clean path, and one may be a secret of several lines pasted where the path goes. The load
+// stores state_dir absolute, resolved against the configuration file's directory and then made
+// absolute against the working directory, and judges that same path, which the start then uses as
+// it is (cmd/legion's start). So a relative state_dir under a directory that holds a line break is
+// refused, and so is one that a file named by a relative path, from a working directory that holds
+// a line break, leaves relative. A path that holds no line break loads as it resolves, one that
+// holds a full stop and a space included, and one that a file named by a relative path leaves
+// relative loads made absolute.
 func TestAStateDirThatHoldsALineBreakIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -81,7 +81,7 @@ func TestAStateDirThatHoldsALineBreakIsRefused(t *testing.T) {
 				}
 				return
 			}
-			want := fmt.Sprintf("state_dir %q holds a line break, which a state directory may not hold: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break", resolved)
+			const want = "state_dir, as the daemon resolves it, holds a line break, which a state directory may not hold: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break"
 			if err == nil {
 				t.Fatalf("Load succeeded with StateDir %q, want error %q", cfg.StateDir, want)
 			}

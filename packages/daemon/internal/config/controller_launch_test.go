@@ -31,14 +31,15 @@ func TestTheOperatorLaunchesTheControllerUnlessTheFileSaysTheDaemonDoes(t *testi
 
 // The controller works the project's Dispatch issues — an Agent Sandbox pod's under kubernetes, a
 // pane's under tmux — so `controller: daemon` is refused where the daemon has no Dispatch to hand
-// it, naming why, and so is a value that is neither launcher.
+// it, naming why, and so is a value that is neither launcher, named as written only where it has a
+// key's shape, as the empty value has not.
 func TestTheControllerKeyIsRefusedWhereTheDaemonCannotLaunchOne(t *testing.T) {
 	const noDispatch = "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\n"
 	for _, tc := range []struct {
 		name, body, want string
 	}{
-		{"neither launcher", "controller: pod\n" + kubernetesFile, "controller must be 'operator' or 'daemon'"},
-		{"blank", "controller: \"\"\n" + kubernetesFile, "controller must be 'operator' or 'daemon'"},
+		{"neither launcher", "controller: pod\n" + kubernetesFile, `controller must be 'operator' or 'daemon' (got "pod")`},
+		{"blank", "controller: \"\"\n" + kubernetesFile, "controller has no key's shape (" + keyShapeWords + "): it must be 'operator' or 'daemon'"},
 		{"under tmux with no Dispatch", "controller: daemon\n" + noDispatch, "controller: daemon needs dispatch_url: the controller the daemon launches works the project's Dispatch issues"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,9 +123,9 @@ func TestTheControllersServiceAccountIsReadOnlyWhereTheDaemonLaunchesIt(t *testi
 		"no pods' account":     {"controller: operator\n" + kubernetesFile + "    pod: {controller_service_account: legion-controller}\n", refusal},
 		"blank":                {"controller: daemon\n" + kubernetesFile + "    pod: {controller_service_account: \" \"}\n", "runtime.kubernetes.pod.controller_service_account must not be empty"},
 		"a placeholder": {"controller: daemon\n" + kubernetesFile + "    pod: {controller_service_account: \"${CONTROLLER_SERVICE_ACCOUNT}\"}\n",
-			`runtime.kubernetes.pod.controller_service_account "${CONTROLLER_SERVICE_ACCOUNT}" is an unfilled placeholder: put the ServiceAccount the controller's pod runs as in its place`},
+			`runtime.kubernetes.pod.controller_service_account is an unfilled placeholder: put the ServiceAccount the controller's pod runs as in its place`},
 		"no ServiceAccount's name": {"controller: daemon\n" + kubernetesFile + "    pod: {controller_service_account: Legion_Controller}\n",
-			`runtime.kubernetes.pod.controller_service_account "Legion_Controller" is no ServiceAccount's name`},
+			`runtime.kubernetes.pod.controller_service_account is no ServiceAccount's name`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)

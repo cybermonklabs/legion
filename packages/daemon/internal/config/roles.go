@@ -38,6 +38,11 @@ type Role struct {
 	PromptFile string
 	Model      string
 	GitHubApp  string
+	// promptUnshaped is whether the file writes prompt_file in no path's shape (pathShape), so a
+	// refusal of the file names the key and never the path (CheckRolePrompts). It is judged on
+	// the path as written, before resolveRoles joins it to the file's directory, which is no
+	// value of the operator's.
+	promptUnshaped bool
 }
 
 // roleWord is the grammar of a role's name and of a type of `role_types`: a word of lowercase
@@ -135,9 +140,10 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 
 // readRole is one role's block: its `type` and its `prompt_file`, which it must name, and its
 // optional `model` and `github_app`. A type outside the role grammar (roleWordShape) is refused by
-// its field alone, never as written. A role of the type review acts as the review App: the
-// account that reviews a change is never the one that wrote it, a review step's fail counts a
-// review round, and GitHub refuses an approval from a pull request's author.
+// its field alone, never as written, and so is a `github_app` of no key's shape, by its field and
+// line (shapelessWord), since the reader takes any word there. A role of the type review acts as
+// the review App: the account that reviews a change is never the one that wrote it, a review
+// step's fail counts a review round, and GitHub refuses an approval from a pull request's author.
 func readRole(value *yaml.Node, field string) (Role, error) {
 	if value.Kind != yaml.MappingNode {
 		return Role{}, fmt.Errorf("%s must be a mapping", field)
@@ -158,6 +164,7 @@ func readRole(value *yaml.Node, field string) (Role, error) {
 	if role.PromptFile, err = requiredString(fields["prompt_file"], field+".prompt_file", ": a role of the deployment starts with its own prompt"); err != nil {
 		return Role{}, err
 	}
+	role.promptUnshaped = !pathShape(role.PromptFile)
 	if role.Model, err = optionalString(fields["model"], field+".model"); err != nil {
 		return Role{}, err
 	}
@@ -170,6 +177,8 @@ func readRole(value *yaml.Node, field string) (Role, error) {
 			field, RoleAppImplement, plan.TypeReview, RoleAppReview)
 	case app == RoleAppImplement || app == RoleAppReview:
 		role.GitHubApp = app
+	case app != "" && !keyShape(app):
+		return Role{}, shapelessWord(lineOf(field+".github_app", fields["github_app"]), RoleAppImplement+" or "+RoleAppReview)
 	case app != "":
 		return Role{}, fmt.Errorf("%s.github_app is %s, which is neither %s nor %s", field, app, RoleAppImplement, RoleAppReview)
 	}
@@ -223,10 +232,18 @@ func resolveRoles(file fileConfig, configDir string, cfg *Config) error {
 
 // CheckRolePrompts refuses a role whose prompt file the daemon cannot read. Load runs it, the
 // daemon's own load, and so does `legion config check` over what LoadForValidation answered,
-// which reads no such file itself and keeps each path as resolved.
+// which reads no such file itself and keeps each path as resolved. The refusal names the path,
+// and the read's error, which repeats it, only where the file writes prompt_file in a path's shape
+// (pathShape); otherwise it names the key and why in fileerr's words (unreadable), since the
+// reader takes any word there, a token pasted where the path goes among them.
 func CheckRolePrompts(roles []Role) error {
 	for _, role := range roles {
-		if _, err := os.ReadFile(role.PromptFile); err != nil {
+		_, err := os.ReadFile(role.PromptFile)
+		switch {
+		case err == nil:
+		case role.promptUnshaped:
+			return unreadable(rolesKey+"."+string(role.Name)+".prompt_file", err)
+		default:
 			return fmt.Errorf("%s.%s.prompt_file %s cannot be read: %w", rolesKey, role.Name, role.PromptFile, err)
 		}
 	}

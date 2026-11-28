@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 
 	"gopkg.in/yaml.v3"
@@ -13,13 +14,32 @@ import (
 // repositoryRenamesKey is `repository_renames`, the key every refusal of it names.
 const repositoryRenamesKey = "repository_renames"
 
+// repositoryShape is a repository written in the characters GitHub allows, ghrepo's owner and
+// name joined by one "/": an owner of a letter or a digit and then at most 38 letters, digits, "-"
+// and "_", and a name of at most 100 letters, digits, "-", "_" and ".".
+var repositoryShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+
+// parseRepository is ghrepo.Parse for repository, a value the file or the environment writes at
+// what, refused by what alone where it has neither a repository's shape (repositoryShape) nor a
+// key's (keyShape): Parse's refusal quotes the value whole, and a value of neither shape, a token
+// pasted where the repository goes among them (`ghp_…` holds no "/"), is no typo of one. A value
+// of either shape is Parse's to refuse in its own words, which name it: a bare word such as
+// `widgets`, or a name ending in `.git`, whose refusal says how to write it.
+func parseRepository(what, repository string) (ghrepo.Repository, error) {
+	if !repositoryShape.MatchString(repository) && !keyShape(repository) {
+		return ghrepo.Repository{}, fmt.Errorf(`%s must be "owner/name": an owner of at most 39 ASCII letters, digits, "-" and "_", beginning with a letter or digit, and a name of at most 100 ASCII letters, digits, "-", "_" and "."`, what)
+	}
+	return ghrepo.Parse(what, repository)
+}
+
 // readRepositoryRenames is `repository_renames`: a list of mappings, each exactly a `from` and a
-// `to` Parse takes, the repository as it was and the one it moved to. It is a top-level key rather
-// than a project's, because the equivalence serves the intake filters and a binary-wide comparison,
-// neither of which is per project. An entry that is not a mapping, a field that is not one of the
-// two, a missing or empty side and a side Parse refuses are each refused naming the entry; the
-// structural rules over the whole list are ghrepo.NewRenames' (checkRepositoryRenames), once the
-// list is read. An absent key, a null one and an empty list are each no rename.
+// `to` Parse takes (parseRepository), the repository as it was and the one it moved to. It is a
+// top-level key rather than a project's, because the equivalence serves the intake filters and a
+// binary-wide comparison, neither of which is per project. An entry that is not a mapping, a field
+// that is not one of the two, a missing or empty side and a side Parse refuses are each refused
+// naming the entry; the structural rules over the whole list are ghrepo.NewRenames'
+// (checkRepositoryRenames), once the list is read. An absent key, a null one and an empty list are
+// each no rename.
 func readRepositoryRenames(value *yaml.Node, key string) ([]ghrepo.Rename, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -46,10 +66,10 @@ func readRepositoryRenames(value *yaml.Node, key string) ([]ghrepo.Rename, error
 			return nil, err
 		}
 		var rename ghrepo.Rename
-		if rename.From, err = ghrepo.Parse(field+".from", from); err != nil {
+		if rename.From, err = parseRepository(field+".from", from); err != nil {
 			return nil, err
 		}
-		if rename.To, err = ghrepo.Parse(field+".to", to); err != nil {
+		if rename.To, err = parseRepository(field+".to", to); err != nil {
 			return nil, err
 		}
 		renames = append(renames, rename)

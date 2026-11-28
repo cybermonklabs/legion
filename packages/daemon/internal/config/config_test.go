@@ -289,12 +289,13 @@ func TestLoadAllowsStage2ConfigWithoutWorkflowKeys(t *testing.T) {
 
 // A `project` the contract takes for no Dispatch project key is refused when the settings load,
 // naming the key: eleven capitals, one past the ten the contract's PROJECT_KEY_PATTERN takes
-// (claim.ProjectKeyPattern), and a key in lower case. The refusal is the loader's, so it comes
-// before the boot opens or migrates its store or mints any credential: the file's postgres_dsn
-// points at a port nothing serves and its implement App's key is read by a command that leaves a
-// mark when it runs, and the load answers with the key's refusal and leaves no mark.
+// (claim.ProjectKeyPattern), and a key in lower case. The value is named only where it has a key's
+// shape, as the lower-case key has and the capitals have not. The refusal is the loader's, so it
+// comes before the boot opens or migrates its store or mints any credential: the file's
+// postgres_dsn points at a port nothing serves and its implement App's key is read by a command
+// that leaves a mark when it runs, and the load answers with the key's refusal and leaves no mark.
 func TestLoadRefusesAProjectKeyTheContractRefusesBeforeTheStoreOrAnyCredential(t *testing.T) {
-	for _, key := range []string{"INFRASTRUCT", "demo"} {
+	for key, named := range map[string]string{"INFRASTRUCT": "project", "demo": `project "demo"`} {
 		t.Run(key, func(t *testing.T) {
 			mark := filepath.Join(t.TempDir(), "minted")
 			body := strings.Replace(minimalFile, "project: DEMO\n", "project: "+key+"\n", 1)
@@ -306,7 +307,7 @@ func TestLoadRefusesAProjectKeyTheContractRefusesBeforeTheStoreOrAnyCredential(t
 
 			_, err := Load(writeConfigFile(t, body), noEnv)
 
-			want := fmt.Sprintf("project %q is no Dispatch project key: it must match ^[A-Z][A-Z0-9]{1,9}$, a capital letter and then one to nine capital letters or digits", key)
+			want := named + " is no Dispatch project key: it must match ^[A-Z][A-Z0-9]{1,9}$, a capital letter and then one to nine capital letters or digits"
 			if err == nil || err.Error() != want {
 				t.Fatalf("Load = %v, want %q", err, want)
 			}
@@ -684,7 +685,8 @@ func TestSlackChannelsNeedTheDaemonsControllerEnrolledWithTheBroker(t *testing.T
 
 // A channel belongs to one project: the loader refuses a channel named twice, in one project or in
 // two, and an id that is not a Slack channel's, which would make a subject no mention is published
-// under.
+// under. Such an id is named as written only where it has a key's shape, and by its number
+// otherwise.
 func TestLoadRefusesProjectSlackChannels(t *testing.T) {
 	for _, tc := range []struct{ name, projects, want string }{
 		{
@@ -699,13 +701,13 @@ func TestLoadRefusesProjectSlackChannels(t *testing.T) {
 		},
 		{
 			name:     "a direct message",
-			projects: "projects:\n  DEMO: { slack_channels: [D00000000] }\n",
-			want:     `projects.DEMO.slack_channels entry "D00000000" is not a Slack channel id (C or G, then capital letters and digits, such as C0123ABCD)`,
+			projects: "projects:\n  DEMO: { slack_channels: [C00000000, D00000000] }\n",
+			want:     `projects.DEMO.slack_channels entry 2 is not a Slack channel id (C or G, then capital letters and digits, such as C0123ABCD)`,
 		},
 		{
 			name:     "a subject wildcard",
 			projects: "projects:\n  DEMO: { slack_channels: ['C*'] }\n",
-			want:     `projects.DEMO.slack_channels entry "C*" is not a Slack channel id (C or G, then capital letters and digits, such as C0123ABCD)`,
+			want:     `projects.DEMO.slack_channels entry 1 is not a Slack channel id (C or G, then capital letters and digits, such as C0123ABCD)`,
 		},
 		{
 			name:     "twice in one project",
@@ -1952,8 +1954,8 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			// PI_CONFIG_FILES separates its overlays with `:`, so it could not name this path.
 			name: "runtime.tmux.pi_config_files naming a path holding the separator",
-			body: minimalFile + "runtime: {tmux: {pi_config_files: [/etc/legion:operator/overlay.yml]}}\n",
-			want: "runtime.tmux.pi_config_files entry \"/etc/legion:operator/overlay.yml\" holds `:`, which separates the overlays PI_CONFIG_FILES names",
+			body: minimalFile + "runtime: {tmux: {pi_config_files: [/etc/legion/a.yml, /etc/legion:operator/overlay.yml]}}\n",
+			want: "runtime.tmux.pi_config_files entry 2 holds `:`, which separates the overlays PI_CONFIG_FILES names",
 		},
 		{
 			name: "hooks that is not a list",
@@ -1985,6 +1987,19 @@ func TestLoadRefuses(t *testing.T) {
 			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester], prompt: Words.}, " +
 				"{name: stuck, on: work_back, every: 2, roles: [reviewer], prompt: More words.}"),
 			want: `hooks[1].name is "stuck", which hooks[0] already carries: a hook is named once, and its name is what every prompt it publishes carries`,
+		},
+		{
+			// A name of the role grammar has a name's shape too (nameShape), so it is named.
+			name: "two hooks of one name of the role grammar",
+			body: aHook("{name: work-back, on: work_back, every: 1, roles: [tester], prompt: Words.}, " +
+				"{name: work-back, on: work_back, every: 2, roles: [reviewer], prompt: More words.}"),
+			want: `hooks[1].name is "work-back", which hooks[0] already carries: a hook is named once, and its name is what every prompt it publishes carries`,
+		},
+		{
+			name: "two hooks of one name of no name's shape",
+			body: aHook("{name: Work Back, on: work_back, every: 1, roles: [tester], prompt: Words.}, " +
+				"{name: Work Back, on: work_back, every: 2, roles: [reviewer], prompt: More words.}"),
+			want: `hooks[1].name is the name hooks[0] already carries: a hook is named once, and its name is what every prompt it publishes carries`,
 		},
 		{
 			name: "a hook that stands on no event",
@@ -2063,8 +2078,8 @@ func TestLoadRefuses(t *testing.T) {
 		},
 		{
 			name: "a hook naming a move the daemon does not count",
-			body: aHook("{name: stuck, on: work_back, every: 1, moves: [testing-testing], roles: [tester], prompt: Words.}"),
-			want: `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`,
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: [reviewing-implementing, testing-testing], roles: [tester], prompt: Words.}"),
+			want: `hooks[0].moves entry 2 is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`,
 		},
 		{
 			name: "a hook with both prompt and prompt_file",

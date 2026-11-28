@@ -106,7 +106,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 		return bootReads{}, err
 	}
 	if cfg.InstructionsPath != "" {
-		if r.instructions, err = config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
+		if r.instructions, err = cfg.ReadInstructions(); err != nil {
 			return bootReads{}, err
 		}
 	}
@@ -114,11 +114,11 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// the deployment's instructions are and refused the same way. The engine is given words and
 	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
 	// missing one refuses boot, and `legion config check` with it.
-	for _, hook := range cfg.Hooks {
+	for index, hook := range cfg.Hooks {
 		if hook.PromptFile == "" {
 			continue
 		}
-		words, err := config.ReadHookPrompt(hook.Name, hook.PromptFile)
+		words, err := config.ReadHookPrompt(index, hook)
 		if err != nil {
 			return bootReads{}, err
 		}

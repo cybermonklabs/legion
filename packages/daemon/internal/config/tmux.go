@@ -50,9 +50,10 @@ const TakeOverKubernetes = "kubernetes"
 
 // readTmux reads the `runtime.tmux` block: `pane_env`, a mapping of variable to plain value,
 // `pi_config_files`, a list of overlay paths, and `take_over`, the runtime whose claims the daemon
-// takes over, each optional. A path holding the list separator `:` is refused, since
-// PI_CONFIG_FILES could not name it, and a take_over other than kubernetes, the one runtime whose
-// claims the tmux runtime can take over.
+// takes over, each optional. A path holding the list separator `:` is refused by its number, never
+// as written, since PI_CONFIG_FILES could not name it and it need not be a path at all, and a
+// take_over other than kubernetes, the one runtime whose claims the tmux runtime can take over,
+// is named as written only where it has a key's shape (shapelessWord).
 func readTmux(value *yaml.Node) (*Tmux, error) {
 	block := &Tmux{}
 	if value.Tag == "!!null" {
@@ -74,9 +75,9 @@ func readTmux(value *yaml.Node) (*Tmux, error) {
 		if block.PiConfigFiles, err = readStrings(node, "runtime.tmux.pi_config_files"); err != nil {
 			return nil, err
 		}
-		for _, path := range block.PiConfigFiles {
+		for index, path := range block.PiConfigFiles {
 			if strings.Contains(path, ":") {
-				return nil, fmt.Errorf("runtime.tmux.pi_config_files entry %q holds `:`, which separates the overlays PI_CONFIG_FILES names", path)
+				return nil, fmt.Errorf("runtime.tmux.pi_config_files entry %d holds `:`, which separates the overlays PI_CONFIG_FILES names", index+1)
 			}
 		}
 	}
@@ -87,6 +88,9 @@ func readTmux(value *yaml.Node) (*Tmux, error) {
 		}
 		if takeOver != nil {
 			if *takeOver != TakeOverKubernetes {
+				if !keyShape(*takeOver) {
+					return nil, shapelessWord(lineOf("runtime.tmux.take_over", node), TakeOverKubernetes)
+				}
 				return nil, fmt.Errorf("runtime.tmux.take_over is %q: the one runtime whose claims the tmux runtime takes over is %s", *takeOver, TakeOverKubernetes)
 			}
 			block.TakeOver = *takeOver

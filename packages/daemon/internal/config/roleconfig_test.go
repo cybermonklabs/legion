@@ -36,7 +36,8 @@ func TestRoleConfigFilesGiveEachRoleItsOwnOverlays(t *testing.T) {
 // Every shape no role could load is refused at load, naming the entry: a name that is neither a
 // Legion role nor one of `roles`, an empty list, a relative or unclean path, one holding PI_CONFIG_FILES' separator, a repeat,
 // the controller's entry with no controller the daemon launches, a role on a harness that reads
-// no overlay, and an overlay every pane already names.
+// no overlay, and an overlay every pane already names. A relative or unclean path, and one holding
+// the separator, is named by its number alone, never as written.
 func TestRoleConfigFilesRefusals(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"not a mapping", "role_config_files: [/etc/a.yml]\n",
@@ -50,11 +51,11 @@ func TestRoleConfigFilesRefusals(t *testing.T) {
 		{"a list of no strings", "role_config_files: {tester: [1]}\n",
 			"role_config_files.tester must be an array of non-empty strings"},
 		{"a relative path", "role_config_files: {tester: [overlay.yml]}\n",
-			`role_config_files.tester entry "overlay.yml" must be a clean absolute path: the role's Oh My Pi reads it from wherever it starts`},
-		{"an unclean path", "role_config_files: {tester: [/etc/../etc/a.yml]}\n",
-			`role_config_files.tester entry "/etc/../etc/a.yml" must be a clean absolute path: the role's Oh My Pi reads it from wherever it starts`},
+			`role_config_files.tester entry 1 must be a clean absolute path: the role's Oh My Pi reads it from wherever it starts`},
+		{"an unclean path", "role_config_files: {tester: [/etc/a.yml, /etc/../etc/a.yml]}\n",
+			`role_config_files.tester entry 2 must be a clean absolute path: the role's Oh My Pi reads it from wherever it starts`},
 		{"the separator", "role_config_files: {tester: [/etc/a:b.yml]}\n",
-			"role_config_files.tester entry \"/etc/a:b.yml\" holds `:`, which separates the overlays PI_CONFIG_FILES names"},
+			"role_config_files.tester entry 1 holds `:`, which separates the overlays PI_CONFIG_FILES names"},
 		{"a duplicate", "role_config_files: {tester: [/etc/a.yml, /etc/b.yml, /etc/a.yml]}\n",
 			"role_config_files.tester names /etc/a.yml twice"},
 		{"the controller under controller: operator", "role_config_files: {controller: [/etc/a.yml]}\n",

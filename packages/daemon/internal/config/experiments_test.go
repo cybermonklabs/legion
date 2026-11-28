@@ -175,8 +175,9 @@ func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {
 // overlay or an instructions path no role could load, a mode on that names no on_variant, an
 // on_variant that is no variant of its experiment, and the four shapes of `experiments.memory`
 // the name memory forbids: beside the block, naming `plan`, with other variants, and drawn for each
-// issue. The other rules of `plan` are refused as well, each by a row of
-// TestThePlanOfAVariantIsRefused.
+// issue. A word is named as written only where it has a key's shape, and by its line or its place
+// otherwise; a path no role could load is never named, only its key or its entry's number. The
+// other rules of `plan` are refused as well, each by a row of TestThePlanOfAVariantIsRefused.
 func TestProjectExperimentsRefusals(t *testing.T) {
 	cases := []struct{ name, block, body, extra, want string }{
 		{name: "the key is not a mapping", block: "[alpha]",
@@ -199,6 +200,8 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			want: "projects.DEMO.experiments.alpha names mode twice"},
 		{name: "a mode that is no word of the three", block: "{alpha: {mode: sometimes, variants: [{name: only}, {name: other}]}}",
 			want: `projects.DEMO.experiments.alpha.mode must be off, on, or random (got "sometimes")`},
+		{name: "a mode of no key's shape", block: "{alpha: {mode: Sometimes, variants: [{name: only}, {name: other}]}}",
+			want: "projects.DEMO.experiments.alpha.mode at line 7 has no key's shape (" + keyShapeWords + "): it must be off, on, or random"},
 		{name: "a mode that is not a string", block: "{alpha: {mode: [on], variants: [{name: only}]}}",
 			want: "projects.DEMO.experiments.alpha.mode must be a string"},
 		{name: "a unit that is neither word", block: "{alpha: {unit: pod, variants: [{name: only}]}}",
@@ -226,7 +229,9 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 		{name: "a variant that names no name", block: "{alpha: {variants: [{weight: 2}]}}",
 			want: "projects.DEMO.experiments.alpha.variants[0] names no name: a draw records the variant it drew by name"},
 		{name: "a variant name outside the pattern", block: "{alpha: {variants: [{name: Only}]}}",
-			want: `projects.DEMO.experiments.alpha.variants[0] name "Only" must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`},
+			want: `projects.DEMO.experiments.alpha.variants[0] name must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`},
+		{name: "a variant name of a key's shape outside the pattern", block: "{alpha: {variants: [{name: only_one}]}}",
+			want: `projects.DEMO.experiments.alpha.variants[0] name "only_one" must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`},
 		{name: "a variant name that is not a string", block: "{alpha: {variants: [{name: [only]}]}}",
 			want: "projects.DEMO.experiments.alpha.variants[0].name must be a string"},
 		{name: "a variant named twice", block: "{alpha: {variants: [{name: only}, {name: only}]}}",
@@ -242,23 +247,25 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 		{name: "an empty overlay list", block: "{alpha: {variants: [{name: only, config_files: []}]}}",
 			want: "projects.DEMO.experiments.alpha.variants.only.config_files names no overlay: give the variant at least one path, or leave it out"},
 		{name: "a relative overlay", block: "{alpha: {variants: [{name: only, config_files: [memory.yml]}]}}",
-			want: `projects.DEMO.experiments.alpha.variants.only.config_files entry "memory.yml" must be a clean absolute path: a role drawn into the variant's Oh My Pi reads it from wherever it starts`},
-		{name: "an unclean overlay", block: "{alpha: {variants: [{name: only, config_files: [/etc/../etc/memory.yml]}]}}",
-			want: `projects.DEMO.experiments.alpha.variants.only.config_files entry "/etc/../etc/memory.yml" must be a clean absolute path: a role drawn into the variant's Oh My Pi reads it from wherever it starts`},
+			want: `projects.DEMO.experiments.alpha.variants.only.config_files entry 1 must be a clean absolute path: a role drawn into the variant's Oh My Pi reads it from wherever it starts`},
+		{name: "an unclean overlay", block: "{alpha: {variants: [{name: only, config_files: [/etc/a.yml, /etc/../etc/memory.yml]}]}}",
+			want: `projects.DEMO.experiments.alpha.variants.only.config_files entry 2 must be a clean absolute path: a role drawn into the variant's Oh My Pi reads it from wherever it starts`},
 		{name: "the separator in an overlay", block: "{alpha: {variants: [{name: only, config_files: [/etc/a:b.yml]}]}}",
-			want: "projects.DEMO.experiments.alpha.variants.only.config_files entry \"/etc/a:b.yml\" holds `:`, which separates the overlays PI_CONFIG_FILES names"},
+			want: "projects.DEMO.experiments.alpha.variants.only.config_files entry 1 holds `:`, which separates the overlays PI_CONFIG_FILES names"},
 		{name: "a duplicate overlay", block: "{alpha: {variants: [{name: only, config_files: [/etc/a.yml, /etc/b.yml, /etc/a.yml]}]}}",
 			want: "projects.DEMO.experiments.alpha.variants.only.config_files names /etc/a.yml twice"},
 		{name: "a relative instructions path", block: "{alpha: {variants: [{name: only, instructions: memory.md}]}}",
-			want: `projects.DEMO.experiments.alpha.variants.only.instructions "memory.md" must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
+			want: `projects.DEMO.experiments.alpha.variants.only.instructions must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
 		{name: "an unclean instructions path", block: "{alpha: {variants: [{name: only, instructions: /etc/../etc/memory.md}]}}",
-			want: `projects.DEMO.experiments.alpha.variants.only.instructions "/etc/../etc/memory.md" must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
+			want: `projects.DEMO.experiments.alpha.variants.only.instructions must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
 		{name: "an instructions path that is not a string", block: "{alpha: {variants: [{name: only, instructions: [/etc/memory.md]}]}}",
 			want: "projects.DEMO.experiments.alpha.variants.only.instructions must be a string"},
 		{name: "a mode on that names no on_variant", block: "{alpha: {mode: on, variants: [{name: only}, {name: other}]}}",
 			want: "projects.DEMO.experiments.alpha is on and names no on_variant: mode on gives every unit one variant, so name the one it gives (only, other)"},
 		{name: "an on_variant that is no variant of its experiment", block: "{alpha: {mode: on, on_variant: third, variants: [{name: only}, {name: other}]}}",
 			want: `projects.DEMO.experiments.alpha.on_variant names "third", which is no variant of the experiment (only, other)`},
+		{name: "an on_variant of no key's shape", block: "{alpha: {mode: on, on_variant: Third, variants: [{name: only}, {name: other}]}}",
+			want: "projects.DEMO.experiments.alpha.on_variant at line 7 names no variant of the experiment (only, other)"},
 		{name: "the memory block and experiments.memory together",
 			body: "memory: {mode: random, config_files: [/etc/legion-operator/memory.yml]}, experiments: {memory: {variants: [{name: memory}, {name: none}]}}",
 			want: "projects.DEMO.memory and projects.DEMO.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both"},

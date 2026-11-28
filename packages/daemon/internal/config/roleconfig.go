@@ -69,9 +69,10 @@ func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string,
 // gives a role and a `memory` block gives a project: at least one clean absolute path, each named
 // once, none holding PI_CONFIG_FILES' separator `:`. An empty list is refused rather than taken as
 // no overlay, since a key that wants none is left out; a relative or unclean path would resolve
-// against wherever the Oh My Pi that loads it starts, which is no file of the operator's. reader
-// names that Oh My Pi and owner whom the key belongs to, the two words the two keys' refusals
-// differ in.
+// against wherever the Oh My Pi that loads it starts, which is no file of the operator's. An entry
+// that is no clean absolute path, or holds `:`, is named by its number alone, never as written: it
+// fits no grammar of the key, and need not be a path at all. reader names that Oh My Pi and owner
+// whom the key belongs to, the two words the two keys' refusals differ in.
 func readOverlayFiles(value *yaml.Node, key, reader, owner string) ([]string, error) {
 	files, err := readStrings(value, key)
 	if err != nil {
@@ -83,9 +84,9 @@ func readOverlayFiles(value *yaml.Node, key, reader, owner string) ([]string, er
 	for index, file := range files {
 		switch {
 		case !filepath.IsAbs(file) || filepath.Clean(file) != file:
-			return nil, fmt.Errorf("%s entry %q must be a clean absolute path: %s reads it from wherever it starts", key, file, reader)
+			return nil, fmt.Errorf("%s entry %d must be a clean absolute path: %s reads it from wherever it starts", key, index+1, reader)
 		case strings.Contains(file, ":"):
-			return nil, fmt.Errorf("%s entry %q holds `:`, which separates the overlays PI_CONFIG_FILES names", key, file)
+			return nil, fmt.Errorf("%s entry %d holds `:`, which separates the overlays PI_CONFIG_FILES names", key, index+1)
 		case slices.Contains(files[:index], file):
 			return nil, fmt.Errorf("%s names %s twice", key, file)
 		}

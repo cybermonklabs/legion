@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -92,8 +94,8 @@ func aHook(mappings string) string { return minimalFile + "hooks: [" + mappings 
 // move between any two different workflow phases: testing-reviewing, the move back of a task whose
 // review comes before its test, loads. A step of a role the deployment defines runs as step, so a
 // move into or out of step loads, and so does step-step, the move back from one such step to
-// another; any other phase paired with itself is refused, since it is no move. The twin: a move
-// back of today's line still loads.
+// another; any other phase paired with itself is refused, since it is no move, by its place in the
+// list, as every word that is no move is. The twin: a move back of today's line still loads.
 func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
 	for _, move := range []string{"testing-reviewing", "reviewing-implementing", "step-implementing", "implementing-step", "step-step"} {
 		cfg, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: ["+move+"], roles: [tester], prompt: Words.}")), noEnv)
@@ -105,7 +107,7 @@ func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
 		}
 	}
 	_, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: [testing-testing], roles: [tester], prompt: Words.}")), noEnv)
-	want := `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`
+	want := `hooks[0].moves entry 1 is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load(moves: [testing-testing]) error = %v, want %q", err, want)
 	}
@@ -142,5 +144,63 @@ func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 	}
 	if loaded != 41 {
 		t.Errorf("%d pairs were read as moves back, want 41", loaded)
+	}
+}
+
+// Boot reads a hook's prompt_file (ReadHookPrompt) and refuses one that is missing or blank,
+// naming the hook by its name where the name has a name's shape (nameShape: `stuck`,
+// `back-to-implementing`) and by its place otherwise (`Stuck`), and naming the path, and the
+// read's error, which repeats it, where the file writes prompt_file in a path's shape
+// (`prompts/missing.md`), and the key and why alone otherwise (`Prompts/Missing.md`).
+func TestReadHookPromptNamesTheHookAndThePathWhereEachHasItsShape(t *testing.T) {
+	for _, tc := range []struct {
+		name, hook, promptFile string
+		blank                  bool
+		want                   func(path string) string
+	}{
+		{name: "a name and a path of their shapes", hook: "stuck", promptFile: "prompts/missing.md",
+			want: func(path string) string {
+				return "hook stuck prompt_file " + path + " could not be read: open " + path + ": no such file or directory"
+			}},
+		{name: "a name of the role grammar", hook: "back-to-implementing", promptFile: "prompts/missing.md",
+			want: func(path string) string {
+				return "hook back-to-implementing prompt_file " + path + " could not be read: open " + path + ": no such file or directory"
+			}},
+		{name: "a name of no name's shape", hook: "Stuck", promptFile: "prompts/missing.md",
+			want: func(path string) string {
+				return "hooks[0].prompt_file " + path + " could not be read: open " + path + ": no such file or directory"
+			}},
+		{name: "a path of no path's shape", hook: "stuck", promptFile: "Prompts/Missing.md",
+			want: func(string) string {
+				return "hook stuck prompt_file names a file that could not be read: it does not exist"
+			}},
+		{name: "a blank file named in a path's shape", hook: "stuck", promptFile: "prompts/blank.md", blank: true,
+			want: func(path string) string { return "hook stuck prompt_file " + path + " is empty" }},
+		{name: "a blank file named in no path's shape", hook: "stuck", promptFile: "Prompts/Blank.md", blank: true,
+			want: func(string) string { return "hook stuck prompt_file names a file that is empty" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := writeConfigFile(t, aHook("{name: "+tc.hook+", on: work_back, every: 1, roles: [implementer], prompt_file: "+tc.promptFile+"}"))
+			path := filepath.Join(filepath.Dir(config), tc.promptFile)
+			if tc.blank {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(" \n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg, err := Load(config, noEnv)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			_, err = ReadHookPrompt(0, cfg.Hooks[0])
+			if want := tc.want(path); err == nil || err.Error() != want {
+				t.Fatalf("ReadHookPrompt = %v, want %q", err, want)
+			}
+			if strings.Contains(tc.promptFile, "P") && strings.Contains(err.Error(), filepath.Base(path)) {
+				t.Fatalf("ReadHookPrompt = %v names the path written in no path's shape", err)
+			}
+		})
 	}
 }

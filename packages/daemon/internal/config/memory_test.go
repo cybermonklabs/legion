@@ -72,7 +72,8 @@ func TestProjectMemoryCarriesTheModeTheOverlaysAndTheInstructions(t *testing.T) 
 // a mode that is not one of the three words, a list that is empty or not a list of strings, a path
 // that is relative, unclean, holds PI_CONFIG_FILES' separator or repeats another, a mode other
 // than off that names no overlay, and a mode other than off while an issue role runs on a harness
-// that reads no overlay.
+// that reads no overlay. A path that is relative, unclean or holds the separator is named by its
+// key or its entry's number alone, never as written.
 func TestProjectMemoryRefusals(t *testing.T) {
 	for _, tc := range []struct{ name, block, extra, want string }{
 		{"not a mapping", "[/etc/legion-operator/memory.yml]", "",
@@ -88,17 +89,17 @@ func TestProjectMemoryRefusals(t *testing.T) {
 		{"a list of no strings", "{config_files: [1]}", "",
 			"projects.DEMO.memory.config_files must be an array of non-empty strings"},
 		{"a relative overlay", "{config_files: [memory.yml]}", "",
-			`projects.DEMO.memory.config_files entry "memory.yml" must be a clean absolute path: a memory-group role's Oh My Pi reads it from wherever it starts`},
-		{"an unclean overlay", "{config_files: [/etc/../etc/memory.yml]}", "",
-			`projects.DEMO.memory.config_files entry "/etc/../etc/memory.yml" must be a clean absolute path: a memory-group role's Oh My Pi reads it from wherever it starts`},
+			`projects.DEMO.memory.config_files entry 1 must be a clean absolute path: a memory-group role's Oh My Pi reads it from wherever it starts`},
+		{"an unclean overlay", "{config_files: [/etc/a.yml, /etc/../etc/memory.yml]}", "",
+			`projects.DEMO.memory.config_files entry 2 must be a clean absolute path: a memory-group role's Oh My Pi reads it from wherever it starts`},
 		{"the separator", "{config_files: [/etc/a:b.yml]}", "",
-			"projects.DEMO.memory.config_files entry \"/etc/a:b.yml\" holds `:`, which separates the overlays PI_CONFIG_FILES names"},
+			"projects.DEMO.memory.config_files entry 1 holds `:`, which separates the overlays PI_CONFIG_FILES names"},
 		{"a duplicate overlay", "{config_files: [/etc/a.yml, /etc/b.yml, /etc/a.yml]}", "",
 			"projects.DEMO.memory.config_files names /etc/a.yml twice"},
 		{"a relative instructions path", "{instructions: memory.md}", "",
-			`projects.DEMO.memory.instructions "memory.md" must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
+			`projects.DEMO.memory.instructions must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
 		{"an unclean instructions path", "{instructions: /etc/../etc/memory.md}", "",
-			`projects.DEMO.memory.instructions "/etc/../etc/memory.md" must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
+			`projects.DEMO.memory.instructions must be a clean absolute path: the daemon reads it at boot from wherever it starts`},
 		{"an instructions path that is not a string", "{instructions: [/etc/memory.md]}", "",
 			"projects.DEMO.memory.instructions must be a string"},
 		{"a mode with no overlays", "{mode: on, instructions: /etc/legion-operator/memory.md}", "",

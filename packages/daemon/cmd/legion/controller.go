@@ -184,7 +184,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 		return 0, errors.New("dispatch_url is configured with no Dispatch credential: set dispatch_token_file to the bearer's file, or dispatch_token_broker: true where this machine proves an identity of its own and the controller's session trades it at the secrets broker")
 	}
 	if cfg.InstructionsPath != "" {
-		if _, err := config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
+		if _, err := cfg.ReadInstructions(); err != nil {
 			return 0, err
 		}
 	}
@@ -302,7 +302,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	}
 	instructionsFile := ""
 	if cfg.InstructionsPath != "" {
-		if instructionsFile, err = config.MaterializeDeploymentInstructions(cfg.InstructionsPath, stateDir, cfg.Project); err != nil {
+		if instructionsFile, err = cfg.MaterializeInstructions(stateDir); err != nil {
 			return 0, err
 		}
 	}

@@ -10,9 +10,12 @@ import (
 
 // `legion config check` reads the words of a hook that names a `prompt_file` as boot does
 // (daemon.CheckStart): a file that holds words passes, and a missing one is refused with exit 1,
-// no OK line, and boot's own sentence naming the hook and the operator's path. The loader reads
-// no hook's file, so this check is the one proof that a hook's words can come from a file;
-// without the read, a deployment would start on a hook whose prompt says nothing.
+// no OK line, and boot's own sentence naming the hook, with the operator's path where the file
+// writes prompt_file in a path's shape (`missing.md`, resolved beside the file) and with the key
+// and why alone where it does not (a temporary directory's path, of capitals and a token's run of
+// digits), as a token pasted there would be. The loader reads no hook's file, so this check is the
+// one proof that a hook's words can come from a file; without the read, a deployment would start
+// on a hook whose prompt says nothing.
 func TestConfigCheckReadsAHooksPromptFile(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
@@ -29,13 +32,23 @@ func TestConfigCheckReadsAHooksPromptFile(t *testing.T) {
 		t.Fatalf("a prompt file that is there: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 
+	config, _ = workflowConfig(t, 13370, hookNaming("missing.md"))
+	beside := filepath.Join(filepath.Dir(config), "missing.md")
+	out.Reset()
+	errb.Reset()
+	code = run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	want := "legion config check: hook stuck prompt_file " + beside + " could not be read: open " + beside + ": no such file or directory\n"
+	if code != 1 || out.Len() != 0 || errb.String() != want {
+		t.Fatalf("a missing prompt file named in a path's shape: exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	}
+
 	config, _ = workflowConfig(t, 13370, hookNaming(missing))
 	out.Reset()
 	errb.Reset()
 	code = run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-	want := "legion config check: hook stuck prompt_file " + missing + " could not be read: open " + missing + ": no such file or directory\n"
+	want = "legion config check: hook stuck prompt_file names a file that could not be read: it does not exist\n"
 	if code != 1 || out.Len() != 0 || errb.String() != want {
-		t.Fatalf("a missing prompt file: exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+		t.Fatalf("a missing prompt file named in no path's shape: exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
 	}
 }
 
