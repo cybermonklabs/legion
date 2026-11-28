@@ -24,6 +24,7 @@ import (
 )
 
 const corpusFollowUp = "Reply with the word corpus-check-6161."
+const corpusSnapcompactStatus = "refused: " + snapcompactRefusal
 
 var (
 	corpusIndex = regexp.MustCompile(`^[0-9]+$`)
@@ -34,6 +35,7 @@ var (
 // TestPinnedOMPCorpus takes a private directory with selected.tsv and sessions/<index>.jsonl.
 // Set LEGION_TEST_OMP to the verified pin and LEGION_OMP_CORPUS_RESULTS to a private TSV path.
 // Neither the test nor its child processes print transcript text, even when replay fails.
+// Snapcompact archives are the only expected refusals.
 func TestPinnedOMPCorpus(t *testing.T) {
 	dir := os.Getenv("LEGION_OMP_CORPUS_DIR")
 	if dir == "" {
@@ -88,7 +90,7 @@ func TestPinnedOMPCorpus(t *testing.T) {
 				compact = "yes"
 			}
 			status = compareCorpusSession(t, target, content)
-			if status != "equal" {
+			if !corpusResultPasses(status) {
 				t.Error(status)
 			}
 		})
@@ -270,6 +272,14 @@ func compareCorpusSession(t *testing.T, route target, content []byte) string {
 	if difference := corpusDifference(got, want); difference != "" {
 		return difference
 	}
+	// The comparison above checks the complete request before the follow-up.
+	// Only in this second comparison, exclude notices the pin added for this run.
+	if history, changed := corpusWithoutNewNotices(before, prefix); changed {
+		resumed, err = Read(history, opts)
+		if err != nil {
+			return corpusReadError(err)
+		}
+	}
 	// As in assertBlankedOnly, do not accept a change to the rebuilt history
 	// between the original session and the resume other than pruned tool output.
 	for i := range max(len(before.Messages), len(resumed.Messages)) {
@@ -287,14 +297,21 @@ func compareCorpusSession(t *testing.T, route target, content []byte) string {
 	return "equal"
 }
 
+func corpusResultPasses(status string) bool {
+	return status == "equal" || status == corpusSnapcompactStatus
+}
+
 // Never emit FormatError.What verbatim: several branches include untrusted fields.
 func corpusReadError(err error) string {
 	var unknown *conversation.FormatError
 	if !errors.As(err, &unknown) {
 		return "error: reader failed"
 	}
+	if unknown.What == snapcompactRefusal {
+		return corpusSnapcompactStatus
+	}
 	for _, reason := range []string{
-		"snapcompact compaction", "session entry type", "session header version", "message role",
+		"session entry type", "session header version", "message role",
 		"an image held in Oh My Pi's blob store", "an image held at a URL or in a provider's file store",
 		"a native Anthropic server tool block", "an Anthropic server-side fallback boundary",
 		"an assistant turn carrying an Anthropic compaction block", "providerPayload type",
@@ -308,6 +325,25 @@ func corpusReadError(err error) string {
 		return "refused: unsupported content block type"
 	}
 	return "refused: unknown session format"
+}
+
+func TestCorpusAcceptsOnlyTheSnapcompactRefusal(t *testing.T) {
+	if !corpusResultPasses("equal") || corpusResultPasses("different: index 0 user/missing") {
+		t.Fatal("an equal row must pass and a different row must fail")
+	}
+	for _, tc := range []struct {
+		reason, status string
+		pass           bool
+	}{
+		{snapcompactRefusal, "refused: " + snapcompactRefusal, true},
+		{snapcompactRefusal + " extra", "refused: unknown session format", false},
+		{"session entry type fixture", "refused: session entry type", false},
+	} {
+		status := corpusReadError(conversation.Unknown("%s", tc.reason))
+		if status != tc.status || corpusResultPasses(status) != tc.pass {
+			t.Errorf("status %q passed=%t, want %q passed=%t", status, corpusResultPasses(status), tc.status, tc.pass)
+		}
+	}
 }
 
 func corpusResumePrefix(before *Session, content []byte) ([]byte, bool) {
@@ -325,6 +361,57 @@ func corpusResumePrefix(before *Session, content []byte) ([]byte, bool) {
 		offset += len(line)
 	}
 	return nil, false
+}
+
+// The pin appends eval state at startup and tool roster changes as it prepares
+// the next request. Keep historical notices. Replace only newly written notices
+// with context-neutral entries so later records still have the same parents.
+func corpusWithoutNewNotices(before *Session, prefix []byte) ([]byte, bool) {
+	var filtered []byte
+	var offset, keptFrom int
+	for line := range bytes.Lines(prefix) {
+		var e struct {
+			Type       string  `json:"type"`
+			ID         string  `json:"id"`
+			ParentID   *string `json:"parentId"`
+			CustomType string  `json:"customType,omitempty"`
+		}
+		if json.Unmarshal(line, &e) == nil && e.Type == "custom_message" && e.ID != "" && !before.ids[e.ID] {
+			switch e.CustomType {
+			case "eval-state-context", "tool-roster-notice":
+				e.Type, e.CustomType = "custom", ""
+				replacement, _ := json.Marshal(e)
+				filtered = append(filtered, prefix[keptFrom:offset]...)
+				filtered = append(filtered, replacement...)
+				filtered = append(filtered, '\n')
+				keptFrom = offset + len(line)
+			}
+		}
+		offset += len(line)
+	}
+	if filtered == nil {
+		return prefix, false
+	}
+	return append(filtered, prefix[keptFrom:]...), true
+}
+
+func TestCorpusExcludesOnlyNewRequestNoticesFromHistoryCheck(t *testing.T) {
+	for _, kind := range []string{"eval-state-context", "tool-roster-notice"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("First request."))
+			f.add(`{"type":"custom_message","customType":` + quote(kind) + `,"content":"Historical notice."}`)
+			f.add(claudeEntry("stop", `[{"type":"text","text":"Answer."}]`))
+			before := read(t, f.bytes())
+			f.add(`{"type":"custom_message","customType":` + quote(kind) + `,"content":"New notice."}`)
+			f.add(`{"type":"custom_message","customType":"fixture-notice","content":"Keep this addition."}`)
+			after, changed := corpusWithoutNewNotices(before, f.bytes())
+			if !changed {
+				t.Fatal("did not exclude the new request notice")
+			}
+			assertMessages(t, read(t, after).Messages, append(before.Messages, user("Keep this addition.")))
+		})
+	}
 }
 
 // Use the contract tests' journal matching rules without printing invalid records.

@@ -60,6 +60,8 @@ const (
 	outputTruncatedNotice   = "[Output truncated]"
 )
 
+const snapcompactRefusal = "the newest compaction is a snapcompact archive, which the reader does not rebuild (dispatch://INFRA-6438)"
+
 // sessionContext is what buildSessionContext reports besides the messages.
 type sessionContext struct {
 	leaf          string
@@ -495,7 +497,7 @@ func applyToolResultPrunes(entries []*entry, byID map[string]*entry) error {
 // which stands in for the kept messages.
 func compactionSummary(c *entry) (summary llmMessage, remote *conversation.Native, err error) {
 	if _, ok := c.PreserveData[snapcompactPreserveKey]; ok {
-		return llmMessage{}, nil, conversation.Unknown("snapcompact compaction %s", c.ID)
+		return llmMessage{}, nil, conversation.Unknown(snapcompactRefusal)
 	}
 	template := compactionSummaryTemplate
 	if c.Method == handoffCompactionMethod {

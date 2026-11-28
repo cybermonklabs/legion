@@ -345,6 +345,8 @@ func anthropicMessageControls(controls conversation.AnthropicControls) *conversa
 // placeAnthropicDeveloperTurns walks backwards: an upgraded next turn prevents
 // the current candidate from also becoming a system turn. Tool result runs
 // count as a user turn, as they do after sender-side grouping.
+// Read rebuilds history for a new user prompt, so a trailing developer turn
+// has a user, not the end of the request, as its next neighbour.
 func placeAnthropicDeveloperTurns(out []conversation.Message, t target) []conversation.Message {
 	for i := len(out) - 1; i >= 0; i-- {
 		msg := &out[i]
@@ -361,9 +363,9 @@ func placeAnthropicDeveloperTurns(out []conversation.Message, t target) []conver
 			continue
 		}
 		followsUser := i > 0 && (out[i-1].Role == conversation.User || out[i-1].Role == anthropicDeveloper || out[i-1].Role == conversation.Tool)
-		lastOrBeforeAssistant := i+1 == len(out) || out[i+1].Role == conversation.Assistant
+		beforeAssistant := i+1 < len(out) && out[i+1].Role == conversation.Assistant
 		effortOnly := controls.Effort != "" && len(msg.Content) == 0
-		if !effortOnly && (!followsUser || !lastOrBeforeAssistant || slices.ContainsFunc(msg.Content, func(b conversation.Block) bool {
+		if !effortOnly && (!followsUser || !beforeAssistant || slices.ContainsFunc(msg.Content, func(b conversation.Block) bool {
 			return b.Type == conversation.Image
 		})) {
 			continue

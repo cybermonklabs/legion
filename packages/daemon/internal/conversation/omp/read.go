@@ -76,8 +76,10 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 //
 // On Anthropic, Read shapes saved developer messages using the pin's direct Anthropic catalog
 // rules for the restored model. They start as user content and can become mid-conversation
-// system messages. Read preserves recorded tool changes by logical name and sets controls on
-// the messages that carry them. The sender applies wire tool names and any endpoint overrides.
+// system messages before an assistant turn. A new user prompt follows the saved history,
+// so a trailing developer message normally stays a user turn. Read preserves recorded tool
+// changes by logical name and sets controls on the messages that carry them. The sender
+// applies wire tool names and any endpoint overrides.
 // Request-level effort and tools are parameters that the answer loop sets. To generate
 // historical markers, a sender would also need each assistant turn's saved requestControls.
 // Read does not return those snapshots or insert their markers.
@@ -125,9 +127,10 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // support, custom tool format, current tool declarations and wire names, and thinking mode.
 // On a model alias the reader cannot infer the wire model identity from the journal ID.
 //
-// The sender checks pairing and order again after it has chosen and combined native and
-// block replay. It needs the call kinds, retained IDs, active tool map, and endpoint pairing
-// policy for orphan repair, recovering calls absent from native items, and batch ordering.
+// Read inserts an interrupted-output placeholder after a native function or custom call
+// with no later output in the rebuilt replay. The sender checks pairing and order again
+// after it chooses and combines native and block replay. It still needs the call kinds,
+// retained IDs, active tool map, and endpoint policy for the final pairing and batch order.
 // Native items and saved block calls and results preserve provider metadata, including
 // computer actions, screenshots, and safety checks. Saved block calls also preserve their
 // custom wire names and namespaces. The sender chooses the outgoing tool form.

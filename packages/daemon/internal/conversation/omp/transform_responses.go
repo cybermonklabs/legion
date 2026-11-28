@@ -155,5 +155,6 @@ func shapeResponsesHistory(messages []conversation.Message) []conversation.Messa
 			}
 		}
 	}
+	repairNativeResponsesToolCalls(messages)
 	return messages
 }

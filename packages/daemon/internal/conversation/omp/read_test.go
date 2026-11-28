@@ -684,7 +684,7 @@ func TestReadKeepsAReminderAcrossToolResultsAndContextNotes(t *testing.T) {
 	}
 	assertMessages(t, messages[:1], []conversation.Message{user(summary)})
 	assertMessages(t, messages[1:3], []conversation.Message{claude(text("partial"), call("call", "read", `{}`)), result("call", "read", "plum", false)})
-	assertMessages(t, messages[4:], []conversation.Message{systemText("Pick up where you stopped.")})
+	assertMessages(t, messages[4:], []conversation.Message{user("Pick up where you stopped.")})
 }
 
 // context-notes.ts:22–43,54–63: count UTF-8 bytes and ignore an invalid revision
@@ -995,7 +995,7 @@ func TestReadRefusesWhatItDoesNotKnow(t *testing.T) {
 		})
 	}
 	for _, tc := range []struct{ name, entry, what string }{
-		{"a snapcompact archive", `{"type":"compaction","summary":"s","firstKeptEntryId":"","preserveData":{"snapcompact":{}}}`, "snapcompact compaction e0000002"},
+		{"a snapcompact archive", `{"type":"compaction","summary":"s","firstKeptEntryId":"","preserveData":{"snapcompact":{}}}`, "the newest compaction is a snapcompact archive, which the reader does not rebuild (dispatch://INFRA-6438)"},
 		{"a bash execution", `{"type":"message","message":{"role":"bashExecution","command":"ls","output":""}}`, "bashExecution message e0000002 in the context"},
 		{"a python execution", `{"type":"message","message":{"role":"pythonExecution","code":"print(1)","output":"1","cancelled":false,"truncated":false,"timestamp":1}}`, "pythonExecution message e0000002 in the context"},
 		{"a file mention message", `{"type":"message","message":{"role":"fileMention","files":[{"path":"note.txt","content":"plum"}],"timestamp":1}}`, `message role "fileMention"`},

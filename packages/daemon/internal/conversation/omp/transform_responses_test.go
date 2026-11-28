@@ -129,6 +129,7 @@ func TestNativeResponsesHistoryShaping(t *testing.T) {
 }
 
 func TestReadRepairsNativeResponsesItemsWithoutChangingPayload(t *testing.T) {
+	const placeholder = `,"output":"[No tool output recorded: the tool call was interrupted before it produced a result.]"}`
 	const api = conversation.OpenAIResponses
 	readNative := func(t *testing.T, items string) *conversation.Native {
 		t.Helper()
@@ -172,7 +173,8 @@ func TestReadRepairsNativeResponsesItemsWithoutChangingPayload(t *testing.T) {
 		assertItems(t, native, `[{"type":"function_call","name":"read","call_id":"bad","arguments":`+
 			quote(`{"__parseError":"invalid JSON","__rawJson":`+quote(bounded)+`}`)+`},`+
 			`{"type":"function_call_output","call_id":"bad","output":"still paired"},`+
-			`{"type":"function_call","name":"read","call_id":"good","arguments":" {\"path\":\"x\"} "}]`)
+			`{"type":"function_call","name":"read","call_id":"good","arguments":" {\"path\":\"x\"} "},`+
+			`{"type":"function_call_output","call_id":"good"`+placeholder+`]`)
 	})
 	t.Run("remove output-only fields but keep replay content", func(t *testing.T) {
 		native := readNative(t, `[
@@ -193,9 +195,46 @@ func TestReadRepairsNativeResponsesItemsWithoutChangingPayload(t *testing.T) {
 			{"type":"shell_call_output","call_id":"shell","output":[null,{"stdout":"keep"}]},
 			{"type":"reasoning","encrypted_content":"second"},
 			{"type":"function_call","call_id":"keep","name":"read","arguments":"{}"},
+			{"type":"function_call_output","call_id":"keep"`+placeholder+`,
 			{"type":"message","role":"assistant","content":"answer"}
 		]`)
 	})
+}
+
+func TestReadRepairsResponsesCallsWithoutRecordedOutput(t *testing.T) {
+	const api = conversation.OpenAIResponses
+	const native = `{"type":"openaiResponsesHistory","provider":"openai","dt":true,"items":[` +
+		`{"type":"function_call","name":"read","call_id":"call_a","arguments":"{}"},` +
+		`{"type":"custom_tool_call","name":"edit","call_id":"call_b","input":"fixture"},` +
+		`{"type":"function_call","name":"read","call_id":"call_c","arguments":"{}"}]}`
+	f := newFixture()
+	f.add(userEntry("Check the note."))
+	f.add(`{"type":"message","message":{"role":"assistant","api":"` + api +
+		`","provider":"openai","model":"gpt-test","stopReason":"toolUse","content":[` +
+		`{"type":"toolCall","id":"call_c","name":"read","arguments":{}}],"providerPayload":` + native + `}}`)
+	f.add(toolResultEntry("call_c", "read", "A note.", false))
+	messages := read(t, f.bytes()).Messages
+	got := messages[1].Native
+	if got == nil || string(got.Payload) != native || !got.Incremental {
+		t.Fatalf("reader did not preserve the native payload: %+v", got)
+	}
+	var items []map[string]any
+	raw, err := json.Marshal(got.Items)
+	if err != nil || json.Unmarshal(raw, &items) != nil {
+		t.Fatalf("cannot decode replay items: %v", err)
+	}
+	const interrupted = "[No tool output recorded: the tool call was interrupted before it produced a result.]"
+	want := []map[string]any{
+		{"type": "function_call", "name": "read", "call_id": "call_a", "arguments": "{}"},
+		{"type": "function_call_output", "call_id": "call_a", "output": interrupted},
+		{"type": "custom_tool_call", "name": "edit", "call_id": "call_b", "input": "fixture"},
+		{"type": "custom_tool_call_output", "call_id": "call_b", "output": interrupted},
+		{"type": "function_call", "name": "read", "call_id": "call_c", "arguments": "{}"},
+	}
+	if !reflect.DeepEqual(items, want) {
+		t.Fatalf("native replay items = %v, want %v", items, want)
+	}
+	assertMessages(t, messages[2:], []conversation.Message{result("call_c", "read", "A note.", false)})
 }
 
 func TestResponsesUserCompactionPayloadShaping(t *testing.T) {

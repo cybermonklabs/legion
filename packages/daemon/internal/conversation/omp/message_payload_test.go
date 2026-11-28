@@ -71,6 +71,18 @@ func TestReadPlacesAnthropicDeveloperMessages(t *testing.T) {
 	}
 }
 
+func TestReadKeepsTrailingAnthropicDeveloperAsUserBeforeFollowUp(t *testing.T) {
+	f := newFixture()
+	f.add(userEntry("Check the note."))
+	f.add(claudeEntry("toolUse", `[{"type":"toolCall","id":"toolu_read","name":"read","arguments":{}}]`))
+	f.add(toolResultEntry("toolu_read", "read", "A note.", false))
+	f.add(`{"type":"custom_message","customType":"test-notice","attribution":"agent","content":"The check stopped."}`)
+	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+		user("Check the note."), claude(call("toolu_read", "read", `{}`)),
+		result("toolu_read", "read", "A note.", false), user("The check stopped."),
+	})
+}
+
 func TestReadCarriesResponsesMessagePayload(t *testing.T) {
 	const first = `{"type":"compaction","encrypted_content":"first"}`
 	const second = `{"type":"message","role":"user","content":[{"type":"input_text","text":"native text"}]}`

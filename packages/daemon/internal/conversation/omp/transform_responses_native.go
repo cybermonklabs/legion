@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
 type responsesHistoryItem struct {
@@ -301,4 +303,80 @@ func shapeNativeResponsesItems(raw []json.RawMessage, assistant bool) []json.Raw
 		}
 	}
 	return out
+}
+
+// repairNativeResponsesToolCalls applies repairOrphanResponsesToolCalls to
+// function and custom calls in the native replay copy. A later native output
+// or a separate tool result can supply the output. The saved payload and the
+// fallback blocks are not changed.
+func repairNativeResponsesToolCalls(messages []conversation.Message) {
+	type outputKey struct{ kind, id string }
+	type position struct{ message, item int }
+	pending := make(map[outputKey][]position)
+	custom := make(map[string]bool)
+	for i, m := range messages {
+		if n := m.Native; n != nil && n.Kind == conversation.OpenAIResponsesHistory && len(n.Items) != 0 {
+			if m.Role == conversation.Assistant && !n.Incremental {
+				// A native assistant snapshot replaces the preceding input.
+				clear(pending)
+				clear(custom)
+			}
+			for j, raw := range n.Items {
+				var item struct {
+					Type   string `json:"type"`
+					CallID string `json:"call_id"`
+				}
+				if json.Unmarshal(raw, &item) != nil || item.CallID == "" {
+					continue
+				}
+				switch item.Type {
+				case "custom_tool_call":
+					custom[item.CallID] = true
+					fallthrough
+				case "function_call":
+					key := outputKey{item.Type + "_output", item.CallID}
+					pending[key] = append(pending[key], position{i, j})
+				case "function_call_output", "custom_tool_call_output":
+					delete(pending, outputKey{item.Type, item.CallID})
+				}
+			}
+		} else if m.Role == conversation.Tool {
+			for _, b := range m.Content {
+				kind := "function_call_output"
+				if custom[b.ToolCallID] {
+					kind = "custom_tool_call_output"
+				}
+				delete(pending, outputKey{kind, b.ToolCallID})
+			}
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+	const interrupted = "[No tool output recorded: the tool call was interrupted before it produced a result.]"
+	outputs := make(map[int]map[int]json.RawMessage)
+	for key, positions := range pending {
+		raw, _ := json.Marshal(struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+			Output string `json:"output"`
+		}{key.kind, key.id, interrupted})
+		for _, pos := range positions {
+			if outputs[pos.message] == nil {
+				outputs[pos.message] = make(map[int]json.RawMessage)
+			}
+			outputs[pos.message][pos.item] = raw
+		}
+	}
+	for i, add := range outputs {
+		native := messages[i].Native
+		repaired := make([]json.RawMessage, 0, len(native.Items)+len(add))
+		for j, raw := range native.Items {
+			repaired = append(repaired, raw)
+			if output := add[j]; output != nil {
+				repaired = append(repaired, output)
+			}
+		}
+		native.Items = repaired
+	}
 }
