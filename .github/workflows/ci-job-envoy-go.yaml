@@ -224,8 +224,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # Each go test's -timeout must fire before the runner cancels the job, so a hung test prints
     # the dump that names it. The lines run one after another, each under its own 10-minute
-    # -timeout: twelve of the rows whose bound is on time and five of the race-impossible rows,
-    # 170 minutes at most after about 2 of setup, so 175.
+    # -timeout: eleven of the rows whose bound is on time and five of the race-impossible rows,
+    # 160 minutes at most. About 2 of setup and the lines' compiles, which no -timeout counts,
+    # come on top, so 175.
     timeout-minutes: 175
     services:
       postgres:
@@ -248,15 +249,12 @@ jobs:
       JOB_TIMEOUT_MINUTES: 175 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
-      # clean up, and its image would be one more registry pull a test could fail on.
-      TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      # No Bun and no test image: no row this job runs calls bun or starts a container.
+      # why: .github/ci-notes/ci.md#why-envoy-go-alone-sets-up-no-bun-and-pulls-no-test-image
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -286,16 +284,6 @@ jobs:
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
-      # The images the module's tests start, pulled first for the reason the action gives:
-      # testnats.HubImage, the image the hub runs Envoy on, testnats.Image (nats:2.10), and
-      # tests3.Image.
-      - name: Pull test container images
-        uses: ./.github/actions/pull-test-images
-        with:
-          consts: |
-            packages/envoy/internal/testnats/nats.go Image
-            packages/envoy/internal/testnats/nats.go HubImage
-            packages/envoy/internal/tests3/seaweedfs.go Image
       # The unit packages' rows whose assertion is a bound on how long something takes, measured
       # from the test's own clock, under twice its slowest reading (ci_job_reads.py's
       # UNIT_ALONE_TESTS says which and why): beside a leg's other packages they measure the load,

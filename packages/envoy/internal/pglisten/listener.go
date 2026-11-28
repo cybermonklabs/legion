@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 const (
@@ -77,6 +79,13 @@ type Listener struct {
 	OnNotify func(channel, payload string)
 	// Backoff is the wait before the attempt-th redial in a row; nil is RedialBackoff.
 	Backoff func(attempt int) time.Duration
+	// Clock is the clock each of Run's waits runs on: the deadlines of the LISTEN, of the ping and
+	// of the close, the idle period since the last proven round trip, and the backoff before a
+	// redial. Dial is not on it: it runs under Run's context, with whatever bound Dial sets itself.
+	// Nil, which every caller leaves it, is clock.Real(); a test hands a clocktest.Fake and moves it
+	// past the deadline it means, so a half-open connection is given up at the moment the test
+	// chooses, and no ping on a healthy one meets a deadline a loaded machine's clock reached first.
+	Clock clock.Clock
 }
 
 // Run blocks until ctx ends, then closes its connection and returns. Each time a connection
@@ -99,12 +108,12 @@ func (l *Listener) Run(ctx context.Context) {
 		wait := l.backoffFor(failures)
 		slog.Warn(l.owner()+": a Postgres listener has no connection; redialing",
 			"channels", strings.Join(l.Channels, ","), "error", err, "attempt", failures, "wait_ms", wait.Milliseconds())
-		timer := time.NewTimer(wait)
+		timer := l.clock().NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-timer.C:
+		case <-timer.C():
 		}
 	}
 }
@@ -118,7 +127,8 @@ func (l *Listener) listen(ctx context.Context) (listened bool, err error) {
 		return false, fmt.Errorf("dial: %w", err)
 	}
 	defer l.close(conn)
-	listenCtx, cancel := context.WithTimeout(ctx, l.pingWait())
+	c := l.clock()
+	listenCtx, cancel := c.WithTimeout(ctx, l.pingWait())
 	_, err = conn.Exec(listenCtx, l.statement())
 	cancel()
 	if err != nil {
@@ -127,19 +137,19 @@ func (l *Listener) listen(ctx context.Context) (listened bool, err error) {
 	// The last round trip this connection proved it could make: the LISTEN above, a notification
 	// it carried, a ping it answered. The ping in the loop below falls due one idle period after
 	// this stamp, so each wait runs only what is left of that period.
-	proven := time.Now()
+	proven := c.Now()
 	if l.OnConnected != nil {
 		l.OnConnected()
 	}
 	for {
-		waitCtx, cancel := context.WithTimeout(ctx, l.idle()-time.Since(proven))
+		waitCtx, cancel := c.WithTimeout(ctx, l.idle()-c.Now().Sub(proven))
 		notification, err := conn.WaitForNotification(waitCtx)
 		reached := errors.Is(waitCtx.Err(), context.DeadlineExceeded)
 		cancel()
 		if notification != nil {
 			// The connection carried it, which is a round trip of its own; stamped before
 			// OnNotify, whose work is the caller's and proves nothing further.
-			proven = time.Now()
+			proven = c.Now()
 			if l.OnNotify != nil {
 				l.OnNotify(notification.Channel, notification.Payload)
 			}
@@ -156,7 +166,7 @@ func (l *Listener) listen(ctx context.Context) (listened bool, err error) {
 		// The wait ran out the idle period since the last proven round trip. pgx keeps the
 		// connection open when a wait ends at its deadline, so the same connection answers the
 		// ping; one that has gone half-open fails it at pingTimeout.
-		pingCtx, cancel := context.WithTimeout(ctx, l.pingWait())
+		pingCtx, cancel := c.WithTimeout(ctx, l.pingWait())
 		err = conn.Ping(pingCtx)
 		cancel()
 		if err != nil {
@@ -165,7 +175,7 @@ func (l *Listener) listen(ctx context.Context) (listened bool, err error) {
 			}
 			return true, fmt.Errorf("ping an idle connection: %w", err)
 		}
-		proven = time.Now()
+		proven = c.Now()
 	}
 }
 
@@ -178,12 +188,20 @@ func (l *Listener) statement() string {
 	return "listen " + strings.Join(l.Channels, "; listen ")
 }
 
-// close closes conn within the ping timeout, so a half-open connection's Terminate cannot hold
-// the listener; closing a connection pgx has already closed does nothing.
+// close closes conn within the ping timeout on the listener's clock, so a half-open connection's
+// Terminate cannot hold the listener; closing a connection pgx has already closed does nothing.
 func (l *Listener) close(conn *pgx.Conn) {
-	ctx, cancel := context.WithTimeout(context.Background(), l.pingWait())
+	ctx, cancel := l.clock().WithTimeout(context.Background(), l.pingWait())
 	defer cancel()
 	_ = conn.Close(ctx)
+}
+
+// clock is the clock the listener's waits run on: Clock, or clock.Real() where that is nil.
+func (l *Listener) clock() clock.Clock {
+	if l.Clock == nil {
+		return clock.Real()
+	}
+	return l.Clock
 }
 
 func (l *Listener) idle() time.Duration {
