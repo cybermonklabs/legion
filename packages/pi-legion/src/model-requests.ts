@@ -36,7 +36,7 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * of its answer.
  *
  * **When it is sent.** The rules of both hosts' reporters
- * (dispatch://INFRA-5899/artifact/reporter-rules-md@v7), as this reporter keeps them, stated here
+ * (dispatch://INFRA-5899/artifact/reporter-rules-md@v9), as this reporter keeps them, stated here
  * once; the Claude Code bridge's header states them as the bridge keeps them. Every other comment
  * of this reporter's code that names when a request is sent, put back, dropped or due points here
  * and restates none of it, or defines a constant: it names what the constant is and points here.
@@ -86,8 +86,10 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  *   failed before, and drops the timer; put-back requests follow their rule.
  * - *A shutdown* (`shutdown`, at `session_shutdown`) sends every pending request at once, put-back
  *   requests included, in reports of at most 200, each a call of its own with its limit, and waits
- *   for no report on its way. No later send comes, so the stall's bound on open calls (next) does
- *   not apply at a shutdown.
+ *   for no report on its way. The host ends its process after `session_shutdown`, so the reporter
+ *   cannot wait there: a call still open then is lost, and so is a shutdown call that fails, since
+ *   no later send comes and there is no retry at the end. For the same reason the stall's bound on
+ *   open calls (next) does not apply at a shutdown.
  * - *A stall or an outage of the daemon.* Fresh requests still leave by their moments and each call
  *   ends by its limit, so while the host runs, until a shutdown, the calls open at once are no more
  *   than the fresh reports of the last 10 s and one report of put-back requests per owner, whatever

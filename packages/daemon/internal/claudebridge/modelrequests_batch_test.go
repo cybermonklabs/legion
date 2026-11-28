@@ -1013,6 +1013,17 @@ func (r *modelRequestRig) exit() <-chan struct{} {
 	return exited
 }
 
+// stillExiting holds that the exit has not returned within a short while, since what is open
+// keeps it.
+func stillExiting(t *testing.T, exited <-chan struct{}, open string) {
+	t.Helper()
+	select {
+	case <-exited:
+		t.Fatalf("the exit returned while %s", open)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // A request whose report failed at a turn's result is put back, due 15 s after that call, and
 // Claude Code ends 5 s later: the exit sends it at once, and returns only once that call has ended
 // (modelRequests' doc). The stand-in fails the turn's call and holds the exit's until the row lets
@@ -1048,23 +1059,47 @@ func TestModelRequestsExitSendsAPutBackRequestAndWaitsForItsCall(t *testing.T) {
 	case <-time.After(deadlineWait(t)):
 		t.Fatalf("the exit sent no report, %s before the test binary's deadline", deadlineMargin)
 	}
-	select {
-	case <-exited:
-		t.Fatal("the exit returned while its call was on its way")
-	case <-time.After(300 * time.Millisecond):
-	}
+	stillExiting(t, exited, "its call was on its way")
 	free()
 	testwait.Receive(t, "the exit to return once its call ended", exited)
+}
+
+// A report a turn's result sent at +0 s is still on its way when Claude Code ends at +4 s with
+// nothing pending, against a daemon that takes each report's connection and never answers: the
+// exit sends nothing, and returns only once that call ends at its timeout (requestReportTimeout),
+// at +10 s on the rig's clock, within requestReportTimeout of the exit. What that call put back is
+// never sent (modelRequests' doc).
+func TestModelRequestsExitWaitsForAReportOnItsWay(t *testing.T) {
+	t.Parallel()
+	stalled := make(chan struct{})
+	r := newModelRequestRig(t, func(http.ResponseWriter, []string, int) { <-stalled })
+	t.Cleanup(func() { close(stalled) })
+	r.reporter.clock = timeoutClock{r.clock}
+	start := r.clock.Now()
+	r.assistant("a", start)
+	r.result()
+	r.expectBatch(t, []string{"a"})
+	r.moveTo(t, start.Add(4*time.Second))
+	exited := r.exit()
+	stillExiting(t, exited, "the result's report was on its way")
+	r.noBatch(t)
+	timeout := start.Add(requestReportTimeout)
+	r.moveTo(t, timeout.Add(-time.Millisecond))
+	stillExiting(t, exited, "the result's report was on its way")
+	r.moveTo(t, timeout)
+	testwait.Receive(t, "the exit to return once the result's report ended at its timeout", exited)
+	r.moveTo(t, timeout.Add(requestWindow+requestLeftDueAfter))
+	r.noBatch(t)
 }
 
 // Claude Code ends at +20 s while the chunk of put-back requests a window sent at +15 s is on its
 // way, with more than a chunk of put-back requests behind it and a fresh request pending, against
 // a daemon that fails the turn's send and then takes each report's connection and never answers.
 // The exit sends every pending request at once, whatever is on its way, the fresh one and the
-// put-back ones each in chunks of at most claim.MaxModelRequests, and returns once those calls end
-// at their timeout (requestReportTimeout) on the rig's clock; nothing is sent after it
-// (modelRequests' doc). An exit whose calls waited for one another sends one report and fails the
-// row on the test binary's deadline.
+// put-back ones each in chunks of at most claim.MaxModelRequests, and returns once every open call
+// has ended at its timeout (requestReportTimeout) on the rig's clock, the chunk on its way at +25 s
+// and the exit's own at +30 s; nothing is sent after it (modelRequests' doc). An exit whose calls
+// waited for one another sends one report and fails the row on the test binary's deadline.
 func TestModelRequestsExitSendsEveryPendingRequestAtOnceAndReturnsByItsTimeout(t *testing.T) {
 	t.Parallel()
 	stalled := make(chan struct{})
@@ -1123,13 +1158,10 @@ func TestModelRequestsExitSendsEveryPendingRequestAtOnceAndReturnsByItsTimeout(t
 	if !slices.Equal(got, want) {
 		t.Fatalf("the exit's reports have %d IDs, want %d; got %q, want %q", len(got), len(want), got, want)
 	}
-	// The exit's calls end at their timeout, 10 s after it, and it returns then and no sooner.
+	// The chunk on its way ends at +25 s and the exit's calls at their timeout, 10 s after it: the
+	// exit returns then and no sooner.
 	r.moveTo(t, end.Add(requestReportTimeout-time.Millisecond))
-	select {
-	case <-exited:
-		t.Fatal("the exit returned before its calls ended")
-	case <-time.After(300 * time.Millisecond):
-	}
+	stillExiting(t, exited, "its calls were on their way")
 	r.moveTo(t, end.Add(requestReportTimeout))
 	testwait.Receive(t, "the exit to return once its calls ended at their timeout", exited)
 	// What those calls put back is never sent: no window comes after the exit.

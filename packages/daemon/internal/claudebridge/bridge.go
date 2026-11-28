@@ -36,7 +36,7 @@ const (
 	// the stop is not waiting on.
 	//
 	// Told to stop, the bridge exits within Grace + drainTimeout + inboxFlushTimeout + flushTimeout,
-	// 4.1 s, where the daemon has answered by then the model requests sent at Claude Code's end
+	// 4.1 s, where every report of model requests open at Claude Code's end has ended by then
 	// (Run), which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
 	// for the process to exit on a loaded machine; its inbox is gone 0.5 s before that.
 	flushTimeout = 500 * time.Millisecond
@@ -150,16 +150,16 @@ type bridge struct {
 // and its own end. Once Claude Code has exited and its stdout is read, the model requests the
 // bridge holds are sent (modelRequests.exit), every Envoy delivery it has not taken is answered
 // with an error, the inbox is removed, and Run returns once the shim has read every frame queued
-// for it and the calls of those model requests have ended.
+// for it and every report of model requests on its way has ended.
 //
 // Told to stop (ctx), the bridge returns within Grace + drainTimeout + inboxFlushTimeout +
 // flushTimeout, 4.1 s, its inbox removed by Grace + drainTimeout + inboxFlushTimeout; after its
 // input ends, within twice Grace + drainTimeout + inboxFlushTimeout + flushTimeout, 7.1 s; and a
 // stop or the input's end that comes while it waits for the shim ends the wait within flushTimeout.
-// A daemon that has not answered the model requests sent at Claude Code's end holds each of these
-// returns until those calls end, at most requestReportTimeout after that end: after a stop, Grace +
-// drainTimeout + requestReportTimeout, 13.5 s, past the 5 s the shim gives a stopped bridge before
-// it kills it (flushTimeout), which cuts those calls short.
+// A report of model requests still open at Claude Code's end, the end's own or one already on its
+// way, holds each of these returns until it ends, at most requestReportTimeout after that end:
+// after a stop, Grace + drainTimeout + requestReportTimeout, 13.5 s, past the 5 s the shim gives a
+// stopped bridge before it kills it (flushTimeout), which cuts those calls short.
 // end's timers need nothing of the loop, Claude Code is reaped by Grace after its SIGTERM, the loop
 // takes that exit at once, drainTimeout bounds what is left of Claude Code's stdout,
 // inboxFlushTimeout the answers the inbox's clients are owed, and flushTimeout what is left of the
@@ -251,8 +251,8 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	}
 
 	// sendRequests sends the model requests the bridge holds once Claude Code is done, and
-	// requestsSent ends once those calls have (modelRequests.exit): Run waits for them before it
-	// returns.
+	// requestsSent ends once no report of them is on its way (modelRequests.exit): Run waits for it
+	// before it returns.
 	var requestsSent sync.WaitGroup
 	sendRequests := sync.OnceFunc(func() {
 		if b.requests != nil {

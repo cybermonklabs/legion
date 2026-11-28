@@ -78,10 +78,12 @@ body: |-
   other 4xx drops its report with a line. A request the daemon would refuse, such as one with a
   blank model, is dropped where the bridge reads it, with a line, and the others still go. When
   Claude Code ends, the bridge sends every request it holds at once, put-back ones included, in
-  reports of at most 200, each a call with its own 10-second limit, and waits for those calls, at
-  most that limit, before it exits; a request one of them puts back is not sent again. A block of
-  a request that comes after its report reports it again under its id with the later end. The
-  turn-outcome report is unchanged.
+  reports of at most 200, each a call with its own 10-second limit, without waiting for a report
+  already on its way. Before it exits, it waits for every open call, its own and those already on
+  their way, within one 10-second bound; at a stop, the shim kills it after its 5-second grace,
+  which can end that wait sooner, and a call still open then is lost. A request one of those calls
+  puts back is not sent again. A block of a request that comes after its report reports it again
+  under its id with the later end. The turn-outcome report is unchanged.
 
   Each admission pass now reads the five series of admission by signals from what the daemon
   keeps, with the replay's one definition of each: the idle share of the slot holders, the merge

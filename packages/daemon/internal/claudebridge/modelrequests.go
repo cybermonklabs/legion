@@ -79,7 +79,7 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 // (record.Store.KeepModelRequests). No block is left out of its request's end.
 //
 // When a request is sent. These are the rules of both hosts' reporters
-// (dispatch://INFRA-5899/artifact/reporter-rules-md@v7), as the bridge keeps them, stated here
+// (dispatch://INFRA-5899/artifact/reporter-rules-md@v9), as the bridge keeps them, stated here
 // once. Every other comment of the bridge's model requests that names when a request is sent, put
 // back, dropped or due points here and restates none of it, or defines a constant: it names what
 // the constant is and points here. A test's comment describes its own row's scenario.
@@ -128,19 +128,26 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 //     at once, and put-back requests follow their rule.
 //   - Claude Code's end. Once Claude Code has ended, by its own exit or the bridge's stop, and the
 //     bridge has read its stdout (Run), the bridge closes every open request and sends every
-//     pending request at once (exit), put-back requests included, whatever report is on its way:
-//     the fresh ones and the put-back ones each in chunks of at most 200, each a call of its own
-//     with its requestReportTimeout, and it drops what a flush drops. It waits for those calls to
-//     end, at most requestReportTimeout, before it exits, and no send follows: a request one of
-//     them puts back is lost with the process, as is a report on its way that the bridge's exit
-//     cuts short. The stall's bound on the calls open at once does not hold at this moment.
+//     pending request at once (exit), put-back requests included: the fresh ones and the put-back
+//     ones each in chunks of at most 200, each a call of its own with its requestReportTimeout,
+//     none waiting for a report on its way, and it drops what a flush drops. Before it exits, it
+//     waits for every open call to end, its own and every report already on its way, within one
+//     bound of requestReportTimeout: each call ends by its own, and those on their way began
+//     before the exit. When the daemon stops a worker, the shim kills the bridge after its grace
+//     (shim.DefaultGrace, 5 s), which can be shorter than that bound, so at a stop that kill
+//     bounds the wait. No send follows: a request one of those calls puts back is not sent again,
+//     and the stall's bound on the calls open at once does not hold at this moment.
+//   - Lost at the end. A request whose call is still open when the bridge's process is ended, by
+//     the shim's kill after its grace at a stop, or whose call made at the exit fails, is lost: no
+//     send follows the exit, so there is no retry there. Beside what Dropped drops, that is the one
+//     loss the rules' check allows (the page's "What a test round checks").
 //   - A stall or an outage of the daemon. Fresh requests still leave by their moments and each call
 //     ends by its timeout, so until Claude Code's end the calls open at once are no more than the
 //     fresh chunks of the last 10 s and one chunk of put-back requests, whatever the length of the
 //     stall.
 //
 // Every report names the launch's boot token. Nothing in the bridge's loop waits on a report: Run
-// waits for the calls of Claude Code's end alone, before it returns.
+// waits for every call open at Claude Code's end, before it returns.
 type modelRequests struct {
 	*daemonPoster
 	// windowAfter is the timer the window runs on: the bridge's clock's, or a test's
@@ -161,7 +168,9 @@ type modelRequests struct {
 	window, windows uint64
 	windowDue       time.Time
 	// exited is Claude Code's end having sent (exit): no window is armed after it (armLocked).
+	// ended wakes the exit's wait at each call's end (post); its locker is mu.
 	exited bool
+	ended  sync.Cond
 }
 
 // pendingRequest is a request the bridge holds closed. taken is whether it is a put-back request,
@@ -178,7 +187,9 @@ func startModelRequests(poster *daemonPoster, windows func(time.Duration) <-chan
 	if windows == nil {
 		windows = poster.clock.After
 	}
-	return &modelRequests{daemonPoster: poster, windowAfter: windows, open: map[string]*claim.ModelRequest{}}
+	r := &modelRequests{daemonPoster: poster, windowAfter: windows, open: map[string]*claim.ModelRequest{}}
+	r.ended.L = &r.mu
+	return r
 }
 
 // streamLine is what read takes of one stream-json line of Claude Code's.
@@ -387,10 +398,7 @@ func (r *modelRequests) sendLocked() {
 		return
 	}
 	untaken, taken := r.splitLocked()
-	for chunk := range slices.Chunk(untaken, claim.MaxModelRequests) {
-		r.posting++
-		go r.post(chunk, false)
-	}
+	r.postLocked(untaken)
 	if r.retrying {
 		r.pending = taken
 		return
@@ -411,31 +419,34 @@ func (r *modelRequests) sendLocked() {
 	go r.post(requestsOf(retry), true)
 }
 
+// postLocked puts batch on its way at once, in chunks of at most claim.MaxModelRequests, each a call
+// of its own (post) that waits for no answer. The caller holds r.mu.
+func (r *modelRequests) postLocked(batch []claim.ModelRequest) {
+	for chunk := range slices.Chunk(batch, claim.MaxModelRequests) {
+		r.posting++
+		go r.post(chunk, false)
+	}
+}
+
 // exit is the send at Claude Code's end (modelRequests' doc), which Run makes once: it closes every
 // open request, drops what a flush drops, and puts every pending request on its way at once,
 // whatever report is on its way, the fresh ones and the put-back ones each in chunks of at most
-// claim.MaxModelRequests. It returns once those calls have ended, each by its answer or by
-// requestReportTimeout, and no window is armed after it (exited).
+// claim.MaxModelRequests. It returns once no call is open (posting), its own and every report that
+// was on its way, each ended by its answer or its requestReportTimeout; no window is armed after it
+// (exited), so nothing those calls put back is sent again.
 func (r *modelRequests) exit() {
-	var calls sync.WaitGroup
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.exited = true
 	r.closeOpenLocked()
 	r.window = 0
 	untaken, taken := r.splitLocked()
 	r.pending = nil
-	send := func(batch []claim.ModelRequest) {
-		r.posting++
-		calls.Go(func() { r.post(batch, false) })
+	r.postLocked(untaken)
+	r.postLocked(requestsOf(taken))
+	for r.posting != 0 {
+		r.ended.Wait()
 	}
-	for chunk := range slices.Chunk(untaken, claim.MaxModelRequests) {
-		send(chunk)
-	}
-	for chunk := range slices.Chunk(requestsOf(taken), claim.MaxModelRequests) {
-		send(chunk)
-	}
-	r.mu.Unlock()
-	calls.Wait()
 }
 
 // splitLocked drops with a line each pending request past the daemon's keep window, and answers
@@ -469,13 +480,16 @@ func requestsOf(pending []pendingRequest) []claim.ModelRequest {
 // doc makes a put-back request, due as that doc says, but for one a block of which opened it again
 // while the report was on its way (assistant), or an earlier report's answer already put back:
 // that request is open or pending already, and takes the later end and due (queuedLocked). Its end
-// clears retrying where batch is the chunk of put-back requests a flush sent (retrying), and arms
-// the window (armLocked).
+// clears retrying where batch is the chunk of put-back requests a flush sent (retrying), arms the
+// window (armLocked), and wakes the exit's wait once no call is open (ended).
 func (r *modelRequests) post(batch []claim.ModelRequest, retrying bool) {
 	kept, retry := r.call(batch)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.posting--
+	if r.posting == 0 {
+		r.ended.Broadcast()
+	}
 	if retrying {
 		r.retrying = false
 	}
