@@ -103,9 +103,10 @@ mkdir -p "$(dirname "$3")" && exec cp "$built" "$3"
 // github-actions identity; under GITHUB_ACTIONS=true it first prints ::add-mask:: with the
 // placeholder on standard output; and it executes the command with the placeholder in
 // DISPATCH_RESULTS_TOKEN and in the airlock's proxy URL, and with no AGENT_SECRETS_* variable but
-// the broker's URL and the helper's (sessionIdentityVars of cmd/cipher). Like cmd/cipher's
-// buildChildEnv, it passes GitHub's ACTIONS_ID_TOKEN_REQUEST_* on to the command, so the reporter
-// is the one that keeps them from the dispatch command. Any other command exits 2.
+// the broker's URL and the helper's (sessionIdentityVars of cmd/cipher). Unlike cmd/cipher's
+// result-grant, which drops GitHub's ACTIONS_ID_TOKEN_REQUEST_* (oidcRequestVars), it passes them
+// on to the command, so the reporter is the one that keeps them from the dispatch command here, as
+// it would under any wrapper that passed them. Any other command exits 2.
 const fakeAgentSecrets = `#!/bin/sh
 printf '%s\0' "$@" > "$CI_REPORT_STUB_DIR/agent-secrets.args"
 printf '%s' "${AGENT_SECRETS_MACHINE_IDENTITY-unset}" > "$CI_REPORT_STUB_DIR/agent-secrets.identity"
@@ -312,8 +313,8 @@ func TestTheActionRunsTheReporter(t *testing.T) {
 	}
 	// heldThePlaceholder fails the test unless each call held the result grant's placeholder, which
 	// the reporter hands on from its own environment, no other Dispatch credential, and no
-	// variable of GitHub's OIDC token request, which the fake agent-secrets passes on as cmd/cipher
-	// does and the reporter keeps from the command. Whether the command got the run's
+	// variable of GitHub's OIDC token request, which the fake agent-secrets passes on, unlike
+	// cmd/cipher, and the reporter keeps from the command. Whether the command got the run's
 	// AGENT_SECRETS_MACHINE_IDENTITY is cmd/cipher's to show: the fake takes it away itself, so a
 	// check of it here would read the fake.
 	heldThePlaceholder := func(t *testing.T, calls []call) {

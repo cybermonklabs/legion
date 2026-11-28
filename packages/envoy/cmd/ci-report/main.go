@@ -54,8 +54,8 @@
 // each dispatch command it runs, in DISPATCH_RESULTS_TOKEN, with the settings of the broker's
 // airlock proxy; the airlock puts the run's results token in its place. The reporter reads no
 // broker setting and makes no exchange: it hands its environment to the command as it is, less
-// ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN (oidcRequest), which
-// result-grant passes on and the command does not read. The grant lasts at most 15 minutes from
+// ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN (oidcRequest), which the command
+// does not read. The grant lasts at most 15 minutes from
 // the step's start, and the airlock refuses each write after its end with its code GRANT_NOT_LIVE,
 // at the CONNECT and inside an open tunnel, which the command prints as the airlock_refused
 // line's code; so does a broker of another results entry than the one that made the grant. The
@@ -335,11 +335,12 @@ const callBound = 75 * time.Second
 // (exec.Cmd.WaitDelay).
 const callWaitDelay = 5 * time.Second
 
-// oidcRequest names the variables of GitHub's OIDC token request, which `agent-secrets
-// result-grant` passes on to the reporter (buildChildEnv in packages/envoy/cmd/cipher). The
-// dispatch command writes with DISPATCH_URL and DISPATCH_RESULTS_TOKEN and reads neither of these
-// (packages/envoy-client/src/dispatch-config.ts), so the reporter gives the command its
-// environment without them, and the command cannot ask GitHub for the job's token.
+// oidcRequest names the variables of GitHub's OIDC token request. `agent-secrets result-grant`
+// gives its command neither (oidcRequestVars in packages/envoy/cmd/cipher), so under the action
+// the reporter gets neither; the reporter drops them too, so the dispatch command gets neither
+// whatever runs the reporter. The command writes with DISPATCH_URL and DISPATCH_RESULTS_TOKEN and
+// reads neither of these (packages/envoy-client/src/dispatch-config.ts), and without them it
+// cannot ask GitHub for the job's token.
 var oidcRequest = []string{"ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"}
 
 // callEnv is environ, the reporter's environment, without the variables oidcRequest names.

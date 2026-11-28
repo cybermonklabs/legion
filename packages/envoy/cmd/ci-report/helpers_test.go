@@ -16,9 +16,10 @@ import (
 // otherSHA is a commit that is not the checkout's, set as GITHUB_SHA.
 const otherSHA = "0123456789abcdef0123456789abcdef01234567"
 
-// oidcEnv is a stand-in of GitHub's OIDC token request, which `agent-secrets result-grant` passes
-// on to the reporter: runReporter sets it in every run, and no call of the dispatch command may
-// get it. Each value is a stand-in of this test's, built as name and value.
+// oidcEnv is a stand-in of GitHub's OIDC token request, which a job with `id-token: write` holds
+// and `agent-secrets result-grant` drops: runReporter sets it in every run, so the reporter's own
+// guard is what keeps it from every call of the dispatch command. Each value is a stand-in of
+// this test's, built as name and value.
 var oidcEnv = []string{
 	envVar("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.test/request"),
 	envVar("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "a-stand-in-of-the-request-credential"),
