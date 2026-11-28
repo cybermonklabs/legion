@@ -5565,7 +5565,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/healthz` (GET; none)
 
-  The readiness probe: `200` while this process can serve requests, which is while Postgres answers within `store.healthProbeTimeout` (two seconds) on the health pool
+  The readiness probe: `200` while this process can serve requests, which is while Postgres answers within `store.HealthProbeTimeout` (two seconds) on the health pool
   — a dedicated one-connection pool, never the shared one — and `ok` says the same.
   A database that stops answering is `503` with `db: false` inside that bound, never silence, and the reason is logged.
   It is not a liveness check (`/livez` is):

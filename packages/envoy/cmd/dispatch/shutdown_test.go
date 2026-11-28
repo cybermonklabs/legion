@@ -72,8 +72,14 @@ const stagedPastTheRun = 24 * time.Hour
 
 // quickHTTPDrain is the HTTP drain (DISPATCH_TEST_HTTP_DRAIN) of a process whose request in flight
 // holds the drain for its whole share, in place of httpDrainBeforeDocuments' eleven seconds: the
-// order of the shutdown's steps is the same at either length.
-const quickHTTPDrain = 3 * time.Second
+// order of the shutdown's steps is the same at either length, since each row that sets it holds
+// its request until the drain's line and reads that order from the process's lines. Two rows set
+// it: TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument, whose request waits
+// behind the issue's lock until the drain's line, and
+// TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget, whose keyword fill's release
+// on the frozen database (quickFillRelease) ends inside it, as a deployment's five-second release
+// ends inside its eleven-second drain.
+const quickHTTPDrain = 200 * time.Millisecond
 
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent
 // view names a session uuid.
@@ -122,25 +128,36 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 }
 
 // inFlightSettleDelay is the settle delay (DISPATCH_TEST_SETTLE_DELAY) of the row below. It is
-// longer than the row's steps from the edit to taking the issue's lock, so the edit's own timer
-// fires behind that lock, and the row waits for the timer's settlement to queue there before it
-// signals: Shutdown then finds that settlement in flight rather than an armed timer it can stop.
-// At the service's own two seconds the timer could fire before the row took the lock and settle
-// the document before the signal, leaving nothing owed at shutdown.
-const inFlightSettleDelay = 4 * time.Second
+// longer than the row's steps from the edit to taking the issue's lock and seeing the title change
+// queued behind it, so the edit's own timer fires behind that lock, and the row waits for the
+// timer's settlement to queue there before it signals: Shutdown then finds that settlement in
+// flight rather than an armed timer it can stop. A timer that fired before the row took the lock
+// would settle the document before the signal, leaving nothing owed at shutdown, and the row fails
+// at its wait for that settlement, at once, on the document owing none while the row holds the
+// lock. The row waits the delay out before it signals, so the delay is as short as that rule lets
+// it be: a build-cluster Job runs the row 20 times and reads, from the row's line "the title
+// change queued behind the issue lock ... after the edit", the largest time from the edit to that
+// point (read at testwait's pace, so up to 10 ms past it), and the delay is at least five times
+// that largest value, 400 ms while it is at most 80 ms. Two Jobs of 20 runs on CI's runner size (4
+// CPU) read at most 6.7 ms and 13.6 ms.
+const inFlightSettleDelay = 400 * time.Millisecond
 
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
-// queued behind another writer's lock on the issue for the 3 s drain (quickHTTPDrain). The edit's
-// own settlement timer fires four seconds in (inFlightSettleDelay), and its settlement waits behind
+// queued behind another writer's lock on the issue for the drain (quickHTTPDrain). The edit's
+// own settlement timer fires inFlightSettleDelay after the edit, and its settlement waits behind
 // the same lock before the signal. The document service starts once the drain's share ends and
 // finds that timer already fired, so it has no timer to stop: it runs its own settlement of the
 // document beside the timer's, joins the timer's, and reports the document settled. The lock is
-// released once Shutdown's settlement is queued behind it too, or two seconds after the document
-// service started, which is ample for it to read what is owed; a release before that read could
-// let the timer's settlement commit first.
+// released once Shutdown's settlement is queued behind it too, so Shutdown has read the document
+// owing its settlement before the timer's settlement can commit. Each of the row's waits goes
+// through internal/testwait with no bound of its own: for the title change's backend behind the
+// lock; for the timer's settlement beside it, which fails at once if that settlement committed
+// before the row took the lock; and for Shutdown's, which fails at once if Shutdown's drain budget
+// stopped it short of the lock. The row logs the time from the edit to the title change queued
+// behind the lock, which sizes inFlightSettleDelay.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
-	// Not parallel: the test must take the issue's lock before the edit's timer fires, four seconds
-	// after the edit, and load could stretch the steps between past that.
+	// Not parallel: the test must take the issue's lock before the edit's timer fires,
+	// inFlightSettleDelay after the edit, and load could stretch the steps between past that.
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		SettleDelay: inFlightSettleDelay,
@@ -156,42 +173,62 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		// Its answer is not this test's.
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
-	// The edit's settlement queues behind the same lock four seconds in, so a count of waiters
-	// could pass with the title change still on its way: watch the title change's own backend.
-	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
-		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
-	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("Dispatch's output:\n%s", process.Output.String())
+		}
+	})
+	// The edit's settlement queues behind the same lock inFlightSettleDelay after the edit, so a
+	// count of waiters could pass with the title change still on its way: watch the title change's
+	// own backend.
+	waitForRenameBehind(t, database, holder)
+	t.Logf("the title change queued behind the issue lock %v after the edit", time.Since(edited))
 	// The title change is one waiter and the settlement the edit's timer starts is the second. The
-	// wait ends ten seconds past the moment the timer is due rather than at the test binary's
-	// deadline, so a timer that does not fire then fails the row here instead of being waited out.
-	queued := 0
-	if !testwait.Holds(time.Until(edited.Add(inFlightSettleDelay+10*time.Second)), 10*time.Millisecond, func() bool {
+	// wait has no bound of its own. A settlement takes the issue's lock before it commits, so none
+	// commits while the row holds that lock, and a document that owes no settlement now was settled
+	// before the row took it: the edit's timer fired first, and no second waiter will come. The row
+	// fails at once on that, naming it.
+	queued := testwait.Until(t, "the edit's settlement timer to queue its settlement behind the issue lock beside the title change (the count waiting on it)", func() (int, bool) {
 		count, err := storetest.LockWaiters(context.Background(), holder)
 		if err != nil {
 			t.Fatal(err)
 		}
-		queued = count
-		return count >= 2
-	}) {
-		t.Fatalf("the edit's settlement timer never queued its settlement behind the issue lock (%d waiting on it %v after the edit):\n%s",
-			queued, time.Since(edited), process.Output.String())
-	}
+		if count < 2 && !settlementOwed(t, database, artifactID) {
+			number, _, _ := latestVersion(t, database, artifactID)
+			t.Fatalf("the edit's settlement timer fired and its settlement committed before the row took the issue's lock: "+
+				"the document owes no settlement %v after the edit, its latest version is %d, and %d waits on the lock, "+
+				"so the signal would find nothing owed (inFlightSettleDelay %v is shorter than the row's steps from the edit to the lock)",
+				time.Since(edited), number, count, inFlightSettleDelay)
+		}
+		return count, count >= 2
+	})
 	t.Logf("the edit's settlement queued behind the issue lock %v after the edit, with %d waiting on it", time.Since(edited), queued)
 
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
-	// A reading, not a wait for a fact: the lock is released once Shutdown's settlement queues
-	// behind it too (three waiters) or two seconds after the document service started, as the
-	// comment above says, and the count is only logged; the settled document below is the verdict.
-	waiting := 0
-	testwait.Holds(2*time.Second, 10*time.Millisecond, func() bool {
+	// Shutdown's worker for the document reads that it owes a settlement and runs its own, which
+	// queues behind the issue's lock as the third waiter: the timer that fired stays registered
+	// while its settlement waits there, so Shutdown settles the document as one whose timer was
+	// armed, loading its room if need be (settleRoomWithin's mayLoad), and no check between its read
+	// and the issue's lock ends that settlement here. Only then is the lock released, so Shutdown
+	// has read the document owing its settlement before the timer's settlement can commit. The wait
+	// has no bound of its own. Shutdown's drain budget ending before its settlement reaches the lock
+	// makes the third waiter impossible, and the process logs it: the row fails at once on that line.
+	waiting := testwait.Until(t, "Shutdown's settlement to queue behind the issue lock as the third waiter (the count waiting on it)", func() (int, bool) {
 		count, err := storetest.LockWaiters(context.Background(), holder)
 		if err != nil {
 			t.Fatal(err)
 		}
-		waiting = count
-		return count >= 3
+		if count < 3 {
+			output := process.Output.String()
+			for _, stopped := range []string{"stop document settlement before durable append drain", "document settlement stopped at the shutdown budget"} {
+				if strings.Contains(output, stopped) {
+					t.Fatalf("Shutdown's drain budget stopped its settlement before it queued behind the issue lock (%q, with %d waiting on the lock)", stopped, count)
+				}
+			}
+		}
+		return count, count >= 3
 	})
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
@@ -569,7 +606,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil, httpDrainBeforeDocuments)
+		}, func() {}, func() {}, nil, httpDrainBeforeDocuments, shutdownProbes(0))
 	}()
 	testwait.Receive(t, "shutdown to wait for delivery work", entered)
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -688,7 +725,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(fake, server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments)
+		shutdown(fake, server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, shutdownProbes(0))
 	}()
 	// The fake stands at the shutdown's start, so the wait for the outbox, once armed for its
 	// budget (waitForOutbox), is where the shutdown stands: no other timer on the fake is due then,
@@ -737,7 +774,7 @@ func TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(fake, server.Config, documentService, database.Pool, func() {}, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments)
+		shutdown(fake, server.Config, documentService, database.Pool, func() {}, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, shutdownProbes(0))
 	}()
 	fake.AwaitArmedAt(t, "shutdown's wait for the outbox, outboxStopBudget after it began", budget)
 	select {
@@ -887,7 +924,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
 		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments)
+			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments, shutdownProbes(0))
 	}()
 	cancel()
 	select {
@@ -1002,49 +1039,21 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 	return holder
 }
 
-// waitForRenameBehind waits up to within for the title change's backend to queue behind holder's
-// lock on the issue, and returns its process id, or 0 if it did not. The title change runs in the
-// Dispatch process, so its backend is found by its statement, the owner-lock statement a PATCH
-// sends first (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the
-// same statement for the same lock, but only once it holds its document's lock, an advisory lock
-// of its own; the title change holds none of those while it waits. Both hold the owner lock's
-// gate, which every write of this build takes shared in that same statement before it waits on
-// the owner (store.OwnerLockGateNamespace, migration 20261115200014), so the gate is the one
-// advisory lock that tells the two apart by nothing and is left out of the exclusion.
-func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, within time.Duration) uint32 {
+// waitForRenameBehind waits for the title change's backend to queue behind holder's lock on the
+// issue (storetest.WaitForStatementBehind, through testwait with no bound of its own; its give-up
+// names the backends it last read running the statement). The title change runs in the Dispatch
+// process, so its backend is found by its statement, the owner-lock statement a PATCH sends first
+// (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the same statement
+// for the same lock
+// before it takes its document's advisory lock (settleRoomWithin calls lockArtifactOwner before
+// readLocked takes lockSettlementCursor), so while it waits there it holds no advisory lock but
+// the owner lock's gate, which every write of this build takes shared in that same statement
+// (store.OwnerLockGateNamespace), as the title change does: nothing the database shows tells the
+// two apart. The row calls this before the edit's settle timer can fire (inFlightSettleDelay), so
+// the backend waiting on the owner-lock statement behind holder is the title change's.
+func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx) {
 	t.Helper()
-	ctx := context.Background()
-	deadline := time.Now().Add(within)
-	for {
-		rows, err := database.Pool.Query(ctx, `
-			select pid from pg_stat_activity
-			where datname = current_database() and query = $1
-			  and pid not in (
-			    select pid from pg_locks
-			    where locktype = 'advisory' and granted
-			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
-		`, store.OwnerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
-		if err != nil {
-			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
-		}
-		pids, err := pgx.CollectRows(rows, pgx.RowTo[uint32])
-		if err != nil {
-			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
-		}
-		for _, pid := range pids {
-			queued, err := storetest.QueuedBehind(ctx, holder, pid)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if queued {
-				return pid
-			}
-		}
-		if time.Now().After(deadline) {
-			return 0
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	storetest.WaitForStatementBehind(t, database, holder, store.OwnerLockStatement)
 }
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch
@@ -1100,22 +1109,54 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 	}
 }
 
+// quickFillRelease bounds the keyword fill's release of its hold as the process stops
+// (DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT, textversions.Config.ReleaseTimeout) in the row below,
+// in place of the hold's five-second renewal interval: against quickHTTPDrain it keeps a
+// deployment's five seconds against its eleven-second drain, 5 : 11, so on the frozen database the
+// release ends inside the drain, as it does in a deployment.
+const quickFillRelease = 90 * time.Millisecond
+
+// quickShutdownProbe bounds each health probe by which the shutdown learns that the database has
+// stopped answering (DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT) in the row below, in place of the
+// store's two seconds, with shutdownProbes' pause between two: silentProbes failed probes in a row
+// decide it at either length.
+const quickShutdownProbe = 120 * time.Millisecond
+
+// quickShutdownSlack is what the row below allows past its drain and its probes: the shutdown's
+// fixed part on this real binary - the signal reaching the process, the document service returning
+// with no room to settle, the waits between the drain and the first probe, and the exit after the
+// warning. The rule that sizes it is twice the largest fixed part 20 runs of the row measure, and
+// at least 250 ms: two Jobs of 20 runs on CI's runner size (4 CPU) exited 594 to 597 ms after the
+// signal, a fixed part of at most 7 ms past the drain and the probes, so the floor holds.
+const quickShutdownSlack = 250 * time.Millisecond
+
 // A database that stops answering - a failover, a partition - holds every connection waiting on it,
 // and closing the pool waits for every connection in use. Here that is an issue create's: it waits
 // in Postgres on another writer's lock on its project's row when the relay stops forwarding, so
 // whatever Postgres answers it never arrives. HTTP shutdown waits for that request, so the
 // document service starts one HTTP drain (quickHTTPDrain here) after the signal, with no document
-// to settle: the issue it would create has none yet. Dispatch then gives up on the connection when
-// silentProbes health probes in a row have failed with no connection taken back meanwhile, so it
-// exits well inside a runtime's grace period instead of being killed, and says why.
+// to settle: the issue it would create has none yet. The keyword fill runs, as in a deployment, and
+// its release of its hold on the frozen database (quickFillRelease here) ends inside that drain; the
+// shutdown waits for it (waitBackground) before it probes, so a release that outlasted the drain
+// and the slack, or never ended, would hold the exit past the bound. Dispatch then gives up on the
+// connection when silentProbes health probes in a row, each within quickShutdownProbe here and an
+// eighth of it apart, have failed with no connection taken back meanwhile, so it exits well inside a
+// runtime's grace period instead of being killed, and says why. The row waits for the process's
+// exit, and logs the signal's time beside the process's WARN lines, each with its own time, so a run
+// reads the time from the signal to the drain's line, from it to the warning, and from the warning
+// to the exit.
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
 	// Not parallel: it holds a step to a wall-clock bound load could break (the shutdown budget the
-	// exit is compared against, with 5 s of slack).
+	// exit is compared against, with quickShutdownSlack of slack).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
 	process := startDispatchProcessWith(t, relay.url, dispatchOptions{
-		Env: map[string]string{"DISPATCH_TEST_HTTP_DRAIN": quickHTTPDrain.String()},
+		Env: map[string]string{
+			"DISPATCH_TEST_HTTP_DRAIN":                  quickHTTPDrain.String(),
+			"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": quickFillRelease.String(),
+			"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT":      quickShutdownProbe.String(),
+		},
 	})
 	process.waitHealthy(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
@@ -1144,11 +1185,13 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	signalled := process.Terminate(t)
 	process.WaitExit(t, "SIGTERM with the database unanswering")
 	exited := time.Since(signalled)
-	t.Logf("exited %v after SIGTERM", exited)
-	// The request in flight holds the HTTP drain for its whole share, then the document service
-	// returns at once with no room to settle, and each failed probe takes its two seconds and a
-	// poll interval. The slack is a loaded box's jitter on this real binary.
-	if bound := quickHTTPDrain + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
+	t.Logf("SIGTERM at %s; exited %v after it", signalled.Format(time.RFC3339Nano), exited)
+	// The request in flight holds the HTTP drain for its whole share, and the keyword fill's release
+	// ends inside it; then the document service returns at once with no room to settle, and each
+	// failed probe takes its quickShutdownProbe and the pause after it, as the process sets them
+	// (shutdownProbes). quickShutdownSlack is the rest of the exit on this real binary.
+	probes := shutdownProbes(quickShutdownProbe)
+	if bound := quickHTTPDrain + silentProbes*(probes.probeTimeout+probes.pause) + quickShutdownSlack; exited > bound {
 		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
 	}
 	output := process.Output.String()
@@ -1165,33 +1208,107 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	}
 }
 
-// A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
-// as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
-// waits for it. On a database that has stopped answering it never comes back, so closePool gives up
-// on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection taken
-// back, and says so, instead of waiting on it until the runtime kills Dispatch. The test's pool pings
-// every connection it hands out, as pgxpool pings one idle for over a second, so the late taker is
-// held by a ping the frozen database never answers without the test waiting out that second.
-func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
-	// to a wall-clock bound load could break (the 3 x (250 ms + 2 s) + 3 s bound on closing the pool).
-	ctx := context.Background()
+// relayedPool opens a test database and a store.Pool on it through a databaseRelay, and answers a
+// health probe through the relay before it returns, so the health pool holds one connection open
+// and a probe's failure once the relay freezes is the freeze's. The pool pings every connection it
+// hands out, as pgxpool pings one idle for over a second, so a connection taken once the relay has
+// frozen is held by a ping the frozen database never answers, without the test waiting out that
+// second. The pool closes when the test ends, after the relay has closed every connection through
+// it (cleanups run last registered first), so a probe still held by the frozen relay holds no
+// close; closing it again after closePool's row closed it does nothing.
+func relayedPool(t *testing.T) (*store.Pool, *databaseRelay) {
+	t.Helper()
 	database := storetest.Open(t)
+	var pool *store.Pool
+	t.Cleanup(func() {
+		if pool != nil {
+			pool.Close()
+		}
+	})
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
 	config, err := testpool.ParseConfig(relay.url)
 	if err != nil {
 		t.Fatalf("parse the relay's URL: %v", err)
 	}
 	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
-	opened, err := pgxpool.NewWithConfig(ctx, config)
+	opened, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool through the relay: %v", err)
 	}
-	pool := store.NewPool(opened)
-	// The probe answers through the relay before it freezes, so its failures after are the freeze's.
-	if _, err := pool.Healthy(ctx); err != nil {
+	pool = store.NewPool(opened)
+	if _, err := pool.Healthy(context.Background()); err != nil {
 		t.Fatalf("health probe through the relay: %v", err)
 	}
+	return pool, relay
+}
+
+// A health probe over a connection the health pool already holds open, to a database that has
+// stopped answering, ends at the store's own bound (store.HealthProbeTimeout). That is the warm case
+// its doc comment names as production's normal state, and the one nothing else bounds: pgxpool's
+// two-minute ConnectTimeout floor covers only a dial, and a /healthz request's context carries no
+// deadline. TestHealthzAnswersWhilePostgresStopsAnswering holds the cold case, the probe's first
+// dial. The row warms the health connection through the relay (relayedPool), freezes the relay, and
+// runs the probe on context.Background(), which sets no deadline, through store.Pool.HealthyOn on a
+// clocktest.Fake: store.Pool.Healthy, which /healthz calls, is HealthyOn on clock.Real, and the
+// shutdown's probe calls HealthyOn on its bounds' clock, which shutdownProbes sets to clock.Real in
+// every process, so the bound the fake holds is the one a deployment's probe runs under, in both
+// callers. The row requires the probe to arm the store's bound and nothing else, to be still waiting
+// on the frozen connection a nanosecond before that bound, and to fail with context.DeadlineExceeded
+// once the fake reaches it. A store that bounds only the dial (the two seconds moved into the pool's
+// ConnectTimeout, say) arms nothing on the fake and fails the row at testwait's deadline. Its
+// verdict reads no clock (dispatch://INFRA-3149/comment/1c8db540-4115-4f10-8655-4ef1cfb6d4e3). The
+// probe waits on pgxpool's ping of the open connection, as /healthz's probe every few seconds does
+// once its connection has been idle for over a second.
+func TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound(t *testing.T) {
+	t.Parallel()
+	pool, relay := relayedPool(t)
+	relay.freeze()
+	start := time.Date(2026, time.November, 28, 7, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	answered := make(chan error, 1)
+	go func() {
+		_, err := pool.HealthyOn(context.Background(), fake)
+		answered <- err
+	}()
+	bound := store.HealthProbeTimeout
+	due := start.Add(bound)
+	fake.AwaitArmedAt(t, "the health probe's bound on the fake", due)
+	fake.Advance(bound - time.Nanosecond)
+	if armed := fake.Armed(); len(armed) != 1 || !armed[0].Equal(due) {
+		t.Fatalf("a nanosecond before the store's bound the fake holds %v; want the probe's bound %s alone, not yet fired", armed, due.Format(time.RFC3339Nano))
+	}
+	select {
+	case err := <-answered:
+		t.Fatalf("the health probe over the open connection to the frozen database returned %v a nanosecond before the store's bound", err)
+	default:
+	}
+	fake.Advance(time.Nanosecond)
+	if err := testwait.Receive(t, "the health probe's answer once the fake reaches the store's bound", answered); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the health probe over the open connection to the frozen database answered %v at the store's bound; want context.DeadlineExceeded: the caller set no deadline, so only the store's bound gives it", err)
+	}
+}
+
+// A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
+// as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
+// waits for it. On a database that has stopped answering it never comes back, so closePool gives up
+// on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection taken
+// back, and says so, instead of waiting on it until the runtime kills Dispatch. closePool runs
+// production's probe and pause, shutdownProbes(0)'s store.HealthProbeTimeout and drainPollInterval,
+// with its clock replaced by a clocktest.Fake: the row moves the fake to each pause's end and each
+// probe's timeout once closePool has armed it, and the frozen relay holds every probe until the
+// fake ends its context. It asserts that closePool waits out a pause before each probe and gives
+// each probe the store's bound, by the deadline each is armed for; that it had not returned after
+// the first and the second failed probe, read once the pause after each was armed, when closePool
+// waits on it; that it returned once the third failed; that the late taker's connection never came
+// back; and that its warning names the cause and the three failed probes. The store's own bound on
+// each probe is armed on the same fake at the same moment (store.Pool.HealthyOn), so no bound on
+// the wall clock can end a probe before the row moves the fake. The pool
+// (relayedPool) pings every connection it hands out, so the late taker is held by a ping the frozen
+// database never answers.
+func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
+	ctx := context.Background()
+	pool, relay := relayedPool(t)
 	if _, err := pool.Exec(ctx, "select 1"); err != nil {
 		t.Fatalf("open a shared connection through the relay: %v", err)
 	}
@@ -1205,27 +1322,60 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 		}
 		taken <- err
 	}()
-	for deadline := time.Now().Add(10 * time.Second); pool.Use().InUse == 0; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the late taker never took the idle shared connection")
-		}
-	}
+	testwait.Until(t, "the late taker taking the idle shared connection", func() (store.ConnectionUse, bool) {
+		use := pool.Use()
+		return use, use.InUse > 0
+	})
 
 	logged := capturedLog(t)
-	started := time.Now()
-	closePool(pool)
-	took := time.Since(started)
-	t.Logf("closePool returned %v after it began", took)
-	if bound := silentProbes*(drainPollInterval+2*time.Second) + 3*time.Second; took > bound {
-		t.Errorf("closePool returned %v after it began with the database unanswering, want within %v", took, bound)
+	start := time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	bounds := shutdownProbes(0)
+	bounds.clock = fake
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		closePool(pool, bounds)
+	}()
+	// awaitArmed waits until closePool has armed a timer due at at on the fake, with failed probes
+	// failed so far. It reads whether closePool has returned after it reads what is armed, so a
+	// timer it saw armed is one closePool still waits on, and a closePool that returned instead
+	// fails the row at once, naming how many probes it gave up after.
+	awaitArmed := func(what string, at time.Time, failed int) {
+		t.Helper()
+		testwait.Until(t, what+" armed on the fake clock for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+			armed := fake.Armed()
+			select {
+			case <-returned:
+				t.Fatalf("closePool returned after %d failed probes, want it to wait until %d had failed", failed, silentProbes)
+			default:
+			}
+			return armed, slices.ContainsFunc(armed, at.Equal)
+		})
 	}
+	// Each probe comes after a pause of bounds.pause and fails at bounds.probeTimeout through the
+	// frozen relay, so the fake moves to each deadline in turn. The pause after the first and the
+	// second failed probe, seen armed, is the read that closePool had not returned after them.
+	at := start
+	for failed := range silentProbes {
+		at = at.Add(bounds.pause)
+		awaitArmed(fmt.Sprintf("the pause before probe %d", failed+1), at, failed)
+		fake.Set(at)
+		at = at.Add(bounds.probeTimeout)
+		awaitArmed(fmt.Sprintf("probe %d's timeout", failed+1), at, failed)
+		fake.Set(at)
+	}
+	testwait.Receive(t, fmt.Sprintf("closePool's return once probe %d failed", silentProbes), returned)
 	select {
 	case err := <-taken:
 		t.Errorf("the late taker's connection came back (%v), want it held by the frozen database", err)
 	default:
 	}
-	if !strings.Contains(logged.String(), "once the database stopped answering") {
-		t.Errorf("closePool did not say it gave up because the database stopped answering:\n%s", logged.String())
+	failedProbes := fmt.Sprintf("failed_probes=%d", silentProbes)
+	if !slices.ContainsFunc(strings.Split(logged.String(), "\n"), func(line string) bool {
+		return strings.Contains(line, "once the database stopped answering") && strings.Contains(line, failedProbes)
+	}) {
+		t.Errorf("closePool did not say it gave up after %d failed probes because the database stopped answering:\n%s", silentProbes, logged.String())
 	}
 }
 

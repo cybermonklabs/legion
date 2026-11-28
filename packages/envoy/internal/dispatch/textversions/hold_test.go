@@ -271,6 +271,26 @@ func TestACaughtUpFillSendsNoStatement(t *testing.T) {
 	}
 }
 
+// The holder's release of its hold (runner.end) is bounded by one renewal interval unless
+// Config.ReleaseTimeout names a shorter bound: the zero value every deployment leaves is
+// holdOptions.Renew, a longer value is cut to it, and a shorter one is taken, so the setting can
+// only shorten the release and production's keeps its five seconds.
+func TestTheFillsReleaseBoundIsTheRenewalUnlessShorter(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "zero", timeout: 0, want: holdOptions.Renew},
+		{name: "above the renewal", timeout: holdOptions.Renew + time.Second, want: holdOptions.Renew},
+		{name: "below the renewal", timeout: 90 * time.Millisecond, want: 90 * time.Millisecond},
+	} {
+		if got := (Config{ReleaseTimeout: row.timeout}).releaseBound(); got != row.want {
+			t.Errorf("%s: Config{ReleaseTimeout: %v}.releaseBound() = %v, want %v", row.name, row.timeout, got, row.want)
+		}
+	}
+}
+
 // renewalsApart counts the statements the store it traces sends (storetest.TracedStore): the
 // hold's renewals (duty's renewHold) in renewals, and every other statement in others.
 type renewalsApart struct {

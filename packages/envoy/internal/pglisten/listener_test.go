@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -368,26 +369,80 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	}
 }
 
+// A connection that goes half-open - the proxy in front of it forwards nothing more and closes
+// neither side - is replaced once a ping on it outlasts PingTimeout: the listener closes it, backs
+// off, dials again, runs OnConnected, and a notification reaches OnNotify on the new connection.
+// The healthy connection before it carried a notification and was not replaced: the listener
+// dialed once until that ping failed.
+//
+// The listener runs at production's ListenIdle (30 s) and PingTimeout (5 s) on a clocktest.Fake
+// (Listener.Clock), and the row moves the fake past each deadline only once the listener has armed
+// it: the idle wait, one ListenIdle after the LISTEN and the notification proved the connection;
+// the ping's deadline, armed once the proxy has gone half-open, so the ping hangs until the fake
+// passes it; and the backoff before the redial, at which the listener has closed the connection
+// and not yet dialed again. The close waits for no answer from the half-open connection (pgx
+// closed it when the ping's read failed, or the close only writes its Terminate), so the close's
+// deadline is released as it is armed and the backoff follows. The fake never moves while a
+// LISTEN runs or while a healthy connection waits, so no deadline ends a healthy connection
+// because a loaded machine was slow, and the row runs beside the others.
+//
+// Its database is an empty one of its own (storetest.Empty), opened with store.Open and never
+// migrated: the row uses LISTEN and NOTIFY alone, which read no table, so it neither makes nor
+// clones the package's migrated template. The store is closed before the database is dropped.
 func TestTheListenerReplacesAHalfOpenConnection(t *testing.T) {
-	// Not parallel: its 1 s PingTimeout is the bound the row is about, and every ping and LISTEN
-	// on a healthy connection - the first one before the proxy blinds it, and the replacement -
-	// must answer inside it, or the listener replaces a connection that was never half-open.
-	database := storetest.Open(t)
+	t.Parallel()
+	database, err := store.Open(context.Background(), storetest.Empty(t))
+	if err != nil {
+		t.Fatalf("open the empty database: %v", err)
+	}
+	// Registered after storetest.Empty's drop, so it runs before it: the drop finds no connection
+	// of the store's pool left.
+	t.Cleanup(database.Pool.Close)
 	proxy := newBlindingProxy(t, databaseAddress(database))
 	probe := newListenerProbe()
 	listener := probe.listener(proxiedDial(database, proxy))
-	listener.ListenIdle, listener.PingTimeout = time.Second, time.Second
+	start := time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	listener.Clock = fake
 	runListener(t, probe, listener)
 	probe.waitConnected(t, "first connection")
+	first := probe.lastConn(t)
 	notifyChannel(t, database, "delivery_changes", "")
 	if note := probe.waitNote(t, "a notification through the proxy"); note != (listenerNote{channel: "delivery_changes"}) {
 		t.Fatalf("notification through the proxy = %+v, want delivery_changes with an empty payload", note)
 	}
 
+	// The LISTEN and the notification proved the connection at start, where the fake stands, so
+	// the idle wait ends one ListenIdle on. Seen armed, it is the read that the listener still
+	// waits on its first connection, the only one it has dialed.
+	idleDue := start.Add(DefaultListenIdle)
+	fake.AwaitArmedAt(t, "the idle wait on the first connection", idleDue)
+	if dials := probe.dials.Load(); dials != 1 {
+		t.Fatalf("dials before the connection went half-open = %d, want 1: the listener replaced a healthy connection", dials)
+	}
 	proxy.blind()
+	fake.Set(idleDue)
+	pingDue := idleDue.Add(DefaultPingTimeout)
+	fake.AwaitArmedAt(t, "the deadline of the ping on the half-open connection", pingDue)
+	fake.Set(pingDue)
+
+	// The backoff, seen armed, is the read that the listener gave the half-open connection up: it
+	// closed that connection before it backed off, and it dials again only once the backoff ends.
+	redialDue := pingDue.Add(listener.backoffFor(1))
+	fake.AwaitArmedAt(t, "the backoff before the redial", redialDue)
+	if !first.IsClosed() {
+		t.Fatal("the listener backs off with the half-open connection still open")
+	}
+	if dials := probe.dials.Load(); dials != 1 {
+		t.Fatalf("dials before the backoff ended = %d, want 1: the listener redialed before its backoff ended", dials)
+	}
+	fake.Set(redialDue)
 	probe.waitConnected(t, "after its connection went half-open")
-	if dials := probe.dials.Load(); dials < 2 {
-		t.Fatalf("dials after the connection went half-open = %d, want a second", dials)
+	if dials := probe.dials.Load(); dials != 2 {
+		t.Fatalf("dials after the connection went half-open = %d, want 2", dials)
+	}
+	if pid := probe.lastConn(t).PgConn().PID(); pid == first.PgConn().PID() {
+		t.Fatalf("the listener reconnected on backend %d, the half-open connection's", pid)
 	}
 	notifyChannel(t, database, "delivery_changes", "")
 	if note := probe.waitNote(t, "a notification on the replacement"); note != (listenerNote{channel: "delivery_changes"}) {

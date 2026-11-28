@@ -330,8 +330,9 @@ const identityProbeBody = `{"message":"identity probe","role":"-identity-probe"}
 
 // startCopysListener starts the listener binary as the copy's manifests/listener.yaml configures
 // it, against the issuer at issuer and a NATS of its own, with ENVOY_OIDC_ACCOUNTS accounts and
-// Dispatch's principal testDispatchSubject; it answers the process and its port.
-func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest.Process, int) {
+// Dispatch's principal testDispatchSubject, under the name what for its waits and failures; it
+// answers the process and its port.
+func startCopysListener(t *testing.T, what, binary, issuer, accounts string) (*cmdtest.Process, int) {
 	t.Helper()
 	_, natsURL := testnats.Start(t)
 	held := cmdtest.HoldPort(t)
@@ -348,7 +349,56 @@ func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest
 		"ENVOY_DISPATCH_PRINCIPAL=" + testDispatchSubject,
 	}
 	held.Pass(cmd, "ENVOY_LISTEN_FD")
-	return cmdtest.Start(t, "the copy's listener", cmd), held.Port
+	return cmdtest.Start(t, what, cmd), held.Port
+}
+
+// healthRead is one read of a listener's /healthz: the status it answered and the body it decoded,
+// or the transport error the read ended with beside the status and body of the last answer before
+// it, and, on a read that is not healthy, the listener's output so far, so that a wait that gives
+// up prints them. The wait asks once more after its request's context (testwait.Context) has
+// expired, so its last read can end in a transport error, and the answer that read carries is then
+// the one the give-up shows. Exported for the reason statusRead's fields are.
+type healthRead struct {
+	Status int
+	Health map[string]any
+	Err    error
+	Output string
+}
+
+// healthyAt waits until the listener p, which what names, answers /healthz at base with status
+// "healthy", and returns the body of that answer. /healthz answers 200 "starting" from the moment
+// the listener serves, before NATS connects; only "healthy" says /v1 serves. A listener that exited
+// fails the row at once.
+func healthyAt(t *testing.T, what string, p *cmdtest.Process, base string) map[string]any {
+	t.Helper()
+	ctx := testwait.Context(t)
+	var last healthRead // the Status and Health of the last read a request was answered with
+	read := testwait.Until(t, what+" to answer /healthz healthy", func() (healthRead, bool) {
+		select {
+		case <-p.Exited:
+			t.Fatalf("%s exited before it was healthy:\n%s", what, p.Output.String())
+		default:
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/healthz", nil)
+		if err != nil {
+			t.Fatalf("build the /healthz request of %s: %v", what, err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return healthRead{Status: last.Status, Health: last.Health, Err: err, Output: p.Output.String()}, false
+		}
+		health := map[string]any{}
+		_ = json.NewDecoder(response.Body).Decode(&health)
+		_ = response.Body.Close()
+		answer := healthRead{Status: response.StatusCode, Health: health}
+		last = answer
+		if health["status"] != "healthy" {
+			answer.Output = p.Output.String()
+			return answer, false
+		}
+		return answer, true
+	})
+	return read.Health
 }
 
 // TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRest: the listener
@@ -363,36 +413,24 @@ func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest
 // older listener exits when it cannot read its issuer; this one, built from this tree, starts,
 // reports "oidc": false on /healthz, answers that issuer's tokens 503 with Retry-After: 1 until it
 // can read it, and logs that it retries.
+//
+// The two listeners start together and run side by side: each has a NATS of its own and an issuer
+// of its own, and nothing either reads or answers is the other's, so the control proves the same
+// whether its listener starts before, beside or after the first.
 func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRest(t *testing.T) {
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Target: "../cmd/listener"})
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject, testStrangerSubject)
-	listener, port := startCopysListener(t, binary, issuer, testDispatchSubject+","+testRunnerSubject)
+	listener, port := startCopysListener(t, "the copy's listener", binary, issuer, testDispatchSubject+","+testRunnerSubject)
+	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
+	// namespace (there a connection that never answers, here one refused). The listener starts and
+	// serves, but answers Dispatch's token for that issuer 503, not the 400 that says it took the
+	// mark: the copy's fault before the fix, a token whose issuer the listener cannot read. The
+	// port is one the test holds and nothing listens on: a closed listener's port is any process's
+	// to take, and an issuer that takes it is reached.
+	strandedIssuer := "http://" + testport.Refused(t)
+	stranded, strandedPort := startCopysListener(t, "the listener given an unreachable issuer", binary, strandedIssuer, testDispatchSubject)
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
-	// /healthz answers 200 "starting" from the moment the listener serves, before NATS connects;
-	// only "healthy" says /v1 serves.
-	deadline := time.Now().Add(90 * time.Second)
-	answer := "none"
-	for {
-		response, err := http.Get(base + "/healthz")
-		if err == nil {
-			var health struct{ Status string }
-			_ = json.NewDecoder(response.Body).Decode(&health)
-			_ = response.Body.Close()
-			if health.Status == "healthy" {
-				break
-			}
-			answer = fmt.Sprintf("%d %q", response.StatusCode, health.Status)
-		}
-		select {
-		case <-listener.Exited:
-			t.Fatalf("the copy's listener exited before it was healthy:\n%s", listener.Output.String())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the copy's listener was not healthy within 90 s (last /healthz answer %s):\n%s", answer, listener.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	healthyAt(t, "the copy's listener", listener, base)
 
 	send := func(token string) (int, string) {
 		t.Helper()
@@ -429,36 +467,9 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	}
 	listener.WaitForOutput(t, `"reason":"issuer"`)
 
-	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
-	// namespace (there a connection that never answers, here one refused). The listener starts and
-	// serves, but answers Dispatch's token for that issuer 503, not the 400 that says it took the
-	// mark: the copy's fault before the fix, a token whose issuer the listener cannot read. The
-	// port is one the test holds and nothing listens on: a closed listener's port is any process's
-	// to take, and an issuer that takes it is reached.
-	unreachable := "http://" + testport.Refused(t)
-	strandedIssuer := unreachable
-	stranded, strandedPort := startCopysListener(t, binary, strandedIssuer, testDispatchSubject)
+	// The control's listener, started beside the first.
 	strandedBase := "http://127.0.0.1:" + strconv.Itoa(strandedPort)
-	health := map[string]any{}
-	for deadline := time.Now().Add(90 * time.Second); ; {
-		if response, err := http.Get(strandedBase + "/healthz"); err == nil {
-			health = map[string]any{}
-			_ = json.NewDecoder(response.Body).Decode(&health)
-			_ = response.Body.Close()
-			if health["status"] == "healthy" {
-				break
-			}
-		}
-		select {
-		case <-stranded.Exited:
-			t.Fatalf("the listener given an unreachable issuer exited:\n%s", stranded.Output.String())
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the listener given an unreachable issuer was not healthy within 90 s (%v):\n%s", health, stranded.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	health := healthyAt(t, "the listener given an unreachable issuer", stranded, strandedBase)
 	if health["oidc"] != false {
 		t.Errorf("the listener given an unreachable issuer reports oidc %v on /healthz, not false", health["oidc"])
 	}

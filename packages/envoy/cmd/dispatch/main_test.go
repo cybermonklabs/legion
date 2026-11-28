@@ -1510,7 +1510,7 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 // packets dropped, nothing refused and nothing reset, which is what a security-group change, an
 // availability-zone partition, or an endpoint that accepts and then stalls looks like to the
 // client. A stopped container cannot produce it - its port refuses instantly - so the probe's
-// own wait only shows here. Without store.healthProbeTimeout that wait is two minutes on a
+// own wait only shows here. Without store.HealthProbeTimeout that wait is two minutes on a
 // cold dial, which pgxpool floors it at, and unbounded once the connection is up, because an
 // http.Server request context carries no deadline: either way the probe does not answer, and
 // three polls that never answer replace the task and cancel every in-flight request of every
@@ -1519,8 +1519,9 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 //
 // The health pool opens on the first probe, so black-holing the link before that probe leaves
 // nothing to race: the connection this test hangs on is dialled after the outage begins. That
-// makes this the cold case; the warm one, which production actually runs, is the unbounded
-// one and is measured against the real binary rather than here.
+// makes this the cold case; the warm one, which production actually runs, is the unbounded one,
+// and TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound measures it: a
+// probe over a health connection already open, to a database that then stops answering.
 func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 5 s timeout
 	// around a 2 s unanswered probe).
