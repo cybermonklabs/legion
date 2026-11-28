@@ -1,10 +1,11 @@
 """The TypeScript half of what a Bun job reads, listed by the tools that compile and load it.
 
 ci_ts_programs.py pairs each changes filter with the tsc programs its job typechecks (PROGRAMS)
-and the entries its job runs with Bun (BUNDLES). This module lists them: `bunx <COMPILER> -p
-<project> --noEmit --listFilesOnly` for a program, and the `inputs` of the metafile `bun build
-<entry> --target bun --metafile` writes for a bundle, each kept to the files inside the repository
-and outside node_modules. Both need the workspace's node_modules, which `bun install` writes.
+and the entries its job runs with Bun (BUNDLES). This module lists them: `bunx --no-install
+<COMPILER> -p <project> --noEmit --listFilesOnly` for a program, and the `inputs` of the metafile
+`bun build <entry> --target bun --metafile` writes for a bundle, each kept to the files inside the
+repository and outside node_modules. Both need the workspace's node_modules, which `bun install`
+writes.
 
 Two readers use it: the changes job's filter generation (`check-ci-filters.sh generate`), which
 writes the files of each LISTED tree into that filter's listed block, and check-ts-filters.sh, which
@@ -40,14 +41,17 @@ RENDERED = {
 }
 
 # The compiler a program is listed with: tsc, the one every typecheck job runs, unless the run says
-# otherwise. The changes job's generation lists with tsgo (check-ci-filters.sh sets it in generate
-# mode), TypeScript's native compiler, pinned in the root package.json: it lists the dashboard's
-# program in 1.3 s of 2.9 s processor time where tsc takes 8 to 10 s of it, and on a runner of 4
-# processors that time is what the table's load and the go commands beside it are short of
-# (.github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs). check-ts-filters.sh,
-# in the lint job, lists with tsc and holds the changes job's listed blocks to what tsc lists, so a
-# file tsgo resolves differently fails that pull request's lint job by name rather than passing.
+# otherwise. The changes job's generation sets tsgo (check-ci-filters.sh, in generate mode);
+# .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs says why, with the
+# numbers.
 COMPILER = "tsc"
+
+# The command a program is listed with, before the compiler's name. `--no-install` runs the
+# compiler's binary in node_modules/.bin, which `bun install` writes from the root package.json's
+# pin, or one on PATH, and never fetches a package: with neither, the listing fails naming the
+# cause, where a bare bunx would download the npm package of the compiler's name, which for tsgo
+# and for tsc is not the pinned one.
+BUNX = ("bunx", "--no-install")
 
 # The files of this repository the listings resolve with besides the sources they list, which a
 # change can edit to move a listing while none of the files it lists changes: each program's
@@ -170,18 +174,18 @@ def failed(path: str, command: str, result, holds: str, problems: list, scratch:
 
 
 def listed_paths(text: str) -> list:
-    """The paths tsc's --listFilesOnly printed, one to a line. Where the repository root holds a
-    newline, as a test's fixture repository under a TMPDIR holding one does, splitting at each
-    newline would cut every path inside it in two, so the root is set aside as a NUL, which no path
-    holds, while the text is split, and put back in each line after."""
+    """The paths the compiler's --listFilesOnly printed, one to a line. Where the repository root
+    holds a newline, as a test's fixture repository under a TMPDIR holding one does, splitting at
+    each newline would cut every path inside it in two, so the root is set aside as a NUL, which no
+    path holds, while the text is split, and put back in each line after."""
     root = str(REPO)
     return [line.replace("\0", root) for line in text.replace(root, "\0").splitlines()]
 
 
 def program_files(project: str, problems: list) -> list | None:
-    """Every file of the project's tsc program that is inside the repository and outside
-    node_modules, repository-relative. None when the command fails."""
-    command = ["bunx", COMPILER, "-p", project, "--noEmit", "--listFilesOnly"]
+    """Every file of the project's program, as the compiler (COMPILER) lists it, that is inside the
+    repository and outside node_modules, repository-relative. None when the command fails."""
+    command = [*BUNX, COMPILER, "-p", project, "--noEmit", "--listFilesOnly"]
     result = subprocess.run(command, cwd=REPO, capture_output=True, text=True)
     if result.returncode != 0:
         failed(project, " ".join(command), result, "program holds", problems)
@@ -254,6 +258,14 @@ def pairs() -> list:
 STARTED: dict = {}
 
 
+def started_summary() -> str:
+    """The command the programs are listed with and how many program and bundle listings start()
+    began, as one line: check-ci-filters.sh prints it in generate mode after the table's load."""
+    kinds = [kind for kind, _path in STARTED]
+    return (f"the TypeScript programs are listed with {' '.join((*BUNX, COMPILER))}: {kinds.count('program')} "
+            f"program and {kinds.count('bundle')} bundle listings began before the table loaded")
+
+
 def start() -> None:
     """Begin every listing a LISTED entry can ask for, each a compiler or Bun run on a thread of its
     own at nice 10 (background_priority), and return at once. The changes job's generation calls it
@@ -287,9 +299,9 @@ def listed_files(filters, problems: list) -> dict:
     """Per LISTED entry of ci_ts_programs.py whose filter is in `filters`, the files of its tree
     that the programs and bundles paired with its sources give, sorted: the filter's listed block.
     A source that cannot be listed leaves the entry out with a refusal recorded, so a caller that
-    finds a problem knows the block is unknown. The sources are listed at once, each tsc or Bun
-    run on a processor of its own, and each one's refusals join `problems` where a listing one
-    after another would have put them."""
+    finds a problem knows the block is unknown. The sources are listed at once, each compiler
+    (COMPILER) or Bun run on a processor of its own, and each one's refusals join `problems` where
+    a listing one after another would have put them."""
     from ci_ts_programs import LISTED
     asked = dict.fromkeys((kind, path) for name, _tree, sources, _why in LISTED if name in filters
                           for source in sources for kind, pair, path, _ in pairs()

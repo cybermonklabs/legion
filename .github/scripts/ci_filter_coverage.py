@@ -608,16 +608,16 @@ def background_priority() -> None:
             pass
 
 
-# The session whose pool begins each Run's go commands as run() declares it (start_early); None
-# until check-ci-filters.sh arms it, so a module that only imports the table starts nothing.
+# The session whose pool begins each Run's `go list -deps` as run() declares it (start_early);
+# None until check-ci-filters.sh arms it, so a module that only imports the table starts nothing.
 EARLY: Session | None = None
 
 
 def start_early() -> None:
     """Arm EARLY: check-ci-filters.sh calls it after this module's import and before the table's,
-    in every mode, so each go command the table's Runs ask runs while the table loads. With
-    CI_FILTERS_JOBS=1 nothing runs early, and every command runs when the walk asks it, one after
-    another, as before."""
+    in every mode, so each Run's `go list -deps` runs while the table loads; the other go commands
+    run when the walk asks them. With CI_FILTERS_JOBS=1 nothing runs early, and every command runs
+    when the walk asks it, one after another, as before."""
     global EARLY
     jobs = go_jobs()
     if jobs > 1 and EARLY is None:
@@ -3443,8 +3443,9 @@ def engine_inputs() -> list:
         if path and not path.endswith(".go") and not path.startswith(".github/ci-gates/") \
                 and (REPO / path).is_file():
             found.add(path)
-    # What tsc and bun resolved the listed blocks with: the tsconfig chains, the package.json
-    # files, the lockfile (ci_ts_listing.RESOLVED), which no Python open sees.
+    # What the compiler (ci_ts_listing.COMPILER) and bun resolved the listed blocks with: the
+    # tsconfig chains, the package.json files, the lockfile (ci_ts_listing.RESOLVED), which no
+    # Python open sees.
     listing = sys.modules.get("ci_ts_listing")
     if listing is not None:
         found |= set(listing.RESOLVED)
@@ -3932,8 +3933,8 @@ def check() -> int:
     # The listed blocks need the workspace's node_modules and Bun, which the changes job installs
     # and the ci-filters job does not: only the generation lists them. No rule of the check reads
     # them, and rule 8's docs filter holds none. Which blocks it lists depends on no read the walk
-    # below finds, only on which filters a gate is on, so tsc and Bun list them while the walk's go
-    # commands run, rather than after them.
+    # below finds, only on which filters a gate is on, so the compiler (ci_ts_listing.COMPILER) and
+    # Bun list them while the walk's go commands run, rather than after them.
     listed, listed_problems = {}, []
     with ThreadPoolExecutor(max_workers=1) as beside:
         if mode == "generate":

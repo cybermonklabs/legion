@@ -722,9 +722,10 @@ check "whose failure makes every filter every path" \
 # What tsc and bun resolve with is a file the filters are computed with too: a tsconfig edit (a
 # `paths` map, an `extends`) can move a listed block while no file of the block changes. The stand-in
 # bunx prints the program's `listed` file, which stands for the compiler's new answer to the new
-# tsconfig. The generation lists a program with tsgo (ci_ts_listing.COMPILER), so each stand-in bunx
-# here answers `tsgo -p` alone and refuses any other argv: a generation that listed with tsc would
-# fail these cases.
+# tsconfig. The generation lists a program with `bunx --no-install tsgo` (ci_ts_listing.BUNX and
+# ci_ts_listing.COMPILER), so each stand-in bunx here answers `--no-install tsgo -p` alone and
+# refuses any other argv: a generation that listed with tsc, or without --no-install, would fail
+# these cases.
 echo "case: a tsconfig edit that moves a listed block selects every path through that filter"
 root=$(fixture base-tsconfig)
 mkdir -p "$root/pkg/app" "$root/pkg/lib" "$root/bin"
@@ -736,8 +737,8 @@ printf 'pkg/lib/one.ts\n' > "$root/pkg/app/listed"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
-sed "s|^|$PWD/|" "$3/listed"
+[ "$1 $2 $3" = "--no-install tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+sed "s|^|$PWD/|" "$4/listed"
 SH
 chmod +x "$root/bin/bunx"
 printf 'PROGRAMS = [("app", "pkg/app", "app: Typecheck the app")]\nBUNDLES = []\nLISTED = [("app", "pkg/lib", ("app",), "app loads what its program compiles")]\n' \
@@ -1161,7 +1162,7 @@ printf '{}\n' > "$root/pkg/app/tsconfig.json"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+[ "$1 $2 $3" = "--no-install tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
 echo "$(cd node_modules/@x/lib && pwd -P)/index.ts"
 SH
 cat > "$root/bin/bun" <<'SH'
@@ -1220,8 +1221,8 @@ printf 'pkg/lib/one.ts\n' > "$root/pkg/app/listed"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
-sed "s|^|$PWD/|" "$3/listed"
+[ "$1 $2 $3" = "--no-install tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+sed "s|^|$PWD/|" "$4/listed"
 SH
 printf '#!/bin/sh\nexit 0\n' > "$root/bin/bun"
 chmod +x "$root/bin/bunx" "$root/bin/bun"
@@ -2997,8 +2998,8 @@ check "with the tag step's files covered" \
 # The tag step's filter can hold a listed block: the contracts modules that the dispatch command
 # the two-build Go step runs loads, in the real repository. Those files are no declared read of
 # the step's gate, so rule 15 puts them in the untagged job's filter from the block itself. The
-# fixture's tsc program is a `bunx` on PATH that lists docs/readme.md, which is how the listing
-# reads a real one (`bunx tsc -p <project> --noEmit --listFilesOnly`).
+# fixture's program is a `bunx` on PATH that lists docs/readme.md, which is how the listing reads
+# a real one (`bunx --no-install tsgo -p <project> --noEmit --listFilesOnly`).
 # listed_tag_run <root>: a tagged job, gated on the filter tagged, whose step runs ./lib under the
 # live tag with -run, pinned whole, whose filter's listed block lists docs/ from the program
 # PROGRAMS pairs it with, and TAG_RUNS pairing the step with the app job.

@@ -405,10 +405,12 @@
 # names the gate file, the //ci: line or the workflow a fault is in. The go commands of every gate
 # and every //ci:builds line run at once, in a pool of CI_FILTERS_JOBS (default: the machine's
 # processors, at most 8; 1 runs them one after another), each answer keyed by what it asks, so the
-# filters are the same text whatever the pool's size. With more than one, each command starts as
-# the table declares its run (ci_filter_coverage.start_early), so the commands run while the rest
-# of the table loads; a command's failure waits in its answer and is reported when the walk asks
-# it, as it is when the command runs then.
+# filters are the same text whatever the pool's size. With more than one, each Run's `go list
+# -deps` starts as the table declares the Run (ci_filter_coverage.start_early), so those listings
+# run while the rest of the table loads; the other go commands, module_files()'s `go env -json`
+# and `go work edit -json` and check_vet_tags()'s `go list`, run when the walk asks them. A
+# listing's failure waits in its answer and is reported when the walk asks it, as it is when the
+# command runs then.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -612,8 +614,12 @@ export CI_FILTERS_MODE="${1:-check}"
 # of those opens is the computation's. A run whose imports fail is a failure before the second
 # read has anything to add. The generate mode starts its TypeScript listings
 # (ci_ts_listing.start), with tsgo (ci_ts_listing.COMPILER), right after the engine's own import,
-# and every mode starts each go command as the table declares its run (ci_filter_coverage.start_early),
-# so they run while the table loads; they read the tree and write nothing in it.
+# and every mode starts each Run's `go list -deps` as the table declares the Run
+# (ci_filter_coverage.start_early), so they run while the table loads. The TypeScript listings
+# read the tree and write nothing in it; the early go list commands are go commands like the
+# others, whose write of a go.work.sum the guard below names. After the load, the generate mode
+# prints the command the programs are listed with and how many listings start() began
+# (ci_ts_listing.started_summary).
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
 import hashlib
 import os
@@ -717,6 +723,8 @@ with contextlib.ExitStack() as stop:
     print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
     if progress is not None:
         print(progress, flush=True)
+    if os.environ["CI_FILTERS_MODE"] == "generate":
+        print(ci_ts_listing.started_summary(), flush=True)
     for import_warning in caught:
         ci_filter_coverage.print_import_warning(import_warning)
     status = ci_filter_coverage.main()
