@@ -43,10 +43,14 @@ const gitHubReadsSigningKey = "github-reads-signing-key"
 // negative control reads: a build without the member answers 200, ok true and no github at all.
 func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 	t.Parallel()
-	// Two Dispatch processes at once, the second started while the first runs.
+	// Reserve both slots before either process starts.
 	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)
+	withoutApp := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey,
+	})
+
 	// failure is the body GitHub answers the webhook's deliveries listing with, with a 503; nil
 	// answers it with no deliveries.
 	var failure atomic.Pointer[string]
@@ -80,8 +84,8 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 
 	env := githubAppEnv(t, github.URL)
 	env["DISPATCH_TEST_HOOKS"] = "1"
-	// Two minutes is longer than any test may wait for a second sweep.
-	env["DISPATCH_TEST_REDELIVERY_INTERVAL"] = "1s"
+	// Shorten the wait for the second sweep from the production interval of two minutes.
+	env["DISPATCH_TEST_REDELIVERY_INTERVAL"] = "100ms"
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey, Env: env,
 	})
@@ -122,9 +126,6 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		t.Fatalf("/healthz with every GitHub read answered = %d %s, want 200 with ok true", succeeded.status, succeeded.body)
 	}
 
-	withoutApp := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey,
-	})
 	withoutApp.waitHealthy(t)
 	answer := withoutApp.readHealthz(t, testwait.Context(t))
 	t.Logf("/healthz of the process with no GitHub App: %d %s", answer.status, answer.body)
