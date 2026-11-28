@@ -11,16 +11,21 @@
  *  this split from Playwright's own, whose count split is a partition too. Every row of the real
  *  config is a unit of its own (`groupOf`, e2e/shard-reporter.ts), so its placement is computed
  *  here row by row; the fixture config holds the rows the reporter must keep together, which the
- *  real config has none of.
+ *  real config has none of. That computation keys each row by its title in the listing, and the
+ *  reporter by its own (`titlesBelowFile`, e2e/shard-reporter.ts), so a second fixture config holds
+ *  the two keys against each other in shapes the real config has none of either: a `describe`
+ *  with no title, one inside it, and a title that holds a newline.
  *
  *  The listings of a selection run one after the other, and the two selections side by side, so
  *  the file holds at most two at once: a listing of the full config is a `node` of about 300 to
  *  500 MiB, and this file once started ten at once, four of which a Legion pod's memory guard
- *  killed at 6.8 to 7.1 of its 8 GiB. The fixture's listings start in the file's last test, after
- *  both selections have ended.
+ *  killed at 6.8 to 7.1 of its 8 GiB. The fixtures' listings start in the file's last two tests,
+ *  one after the other, after both selections have ended.
  */
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -384,4 +389,39 @@ test(
     expect(free.length).toBeGreaterThan(1);
   },
   rowLimit(...Array.from({ length: legs + 1 }, () => "listing" as const))
+);
+
+test(
+  "the reporter keys each row as the listing does, inside a describe with no title and with a newline in its title too",
+  async () => {
+    const output = mkdtempSync(join(tmpdir(), "row-keys-"));
+    try {
+      const keys = join(output, "keys.json");
+      const listed = await listing(
+        import.meta.url,
+        "e2e/__tests__/fixtures/row-keys.config.ts",
+        { ROW_KEYS_OUTPUT: keys },
+        [],
+        ["./e2e/__tests__/fixtures/row-keys.reporter.ts"]
+      );
+      const listedRows = rowsOfListing(listed);
+      // The listing keeps a `describe` with no title as a suite titled "", as a merged report does
+      // (`rowTimes`, e2e/tools/shard-weights.ts), so a row inside one starts with the separator.
+      expect(listedRows.map((row) => row.title)).toEqual([
+        "a top-level row",
+        "a row of\ntwo lines",
+        `a titled describe${titleSeparator}a row in a titled describe`,
+        `${titleSeparator}a row in an untitled describe`,
+        `${titleSeparator}a titled describe in an untitled one${titleSeparator}a row two describes down`,
+      ]);
+      const reported = JSON.parse(readFileSync(keys, "utf8")) as Pick<
+        Row,
+        "project" | "file" | "title"
+      >[];
+      expect(reported.map(rowKey).sort()).toEqual(listedRows.map(rowKey).sort());
+    } finally {
+      rmSync(output, { force: true, recursive: true });
+    }
+  },
+  rowLimit("listing")
 );

@@ -82,10 +82,27 @@ function groupOf(test: TestCase): { holder: TestCase | Suite; kind: UnitKind } {
   };
 }
 
-/** The titles of `entry` below its file. A title path is the root's empty title, the project,
- *  the file, then these: the table's and the listing's own key. */
-function titlesBelowFile(entry: Suite | TestCase): string[] {
-  return entry.titlePath().slice(3);
+/** The titles of `entry` below its file, as a JSON report and a listing hold them: each `describe`
+ *  from the file down, one with no title as "", then the entry's own. The table and the listing
+ *  key a row by these joined by `titleSeparator` (`rowTimes`, e2e/tools/shard-weights.ts, and
+ *  `rowsOfListing`, e2e/configurations.ts), so the placement weighs it by its own time. They are
+ *  not read off `titlePath()`, which leaves a `describe` with no title out (Playwright 1.64.1's
+ *  `Suite.titlePath`, playwright/lib/common/index.js:2617-2622), where the JSON reporter keeps it
+ *  as a suite titled "" (`_serializeSuite`, lib/runner/index.js:4343-4352): a row inside one would
+ *  be keyed apart from its entry in the table, and weighed by its file's mean.
+ *  e2e/__tests__/shard-split.test.ts holds these against the listing's, through
+ *  `fixtures/row-keys.reporter.ts`. */
+export function titlesBelowFile(entry: Suite | TestCase): string[] {
+  const titles: string[] = [];
+  let at: Suite | TestCase = entry;
+  while (at.type !== "file") {
+    titles.push(at.title);
+    if (at.parent === undefined) {
+      throw new Error(`"${entry.title}" is in no file suite, so it has no titles below one`);
+    }
+    at = at.parent;
+  }
+  return titles.reverse();
 }
 
 /** Places a sharded run's rows on its legs by measured row time (`e2e/shard-split.ts` says why

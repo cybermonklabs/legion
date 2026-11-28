@@ -2,6 +2,7 @@
  *  `e2e/shard-split.ts` places rows by. */
 import { expect, test } from "bun:test";
 
+import { titleSeparator } from "../configurations";
 import { rowTimes, weightsOf } from "../tools/shard-weights";
 
 /** A report of one file, `a.e2e.ts`, whose rows ran in `chromium` with the durations given, in
@@ -41,8 +42,8 @@ function report(rows: Record<string, readonly number[]>, project = "chromium") {
 test("a row's time is every attempt it took, and a row that never ran is no row", () => {
   const rows = rowTimes(report({ "one attempt": [2000], "a retry": [3000, 1500] }));
   expect([...rows.entries()]).toEqual([
-    ["chromium\na.e2e.ts\none attempt", 2],
-    ["chromium\na.e2e.ts\na retry", 4.5],
+    [JSON.stringify(["chromium", "a.e2e.ts", "one attempt"]), 2],
+    [JSON.stringify(["chromium", "a.e2e.ts", "a retry"]), 4.5],
   ]);
 });
 
@@ -97,4 +98,41 @@ test("a row inside a describe is keyed by its titles below the file, as a listin
     "bun e2e/tools/shard-weights.ts --main 1"
   );
   expect(weights.rows).toEqual({ chromium: { "a.e2e.ts": { "a describe › a row": 1.5 } } });
+});
+
+test("a row's titles stay whole in its key: a newline in a row's or a describe's title, and a describe with no title", () => {
+  /** A spec of `a.e2e.ts` titled `title` whose one attempt in `chromium` took `duration` ms. */
+  const spec = (title: string, duration: number) => ({
+    file: "a.e2e.ts",
+    tests: [{ projectName: "chromium", results: [{ duration, status: "passed" }] }],
+    title,
+  });
+  const titled = {
+    suites: [
+      {
+        specs: [spec("a row of\ntwo lines", 1000)],
+        suites: [
+          { specs: [spec("a row", 2000)], title: "a describe of\ntwo lines" },
+          { specs: [spec("a row", 3000)], title: "" },
+        ],
+        title: "a.e2e.ts",
+      },
+    ],
+  };
+  const weights = weightsOf(
+    [{ commit: "c0", rows: rowTimes(titled), run: 0 }],
+    "2026-11-28T00:00:00.000Z",
+    "bun e2e/tools/shard-weights.ts --main 1"
+  );
+  // As a listing names them (`rowsOfListing`, e2e/configurations.ts): each title whole, and a
+  // `describe` with no title as an empty one before the separator.
+  expect(weights.rows).toEqual({
+    chromium: {
+      "a.e2e.ts": {
+        [`a describe of\ntwo lines${titleSeparator}a row`]: 2,
+        "a row of\ntwo lines": 1,
+        [`${titleSeparator}a row`]: 3,
+      },
+    },
+  });
 });

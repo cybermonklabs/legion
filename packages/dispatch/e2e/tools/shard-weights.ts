@@ -78,8 +78,9 @@ interface ReportSpec {
   }[];
 }
 
-/** One report's rows that ran: `project`, `file` and the title path, joined by newlines, to the
- *  seconds all its attempts took. */
+/** One report's rows that ran, each keyed by `project`, `file`, its `describe` titles and its own
+ *  title as one JSON array, to the seconds all its attempts took. JSON is the separator-free way
+ *  to key strings: a title may hold a newline, which Playwright allows, and it stays one title. */
 export function rowTimes(report: {
   readonly suites?: readonly ReportSuite[];
 }): Map<string, number> {
@@ -91,7 +92,7 @@ export function rowTimes(report: {
         if (ran.length === 0) continue;
         const seconds = ran.reduce((sum, result) => sum + (result.duration ?? 0), 0) / 1000;
         rows.set(
-          [test.projectName ?? "", spec.file ?? "", ...path, spec.title ?? ""].join("\n"),
+          JSON.stringify([test.projectName ?? "", spec.file ?? "", ...path, spec.title ?? ""]),
           seconds
         );
       }
@@ -120,7 +121,7 @@ export function weightsOf(
   // Each row's median, by project, then file, then the row's titles below its file.
   const medians = new Map<string, Map<string, Map<string, number>>>();
   for (const [row, times] of byRow) {
-    const [project = "", file = "", ...titles] = row.split("\n");
+    const [project = "", file = "", ...titles] = JSON.parse(row) as string[];
     const files = medians.get(project) ?? new Map<string, Map<string, number>>();
     medians.set(project, files);
     const ofFile = files.get(file) ?? new Map<string, number>();
