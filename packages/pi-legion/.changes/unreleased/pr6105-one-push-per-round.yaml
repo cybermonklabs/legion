@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  `legion-worker`'s `pr-body.md` runs the simplify pass before the round's one push, and records every result once, at the pushed head. Before, the pass ran after the round's results, so a round pushed once for the results and again for the simplify commit, and the second push cancelled the CI run of the first.
