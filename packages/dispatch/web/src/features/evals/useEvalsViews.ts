@@ -63,6 +63,9 @@ export function laterOffsets(total: number): number[] {
  *  reads every page again. */
 export type EvalsViewSelect = (answer: EvalListResponse) => EvalListResponse;
 
+/** The items of a view that holds none yet: one array, so its readers' comparisons hold. */
+const NO_ITEMS: readonly EvalListItem[] = [];
+
 /**
  * The evals views of `kinds` over `scope`, all subscribed at once (dispatch://INFRA-2918/
  * artifact/plan-md, D3): one view per kind, and, for a kind whose first answer counts more than a
@@ -135,7 +138,13 @@ export function useEvalsViews(
       kind,
       status: refused.length > 0 ? "failed" : first?.data === undefined ? "subscribed" : "painted",
       answer: first?.data,
-      items: pages.flatMap((page) => page.data?.items ?? []),
+      // A kind of one page keeps that page's items as the query holds them, the same array until
+      // that view's own answer moves it, so a reader of several kinds whose drawing of one kind
+      // compares its items (`TargetCards`) draws it again only when that kind's view lands.
+      items:
+        pages.length === 1
+          ? (pages[0]?.data?.items ?? NO_ITEMS)
+          : pages.flatMap((page) => page.data?.items ?? []),
       retry: () => {
         for (const page of refused) void page.refetch();
       },

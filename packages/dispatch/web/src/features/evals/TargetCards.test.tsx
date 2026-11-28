@@ -8,6 +8,7 @@ import { installFakeLiveSockets, snapshotFrame } from "../../__tests__/live-sock
 import { api } from "../../api/client";
 import type { EvalListItem, EvalListResponse, LiveSubscribe } from "../../api/types";
 import type { EvalSeriesValues } from "./chart-model";
+import * as chartModel from "./chart-model";
 import { EvalsSection } from "./EvalsSection";
 import { TargetCards } from "./TargetCards";
 import type { EvalsScope, EvalsViewFacets, EvalsViewState } from "./useEvalsViews";
@@ -602,4 +603,36 @@ test("resolving | items read failed | the card shows the error and a retry", asy
       "/projects/ACME/issues?only=ACME-4&onlyLabel=P0+with+no+owner&nofilter=1"
     )
   );
+});
+
+test("a frame of one of the cards' two views draws none of the other view's cards again", async () => {
+  const delivery = view("delivery", [
+    unowned(0),
+    evalItem(
+      "deploy-frequency",
+      "delivery",
+      series("deploys", "deploys", { window: { deploys: 3, per_day: 1 } })
+    ),
+  ]);
+  const legion = (median: number) =>
+    view("legion", [
+      evalItem(
+        "legion-work-time",
+        "legion",
+        series("hours", "hours", { window: { median, n: 2, p90: median * 2 } })
+      ),
+    ]);
+  const tree = (views: EvalsViewState[]) => (
+    <MemoryRouter initialEntries={["/projects/ACME/evals"]}>
+      <TargetCards delivery project="ACME" views={views} />
+    </MemoryRouter>
+  );
+  const { rerender } = render(tree([delivery, legion(2)]));
+  // primarySeries runs once a draw of a card whose eval its view holds.
+  const drawn = spyOn(chartModel, "primarySeries");
+  spies.push(drawn);
+
+  rerender(tree([delivery, legion(3)]));
+  expect(drawn.mock.calls.map(([item]) => item.definition.slug)).toEqual(["legion-work-time"]);
+  expect(figure("legion-work-time", "median")).toBe("3.0 h");
 });

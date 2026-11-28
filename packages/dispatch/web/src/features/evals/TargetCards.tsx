@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo } from "react";
+import { memo, type ReactNode, useMemo } from "react";
 
 import type { EvalKind } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
@@ -146,33 +146,34 @@ export const TARGET_CARDS: readonly CardSpec[] = [
 /** The words the issue table names the unowned P0 card's issues by. */
 const UNOWNED_P0_LABEL = "P0 with no owner";
 
-/** One target card: its eval's primary series as a chart (`EvalChart`), its verdict's badge
- *  beside the title, and its target. A card whose eval the view does not hold, or whose series it
- *  holds no row of, reads "no data", never 0 (spec R5). While a facet or the search is set, a card
- *  of an eval they narrow names them, or is marked loading while its values are the unnarrowed
- *  ones, and any other card reads "window and repository only" (plan D3). */
-function TargetCard({
-  days,
-  project,
-  spec,
-  view,
-}: {
+/** What draws one target card. */
+interface TargetCardProps {
   days: { from: string; to: string } | null;
   project: string;
   spec: CardSpec;
   view: EvalsViewState;
-}): ReactNode {
+}
+
+/** One target card: its eval's primary series as a chart (`EvalChart`), its verdict's badge
+ *  beside the title, and its target. A card whose eval the view does not hold, or whose series it
+ *  holds no row of, reads "no data", never 0 (spec R5). While a facet or the search is set, a card
+ *  of an eval they narrow names them, or is marked loading while its values are the unnarrowed
+ *  ones, and any other card reads "window and repository only" (plan D3). Its model is built from
+ *  its series and the view's window and compare range, so a delta of another eval of the view
+ *  builds it again only where that delta moved one of them. */
+function TargetCardOf({ days, project, spec, view }: TargetCardProps): ReactNode {
   const item = view.items.find((candidate) => candidate.definition.slug === spec.slug);
-  const answer = view.answer;
+  const window = view.answer?.window;
+  const compare = view.answer?.compare ?? null;
   const series = item === undefined ? undefined : primarySeries(item);
   const verdict = item?.verdict ?? null;
   const target = useMemo(() => targetOf(verdict), [verdict]);
   const model = useMemo((): ChartModel | null => {
-    if (answer === undefined || series === undefined) return null;
+    if (window === undefined || series === undefined) return null;
     return {
       axis: DAY_AXIS,
       comparable: true,
-      compareRange: answer.compare,
+      compareRange: compare,
       kind: spec.chart,
       name: spec.slug,
       series: [
@@ -184,12 +185,12 @@ function TargetCard({
             noun: spec.noun,
             statistics: spec.statistics,
           },
-          { compare: answer.compare, nowMs: Date.now(), target, window: answer.window }
+          { compare, nowMs: Date.now(), target, window }
         ),
       ],
       title: spec.title,
     };
-  }, [answer, series, spec, target]);
+  }, [compare, series, spec, target, window]);
   // The P0 card's link: every issue key unowned-p0's rows name now, the issues the card counts,
   // so its link and its count are one set (plan D13).
   const link = useIssuesLink(
@@ -272,6 +273,22 @@ function TargetCard({
     </article>
   );
 }
+
+/** A target card, drawn again only when what it draws moved: its view's status, answer, items or
+ *  facets, the brushed days, the project or its spec. The cards read two views, the delivery and
+ *  the Legion view, so a frame of one draws none of the other's cards again. */
+const TargetCard = memo(
+  TargetCardOf,
+  (before: TargetCardProps, after: TargetCardProps) =>
+    before.days === after.days &&
+    before.project === after.project &&
+    before.spec === after.spec &&
+    before.view.status === after.view.status &&
+    before.view.answer === after.view.answer &&
+    before.view.items === after.view.items &&
+    before.view.facets?.loading === after.view.facets?.loading &&
+    before.view.facets?.set === after.view.facets?.set
+);
 
 /**
  * The target cards (dispatch://INFRA-2918/artifact/plan-md, D7): the ten cards, each its eval's

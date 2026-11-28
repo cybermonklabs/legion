@@ -21,6 +21,10 @@ import { DAY_MS, utcDate } from "../delivery/lib/window";
 export type EvalSeriesValues = NonNullable<EvalListItem["series"]>[number];
 /** A range of whole UTC days, as an eval read names its window and its compare range. */
 export type EvalRange = EvalListResponse["window"];
+/** What a chart model reads of an evals answer: its window and its compare range (null for none),
+ *  which stay the same objects across a delta of the view that moves neither, so a reader keyed on
+ *  them builds a model again only when its own eval or one of them moved. */
+export type EvalRanges = Pick<EvalListResponse, "window" | "compare">;
 type EvalVerdict = NonNullable<EvalListItem["verdict"]>;
 type Statistics = NonNullable<EvalSeriesValues["window"]>;
 
@@ -386,7 +390,7 @@ export interface ChartHead {
  *  holds, judged by its verdict, over the answer's window and compare range; null where it holds
  *  none of them. */
 export function dayChartModel(
-  answer: EvalListResponse,
+  answer: EvalRanges,
   item: EvalListItem,
   head: ChartHead,
   series: readonly ChartSeriesSpec[],
@@ -475,7 +479,7 @@ function everySeriesSpec(values: EvalSeriesValues, judged: readonly string[]): S
  *  them, the primary first, as a line of its leading statistic, judged by the eval's verdict, over
  *  the answer's window and compare range; null where it lists none. */
 export function everyEvalModel(
-  answer: EvalListResponse,
+  answer: EvalRanges,
   item: EvalListItem,
   nowMs: number
 ): ChartModel | null {
@@ -513,7 +517,7 @@ export interface Category {
  * first's they share. Null where the eval holds none of the categories.
  */
 export function categoryChartModel(
-  answer: EvalListResponse,
+  answer: EvalRanges,
   item: EvalListItem,
   head: ChartHead & { readonly axis: ChartAxis; readonly series: string },
   categories: readonly Category[],

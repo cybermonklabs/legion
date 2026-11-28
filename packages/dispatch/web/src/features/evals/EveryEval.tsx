@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
+import { memo, type ReactNode, useMemo, useState } from "react";
 
 import { type EvalKind, evalDetailQuery } from "../../api/queries";
 import type { EvalListItem, EvalListResponse } from "../../api/types";
@@ -62,6 +62,15 @@ export function keepLogged(answer: EvalListResponse): EvalListResponse {
   };
 }
 
+/** What draws one eval's box. */
+interface EvalBoxProps {
+  answer: EvalListResponse;
+  item: EvalListItem;
+  landed: boolean;
+  rows: boolean;
+  scope: EvalsScope;
+}
+
 /**
  * One eval no section draws by name, in a box naming it (`data-eval`): its per-day line, each
  * listed series a line of its leading statistic, under EvalChart's Graph | Table and Compare; its
@@ -72,21 +81,10 @@ export function keepLogged(answer: EvalListResponse): EvalListResponse {
  * landed (`landed`), and draws them in place of the line (`DeclaredEval`, plan D10, D25 step 3);
  * one that declares none reads no detail. The detail is read at the version the evals view
  * answers, so a register write that declares charts reads it again (D11a), the box drawing what
- * the version before declared until the new detail lands.
+ * the version before declared until the new detail lands. Of its view's answer it reads the window
+ * and the compare range alone (`EvalBox`).
  */
-function EvalBox({
-  answer,
-  item,
-  landed,
-  rows,
-  scope,
-}: {
-  answer: EvalListResponse;
-  item: EvalListItem;
-  landed: boolean;
-  rows: boolean;
-  scope: EvalsScope;
-}): ReactNode {
+function EvalBoxOf({ answer, item, landed, rows, scope }: EvalBoxProps): ReactNode {
   const { slug, unit, version } = item.definition;
   const declares = item.declared_charts > 0;
   const detail = useQuery({
@@ -95,7 +93,11 @@ function EvalBox({
     placeholderData: keepPreviousData,
   });
   const [rowsOpen, setRowsOpen] = useState(false);
-  const model = useMemo(() => everyEvalModel(answer, item, Date.now()), [answer, item]);
+  const { compare, window } = answer;
+  const model = useMemo(
+    () => everyEvalModel({ compare, window }, item, Date.now()),
+    [compare, item, window]
+  );
   const target = useMemo(() => targetOf(item.verdict), [item.verdict]);
   const name = evalName(item);
   return (
@@ -149,8 +151,24 @@ function EvalBox({
   );
 }
 
+/** An eval's box, drawn again only when its eval, its view's window or compare range, whether its
+ *  views have landed, whether it lists rows or the scope moved: a frame of another of the Logged
+ *  section's views, or a delta of another eval of its own, draws it not at all. Its view's answer
+ *  is otherwise not compared: the box reads its window and compare range alone. */
+const EvalBox = memo(
+  EvalBoxOf,
+  (before: EvalBoxProps, after: EvalBoxProps) =>
+    before.item === after.item &&
+    before.answer.window === after.answer.window &&
+    before.answer.compare === after.answer.compare &&
+    before.landed === after.landed &&
+    before.rows === after.rows &&
+    before.scope === after.scope
+);
+
 /** Evals each drawn in a box of its own, side by side where the section is wide enough, each
- *  reading its declared charts once the views they are drawn from have landed (`landed`). */
+ *  reading its declared charts once the views they are drawn from have landed (`landed`), which
+ *  only a box of an eval that declares charts is told. */
 function EvalBoxes({
   drawn,
   landed,
@@ -170,7 +188,7 @@ function EvalBoxes({
             answer={answer}
             item={item}
             key={item.id}
-            landed={landed}
+            landed={landed && item.declared_charts > 0}
             rows={rows}
             scope={scope}
           />

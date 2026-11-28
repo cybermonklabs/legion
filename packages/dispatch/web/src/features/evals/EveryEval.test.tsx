@@ -24,9 +24,10 @@ import { api } from "../../api/client";
 import type { EvalKind } from "../../api/queries";
 import type { EvalListItem, EvalListResponse, LegionSetting } from "../../api/types";
 import { successText } from "../../theme/classes";
+import * as chartModel from "./chart-model";
 import { EvalsTab } from "./EvalsTab";
 import { LoggedEvals } from "./EveryEval";
-import type { EvalsScope } from "./useEvalsViews";
+import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
 
 // Every registered eval on the tab (dispatch://INFRA-2918/artifact/plan-md, D7, T17; spec R19,
 // R2): each logged eval, whatever its kind, in the Logged section after the merge timeline, with
@@ -408,4 +409,51 @@ test("every eval of the list read appears on the tab, counted against the read's
   expect(listed("Legion measures").at(-1)).toBe("legion-new-measure");
   // The Logged section: every logged eval of every view, and every experiment, by slug.
   expect(listed("Logged")).toEqual(["ab-uplift", "flaky-tests", "release-notes", "widget-size"]);
+});
+
+test("a frame of another view draws no logged eval's box again, and a delta of one eval builds that eval's chart alone", async () => {
+  const quiet = logged("quiet-eval", "experiment", [WIDGETS]);
+  const moving = logged("moving-eval", "experiment", [WIDGETS]);
+  const experiment = evalsView("experiment", [moving, quiet]);
+  const waiting: EvalsViewState = {
+    answer: undefined,
+    items: [],
+    kind: "delivery",
+    retry: () => undefined,
+    status: "subscribed",
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page = (views: EvalsViewState[]) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <LoggedEvals scope={SCOPE} views={views} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const { rerender } = render(page([experiment, waiting]));
+  await waitFor(() => expect(document.querySelectorAll("[data-eval]")).toHaveLength(2));
+  // evalName runs at each draw of a box (and each build of its chart), everyEvalModel at each build.
+  const drawnBoxes = spyOn(chartModel, "evalName");
+  const built = spyOn(chartModel, "everyEvalModel");
+  spies.push(drawnBoxes, built);
+
+  // The delivery view lands holding no logged eval (the section keeps its logged evals alone,
+  // keepLogged): every view has landed, and neither box, whose evals declare no charts, draws again.
+  const delivery = evalsView("delivery", []);
+  rerender(page([experiment, delivery]));
+  expect(drawnBoxes).not.toHaveBeenCalled();
+
+  // A delta of the experiment view moves one eval: the answer is new, its window and compare
+  // range the same, and only the moved eval's chart is built again.
+  const moved = logged("moving-eval", "experiment", [{ ...WIDGETS, window: { n: 4, value: 6 } }]);
+  const answer = experiment.answer;
+  if (answer === undefined) throw new Error("the experiment view holds an answer");
+  rerender(
+    page([
+      { ...experiment, answer: { ...answer, items: [moved, quiet] }, items: [moved, quiet] },
+      delivery,
+    ])
+  );
+  expect(built).toHaveBeenCalledTimes(1);
+  expect(built.mock.calls[0]?.[1]).toBe(moved);
 });
