@@ -357,6 +357,12 @@ export const MARK_ATTRIBUTE = "data-foot-clearance";
 /** The custom property that holds a scroller's end room, on its own inline style. */
 export const CLEARANCE_PROPERTY = "--foot-clearance";
 
+/** The event the hook fires on the document element each time it writes or unsets a page
+ *  element's `topProperty` (`useFootInset`). The room the page keeps by that property resizes
+ *  nothing a `ResizeObserver` watches, so what is laid out against that room listens for this:
+ *  the issues table's box fits its height to it again (`components/table-layout.ts`). */
+export const FOOT_TOP_EVENT = "foot-top-change";
+
 /** The attribute by which the page states, on `<main>` or, in the new issue page's frame, on the
  *  frame's column, that the document scrolls that element's content (`FOOT_LAYERS` says why the
  *  hook cannot tell, and why the frame's room goes in its column). */
@@ -520,10 +526,20 @@ function footHeldAbove(scroller: HTMLElement): PageBand | undefined {
 
 /** Writes `pixels` to `property` in `style` as `${pixels}px`, or removes the property while
  *  `pixels` is 0 (`setProperty` with an empty value removes it), and leaves a property that
- *  already holds that alone. */
-function writePixels(style: CSSStyleDeclaration, property: string, pixels: number): void {
+ *  already holds that alone. Answers whether it wrote. */
+function writePixels(style: CSSStyleDeclaration, property: string, pixels: number): boolean {
   const value = pixels === 0 ? "" : `${pixels}px`;
-  if (style.getPropertyValue(property) !== value) style.setProperty(property, value);
+  if (style.getPropertyValue(property) === value) return false;
+  style.setProperty(property, value);
+  return true;
+}
+
+/** Writes a page element's `topProperty` on the document element (`writePixels`) and, where that
+ *  changed it, fires `FOOT_TOP_EVENT` there, so what is laid out against the room the property
+ *  gives is laid out again in the same task, before anything reads it. */
+function writeTop(property: string, pixels: number): void {
+  const root = document.documentElement;
+  if (writePixels(root.style, property, pixels)) root.dispatchEvent(new Event(FOOT_TOP_EVENT));
 }
 
 /** The scroller under a point of a float, as `scrollerUnder` finds it: the scroller, its foot
@@ -982,7 +998,9 @@ function publish(): void {
  * edge its top stands, while it counts, and unset while it counts nothing or is no longer a foot
  * element. It is the one property a page element's band publishes for the page to read: the
  * issues table keeps that much room at its end for its selection bar (`SelectionBar`'s
- * `SELECTION_BAR_TOP_PROPERTY`). The bar is fixed, so that room moves no foot element.
+ * `SELECTION_BAR_TOP_PROPERTY`). The bar is fixed, so that room moves no foot element, and it
+ * resizes nothing a `ResizeObserver` watches either: each write that changes the property fires
+ * `FOOT_TOP_EVENT` on the document element, on which the table's box fits itself to the room.
  */
 export function useFootInset(
   ref: RefObject<HTMLElement | null>,
@@ -1045,9 +1063,7 @@ export function useFootInset(
       } else {
         pageBands.delete(element);
       }
-      if (topProperty !== undefined) {
-        writePixels(document.documentElement.style, topProperty, pageBands.get(element)?.hi ?? 0);
-      }
+      if (topProperty !== undefined) writeTop(topProperty, pageBands.get(element)?.hi ?? 0);
       publish();
     };
     const measureLayerFloat = () => {
@@ -1065,7 +1081,7 @@ export function useFootInset(
       cancelAnimationFrame(frame);
       pageBands.delete(element);
       floats.delete(element);
-      if (topProperty !== undefined) writePixels(document.documentElement.style, topProperty, 0);
+      if (topProperty !== undefined) writeTop(topProperty, 0);
       publish();
     };
   }, [active, layer, ref, topProperty]);

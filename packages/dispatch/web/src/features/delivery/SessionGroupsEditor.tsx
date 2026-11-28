@@ -113,24 +113,29 @@ function arrivedSince(over: DeliverySessionGroup, group: DeliverySessionGroup): 
 const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
+/** What a group's card says before why the live update carrying its write is not drawn, once the
+ *  hold for it ran out (`useHoldUntilDrawn`): the editor reads its groups from that update. */
+const SESSION_GROUPS_NOT_LOADED = "Couldn't load the session groups.";
+
 /** One group: its name, renamable, its members, each removable, and the window's selected
  *  sessions to add, drawn as an item of the editor's list of groups, keyed by the group's id.
  *  While any group write is pending, every mutating button is held so a second click cannot race
  *  the one request that decides the membership. A write of this card's own that lands keeps them
  *  held until the update carrying it brings the group's new `updated_at` - a Rename's own answer,
  *  which the card writes into the page's groups reads (`writeGroup`), or Dispatch's live update -
- *  or takes the group away (`useHoldUntilDrawn`); a refusal lets them go at once. The card and its
- *  buttons stay the same elements through that update. Rename with no new name and Add selected
- *  with no session to add are held as well. Every hold is by `aria-disabled`, not `disabled`
- *  (`heldPress`): a held button keeps its Tab stop and the focus the reader's press left on it,
- *  and a press on it does nothing.
+ *  or takes the group away (`useHoldUntilDrawn`); a refusal lets them go at once. An update that
+ *  never comes lets them go at the write deadline, and the card says why until it comes. The card
+ *  and its buttons stay the same elements through that update. Rename with no new name and Add
+ *  selected with no session to add are held as well. Every hold is by `aria-disabled`, not
+ *  `disabled` (`heldPress`): a held button keeps its Tab stop and the focus the reader's press
+ *  left on it, and a press on it does nothing.
  *
  *  Its groups, in this order, each on a line of its own: Name (the name's field and Rename),
  *  Sessions (its members as chips, each with its ✕: the first ten, then "+N" for the rest) and
- *  Actions (Add selected, Delete group). A chip shrinks to the list's width and its name wraps
- *  inside it (`AgentName`'s own `[overflow-wrap:anywhere]`): below the wide layout a link is
- *  `inline-flex` (the 44 px touch rule in styles.css), and a cut line there would end in no
- *  ellipsis. */
+ *  Actions (Add selected, Delete group), then the line that says why an update is not drawn,
+ *  while there is one. A chip shrinks to the list's width and its name wraps inside it
+ *  (`AgentName`'s own `[overflow-wrap:anywhere]`): below the wide layout a link is `inline-flex`
+ *  (the 44 px touch rule in styles.css), and a cut line there would end in no ellipsis. */
 function GroupCard({
   group,
   storedTitle,
@@ -184,7 +189,7 @@ function GroupCard({
     setLanded((before) => (before === undefined ? renamed : laterGroup(before, renamed)));
     setRename((now) => (now.sent?.press === press ? NO_RENAME : now));
   };
-  const [drawing, holdUntilDrawn] = useHoldUntilDrawn(group.updated_at);
+  const [drawing, holdUntilDrawn, undrawn] = useHoldUntilDrawn(group.updated_at);
   const held = pending || drawing;
   // The press's render hands its own `holdUntilDrawn`, so the hold is on the version pressed on,
   // and on the press the write began under (`pressOfWrite`), read here at that press. The hold is
@@ -321,6 +326,9 @@ function GroupCard({
           Delete group
         </button>
       </div>
+      {undrawn === undefined ? null : (
+        <QueryError message={`${SESSION_GROUPS_NOT_LOADED} ${undrawn}.`} />
+      )}
     </fieldset>
   );
 }

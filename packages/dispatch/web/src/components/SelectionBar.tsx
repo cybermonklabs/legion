@@ -150,14 +150,20 @@ export interface MarkedList {
  * the bar away together. So while the bar is drawn and nothing is owed, the hand-off remembers
  * the control that holds the focus in a row the list names as leaving, from the focus events
  * (`focusin`) and from the host's commits, never from a frame or a timer. A focus on a control
- * outside those rows, a landing owed and the hook's unmount forget it. The reader's own act
- * (`READER_ACTS`) forgets it only where, once the act is read - when **Cancelled** reads one
- * (`afterAnswer`) - the focus no longer stands on it: ⌘C and a wheel move no focus and make no
- * commit, so the control stays remembered through them, while a press on blank space, which
- * drops the focus onto the body and raises no `focusin`, forgets it. A window `blur` ends that
- * read unmade. The focus an act puts in a leaving row is remembered again. A going that finds
- * the focus on the body and that control gone from the page owes the landing as well, and asks
- * for it at once. Each commit asks again.
+ * outside those rows, a landing owed and the hook's unmount forget it. So does the bar still
+ * drawn in the host's commit after the one whose read found that control gone from the page: its
+ * row went and the bar stayed, as another mark the reader made keeps it, so no going of the bar
+ * owes a landing for that row any more, and a going nobody caused later owes nothing. The commit
+ * that takes the row keeps it, since the project List takes its bar away a commit after the rows.
+ * A press outside every row of the list, as on blank space, which drops the focus onto the body
+ * and raises no `focusin`, forgets it at its `pointerdown`, so a going before the act's read
+ * lands nothing over the body the reader chose. Any other act of the reader's (`READER_ACTS`)
+ * forgets it only where, once the act is read - when **Cancelled** reads one (`afterAnswer`) -
+ * the focus no longer stands on it: ⌘C and a wheel move no focus and make no commit, so the
+ * control stays remembered through them. A window `blur` ends that read unmade. The focus an act
+ * puts in a leaving row is remembered again. A going that finds the focus on the body and that
+ * control gone from the page owes the landing as well, and asks for it at once. Each commit asks
+ * again.
  *
  * **Landed.** No listed row is leaving, so the hand-off lands once and then watches nothing. The
  * place is the mark of the row the reader marked last while the list holds it, out of sight or
@@ -184,8 +190,11 @@ export interface MarkedList {
  * component's hand-off that a press on a row's mark armed (`yieldMarkPressTo`): the project
  * List's table hands a focus its row took with it to a control before the row's place, in the
  * commit that takes the row and ahead of this hand-off's own read of it, and takes its bar away a
- * commit later. That hand-off moves nothing then, so the mark at the place takes the focus. With
- * no landing owed, that hand-off answers the loss as it always has.
+ * commit later. That hand-off moves nothing then, so the mark at the place takes the focus. It
+ * holds the loss back and reads it again at each later commit until its press ends: where the
+ * bar stays in the host's commit after the row's going, that commit forgets the remembered
+ * control (Owed), nothing is owed, and that hand-off answers the loss then. With no landing owed,
+ * that hand-off answers the loss as it always has.
  *
  * **Cancelled.** The reader's own press, key or wheel (`READER_ACTS`) ends what is owed when
  * it leaves focus on a control that stays or puts focus on the body. A press outside every row
@@ -224,8 +233,12 @@ export interface MarkedList {
  * in `drawLast`), and read when the landing is made, once the foot's pass has run: a focus that
  * stands elsewhere then, and not on the page's body, on the list's own stop or in a row the list
  * names as leaving, ends it unmade. So a focus that a row's going drops onto the body is still
- * landed. A reader's own act is read by **Cancelled**, which ends what is owed as the act comes,
- * before any landing, and what its read owes again is noted afresh.
+ * landed. The table's own landing on a row it is drawing (`drawRow`) is read at each commit of
+ * the host while it is owed, and a focus moved on so takes that landing back and ends it unmade,
+ * so the table never takes the focus back from a dialog's control the page put it on. A move made
+ * in the very commit that draws the row comes too late: the table lands in that commit, ahead of
+ * this read. A reader's own act is read by **Cancelled**, which ends what is owed as the act
+ * comes, before any landing, and what its read owes again is noted afresh.
  *
  * So a reader deep in a long list keeps their place, and the focus goes neither to the list's first
  * row nor to the page's body. A bar action that a dialog confirms, as the parent-status question
@@ -246,8 +259,9 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // and once it is settled. Its identity is the token a landing waiting on the foot's pass checks.
   const owed = useRef<Owed | null>(null);
   // Where the focus stood once the landing was owed, or once the hand-off itself last moved it
-  // (`park`, the list's own stop in `drawLast`): the landing reads a focus the page has moved on
-  // from there to a control that stays as the page's own hand-off (Handed on).
+  // (`park`, the list's own stop in `drawLast`): the landing, and each commit while the table's own
+  // landing is owed, read a focus the page has moved on from there to a control that stays as the
+  // page's own hand-off (Handed on).
   const owedFocus = useRef<Element | null>(null);
   // The read of where the reader's act left the focus, which `owe` puts off until the act has been
   // answered (`afterAnswer`), as this render wrote it below: it can owe the landing again, through
@@ -267,11 +281,30 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   // What ends the watch that keeps `leavingFocus` from the focus events and the reader's acts,
   // with the read of an act still to come, while it runs, else null.
   const leavingWatch = useRef<AbortController | null>(null);
+  // The control remembered in a leaving row (`leavingFocus`) that the read of a host's commit
+  // found gone from the page with the bar still drawn, with the list as the render of that commit
+  // gave it, else null. Each render of the host hands the hook a list of its own, so a later one
+  // is the host's commit after it, which forgets that control where the bar is still drawn in it
+  // (`forgetLeft`).
+  const left = useRef<{ readonly control: Element; readonly list: MarkedList } | null>(null);
   /** Forgets the control remembered in a leaving row and ends the watch that keeps it. */
   const forgetLeaving = useCallback(() => {
     leavingWatch.current?.abort();
     leavingWatch.current = null;
     leavingFocus.current = null;
+    left.current = null;
+  }, []);
+  /** Forgets the control remembered in a leaving row where a commit's read found it gone from the
+   *  page (`left`) and the host has rendered again since with the bar still drawn: its row went
+   *  and the bar stayed, so no going of the bar owes a landing for that row (Owed). Asked before
+   *  each read of what that control owes: by `landingOwed`, which a component's hand-off reads
+   *  ahead of this hook in the host's commit, and by this hook's own read of the commit. */
+  const forgetLeft = useCallback(() => {
+    const gone = left.current;
+    const live = latest.current;
+    if (gone === null || gone.list === live || !live.shown) return;
+    left.current = null;
+    if (leavingFocus.current === gone.control) leavingFocus.current = null;
   }, []);
   /** Ends what is owed, its watch on the reader's acts, a read their act left to come, and what
    *  the hand-off remembers of a focus in a leaving row (`forgetLeaving`). It moves no focus. */
@@ -295,12 +328,15 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   /** Remembers, while the bar is drawn and nothing is owed, the control that holds the focus in a
    *  row the list names as leaving, for the bar's going to read (Owed): as this commit of the host
    *  leaves it, and at each move of the focus until the watch ends (`forgetLeaving`). A focus on a
-   *  control outside those rows forgets it. The reader's own act (`READER_ACTS`) forgets it only
-   *  where, once the act has been answered (`afterAnswer`, the read **Cancelled** makes), the
-   *  focus no longer stands on it: ⌘C and a wheel leave it there, and a press on blank space puts
-   *  the focus on the body. The focus an act puts in a leaving row is remembered again by its
+   *  control outside those rows forgets it, and so does a press outside every row of the list, at
+   *  its `pointerdown`: a press on blank space puts the focus on the body and raises no `focusin`.
+   *  Any other act of the reader's (`READER_ACTS`) forgets it only where, once the act has been
+   *  answered (`afterAnswer`, the read **Cancelled** makes), the focus no longer stands on it: ⌘C
+   *  and a wheel leave it there. The focus an act puts in a leaving row is remembered again by its
    *  `focusin` or by the commit after it. A focus on the body keeps it otherwise: a control taken
-   *  out of the page with its row drops the focus there and raises no `focusin`. */
+   *  out of the page with its row drops the focus there and raises no `focusin`. This commit notes
+   *  such a control gone (`left`), and the host's commit after it forgets it where the bar is still
+   *  drawn (`forgetLeft`). */
   const rememberLeaving = useCallback((live: MarkedList) => {
     if (leavingWatch.current === null) {
       const watch = new AbortController();
@@ -324,6 +360,12 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
       const onAct = (event: Event) => {
         if (leavingFocus.current === null || !readerActed(event)) return;
         read?.();
+        // A press outside every row, as `owe`'s `pressedOutsideRows` reads it, forgets it at once:
+        // read after the act, a going before that read would land over the body the reader chose.
+        if (event.type === "pointerdown" && listRowOf(latest.current, event.target) === null) {
+          leavingFocus.current = null;
+          return;
+        }
         read = afterAnswer(event, new AbortController(), (answered) => {
           read = null;
           if (answered && document.activeElement !== leavingFocus.current) {
@@ -336,6 +378,8 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     const focused = document.activeElement;
     if (leavingRowOf(live, focused) !== null) leavingFocus.current = focused;
     else if (!focusOnDocument()) leavingFocus.current = null;
+    const remembered = leavingFocus.current;
+    left.current = remembered?.isConnected === false ? { control: remembered, list: live } : null;
   }, []);
   /** Owes `next` and watches the reader's own acts until it is settled. */
   const owe = useCallback(
@@ -388,8 +432,9 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     [settle]
   );
   /** Has a windowed table draw its listed, undrawn row `id` and land on its mark once drawn, owes
-   *  that landing so a reader's act takes it back, and puts the focus on the list's own stop
-   *  meanwhile where it stands on the page's body. Answers whether the list gave `drawRow`. */
+   *  that landing so a reader's act, or the page's move of the focus on to a control that stays
+   *  (Handed on), takes it back, and puts the focus on the list's own stop meanwhile where it
+   *  stands on the page's body. Answers whether the list gave `drawRow`. */
   const drawLast = useCallback(
     (live: MarkedList, id: string): boolean => {
       if (live.drawRow === undefined) return false;
@@ -474,19 +519,22 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
   );
   /** Whether a landing is owed now, or will be once the bar goes: the control remembered in a
    *  leaving row has left the page with that row and dropped the focus onto the body, so the
-   *  bar's going owes the landing (`goingOwes`), in the commit that takes the row or in a later
-   *  one, as the project List takes its bar away a commit after the rows, once its selection is
-   *  pruned. Read in a commit before this hook's own read of it below: a component's hand-off that
-   *  a press on a row's mark armed leaves its loss to this landing then (`yieldMarkPressTo`,
-   *  Landed). */
-  const landingOwed = useCallback(
-    () =>
-      owed.current !== null || (focusOnDocument() && leavingFocus.current?.isConnected === false),
-    []
-  );
+   *  bar's going owes the landing (`goingOwes`), in the commit that takes the row or in the host's
+   *  commit after it, as the project List takes its bar away a commit after the rows, once its
+   *  selection is pruned. Where the bar is still drawn in that commit after, the control is
+   *  forgotten first (`forgetLeft`) and nothing is owed. Read in a commit before this hook's own
+   *  read of it below: a component's hand-off that a press on a row's mark armed holds its loss
+   *  back for this landing while this says so, and reads it again at each later commit until its
+   *  press ends (`yieldMarkPressTo`, Landed). */
+  const landingOwed = useCallback(() => {
+    if (owed.current !== null) return true;
+    forgetLeft();
+    return focusOnDocument() && leavingFocus.current?.isConnected === false;
+  }, [forgetLeft]);
   // Each commit of the host asks the hand-off again while a landing is owed: the commit that lets
   // the press's rows go is the one that makes the landing. The page's own landing is its table's,
-  // and is made once the focus stands in the list's rows.
+  // and is made once the focus stands in the list's rows, or ends unmade where the page has moved
+  // the focus on before the table drew the row (Handed on).
   useLayoutEffect(() => {
     // A press on a row's mark is armed in the event this commit answers, as the reader's untick
     // of a mark is: it takes what says whether this hand-off's landing is owed.
@@ -496,6 +544,8 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     drawn.current = live.shown;
     const place = owed.current;
     if (place === null) {
+      // A control remembered in a row that went while the bar stayed owes nothing (`forgetLeft`).
+      forgetLeft();
       // The bar gone with the focus in a row the list names as leaving, or with the control
       // remembered in such a row gone from the page (`goingOwes`): the landing is owed, and asked
       // for at once, as each commit asks while it is owed, so with no row leaving it is made now.
@@ -512,7 +562,16 @@ export function useLastMarkedPlace(list: MarkedList): MarkedPlace {
     if (place.kind === "own") {
       const stop = live.list();
       const focused = document.activeElement;
-      if (stop?.contains(focused) === true && focused !== stop) settle();
+      // The table's landing made: the focus stands in the list's rows.
+      if (stop?.contains(focused) === true && focused !== stop) {
+        settle();
+      } else if (focusMovedOn(live, owedFocus.current)) {
+        // The page moved the focus on to a control that stays, as a dialog's control takes it,
+        // before the table drew the row: its landing is taken back, so it never takes the focus
+        // from there, and ends unmade (Handed on).
+        place.abandon();
+        settle();
+      }
       return;
     }
     parkOrLand(live, place.last);

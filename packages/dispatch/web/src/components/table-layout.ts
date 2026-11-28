@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
+import { FOOT_TOP_EVENT } from "../hooks/useFootInset";
 import { readLayout, type StoredColumns, writeLayout } from "./table-storage";
 
 /** The columns a table pins at its left edge while it scrolls sideways, and how they fit the
@@ -115,8 +116,10 @@ export interface TableLayoutModel {
    *  calls it right before each landing, once the foot's pass (`afterFootPass`) has given the
    *  page its room, and again right after a landing's scroll once `footPassNow()` runs, so the
    *  box the focus lands against is the box the reader keeps (`MarkedList`'s `fit`, given by
-   *  `features/project/IssuesTable.tsx`). The widths are left to that observer: a change of them
-   *  can draw the rows anew, which would take the focus the hand-off is about to land. */
+   *  `features/project/IssuesTable.tsx`). The layout calls it itself each time the bar's foot
+   *  inset changes the room the page keeps under the box (`FOOT_TOP_EVENT`). The widths are left
+   *  to that observer: a change of them can draw the rows anew, which would take the focus the
+   *  hand-off is about to land. */
   readonly fitHeight: () => void;
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
@@ -233,8 +236,10 @@ export function reorder(current: readonly string[], dragged: string, before: str
  * Measuring reads layout, so it happens only when something that changes the answer happens: a
  * `ResizeObserver` over the box and over everything drawn above it — which covers the rows the
  * page holds, a notice appearing above the table and moving its top edge, and a sidebar
- * changing its width — and a window resize, which the observer cannot see because the box's own
- * height is what this sets. A scroll does none of these, and the virtualizer commits on every
+ * changing its width — a window resize, which the observer cannot see because the box's own
+ * height is what this sets, and a change of the room the page keeps under the box for the
+ * selection bar, which resizes nothing either sees (`FOOT_TOP_EVENT`) and fits the box's height
+ * alone (`fitHeight`). A scroll does none of these, and the virtualizer commits on every
  * visible range, so measuring there would be a reflow per scrolled row.
  *
  * A table whose columns fit what they hold (`fits`) reads those columns' header and cells too,
@@ -445,6 +450,13 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   useLayoutEffect(() => {
     measure();
     window.addEventListener("resize", measure);
+    // The section keeps room under the box for the selection bar's band, which the bar's foot
+    // inset publishes as a property on the document element as the bar is drawn, wraps onto
+    // another number of lines, or goes. That resizes nothing observed here, so the box fits its
+    // height again at each change of the property, in the task that made it: before the bar's
+    // hand-off lands against the box, which fits it once more first.
+    const root = document.documentElement;
+    root.addEventListener(FOOT_TOP_EVENT, fitHeight);
     // happy-dom lays nothing out and has no `ResizeObserver`; the unit suite installs one.
     const sizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
     if (box) {
@@ -457,9 +469,10 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     if (above) sizes?.observe(above);
     return () => {
       window.removeEventListener("resize", measure);
+      root.removeEventListener(FOOT_TOP_EVENT, fitHeight);
       sizes?.disconnect();
     };
-  }, [above, box, measure]);
+  }, [above, box, fitHeight, measure]);
 
   // The widths of the columns that fit what they hold (`fits`): each column's widest need, read
   // off its header - which `DataTable` names by the column's id (`data-column`) - and off the

@@ -5,7 +5,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type HeldNotifications, holdNotifications, recordCommits } from "../../__tests__/commits";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { pressHeld } from "../../__tests__/held-press";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
@@ -16,7 +16,7 @@ import { deliverySettingsQuery } from "../../api/queries";
 import type { DeliverySettings } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -915,6 +915,57 @@ test("Save stays held, with the focus, after its save is answered and before its
     restoreFocus();
     cleanup();
     queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// The Delivery page holds no record for the form to read again: it draws the timeline in the
+// form's place once the snapshot a save brings comes (`useHoldUntilDrawn`). Where that snapshot
+// does not come, Save is let go at the hold's deadline, and the form says why the timeline is not
+// drawn, in the words the page says for a timeline read that failed.
+test("on the Delivery page, Save let go at its hold's deadline with no timeline drawn says why", async () => {
+  const user = userEvent.setup();
+  // The save's answer, held until the row gives it, so what it sets off runs in `act`.
+  const saved = Promise.withResolvers<DeliverySettings>();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockImplementation(
+    () => saved.promise
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DeliverySettingsForm initial={null} />
+      </QueryClientProvider>
+    );
+    await fill(user, "Deploy repository", "acme/widgets");
+    await fill(user, "Deploy workflow", ".github/workflows/deploy.yml");
+    await fill(user, "Production jobs", "widgets-release / widgets-release");
+    await fill(user, "PR checks workflow", ".github/workflows/pr-checks.yml");
+    await fill(user, "Population authors", "octocat");
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(save);
+    await tick(0);
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    await act(async () => saved.resolve(record));
+    await tick(0);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+
+    // The save landed in the step before, which is when the hold's timer started.
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    await tick(1_000);
+    expect(save).not.toHaveAttribute("aria-disabled");
+    expect(
+      screen.queryByRole("alert")?.textContent,
+      "Save let go at its deadline and said nothing of the timeline it waited for"
+    ).toBe("Couldn't load the delivery timeline. Dispatch did not answer within 30 seconds.");
+  } finally {
+    cleanup();
+    queryClient.clear();
+    realClock();
     putDeliverySettings.mockRestore();
   }
 });

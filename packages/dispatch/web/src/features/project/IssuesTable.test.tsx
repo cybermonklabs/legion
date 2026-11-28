@@ -1686,6 +1686,95 @@ test("the List keeps room at its end for its selection bar's whole height, and n
   expect(room()).toBe(96);
 });
 
+// The room the List keeps at its end follows its selection bar's band through the property the
+// bar's foot inset writes, which resizes nothing the box's own observer watches; so the box fits
+// its height again each time that property changes, with no window resize. At 640x900 two marked
+// rows wrapped the bar onto two lines, 106 px tall with its top at 778: the room grew from 96 to
+// 122 px while the box kept its height, and its last rows stood under the bar (builds Job
+// `infra-3135-i-room-ftsl4`).
+test("the List's box fits its height again each time its selection bar's band changes the room at its end, with no window resize", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  restores.push(() => sizes.restore());
+  const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+  restores.push(() => {
+    if (innerHeight === undefined) Reflect.deleteProperty(window, "innerHeight");
+    else Object.defineProperty(window, "innerHeight", innerHeight);
+  });
+  // happy-dom lays nothing out, so the case gives the boxes: the List's box 200 px down the window
+  // at the height the List gives it, its pager's 20 px right under it, and the bar 16 px above the
+  // screen's bottom edge, as `bottom-4` stands it, on one line, 42 px, until it wraps onto two,
+  // 106 px, as the browsers drew it at 1440 and at 640 px wide.
+  let barHeight = 42;
+  const ownRect = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const box = tableBox();
+    const boxHeight = Number.parseFloat(box?.style.height ?? "");
+    if (this === box) return new DOMRect(0, 200, 640, boxHeight);
+    if (this.getAttribute("data-testid") === "issues-table-pager") {
+      return new DOMRect(0, 200 + boxHeight, 640, 20);
+    }
+    if (this.getAttribute("aria-label") === "Selected issues") {
+      return new DOMRect(8, window.innerHeight - 16 - barHeight, 624, barHeight);
+    }
+    return ownRect.call(this);
+  });
+  restores.push(() => rect.mockRestore());
+  // The section's bottom padding as a browser computes its rule, the larger of 96 px and the
+  // property the bar's foot inset writes: happy-dom's own reads empty with that rule.
+  const ownStyle = window.getComputedStyle;
+  const style = spyOn(window, "getComputedStyle").mockImplementation(
+    (element: Element, pseudo?: string | null) => {
+      const computed = ownStyle.call(window, element, pseudo);
+      if (
+        element.tagName !== "SECTION" ||
+        element.getAttribute("aria-label") !== "Project issues"
+      ) {
+        return computed;
+      }
+      const bar = Number.parseFloat(
+        document.documentElement.style.getPropertyValue(SELECTION_BAR_TOP_PROPERTY)
+      );
+      const room = `${Math.max(96, Number.isNaN(bar) ? 0 : bar)}px`;
+      return new Proxy(computed, {
+        get: (target, key) => (key === "paddingBottom" ? room : Reflect.get(target, key)),
+      });
+    }
+  );
+  restores.push(() => style.mockRestore());
+  table([issue("CORE-1"), issue("CORE-2")]);
+  const mark = await screen.findByRole("checkbox", { name: "Select CORE-1" });
+  const box = tableBox();
+  if (box === null) throw new Error("The List drew no box for its rows");
+  const boxPx = () => Number.parseFloat(box.style.height);
+  const property = () =>
+    document.documentElement.style.getPropertyValue(SELECTION_BAR_TOP_PROPERTY);
+  // With no bar the room is 96 px, and the box takes the window's 900 px less its own top, its
+  // pager and that room.
+  const withRoomOf96 = 900 - 200 - 20 - 96;
+  expect(boxPx()).toBe(withRoomOf96);
+  // The bar is drawn on one line: its band's 58 px is less than the 96 px the room keeps anyway.
+  await user.click(mark);
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  expect(property()).toBe("58px");
+  expect(boxPx()).toBe(withRoomOf96);
+  // It wraps onto two lines, which only its own observer sees: the room grows to 122 px, and the
+  // box gives up those 26 px at once.
+  barHeight = 106;
+  sizes.resize(bar);
+  expect(property()).toBe("122px");
+  expect(boxPx()).toBe(withRoomOf96 - 26);
+  // The reader unmarks the row: the bar goes, its property with it, and the box takes the 26 px
+  // back.
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-1" }));
+  expect(screen.queryByRole("toolbar", { name: "Selected issues" })).toBeNull();
+  expect(property()).toBe("");
+  expect(boxPx()).toBe(withRoomOf96);
+});
+
 // With a float at the foot, the foot pass is still to come as the bar goes. Main holds 100 px of
 // end room while the bar is drawn and none after that pass. The List fits its box after the pass
 // and before landing on the last marked checkbox, so the box's own read after landing finds the

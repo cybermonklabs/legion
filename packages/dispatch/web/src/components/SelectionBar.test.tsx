@@ -3454,3 +3454,171 @@ test.each([
     }
   }
 );
+
+// A control remembered in a leaving row whose row goes while the bar stays owes nothing once the
+// host's commit after that going still draws the bar. CORE-12 and CORE-13 are marked with the
+// press's writes out; the reader ticks CORE-15, then unticks CORE-13 with a click, which leaves the
+// focus on its checkbox, in a leaving row. Within that click's frame and task the writes take both
+// rows away, and the bar stays. The list's own hand-off reads that commit first and holds its loss
+// back, since the bar's going could still owe the landing there, as the project List takes its
+// bar away a commit after the rows. The host's next commit, which prunes CORE-12 from the
+// selection, still draws the bar over CORE-15: the bar forgets the checkbox and owes nothing, and
+// the list's own hand-off, reading its loss again, hands the focus to the Priority of the row
+// before the rows' place, not to the body. It reads that loss again only while the click's press
+// is live: that press's end, a frame and a task after the click, ends the wait.
+test("a click that unticks a leaving row's mark while another mark keeps the bar up, with that row then taken away and the bar still drawn in the host's next commit, lands by the list's own hand-off, not on the body", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const page = (count: number, listed: readonly string[], leaving: readonly string[] = []) => (
+    <HandOffRows count={count} leaving={leaving} listed={listed} marked={UNTICK_PRESS} />
+  );
+  const view = render(page(2, PLACED_KEYS));
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(page(2, PLACED_KEYS, UNTICK_PRESS));
+    clickMark(rowBox("CORE-15"));
+    expect(rowBox("CORE-15")).toBeChecked();
+    view.rerender(page(3, PLACED_KEYS, UNTICK_PRESS));
+    clickMark(rowBox("CORE-13"));
+    expect(rowBox("CORE-13")).not.toBeChecked();
+    view.rerender(page(2, PLACED_KEYS, UNTICK_PRESS));
+    expect(focusedName()).toBe("Select CORE-13");
+    // The writes land and take CORE-12 and CORE-13 away; CORE-12 is still selected.
+    const kept = without(PLACED_KEYS, ...UNTICK_PRESS);
+    view.rerender(page(2, kept));
+    // The selection pruned, the bar over CORE-15 alone.
+    view.rerender(page(1, kept));
+    expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
+    expect(focusLanding()).toBe("Priority CORE-11");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// A control remembered in a row that went while the bar stayed makes no later going owe a
+// landing. As above, the reader unticked the row marked last with a click while the press's writes
+// were out, and the focus stands on its checkbox in a leaving row; the writes take CORE-12 and
+// CORE-13 away while another mark of the reader's keeps the bar up (the count stands for the marks
+// still selected), and with no hand-off of the list's own the focus stays on the body. The host's
+// next commit still draws the bar and forgets the checkbox. A later read then empties the bar with
+// no act of the reader's, as a refetch does: nothing is owed, so nothing lands.
+test("after the row of a remembered checkbox goes while the bar stays, a later going of the bar nobody caused owes nothing", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(untickList(2, PLACED_KEYS));
+  let answered: () => void = () => undefined;
+  try {
+    answered = await untickWhileHeld(view);
+    const kept = without(PLACED_KEYS, ...UNTICK_PRESS);
+    view.rerender(untickList(1, kept));
+    view.rerender(untickList(1, kept));
+    expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
+    expect(focusLanding()).toBe("the body");
+    const moves = watchMoves();
+    try {
+      view.rerender(untickList(0, kept));
+      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      expect(focusLanding()).toBe("the body");
+      expect(moves.focused.map((move) => move.target.getAttribute("aria-label"))).toEqual([]);
+    } finally {
+      moves.restore();
+    }
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// A press outside every row forgets the remembered control at its `pointerdown`, not a task after
+// its `pointerup`. As above, the focus stands on the checkbox of the row marked last, in a leaving
+// row; the reader presses a blank part of the page, which puts the focus on the body, their own
+// choice. Within the task before that press would be read, the writes take both rows and the bar
+// away together: nothing is owed, so nothing lands over the body, then or at the read.
+test("after a click that unticks the row marked last while the press's writes are out, a press on a blank part of the page forgets its checkbox at once, so the rows and the bar going before that press's read land nothing", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(untickList(2, PLACED_KEYS));
+  let answered: () => void = () => undefined;
+  try {
+    answered = await untickWhileHeld(view);
+    const moves = watchMoves();
+    try {
+      act(() => {
+        document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        rowBox("CORE-13").blur();
+        document.body.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        document.body.click();
+      });
+      expect(focusLanding()).toBe("the body");
+      view.rerender(untickList(0, without(PLACED_KEYS, ...UNTICK_PRESS)));
+      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      expect(focusLanding()).toBe("the body");
+      await act(afterTask);
+      expect(focusLanding()).toBe("the body");
+      expect(moves.focused.map((move) => move.target.getAttribute("aria-label"))).toEqual([]);
+    } finally {
+      moves.restore();
+    }
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// Handed on covers the table's own landing on a row it is drawing (`drawRow`). The bar goes with
+// the row marked last listed but not drawn, so the table is asked to draw it and land on its mark
+// once drawn, as table-keys' pending focus does, and the focus waits on the list's own stop. The
+// page then opens a dialog whose control takes the focus, in a commit before the table draws the
+// row: that commit takes the table's landing back, so once the row is drawn the focus stays in the
+// dialog.
+test("a landing the table owes on a row it is drawing ends unmade, taken back, where the page moves the focus to a dialog's control before the row is drawn", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  // The row the table was asked to draw and land on, until that landing is taken back.
+  const table: { pending: string | null } = { pending: null };
+  const drawRow = (id: string) => {
+    table.pending = id;
+    return () => {
+      if (table.pending === id) table.pending = null;
+    };
+  };
+  const placed = (count: number, undrawn: readonly string[]) => (
+    <PlacedList
+      count={count}
+      drawRow={drawRow}
+      last="CORE-14"
+      listed={PLACED_KEYS}
+      undrawn={undrawn}
+    />
+  );
+  const view = render(placed(1, ["CORE-14"]));
+  const dialog = render(
+    <div aria-label="Move to epic" role="dialog">
+      <button aria-label="Confirm" type="button" />
+    </div>
+  );
+  try {
+    pressInBar("Dismiss");
+    view.rerender(placed(0, ["CORE-14"]));
+    expect(table.pending).toBe("CORE-14");
+    expect(screen.getByRole("list", { name: "Rows" })).toHaveFocus();
+    // The page's commit that opens the dialog, whose control takes the focus.
+    act(() => screen.getByRole("button", { name: "Confirm" }).focus());
+    view.rerender(placed(0, ["CORE-14"]));
+    // The table draws CORE-14 and makes its landing, unless it was taken back.
+    view.rerender(placed(0, []));
+    const { pending } = table;
+    if (pending !== null) act(() => rowBox(pending).focus({ preventScroll: true }));
+    expect(focusLanding()).toBe("Confirm");
+  } finally {
+    disarm();
+    dialog.unmount();
+    view.unmount();
+    laidOut();
+  }
+});
