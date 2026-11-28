@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+    The shim's adoption of a role's working copy before a phase task takes no snapshot of a
+    fresh working copy. Each jj command of the adoption (`jj log`, then `jj metaedit
+    --update-author` or `jj new`) runs with `--ignore-working-copy`, for every project, so on a
+    checkout of some 342,000 files the adoption no longer spends most of its 300 s budget on the
+    snapshot (dispatch://INFRA-3916, R4). What this moves: an edit on disk that no jj command
+    recorded is taken in by the role's next ordinary jj command, so on the `jj new` branch it
+    lands in the incoming role's new commit; the adoption imports neither git's HEAD nor its refs,
+    so a role's `git commit` reaches jj at its next ordinary command; a stale git `index.lock`
+    fails the adoption only where its second command writes an operation; and the adoption's
+    commands take no working-copy lock.
+time: 2026-11-27T18:00:00Z
+custom:
+    Issue: INFRA-3916

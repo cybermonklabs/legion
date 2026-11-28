@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    The capability report's `mcp` row reads a server configured `lazy: true` as lazy. Oh My Pi
+    connects such a server only at its first tool call, which the check never makes, so the row
+    failed for it while its tools worked. A lazy server that is not connected and has no recorded
+    error now passes and is listed after the connected ones (`connected: <name> (<config file>);
+    lazy: <name> (<config file>)`), and a lazy server with a recorded error still fails the row
+    (dispatch://INFRA-3916, R2).
+time: 2026-11-27T18:00:02Z
+custom:
+    Issue: INFRA-3916

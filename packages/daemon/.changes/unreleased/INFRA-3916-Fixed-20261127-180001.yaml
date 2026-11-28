@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    A stale working copy no longer stops a phase task. Before and after the adoption's change,
+    the shim reads with no snapshot whether the working copy is stale, as jj's own check decides
+    it, and runs `jj workspace update-stale` on a stale one only. That update leaves the edits
+    that no jj command had recorded in a divergent commit that is not checked out and no longer
+    on disk. The shim's answer names each such commit in the new optional field `editsCommits` of
+    `adopt-working-copy-result` (a daemon or a shim of an earlier release reads the frame as
+    before), the shim's log names it, and the daemon adds one sentence to the task that names it
+    and says that the edits are there, which every later send of the task carries
+    (dispatch://INFRA-3916, R1).
+time: 2026-11-27T18:00:01Z
+custom:
+    Issue: INFRA-3916
