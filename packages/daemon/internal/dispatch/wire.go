@@ -7,9 +7,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// The JSON forms of Dispatch's answers and of the daemon's request bodies, which HTTPClient
-// decodes and encodes (client.go) and hands to its callers only as the package's own types.
-
 type issueSummaryResponse struct {
 	Key      string  `json:"key"`
 	Title    string  `json:"title"`
@@ -98,7 +95,6 @@ type claimResponse struct {
 	Actor actor `json:"actor"`
 }
 
-// claim is the claim as Claim, nil for none or for one naming no actor (unread).
 func (c *claimResponse) claim() *Claim {
 	if c == nil || c.unread() {
 		return nil
@@ -112,7 +108,6 @@ func (c *claimResponse) unread() bool {
 	return c != nil && (c.Actor.Kind == "" || c.Actor.ID == "")
 }
 
-// holder is the claim as Claim.Holder writes it.
 func (c *claimResponse) holder() string {
 	return c.claim().Holder()
 }
@@ -218,7 +213,6 @@ type handoffResponse struct {
 	Author   actor  `json:"author"`
 }
 
-// handoff is the record without its body.
 func (r handoffResponse) handoff() Handoff {
 	return Handoff{
 		ID:       r.ID,
@@ -252,15 +246,11 @@ type artifactUpload struct {
 	Actor   actor  `json:"actor"`
 }
 
-// gatedStepsWrite is the body of the gated-steps publish: the list, never omitted, and the
-// daemon's actor.
 type gatedStepsWrite struct {
 	Steps []string `json:"steps"`
 	Actor actor    `json:"actor"`
 }
 
-// designGatesWrite is the body of the design-gates publish: the set, never omitted, and the
-// daemon's actor.
 type designGatesWrite struct {
 	Gates []DesignGateDocument `json:"gates"`
 	Actor actor                `json:"actor"`
@@ -273,29 +263,23 @@ type roleHoldersWrite struct {
 	Actor   actor        `json:"actor"`
 }
 
-// stepWrite is the body of a step record's write: the record's fields and the daemon's actor.
 type stepWrite struct {
 	StepWrite
 	Actor actor `json:"actor"`
 }
 
-// stepRatingWrite is the body of a rating's write: the record's fields, the rating and its reason,
-// and the daemon's actor.
 type stepRatingWrite struct {
 	StepWrite
 	PlanRating
 	Actor actor `json:"actor"`
 }
 
-// stepExperimentWrite is the body of a variant's write: the run's identity, the experiment and the
-// variant, and the daemon's actor.
 type stepExperimentWrite struct {
 	StepWrite
 	StepExperiment
 	Actor actor `json:"actor"`
 }
 
-// planWrite is the body of a plan's write: the plan's fields and the daemon's actor.
 type planWrite struct {
 	PlanWrite
 	Actor actor `json:"actor"`

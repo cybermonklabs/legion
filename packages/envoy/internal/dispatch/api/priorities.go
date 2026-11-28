@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -50,14 +51,14 @@ const (
 	codeRankInput = "RANK_INPUT"
 )
 
-// priorityIDMax is the longest priority id, in bytes, which for the ASCII the grammar admits is
-// characters too. The id is a btree key of priority_nodes and of priority_tuples_inbound, and
-// Postgres refuses a btree entry over about 2,700 bytes, so an id with no bound reached the
-// insert inside prioritystore.Create and failed it as a 500. 200 is far under that bound with
-// every other column of the inbound entry beside it, and well over any name a person reads at a
-// glance. It is contracts.PriorityIDMax, so the refusal of an id the caller names
-// (priorityIDRefusal) and the cut of an id a create derives from a title (priorityIDFromTitle)
-// read one number.
+// priorityIDMax is the longest priority id, in characters (code points), which for the ASCII the
+// grammar admits are bytes too. The id is a btree key of priority_nodes and of
+// priority_tuples_inbound, and Postgres refuses a btree entry over about 2,700 bytes, so an id
+// with no bound reached the insert inside prioritystore.Create and failed it as a 500. 200 is far
+// under that bound with every other column of the inbound entry beside it, and well over any name
+// a person reads at a glance. It is contracts.PriorityIDMax, so the refusal of an id the caller
+// names (priorityIDRefusal) and the cut of an id a create derives from a title
+// (priorityIDFromTitle) read one number.
 const priorityIDMax = contracts.PriorityIDMax
 
 // priorityIDPattern is the grammar of a priority id: lowercase letters and digits in groups
@@ -80,9 +81,10 @@ var priorityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // its own page and row list the work the keyword reads, and no filter could ask for the work
 // under it.
 func priorityIDRefusal(id string) string {
+	characters := utf8.RuneCountInString(id)
 	switch {
-	case len(id) > priorityIDMax:
-		return fmt.Sprintf("an id is at most %d characters, and this one is %d", priorityIDMax, len(id))
+	case characters > priorityIDMax:
+		return fmt.Sprintf("an id is at most %d characters, and this one is %d", priorityIDMax, characters)
 	case !priorityIDPattern.MatchString(id):
 		return fmt.Sprintf("%q is no priority id: an id is lowercase letters and digits in groups joined by single hyphens", id)
 	case id == noAdvancesFilter:

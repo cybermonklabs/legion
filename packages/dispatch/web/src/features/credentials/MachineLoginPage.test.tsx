@@ -294,10 +294,11 @@ test("a Dispatch sign-in's unknown scope shows as its word, unticked, and is sen
   }
 });
 
-// p0 lets the session make an issue's own priority 0, which the person gives one sign-in only by
-// ticking it (dispatch://INFRA-5943/ask/3dfbf22b-74af-4e6d-af17-3bf368aac9fa): the page draws it
-// in its Settings words and unticked, though the sign-in asked for it, beside person ticked, so
-// an Approve press that ticks nothing more sends no p0.
+// p0 lets the session make work P0, setting P0 or moving, clearing or filing work under a P0
+// issue, which the person gives one sign-in only by ticking it
+// (dispatch://INFRA-5943/ask/3dfbf22b-74af-4e6d-af17-3bf368aac9fa): the page draws it in its
+// Settings words and unticked, though the sign-in asked for it, beside person ticked, so an
+// Approve press that ticks nothing more sends no p0.
 test("a Dispatch sign-in asking for p0 draws it unticked, and Approve without ticking it sends no p0", async () => {
   const user = userEvent.setup();
   const record = machineRecord({ dispatch_scopes: ["p0", "person"] });
@@ -318,7 +319,9 @@ test("a Dispatch sign-in asking for p0 draws it unticked, and Approve without ti
     const person = screen.getByRole("checkbox", { name: "Act as you" }) as HTMLInputElement;
     expect(p0.checked).toBe(false);
     expect(person.checked).toBe(true);
-    expect(screen.getByText("Set an issue's priority to P0.")).toBeDefined();
+    expect(
+      screen.getByText("Makes work P0: sets P0, or moves, clears or files work under a P0 issue.")
+    ).toBeDefined();
 
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() =>

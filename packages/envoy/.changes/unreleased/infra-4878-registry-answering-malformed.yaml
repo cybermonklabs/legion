@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The Legion agent registry's reads answer `answering`, the flag a project last stated in its
+  answering record (`project.<legion_project>`), false while the project has stated none.
+  `GET /v1/legion/agents/roles/{role_token}` now answers `{"entries":[…],"answering":<bool>}`:
+  the flag of the role token's own project, written out beside the entries, an empty list's
+  included. An edge listener answers it only for a role of one of its token's projects, and
+  `false` for any other. Each entry that `GET /v1/legion/agents/sessions/{session_id}` and
+  `GET /v1/legion/agents?issue={KEY}` answer carries the flag of its own project.
+
+  The registry routes answer a record the `legion_agents` bucket holds that does not decode (a
+  session's entry, an index key's or a project's answering record) with `500`, no `Retry-After`
+  and `code: "malformed_record"` (`listenerwire.CodeMalformedRecord`). The error names the
+  session, the key or the project
+  (`envoy: the legion agent registry holds a record it cannot decode: …`). Each read that meets
+  such a record gets it, and so do both entry PUTs, which read the session's stored entry before
+  they write. Asking again reads the same record, so it is no longer the `503` with
+  `Retry-After: 1` that a read or write the bucket did not answer still gets.
+time: 2026-11-28T00:27:52Z
+custom:
+    Issue: INFRA-4878

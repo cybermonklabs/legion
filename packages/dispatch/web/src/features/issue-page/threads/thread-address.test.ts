@@ -51,6 +51,17 @@ const PERSON = threadOf(
   "thread a person began"
 );
 
+/** `thread` with a person's reply added: the reader's reply of `PERSON`, made an answer to
+ *  `thread`'s root. */
+function answeredByPerson(thread: MessageRead): MessageRead {
+  const reply = (PERSON.replies ?? []).find(({ author }) => author.kind === "user");
+  if (reply === undefined) throw new Error("The thread a person began holds no person's reply.");
+  return {
+    ...thread,
+    replies: [...(thread.replies ?? []), { ...reply, in_reply_to: thread.message.id }],
+  };
+}
+
 describe("the choice a record opens under", () => {
   test("a thread between agents opens under Agents", () => {
     const row = AGENTS_PAGE.threads?.[0];
@@ -93,6 +104,20 @@ describe("the record /messages/<id> opens in Threads", () => {
 
   test("an agent's note opens its own record", () => {
     expect(messageRecord(NOTE.message.id, CONVERSATION, PROJECT)).toBe(NOTE.message.id);
+  });
+
+  test("an agent's note that a person answered opens as on main", () => {
+    const answered = answeredByPerson(NOTE);
+    for (const message of [answered.message, ...(answered.replies ?? [])]) {
+      expect(messageRecord(message.id, [answered], PROJECT), message.id).toBeUndefined();
+    }
+  });
+
+  test("a message of a thread between agents that a person wrote in opens as on main", () => {
+    const written = answeredByPerson(BETWEEN_AGENTS);
+    for (const message of [written.message, ...(written.replies ?? [])]) {
+      expect(messageRecord(message.id, [written], PROJECT), message.id).toBeUndefined();
+    }
   });
 
   test("a message of a thread a person wrote in opens as on main", () => {

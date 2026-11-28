@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Harvest a Dispatch server's searchable content through its read API. GET only.
 
-usage: harvest.py --out $TMPDIR/<dir> [--workers 16] [--projects KEY,KEY] [--issue-limit N]
+usage: harvest.py --out $TMPDIR/<dir> [--workers 16] [--projects KEY,KEY] [--issue-limit N] [--chunk 400]
 
 It writes, into --out:
 
@@ -19,8 +19,15 @@ Nothing here writes: every call is a GET, and a harvest of production is a read 
 import argparse
 import os
 
-from corpus import say, write_json, write_jsonl
+from corpus import JsonlWriter, say, write_json, write_jsonl
 from dispatch_read import DispatchRefused, ReadOnlyDispatch, pmap, require_under_tmpdir
+
+# A harvest holds the answers of one chunk at a time - the markdown of CHUNK documents, or the
+# comments, asks and messages of CHUNK issues - and writes each row as it comes: a deployment's
+# documents alone are more than a gigabyte of markdown, and a harvest that held every answer until
+# the last one came passed the memory of the pod it ran in. The rows, and their order, are the same
+# whatever the chunk.
+CHUNK = 400
 
 
 def main():
@@ -29,12 +36,16 @@ def main():
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--projects", default="", help="comma-separated project keys; default all")
     parser.add_argument("--issue-limit", type=int, default=0, help="harvest at most N issues per project (0: all)")
+    parser.add_argument("--chunk", type=int, default=CHUNK,
+                        help=f"documents, or issues, whose answers are held at once (default {CHUNK})")
     arguments = parser.parse_args()
+    if arguments.chunk < 1:
+        parser.error("--chunk must be at least 1")
 
     out = require_under_tmpdir(arguments.out)
     os.makedirs(out, exist_ok=True)
     dispatch = ReadOnlyDispatch()
-    workers = arguments.workers
+    workers, chunk = arguments.workers, arguments.chunk
 
     projects = dispatch.get("/api/v1/projects")
     wanted = {key for key in arguments.projects.split(",") if key}
@@ -103,18 +114,19 @@ def main():
             path = f"/api/v1/projects/{artifact['project']}/artifacts/{artifact['slug']}/text"
         return dispatch.get(path)
 
-    texts = pmap(text_of, artifacts, workers, "document text", every=1000)
-    documents, unread = [], 0
-    for artifact, text in zip(artifacts, texts):
-        if isinstance(text, Exception):
-            unread += 1
-            continue
-        documents.append(document_row(artifact, text))
-    write_jsonl(out, "documents.jsonl", documents)
-    say(f"{len(documents)} documents with text, {unread} unread")
-    standalone = [document for document in documents if document["issue_key"] is None]
-
-    comments, asks, messages = [], [], []
+    # Only the ids of the documents of no issue outlive this pass: their comments and asks are read
+    # from the document's own routes below.
+    standalone_ids, unread = [], 0
+    with JsonlWriter(out, "documents.jsonl") as documents:
+        for artifact, text in chunked(text_of, artifacts, workers, chunk, "document text"):
+            if isinstance(text, Exception):
+                unread += 1
+                continue
+            document = document_row(artifact, text)
+            documents.writerow(document)
+            if document["issue_key"] is None:
+                standalone_ids.append(document["artifact_id"])
+    say(f"{documents.count} documents with text, {unread} unread")
 
     def issue_items(key):
         return (
@@ -122,16 +134,6 @@ def main():
             dispatch.get(f"/api/v1/issues/{key}/asks"),
             dispatch.get(f"/api/v1/issues/{key}/messages"),
         )
-
-    unread_items = 0
-    for key, answer in zip(keys, pmap(issue_items, keys, workers, "issue items")):
-        if isinstance(answer, Exception):
-            unread_items += 1
-            continue
-        issue_comments, issue_asks, issue_messages = answer
-        comments.extend(comment_row(comment, key, None) for comment in issue_comments)
-        asks.extend(ask_row(ask, key, None) for ask in issue_asks)
-        flatten_threads(issue_messages, key, messages)
 
     def document_items(artifact_id):
         try:
@@ -142,23 +144,46 @@ def main():
         except DispatchRefused as refused:
             return refused
 
-    standalone_ids = [document["artifact_id"] for document in standalone]
-    for artifact_id, answer in zip(standalone_ids, pmap(document_items, standalone_ids, workers)):
-        if isinstance(answer, Exception):
-            continue
-        document_comments, document_asks = answer
-        comments.extend(comment_row(comment, None, artifact_id) for comment in document_comments)
-        asks.extend(ask_row(ask, None, artifact_id) for ask in document_asks)
+    # Every issue's rows in issue order, then the rows of each document of no issue in document order.
+    unread_items = 0
+    with (JsonlWriter(out, "comments.jsonl") as comments, JsonlWriter(out, "asks.jsonl") as asks,
+          JsonlWriter(out, "messages.jsonl") as messages):
+        for key, answer in chunked(issue_items, keys, workers, chunk, "issue items"):
+            if isinstance(answer, Exception):
+                unread_items += 1
+                continue
+            issue_comments, issue_asks, issue_messages = answer
+            comments.writerows(comment_row(comment, key, None) for comment in issue_comments)
+            asks.writerows(ask_row(ask, key, None) for ask in issue_asks)
+            thread_rows = []
+            flatten_threads(issue_messages, key, thread_rows)
+            messages.writerows(thread_rows)
 
-    write_jsonl(out, "comments.jsonl", comments)
-    write_jsonl(out, "asks.jsonl", asks)
-    write_jsonl(out, "messages.jsonl", messages)
-    say(f"{len(comments)} comments, {len(asks)} asks, {len(messages)} messages, {unread_items} issues unread")
+        for artifact_id, answer in chunked(document_items, standalone_ids, workers, chunk):
+            if isinstance(answer, Exception):
+                continue
+            document_comments, document_asks = answer
+            comments.writerows(comment_row(comment, None, artifact_id) for comment in document_comments)
+            asks.writerows(ask_row(ask, None, artifact_id) for ask in document_asks)
+    say(f"{comments.count} comments, {asks.count} asks, {messages.count} messages, {unread_items} issues unread")
 
     try:
         write_json(out, "coverage.json", counts_only(dispatch.get("/api/v1/search/coverage")))
     except Exception as error:  # noqa: BLE001 - a coverage read is a comparison, never the harvest
         say(f"coverage unread: {error!r}")
+
+
+def chunked(function, items, workers, chunk, label=None):
+    """Each item beside its answer, as pmap answers them, a chunk of items at a time.
+
+    What a caller holds is one chunk's answers, where pmap over every item holds every answer until
+    the last one comes. label, when given, says the running total after each chunk.
+    """
+    for start in range(0, len(items), chunk):
+        part = items[start:start + chunk]
+        yield from zip(part, pmap(function, part, workers))
+        if label:
+            say(f"  {label}: {start + len(part)}/{len(items)}")
 
 
 def issue_row(issue):

@@ -1,0 +1,9 @@
+kind: Added
+custom:
+  Issue: pr2230
+body: |-
+  `KEPT_FORWARD_UNCONFIRMED_CAUSE`: the cause for a post to a role whose copy the Envoy listener
+  kept for the role ended after a forward of it to the role's holder was never confirmed, so the
+  holder may already have the message. It is generated into Go as
+  `contracts.KeptForwardUnconfirmedCause`, and it is one of `POSSIBLY_DELIVERED_CAUSES`, the list
+  the dashboard keys its warning of a possible second delivery on.

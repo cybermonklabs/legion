@@ -59,6 +59,7 @@ import {
   type MyRepliesResponse,
   NO_ROUTE_RETRY_DELAYS_MS,
   ProjectAccessChangedEventPayloadSchema,
+  parseAsOfAbsent,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -176,6 +177,24 @@ describe("answerNotKept", () => {
       IDEMPOTENCY_ANSWER_NOT_KEPT,
     ];
     expect(landed).toEqual(["KEY_COMMITTED", "ANSWER_NOT_KEPT"]);
+  });
+});
+
+// A client names each member a past-time answer omits from this header, so a space or a stray
+// comma must not become a pointer of its own, and a header the answer did not send names none.
+describe("parseAsOfAbsent", () => {
+  test("names no pointer for a missing header, an empty one or one of spaces and commas", () => {
+    for (const header of [null, undefined, "", "   ", " , ,"]) {
+      expect(parseAsOfAbsent(header)).toEqual([]);
+    }
+  });
+
+  test("names each pointer trimmed, in the order of the header", () => {
+    expect(parseAsOfAbsent("/route_status")).toEqual(["/route_status"]);
+    expect(
+      parseAsOfAbsent(" /route_status , /open_asks/*/referenced_by_count,/*/snoozed_until ")
+    ).toEqual(["/route_status", "/open_asks/*/referenced_by_count", "/*/snoozed_until"]);
+    expect(parseAsOfAbsent("/route_status,")).toEqual(["/route_status"]);
   });
 });
 
@@ -615,6 +634,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/issues/CORE-1/comments/comment-1",
         issue: { key: "CORE-1", title: "Release" },
         priority: 1,
+        resolved_priority: 1,
+        priority_from: null,
         project: "CORE",
         subject: "Ship it on Friday?",
         reply: {
@@ -635,6 +656,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/issues/CORE-1/asks/ask-1",
         issue: { key: "CORE-1", title: "Release" },
         project: "CORE",
+        resolved_priority: null,
+        priority_from: null,
         subject: "Which region?",
         reply: {
           id: "ask-1",
@@ -654,6 +677,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/projects/CORE/documents/runbook?comment=comment-3",
         document: { project: "CORE", slug: "runbook", name: "Runbook" },
         project: "CORE",
+        resolved_priority: null,
+        priority_from: null,
         subject: "Is step one current?",
         reply: {
           id: "comment-4",
@@ -680,6 +705,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         kind: "agent",
         ref: "/agents/session-1/live",
         subject: "Where is the dashboard?",
+        resolved_priority: null,
+        priority_from: null,
         reply: {
           id: "message-2",
           kind: "reply",

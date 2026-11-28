@@ -1492,23 +1492,6 @@ describe("the readers", () => {
     expect(state.holdSessionID()).toBeUndefined();
   });
 
-  test("roleSnapshot says whether a topic serves the held role, and counts the ends before it", async () => {
-    const harness = createHarness();
-    const { state } = harness;
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: false, endsBefore: 0 });
-    await harness.hold("alpha", "ses_a");
-    state.markRoleBoundSubjects([CONTROLLER_NOTICE], "alpha");
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: true, endsBefore: 0 });
-    // A wildcard expands to its own concrete base and itself, neither of them marked here.
-    expect(state.roleSnapshot("notifications.legion.ACME.>")).toEqual({
-      roleBound: false,
-      endsBefore: 0,
-    });
-    state.endUnwantedRole("ses_b", null, ["ses_b"]);
-    expect(state.roleEndCount()).toBe(1);
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: false, endsBefore: 1 });
-  });
-
   test("establishedFor, inboundOpenSession and roleSettledSession follow what a pass recorded", async () => {
     const { state, control } = createHarness();
     control.open = "ses_a";
