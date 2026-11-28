@@ -928,15 +928,18 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
   await phase(browser, seedThreads, async (page, seed) => {
     const key = seed.key;
     const { comments, messages } = seed;
+    // Each record of `linked` is one that a reply with a quote begins: `id` is the record's,
+    // `post` its node's, and `segment` the route segment of that node's address.
+    const linked = [
+      { id: comments.postQuote, post: comments.post, segment: "comments" },
+      { id: messages.quotingReply, post: messages.quoting, segment: "messages" },
+    ] as const;
     const [records, reads] = await Promise.all([recordsById(key), markReads(key)]);
     await loadThreads(page, key);
     await drawEveryPage(page, "All");
 
     // The post and the record its quoting reply begins are two rows, the reply in one of them.
-    for (const [post, quote] of [
-      [comments.post, comments.postQuote],
-      [messages.quoting, messages.quotingReply],
-    ] as const) {
+    for (const { id: quote, post } of linked) {
       await expect(
         threadRow(page, quote),
         `the reply with a quote ${quote} begins no row`
@@ -969,12 +972,7 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
     // node (R8): the post or the message that reply answers, which Conversation's outline draws.
     // The post's own record is on no text, and the link of the comment on the spec's text is owed
     // until dispatch://INFRA-1253's node anchor is on the base, so neither draws a link. Each
-    // record of `linked` draws one: `id` is the record's, `post` its node's, and `segment` the
-    // route segment of that node's address.
-    const linked = [
-      { id: comments.postQuote, post: comments.post, segment: "comments" },
-      { id: messages.quotingReply, post: messages.quoting, segment: "messages" },
-    ] as const;
+    // record of `linked` draws one.
     const nodeLinks = new Map(
       linked.map(({ id, post, segment }) => [id, `/issues/${key}/${segment}/${post}`] as const)
     );
