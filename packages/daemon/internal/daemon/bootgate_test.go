@@ -1037,7 +1037,8 @@ func TestAProbeThatHandlesItsBudgetsSIGTERMIsReportedWithinHalfTheGrace(t *testi
 		return attempt, cancel
 	}
 
-	script := `onterm() { ` + testexec.MarkNow(`"$2"`) + `; exit 0; }; trap onterm TERM; : >"$1"; (while [ ! -e "$3" ] && kill -0 "$4" 2>/dev/null; do sleep 0.01; done) & wait $!; exit 0`
+	// A function's $2 is its own argument, so the trap names the exit mark's path by a variable.
+	script := `exited="$2"; onterm() { ` + testexec.MarkNow(`"$exited"`) + `; exit 0; }; trap onterm TERM; : >"$1"; (while [ ! -e "$3" ] && kill -0 "$4" 2>/dev/null; do sleep 0.01; done) & wait $!; exit 0`
 	r, err := gate.run(context.Background(), script, ready, exited, held, strconv.Itoa(os.Getpid()))
 	returned, returnedBoot := time.Now(), testexec.SinceBoot(t)
 	at := <-passed
