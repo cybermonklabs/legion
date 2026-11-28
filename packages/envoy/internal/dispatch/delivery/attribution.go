@@ -235,42 +235,63 @@ func uniqueKeys(text string) []string {
 	return appendUnique([]string{}, issueKeyCandidate.FindAllString(text, -1)...)
 }
 
-// BranchOfIssue reports whether branch belongs to issueKey, which is what decides whether a CI
-// job's result of a push of that branch counts for that issue (api/results.go,
-// refuseBranchOfAnotherIssue; api/results_comparison.go, headBases). A branch belongs to an issue
-// when it is the head branch of an open or merged pull request attributed to that issue
-// (pull_request_heads), or when the attribution rule above gives the branch's name to the issue:
-// source 3, "a key in its head branch name, whatever its case", read as attributionInputsFrom
-// reads BranchKeys and joined to the issues Dispatch holds as attributionCandidates joins them,
-// the first such key in the name's order deciding. That is the part of the rule that needs only
-// the branch: the links, the title, the body and the commit messages are a pull request's.
+// BranchOfIssue reports whether branch, a branch of repoFull, belongs to issueKey, which is what
+// decides whether a CI job's result of a push of that branch counts for that issue
+// (api/results_recorder.go, refuseBranchOfAnotherIssue; api/results_head_bases.go,
+// issueBranchHead). A branch belongs to an issue when it is the head branch of an open or merged
+// pull request of repoFull attributed to that issue (pull_request_heads), or when the attribution
+// rule above gives the branch's name to the issue: source 3, "a key in its head branch name,
+// whatever its case", read as attributionInputsFrom reads BranchKeys and joined to the issues
+// Dispatch holds as attributionCandidates joins them, the first such key in the name's order
+// deciding. That is the part of the rule that needs only the branch: the links, the title, the
+// body and the commit messages are a pull request's.
+//
+// The pull request is held to repoFull because a head branch names a branch of its pull request's
+// repository, and the attribution gives an issue a pull request of another repository too: one
+// the issue links by its URL is that issue's in any repository (attributionHeldFor, R19 of the
+// spec of several open pull requests). Such a pull request's head branch is no branch of repoFull,
+// so a push of a branch of the same name in repoFull is not the issue's by it. Both names are
+// compared under their canonical names by the Attributor's rename pairs and without case, as
+// MergeOfIssue compares them, so a row the build before this one wrote under the name its
+// repository was renamed away from is a pull request of repoFull still. Both callers pass the
+// repository the branch is in: the record route the repository of the job's run, which it has
+// already held to the repository of the check's issue (refuseResultOfAnotherRecorder), and the
+// results read the repository it reads the branch's head from, the one the check's issue
+// resolves to.
 //
 // answers is the caller's request's, as HeadsAttributedTo takes them: a write route (the record's
 // refuseBranchOfAnotherIssue) passes none and reads the stored rows, and a read-only caller's
 // results read passes its own, so a pull request its read-through learned at the branch makes the
 // branch the issue's as the row a writer's read-through stored does.
-func BranchOfIssue(ctx context.Context, q refs.Queryer, issueKey, branch string, answers HeadAnswers) (bool, error) {
-	query, args := branchOfIssueRead.query(answers, issueKey, branch, uniqueKeys(strings.ToUpper(branch)))
+func (a *Attributor) BranchOfIssue(ctx context.Context, q refs.Queryer, issueKey, repoFull, branch string, answers HeadAnswers) (bool, error) {
+	query, args := a.branchOfIssueRead.query(answers, issueKey, branch, uniqueKeys(strings.ToUpper(branch)), repoFull)
 	var belongs bool
 	if err := q.QueryRow(ctx, query, args...).Scan(&belongs); err != nil {
-		return false, fmt.Errorf("read whether branch %q belongs to %s: %w", branch, issueKey, err)
+		return false, fmt.Errorf("read whether branch %q of %s belongs to %s: %w", branch, repoFull, issueKey, err)
 	}
 	return belongs, nil
 }
 
-// branchOfIssueQuery is BranchOfIssue's statement after its WITH list.
-var branchOfIssueQuery = `
+// branchOfIssueQuery is BranchOfIssue's statement after its WITH list, both repositories under
+// their canonical names by renames.
+func branchOfIssueQuery(renames refs.Renames) string {
+	return `
 	select exists (
 		select 1 from pull_request_heads
 		where issue_key = $1 and head_ref = $2 and state in ('open', 'merged')
+			and lower(` + refs.CanonicalRepoSQL(renames, "repo") + `) = lower(` + refs.CanonicalRepoSQL(renames, "$4::text") + `)
 	) or coalesce((
 		select b.key = $1 from unnest($3::text[]) with ordinality b(key, n)
 		join issues i on i.key = b.key
 		order by b.n limit 1
 	), false)`
+}
 
-// branchOfIssueRead is branchOfIssueQuery whole, for both callers.
-var branchOfIssueRead = newHeadsStatement("", branchOfIssueQuery, 3, "")
+// branchOfIssueRead is branchOfIssueQuery whole, for both callers. NewAttributor builds it once
+// from its rename pairs.
+func branchOfIssueRead(renames refs.Renames) headsStatement {
+	return newHeadsStatement("", branchOfIssueQuery(renames), 4, "")
+}
 
 func appendUnique(list []string, values ...string) []string {
 	for _, value := range values {
@@ -523,27 +544,29 @@ func attributionBatchQuery(renames refs.Renames) string {
 // the same pairs (api.NewDeps). No package variable holds the pairs, so a test builds an
 // Attributor from pairs of its own.
 type Attributor struct {
-	renames          refs.Renames
-	candidatesQuery  string
-	batchQuery       string
-	linkedQuery      string
-	headsRead        headsStatement
-	mergeOfIssueRead headsStatement
-	mergeInRead      headsStatement
-	upsertQuery      string
+	renames           refs.Renames
+	candidatesQuery   string
+	batchQuery        string
+	linkedQuery       string
+	headsRead         headsStatement
+	mergeOfIssueRead  headsStatement
+	mergeInRead       headsStatement
+	branchOfIssueRead headsStatement
+	upsertQuery       string
 }
 
 // NewAttributor is the Attributor of renames.
 func NewAttributor(renames refs.Renames) *Attributor {
 	return &Attributor{
-		renames:          renames,
-		candidatesQuery:  attributionCandidatesQuery(renames),
-		batchQuery:       attributionBatchQuery(renames),
-		linkedQuery:      linkedPullRequestsQuery(renames),
-		headsRead:        headsAttributedRead(renames),
-		mergeOfIssueRead: mergeOfIssueRead(renames),
-		mergeInRead:      mergeInRead(renames),
-		upsertQuery:      upsertHeadQuery(renames),
+		renames:           renames,
+		candidatesQuery:   attributionCandidatesQuery(renames),
+		batchQuery:        attributionBatchQuery(renames),
+		linkedQuery:       linkedPullRequestsQuery(renames),
+		headsRead:         headsAttributedRead(renames),
+		mergeOfIssueRead:  mergeOfIssueRead(renames),
+		mergeInRead:       mergeInRead(renames),
+		branchOfIssueRead: branchOfIssueRead(renames),
+		upsertQuery:       upsertHeadQuery(renames),
 	}
 }
 

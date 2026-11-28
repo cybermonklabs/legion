@@ -1,4 +1,5 @@
 -- replaces: 20261120144431_pull_request_heads_attribution_inputs.up.sql sha256:8ec836f82050a623e4731e2e8067428a99144c17b4c2a391fc97d40df241da60
+-- replaces: 20261120144431_pull_request_heads_attribution_inputs.up.sql sha256:5a67b3c7789e2587a4978cf8e538e9f88cbce6fa94a0dfc141d7abc04d15b636
 -- 20261120144431_pull_request_heads_attribution_inputs.up.sql
 --
 -- What a pull request's issue was judged from, stored on its pull_request_heads row, so that a
@@ -24,15 +25,15 @@
 --
 -- Every row stored before this migration reads null in all five, and no backfill writes them here:
 -- the body and the commit messages are on no stored row, and a census that rewrites a row refuses
--- the deploy (cmd/dispatch/README.md, "Pre-deploy census"). The release that carries this migration
--- raises delivery.AttributionRuleVersion to 4, so the reconcile's merged arm reads each merged row
--- once more and stores its inputs, at most delivery.RejudgedHeadsPerPass (50) rows a pass, about 600
--- an hour. An open row is read again by the first reconcile pass that finds it unread for longer
--- than delivery.PullRequestHeadStaleAfter (four and a half minutes), as far as the pass's batch of
--- delivery.PullRequestHeadBatch (200) rows reaches, so two reads of it are at most about nine and a
--- half minutes apart. Until then a change of the links judges such a row as the release before did:
--- it takes the pull request from the issue where the link that gave it is gone, and leaves it for
--- the reconcile.
+-- the deploy (cmd/dispatch/README.md, "Pre-deploy census"). The release that carries this
+-- migration raises delivery.AttributionRuleVersion from the release before's 6 to 7, so the
+-- reconcile's merged arm reads each merged row once more and stores its inputs, at most
+-- delivery.RejudgedHeadsPerPass (50) rows a pass, about 600 an hour. An open row is read again by
+-- the first reconcile pass that finds it unread for longer than delivery.PullRequestHeadStaleAfter
+-- (four and a half minutes), as far as the pass's batch of delivery.PullRequestHeadBatch (200) rows
+-- reaches, so two reads of it are at most about nine and a half minutes apart. Until then a change
+-- of the links judges such a row as the release before did: it takes the pull request from the
+-- issue where the link that gave it is gone, and leaves it for the reconcile.
 --
 -- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
 -- takes ACCESS EXCLUSIVE on pull_request_heads, which every pull request event and every results
@@ -43,11 +44,16 @@
 -- which scans the table's few thousand rows once.
 --
 -- The release before this one neither reads nor writes the columns, and its insert names its
--- columns, so the two roll side by side (cmd/dispatch/README.md, "Database migrations"): a row
--- that release writes during the roll reads null here and is judged as a row stored before this
--- migration is. Rolling back past this migration is an image rollback alone; the columns left
--- behind are read by nothing. The rollback script beside this file drops them, for an operator
--- who wants them gone once no release that writes them serves.
+-- columns, so the two roll side by side (cmd/dispatch/README.md, "Database migrations"). A row
+-- that release inserts during the roll reads null in all five here and is judged as a row stored
+-- before this migration is. A row that release rewrites keeps the five values an earlier write of
+-- this release stored, while its upsert writes the row's issue, title and attribution_rule (6, its
+-- delivery.AttributionRuleVersion), so those values are not the facts the new issue was judged
+-- from. A change of the links therefore judges from them only a row whose attribution_rule is this
+-- release's, and judges every other row as a row stored before this migration is
+-- (delivery.LinksChanged). Rolling back past this migration is an image rollback alone; the
+-- columns left behind are read by nothing. The rollback script beside this file drops them, for an
+-- operator who wants them gone once no release that writes them serves.
 alter table pull_request_heads
     add column attribution_title_keys text[],
     add column attribution_cited_issues text[],

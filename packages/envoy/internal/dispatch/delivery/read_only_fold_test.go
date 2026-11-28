@@ -64,7 +64,7 @@ var resultsHeadsReads = []resultsHeadsRead{
 	{read: "LandingOf", function: "LandingOf", statement: "landingQuery", text: fixedText(landingQuery)},
 	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestOfQuery", text: fixedText(mergedPullRequestOfQuery)},
 	{read: "headForRefresh", function: "headForRefresh", statement: "headForRefreshQuery", text: fixedText(headForRefreshQuery)},
-	{read: "BranchOfIssue", function: "BranchOfIssue", statement: "branchOfIssueQuery", text: fixedText(branchOfIssueQuery)},
+	{read: "branchOfIssueQuery", function: "Attributor.BranchOfIssue", statement: "branchOfIssueQuery", text: branchOfIssueQuery},
 }
 
 // answeredReads is the functions and methods besides the reads' own that take the request's
@@ -987,14 +987,16 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 			}
 		case "mergeInQuery":
 			questions = append(questions, foldQuestion{read: read.read, args: []string{foldLinkingIssue, deliveryRepo}})
-		case "BranchOfIssue":
+		case "branchOfIssueQuery":
 			asked := map[string]bool{}
 			for _, step := range steps {
 				for _, head := range step.pulls.Heads {
 					if !asked[head.HeadRef] {
 						asked[head.HeadRef] = true
 						for _, issue := range issues {
-							questions = append(questions, foldQuestion{read: read.read, args: []string{issue, head.HeadRef}})
+							for _, repo := range []string{deliveryRepo, gadgetsRepo} {
+								questions = append(questions, foldQuestion{read: read.read, args: []string{issue, repo, head.HeadRef}})
+							}
 						}
 					}
 				}
@@ -1123,8 +1125,8 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 	case "NewestPullRequestHead":
 		head, found, err := NewestPullRequestHead(ctx, q, args[0], answers)
 		return describeNewestHead(head, found), err
-	case "BranchOfIssue":
-		belongs, err := BranchOfIssue(ctx, q, args[0], args[1], answers)
+	case "branchOfIssueQuery":
+		belongs, err := attributor.BranchOfIssue(ctx, q, args[0], args[1], args[2], answers)
 		return fmt.Sprint(belongs), err
 	case "LandingOf":
 		merged, err := LandingOf(ctx, q, args[0], args[1], answers)

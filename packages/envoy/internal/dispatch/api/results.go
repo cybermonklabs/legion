@@ -292,7 +292,7 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 		return refused(err)
 	}
 	if credential != nil && credential.ResultsOnly {
-		if err := refuseBranchOfAnotherIssue(r.Context(), pool, issueKey, pushedBranch(*credential.CI)); err != nil {
+		if err := s.refuseBranchOfAnotherIssue(r.Context(), pool, issueKey, credential.CI.Repository, pushedBranch(*credential.CI)); err != nil {
 			return refused(err)
 		}
 	}
@@ -394,20 +394,6 @@ func refuseUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue, ch
 	}
 	return nil
 }
-
-// checkContended is the code of a results write whose check a document version moved at every
-// attempt. Nothing is recorded, and the caller's retry resolves the check again.
-const checkContended = "CHECK_CONTENDED"
-
-// checkContendedRetryAfter is the Retry-After, in whole seconds, that refusal carries. What the
-// caller waits for is another writer's document version landing on the check's block - a
-// transaction already committing, not a budget this caller has spent - so the wait is the
-// shortest whole second HTTP can ask for, which is what Dispatch already answers a caller whose
-// write another transaction is in the middle of (writeKeyInFlight's 409 KEY_IN_FLIGHT,
-// request_keys.go). Nothing longer is honest here: this is no rate limit, so there is no budget
-// to refill and no burst to spread out, and a longer wait would only hold back a retry that can
-// land as soon as the version that moved the check has committed.
-const checkContendedRetryAfter = 1
 
 // recordedCheckResult is what one results write produces: the row it wrote, the event it
 // appended, and the check as the transaction that wrote them saw it. That check is not the one

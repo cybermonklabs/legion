@@ -178,7 +178,7 @@ func (c *comparisonReader) branchHeadBases(
 // read either. It answers "" for both where the branch is another issue's, and where GitHub no
 // longer holds it.
 func (c *comparisonReader) issueBranchHead(ctx context.Context, issueKey, repo, branch string) (string, string) {
-	belongs, read := c.branchOfIssue(ctx, issueKey, branch)
+	belongs, read := c.branchOfIssue(ctx, issueKey, repo, branch)
 	switch {
 	case !read:
 		return "", model.ReasonReadFailed
@@ -195,18 +195,18 @@ func (c *comparisonReader) issueBranchHead(ctx context.Context, issueKey, repo, 
 	return head.sha, ""
 }
 
-// branchOfIssue is whether branch belongs to issueKey (delivery.BranchOfIssue), and whether the
-// read answered, held for the rest of the read: a stored row's branch counts for the check's
-// issue only where it does, so a row a job of another issue's branch left adds no head. It reads
-// the caller's request's answers as headBases does.
-func (c *comparisonReader) branchOfIssue(ctx context.Context, issueKey, branch string) (bool, bool) {
-	key := [2]string{issueKey, branch}
+// branchOfIssue is whether branch of repo belongs to issueKey (delivery.Attributor.BranchOfIssue),
+// and whether the read answered, held for the rest of the read: a stored row's branch counts for
+// the check's issue only where it does, so a row a job of another issue's branch left adds no
+// head. It reads the caller's request's answers as headBases does.
+func (c *comparisonReader) branchOfIssue(ctx context.Context, issueKey, repo, branch string) (bool, bool) {
+	key := [3]string{issueKey, repo, branch}
 	if held, read := c.branchIssues[key]; read {
 		return held[0], held[1]
 	}
-	belongs, err := delivery.BranchOfIssue(ctx, c.server.deps.Store.Pool, issueKey, branch, c.answers)
+	belongs, err := c.server.deps.Attributor.BranchOfIssue(ctx, c.server.deps.Store.Pool, issueKey, repo, branch, c.answers)
 	if err != nil {
-		slog.Warn("dispatch: read whether a branch belongs to a check's issue", "issue", issueKey, "branch", branch, "error", err)
+		slog.Warn("dispatch: read whether a branch belongs to a check's issue", "issue", issueKey, "repo", repo, "branch", branch, "error", err)
 	}
 	c.branchIssues[key] = [2]bool{belongs, err == nil}
 	return belongs, err == nil

@@ -675,7 +675,7 @@ func (head AttributedHead) MergeTime() MergeTime {
 // The results path reads pull_request_heads through one statement and one function that both of
 // its callers call for each read: headsAttributedQuery (Attributor.HeadsAttributedTo),
 // headStoredAtQuery (HeadStoredAt), newestPullRequestHeadQuery (NewestPullRequestHead),
-// branchOfIssueQuery (BranchOfIssue), and the reads of the merges (merge_holds.go:
+// branchOfIssueQuery (Attributor.BranchOfIssue), and the reads of the merges (merge_holds.go:
 // Attributor.MergeOfIssue, Attributor.MergeIn, LandingOf, MergedPullRequestOf, headForRefresh).
 // Each function takes the answers GitHub gave the caller's own request (HeadAnswers). A writer's
 // read passes none, and its statement reads the table; a read-only caller's read passes what its

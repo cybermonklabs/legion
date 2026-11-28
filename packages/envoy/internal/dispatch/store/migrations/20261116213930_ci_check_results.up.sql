@@ -1,3 +1,4 @@
+-- replaces: 20261116213930_ci_check_results.up.sql sha256:a06649d81d636035d9aed8fa032d13f58a32a38c2386034cede6ec35133bf684
 -- 20261116213930_ci_check_results.up.sql
 --
 -- Two tables of what a CI job recorded: ci_check_results, its results, and
@@ -45,6 +46,12 @@
 -- neither reads nor writes either, so they roll beside this one (cmd/dispatch/README.md, "Database
 -- migrations"). The census answers 0, and rolling back past it is an image rollback alone: the
 -- release before reads none of their rows, so a result a job recorded changes nothing it serves.
+-- The one way that release could reach a row is the cascade of a document it removes: its removal
+-- (api/artifact_removal.go) asks check_results alone whether a result names the document. It
+-- removes no job's result all the same. A job's result names a check block of an issue's
+-- Verification document, and the removal of either release refuses, before it asks about results,
+-- a document that plays a role and a document any version of which holds text; that document
+-- holds text whether or not a role still names it. No route of either release deletes an issue.
 create table ci_check_results (
     id uuid primary key default gen_random_uuid(),
     issue_key text not null references issues (key) on delete cascade,

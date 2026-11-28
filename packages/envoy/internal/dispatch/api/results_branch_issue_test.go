@@ -1,7 +1,8 @@
 // results_branch_issue_test.go holds POST and GET /api/v1/issues/{key}/results to the rule that a
 // CI job's result counts for an issue only when the branch whose push its run ran on belongs to
-// that issue (delivery.BranchOfIssue): the head branch of one of the issue's pull requests, or a
-// branch whose name gives it to the issue by Dispatch's own attribution rule.
+// that issue (delivery.Attributor.BranchOfIssue): the head branch of one of the issue's pull
+// requests in the branch's own repository, or a branch whose name gives it to the issue by
+// Dispatch's own attribution rule.
 package api
 
 import (
@@ -111,6 +112,54 @@ func TestAPullRequestsHeadBranchBelongsToItsIssue(t *testing.T) {
 	refusedForTheBranch(t, response, response.Body.String(), "legion/work", other)
 	jobRecorded(t, "the job's pass on the issue whose pull request's branch it pushed",
 		rig.post(t, rig.issue, token, jobResultAt(ciJobCommit, "pass")))
+}
+
+// TestALinkedRepositorysPullRequestGivesTheIssueNoBranchOfItsOwnRepository: a pull request of
+// another repository that ACME-1 links is ACME-1's (R19), and its head branch, legion/work, is a
+// branch of that repository. The job on legion/work of ACME-1's own repository, where no pull
+// request of ACME-1 has that head branch, records nothing: 403 BRANCH_NOT_THE_ISSUES. The control:
+// once ACME-1's pull request #70 of its own repository has legion/work as its head branch, the
+// same token's result is stored. The results read follows the same rule. While #70 is merged and
+// the branch has moved on, c1 compares with the branch's head (the read's control); once #70 is
+// closed instead, so that only the linked pull request has legion/work as its head branch, c1
+// compares with no head of it.
+//
+// Catches: a read of whether a branch belongs to an issue that takes a pull request's head branch
+// in any repository, so that a linked repository's pull request gives the issue the branch of the
+// same name in the issue's own repository, on the record route and on the results read.
+func TestALinkedRepositorysPullRequestGivesTheIssueNoBranchOfItsOwnRepository(t *testing.T) {
+	t.Parallel()
+	rig := newCIJobRig(t)
+	const linkedRepository, branch = "example-org/example-infra", "legion/work"
+	writeHead(t, rig.database, linkedRepository, 9, ciJobHead, "merged", rig.issue)
+	token := jobTokenOn(rig, ciJobCommit, "refs/heads/"+branch, 98)
+
+	response := rig.post(t, rig.issue, token, jobResultAt(ciJobCommit, "pass"))
+	refusedForTheBranch(t, response, response.Body.String(), branch, rig.issue)
+
+	writeHead(t, rig.database, ciJobRepository, 70, ciJobCommit, "open", rig.issue)
+	jobRecorded(t, "the control: the job's pass once a pull request of the issue's own repository has the branch",
+		rig.post(t, rig.issue, token, jobResultAt(ciJobCommit, "pass")))
+
+	rig.github.setBranch(branch, ciJobBranchHead{sha: ciJobOtherCommit})
+	branchHead := func() *model.CheckBasis {
+		t.Helper()
+		for _, basis := range checkOf(t, readResults(t, rig.handler, rig.issue), "c1").ComparedWith {
+			if basis.Kind == model.CheckBasisBranchHead && basis.Branch == branch {
+				return &basis
+			}
+		}
+		return nil
+	}
+	writeHead(t, rig.database, ciJobRepository, 70, ciJobCommit, "merged", rig.issue)
+	if basis := branchHead(); basis == nil || basis.Commit != ciJobOtherCommit {
+		t.Fatalf("the read's control: with #70 merged from %s, c1's head of %s = %+v, want the branch's head %s", branch, branch, basis, ciJobOtherCommit)
+	}
+	writeHead(t, rig.database, ciJobRepository, 70, ciJobCommit, "closed", rig.issue)
+	if basis := branchHead(); basis != nil {
+		t.Fatalf("c1 compares with %+v, the head of %s of %s, which only a pull request of %s has as its head branch",
+			*basis, branch, ciJobRepository, linkedRepository)
+	}
 }
 
 // TestAStoredRowOfABranchOfNoIssueAddsNoBasis: the read compares a check only with the heads of
