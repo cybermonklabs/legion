@@ -422,18 +422,24 @@ Check, in order:
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
    branch, as the implement App, and again before the worker of each tree member's first step
    starts, so no agent's push is the one that creates it (GitHub can refuse that push on a large
-   repository). A branch GitHub already has is kept as it is. While GitHub refuses the read of the
-   base branch's ref or the create, the architect or the worker waiting for it does not start. The
-   daemon retries, backing off to about a minute, and logs each refusal as an error whose `msg` is
-   `outbox row failed`, with `kind` `issue_branch` and an `error` naming the repository, the ref,
-   GitHub's status and its body:
+   repository). A branch GitHub already has is kept as it is. While GitHub answers with a rate
+   limit, a 5xx, a 401 or nothing, the architect or the worker waiting for it does not start: the
+   daemon retries, backing off to about a minute, and logs each failure as an error whose `msg` is
+   `outbox row failed`, with `kind` `issue_branch`.
+
+   A refusal that a retry meets again ends the row instead: a 403 that is no rate limit, a 404, a
+   409, a create's 422, or a branch name the deployment's private-name rules match. The daemon
+   logs it once, records it, tells the owning architect once for each generation (a
+   `branch-refused` notice), and starts the issue's roles without the write, so the first push
+   makes the branch. `legion state` lists it in its `refused issue branches` block:
 
    ```text
-   {"level":"ERROR","msg":"outbox row failed","row":81,"kind":"issue_branch","error":"create the branch of WIDGETS-12, which its roles' starts wait for: create refs/heads/legion/WIDGETS-12 on acme/widgets at <default branch's commit>: GitHub answered POST /git/refs with 403: {\"message\":\"Resource not accessible by integration\",…}"}
+   {"level":"ERROR","msg":"outbox issue branch refused for good and dropped, and its architect is told once a generation","row":81,"issue":"WIDGETS-12","write":"create","refusal":"forbidden","told":true,"error":"create the branch of WIDGETS-12, which its roles' starts wait for: create refs/heads/legion/WIDGETS-12 on acme/widgets at <default branch's commit>: GitHub answered POST /git/refs with 403: {\"message\":\"Resource not accessible by integration\",…}"}
    ```
 
    Fix what GitHub names, such as the implement App's permissions or a ruleset on `legion/*`
-   branches. The next attempt then creates the branch, and the tree starts.
+   branches. The issue's next branch row, at its next change or its next run, then writes the
+   branch and clears the refusal from `legion state`.
 6. **Someone else holds it.** A root's architect's first act is to claim the root in Dispatch.
    When a person or another session already holds that claim, the root's architect starts nothing
    and asks the holder, on the root, to release it or take the issue back; the tree keeps its slot

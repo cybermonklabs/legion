@@ -1589,8 +1589,8 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   The `refused issue branches` block names each issue whose branch row GitHub refused for good.
   Each line gives the row, what it wrote, the refusal's kind, when, and the row's error.
-  Legion makes no second try, starts the issue's roles without the write, and tells the owning
-  architect once.
+  Legion does not run that row again, starts the issue's roles without the write, and tells the
+  owning architect once for each generation. A later row whose write GitHub takes clears the line.
 
   The `admission` line counts every issue that holds a slot, a root or a child, beside the cap.
   An issue takes a slot when the daemon starts it and gives it back as the admission rule says

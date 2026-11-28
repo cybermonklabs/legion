@@ -3159,7 +3159,7 @@ Rolling forward again also costs the window the other way: an issue the earlier 
 #### Rolling back the release that ends a branch row GitHub refuses for good
 
 This release's migration `20261127215416_branch_refusals.up.sql` adds the table `branch_refusals` and the notice kind `branch-refused`.
-The table records each issue's branch row that GitHub refused in a way a retry meets again.
+The table records the first branch row of each issue and generation that GitHub refused in a way a retry meets again, and no later one.
 An earlier release names the table in no statement.
 It decodes an outbox row strictly, so it fails an unsent `branch-refused` notice at every attempt.
 
@@ -3342,9 +3342,13 @@ A check with no `subject` reads as `code`: a pass recorded at a commit of the me
 **A next change's branch.**
 Before a next change's first task, the daemon moves the issue's branch to the head of the base its last pull request merged into, as the implement App.
 It reads the repository's node id over REST and moves the branch with GitHub's GraphQL mutation `updateRefs`, at `https://api.github.com/graphql`.
-Where the App's token cannot make that call, the `issue_branch` row logs `outbox row failed` with an error that begins `move the branch of <KEY> to <base> for its next change, which its roles' starts wait for:`, followed by GitHub's answer.
-The row runs again on its backoff, and the change's roles do not start until the move succeeds.
-Let the daemon reach GitHub's GraphQL endpoint, and give the implement App `Contents: Read and write` on the repository, which its write set already asks for.
+Where GitHub refuses that call in a way a retry meets again, the `issue_branch` row ends rather than running again: the App's GraphQL access, a repository read that names no node id, and a coded 4xx are such refusals (`ghbranch.PermanentRefusal`).
+The row logs the ERROR line `outbox issue branch refused for good and dropped, and its architect is told once a generation`, with the write, the refusal's kind and GitHub's answer.
+It records the refusal in `branch_refusals`, and the owning architect is told by a `branch-refused` notice, once for each issue and generation.
+`legion state` shows the refusal on the issue as `branchRefused`, until a later write of that branch succeeds.
+The change's roles then start on the branch as it stands, which is behind the base, so the change's first task must merge the base forward.
+A rate limit, a 5xx, a 401 or a GitHub that answers nothing is no such refusal: the row runs again on its backoff, and the roles wait for it.
+To fix a refusal, let the daemon reach GitHub's GraphQL endpoint, and give the implement App `Contents: Read and write` on the repository, which its write set already asks for.
 
 #### Rolling back the release that names the variant on each step record
 
