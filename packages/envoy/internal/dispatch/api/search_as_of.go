@@ -638,7 +638,7 @@ meaning_ask_candidates as (
 // one row, which its keys already do. On the corpus at scale 0.01, with the test joined inside
 // the ordered, limited select, the planner read the comments first, expecting 1 and getting
 // 1,478, and read all 2,796 comment windows again for each of them, so every search with meaning
-// at the corpus's newest event ended at searchStatementBound and answered 500.
+// at the corpus's newest event ended at searchStatementBound and answered 503 SEARCH_TIMEOUT.
 func searchAsOfWindows(kind, cut, item, check, limit string) string {
 	return `(
       select e.id as window_id, e.covers, ` + item + ` as item, 1 - e.distance as r
