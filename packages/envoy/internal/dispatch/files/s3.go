@@ -18,6 +18,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/aws/smithy-go/logging"
+
+	"github.com/sjawhar/envoy/awsbody"
 )
 
 // S3 is a Store over one bucket.
@@ -44,7 +46,10 @@ func NewS3(ctx context.Context, bucket string) (*S3, error) {
 	if cfg.Region == "" {
 		return nil, errors.New("the file store needs an AWS region: set AWS_REGION, or a region in the shared AWS config")
 	}
-	return &S3{client: s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = true }), bucket: bucket}, nil
+	return &S3{client: s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+		o.HTTPClient = awsbody.Client(o.HTTPClient)
+	}), bucket: bucket}, nil
 }
 
 // LogSDK hands the AWS SDK's log lines to slog, so they are structured like Dispatch's own and its

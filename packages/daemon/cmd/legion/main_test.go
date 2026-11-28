@@ -62,7 +62,7 @@ const testCurlEnv = "LEGION_CMD_TEST_CURL"
 // start, on this binary run again as `legion`, and on the wall-clock bounds some of them prove —
 // so one at a time the package kept about half of one of CI's four CPUs busy, and go test's
 // default of GOMAXPROCS would leave most of that idle. A -parallel on the command line still wins
-// only because TestMain sets this default before testBinaryDeadline parses the command line
+// only because TestMain sets this default before testwait.BinaryDeadline parses the command line
 // (flag.Parse): the set must stay above that call, or this default would replace a -parallel the
 // command line names.
 const cmdTestParallelism = 8
@@ -93,7 +93,7 @@ func TestMain(m *testing.M) {
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
 		// (ghCheckAt). Only this test binary reads the variable; the legion binary has none.
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
-			ghReadsProvenCheck.sha256 = proven
+			ghProvenCheckSHA256 = proven
 		}
 		// A test's stand-in curl for the guard's curl reads, which reach no network. Only this
 		// test binary reads the variable; the legion binary has none, and its guards run the
@@ -127,8 +127,8 @@ func TestMain(m *testing.M) {
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())
 		main()
 	}
-	// The package's default -parallel (cmdTestParallelism), set before testBinaryDeadline below
-	// parses the command line, so a -parallel there still replaces it.
+	// The package's default -parallel (cmdTestParallelism), set before testwait.BinaryDeadline
+	// below parses the command line, so a -parallel there still replaces it.
 	if err := flag.Set("test.parallel", strconv.Itoa(cmdTestParallelism)); err != nil {
 		fmt.Fprintf(os.Stderr, "TestMain: set this package's default -parallel: %v\n", err)
 		os.Exit(1)
@@ -140,10 +140,11 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
-	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
-	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
-	// LEGION_* variables out of the environment.
-	if deadline, ok := testBinaryDeadline(); ok {
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline
+	// (testwait.BinaryDeadline), here and in every run of it as `legion`, and in the `legion` it
+	// builds (boundByTheDeadline). After MustGuard, which takes LEGION_* variables out of the
+	// environment.
+	if deadline, ok := testwait.BinaryDeadline(); ok {
 		if err := boundByTheDeadline(deadline); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)
 			os.Exit(1)
@@ -1224,9 +1225,10 @@ func TestConfigCheckNamesTheBrokenKey(t *testing.T) {
 // production-check line and the capability gaps, and the warning says what the refusal would
 // have said: the key, that nothing counts fix attempts, that no CI verdict sends work back on its
 // own — what a settlement names is told to the roles that work the issue
-// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and review_round_cap,
-// the one cap left that blocks a pull request. The refused keys of TestConfigCheckNamesTheBrokenKey (worker_cap,
-// resync_interval_seconds) are the control that the two kinds stay apart.
+// (dispatch://INFRA-714/spec R1) — that the architect decides when to stop, and that
+// review_round_cap, the one cap left on an issue's review rounds, moves nothing. The refused keys
+// of TestConfigCheckNamesTheBrokenKey (worker_cap, resync_interval_seconds) are the control that
+// the two kinds stay apart.
 func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
@@ -1235,7 +1237,7 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
-	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)\n"
+	warning := "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml. review_round_cap is the one cap left on an issue's review rounds, and it moves nothing: after that many counted review rounds (recordRound in internal/workflow/review.go counts them, less the conflict rounds) the daemon posts a message on the issue and sends the architect a pr-blocked notice, once for each value the cap holds, and the work goes on (dispatch://INFRA-956 R4)\n"
 	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}

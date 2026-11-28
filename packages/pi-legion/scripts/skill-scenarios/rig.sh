@@ -40,10 +40,12 @@
 #                                                  pod of the Job stored (RT_STORE): the pack its
 #                                                  row names, checked and unpacked into
 #                                                  <work>/runs (cmd_restore_stored)
-#   rig.sh check-stored <dir> <job log>...         a download of a Job's store, checked against
+#   rig.sh check-stored <dir> <job log>...        a download of a Job's store, checked against
 #                                                  the sha256 its logs and its rows name: each run
 #                                                  unpacked into <dir>/checked, or a rig error row
-#                                                  naming each fault; then the cells
+#                                                  naming each fault; each entry no run's object
+#                                                  named; then the cells, each case at the count
+#                                                  the Job's own logs name for it
 #   rig.sh rows      [<scenario>]                  each scored run's row.json, then each entry of
 #                                                  its reach, without scoring it again
 #   rig.sh cell      <scenario> <label> <case> <count>
@@ -64,6 +66,8 @@
 #                                                  <dir> (read-only but for <dir>/<output> and
 #                                                  <dir>/sessions), output to <dir>/out.txt, the
 #                                                  model and thinking level to <dir>/judge-model.txt
+#   rig.sh judge-image                             pulls the judges' container image unless Docker
+#                                                  holds it: the pull judge-omp makes when it must
 #
 # A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>`, which needs that
 # batch's services: <index> is the run's place in the batch and <start> the batch's start in epoch
@@ -209,7 +213,8 @@
 #                                 one provider block is the model stand-in (install_standin_route),
 #                                 which model-standin.ts serves for each run of a scored scenario,
 #                                 and its built-from's model line names it
-# `judge` and `judge-omp` also need Docker: each judge runs in a container (cmd_judge_omp).
+# `judge`, `judge-omp` and `judge-image` also need Docker: each judge runs in a container
+# (cmd_judge_omp).
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
 #                             any directory above it (default ${TMPDIR:-/tmp}/skill-scenarios)
@@ -1777,6 +1782,29 @@ judge_keys() {
   [ -z "${key_file:-}" ] || printf '%s\n' "$key_file"
 }
 
+# cmd_judge_image pulls judge_image unless Docker already holds it, quietly. cmd_judge_omp runs it
+# before its container, so a first judge's pull progress never lands in its out.txt and a failed
+# pull names itself; a caller that starts many judges can run it first, so that no judge's own time
+# holds the pull, as rig.test.ts's judge-omp tests do in a beforeAll. The registry answers one
+# request of a batch badly now and then (a token it refuses to mint, a manifest GET it drops) and
+# serves the next, so the pull is asked three times a couple of seconds apart before the rig
+# refuses. Only the last attempt's own words are kept, and only for the refusal: an attempt the
+# next one makes good says nothing.
+cmd_judge_image() {
+  [ $# = 0 ] || fail "usage: rig.sh judge-image"
+  command -v docker >/dev/null || fail "judge-image: docker is not on PATH; each judge runs in a container"
+  docker image inspect "$judge_image" >/dev/null 2>&1 && return 0
+  local pulled='' pull_error='' attempt
+  for attempt in 1 2 3; do
+    pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
+      pulled=1
+      break
+    }
+    [ "$attempt" -eq 3 ] || sleep 2
+  done
+  [ -n "$pulled" ] || fail "judge-image: docker could not pull $judge_image in 3 attempts: $pull_error"
+}
+
 # cmd_judge_omp KIND DIR OUTPUT runs one fresh judge session in DIR on DIR/prompt.txt: no plugins,
 # the KIND profile's skills alone (ste: asd-ste100; bare: none), the judge's pinned model and
 # thinking level, its transcript under DIR/sessions, its output to DIR/out.txt with a last line
@@ -1840,22 +1868,7 @@ cmd_judge_omp() {
   [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
-  # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
-  # failed pull names itself. The registry answers one request of a batch badly now and then (a
-  # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
-  # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
-  # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
-  if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
-    local pulled='' pull_error='' attempt
-    for attempt in 1 2 3; do
-      pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
-        pulled=1
-        break
-      }
-      [ "$attempt" -eq 3 ] || sleep 2
-    done
-    [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
-  fi
+  cmd_judge_image
   docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
@@ -2598,10 +2611,11 @@ batch_scored_cell() {
 #
 # A pack holds the run's regular files and directories alone, a hard link as its file. It leaves
 # out every other entry (a symlink, a FIFO, a socket), and names them. It leaves out, by name, the
-# places the run's credentials are in: every directory named secrets (the daemon stand-in's boot
-# token, the owner's Envoy token and gh configuration), home/ (the label's HOME, copied), pane.env
-# and the launch's texts/launch-request.json and texts/launch-answer.json, which can carry the
-# batch's NATS URL with its credential. The scorer reads none of them.
+# places the run's credentials can be, without reading what is in them: every directory named
+# secrets (the daemon stand-in's boot token, the owner's Envoy token and gh configuration), every
+# directory named home (the label's HOME, copied, and the owner's state/home), pane.env and the
+# launch's texts/launch-request.json and texts/launch-answer.json, which can carry the batch's NATS
+# URL with its credential. The scorer reads none of them.
 
 # store_scored_run NAME stores the run NAME, when RT_STORE is set. A failed pack or put is noted and
 # stops neither the batch nor the run's count in this pod. After a failed pack or a failed put of
@@ -2613,10 +2627,10 @@ store_scored_run() {
   local hex left
   mkdir -p "$work/stored"
   rm -f -- "$pack" "$row" "$list"
-  (cd "$work/runs" && find "$name" \( -path "$name/home" -o -path "$name/pane.env" -o -type d -name secrets \
+  (cd "$work/runs" && find "$name" \( -type d \( -name home -o -name secrets \) -o -path "$name/pane.env" \
     -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
     -o \( -type d -o -type f \) -print0) >"$list"
-  left=$(cd "$work/runs" && find "$name" \( -path "$name/home" -o -path "$name/pane.env" -o -type d -name secrets \
+  left=$(cd "$work/runs" && find "$name" \( -type d \( -name home -o -name secrets \) -o -path "$name/pane.env" \
     -o -path "$name/texts/launch-request.json" -o -path "$name/texts/launch-answer.json" \) -prune \
     -o ! -type d ! -type f -printf '%P\n' | LC_ALL=C sort)
   [ -z "$left" ] ||
@@ -2684,6 +2698,14 @@ unpack_fresh() {
   printf '%s\n' "$fresh"
 }
 
+# sorted_counts COUNTS prints the counts COUNTS holds, lowest first, `and` between two: the counts
+# a case's cell lines name, read in no order, so no message depends on the order of the logs.
+sorted_counts() {
+  local sorted
+  sorted=$(printf '%s' "$1" | tr ' ' '\n' | sort -n | paste -sd' ')
+  printf '%s' "${sorted// / and }"
+}
+
 # same_row STORED ROW is true when the stored row STORED, its `pack` taken out, is the run's ROW.
 same_row() {
   [ "$(jq -S -c 'del(.pack)' "$1" 2>/dev/null)" = "$(jq -S -c . "$2" 2>/dev/null)" ]
@@ -2729,55 +2751,125 @@ cmd_restore_stored() {
   note "the store lists $listed names under runs/; $restored runs of $1 restored from it"
 }
 
-# cmd_check_stored DIR LOG... (the header). DIR is a download of a Job's store, DIR/runs/<run>.tar.gz
-# and DIR/runs/<run>.row.json, and each LOG a log of the Job, in the order its pods ran. Their
-# `stored` and `got` lines name each object's sha256: a `stored` line sets it, and a later `got`
-# line of another sha256 is a fault, since the object then changed between the pods. A `got` line
-# of a name no LOG stores sets it, so with the last pod's log alone, a row and pack an earlier pod
-# stored and that changed together before the later pod's get read as stored. Each owner-walk run
-# whose row the download holds, or whose object a LOG names, is checked: its row must be in the
-# download, named in a LOG, and of that sha256; its pack must be in the download, of the sha256
-# its row names (and of a LOG's, when one names it), pass pack_problem, and hold the row's own
-# row.json. A run that passes is unpacked into DIR/checked, through a fresh directory. One that
-# fails gets a rig error row there, naming each fault, and its pack is not unpacked; with no
-# world.json, it is in no cell. Then a line for each run, and the cells (score.ts cells). The check
-# catches an object changed or mixed up after a pod stored it, not one an agent in the same pod
-# changed before the rig stored it.
+# run_case_label RUN prints the case, the label and the form of the run RUN, from its name alone:
+# owner-walk-<kind>-<form>-<family>-<label>-<n>, where the label may hold hyphens of its own
+# (ctl-d, notice-<hex>) and <n> is its number.
+run_case_label() {
+  local rest=${1#owner-walk-} kind form family label
+  IFS=- read -r kind form family label <<<"$rest"
+  label=${label%-*}
+  printf '%s %s %s\n' "$kind-$form-$family" "$label" "$form"
+}
+
+# cmd_check_stored DIR LOG... (the header). DIR is a download of a Job's store,
+# DIR/runs/<run>.tar.gz and DIR/runs/<run>.row.json; the LOGs are every log of the Job, in the
+# order its pods ran
+# (legion-remote-test.sh keeps every attempt's in <out>.attempts, in that order). Their `stored`
+# and `got` lines name each object's sha256. A `stored` line sets it, and these are faults:
+#   - a `got` line of another sha256 than the `stored` line before it: the object changed between
+#     the pods;
+#   - a `got` line of a name no LOG stores: no pod is known to have stored that object, so a run
+#     put into the store by anything but a pod, and every run of a pod whose LOG is not given, is
+#     refused, never counted;
+#   - a `stored` line, of another sha256, for an object of a run whose row a LOG stored before: a
+#     stored run is never run, or stored, again.
+# A `stored` line of the same sha256 again is no fault: the same sha256 is the same bytes, so
+# nothing was replaced, and giving a pod's --out and its <out>.attempts both puts each of its
+# `stored` lines in twice, so a check that refused it would refuse every honest run checked that
+# way. A pack stored twice before its run's row is no fault either: a pod stopped between the two
+# puts, and the later pod ran and stored the run again.
+#
+# Every entry of DIR/runs is read, a dotfile and a directory too. A regular file named
+# <run>.tar.gz or <run>.row.json, for an owner-walk run's name, belongs to that run; any other
+# entry is left out, printed as UNKNOWN by its name. Each owner-walk run that a file of the download
+# or an object of a LOG names is checked: its row must be in the download, stored by a LOG, and of
+# that sha256; its pack must be in the download, of the sha256 its row names (the row, checked
+# against the LOGs, vouches for it), pass pack_problem, and hold the row's own row.json. A run that
+# passes is unpacked into DIR/checked, through a fresh directory. One that fails gets a rig error
+# row there, naming each fault, and its pack is not unpacked; with no world.json, it is in no cell.
+# Then a line for each run, and the cells at COUNT (score.ts cells; a control form's cell keeps its
+# own count). Each case's count comes from the Job's own cell line for that case, never from the
+# caller: a Job runs each case to its form's runs unless it is told one count. It exits 0 only when
+# every run is as stored, no entry was left out, every case the names hold has one count in the
+# logs that no scored run of it goes beyond, every case a cell line names has a run,
+# no cell is UNKNOWN, that is, short of the runs its count needs, and the cells cover every case it
+# checked hold: a run whose directory holds no world.json is in no cell, so a Job none of whose
+# runs reached a cell prints no cell line, which counting UNKNOWN cells alone would read as clean.
+# Any fault, any entry left out, any of its own UNKNOWN lines, any UNKNOWN cell, any case with no
+# cell and any case whose count no log names exit 1.
+#
+# What it cannot see: an object an agent in the same pod changed before the rig stored it; and a
+# `stored` line written outside the rig's own put. A run that only a LOG not given names, and whose
+# objects are gone from the store, is named nowhere it reads; its cell is then short of COUNT, and
+# reads UNKNOWN. Give it every attempt's log.
 cmd_check_stored() {
   [ $# -ge 2 ] || fail "usage: rig.sh check-stored <dir> <job log>..."
-  local dir=$1 log line file name run object hex faults joined kind form family kase label rest want problem fresh
-  local -A logged=() named=()
+  local dir=$1 log line file name run object hex faults joined kase label form want problem fresh
+  local left=0 faulted=0 listed=0 unknown=0 uncovered=0 status cells shown cell counts clashing
+  local nocount=0 clashed=0 surplus=0 unrun=0
+  local -A logged=() named=() conflict=() rowstored=() ran=() saw=() seen=() scored=() clash_key=()
+  local key outcome
+  # A cell line of the Job's own names the case it ran and the count it ran that case to:
+  # `scored-job <scenario> <group> <case>, label <label>: ... count <n>[;,]`. A Job runs each case
+  # to its form's runs unless it is told one count, so a head Job runs A three times, B three times
+  # and C once: one number for the whole Job reads an honest Job as broken at 3 and a short one as
+  # clean at 1. The counts come from here, one a case, and the caller gives none.
+  local cell_count_re='^scored-job owner-walk [a-z-]+ ([A-Za-z0-9-]+), label ([A-Za-z0-9_-]+): .* count ([0-9]+)[;,]'
   shift
   faults=()
-  local -A conflict=()
   for log in "$@"; do
     [ -f "$log" ] || fail "the Job's log $log is not a file"
     while IFS= read -r line; do
       [[ $line =~ ^(stored|got)\ (runs/(owner-walk-[A-Za-z0-9_-]+)\.(tar\.gz|row\.json))\ sha256\ ([0-9a-f]{64})$ ]] || continue
-      object=${BASH_REMATCH[2]} hex=${BASH_REMATCH[5]}
-      named[${BASH_REMATCH[3]}]=1
-      if [ "${BASH_REMATCH[1]}" = stored ] || [ -z "${logged[$object]:-}" ]; then
+      object=${BASH_REMATCH[2]} run=${BASH_REMATCH[3]} hex=${BASH_REMATCH[5]}
+      named[$run]=1
+      if [ "${BASH_REMATCH[1]}" = stored ]; then
+        if [ -n "${rowstored[$run]:-}" ] && [ "$hex" != "${logged[$object]:-}" ]; then
+          conflict[$object]="$object was stored again after its run's row was stored: ${logged[$object]:+first with sha256 ${logged[$object]}, then }with sha256 $hex"
+          continue
+        fi
         logged[$object]=$hex
+        [ "${BASH_REMATCH[4]}" != row.json ] || rowstored[$run]=1
+      elif [ -z "${logged[$object]:-}" ]; then
+        conflict[$object]="$object was got with sha256 $hex, and no log given stores it: give every pod's log"
       elif [ "$hex" != "${logged[$object]}" ]; then
         conflict[$object]="$object was stored with sha256 ${logged[$object]} and later got with sha256 $hex"
       fi
     done <"$log"
+    # The Job's own cell lines name the count it ran to, so COUNT is checked against them rather
+    # than trusted: a count below the Job's leaves every cell complete, and reads clean.
+    while IFS= read -r line; do
+      [[ $line =~ $cell_count_re ]] || continue
+      key=${BASH_REMATCH[2]}$'\t'${BASH_REMATCH[1]}
+      # Every count any log names for the case, sorted and without repeats: two logs that disagree
+      # are a contradiction, and the message must not depend on the order they were given in.
+      case " ${saw[$key]:-} " in
+        *" ${BASH_REMATCH[3]} "*) ;;
+        *) saw[$key]="${saw[$key]:+${saw[$key]} }${BASH_REMATCH[3]}" ;;
+      esac
+      ran[$key]=${BASH_REMATCH[3]}
+    done <"$log"
   done
-  # A download that holds nothing was not checked, whatever the logs name: each run would read as
-  # its objects missing, and the count of that is no measurement of the store.
-  if ! compgen -G "$dir/runs/*" >/dev/null; then
-    echo "UNKNOWN: $dir/runs holds no object: nothing was checked"
+  if [ ! -d "$dir/runs" ]; then
+    echo "UNKNOWN: $dir/runs is no directory: nothing was checked"
     return 1
   fi
-  for file in "$dir"/runs/*.row.json; do
-    [ -f "$file" ] || continue
+  while IFS= read -r -d '' file; do
+    listed=$((listed + 1))
     name=${file##*/}
-    if [[ $name =~ ^(owner-walk-[A-Za-z0-9_-]+)\.row\.json$ ]]; then
+    if [ -f "$file" ] && [ ! -L "$file" ] && [[ $name =~ ^(owner-walk-[A-Za-z0-9_-]+)\.(row\.json|tar\.gz)$ ]]; then
       named[${BASH_REMATCH[1]}]=1
     else
       printf 'UNKNOWN: %q in %s/runs is no run'"'"'s object: it is left out\n' "$name" "$dir"
+      left=$((left + 1))
     fi
-  done
+  done < <(find "$dir/runs" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+  # A download that holds nothing was not checked, whatever the logs name: each run would read as
+  # its objects missing, and the count of that is no measurement of the store.
+  if [ "$listed" = 0 ]; then
+    echo "UNKNOWN: $dir/runs holds no object: nothing was checked"
+    return 1
+  fi
   if [ ${#named[@]} = 0 ]; then
     echo "UNKNOWN: neither the Job's logs nor $dir/runs name an owner-walk run: nothing was checked"
     return 1
@@ -2792,7 +2884,7 @@ cmd_check_stored() {
     elif [ -n "${conflict[$object]:-}" ]; then
       faults+=("${conflict[$object]}")
     elif [ -z "${logged[$object]:-}" ]; then
-      faults+=("$object has no stored or got line in the Job's logs")
+      faults+=("$object has no stored line in the Job's logs")
     else
       hex=$(sha256sum <"$file")
       hex=${hex%% *}
@@ -2813,8 +2905,6 @@ cmd_check_stored() {
       hex=$(sha256sum <"$file")
       hex=${hex%% *}
       [ -z "${conflict[$object]:-}" ] || faults+=("${conflict[$object]}")
-      [ -z "${logged[$object]:-}" ] || [ "$hex" = "${logged[$object]}" ] ||
-        faults+=("$object differs from the Job's log: logged ${logged[$object]}, downloaded $hex")
       [ -z "$want" ] || [ "$hex" = "$want" ] ||
         faults+=("$object is not the pack its row names: the row names $want, the download holds $hex")
     fi
@@ -2834,17 +2924,113 @@ cmd_check_stored() {
       faults+=("$object's row.json is not the row stored beside it")
     fi
     # The run's name gives its case and label: owner-walk-<kind>-<form>-<family>-<label>-<n>.
-    rest=${run#owner-walk-}
-    IFS=- read -r kind form family label <<<"$rest"
-    kase=$kind-$form-$family label=${label%-*}
+    read -r kase label form < <(run_case_label "$run")
     printf -v joined '%s; ' "${faults[@]}"
     joined=${joined%; }
     mkdir -p "$dir/checked/$run"
     jq -cn --arg run "$run" --arg label "$label" --arg case "$kase" --arg error "the store's objects of the run are at fault: $joined" \
       '{outcome: "rig-error", run: $run, scenario: "owner-walk", label: $label, case: $case, error: $error}' >"$dir/checked/$run/row.json"
     printf 'checked %s: rig error: %s\n' "$run" "$joined"
+    faulted=$((faulted + 1))
   done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
-  bun "$here/score.ts" cells "$dir/checked" owner-walk
+  # A case whose logs name two counts has no count of its own. One list holds those cases, and
+  # everything below reads it: they are left out of the counts, no cell of them is printed or
+  # counted UNKNOWN, and each says so in its own line. Taking either number, or falling back to
+  # the form's runs, would make the printed cell and the UNKNOWN count depend on the order the
+  # logs were given in, which is what this rule refuses.
+  for key in "${!ran[@]}"; do
+    [ "${saw[$key]}" != "${ran[$key]}" ] || continue
+    clash_key[$key]=1
+  done
+  counts=$(
+    for key in "${!ran[@]}"; do
+      [ -z "${clash_key[$key]:-}" ] || continue
+      printf '%s\t%s\n' "$key" "${ran[$key]}"
+    done |
+      jq -R -s 'split("\n") | map(select(length > 0) | split("\t")) |
+        map({key: (.[0] + "\t" + .[1]), value: (.[2] | tonumber)}) | from_entries'
+  )
+  clashing=$(
+    for key in "${!clash_key[@]}"; do
+      printf '%s\n' "$key"
+    done |
+      jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {label: .[0], case: .[1]})'
+  )
+  cells=$(bun "$here/score.ts" cells "$dir/checked" owner-walk "$counts")
+  status=$?
+  # The cover check below reads every cell cells() made; the reading prints, and counts as
+  # UNKNOWN, only the cells of cases that have one count.
+  shown=$(
+    printf '%s\n' "$cells" | while IFS= read -r cell; do
+      [ -n "$cell" ] || continue
+      jq -e -n --argjson cell "$cell" --argjson clashing "$clashing" \
+        '[$clashing[] | . as $key | select($cell.label == $key.label and ($cell.cell | endswith("/" + $key.case)))] | length > 0' >/dev/null &&
+        continue
+      printf '%s\n' "$cell"
+    done
+  )
+  [ -z "$shown" ] || printf '%s\n' "$shown"
+  [ "$status" = 0 ] || return "$status"
+  while IFS= read -r cell; do
+    [ -n "$cell" ] || continue
+    [ "$(jq -r .verdict <<<"$cell")" != UNKNOWN ] || unknown=$((unknown + 1))
+  done <<<"$shown"
+  # Every case the Job ran must have a cell. A run reaches no cell when its directory holds no
+  # world.json, which every rig error of this check does, and scored_rig_error's runs do too: so a
+  # Job none of whose runs reached a cell prints no cell line at all, and counting UNKNOWN cells
+  # would read that as clean. A case is this check's own reading of the run names it checked, so a
+  # Job whose runs all failed, and one where some runs reach a cell and others do not, each say so.
+  while IFS= read -r run; do
+    read -r kase label form < <(run_case_label "$run")
+    key=$label$'\t'$kase
+    seen[$key]=$((${seen[$key]:-0} + 1))
+    # A run the rig failed is stored and checked like any other, and is no scored run: a cell
+    # takes its case's first `count` SCORED runs, so an honest count-1 Job whose first run is a
+    # rig error stores two runs of the case and is no fault.
+    outcome=$(jq -r '.outcome // empty' "$dir/checked/$run/row.json" 2>/dev/null)
+    [ "$outcome" != scored ] || scored[$key]=$((${scored[$key]:-0} + 1))
+    # cells() keys a control form's cell by the form, every other by the case.
+    jq -e -n --slurpfile cell <(printf '%s\n' "$cells") --arg label "$label" --arg case "$kase" --arg form "$form" \
+      '[$cell[] | select(.label == $label and ((.cell | endswith("/" + $case)) or (.cell | endswith("/" + $form))))] | length > 0' >/dev/null && continue
+    echo "UNKNOWN: no cell covers $label $kase: its runs are in none, so nothing was measured of it"
+    uncovered=$((uncovered + 1))
+  done < <(printf '%s\n' "${!named[@]}" | LC_ALL=C sort)
+  # Every fault of a count is a fault of its CASE, so each is read once for the case and counted
+  # once, never once for each run of it. The keys are sorted, since the order an associative
+  # array hands them back is its own and the reading must not depend on it.
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if [ -z "${ran[$key]:-}" ]; then
+      echo "UNKNOWN: the Job's logs name no count for ${key/$'\t'/ }, so its cell is measured against nothing"
+      nocount=$((nocount + 1))
+    elif [ -n "${clash_key[$key]:-}" ]; then
+      echo "UNKNOWN: ${key/$'\t'/ }: the Job's logs name the counts $(sorted_counts "${saw[$key]}") for it, so no count of its own decides it, and no cell of it is read"
+      clashed=$((clashed + 1))
+    fi
+  done < <(printf '%s\n' "${!seen[@]}" | LC_ALL=C sort)
+  # A case with scored runs beyond its count has runs the cell drops with nothing said, which is
+  # the fault the per-case count exists to stop; and a case a cell line names that no run of the
+  # download or the logs holds was measured by nothing at all. A case whose logs disagree has no
+  # count of its own, so nothing here reads one for it.
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if [ -z "${seen[$key]:-}" ]; then
+      echo "UNKNOWN: the Job's logs name the count $(sorted_counts "${saw[$key]}") for ${key/$'\t'/ }, and no run of it is in the download or the logs"
+      unrun=$((unrun + 1))
+    elif [ -n "${clash_key[$key]:-}" ]; then
+      continue
+    elif [ "${scored[$key]:-0}" -gt "${ran[$key]}" ]; then
+      echo "UNKNOWN: ${key/$'\t'/ }: the Job's logs name the count ${ran[$key]}, and the store holds ${scored[$key]} scored runs of it, so $((${scored[$key]} - ${ran[$key]})) of them would be dropped"
+      surplus=$((surplus + 1))
+    fi
+  done < <(printf '%s\n' "${!ran[@]}" | LC_ALL=C sort)
+  # Each kind of fault is counted by its own name: four of them would otherwise share one
+  # sentence, and a reader of this line could not tell which rule fired.
+  if [ "$faulted" != 0 ] || [ "$left" != 0 ] || [ "$unknown" != 0 ] || [ "$uncovered" != 0 ] ||
+    [ "$nocount" != 0 ] || [ "$clashed" != 0 ] || [ "$surplus" != 0 ] || [ "$unrun" != 0 ]; then
+    echo "check-stored: $faulted of ${#named[@]} runs are rig errors of the store, $left entries of the download were left out, $unknown cells are UNKNOWN at the counts the Job ran, $uncovered runs are in no cell, $nocount cases the logs name no count for, $clashed cases whose logs name two counts, $surplus cases hold scored runs beyond their count, and $unrun cases a cell line names have no run"
+    return 1
+  fi
 }
 
 # cmd_batch_scored SCENARIO COUNT LABEL... (the header): the batch's services, each label's texts
@@ -3074,5 +3260,6 @@ unpatch-holds) shift && cmd_unpatch_holds "$@" ;;
 plans-capture) shift && cmd_plans_capture "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
+judge-image) shift && cmd_judge_image "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;
 esac; exit

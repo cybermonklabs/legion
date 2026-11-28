@@ -138,8 +138,7 @@ function approvalDocuments(ask: IssueAskRow): readonly ApprovalDocument[] {
  * The one document an approval request is on, by artifact id: the ask's own (`artifact_id`),
  * else the document of `issue` its approval names by slug (`approval_artifact`), else the issue's
  * spec (`primary_artifact_id`). The header's approval control for that document carries Approve
- * and Request changes, and is where the count's press puts the focus when nothing else waits
- * (`issue-page/IssuePropertiesRow.tsx`), as `main`'s count placed it.
+ * and Request changes (`issue-page/IssuePropertiesRow.tsx`).
  *
  * It is not `approvalDocuments`, and the two are not one rule, since each answers its own
  * question from other fields: `approvalDocuments` gives every document the request covers
@@ -298,6 +297,8 @@ const dashboardRepliesQuery = (key: string) =>
     queryKey: [...myRepliesKey, "dashboard", key],
     queryFn: () => api.listMyReplies({ issue: key, state: "unread" }),
   });
+
+export { dashboardRepliesQuery, isDaemon };
 
 /** What waits on the reader, as `useWaitingItems` answers it. */
 export interface WaitingView {

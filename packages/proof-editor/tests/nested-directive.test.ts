@@ -20,7 +20,6 @@ import {
   type CostShape,
   measuredRowCeilingMs,
   parsedWithinCostBounds,
-  plainRowCeilingMs,
   refusalWithinCostBounds,
 } from "./cpu-time";
 
@@ -121,70 +120,54 @@ async function defaultProof() {
   return createHeadlessProof({ blockSchema: serverBlockSchema });
 }
 
-test(
-  "read-only draws the 33rd nested opener and every line after it as text",
-  async () => {
-    // Each level's opener is followed by a line of its own, so every line drawn as text can be
-    // found by its words; the openers past the bound are left unclosed, as the reported body's were.
-    const lines: string[] = [];
-    for (let level = 1; level <= maxNesting + 1; level++) {
-      lines.push(":::callout{}", `level ${level} words`, "");
-    }
-    lines.push("after the openers", "", "the last line");
-    const doc = (await readOnlyProof()).parseMarkdown(lines.join("\n"));
+test("read-only draws the 33rd nested opener and every line after it as text", async () => {
+  // Each level's opener is followed by a line of its own, so every line drawn as text can be
+  // found by its words; the openers past the bound are left unclosed, as the reported body's were.
+  const lines: string[] = [];
+  for (let level = 1; level <= maxNesting + 1; level++) {
+    lines.push(":::callout{}", `level ${level} words`, "");
+  }
+  lines.push("after the openers", "", "the last line");
+  const doc = (await readOnlyProof()).parseMarkdown(lines.join("\n"));
 
-    expect(calloutDepth(doc)).toBe(maxNesting);
-    const innermost = innermostCallout(doc);
-    expect(innermost).toBeDefined();
-    innermost?.forEach((child) => {
-      expect(child.type.name).toBe("paragraph");
-    });
-    // The 33rd opener, its line, and every line after it stand in the innermost callout as text.
-    for (const line of lines.slice(maxNesting * 3).filter((line) => line !== "")) {
-      expect(innermost?.textContent).toContain(line);
-    }
-    for (let level = 1; level <= maxNesting + 1; level++) {
-      expect(doc.textContent).toContain(`level ${level} words`);
-    }
-  },
-  plainRowCeilingMs
-);
+  expect(calloutDepth(doc)).toBe(maxNesting);
+  const innermost = innermostCallout(doc);
+  expect(innermost).toBeDefined();
+  innermost?.forEach((child) => {
+    expect(child.type.name).toBe("paragraph");
+  });
+  // The 33rd opener, its line, and every line after it stand in the innermost callout as text.
+  for (const line of lines.slice(maxNesting * 3).filter((line) => line !== "")) {
+    expect(innermost?.textContent).toContain(line);
+  }
+  for (let level = 1; level <= maxNesting + 1; level++) {
+    expect(doc.textContent).toContain(`level ${level} words`);
+  }
+});
 
-test(
-  "read-only nests 32 callouts as 32 typed blocks",
-  async () => {
-    const doc = (await readOnlyProof()).parseMarkdown(nestedCallouts(maxNesting));
-    expect(calloutDepth(doc)).toBe(maxNesting);
-    expect(innermostCallout(doc)?.textContent).toBe("a");
-    expect(doc.textContent).not.toContain(":::");
-  },
-  plainRowCeilingMs
-);
+test("read-only nests 32 callouts as 32 typed blocks", async () => {
+  const doc = (await readOnlyProof()).parseMarkdown(nestedCallouts(maxNesting));
+  expect(calloutDepth(doc)).toBe(maxNesting);
+  expect(innermostCallout(doc)?.textContent).toBe("a");
+  expect(doc.textContent).not.toContain(":::");
+});
 
-test(
-  "the default mode nests 32 callouts as 32 typed blocks",
-  async () => {
-    const doc = (await defaultProof()).parseMarkdown(nestedCallouts(maxNesting));
-    expect(calloutDepth(doc)).toBe(maxNesting);
-    expect(innermostCallout(doc)?.textContent).toBe("a");
-    expect(doc.textContent).not.toContain(":::");
-  },
-  plainRowCeilingMs
-);
+test("the default mode nests 32 callouts as 32 typed blocks", async () => {
+  const doc = (await defaultProof()).parseMarkdown(nestedCallouts(maxNesting));
+  expect(calloutDepth(doc)).toBe(maxNesting);
+  expect(innermostCallout(doc)?.textContent).toBe("a");
+  expect(doc.textContent).not.toContain(":::");
+});
 
-test(
-  "the default mode refuses a 33rd nested callout, naming its line",
-  async () => {
-    const proof = await defaultProof();
-    const markdown = nestedCallouts(maxNesting + 1);
-    const parse = () => {
-      proof.parseMarkdown(markdown);
-    };
-    expect(parse).toThrow(/line 33\b/);
-    expect(parse).toThrow(/32/);
-  },
-  plainRowCeilingMs
-);
+test("the default mode refuses a 33rd nested callout, naming its line", async () => {
+  const proof = await defaultProof();
+  const markdown = nestedCallouts(maxNesting + 1);
+  const parse = () => {
+    proof.parseMarkdown(markdown);
+  };
+  expect(parse).toThrow(/line 33\b/);
+  expect(parse).toThrow(/32/);
+});
 
 for (const body of bodies) {
   test(

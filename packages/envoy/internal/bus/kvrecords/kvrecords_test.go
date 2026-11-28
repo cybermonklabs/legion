@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/kvrecords"
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -444,9 +445,15 @@ func TestAMessageStoredUnderAForeignSubjectIsListedNotCopied(t *testing.T) {
 // than the few republishes still in flight when it reads the stream's info, and the stream's
 // last_seq still moves after the walk's tenth pass.
 //
-// Run by hand, the control is the walk with no bound: it never ends, and the test fails at its
-// one-minute deadline, naming no bound.
+// The bound the row reads is the pass bound. The walk times its catch-up bound on a clock the row
+// holds still (HoldWalkClockForTest) and runs under the shared wait's context (testwait.Context),
+// so neither the catch-up bound nor a deadline of the row's own ends a walk that a loaded machine
+// makes slow before its tenth pass.
+//
+// Run by hand, the control is the walk with no bound: it never ends, and the test fails when the
+// shared wait gives up, naming no bound.
 func TestAWalkThatCannotCatchTheStreamFailsNamingItsBound(t *testing.T) {
+	kvrecords.HoldWalkClockForTest(t)
 	r := newRig(t)
 	kv, err := r.js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
 	require.NoError(t, err)
@@ -455,8 +462,7 @@ func TestAWalkThatCannotCatchTheStreamFailsNamingItsBound(t *testing.T) {
 		require.NoError(t, err)
 	}
 	captured := r.captureWalk(t, "s-moved", 0)
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	dir := filepath.Join(t.TempDir(), "copy")
 	_, err = kvrecords.Write(ctx, r.operator, bucket, dir, r.key)
 	moved, infoErr := r.js.StreamInfo(captured)

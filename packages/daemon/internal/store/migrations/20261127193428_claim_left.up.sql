@@ -1,0 +1,47 @@
+-- 20261127193428_claim_left.up.sql — the record of why a claim release left an issue's Dispatch
+-- claim (dispatch://INFRA-3144).
+--
+-- issues.claim_left is record.Issue.ClaimLeft: the entry of the newest claim release row
+-- (record.ClaimRelease, which the outbox's releaseClaim runs) that judged the issue's Dispatch
+-- holder, when that row left the claim on purpose, and null for none. It is a JSON object: the
+-- holder Dispatch named ("<kind>:<id>", left out where Dispatch named none), the reason, one of the
+-- eleven words of record.ClaimLeftReason, and the executor's clock. A row that takes the claim, or
+-- that finds no claim, clears it. record.Store.RecordClaimLeft is its one writer: PutIssue names
+-- the column in neither its insert nor its update, so a copy of the issue read before a release
+-- wrote its entry never writes the entry away or writes an older one back. The record route and
+-- read_record serve it as claimLeft. Every row the migration finds takes null: no release before
+-- this one recorded why it left a claim.
+--
+-- The release before this one names each column of the table it writes (record's PutIssue) and
+-- reads none of this one, so every row it inserts takes null and its update of a row keeps the
+-- entry. A daemon of this release reads the column in every read of a record (record's
+-- issueColumns), so the column must stand while any such daemon runs.
+--
+-- This release also queues a claim_release row whose payload names a session ({"session": ...}):
+-- each claim write that moves a claim off a session it recorded queues one (store's putClaim), so
+-- the Dispatch claim that session holds is released. The move's row and the boot pass's row carry
+-- no session, as before ({}). The release before this one decodes an outbox payload strictly
+-- (record.DecodeOutboxPayload, DisallowUnknownFields), so it refuses a row that carries session on
+-- every attempt, and that row retries for ever on its claim lane.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with every daemon of the database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. issues and outbox
+-- hold the rows of every project that shares the database. The delete is owed to the release
+-- before: it deletes each claim_release row that carries session and keeps every row that carries
+-- none, which that release runs as it always did. The claim each deleted row was to release stays
+-- in Dispatch, and the controller releases it by hand, as it did before this release. The drop and
+-- the delete of this migration's row go together: the release before needs neither, since it never
+-- names the column, but the delete is what makes the version the store reports, its highest
+-- recorded row (store.SchemaVersionTx), that release's own again. With the column dropped and the
+-- row deleted, store.apply finds no row of this version and runs this file again, which adds the
+-- column again, null on every row. What the drop costs is the entries: every issue reads no claim
+-- left after the roll-forward until a release leaves one again.
+--
+-- begin;
+-- delete from outbox where kind = 'claim_release' and payload ? 'session';
+-- alter table issues drop column if exists claim_left;
+-- delete from schema_version where version = 20261127193428;
+-- commit;
+alter table issues add column claim_left jsonb;
