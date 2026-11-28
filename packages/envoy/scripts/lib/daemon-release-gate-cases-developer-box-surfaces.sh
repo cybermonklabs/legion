@@ -195,3 +195,36 @@ check "refuses UNKNOWN naming HOME" \
 check "still reads the images" \
   "$(grep -q '^PASS: LINUX image (pi-envoy and claude-envoy) runs ' "$out" && echo true || echo false)"
 check "the verdict is the last line" "$(last_line_is "UNKNOWN")"
+
+# The gate's python3 reader can end before it answers, as an out-of-memory kill ends it, and the
+# gate reads no silence as an answer: each question it then asks is UNKNOWN by name. Here the reader
+# ends when it is asked whether the dotfiles' own pi-envoy, a directory and no link, resolves. No pin
+# shut the gate, so the run ends UNKNOWN, never with the GATE SHUT status and no verdict line.
+ending_bin="${temporary_dir}/ending-python"
+mkdir -p "$ending_bin"
+real_python=$(python3 -c 'import sys; print(sys.executable)')
+fake "$ending_bin/python3" <<'EOF'
+if [[ ${1-} == */gate-reader.py ]]; then
+  reader=$1
+  shift
+  while IFS= read -r line; do
+    printf '%s\n' "$line"
+    if [ "$line" = '    verb = question[0]' ]; then
+      printf '%s\n' '    if verb == b"unresolved":' \
+        '        open(os.environ["FAKE_ROOT"] + "/reader-ended", "w").close()' \
+        '        os.kill(os.getpid(), 9)'
+    fi
+  done <"$reader" >"$reader.ending"
+  exec "$REAL_PYTHON" "$reader.ending" "$@"
+fi
+exec "$REAL_PYTHON" "$@"
+EOF
+echo "case: --clients, a python3 reader that ends before it answers"
+box_case box-reader-ends
+run_gate "PATH=${ending_bin}:${temporary_dir}/bin:${PATH}" "REAL_PYTHON=${real_python}" -- --clients "$commit"
+check "control: the reader ended when asked whether the dotfiles' pi-envoy resolves" \
+  "$([ -e "${case_root}/reader-ended" ] && echo true || echo false)"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the reader that did not answer" \
+  "$(grep -q '^UNKNOWN: .*reader did not answer' "$out" && echo true || echo false)"
+check "the verdict is UNKNOWN, never GATE SHUT or no verdict at all" "$(last_line_is "UNKNOWN")"
