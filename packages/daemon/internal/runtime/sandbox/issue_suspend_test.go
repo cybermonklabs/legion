@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -622,6 +623,7 @@ func TestARelaunchTakesNoPodThatTheAPIServerDeletedAndThePodStoreStillHolds(t *t
 	loc := g.spawn(spec)
 
 	apply := k8stesting.ObjectReaction(generationTracker{g.dyn.Tracker()})
+	bound := testwait.Remaining(t)
 	g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
 		patch := a.(k8stesting.PatchAction)
 		if !armed.Load() || patch.GetName() != name {
@@ -630,8 +632,8 @@ func TestARelaunchTakesNoPodThatTheAPIServerDeletedAndThePodStoreStillHolds(t *t
 		switch body := string(patch.GetPatch()); {
 		case modePatched(t, body, modeSuspended) && suspended.CompareAndSwap(false, true):
 			handled, object, err := apply(a)
-			for g.pod(name) != nil && g.ctx.Err() == nil {
-				time.Sleep(time.Millisecond)
+			if !testwait.Holds(bound, testwait.Poll, func() bool { return g.pod(name) == nil }) {
+				t.Errorf("the controller stand-in did not delete the pod %s of the suspended Sandbox", name)
 			}
 			return handled, object, err
 		case modePatched(t, body, modeRunning) && running.CompareAndSwap(false, true):
