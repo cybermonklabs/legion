@@ -104,7 +104,7 @@ func readBoundTx(t *testing.T, ctx context.Context) pgx.Tx {
 		t.Fatalf("begin: %v", err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	set, args := setConfig(true, censusSettings())
+	set, args := setConfig(true, Locking{}.censusSettings())
 	if _, err := tx.Exec(ctx, set, args...); err != nil {
 		t.Fatalf("set the census's settings: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestCensusTableRunsOnlyTheTablesReadsUnderTheReadBound(t *testing.T) {
 				writes = &writeReading{c: &classifier{ctx: ctx, census: spy, catalog: spy}, statements: classified.statements, changedBy: map[string]string{}, reviewed: reviewedTriggers}
 			}
 			entry := &MigrationCensus{}
-			if err := censusTable(ctx, spy, row.touched, readBoundOptions(row.tableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, entry, writes); err != nil {
+			if err := (Locking{}).censusTable(ctx, spy, row.touched, readBoundOptions(row.tableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, entry, writes); err != nil {
 				t.Fatalf("censusTable: %v", err)
 			}
 			if len(spy.savepoints) == 0 {
@@ -207,7 +207,7 @@ func TestCensusTableFailsByNameWhenTheEndOfItsReadsOutlastsTheReadBound(t *testi
 			t.Parallel()
 			ctx := context.Background()
 			spy := &spyTx{Tx: readBoundTx(t, ctx), plant: "select pg_sleep(10)"}
-			err := censusTable(ctx, spy, TouchedTable{Name: "things"}, readBoundOptions(CensusTableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, &MigrationCensus{}, &writeReading{})
+			err := Locking{}.censusTable(ctx, spy, TouchedTable{Name: "things"}, readBoundOptions(CensusTableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, &MigrationCensus{}, &writeReading{})
 			if len(spy.savepoints) == 0 || !spy.savepoints[0].planted {
 				t.Fatalf("the plant did not run where the reads' savepoint ends (%d savepoints)", len(spy.savepoints))
 			}

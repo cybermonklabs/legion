@@ -72,13 +72,13 @@ const CensusLongTransaction = time.Minute
 const CensusStatementTimeout = time.Minute
 
 // censusSettings are the settings Census gives its transaction, local to it: statement_timeout at
-// CensusStatementTimeout and lock_timeout at LockTimeout, which bound how long each statement runs
-// and waits for a lock, and the text settings (textSettings says why each matters), which make
-// Postgres read the census's text as Load's check read it (censusTokens).
-func censusSettings() []setting {
+// CensusStatementTimeout and lock_timeout at l's Timeout, the runner's own, which bound how long
+// each statement runs and waits for a lock, and the text settings (textSettings says why each
+// matters), which make Postgres read the census's text as Load's check read it (censusTokens).
+func (l Locking) censusSettings() []setting {
 	return withTextSettings(
 		setting{"statement_timeout", strconv.FormatInt(CensusStatementTimeout.Milliseconds(), 10) + "ms"},
-		setting{"lock_timeout", lockTimeoutSetting},
+		setting{"lock_timeout", l.timeoutSetting()},
 	)
 }
 
@@ -198,6 +198,12 @@ func (r *Report) refusals() int {
 // Refused reports whether anything refuses the pending migrations.
 func (r *Report) Refused() bool { return r.refusals() > 0 }
 
+// Census is the zero Locking's Census, production's: its reads and its judgement of a
+// migration's lock holders take LockTimeout, the bound production's runner sets.
+func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, versionTable string, options CensusOptions) (*Report, error) {
+	return Locking{}.Census(ctx, conn, migrations, versionTable, options)
+}
+
 // Census reads, in one repeatable-read read-only transaction on conn, what a deployment must know
 // before the migrations the database has not applied run: for each pending migration the tables
 // it locks above ACCESS SHARE (CensusTables), with their total size, row count and the sessions
@@ -212,8 +218,8 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 //     catalog or the transaction's own settings, or take a lock, and read no existing row
 //     (tableSizeExemption), or it is a marked single concurrent index build, or every statement
 //     of it that touches the table is a bounded write of that table (boundedWrites); or a table
-//     the census cannot read within LockTimeout or the statement timeout;
-//   - a lock holder on a touched table that would hold the migration past LockTimeout
+//     the census cannot read within l's Timeout or the statement timeout;
+//   - a lock holder on a touched table that would hold the migration past l's Timeout
 //     (holderRefusal): a transaction at least LongTransaction old, one whose age Postgres hides
 //     from the census's role or does not record (track_activities off), or an autovacuum Postgres
 //     will not cancel or may not; each such refusal carries the holder's diagnosis
@@ -249,7 +255,7 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 // triggers of a table admitted for bounded writes, a refusing holder's query text only with its
 // literals, numbers and comments taken out (redactedQuery), and Postgres's own message only where
 // it points into the census's own text (censusCount).
-func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, versionTable string, options CensusOptions) (*Report, error) {
+func (l Locking) Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, versionTable string, options CensusOptions) (*Report, error) {
 	if options.TableLimit == 0 {
 		options.TableLimit = CensusTableLimit
 	}
@@ -273,7 +279,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	if _, err := tx.Exec(ctx, resetLocal); err != nil {
 		return nil, fmt.Errorf("census: set session_authorization, role and search_path to their reset values: %w", err)
 	}
-	set, args := setConfig(true, censusSettings())
+	set, args := setConfig(true, l.censusSettings())
 	if _, err := tx.Exec(ctx, set, args...); err != nil {
 		return nil, fmt.Errorf("census: set timeouts and text settings: %w", err)
 	}
@@ -400,7 +406,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		if len(report.Pending) == 0 && len(unrecorded) > 0 {
 			entry.refuse("%s records no version, yet the database holds %s: the runner would apply every migration from this one over it", versionTable, someTables(unrecorded))
 		}
-		bound, err := lockBoundOf(ctx, tx, &entry)
+		bound, err := l.lockBoundOf(ctx, tx, &entry)
 		if err != nil {
 			return nil, err
 		}
@@ -411,7 +417,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		}
 		keys = append(keys, addedForeignKeys(text.code)...)
 		for _, table := range tables {
-			if err := censusTable(ctx, tx, table, options, bound, &entry, writes); err != nil {
+			if err := l.censusTable(ctx, tx, table, options, bound, &entry, writes); err != nil {
 				return nil, err
 			}
 		}
@@ -496,9 +502,9 @@ type lockBound struct {
 // would and the census keeps its own. A value set_config refuses - one the migration would fail
 // on, or SET syntax such as DEFAULT that set_config does not take - is refused: the census cannot
 // judge the migration's lock holders against it.
-func lockBoundOf(ctx context.Context, tx pgx.Tx, entry *MigrationCensus) (lockBound, error) {
+func (l Locking) lockBoundOf(ctx context.Context, tx pgx.Tx, entry *MigrationCensus) (lockBound, error) {
 	var bound lockBound
-	for _, setting := range migrationLockTimeouts(entry.Migration.SQL) {
+	for _, setting := range l.migrationLockTimeouts(entry.Migration.SQL) {
 		bound = lockBound{setting: setting}
 		nested, err := tx.Begin(ctx)
 		if err != nil {
@@ -529,12 +535,14 @@ func lockBoundOf(ctx context.Context, tx pgx.Tx, entry *MigrationCensus) (lockBo
 	return bound, nil
 }
 
-// migrationLockTimeouts are the lock_timeout settings a migration's statements wait under: Exec's
-// LockTimeout until the migration's first SET [LOCAL | SESSION] lock_timeout, then each value it
-// sets, as SET would give it to Postgres (a string literal's text, any other value as written). A
-// migration that sets its own before any other statement waits under that alone. Comments and
-// literals are read past as Postgres reads them (scanSQL), and a DO block's body is not read.
-func migrationLockTimeouts(sql string) []string {
+// migrationLockTimeouts are the lock_timeout settings a migration's statements wait under: the one
+// Exec of l sets, l's Timeout, until the migration's first SET [LOCAL | SESSION] lock_timeout, then
+// each value it sets, as SET would give it to Postgres (a string literal's text, any other value as
+// written). A migration that sets its own before any other statement waits under that alone.
+// Comments and literals are read past as Postgres reads them (scanSQL), and a DO block's body is
+// not read.
+func (l Locking) migrationLockTimeouts(sql string) []string {
+	pinned := l.timeoutSetting()
 	type token struct {
 		kind sqlTokenKind
 		text string
@@ -567,7 +575,7 @@ func migrationLockTimeouts(sql string) []string {
 			return
 		}
 		if !set && !defaulted {
-			settings = append(settings, lockTimeoutSetting)
+			settings = append(settings, pinned)
 			defaulted = true
 		}
 	}
@@ -584,7 +592,7 @@ func migrationLockTimeouts(sql string) []string {
 	})
 	end()
 	if len(settings) == 0 {
-		return []string{lockTimeoutSetting}
+		return []string{pinned}
 	}
 	return settings
 }
@@ -641,7 +649,7 @@ func someTables(names []string) string {
 // censusTable reads one touched table onto entry, with what it refuses. Its holders come from
 // pg_locks, which takes no lock. Its size and its rows each take ACCESS SHARE on it, so both wait
 // behind a session holding ACCESS EXCLUSIVE (another migration, an ALTER) and run in a savepoint:
-// a wait that outlasts LockTimeout, or a read that outlasts TableReadTimeout, leaves the
+// a wait that outlasts l's Timeout, or a read that outlasts TableReadTimeout, leaves the
 // transaction usable and is a refusal naming the holders, not an error. A table the migration
 // names above the limit is refused on its size, unless the migration is exempt from the limit
 // (entry.TableSizeExemption), or every statement of it that touches the table is a bounded write
@@ -650,7 +658,7 @@ func someTables(names []string) string {
 // key reaches has no limit, since the migration checks or acts on only the rows that key connects,
 // or, for a dropped table's key, changes only the catalog, and its rows are never counted. Every
 // refusal a holder causes carries that holder's diagnosis (holderDiagnosis).
-func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options CensusOptions, bound lockBound, entry *MigrationCensus, writes *writeReading) error {
+func (l Locking) censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options CensusOptions, bound lockBound, entry *MigrationCensus, writes *writeReading) error {
 	name := touched.Name
 	table := TableCensus{Name: name, Through: touched.Through}
 	defer func() { entry.Tables = append(entry.Tables, table) }()
@@ -706,8 +714,8 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 	case err == nil:
 	case errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable:
 		_ = nested.Rollback(ctx)
-		table.Unread = fmt.Sprintf("its lock was not granted within %s", LockTimeout)
-		entry.refuse("could not read %s within %s (SQLSTATE %s); %s%s", name, LockTimeout, pgErr.Code, lockedBy(table.Holders), holderDiagnoses(ctx, tx, table.Holders))
+		table.Unread = fmt.Sprintf("its lock was not granted within %s", l.timeout())
+		entry.refuse("could not read %s within %s (SQLSTATE %s); %s%s", name, l.timeout(), pgErr.Code, lockedBy(table.Holders), holderDiagnoses(ctx, tx, table.Holders))
 		return nil
 	case errors.As(err, &pgErr) && pgErr.Code == queryCanceled:
 		_ = nested.Rollback(ctx)

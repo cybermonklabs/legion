@@ -3,20 +3,281 @@ package pgmigrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testpg"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// lockTimeoutSetting is the zero Locking's lock_timeout as Postgres takes it, production's 5000ms,
+// which the census's tests pass as a migration's bound and expect where a migration sets none.
+var lockTimeoutSetting = Locking{}.timeoutSetting()
+
+// The zero Locking is production's discipline: Postgres's lock_timeout at LockTimeout, five
+// seconds, which Pin, PinSession and Census set as 5000ms, the runner's timers on the wall clock,
+// and the lock watch reading every 200 ms, a 25th of that timeout, a ratio a Locking of its own
+// keeps (20 ms at 500 ms). The attempts and the pause between them are the same for every Locking:
+// three attempts, two seconds apart.
+func TestAZeroLockingIsProductionsDiscipline(t *testing.T) {
+	t.Parallel()
+	var zero Locking
+	if got := zero.timeout(); got != LockTimeout || LockTimeout != 5*time.Second {
+		t.Errorf("the zero Locking's timeout is %v and LockTimeout is %v, want both 5s", got, LockTimeout)
+	}
+	if got := zero.timeoutSetting(); got != "5000ms" {
+		t.Errorf("the zero Locking's lock_timeout setting is %q, want 5000ms", got)
+	}
+	for name, settings := range map[string][]setting{"Pin's and PinSession's": zero.pinSettings(), "Census's": zero.censusSettings()} {
+		if !slices.Contains(settings, setting{"lock_timeout", "5000ms"}) {
+			t.Errorf("the zero Locking's %s settings %v hold no lock_timeout of 5000ms", name, settings)
+		}
+	}
+	if got := zero.clock(); got != clock.Real() {
+		t.Errorf("the zero Locking's clock is %#v, want clock.Real()", got)
+	}
+	if got := zero.watchInterval(); got != 200*time.Millisecond {
+		t.Errorf("the zero Locking's watch reads every %v, want 200ms", got)
+	}
+	fake := clocktest.New(time.Unix(0, 0).UTC())
+	own := Locking{Timeout: 500 * time.Millisecond, Clock: fake}
+	if got := own.timeoutSetting(); got != "500ms" {
+		t.Errorf("a Locking of 500ms has the lock_timeout setting %q, want 500ms", got)
+	}
+	if got := own.watchInterval(); got != 20*time.Millisecond {
+		t.Errorf("a Locking of 500ms has its watch read every %v, want 20ms", got)
+	}
+	if got := own.clock(); got != clock.Clock(fake) {
+		t.Errorf("a Locking's clock is %#v, want the Clock it was given", got)
+	}
+	if LockTimeoutAttempts != 3 || LockTimeoutRetryPause != 2*time.Second {
+		t.Errorf("LockTimeoutAttempts is %d and LockTimeoutRetryPause %v, want 3 and 2s", LockTimeoutAttempts, LockTimeoutRetryPause)
+	}
+}
+
+// RetryLockTimeouts and RetryVersionTableLockTimeouts pause LockTimeoutRetryPause on their
+// Locking's Clock between attempts: after each timed-out attempt but the last, the fake holds a
+// pause armed two seconds past its moment, and the next attempt runs only once the test moves the
+// fake past it. An attempt that always times out runs LockTimeoutAttempts times, and the error that
+// comes back says so and still holds the attempt's timeout. The version table's retry also takes
+// Postgres's own SQLSTATE 55P03, which a runner's step on that table meets outside Exec.
+func TestALockingsRetriesPauseOnItsClock(t *testing.T) {
+	t.Parallel()
+	lockTimeout := &LockTimeoutError{Migration: "0001_held.up.sql", Timeout: LockTimeout, Err: &pgconn.PgError{Code: lockNotAvailable}}
+	isLockTimeout := func(err error) bool {
+		var timedOut *LockTimeoutError
+		return errors.As(err, &timedOut) && timedOut == lockTimeout
+	}
+	pgTimeout := &pgconn.PgError{Code: lockNotAvailable}
+	isPgTimeout := func(err error) bool {
+		var pgErr *pgconn.PgError
+		return errors.As(err, &pgErr) && pgErr == pgTimeout
+	}
+	for _, row := range []struct {
+		name  string
+		retry func(Locking, context.Context, string, func(context.Context) error) error
+		// timedOut is what every attempt fails with, and found says whether an error holds it.
+		timedOut error
+		found    func(error) bool
+	}{
+		{"RetryLockTimeouts of a *LockTimeoutError", Locking.RetryLockTimeouts, lockTimeout, isLockTimeout},
+		{"RetryVersionTableLockTimeouts of a *LockTimeoutError", Locking.RetryVersionTableLockTimeouts, lockTimeout, isLockTimeout},
+		{"RetryVersionTableLockTimeouts of SQLSTATE 55P03", Locking.RetryVersionTableLockTimeouts, pgTimeout, isPgTimeout},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			fake := clocktest.New(time.Unix(0, 0).UTC())
+			var attempts atomic.Int32
+			done := make(chan error, 1)
+			go func() {
+				done <- row.retry(Locking{Clock: fake}, context.Background(), "held", func(context.Context) error {
+					attempts.Add(1)
+					return row.timedOut
+				})
+			}()
+			for n := int32(1); n < LockTimeoutAttempts; n++ {
+				fake.AwaitArmedAt(t, fmt.Sprintf("the pause after attempt %d", n), fake.Now().Add(LockTimeoutRetryPause))
+				if got := attempts.Load(); got != n {
+					t.Fatalf("%d attempts ran before pause %d, want %d", got, n, n)
+				}
+				fake.Advance(LockTimeoutRetryPause)
+			}
+			err := testwait.Receive(t, "the retry to give up after its last attempt", done)
+			if got := attempts.Load(); got != LockTimeoutAttempts {
+				t.Errorf("%d attempts ran, want %d", got, LockTimeoutAttempts)
+			}
+			if want := fmt.Sprintf("after %d attempts: ", LockTimeoutAttempts); err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("the retry returned %v, want an error starting %q", err, want)
+			}
+			if !row.found(err) {
+				t.Errorf("the retry returned %v, in which errors.As does not find the attempts' timeout %v", err, row.timedOut)
+			}
+		})
+	}
+}
+
+// A Locking's Timeout is the lock_timeout Postgres runs the migration under, in both apply modes,
+// and the zero Locking's is production's five seconds. Exec's migration writes the lock_timeout it
+// runs under into a table, and ExecNonTransactional's build runs under an event trigger that
+// refuses it where its session's lock_timeout is not the row's. The Locking of 300 ms runs on a
+// fake clock that the row never moves, so its lock watch never dials the row's database: a
+// concurrent build waits for each backend there that holds an older snapshot, and a watch's would
+// be one. Each row and each control has a database of its own, so no other row's session holds a
+// snapshot where a build runs. Postgres lets only a superuser create an event trigger, so the build
+// rows need the test database's login to be one, as CI's is.
+func TestALockingPinsItsTimeoutOnTheMigration(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, row := range []struct {
+		name    string
+		locking Locking
+		// want is current_setting('lock_timeout') under the row's Locking, as Postgres shows it.
+		want string
+	}{
+		{"a Locking of 300 ms", Locking{Timeout: 300 * time.Millisecond, Clock: clocktest.New(time.Unix(0, 0).UTC())}, "300ms"},
+		{"the zero Locking", Locking{}, "5s"},
+	} {
+		t.Run("Exec under "+row.name, func(t *testing.T) {
+			t.Parallel()
+			conn := connect(t, ctx, testpg.URL(t))
+			if _, err := conn.Exec(ctx, "create table seen (lock_timeout text)"); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := row.locking.Exec(ctx, tx, Migration{Version: 1, Name: "0001_seen.up.sql", SQL: "insert into seen select current_setting('lock_timeout')"}, nil); err != nil {
+				t.Fatalf("Exec: %v", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+			var seen string
+			if err := conn.QueryRow(ctx, "select lock_timeout from seen").Scan(&seen); err != nil {
+				t.Fatalf("read the lock_timeout the migration ran under: %v", err)
+			}
+			if seen != row.want {
+				t.Errorf("the migration ran under lock_timeout %q, want %q", seen, row.want)
+			}
+		})
+		t.Run("ExecNonTransactional under "+row.name, func(t *testing.T) {
+			t.Parallel()
+			conn := connect(t, ctx, testpg.URL(t))
+			if _, err := conn.Exec(ctx, `create table things (kind text);
+				create function check_build_lock_timeout() returns event_trigger language plpgsql as $fn$
+				begin
+					if current_setting('lock_timeout') <> '`+row.want+`' then
+						raise exception 'build ran under lock_timeout %', current_setting('lock_timeout');
+					end if;
+				end $fn$;
+				create event trigger check_build_lock_timeout on ddl_command_start when tag in ('CREATE INDEX') execute function check_build_lock_timeout()`); err != nil {
+				t.Fatal(err)
+			}
+			if err := row.locking.ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+				t.Fatalf("ExecNonTransactional: %v", err)
+			}
+			got := indexState(t, ctx, conn, "things_kind")
+			if want := (relation{OID: got.OID, Index: true, Valid: true, Table: "things"}); got != want {
+				t.Errorf("things_kind = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// A Locking's census reads under the Locking's Timeout, as its runner waits under it: a table that
+// another session holds in ACCESS EXCLUSIVE, which the census's reads of the table's size and rows
+// wait behind, is refused once that wait outlasts the Locking's 300 ms, and the refusal and the
+// table's Unread name 300 ms, not production's 5 s. The census runs no lock watch, and the held
+// lock is the one lock any of its statements waits for.
+func TestALockingsCensusReadsItsTimeout(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	url := testpg.URL(t)
+	conn := connect(t, ctx, url)
+	if _, err := conn.Exec(ctx, "create table schema_migrations (version bigint primary key); insert into schema_migrations values (1); create table held (id integer)"); err != nil {
+		t.Fatal(err)
+	}
+	holder := connect(t, ctx, url)
+	tx, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(ctx, "lock table held in access exclusive mode"); err != nil {
+		t.Fatal(err)
+	}
+	short := Locking{Timeout: 300 * time.Millisecond}
+	report, err := short.Census(ctx, conn, []Migration{{Version: 2, Name: "0002_note.up.sql", SQL: "alter table held add column note text"}}, "schema_migrations", CensusOptions{})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if len(report.Pending) != 1 {
+		t.Fatalf("the census read %d pending migrations, want 1: %+v", len(report.Pending), report.Pending)
+	}
+	entry := report.Pending[0]
+	if want := "could not read held within 300ms (SQLSTATE 55P03)"; len(entry.Refusals) != 1 || !strings.HasPrefix(entry.Refusals[0], want) {
+		t.Errorf("refusals = %q, want one starting %q", entry.Refusals, want)
+	}
+	i := slices.IndexFunc(entry.Tables, func(table TableCensus) bool { return table.Name == "held" })
+	if want := "its lock was not granted within 300ms"; i < 0 || entry.Tables[i].Unread != want {
+		t.Errorf("tables = %+v, want held with Unread %q", entry.Tables, want)
+	}
+}
+
+// The zero Locking's timeout error names production's five seconds, the bound every migration of
+// a production runner waits under unless it sets its own. Here the migration sets its own, 100 ms,
+// with SET LOCAL as a migration does, and then waits on a table another session holds, so Postgres
+// cancels it at 100 ms; the *LockTimeoutError that the package function Exec returns still names
+// the runner's bound, LockTimeout, in its Timeout and in its text.
+func TestTheZeroLockingsTimeoutErrorNamesFiveSeconds(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	url := testpg.URL(t)
+	runner := connect(t, ctx, url)
+	if _, err := runner.Exec(ctx, "create table held (id integer)"); err != nil {
+		t.Fatal(err)
+	}
+	holder := connect(t, ctx, url)
+	held, err := holder.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Rollback(context.Background()) })
+	if _, err := held.Exec(ctx, "lock table held in access share mode"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := runner.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	err = Exec(ctx, tx, Migration{Version: 1, Name: "0001_note.up.sql", SQL: "set local lock_timeout = '100ms'; alter table held add column note text"}, nil)
+	var timedOut *LockTimeoutError
+	if !errors.As(err, &timedOut) {
+		t.Fatalf("Exec = %v, want a *LockTimeoutError", err)
+	}
+	if timedOut.Timeout != LockTimeout {
+		t.Errorf("the error's Timeout is %v, want LockTimeout, %v", timedOut.Timeout, LockTimeout)
+	}
+	if want := "(5s unless the migration sets its own)"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not name production's timeout as %q", err, want)
+	}
+}
 
 // What the watch reports after a sequence of readings. One empty reading of a wait that named its
 // holders is the cancellation race between pg_locks and pg_blocking_pids and is held back; two in a
@@ -156,7 +417,7 @@ func startForwarder(t *testing.T, dsn string) *stallingForwarder {
 			conn.Close()
 		}
 		f.mu.Unlock()
-		f.wg.Wait()
+		testwait.Returns(t, "the forwarder's goroutines to end once its listener and connections are closed", f.wg.Wait)
 	})
 	f.wg.Add(1)
 	go func() {
@@ -234,6 +495,11 @@ func (s *stallAtTheCleanup) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQ
 // transport lives, and the holder the diagnosis read before the stall is still named. The stall
 // outlives the answer: the forwarder is released only by its own cleanup, after the checks below,
 // and those checks fail a call that came back with nothing of its cleanup still held.
+//
+// diagnoseHolders runs on a fake clock, which arms both of its bounds and fires neither until the
+// test moves it. Once the forwarder holds the cleanup, one of the armed deadlines must lie within
+// three seconds of the fake's moment, and the test then moves the fake those three seconds: the
+// cleanup's own bound is what ends the call, and no load on the machine can make it miss.
 func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -269,29 +535,39 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 		return conn, err
 	}
 
-	// What the whole call may take: the diagnosis's own reads, a handful of round trips on a
-	// local server, and then the cleanup, which diagnosisCleanupTimeout bounds at one second. The
-	// three seconds are that second and two more for a loaded machine, written out rather than
-	// read from diagnosisCleanupTimeout so that raising that bound reddens this row instead of
-	// moving it: a cleanup left to LockTimeout's five seconds has to fail here.
+	// The bound the cleanup must keep: diagnosisCleanupTimeout's one second and two more, written
+	// out rather than read from diagnosisCleanupTimeout so that raising that bound reddens this
+	// row instead of moving it: a cleanup left to LockTimeout's five seconds has to fail here.
 	const bound = 3 * time.Second
-	start := time.Now()
+	fake := clocktest.New(time.Unix(0, 0).UTC())
 	done := make(chan []string, 1)
-	go func() { done <- diagnoseHolders(ctx, dial, []Session{{PID: pid}}) }()
-	select {
-	case diagnoses := <-done:
-		returned := time.Since(start)
-		// The forwarder is released by its own cleanup, which runs after this check, so a
-		// forwarder still holding the bytes of the rollback is one this call never waited for.
-		if !forwarder.holding() {
-			t.Fatalf("diagnoseHolders returned after %v and the forwarder had swallowed nothing: the cleanup was never held open, so this row says nothing about its bound", returned)
+	go func() { done <- diagnoseHolders(ctx, fake, dial, []Session{{PID: pid}}) }()
+	testwait.Until(t, "the forwarder to hold the bytes of the diagnosis's cleanup", func() (bool, bool) {
+		held := forwarder.holding()
+		if !held {
+			select {
+			case diagnoses := <-done:
+				t.Fatalf("diagnoseHolders returned %q and the forwarder had swallowed nothing: the cleanup was never held open, so this row says nothing about its bound", diagnoses)
+			default:
+			}
 		}
-		want := fmt.Sprintf("diagnosis of pid %d, read when refused: ", pid)
-		if len(diagnoses) != 1 || !strings.HasPrefix(diagnoses[0], want) {
-			t.Fatalf("diagnoseHolders returned %q after %v, want one diagnosis starting %q", diagnoses, returned, want)
-		}
-	case <-time.After(bound):
-		t.Fatalf("diagnoseHolders has not returned in %v: its cleanup is waiting on a transport that passes nothing", bound)
+		return held, held
+	})
+	// The cleanup arms its bound before it sends the rollback the forwarder now holds.
+	now, armed := fake.Now(), fake.Armed()
+	if !slices.ContainsFunc(armed, func(deadline time.Time) bool { return !deadline.After(now.Add(bound)) }) {
+		t.Fatalf("with the cleanup held, the fake clock holds the deadlines %v, none within %v of its moment %v: the cleanup waits on a transport that passes nothing with no bound of %v", armed, bound, now, bound)
+	}
+	fake.Advance(bound)
+	diagnoses := testwait.Receive(t, "diagnoseHolders to return once the fake clock has passed its cleanup's bound", done)
+	// The forwarder is released by its own cleanup, which runs after this check, so a forwarder
+	// still holding the bytes of the rollback is one this call never waited for.
+	if !forwarder.holding() {
+		t.Fatalf("diagnoseHolders returned and the forwarder had swallowed nothing: the cleanup was never held open, so this row says nothing about its bound")
+	}
+	want := fmt.Sprintf("diagnosis of pid %d, read when refused: ", pid)
+	if len(diagnoses) != 1 || !strings.HasPrefix(diagnoses[0], want) {
+		t.Fatalf("diagnoseHolders returned %q, want one diagnosis starting %q", diagnoses, want)
 	}
 }
 
