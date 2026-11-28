@@ -29,7 +29,7 @@ import {
   treeWordsOf,
 } from "../issue-tree";
 import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
-import { needsChip } from "../plan-filter/plan-order";
+import { needsChip, planChart, planOrder } from "../plan-filter/plan-order";
 import { presetView } from "../presets";
 import { drawnChip, nameOf } from "../projection-fixture";
 import { blockNodeId } from "../tree-drafts";
@@ -857,6 +857,7 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
       gone: false,
       label: "needs",
       name: "Words of t1.",
+      node: blockNodeId("plan-md", "t1"),
       ref: `dispatch://${KEY}/artifact/plan-md#b-t1`,
     },
   ]);
@@ -1115,6 +1116,37 @@ test("a decisions.md section finds its Change by its words", () => {
   ).toEqual([[blockNodeId("decisions-md", "d2")], [KEY]]);
   expect(nodeOf(root, blockNodeId("decisions-md", "d2"))?.state).toBe("change_requested");
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
+});
+
+// Row 15: the issue's memo is its spec's first block where that block is a callout, which the
+// read stands first under the issue; a decision no node holds stands right after it, and first
+// where there is none. A callout after a paragraph of the spec - a block the read leaves out, so
+// the callout stands at the place 1 of the spec (`document.position`) - is no memo, and the
+// decision stands before it.
+test("a decision no node holds stands first under the issue where the spec opens with no memo, and after the memo where it does", () => {
+  const decisions = decisionsRead(
+    [decisionsSection("d1", "Keep it", "Keep the model pure.")],
+    DECISIONS
+  );
+  const children = (position: number) =>
+    buildIssueTree({
+      decisions,
+      issue: issueDetails(),
+      tree: answer([
+        block("note", "callout", KEY, SPEC, position),
+        block("r1", "requirement", KEY, SPEC, position + 1),
+      ]),
+    }).children.map((child) => child.id);
+  expect(children(1)).toEqual([
+    blockNodeId("decisions-md", "d1"),
+    blockNodeId("spec", "note"),
+    blockNodeId("spec", "r1"),
+  ]);
+  expect(children(0)).toEqual([
+    blockNodeId("spec", "note"),
+    blockNodeId("decisions-md", "d1"),
+    blockNodeId("spec", "r1"),
+  ]);
 });
 
 // A Change of a decision is a person's comment made after the decision last changed and was last
@@ -2154,6 +2186,32 @@ test("an older page's comment stands before the issue's ranked children", () => 
   ]);
 });
 
+// The issue's memo, which the read stands first under the issue, ahead of its conversation, is
+// the issue's first child where that child is a callout (`docs`' `treeWalk.memoFirst`): the
+// spec's first block. A callout after a paragraph of the spec - which the read leaves out, so
+// the callout stands at the place 1 of the spec (`document.position`) - is no memo: the read
+// stands it among the ranked children, after the conversation, so an older page's comment goes
+// before it, and after the memo.
+test("an older page's comment stands before a callout the spec holds after its first block, and after the memo", () => {
+  const merged = (position: number) =>
+    mergeCommentPage(
+      answer(
+        [
+          block("note", "callout", KEY, SPEC, position, { rank: "0" }),
+          block("r1", "requirement", KEY, SPEC, position + 1, { rank: "a" }),
+        ],
+        [],
+        { comments_before: "2026-11-07T00:00:00.000000Z,c-3" }
+      ),
+      treeAnswer([personsComment("c-1", KEY, "2026-11-06T00:00:00Z")], [], {
+        comments_before: null,
+        converted: true,
+      })
+    ).nodes?.map((one) => one.id);
+  expect(merged(1)).toEqual([KEY, "c-1", `${KEY}/spec#note`, `${KEY}/spec#r1`]);
+  expect(merged(0)).toEqual([KEY, `${KEY}/spec#note`, "c-1", `${KEY}/spec#r1`]);
+});
+
 // R10: Graph draws every node of its read the page draws as a row, and the tree read's prose node
 // - a document's plain paragraph, as the model stores it - is one: it is drafted as a row of its
 // own kind, by its own words, under the parent the read gives it, and the page names that kind.
@@ -2391,4 +2449,176 @@ test("two children's plan tasks of one block id are two rows, each with its own 
     needing === undefined ? [] : rows.flatMap((row) => (needsChip(needing, row) ? [row.id] : [])),
     "the task CORE-3's t2 needs"
   ).toEqual(["CORE-3/plan-md#t1"]);
+});
+
+/** The Plan view's rows over the plan answer `plan`, as the Plan filter hands them to its order. */
+function planRows(plan: TreeAnswer): readonly TreeNode[] {
+  const { root } = drawn(plan);
+  return presetView({ ...root, views: { plan, trees: { plan: root } } }, "plan", "").root.children;
+}
+
+/** The chart over `rows`: each bar's task, where it starts and what it needs; a cycle's row as
+ *  the ids of the tasks in it. */
+function bars(rows: readonly TreeNode[]) {
+  return planChart(planOrder(rows)).rows.map((row) =>
+    row.kind === "bar"
+      ? [row.task.id, row.start, row.needs.map((one) => one.id)]
+      : row.tasks.map((one) => one.id).join(" ")
+  );
+}
+
+/** A plan node's `plan` in a cycle of the Plan view's answer: no place, and what it waits on. */
+function cyclic(needs: NonNullable<TreeAnswerNode["plan"]>["needs"]) {
+  return { ...place(0), cycle: true, needs, position: null };
+}
+
+// Row 8: only another issue's nodes carry `issue`, and the read issue's own tasks are drawn by
+// their block's id in their document. A child's task that needs the parent's own task (a `needs`
+// pointer holds to no document or issue) waits on it as the Plan view's read answers
+// (`plan.needs`), so its bar starts where that task ends and the chart names the need.
+test("a child's task that needs the parent's own task starts where that task ends", () => {
+  const plan = answer(
+    [
+      block("t1", "plan_task", KEY, PLAN, 0, { plan: place(1, "30"), role: "query" }),
+      node("CORE-2", "issue", KEY, { role: "context", text: "A child of the issue" }),
+      node("x1", "plan_task", "CORE-2", {
+        document: { artifact_id: "artifact-child-plan", position: 0, slug: "plan-md" },
+        issue: "CORE-2",
+        plan: {
+          ...place(3, "15"),
+          needs: [
+            { half: "start" as const, id: "CORE-2", kind: "issue" },
+            { id: `${KEY}/plan-md#t1`, kind: "block" },
+          ],
+        },
+        role: "context",
+        text: "Task x1 of the child.",
+      }),
+    ],
+    [tuple("needs", "CORE-2/plan-md#x1", "t1")],
+    { view: "plan" }
+  );
+  const rows = planRows(plan);
+  expect(bars(rows)).toEqual([
+    [blockNodeId("plan-md", "t1"), 0, []],
+    ["CORE-2/plan-md#x1", 30, [blockNodeId("plan-md", "t1")]],
+  ]);
+  const [own, child] = rows;
+  expect(own && child ? needsChip(child, own)?.ref : undefined).toBe(
+    `dispatch://${KEY}/artifact/plan-md#b-t1`
+  );
+});
+
+// Row 9: a pointer at a block of the primary document is written `…/spec#b-<id>`, and a plan task
+// may stand in any document. The plan's `t1` needs the spec's `t9`, and the plan holds a `t9` of
+// its own: `t1` waits on the spec's, as the read answers, and the chart names the spec's.
+test("a task that needs a task of the spec starts where the spec's task ends, not the plan's of the same id", () => {
+  const plan = answer(
+    [
+      block("t9", "plan_task", KEY, SPEC, 0, { plan: place(0, "60"), role: "query" }),
+      block("t9", "plan_task", KEY, PLAN, 0, { plan: place(1, "15"), role: "query" }),
+      block("t1", "plan_task", KEY, PLAN, 1, {
+        plan: {
+          ...place(2, "15"),
+          needs: [
+            { half: "start" as const, id: KEY, kind: "issue" },
+            { id: `${KEY}/spec#t9`, kind: "block" },
+          ],
+        },
+        role: "query",
+      }),
+    ],
+    [tuple("needs", `${KEY}/plan-md#t1`, `${KEY}/spec#t9`)],
+    { view: "plan" }
+  );
+  const rows = planRows(plan);
+  expect(bars(rows)).toEqual([
+    [blockNodeId("spec", "t9"), 0, []],
+    [blockNodeId("plan-md", "t9"), 0, []],
+    [blockNodeId("plan-md", "t1"), 60, [blockNodeId("spec", "t9")]],
+  ]);
+  const [specT9, , needing] = rows;
+  expect(specT9 && needing ? needsChip(needing, specT9)?.ref : undefined).toBe(
+    `dispatch://${KEY}/spec#b-t9`
+  );
+});
+
+// Row 10 (a): a cycle of the read can pass through an issue's half. The parent's `t1` needs the
+// child CORE-2, whose done waits on its task `x1`, and `x1` needs `t1`: the read puts `t1`, CORE-2's
+// done and `x1` in one cycle (`plan.cycle`) and gives none of them a place, so the two tasks are
+// one cycle, after the task with a place.
+test("tasks the read puts in one cycle through a child issue's done are one cycle", () => {
+  const plan = answer(
+    [
+      block("t1", "plan_task", KEY, PLAN, 0, {
+        plan: cyclic([
+          { half: "start", id: KEY, kind: "issue" },
+          { half: "done", id: "CORE-2", kind: "issue" },
+        ]),
+        role: "query",
+      }),
+      block("t2", "plan_task", KEY, PLAN, 1, { plan: place(1), role: "query" }),
+      node("CORE-2", "issue", KEY, {
+        plan: {
+          ...place(0),
+          done: cyclic([
+            { half: "start", id: "CORE-2", kind: "issue" },
+            { id: "CORE-2/plan-md#x1", kind: "block" },
+          ]),
+          position: null,
+          start: { ...place(2), needs: [{ half: "start", id: KEY, kind: "issue" }] },
+        },
+        role: "context",
+        text: "A child of the issue",
+      }),
+      node("x1", "plan_task", "CORE-2", {
+        document: { artifact_id: "artifact-child-plan", position: 0, slug: "plan-md" },
+        issue: "CORE-2",
+        plan: cyclic([
+          { id: `${KEY}/plan-md#t1`, kind: "block" },
+          { half: "start", id: "CORE-2", kind: "issue" },
+        ]),
+        role: "context",
+      }),
+    ],
+    [tuple("needs", "t1", "CORE-2"), tuple("needs", "CORE-2/plan-md#x1", "t1")],
+    { view: "plan" }
+  );
+  expect(
+    planOrder(planRows(plan)).map((entry) =>
+      entry.kind === "step" ? entry.task.id : entry.tasks.map((one) => one.id).join(" ")
+    )
+  ).toEqual([blockNodeId("plan-md", "t2"), `${blockNodeId("plan-md", "t1")} CORE-2/plan-md#x1`]);
+});
+
+// Row 10 (b): no node waits on an overtaken one. `t1` and `t2` need each other and `t2` is
+// overtaken: the read gives `t1` its place, names `t2` in no task's `plan.needs` and marks no
+// cycle, so `t1` is a step at its place and `t2`, which still waits on `t1`, starts after it.
+test("a task whose need is overtaken keeps its place, and the two are no cycle", () => {
+  const plan = answer(
+    [
+      block("t1", "plan_task", KEY, PLAN, 0, {
+        plan: { ...place(0), needs: [{ half: "start" as const, id: KEY, kind: "issue" }] },
+        role: "query",
+      }),
+      block("t2", "plan_task", KEY, PLAN, 1, {
+        plan: {
+          ...place(0),
+          needs: [
+            { half: "start" as const, id: KEY, kind: "issue" },
+            { id: `${KEY}/plan-md#t1`, kind: "block" },
+          ],
+          position: null,
+        },
+        role: "query",
+        state: "overtaken",
+      }),
+    ],
+    [tuple("needs", "t1", "t2"), tuple("needs", "t2", "t1")],
+    { view: "plan" }
+  );
+  expect(bars(planRows(plan))).toEqual([
+    [blockNodeId("plan-md", "t1"), 0, []],
+    [blockNodeId("plan-md", "t2"), 1, [blockNodeId("plan-md", "t1")]],
+  ]);
 });

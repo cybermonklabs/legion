@@ -279,7 +279,8 @@ export function personDecision(id: string, partial: Partial<Decision> = {}): Dec
 }
 
 /** The entry the decisions read answers beside `row` (`api/decisions.go`'s `decisionEntry`): an
- *  agent's decision by the block node of `spec`, the issue's spec, that holds it, with the asks its
+ *  agent's decision by the block node of `spec`, the issue's spec, that holds it - named as the
+ *  tree read names a block of that document (`tree-fixtures.ts`' `treeNode`) - with the asks its
  *  `from_ask` settles, a person's by the ask's own node, and each member the node holds none of
  *  null. Its `decided_by` is the row's where the case names one, else the server's for the node:
  *  the person who answered an ask, by the `person` kind the server names a person with, and the
@@ -314,7 +315,9 @@ export function entryOf(row: MadeDecision, spec: SpecDocument = SPEC_DOCUMENT): 
     kept_text_sum: row.kept === null ? null : row.text_sha256,
     kind: row.kind,
     multiple: null,
-    node: person ? { id: row.asks?.[0] ?? "", kind: "ask" } : { id: block, kind: "block" },
+    node: person
+      ? { id: row.asks?.[0] ?? "", kind: "ask" }
+      : { id: `${KEY}/${spec.slug}#${row.block_id}`, kind: "block" },
     options: null,
     question: person ? row.heading : null,
     readings: [],

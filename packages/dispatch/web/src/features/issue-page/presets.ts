@@ -475,8 +475,9 @@ function filterView(
  * Plan draws as rows, beside the issue's own tasks, the plan tasks of every issue under it,
  * which its read answers as context, each marked with its issue (`viewRow`), in the order the read
  * hands them over. Each of its rows carries what the read answers of the task beside the node: its
- * place in the order the read answers, its size, and the issue it is another issue's task of
- * (`planFactsOf`), and the Plan view draws its tasks in that order (`plan-filter/plan-order.ts`).
+ * place in the order the read answers, its size, the issue it is another issue's task of, the
+ * tasks it waits on and the cycle it stands in (`planFactsOf`), and the Plan view draws its tasks
+ * in that order (`plan-filter/plan-order.ts`).
  * No other view takes a node of another issue as a row.
  */
 function heldFilterView(
@@ -576,6 +577,10 @@ function heldFilterView(
   }
   const treeNodeOf = (readId: string): TreeNode | undefined =>
     firstOf.get(readId) ?? byRead.get(readId);
+  // Under Plan, the cycle each task stands in, read once from the whole answer (`planCycles`), and
+  // each task a task waits on, by the id the tree draws it by.
+  const cycles = filter === "plan" ? planCycles(nodes) : NO_CYCLES;
+  const drawnId = (readId: string): string | undefined => treeNodeOf(readId)?.id;
   const parentOf = new Map<TreeAnswerNode, TreeNode>();
   const latest = new Map<string, TreeNode>();
   for (const node of nodes) {
@@ -737,7 +742,7 @@ function heldFilterView(
           chips: chipsNamed(tree.chips),
           children: kept,
           held: heldBy(kept),
-          ...(filter === "plan" ? planFactsOf(node, root.id) : {}),
+          ...(filter === "plan" ? planFactsOf(node, root.id, drawnId, cycles) : {}),
         },
       ],
     };
@@ -783,24 +788,96 @@ function viewRow(node: TreeAnswerNode, filter: TreeFilter, key: string): boolean
 /**
  * What the Plan view's read answers of a task beside its node, which the task's row carries: its
  * place in the order the read answers (`plan.position`), where the read gives it one; its size,
- * the whole number of minutes the read answers as `plan.size` from the task's `size` attribute,
- * where it holds one; and the issue it belongs to, where that is an issue under `key`, the issue
- * the page is of. A size that is no whole number of minutes is no size. This is the one place the
- * page reads `plan.position` and `plan.size`; `tree-read/tree-nodes.ts`' `draftServing` reads only
- * whether the read answered a `plan`.
+ * the whole number of minutes the read answers as `plan.size`, where it holds one; the issue it
+ * belongs to, where that is an issue under `key`; the tasks it waits on (`plan.needs`), each by
+ * the id the tree draws it by (`drawnId`) - an issue's half is no task, and a far end the read
+ * holds no node of, a task of an issue above (`TreeOrder.Fixed`), is none here; and the cycle the
+ * read puts it in (`plan.cycle`, `planCycles`). A size that is no whole number of minutes is no
+ * size. This is the one place the page reads `plan.position`, `plan.size`, `plan.needs` and
+ * `plan.cycle`; `tree-read/tree-nodes.ts`' `draftServing` reads only whether the read answered a
+ * `plan`.
  */
 function planFactsOf(
   node: TreeAnswerNode,
-  key: string
-): Pick<TreeNode, "issue" | "position" | "size"> {
+  key: string,
+  drawnId: (readId: string) => string | undefined,
+  cycles: ReadonlyMap<string, string>
+): Pick<TreeNode, "cycle" | "issue" | "needs" | "position" | "size"> {
   const position = node.plan?.position;
   const written = node.plan?.size;
   const size = typeof written === "string" && written !== "" ? Number(written) : Number.NaN;
+  const needs = [
+    ...new Set(
+      (node.plan?.needs ?? []).flatMap((end) => {
+        const id = end.kind === "issue" ? undefined : drawnId(end.id);
+        return id === undefined ? [] : [id];
+      })
+    ),
+  ];
+  const cycle = cycles.get(node.id);
   return {
+    ...(cycle === undefined ? {} : { cycle }),
     ...(isForeign(node, key) ? { issue: node.issue } : {}),
+    ...(needs.length === 0 ? {} : { needs }),
     ...(typeof position === "number" ? { position } : {}),
     ...(Number.isInteger(size) && size >= 0 ? { size } : {}),
   };
+}
+
+/** No task in a cycle: the cycles of a view that is not Plan, and of a plan with none. */
+const NO_CYCLES: ReadonlyMap<string, string> = new Map();
+
+/**
+ * The cycle each plan task of the Plan view's read `nodes` stands in, by the task's read id, each
+ * cycle named by the least of its nodes' keys. The read marks each node of a cycle (`plan.cycle`)
+ * and names every node each one waits on (`plan.needs`): a task by its store id, an issue by the
+ * half the wait reaches, which the issue's own node answers as its two halves (`plan.start`,
+ * `plan.done`). Two nodes stand in one cycle where each waits on the other, directly or through
+ * the rest - a strongly connected component of the ordered read (`refs/plan_order.go`'s
+ * `TreeOrder.Cycles`), which can pass through an issue's half. Every node on such a path stands
+ * in that cycle too, so the walk follows waits between marked nodes alone.
+ */
+function planCycles(nodes: readonly TreeAnswerNode[]): ReadonlyMap<string, string> {
+  const keyOf = (end: { readonly half?: string; readonly id: string; readonly kind: string }) =>
+    end.half === undefined ? `${end.kind} ${end.id}` : `${end.kind} ${end.id} ${end.half}`;
+  const waits = new Map<string, readonly string[]>();
+  const tasks = new Map<string, string>();
+  for (const node of nodes) {
+    const plan = node.plan;
+    if (plan === undefined) continue;
+    if (node.kind === "issue") {
+      for (const [half, held] of [
+        ["start", plan.start],
+        ["done", plan.done],
+      ] as const) {
+        if (held?.cycle === true) {
+          waits.set(keyOf({ half, id: node.id, kind: node.kind }), (held.needs ?? []).map(keyOf));
+        }
+      }
+    } else if (plan.cycle) {
+      const key = keyOf(node);
+      waits.set(key, (plan.needs ?? []).map(keyOf));
+      tasks.set(key, node.id);
+    }
+  }
+  if (tasks.size === 0) return NO_CYCLES;
+  const reach = new Map<string, ReadonlySet<string>>();
+  for (const from of waits.keys()) {
+    const found = new Set<string>();
+    const walking = [...(waits.get(from) ?? [])];
+    for (let next = walking.pop(); next !== undefined; next = walking.pop()) {
+      if (found.has(next) || !waits.has(next)) continue;
+      found.add(next);
+      walking.push(...(waits.get(next) ?? []));
+    }
+    reach.set(from, found);
+  }
+  const cycles = new Map<string, string>();
+  for (const [key, id] of tasks) {
+    const members = [...(reach.get(key) ?? [])].filter((other) => reach.get(other)?.has(key));
+    cycles.set(id, [key, ...members].sort()[0] ?? key);
+  }
+  return cycles;
 }
 
 /**

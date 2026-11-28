@@ -384,8 +384,8 @@ const NO_ASK_IDS: ReadonlyMap<string, string> = new Map();
  *   in that issue's document (`blockReadId`): a block id is unique inside one document alone,
  *   and every plan names its tasks `t1`, `t2`, so two issues under this one can each hold a
  *   `t1`; and a child's documents carry its parent's slugs, so the outline's
- *   `<slug>#b-<block id>` would name a block of this issue. The Plan view finds a task one of
- *   them needs by that same id (`plan-filter/plan-order.ts`' `neededId`).
+ *   `<slug>#b-<block id>` would name a block of this issue. The Plan view maps each task a task
+ *   waits on to that same id (`presets.ts`' `planFactsOf`, from the read's `plan.needs`).
  * - **The issue itself** is its key, which is the outline's root.
  * - **A typed block of one of this issue's documents** is the outline's `blockNodeId` of the
  *   slug its `document` names and its block id.
@@ -859,14 +859,25 @@ function onNodeText(
   return onNodeText(above, context, seen);
 }
 
-/** A callout or an image: a typed block with its words and nothing more. */
+/**
+ * A callout or an image: a typed block with its words and nothing more. A callout of the spec is
+ * the issue's memo where it is the spec's first top-level block (`Draft.memo`, `docs`'
+ * `treeWalk.memoFirst`: the issue's first child, where that child is a callout; the spec's first
+ * block is the issue's first ranked child, `refs.RankBandSpec`). The read names the place a typed
+ * block of the spec holds in it (`document.position`), so a callout after a paragraph - a block
+ * of the spec the read leaves out (`issue_tree_read.go`'s `excluded`) - is no memo.
+ */
 function draftBlock(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "callout" && node.supertag !== "image") return undefined;
-  return draftOf(node, node.supertag, context);
+  const draft = draftOf(node, node.supertag, context);
+  if (node.supertag === "callout" && isSpecBlock(node, context)) {
+    draft.memo = node.document?.position === 0;
+  }
+  return draft;
 }
 
 /** A prose node: a block of a document's text that opens no typed block - a paragraph, a list, a
@@ -1113,7 +1124,15 @@ function needsChips(node: TreeAnswerNode, context: TreeDraftContext): NodeChip[]
     if (held === undefined || (held.pinned && !pinned)) needed.set(key, { chip, pinned });
   };
   for (const tuple of context.tuplesFrom(node.id)) {
-    if (tuple.kind === "needs") offer(chipTo(tuple.to.id, context));
+    if (tuple.kind !== "needs") continue;
+    // The tuple's far end is the node the chip names, where the read holds it, by which the chart
+    // finds a need's chip; a far end the read names by an address alone is no node of the tree.
+    const chip = chipTo(tuple.to.id, context);
+    offer(
+      chip === undefined || context.nodeOf(tuple.to.id) === undefined
+        ? chip
+        : { ...chip, node: context.treeIdOf(tuple.to.id) }
+    );
   }
   const tied = new Set(needed.keys());
   for (const pointer of pointersOf(node, "needs")) {
@@ -1571,9 +1590,13 @@ function commentRuns(nodes: readonly TreeAnswerNode[]): [TreeAnswerNode, ...Tree
  * the node its `parent` names where `nodes` holds it, else under the issue's own node (`issue`),
  * before the first of that node's children the read orders after `head` (`sortsAfter`), else
  * where that node's branch ends. The read stands two children first, ahead of that order, and so
- * the run after them: an item's own blocks under it, and the issue's memo, the callout the read
- * stands first under the issue's node. A parent's branch is every node after it whose chain of
- * parents reaches it, which the read's walk keeps together, each node after its parent.
+ * the run after them: an item's own blocks under it, and the issue's memo, which the read stands
+ * first under the issue's node: the issue's first child where that child is a callout
+ * (`docs`' `treeWalk.memoFirst`), the first block of its document, so a callout the read places
+ * after another block of its document (`document.position`) - a paragraph of the spec, which the
+ * read leaves out - is no memo and stands among the ranked children. A parent's branch is every
+ * node after it whose chain of parents reaches it, which the read's walk keeps together, each
+ * node after its parent.
  */
 function placeOfRun(
   nodes: readonly TreeAnswerNode[],
@@ -1600,7 +1623,11 @@ function placeOfRun(
     const node = nodes[place];
     if (node === undefined || !reaches(node)) return place;
     if (node.parent?.id !== parent.id || ITEM_BLOCK_KINDS.includes(node.kind)) continue;
-    const memo = underIssue && place === parentAt + 1 && node.supertag === "callout";
+    const memo =
+      underIssue &&
+      place === parentAt + 1 &&
+      node.supertag === "callout" &&
+      node.document?.position === 0;
     if (!memo && sortsAfter(node, head)) return place;
   }
   return nodes.length;

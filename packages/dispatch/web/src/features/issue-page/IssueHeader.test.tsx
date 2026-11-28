@@ -495,8 +495,8 @@ test("the header counts a Change under the decision whose block of the spec hold
   const tree = spyOn(api, "getIssueTree").mockResolvedValue(
     treeAnswer([
       treeNode("CORE-1", "issue", null),
-      treeNode("listed", "decision", "CORE-1"),
-      treeNode("untied", "decision", "CORE-1"),
+      treeNode("listed", "decision", "CORE-1", { in: "spec" }),
+      treeNode("untied", "decision", "CORE-1", { in: "spec" }),
       treeNode(change.id, "comment", "untied", {
         author: [change.author],
         made_at: change.created_at,
@@ -549,9 +549,9 @@ test("the header counts a decision whose only Change the tree read answers delet
   const tree = spyOn(api, "getIssueTree").mockResolvedValue(
     treeAnswer([
       treeNode("CORE-1", "issue", null),
-      treeNode("asked", "decision", "CORE-1"),
+      treeNode("asked", "decision", "CORE-1", { in: "spec" }),
       markedCommentNode(changeOf("c-asked", false), "asked"),
-      treeNode("dropped", "decision", "CORE-1"),
+      treeNode("dropped", "decision", "CORE-1", { in: "spec" }),
       markedCommentNode(changeOf("c-dropped", true), "dropped"),
     ])
   );
@@ -601,8 +601,8 @@ test("the header leaves a decision whose Change may stand on an older comment pa
       ? {
           ...treeAnswer([
             treeNode("CORE-1", "issue", null),
-            treeNode("asked", "decision", "CORE-1"),
-            treeNode("unasked", "decision", "CORE-1"),
+            treeNode("asked", "decision", "CORE-1", { in: "spec" }),
+            treeNode("unasked", "decision", "CORE-1", { in: "spec" }),
             markedCommentNode(held, "CORE-1"),
           ]),
           comments_before: `${held.created_at},${held.id}`,
@@ -622,7 +622,7 @@ test("the header leaves a decision whose Change may stand on an older comment pa
     );
     await act(async () =>
       older.resolve({
-        ...treeAnswer([markedCommentNode(change, "CORE-1/tree#asked")]),
+        ...treeAnswer([markedCommentNode(change, "CORE-1/spec#asked")]),
         comments_before: null,
       })
     );
@@ -666,8 +666,8 @@ test("the header leaves a decision whose Change may stand on the tree read's nex
       ? {
           ...treeAnswer([
             treeNode("CORE-1", "issue", null),
-            treeNode("unasked", "decision", "CORE-1"),
-            treeNode("asked", "decision", "CORE-1"),
+            treeNode("unasked", "decision", "CORE-1", { in: "spec" }),
+            treeNode("asked", "decision", "CORE-1", { in: "spec" }),
           ]),
           comments_before: null,
           cursor: "page-2",
@@ -687,7 +687,7 @@ test("the header leaves a decision whose Change may stand on the tree read's nex
     );
     await waitFor(() => expect(pagesSent(), "the header read no next page").toBe(1));
     await act(async () =>
-      next.resolve(treeAnswer([markedCommentNode(change, "CORE-1/tree#asked")]))
+      next.resolve(treeAnswer([markedCommentNode(change, "CORE-1/spec#asked")]))
     );
     await waitFor(() => expect(count()).toBe("Waiting on you (2)"));
     expect(pagesSent(), "the next page was read other than once").toBe(1);
@@ -739,7 +739,7 @@ test("the header counts no decision while the tree read holds no answer and mark
       answer.resolve(
         treeAnswer([
           treeNode("CORE-1", "issue", null),
-          treeNode("asked", "decision", "CORE-1"),
+          treeNode("asked", "decision", "CORE-1", { in: "spec" }),
           markedCommentNode(change, "asked"),
         ])
       )

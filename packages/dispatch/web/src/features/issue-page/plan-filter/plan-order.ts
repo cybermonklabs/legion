@@ -1,7 +1,5 @@
-import { parseNodeReference } from "../../refs/routes";
 import type { NodeChip, TreeNode } from "../issue-tree";
 import { BLOCK_ATTRIBUTE_LABELS, PLAN_WORDS } from "../page-words";
-import { blockNodeId, blockReadId } from "../tree-drafts";
 
 /**
  * The plan's tasks as ordered steps.
@@ -15,22 +13,26 @@ import { blockNodeId, blockReadId } from "../tree-drafts";
  *
  * Tasks that need each other, directly or through the rest, are one cycle: no order can put any
  * of them after every task it needs, so the read gives none of them a place, and they are one
- * group, which the page draws as one line that lists them. Which tasks are one cycle is worked out
- * here, from the `needs` each task's chips name. The line stands just before the first task with a
- * place that waits on the cycle, directly or through another cycle, and after every task with a
- * place where none does, as the read sorts every node it gives no place after every node it
- * places. The read places each task that waits on a cycle after everything the cycle waits on, so
- * what a cycle holds up stands after its line and what it waits on stands before.
+ * group, which the page draws as one line that lists them. Which tasks are one cycle is the
+ * read's (`TreeNode.cycle`, the read's `plan.cycle`), not worked out here. The line stands just
+ * before the first task with a place that waits on the cycle, directly or through another cycle,
+ * and after every task with a place where none does, as the read sorts every node it gives no
+ * place after every node it places. The read places each task that waits on a cycle after
+ * everything the cycle waits on, so what a cycle holds up stands after its line and what it waits
+ * on stands before.
  *
  * A task the read gives no place and that is in no cycle - one it leaves out of its order, as it
  * does an overtaken task - stands after every task with a place, in the order the view hands it
  * over, as the read sorts it too.
  *
- * `needs` is a `block[]` attribute of the plan's own blocks
+ * What a task waits on is the read's too (`TreeNode.needs`, the read's `plan.needs`): every task
+ * of the tree its `needs` tuples name, never an overtaken one, and none outside the tree. `needs`
+ * is a `block[]` attribute of the plan's own blocks
  * (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`), which the tree draws as a chip
- * on the task's row (`tree-read/tree-nodes.ts`' `needsChips`). A task whose `needs` names a task
- * this plan does not hold waits on nothing here: its row says the target is gone or names an
- * address nothing answers to (`NodeRow.tsx`'s `Chip`).
+ * on the task's row (`tree-read/tree-nodes.ts`' `needsChips`); the chips only name a need
+ * (`needsChip`). A task whose `needs` names a task this plan does not hold waits on nothing here:
+ * its row says the target is gone or names an address nothing answers to (`NodeRow.tsx`'s
+ * `Chip`).
  *
  * The module is pure: it holds no React, reads no model of its own and makes no request.
  */
@@ -52,82 +54,11 @@ export interface PlanCycle {
 /** One place in the plan's order: a step, or a cycle the page draws as one line. */
 export type PlanEntry = PlanCycle | PlanStep;
 
-/** Where a block stands: the key of its issue, the slug of its document where its reference
- *  spells one, and the block's id (`blockOf`). */
-interface BlockPlace {
-  readonly blockId: string;
-  readonly key: string;
-  readonly slug?: string;
-}
-
-/** Where the block `reference` names stands; undefined for a reference that names no block of a
- *  document of an issue. A reference spells the issue's primary document `spec`, with no slug
- *  (`tree-read/tree-nodes.ts`' `referenceOf`), so `slug` is absent for a block of it. */
-function blockOf(reference: string | undefined): BlockPlace | undefined {
-  const route = reference === undefined ? undefined : parseNodeReference(reference);
-  if ((route?.kind !== "artifact" && route?.kind !== "spec") || route.block === undefined) {
-    return undefined;
-  }
-  return route.kind === "artifact"
-    ? { blockId: route.block.id, key: route.key, slug: route.slug }
-    : { blockId: route.block.id, key: route.key };
-}
-
-/**
- * The ids of the nodes `task` needs, as the tree draws them: one per task its block's `needs`
- * pointers name, each once. The tree draws each pointer as a chip that says it is a need
- * (`tree-read/tree-nodes.ts`' `needsChips`, `NodeChip.label`), which is what tells it from a chip
- * for anything else the task names - a document its words cite, a statement it is also under - so
- * such a chip is no need, whatever it names.
- *
- * `needs` points at a plan task of any document of the task's own issue or of an issue above it
- * (`blocks.json`: `targets: ["plan_task"]`, and no `scope`, which would hold it to the task's own
- * document), or at an issue (`items: ["issue"]`), which is no task and no need here. So a pointer
- * names its task by the issue, the document and the block its own reference names (`neededId`).
- * Its pin is not read: the server refuses a pointer named twice by its raw value alone
- * (`pmdoc/schema.go`), so `…#b-<id>@v1` and `…#b-<id>` can stand in one `needs`, and they name
- * one task, which the chart then names and joins by one curve once.
- *
- * A task of this issue is drawn by its block's id in its document (`blockNodeId`), and a task of
- * another issue (`TreeNode.issue`), which the Plan view of an issue above it draws, by the read's
- * id (`blockReadId`), as every node of another issue is (`tree-read/tree-nodes.ts`'
- * `treeIdOfNode`): two issues under one parent can each write a `t1`, and each is its own task.
- */
+/** The ids of the nodes `task` waits on, as the tree draws them: the tasks the Plan view's read
+ *  says it waits on (`TreeNode.needs`, the read's `plan.needs`), each once. A node that is no plan
+ *  task needs nothing. */
 function neededIds(task: TreeNode): readonly string[] {
-  if (task.type !== "plan_task") return [];
-  const own = blockOf(task.reference);
-  return [
-    ...new Set(
-      task.chips.flatMap((chip) => {
-        const id = neededId(task, own, chip);
-        return id === undefined ? [] : [id];
-      })
-    ),
-  ];
-}
-
-/**
- * The id of the node one chip of `task` names as a need (`neededIds`, `needsChip`), or undefined
- * for a chip that is no `needs` pointer at a block: the block of the issue and the document the
- * chip's reference names, as the tree draws it, by its block's id in its document where it is of
- * the issue `task` is drawn in (`task` is of this issue, and so is the pointer), and by the read's
- * id where it is of another. The task's own issue and document are its own reference's
- * (`TreeNode.reference`), which the tree writes by its document's slug: `own`, that reference's
- * `blockOf`, which the caller reads once for all of `task`'s chips.
- *
- * The chip names a block of the primary document as `spec`, with no slug, and this module holds no
- * issue to read that document's slug from, so such a pointer of the task's own issue names its
- * block in the task's own document, which is the primary document where the task stands in it.
- */
-function neededId(task: TreeNode, own: BlockPlace | undefined, chip: NodeChip): string | undefined {
-  if (task.type !== "plan_task" || chip.label !== BLOCK_ATTRIBUTE_LABELS.needs) return undefined;
-  const needed = blockOf(chip.ref);
-  if (own === undefined || needed === undefined) return undefined;
-  const slug = needed.slug ?? (needed.key === own.key ? own.slug : undefined);
-  if (slug === undefined) return undefined;
-  return task.issue === undefined && needed.key === own.key
-    ? blockNodeId(slug, needed.blockId)
-    : blockReadId(needed.key, slug, needed.blockId);
+  return task.type === "plan_task" ? (task.needs ?? []) : [];
 }
 
 /**
@@ -140,7 +71,8 @@ function neededId(task: TreeNode, own: BlockPlace | undefined, chip: NodeChip): 
  * the filter drew under two statements is one task here, at its first place: a plan holds each
  * task once, and its second statement is its "Also under" chip, so the task is not drawn twice.
  * A task is told from the rest by its id, which holds its issue for a task of another issue
- * (`neededIds`), so the tasks two issues under this one write with one block id are two.
+ * (`tree-read/tree-nodes.ts`' `treeIdOfNode`), so the tasks two issues under this one write with
+ * one block id are two.
  */
 export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
   const seen = new Set<string>();
@@ -157,28 +89,15 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
       return index === undefined || nodes[index]?.type !== "plan_task" ? [] : [index];
     })
   );
-  // Every task each task needs, through the rest as well as directly, which is what tells a
-  // cycle from a chain: a task is in a cycle with every task it needs that needs it back.
-  const reaches = nodes.map((_node, from) => {
-    const found = new Set<number>();
-    const walking = [...(needs[from] ?? [])];
-    while (walking.length > 0) {
-      const next = walking.pop();
-      if (next === undefined || found.has(next)) continue;
-      found.add(next);
-      walking.push(...(needs[next] ?? []));
-    }
-    return found;
-  });
   // The group each task is in, named by the earliest task in it: a task on its own, or every
-  // task of one cycle, which all answer to the same name because needing each other both ways
-  // holds between every pair of them.
-  const groupOf = nodes.map((_node, index) => {
-    let earliest = index;
-    for (const other of reaches[index] ?? []) {
-      if (other < earliest && reaches[other]?.has(index) === true) earliest = other;
-    }
-    return earliest;
+  // task of one cycle the read reports (`TreeNode.cycle`), which all carry the cycle's one name.
+  const firstOfCycle = new Map<string, number>();
+  const groupOf = nodes.map((node, index) => {
+    if (node.type !== "plan_task" || node.cycle === undefined) return index;
+    const first = firstOfCycle.get(node.cycle);
+    if (first !== undefined) return first;
+    firstOfCycle.set(node.cycle, index);
+    return index;
   });
   const members = new Map<number, number[]>();
   groupOf.forEach((group, index) => {
@@ -205,11 +124,12 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
       const node = nodes[index];
       return node === undefined ? [] : [node];
     });
-    const alone = tasks.length === 1 && (needs[group] ?? []).every((one) => one !== group);
     const first = tasks[0];
     entries.set(
       group,
-      alone && first !== undefined ? { kind: "step", task: first } : { kind: "cycle", tasks }
+      tasks.length === 1 && first !== undefined && first.cycle === undefined
+        ? { kind: "step", task: first }
+        : { kind: "cycle", tasks }
     );
   }
   // Where each group stands: a place in the read's order, then a rank among the groups at that
@@ -370,13 +290,13 @@ function placeBars(
  * The chart of time over the plan's order: one bar per step, starting after every task it
  * needs has ended, and one line per cycle at its place in the order.
  *
- * Where a bar starts is worked out here from the `needs` its task's chips name (`neededIds`), and
- * how long it is from its task's size (`TreeNode.size`), on one scale for the whole chart
- * (`PlanAxis`). Where no task holds a size, a unit is one task and every bar is one unit long, as
- * is every cycle. Where any task holds one, a unit is a minute: a bar is as long as its task's
- * size, and a task with no size and a cycle are each one line of the axis long, the line's step
- * chosen from the sizes alone (`axisStep`) so the tasks with no size do not stretch it; each
- * counts as that long for the bars after it.
+ * Where a bar starts is worked out here from the tasks the read says its task waits on
+ * (`neededIds`, `TreeNode.needs`), and how long it is from its task's size (`TreeNode.size`), on
+ * one scale for the whole chart (`PlanAxis`). Where no task holds a size, a unit is one task and
+ * every bar is one unit long, as is every cycle. Where any task holds one, a unit is a minute: a
+ * bar is as long as its task's size, and a task with no size and a cycle are each one line of the
+ * axis long, the line's step chosen from the sizes alone (`axisStep`) so the tasks with no size
+ * do not stretch it; each counts as that long for the bars after it.
  */
 export function planChart(entries: readonly PlanEntry[]): PlanChart {
   const all = entries.flatMap((entry) => (entry.kind === "step" ? [entry.task] : entry.tasks));
@@ -392,8 +312,8 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
 }
 
 /**
- * The chip of `task` that names `needed` as a need: the first `needs` pointer of `task` that
- * names it (`neededId`), or undefined where no chip of `task` points at `needed`.
+ * The chip of `task` that names `needed` as a need: the `needs` chip whose tuple's far end is
+ * `needed` (`NodeChip.node`), or undefined where no chip of `task` points at `needed`.
  *
  * The chart names each need by this chip's own name, as the tree names it (`buildIssueTree`):
  * the needed task's first line, and the page's word for its kind where that task holds no
@@ -403,6 +323,7 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
  * already names.
  */
 export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
-  const own = blockOf(task.reference);
-  return task.chips.find((chip) => neededId(task, own, chip) === needed.id);
+  return task.chips.find(
+    (chip) => chip.label === BLOCK_ATTRIBUTE_LABELS.needs && chip.node === needed.id
+  );
 }

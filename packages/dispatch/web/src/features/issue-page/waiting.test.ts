@@ -204,9 +204,9 @@ function waitingDecision(blockId: string, shaped: readonly string[]): Decision {
 }
 
 /** The entry the decisions read answers beside the agent's decision `decision` of the spec
- *  (`api/decisions.go`'s `decisionEntry`): the block node that holds it, the spec's block it
- *  stands at, and the members the read takes from that node, each null where an agent's decision
- *  holds none. */
+ *  (`api/decisions.go`'s `decisionEntry`): the block node that holds it, as the tree read names
+ *  the node `decisionTreeNode` answers for it, the spec's block it stands at, and the members the
+ *  read takes from that node, each null where an agent's decision holds none. */
 function entryOf(decision: Decision): DecisionEntry {
   const node = `${spec.ref_key}#${decision.block_id}`;
   return {
@@ -231,7 +231,7 @@ function entryOf(decision: Decision): DecisionEntry {
     kept_text_sum: decision.kept === null ? null : decision.text_sha256,
     kind: "agent",
     multiple: null,
-    node: { id: node, kind: "block" },
+    node: { id: `${KEY}/tree#${decision.block_id}`, kind: "block" },
     options: null,
     question: null,
     readings: [],
@@ -884,6 +884,45 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
   }
 });
 
+// Row 14: a view's coverage lists the requirements of the issue it is a view of, each by that
+// issue's own address (`coverage_tuples.go`). On such an issue a tie to one of them is a tie to a
+// statement, whatever issue it names, and a tie to the issue's own spec's block of that id, which
+// no coverage row holds, is none: the count counts the one and not the other.
+test("on an issue that is a view, a tie to a requirement of the issue it is a view of is a tie to a statement, and a tie to its own spec's block of that id is none", () => {
+  const above = "ACME-2";
+  const viewCoverage: IssueCoverage = {
+    ...coverage,
+    requirements: [
+      {
+        block_id: "r1",
+        checks: 1,
+        gaps: [],
+        plan_tasks: 0,
+        ref: `dispatch://${above}/spec#b-r1`,
+        text: "The first.",
+      },
+    ],
+  };
+  const listed = coverageStatements(issue, viewCoverage);
+  expect([`dispatch://${above}/spec#b-r1`, `dispatch://${KEY}/spec#b-r1`].map(listed)).toEqual([
+    true,
+    false,
+  ]);
+  const tiedTo = (ref: string): Decision => {
+    const decision = waitingDecision("tied", ["r1"]);
+    return {
+      ...decision,
+      links: (decision.links ?? []).map((link) => ({ ...link, to: { ...link.to, ref } })),
+    };
+  };
+  const counted = (ref: string) =>
+    waitingOnReader(issue, "alice", decisionsRead([tiedTo(ref)]), listed, answerOf([])).decisions;
+  expect([
+    counted(`dispatch://${above}/spec#b-r1`),
+    counted(`dispatch://${KEY}/spec#b-r1`),
+  ]).toEqual([1, 0]);
+});
+
 // R3 and R13: a decision node's Change is the comment the tree read hangs under it, so the count
 // finds it with no block of the decisions document read, and with no decisions document at all,
 // and matches no quote: the comment here is anchored nowhere. The decision then waits on its
@@ -1218,6 +1257,35 @@ test("a Change of a decision node is no Change of another document's decision of
     ),
     waiting: waitingIn(root),
   }).toEqual({ count: 0, states: ["change_requested", "waiting_review"], waiting: [] });
+});
+
+// Row 11: each entry of the decisions read names its own node (`DecisionEntry.node`). A
+// converted issue's own tree holds a decision `d1`, and a document that plays no part holds a
+// decision `d1` too; the read names neither node's `document`. A person's Change under the
+// tree's node is that decision's Change alone, and the other document's decision, which no node
+// of the answer is, is drafted as the tree drafts a decision no node holds.
+test("a Change of the issue's own decision node is no Change of a decision of a document that plays no part, of the same block id", () => {
+  const onTree = { ...waitingDecision("d1", ["r1"]), ref: `dispatch://${KEY}/artifact/tree#b-d1` };
+  const inNotes = {
+    ...waitingDecision("d1", ["r1"]),
+    ref: `dispatch://${KEY}/artifact/notes-md#b-d1`,
+  };
+  const read: IssueDecisions = {
+    decisions: [],
+    document: null,
+    entries: [
+      { ...entryOf(onTree), document: null, node: { id: `${KEY}/tree#d1`, kind: "block" } },
+      { ...entryOf(inNotes), document: null, node: { id: `${KEY}/notes-md#d1`, kind: "block" } },
+    ],
+    open_questions: [],
+  };
+  const asked: Comment = { ...change, anchor: null, id: "c-on-tree" };
+  const tree = answerOf([statement, decisionTreeNode(onTree), commentNode(asked, "d1")]);
+  expect(decisionChangeComments(read, [], issue, undefined, tree)).toEqual(
+    new Map([["c-on-tree", onTree.ref]])
+  );
+  const root = buildIssueTree({ coverage, decisions: read, issue, tree, viewer: "alice" });
+  expect(nodeIn(root, blockNodeId("notes-md", "d1"))?.type).toBe("decision");
 });
 
 /** An intro of the spec that holds none of the quotes below. */

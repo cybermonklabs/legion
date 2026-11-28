@@ -122,13 +122,15 @@ function taskRef(blockId: string): string {
 }
 
 /** The chip the tree draws for one `needs` pointer of a task's block (`tree-read/tree-nodes.ts`'
- *  `needsChips`), under the attribute's own word; `issue` names it as the tree names the task it
- *  points at, once a test has built every task. */
+ *  `needsChips`), under the attribute's own word, naming the task it points at by the tree's id
+ *  of it (`NodeChip.node`); `issue` names it as the tree names the task it points at, once a test
+ *  has built every task. */
 function need(blockId: string): NodeChip {
   return {
     answered: true,
     gone: false,
     label: BLOCK_ATTRIBUTE_LABELS.needs,
+    node: blockNodeId(PLAN, blockId),
     ref: taskRef(blockId),
   };
 }
@@ -185,17 +187,21 @@ function alsoUnder(statement: ParentLine): NodeChip {
   return treeContext(planReads([statement])).chipOf(statement.reference ?? "");
 }
 
-/** One plan task, by its block id: what it needs, by their block ids, the statement it serves,
- *  where the plan gives it one, and its place in the order the Plan view's read answers
- *  (`TreeNode.position`), where the read gives it one: a task of a cycle holds none. */
+/** One plan task, by its block id: what it needs, by their block ids, as the Plan view's read
+ *  answers them (`TreeNode.needs`) and its chips name them; the statement it serves, where the
+ *  plan gives it one; its place in the order the Plan view's read answers (`TreeNode.position`),
+ *  where the read gives it one: a task of a cycle holds none; and the cycle the read puts it in
+ *  (`TreeNode.cycle`), where it puts it in one. */
 function task(
   blockId: string,
   {
+    cycle,
     needs = [],
     parentLine,
     position,
     type = "plan_task",
   }: {
+    cycle?: string;
     needs?: readonly string[];
     parentLine?: ParentLine;
     position?: number;
@@ -206,10 +212,12 @@ function task(
     alsoUnder: [],
     children: [],
     chips: needs.map(need),
+    ...(cycle === undefined ? {} : { cycle }),
     facts: [],
     gaps: [],
     held: 0,
     id: blockNodeId(PLAN, blockId),
+    ...(needs.length === 0 ? {} : { needs: needs.map((one) => blockNodeId(PLAN, one)) }),
     ...(parentLine === undefined ? {} : { parentLine }),
     ...(position === undefined ? {} : { position }),
     question: false,
@@ -224,14 +232,18 @@ function task(
 
 /** The issue's root over a test's tasks, each `needs` chip named as the tree names it, from the
  *  reads the page names the tasks from (`tasksReads`, `treeContext`'s `chipOf`), with its label
- *  spread into a chip of its own, as the filter's view hands the tree over. */
+ *  and the task it names spread into a chip of its own, as the filter's view hands the tree over. */
 function issue(tasks: readonly TreeNode[]): TreeNode {
   const { chipOf } = treeContext(tasksReads(tasks));
   const children = tasks.map((one) => ({
     ...one,
     chips: one.chips.map((chip) =>
       chip.label === BLOCK_ATTRIBUTE_LABELS.needs
-        ? { ...chipOf(chip.ref), label: chip.label }
+        ? {
+            ...chipOf(chip.ref),
+            label: chip.label,
+            ...(chip.node === undefined ? {} : { node: chip.node }),
+          }
         : chip
     ),
   }));
@@ -545,8 +557,8 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   const cutView = renderBody(
     issue([
       { ...task("t1", { position: 0 }), text: long("t1") },
-      { ...task("t2", { needs: ["t3"] }), text: long("t2") },
-      task("t3", { needs: ["t2"] }),
+      { ...task("t2", { cycle: "c", needs: ["t3"] }), text: long("t2") },
+      task("t3", { cycle: "c", needs: ["t2"] }),
     ])
   );
   try {
@@ -567,8 +579,8 @@ test("a cycle names a task by its projected line, not its stored marks", async (
   setViewport(1440);
   const view = renderBody(
     issue([
-      { ...task("t2", { needs: ["t3"] }), text: "**Draw** the `rows` first" },
-      task("t3", { needs: ["t2"] }),
+      { ...task("t2", { cycle: "c", needs: ["t3"] }), text: "**Draw** the `rows` first" },
+      task("t3", { cycle: "c", needs: ["t2"] }),
     ])
   );
   try {
@@ -1252,11 +1264,21 @@ test("a step names the step it needs and the statements it serves from the view'
     treeAnswer([treeNode(KEY, "issue", null)])
   );
   const words = (text: string) => ({ text, text_tree: displayTree(text) });
-  // A step at `position` in the plan document and at `place` in the order the read answers.
-  const step = (id: string, position: number, place: number, text: string): TreeAnswerNode =>
+  // A step at `position` in the plan document and at `place` in the order the read answers,
+  // waiting on the steps `needs` names, as the read answers them (`plan.needs`).
+  const step = (
+    id: string,
+    position: number,
+    place: number,
+    text: string,
+    needs: readonly string[] = []
+  ): TreeAnswerNode =>
     treeNode(id, "plan_task", "r1", {
       document: { artifact_id: PLAN_ARTIFACT, position, slug: PLAN },
-      plan: planAt(place),
+      plan: {
+        ...planAt(place),
+        needs: needs.map((one) => ({ id: `${KEY}/${PLAN}#${one}`, kind: "block" })),
+      },
       role: "query",
       ...words(text),
     });
@@ -1270,7 +1292,7 @@ test("a step names the step it needs and the statements it serves from the view'
           ...words("Draw the chart of the plan."),
         }),
         step("t2", 1, 0, "Stand the harness up."),
-        step("t1", 0, 1, "Read every row of the harness."),
+        step("t1", 0, 1, "Read every row of the harness.", ["t2"]),
       ],
       [
         treeTuple("needs", "t1", "t2"),
@@ -2023,10 +2045,10 @@ test("a row lets go of its mark when the focus leaves the chart for another cont
 test("tasks that need each other are one line at their place, and rows at that place as steps", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const second = task("t5", { needs: ["t4"] });
+  const second = task("t5", { cycle: "c", needs: ["t4"] });
   const root = issue([
     task("t6", { needs: ["t5"], position: 1 }),
-    task("t4", { needs: ["t5", "t1"] }),
+    task("t4", { cycle: "c", needs: ["t5", "t1"] }),
     second,
     task("t1", { parentLine: serves("r1", "The page draws the conversation"), position: 0 }),
   ]);
@@ -2097,7 +2119,9 @@ test("tasks that need each other are one line at their place, and rows at that p
 
 test("a plan whose every task is in a cycle draws the line, and its tasks as steps", async () => {
   setViewport(1440);
-  const view = renderBody(issue([task("t1", { needs: ["t2"] }), task("t2", { needs: ["t1"] })]));
+  const view = renderBody(
+    issue([task("t1", { cycle: "c", needs: ["t2"] }), task("t2", { cycle: "c", needs: ["t1"] })])
+  );
   try {
     expect(view.container.querySelectorAll("[data-plan-bar-row]")).toHaveLength(0);
     expect(view.container.querySelectorAll("[data-plan-cycle]")).toHaveLength(1);
@@ -2233,8 +2257,8 @@ test("a task with no words is named by its kind, never by its id", async () => {
     issue([
       blank("t1", [], 0),
       task("t2", { needs: ["t1"], position: 1 }),
-      blank("t3", ["t4"]),
-      task("t4", { needs: ["t3"] }),
+      { ...blank("t3", ["t4"]), cycle: "c" },
+      task("t4", { cycle: "c", needs: ["t3"] }),
     ])
   );
   try {
@@ -2407,6 +2431,7 @@ test("a parent's plan draws the tasks of each issue under it in the order the re
     ...task(id),
     chips: needs.map((one) => ({
       ...need(one),
+      node: childId(one),
       reading: { words: `Task ${one}` },
       ref: `dispatch://${child}/artifact/${PLAN}#b-${one}`,
     })),

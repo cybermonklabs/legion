@@ -352,7 +352,10 @@ function twoChanges(marks: Partial<Comment> = {}) {
   const reading = { content: [{ text: "Change.", type: "text" }], type: "paragraph" };
   const answer = treeAnswer([
     treeNode(KEY, "issue", null),
-    treeNode("noded", "decision", KEY, { decision: { changed_at: made[0]?.changed_at } }),
+    treeNode("noded", "decision", KEY, {
+      decision: { changed_at: made[0]?.changed_at },
+      in: SPEC_SLUG,
+    }),
     { ...markedCommentNode(onNode, "noded"), text_tree: reading },
     { ...markedCommentNode(byQuote, KEY), text_tree: reading },
   ]);
