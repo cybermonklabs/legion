@@ -24,20 +24,24 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// testnatsTestParallelism is the default limit on tests and parallel subtests running at once.
-// Tests that replace the shared server and its start function, or check short wall-clock bounds,
-// run serially. URL gives each test and subtest its own account on the shared server.
-//
-// On #5604's tree, the package used 3.6 s of CPU over 148 s before parallelization.
-// The sweep took 42–49 s at -parallel 4 and 26 s at 16 on four CPUs.
-// The serial tests took about 7 s and the longest parallel test, a bucket-create child, took 18 s.
-// These are measurements from Jobs legion-ci-testnatspar-lllr2 and legion-ci-testnatspar-q8jxh
-// (2026-11-25), before the bucket-create child moved to a step clock.
+// testnatsTestParallelism is how many of this package's tests, and of a test's parallel subtests,
+// run at once when the command line names no -parallel. The tests wait on servers and clusters of
+// their own, on child test binaries and on the waits they test, not on a core: on #5604's tree a
+// plain run of the package alone on 4 CPUs used 3.6 s of them over its 148 s (build-cluster Job
+// legion-ci-testnatspar-lllr2). go test's default would be GOMAXPROCS, 4 on CI's runner. On 4
+// CPUs, at the commit that made every test here parallel but two, the package took 39-53 s at
+// -parallel 4, 28-33 s at 8, and 17-31 s at 12, 16, 24 and 32, where its longest tests, each on a
+// cluster of its own and 18-20 s long, set its time (build-cluster Job infra-6300-testnats-tvxvz,
+// two or three runs each; main's serial run took 132-135 s). Every test calls t.Parallel except
+// two, which say why: one replaces the shared server's start (startShared), which every other
+// test's URL reads, and one holds a wall-clock bound close to what it waits for. A test that needs
+// a server has an account of its own on the shared one (URL) or a server of its own.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const testnatsTestParallelism = 16
 
-// TestMain sets the package's default -parallel and uses Main to clean up the shared NATS server.
+// TestMain sets the package's default -parallel and removes the NATS server the package's tests
+// share (Main).
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(testnatsTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
