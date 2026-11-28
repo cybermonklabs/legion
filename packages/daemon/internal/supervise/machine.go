@@ -2962,9 +2962,12 @@ func (m *Machine) releaseHeld(ctx context.Context, row int64, task *RequestDeliv
 // A claim already at or above entry is left alone and written nothing: the number only rises, so
 // a row run again after the claim was given a later entry's work cannot take it back.
 //
-// The raised number stands in memory whether or not the store takes the write, as the row
-// StartedBy records does: the claim holds that entry's task either way, and a write the rule owes
-// is owed and made again at the claim's next decision (persist, claimWriteFailed).
+// The raised number stands in memory while its write is owed, as the row StartedBy records does:
+// the claim holds that entry's task either way, and a write the rule owes is made again at the
+// claim's next decision (persist, claimWriteFailed). A write the rule refuses does not stand: the
+// section ends by reading the claim's row and building the machine again over it (unlock,
+// settleRefusal), so memory holds the number the store holds, and the call answers the refusal,
+// which fails the outbox's row for its next attempt.
 func (m *Machine) EntryGiven(ctx context.Context, entry int64) error {
 	m.mu.Lock()
 	defer m.unlock()
@@ -5910,10 +5913,12 @@ func (m *Machine) putClaimAndPending(ctx context.Context) error {
 }
 
 // persist is putClaim with the mark, and is what every caller that leaves its decision standing
-// in memory uses: the claim the machine holds came from the worker's own frame and nothing puts
-// it back, so a write the store did not take is the only thing still missing, and a failure the
-// rule owes is owed and made again at the claim's next decision rather than lost with the event
-// that failed (claimWriteFailed).
+// in memory uses: the claim the machine holds came from the worker's own frame, so a write the
+// store did not take is the only thing still missing. A failure the rule owes keeps memory as it
+// stands, is owed, and is made again at the claim's next decision rather than lost with the event
+// that failed (claimWriteFailed). A failure the rule refuses is not owed: the store would refuse
+// the same write again, so the decision ends by reading the claim's row and building the machine
+// again over it (settleRefusal), and memory holds what the store holds.
 func (m *Machine) persist(ctx context.Context) error {
 	method := m.claimWriteMethod()
 	return m.claimWriteFailed(method, m.putClaim(ctx))

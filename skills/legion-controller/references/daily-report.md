@@ -70,6 +70,9 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
 - **Stalled work.**
   Each claim a `provider-errors` wake named, with its role, run and model, and each root an `architect-stalled` or `tree-stalled` wake named since the last report, with the arm, what you did and what it waits on (`skill://legion-controller/references/wakes.md`).
 
+- **Refused claim writes.**
+  Each claim a `claim-write-refused` wake named since the last report, with its role, the SQLSTATE and the constraint, and the defect you filed for it (`skill://legion-controller/references/wakes.md`).
+
 - **Operations you lack.**
   Each operation of yours you did not run (a `can-i` answer of no, a failed `kubectl`, no daemon label, no or several daemon pods, an `agent-secrets` denial), with the work, the read and its answer;
   each Slack reply that Slack refused or that the broker granted no token for;

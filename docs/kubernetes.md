@@ -2580,6 +2580,27 @@ This release adds that key, and an earlier release's key table has no row for it
 Where `legion.yaml` sets it, remove the key before you pin the earlier image.
 The earlier release then runs the controller's pod as `runtime.kubernetes.pod.service_account`, the account of every other pod, so the rights that an account of its own gave the controller, such as `delete pods`, go with the key.
 
+#### Rolling back the release that reads a claim again after the store refuses its write
+
+This release reads a claim again from the store when the store refuses a write of that claim (dispatch://INFRA-4099).
+It builds the daemon's memory of the claim again over the row it reads, so the daemon's memory and the store agree.
+It also tells the issue's architect and the project's controller of each such refusal once, in a notice of a new kind, `claim-write-refused`: a `notice` row to the architect and a `controller_notice` row to the controller.
+The architect acts only when the claim's role stays stuck for more than one probe interval (`probe_interval_seconds`), and then sends the claim and the notice to the controller.
+The controller files the refusal as a defect of the daemon, with the claim, the SQLSTATE and the constraint.
+An earlier release refuses a row of that kind at each attempt (`unknown notice kind`, `validNoticeKind` in `record/outbox.go`), so the row fails on its backoff for ever.
+While that backoff holds the row ahead of now, the row fails every read of the project's state that passes it (`WaitingNotices`, `pacedCatchUps`).
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The notices to an architect and to the controller of a claim write the store refused.
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'claim-write-refused';
+```
+
+Each deleted row costs one architect, or the controller, one notice of one refused claim write, and the refusal's lines stay in the daemon's log.
+This release adds no migration, so no dump and no `alter table` belong here.
+It records each refusal it told as a row of `processed_events`, whose id is `claim-write-refused:<claim>:<generation>:<SQLSTATE>:<constraint>`.
+An earlier release reads no such row, so the rollback needs no statement for those rows.
+
 #### Rolling back the release that merges a conflicting head forward in its phase
 
 This release stops a conflict from sending an issue back to `implementing`.
@@ -2692,9 +2713,14 @@ It keeps its role until the daemon's publication of the end lands.
 The claim write that ends the claim queues that publication in its own transaction, so the end and its publication commit together or not at all.
 An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published only when the daemon makes that write again, at the claim's next decision, because until then the store still holds the claim live.
 In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
-An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
-A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
-Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
+An end whose claim write the store refused is not made, whatever the end is: a suspension, a stop, a failure, or a stop's retirement of its round's ask.
+The daemon logs the refusal at Error (`supervise: a claim write the store refused`), reads the claim again from the store, and builds its memory of the claim again over that row (`supervise: the claim was read again from the store after a refused write`, at Info).
+So the daemon's memory and the store both hold the claim live, the set follows them, and the session stays listed.
+A suspension of a running process, a stop and a close ask the runtime to stop or release the process before the claim write, so after such a refusal that process is gone.
+The daemon's next observation of the claim finds the process gone and recovers the claim as a daemon start over the same row would.
+A failure, an exit and every other end write the claim first, so a refusal of their write stops nothing.
+The claim's writes wait one probe interval after that read.
+The daemon tells the issue's architect and the project's controller of the refusal once, in a `claim-write-refused` notice.
 
 **Who can write the set.**
 The route takes a write that names the actor `legion-daemon:<project>`, and with Dispatch's `DISPATCH_LEGION_STATUS_SCOPE` on only one from the daemon's own broker token.
@@ -11279,7 +11305,9 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - A boot suspension that fails for a reason other than the claim's state, such as a stop the runtime refuses, is logged at Error (`… failed; it is left as it is …`) naming the claim, and the boot goes on, so the steps below can run.
   The claim is then contained: its hold refuses every relaunch, resume and new enrollment of it; the enrollment its process holds is revoked once the broker confirms the revocation, the claim keeping it recorded and asking again at each observation until then, and, where the broker refuses the revocation for good, recorded no longer and logged at Error while the process renews it until it stops; and the daemon publishes nothing to its Envoy role, the controller's role among them for the daemon's own controller, and sends that process no task and no compaction; the next boot asks again.
-  A stop the runtime refused leaves the process running; a write the store refused after the stop leaves it stopped, with the claim not yet recorded suspended.
+  A stop the runtime refused leaves the process running, and the daemon writes nothing.
+  A write the store refused after the stop leaves the process stopped and the claim as the store holds it, in the daemon's memory too, so the claim is not suspended.
+  The daemon logs that refusal at Error (`supervise: a claim write the store refused`) and reads the claim again from the store.
   The daemon withholds its messages from a claim's role whatever the claim's state, a retired or failed claim included, since its unheld session may still be a live process the daemon no longer manages; that stays so until the Envoy listener withholds the role itself, which it does not yet do.
   A process that runs on does so under the session until it is stopped, and the listener still gives it the role its session claimed: the daemon could free the role, but the process claims a free role again at its next heartbeat, so a message another session sends to that role reaches the session's subscriber until the session ends.
   Once no process registers the session id, the listener frees the role at the role reaper's first pass after the session's record is gone and the role claim's last renewal is a live window old.

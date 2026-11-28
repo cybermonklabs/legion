@@ -11,7 +11,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | --- | --- |
 | `catch-up` | Start or resume from it as your role prompt says. Accept each issue its `reason` names as waiting for you (section 6), a parent only after its last round. |
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
-| `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in `skill://legion-architect/references/design-gate.md`) and end your turn. A late one for an older version: answer its reason if the latest does not. |
+| `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in design-gate.md) and end your turn. A late one for an older version: answer its reason if the latest does not. |
 | `carried-gate-opened` | Start and release nothing. |
 | `phase-finished` | The next phase started, or `retro-held` came too. Read `dispatch results`, the pull request and its review; tell the working role of any gap. A departure in `plan.md` under `## Departures from the spec`: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
 | `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in `skill://legion-architect/references/plan-changes.md` says. |
@@ -30,7 +30,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `worker-stalled` | The daemon relaunched or queued the turn, retries its relaunch, let a suspension already waiting for the claim run instead, or failed the claim. Judge from the reason whether the work needs your decision. A stop the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. |
 | `worker-silent` | The daemon already sent the work again; start nothing. Where a suspension holds the agent, ask its holder to resume it ("An agent of your tree that needs an action" in operations.md). |
 | `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone and a fresh agent runs the role. Bring it up to date as "A lost session" in wake-routing-steps.md says. |
-| `provider-errors` | "An agent of your tree that needs an action" in operations.md. |
+| `provider-errors`, `claim-write-refused` | "An agent of your tree that needs an action" in operations.md. |
 | `merge-holds-changed` | "A merge hold" in acceptance.md. |
 | `worker-background-stalled` | Read what the session waits on: a missing surface or a person needs your decision, a long build does not. |
 | `held` | No `reason`: answer the `worker-died` that comes with it. Only your `escalate` hands it to the controller. `reason: "escalated"`: the controller has it; start nothing. |

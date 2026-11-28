@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The README's account of when the Legion daemon publishes an issue's role holders, and the comment
+  of `issue_role_holders.go`, state the daemon's new rule for an end whose claim write the store
+  refuses: the daemon puts the claim back to the row the store holds, in memory too, so the set
+  that Dispatch shows and the daemon agree. Before, the text said that such an end left the
+  daemon's memory ended and the store live.
+time: 2026-11-28T01:37:37Z
+custom:
+  Issue: INFRA-4099

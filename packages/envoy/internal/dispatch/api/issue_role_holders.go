@@ -53,14 +53,11 @@ import (
 // will. The daemon queues the publication in the transaction of each claim write that changes the
 // session holding a role, so an end whose claim write failed with an error that the daemon owes
 // is published when the daemon makes that write again at the claim's next decision. An end whose
-// claim write failed and is not owed leaves the daemon's memory ended and its store live, and the
-// set follows the store (dispatch://INFRA-4099).
-// A later decision of that claim, such as a second stop, makes that write again only while the
-// claim still holds a pending task that the decision retires, such as the task of a turn that is
-// over, because the retirement writes the claim with it; otherwise the session stays listed until
-// another write of that claim lands, and the daemon's next start takes the claim up from its row as
-// live. Such ends include a suspension, a stop or a failure whose claim write the database
-// refused, and a stop whose retirement of its round's ask failed.
+// claim write the store refused is not made, whatever the end is: a suspension, a stop, a failure,
+// or a stop's retirement of its round's ask. The daemon reads the claim again from its store and
+// builds its memory of the claim again over that row, so its memory and its store both hold the
+// claim live, the set follows them, and the session stays listed (packages/daemon's
+// supervise.SortClaimWriteFailure and settleRefusal).
 //
 // Each write replaces the issue's whole set under the issue's owner lock (store.LockOwner), which
 // a second write of the same issue waits for, so the stored set is always one whole set, and each

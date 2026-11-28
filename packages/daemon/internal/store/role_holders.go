@@ -21,10 +21,10 @@ import (
 // so the change and the obligation to publish it commit together or not at all: no change of a
 // holder stands that nothing owes a publication, and a write the store refused leaves neither. An
 // end whose own write failed with an error the machine owes is published when the repair that
-// makes it good lands, whichever decision makes it. An end whose failed write is not owed is
-// written again only when a later decision retires a task the claim still holds, which writes the
-// claim with it; until then the store, and so Dispatch's set, keeps the claim holding its role
-// (dispatch://INFRA-4099).
+// makes it good lands, whichever decision makes it. An end whose write the store refused is not
+// made: the machine reads the claim again from the store and builds itself again over that row
+// (supervise's settleRefusal), so its memory, the store and so Dispatch's set all keep the claim
+// holding its role.
 //
 // The row is keyed by the issue, so it is queued only for an issue of the claim's own project
 // (claim.KeyOfProject): a claim of another project's issue, which the operator's spawn makes under

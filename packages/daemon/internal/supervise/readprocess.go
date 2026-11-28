@@ -121,12 +121,14 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 		// that is over (Claim.DeathCharged, reportedProcess). It is written here as judge writes
 		// it, because a clear held in memory alone is lost at a restart and leaves the sweep's
 		// next report of the same live process nothing to clear, so the process's next real death
-		// would go uncounted. A store that will not take it leaves the clear in memory: where the
-		// rule owes the failure, the write is marked owed and the repair or the claim's next write
-		// carries it (claimWriteFailed); where the rule refuses it, the claim's next write that
-		// the store takes carries it.
+		// would go uncounted. A failure the rule owes leaves the clear in memory, and the write is
+		// marked owed, so the repair or the claim's next write carries it (claimWriteFailed). A
+		// failure the rule refuses leaves nothing in memory: the section ends by reading the
+		// claim's row and building the machine again over it (unlock, settleRefusal), so the
+		// charge stands in memory as in the store, for the next read or report that finds the
+		// process running to clear, as this one did.
 		if err := m.persist(ctx); err != nil {
-			m.log.Error("supervise: the read of the claim's process found it running and the cleared death charge was not written; it stays in memory for the claim's next write the store takes",
+			m.log.Error("supervise: the read of the claim's process found it running and the cleared death charge was not written; a write the rule owes is made at the claim's next decision, and one the store refused leaves the charge as the store holds it",
 				"incarnation", m.claim.Locator.Incarnation, "error", err)
 		}
 	}

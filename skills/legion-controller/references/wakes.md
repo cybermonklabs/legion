@@ -44,6 +44,10 @@ The daemon could not ask the session store for a role's start. Open one finding 
 
 Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. It tells an architect too, except for a tree root architect's own run, which comes to you alone. Name the run and its model in the day's report, and send no architect anything. When one agent stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
 
+## `claim-write-refused`
+
+The store refused a write of `role`'s claim, and the daemon put the claim back to its stored row: a defect of the daemon. Find in the daemon's log the two lines the notice's reason names, for `claim=` the role's token. With no log to read, use the reason alone. File it as a clear defect you found (`skill://legion-controller/references/finding-asks.md#file-a-clear-defect`), with the claim, the SQLSTATE and the constraint.
+
 ## A root architect's stuck tool call
 
 Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot recover from on its own: <reason>``. The session will not end that call: `suspend` the root's architect, then `resume_agent` it once `read_state` shows its claim suspended, so it starts again in its own session with the task it owes (`skill://legion-controller/references/operations.md`).

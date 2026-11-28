@@ -1676,12 +1676,15 @@ func (m *Machine) retirePending(ctx context.Context) error {
 }
 
 // saved records the outcome of a write of the pending delivery that memory changed first, since
-// the decision it records has been made whether or not the store takes it. A write that failed
-// leaves the delivery unsaved, and settle writes it again, with the claim, before the next decision
-// - confirmCarrying's write covers both, and a delivery written confirmed beside a claim still
-// ready is a turn a restart would find over. So once the store takes writes again, a restart reads
-// what the machine decided rather than what it replaced; one before that reads the older rows, as
-// a restart after a crash between a decision and its write does.
+// the decision it records has been made whether the store takes the write or owes it. A write
+// that failed for a cause the rule owes leaves the delivery unsaved, and settle writes it again,
+// with the claim, before the next decision - confirmCarrying's write covers both, and a delivery
+// written confirmed beside a claim still ready is a turn a restart would find over. So once the
+// store takes writes again, a restart reads what the machine decided rather than what it replaced;
+// one before that reads the older rows, as a restart after a crash between a decision and its
+// write does. A write the rule refuses keeps none of the decision: the decision ends by reading
+// the claim's row and building the machine again over it (settleRefusal), which holds the delivery
+// as the store holds it.
 func (m *Machine) saved(err error) error {
 	m.unsaved = err != nil
 	return err
@@ -2256,9 +2259,11 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // confirmation a turn took while the send of its prompt was still in flight, or while a prompt of
 // the task still waited on its result, may be another input's, and goes back to untold before the
 // id moves (untellInFlight, where that rule is), in the same write as the delivery when a telling
-// moved. The untelling stands in memory whether or not that write lands, since untold is the safe
-// way round, and the claim's next write carries it. The record of the let-go that cut the turn off
-// is new words, and is told by a prompt of its own.
+// moved. The untelling stands in memory while that write is owed, since untold is the safe way
+// round, and the claim's next write carries it; a write the rule refuses ends the decision with
+// the machine built again over the claim's row (settleRefusal), which holds the telling the store
+// holds. The record of the let-go that cut the turn off is new words, and is told by a prompt of
+// its own.
 //
 // The claim's handshake gives back the same confirmation by the same reading (Claim.Handshake,
 // EntryHandshake.unconfirmed), where it was this task's: a turn that may be another input's is no
@@ -2524,16 +2529,18 @@ func (m *Machine) turnNews() []byte {
 //
 // The refusal or timeout behind it arrives once, and settle and ServingRun read the claim as memory
 // holds it, so what it established — not confirmed, not read when taken back unread, and no longer
-// told by that confirmation — holds at once, whether or not the write recording it lands. Only the
-// new id waits for the write, and the telling moved to it with it, so the claim's id is always one
-// the store holds; a write that fails leaves the delivery unsaved, and settle writes it again
-// under the id it kept, with the claim (saved). Where none is outstanding, the wait for the
-// prompts' results is over before that write, which is safe here, where interrupted ends the wait
-// after its own write: this clears ConfirmedAt in memory first, so the claim a failed write leaves
-// is one settle reads as a task still waiting rather than as a turn that is over (turnOver,
-// resultPending). A telling that moved goes in the same write as the delivery, the claim and the
-// delivery together, so a restart never reads a record told by a confirmation the delivery no
-// longer holds.
+// told by that confirmation — holds at once, and stands while the write recording it is owed. Only
+// the new id waits for the write, and the telling moved to it with it, so the claim's id is always
+// one the store holds; a write that fails for a cause the rule owes leaves the delivery unsaved,
+// and settle writes it again under the id it kept, with the claim (saved). A write the rule
+// refuses ends the decision with the machine built again over the claim's row (settleRefusal),
+// which holds the delivery and the claim as the store holds them. Where none is outstanding, the
+// wait for the prompts' results is over before that write, which is safe here, where interrupted
+// ends the wait after its own write: this clears ConfirmedAt in memory first, so the claim a
+// failed owed write leaves is one settle reads as a task still waiting rather than as a turn that
+// is over (turnOver, resultPending). A telling that moved goes in the same write as the delivery,
+// the claim and the delivery together, so a restart never reads a record told by a confirmation
+// the delivery no longer holds.
 //
 // A confirmation taken back was never the worker's, so the claim's handshake gives back its own
 // too (takeBackConfirmation); a confirmation kept for an outstanding prompt keeps the handshake's

@@ -271,20 +271,23 @@ func (m *Machine) oweDurableState(state ClaimState) {
 // for those failure lines alone, since the line of a write that landed is written where it
 // landed.
 //
-// It returns nothing. A repair that fails must not drop the event behind it: the error would
-// reach supervisor.decisionFailed in internal/daemon, which logs it and drops the event, and an
-// event dropped for a write the database did not take is the fault this change exists to end. A
-// repair that failed keeps the mark, logs it, and the decision goes on to its own row, which will
-// be owed too if the database is still away.
+// It returns nothing. A repair whose failure the rule owes must not drop the event behind it: the
+// error would reach supervisor.decisionFailed in internal/daemon, which logs it and drops the
+// event, and an event dropped for a write the database did not take is the fault this change
+// exists to end. Such a repair keeps the mark, logs it, and the decision goes on to its own row,
+// which will be owed too if the database is still away.
 //
 // A failure the rule refuses drops the mark: the store, the server or the driver judged the row
 // memory holds, and would refuse the same write again, so keeping the mark would only buy the same
 // refusal at every decision from here on. The reports the mark held go with it, and the refusal's
 // line carries how many of them there were (droppedReports) and how many of the pause's stops
-// (droppedStops), because that line is the whole record of what was lost: R6 asks it to say that
-// the write and the reports it held are dropped, and a line naming only the write would leave no
-// trace that anything went with it — the states and the generations those reports carried are
-// gone from the daemon the moment the mark is.
+// (droppedStops), because that line is the whole record of what was lost: a line naming only the
+// write would leave no trace that anything went with it — the states and the generations those
+// reports carried are gone from the daemon the moment the mark is. Memory does not stay ahead of
+// the row: the refusal stands for the rest of the decision (Machine.refusal), its caller decides
+// nothing more (handle returns the refusal and drops the event, and PublishUpdateAsk publishes
+// nothing and answers a wait), and the decision ends by reading the claim's row and building the
+// machine again over it (settleRefusal), so memory holds what the store holds.
 func (m *Machine) repair(ctx context.Context) {
 	if m.owedWrite == nil {
 		return

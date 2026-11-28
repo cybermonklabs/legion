@@ -1,0 +1,24 @@
+kind: Fixed
+body: |-
+    When the store refuses a write of a claim for good, the daemon's memory of that claim no longer
+    stays ahead of the store. A refusal is the store, the server or the driver judging the row: a
+    check constraint, a unique index, or a value that does not fit its column. The daemon logs the
+    refusal at Error (`supervise: a claim write the store refused`), with the store call, the
+    stored and the refused state, the SQLSTATE and the constraint. Then it reads the claim again
+    from the store and builds its memory of the claim again over that row (`supervise: the claim
+    was read again from the store after a refused write`, at Info). The claim's writes then wait one
+    probe interval, so a claim whose every write is refused tries one write in each interval and
+    starts no process. A refused write revokes no capability and stops no pod-session
+    registration, and a failure or an exit whose write is refused stops no process. The daemon
+    tells the issue's architect and the project's controller once for each claim, generation,
+    SQLSTATE and constraint, in a `claim-write-refused` notice, also across a restart. A write that
+    fails because the database is away is still owed and made at the claim's next decision. A
+    server that a failover left read-only (`25006`) and a schema that does not have a column or a
+    table the daemon names yet (`42703`, `42P01`) now owe the write too. Before, the daemon kept the
+    refused state in memory while the store kept the old row, so Dispatch's role holders and a
+    restart disagreed with the daemon. Before you roll back below this release, delete the queued
+    notices of the new kind (`docs/kubernetes.md`, "Rolling back the release that reads a claim
+    again after the store refuses its write").
+time: 2026-11-28T01:37:37Z
+custom:
+    Issue: INFRA-4099
