@@ -201,25 +201,23 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
-// A write in flight at SIGTERM can wait on a lock past the HTTP drain's share, the document
-// service's budget and the outbox's wait, here a title change behind another writer that holds the
-// issue past all three. The database is answering, so Dispatch keeps the request's connection open
-// until the write commits and its answer is sent, and only then closes the pool. The child takes a
+// A write in flight at SIGTERM can wait on a lock past the HTTP drain's share and the document
+// service's budget, here a title change behind another writer that holds the issue past both.
+// The database is answering, so Dispatch keeps the request's connection open until the write
+// commits and its answer is sent, and only then closes the pool. The child takes a
 // tenth of a deployment's drain and document budget, and the hold keeps a deployment's 11 : 14 : 27
 // ratio to them: the 27 s a deployment's hold would last ends 2 s past the latest of its bounds (25 s)
 // and 3 s inside the runtime's kill.
 func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.T) {
 	t.Parallel()
-	// The HTTP drain, document budget and lock hold keep their 11 : 14 : 27 ratio at one tenth scale.
 	const (
-		httpDrain            = 1100 * time.Millisecond
-		documentBudget       = 1400 * time.Millisecond
-		lockHeldAfterSIGTERM = 2700 * time.Millisecond
+		httpDrain            = httpDrainBeforeDocuments / 10
+		documentBudget       = documentShutdownTimeout / 10
+		lockHeldAfterSIGTERM = (stopGrace - 3*time.Second) / 10
 	)
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		Env: map[string]string{
-			"DISPATCH_TEST_HOOKS":             "1",
 			"DISPATCH_TEST_HTTP_DRAIN":        httpDrain.String(),
 			"DISPATCH_TEST_DOCUMENT_SHUTDOWN": documentBudget.String(),
 		},
@@ -249,7 +247,7 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	testwait.Quiet(t, "Dispatch's exit", process.Exited, time.Until(signalled.Add(lockHeldAfterSIGTERM)),
-		"releasing the lock ends the blocked write, and no state shows whether Dispatch would exit with the lock still held before the document budget and outbox wait end")
+		"releasing the lock ends the blocked write, and no state shows whether Dispatch would exit with the lock still held before the document budget ends")
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
@@ -268,9 +266,6 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	}
 	if code := process.Cmd.ProcessState.ExitCode(); code != 0 {
 		t.Errorf("Dispatch exited %d after SIGTERM, want 0", code)
-	}
-	if t.Failed() {
-		t.Logf("Dispatch's output:\n%s", process.Output.String())
 	}
 }
 
@@ -2121,15 +2116,14 @@ func settlementMarkedAt(t *testing.T, database *store.Store, artifactID string) 
 	return marked
 }
 
+// waitForSettlementMarkedAfter waits for the editor's durable update to advance the pending
+// settlement marker past before. On failure it reports the last marker read.
 func waitForSettlementMarkedAfter(t *testing.T, database *store.Store, artifactID string, before time.Time) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !settlementMarkedAt(t, database, artifactID).After(before) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the editor's durable update did not advance the pending settlement marker within 10s")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("the pending settlement marker for %s to advance past %s", artifactID, before), func() (time.Time, bool) {
+		marked := settlementMarkedAt(t, database, artifactID)
+		return marked, marked.After(before)
+	})
 }
 
 // waitForSettlementOwed waits for the document's pending-settlement row to be there, or gone.

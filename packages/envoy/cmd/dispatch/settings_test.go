@@ -2283,8 +2283,8 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": invalid},
 					fmt.Sprintf("DISPATCH_TEST_HTTP_DRAIN=%q (expected a positive Go duration)", invalid))
 			}
-			// The ceiling: a deployment's drain is taken, and anything longer would end a
-			// deployment's document budget after it less than five seconds inside the stop grace.
+			// The ceiling: a deployment's drain is taken, and anything longer would end the
+			// document service's budget past the outbox's wait (outboxStopBudget).
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": "11s"}); boot.HTTPDrain != 11*time.Second {
 				t.Errorf("DISPATCH_TEST_HTTP_DRAIN=11s: HTTPDrain = %v, want 11s", boot.HTTPDrain)
 			}
@@ -2572,12 +2572,12 @@ func TestTheNATSSOCKS5ProxyCarriesTheConnect(t *testing.T) {
 
 // TestAProcessCreatesAStagedPlanElementOnlyWhenTold checks that Dispatch rejects a plan with a
 // staged parent unless DISPATCH_TEST_CREATE_STAGED=1. It is the half of
-// TestEverySettingReachesItsReader's case for that setting that starts Dispatch processes.
-// It reads no settings or logs from the test process.
+// TestEverySettingReachesItsReader's case for that setting that starts Dispatch processes, apart
+// so that it runs beside the other tests: it reads no process environment and no log.
 //
-// A subprocess runs the shipped manifest alone, so this case writes the element that manifest
+// A subprocess runs the shipped manifest alone, so this test writes the element that manifest
 // stages now, and moves to the next staged element at each version that makes parent creatable.
-// Pmdoc's TestATestProcessCreatesAStagedElementOnlyWhenTold holds the hook on a made-up element.
+// The hook on a made-up element is pmdoc's TestATestProcessCreatesAStagedElementOnlyWhenTold.
 func TestAProcessCreatesAStagedPlanElementOnlyWhenTold(t *testing.T) {
 	t.Parallel()
 	dispatchSlots.reserve(t, 2)
@@ -2607,7 +2607,8 @@ func TestAProcessCreatesAStagedPlanElementOnlyWhenTold(t *testing.T) {
 // TestTheOwnerFallbackGrantsAnOwnerAtBoot checks that a process refuses to serve a project with
 // no owner, and that DISPATCH_PROJECT_OWNER_FALLBACK gives it an owner and records the grant.
 // It is the half of TestEverySettingReachesItsReader's case for that setting that starts
-// Dispatch processes. It reads no settings or logs from the test process.
+// Dispatch processes, apart so that it runs beside the other tests: it reads no process
+// environment and no log.
 func TestTheOwnerFallbackGrantsAnOwnerAtBoot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -2664,7 +2665,8 @@ func TestTheOwnerFallbackGrantsAnOwnerAtBoot(t *testing.T) {
 // TestBootRefusesAnEmptySigningKeyFileWithoutPanicking checks that when DISPATCH_SIGNING_KEY
 // is unset and the signing-key file is empty, Dispatch exits 1 and names the file before the
 // people store would panic. It is the half of TestEverySettingReachesItsReader's case for that
-// setting that starts a Dispatch process. It reads no settings or logs from the test process.
+// setting that starts a Dispatch process, apart so that it runs beside the other tests:
+// it reads no process environment and no log.
 func TestBootRefusesAnEmptySigningKeyFileWithoutPanicking(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)

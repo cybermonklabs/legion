@@ -244,13 +244,12 @@ type bootConfig struct {
 	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
 	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, since a test
 	// whose request holds the drain waits all of it out; resolveBootConfig refuses one longer than
-	// httpDrainBeforeDocuments, so a deployment's document budget after it still ends 5 s inside
-	// stopGrace.
+	// httpDrainBeforeDocuments (outboxStopBudget).
 	HTTPDrain time.Duration
 	// DocumentShutdown is the document service's budget as the process stops, zero for
 	// documentShutdownTimeout's fourteen seconds; only DISPATCH_TEST_DOCUMENT_SHUTDOWN, under the
 	// test hooks, sets it, since a test whose request is held past that budget waits all of it out;
-	// resolveBootConfig refuses one longer than documentShutdownTimeout.
+	// resolveBootConfig refuses one longer than documentShutdownTimeout (outboxStopBudget).
 	DocumentShutdown time.Duration
 	// RateReadingBeforeReset sets how early the GitHub rate reading aims before a reset.
 	// Zero keeps githubrate.BeforeReset; only DISPATCH_TEST_RATE_READING_BEFORE_RESET, under the
@@ -1602,14 +1601,8 @@ func main() {
 		waitFill()
 		waitCounts()
 	}
-	httpDrain := httpDrainBeforeDocuments
-	if boot.HTTPDrain > 0 {
-		httpDrain = boot.HTTPDrain
-	}
-	documentBudget := documentShutdownTimeout
-	if boot.DocumentShutdown > 0 {
-		documentBudget = boot.DocumentShutdown
-	}
+	httpDrain := cmp.Or(boot.HTTPDrain, httpDrainBeforeDocuments)
+	documentBudget := cmp.Or(boot.DocumentShutdown, documentShutdownTimeout)
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
 		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain, documentBudget); err != nil {
 		slog.Error("dispatch: serve", "error", err)

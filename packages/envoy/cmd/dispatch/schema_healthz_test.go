@@ -17,11 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// schemaHealthWait bounds the wait for a running process to read a schema write: the write
-// announces itself on the schema channel at commit, and the process's installer reads the store
-// again on that wake, so this is the listener's round trip with room for a loaded pod.
-const schemaHealthWait = 30 * time.Second
-
 // A store schema whose version is above the one this binary was built for is a store the next
 // release migrated, and this process keeps serving over it (c-schema-holder): it installs the
 // store at its own version, with the elements that version reads - the claim type the migration
@@ -180,20 +175,13 @@ func (p *dispatchProcess) servedSchema(t *testing.T) pmdoc.BlockSchema {
 }
 
 // waitForServedSchema reads the served schema until reached holds of it, and fails the test with
-// the last one and the process's output once schemaHealthWait has passed.
+// the last schema read and the process's output.
 func (p *dispatchProcess) waitForServedSchema(t *testing.T, what string, reached func(pmdoc.BlockSchema) bool) pmdoc.BlockSchema {
 	t.Helper()
-	deadline := time.Now().Add(schemaHealthWait)
-	for {
+	return testwait.Until(t, "the process to serve "+what, func() (withOutput[pmdoc.BlockSchema], bool) {
 		served := p.servedSchema(t)
-		if reached(served) {
-			return served
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the process never served %s within %v; last version %d:\n%s", what, schemaHealthWait, served.Version, p.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return readWith(served, p.Output), reached(served)
+	}).read
 }
 
 // schemaHealthBody is the part of /healthz this test reads: whether the process says it can
