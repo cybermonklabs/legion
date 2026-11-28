@@ -186,15 +186,13 @@ describe("dispatch read over HTTP with served and former address links (R10)", (
           fetchImpl: fetchImpl as typeof fetch,
         });
         expect(result.text).toBe("Key: CORE-42\nEvents:\n- none");
-        const expected =
-          linkOrigin === configured
-            ? [`${configured}/api/v1/issues/CORE-42`, `${configured}/api/v1/issues/CORE-42/events`]
-            : [
-                `${configured}/api/v1/whoami`,
-                `${configured}/api/v1/issues/CORE-42`,
-                `${configured}/api/v1/issues/CORE-42/events`,
-              ];
-        expect(requested).toEqual(expected);
+        // A read command reads whoami first (`readAtCut`), and a link at another address of the
+        // server is read against the origins in that same answer: one whoami read either way.
+        expect(requested).toEqual([
+          `${configured}/api/v1/whoami`,
+          `${configured}/api/v1/issues/CORE-42`,
+          `${configured}/api/v1/issues/CORE-42/events`,
+        ]);
       }
 
       requested.length = 0;
