@@ -131,10 +131,6 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	}
 	e.logOnCommit(ctx, "workflow: the next change of an issue starts", "issue", started.Key, "tree", started.Tree,
 		"generation", next, "changes", started.NextChanges, "reasons", ids)
-	if err := e.notice(ctx, tx, started.Key, record.Notice{Kind: "next-change", Role: claim.RoleArchitect,
-		Reason: nextChangeReason(started, reasons)}); err != nil {
-		return err
-	}
 	return e.tellChangeCount(ctx, tx, started, reasons)
 }
 
