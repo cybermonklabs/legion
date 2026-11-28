@@ -38,6 +38,10 @@ case "${words[*]}" in
     }
     ;;
   "projects describe $project")
+    # A world marked refuse-project-describe refuses it, so neither --project's number nor the pool
+    # project's (the same project by default) is read.
+    [ ! -e "$world/refuse-project-describe" ] ||
+      refuse projects.describe "Permission 'resourcemanager.projects.get' denied on resource '//cloudresourcemanager.googleapis.com/projects/$project' (or it may not exist)."
     jq -n --arg p "$project" --arg n "$number" \
       '{projectId: $p, projectNumber: $n, name: $p, lifecycleState: "ACTIVE", parent: {type: "organization", id: "100"}}'
     ;;
@@ -316,9 +320,25 @@ case "${args[*]}" in
       | .[]' "$1"
     ;;
   "get serviceaccounts --all-namespaces -o json")
+    # Each ServiceAccount's uid is its world entry's uid (sa_uid), else uid-<namespace>-<name>.
     shaped_answer serviceaccounts
     [ ! -e "$dir/refuse-list" ] || forbidden serviceaccounts 'list resource "serviceaccounts" in API group ""' container.serviceAccounts.list
-    jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: "uid-\(.namespace)-\(.name)"} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))} + (if .secrets then {secrets: .secrets} else {} end)]}' "$dir/serviceaccounts.json"
+    jq '{apiVersion: "v1", kind: "List", items: [.[] | {apiVersion: "v1", kind: "ServiceAccount", metadata: ({namespace: .namespace, name: .name, uid: (.uid // "uid-\(.namespace)-\(.name)")} + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))} + (if .secrets then {secrets: .secrets} else {} end)]}' "$dir/serviceaccounts.json"
+    ;;
+  "get serviceaccounts -n "*" --field-selector metadata.name="*" -o json")
+    # One namespace's ServiceAccounts of one name, as kubectl 1.35.9 answered this list on
+    # 2026-11-28: a List (its metadata an empty resourceVersion) of each match, its metadata
+    # creationTimestamp, name, namespace, resourceVersion and uid (the entry's uid, else
+    # uid-<namespace>-<name>, as above), with example values for the rest, and the Google service
+    # account annotation as above when the entry names one; no match, a missing namespace included,
+    # is an empty items. A world marked refuse-serviceaccount-read refuses it.
+    shaped_answer serviceaccount
+    [ ! -e "$dir/refuse-serviceaccount-read" ] || forbidden serviceaccounts 'list resource "serviceaccounts" in API group ""' container.serviceAccounts.list
+    jq --arg ns "${args[3]}" --arg n "${args[5]#metadata.name=}" '{apiVersion: "v1", kind: "List", metadata: {resourceVersion: ""},
+      items: [.[] | select(.namespace == $ns and .name == $n) | {apiVersion: "v1", kind: "ServiceAccount",
+        metadata: ({creationTimestamp: "2026-11-17T12:00:00Z", name: .name, namespace: .namespace, resourceVersion: "1001",
+                    uid: (.uid // "uid-\(.namespace)-\(.name)")}
+                   + (if .gsa then {annotations: {"iam.gke.io/gcp-service-account": .gsa}} else {} end))}]}' "$dir/serviceaccounts.json"
     ;;
   "get clusterrolebindings,rolebindings --all-namespaces -o json")
     # The built-in cluster-admin binding (unless the world drops it), the bootstrap RoleBinding

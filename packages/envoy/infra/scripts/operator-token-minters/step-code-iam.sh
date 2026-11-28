@@ -90,9 +90,14 @@ else
           attached="$a:$b"
           [ "$a" != serviceaccount ] || attached="//iam.googleapis.com/projects/-/serviceAccounts/${b##*/}"
           iam_verdict "$check" "$e" "$d" "$attached" code
-          [ "$VERDICT" != finding ] ||
-            finding "$e" "$(held_text "$check" "$granted") on $(resource_of "$check") through $d, declared by $f$NOTE" \
-              "$d" "$(resource_of "$check")" "$(held_list "$check" "$granted")" "$attached"
+          case "$VERDICT" in
+            ok | skip) ;;
+            finding)
+              finding "$e" "$(held_text "$check" "$granted") on $(resource_of "$check") through $d, declared by $f$NOTE" \
+                "$d" "$(resource_of "$check")" "$(held_list "$check" "$granted")" "$attached"
+              ;;
+            unknown) unknown "$step" "$(held_text "$check" "$granted") on $(resource_of "$check") through $d, declared by $f$NOTE" ;;
+          esac
         done
         ;;
     esac

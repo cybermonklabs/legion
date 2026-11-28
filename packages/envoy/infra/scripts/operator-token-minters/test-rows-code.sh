@@ -22,7 +22,12 @@
 #        on patch of a Deployment in secrets-broker, is a finding naming the names;
 #   (ca) a render's create namespaces, create of a mutating webhook configuration, and the
 #        certificate chain (create, patch of the approval, approve of the client signer by name)
-#        are each a finding, the chain as one, and create of requests alone is none.
+#        are each a finding, the chain as one, and create of requests alone is none;
+#   (up) a preview giving the broker's member by UID roles/iam.workloadIdentityUser on the broker's
+#        account passes code: IAM, the broker's UID read on the operator's cluster;
+#   (uq) the same of a member by another UID is a finding naming the preview's resource;
+#   (ur) with the broker's UID unread, the member by UID reads UNKNOWN on code: IAM naming the
+#        resource, the member and why.
 
 # --- (p) The code read. Every live step is refused, so each finding is the code's. ---
 if row p; then
@@ -219,4 +224,61 @@ if row ca; then
   ! has_prefix "FINDING system:serviceaccount:legion:worker: create certificatesigningrequests.certificates.k8s.io" ||
     fail "a render's create certificatesigningrequests is reported alone"
   passed "(ca) a render's guard right, admission right and certificate chain are each a finding, the chain as one"
+fi
+
+# --- (up), (uq) and (ur): the code read of a member by UID on the broker's account. Every live step
+# is refused (refuse_live), so each line about the member is the code's; refuse_live leaves the read
+# of the broker's UID (uid_world) alone. Each row holds its exit and its whole set of FINDING and
+# UNKNOWN lines: the code step's, and those of the same world run without the preview's step
+# (uid_code_baseline), which the refused live steps print. ---
+uid_code_urn="urn:pulumi:example::iam::gcp:serviceaccount/iAMMember:IAMMember::broker-by-uid"
+uid_code_right="iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken on $broker_res through roles/iam.workloadIdentityUser, declared by $uid_code_urn"
+# uid_code_baseline: runs the current world and keeps its FINDING and UNKNOWN lines in baseline.
+uid_code_baseline() {
+  run
+  mapfile -t baseline < <(awk '/^(FINDING|UNKNOWN) /' <<<"$output")
+}
+
+# --- (up) The broker's member by UID declared: allowed as the name member is. ---
+if row up; then
+  uid_world
+  refuse_live
+  uid_code_baseline
+  broker_member_step broker-by-uid "$(uid_member "$broker_uid")"
+  run
+  want_status 2 "a preview giving the broker's member by UID its workload binding"
+  want_lines "a preview giving the broker's member by UID its workload binding" "FINDING UNKNOWN" ${baseline[@]+"${baseline[@]}"}
+  want_text "PASS code: IAM: " "a preview giving the broker's member by UID its workload binding"
+  passed "(up) a preview giving the broker's member by UID roles/iam.workloadIdentityUser on the broker's account passes code: IAM"
+fi
+
+# --- (uq) A member by another UID declared: a finding. ---
+if row uq; then
+  uid_world
+  sa_uid operator-cluster legion worker "$other_uid"
+  refuse_live
+  uid_code_baseline
+  member="$(uid_member "$other_uid")"
+  broker_member_step broker-by-uid "$member"
+  run
+  want_status 1 "a preview giving a member by another UID the broker's workload binding"
+  want_lines "a preview giving a member by another UID the broker's workload binding" "FINDING UNKNOWN" ${baseline[@]+"${baseline[@]}"} \
+    "FINDING $member: $uid_code_right"
+  passed "(uq) a preview giving a member by another UID roles/iam.workloadIdentityUser on the broker's account is a finding"
+fi
+
+# --- (ur) The broker's UID unread: the declared member by UID cannot be compared. ---
+if row ur; then
+  uid_world
+  : >"$world/clusters/operator-cluster/refuse-serviceaccount-read"
+  refuse_live
+  uid_code_baseline
+  member="$(uid_member "$broker_uid")"
+  broker_member_step broker-by-uid "$member"
+  run
+  want_status 2 "a preview giving the broker's member by UID its workload binding, the UID unread"
+  want_lines "a preview giving the broker's member by UID its workload binding, the UID unread" "FINDING UNKNOWN" ${baseline[@]+"${baseline[@]}"} \
+    "$(uid_unknown "code: IAM" "$uid_code_right" "$member" "$uid_refused")"
+  ! has_prefix "PASS code: IAM: " || fail "a preview giving the broker's member by UID its workload binding, the UID unread: code: IAM passed"
+  passed "(ur) with the broker's UID unread, a preview giving its member by UID the broker's workload binding reads UNKNOWN on code: IAM naming the resource, the member and why"
 fi

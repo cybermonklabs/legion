@@ -703,8 +703,8 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
 # Every part and jq file must be readable before any is sourced: a missing one would stop the run
 # before output.sh defines its report, or leave a step that needs it unread.
 missing=""
-for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-code-iam.sh \
-  step-clusters.sh reviews.sh admission-backends.sh broker-fence.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh \
+for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-clusters.sh \
+  broker-uid.sh step-code-iam.sh reviews.sh admission-backends.sh broker-fence.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh \
   step-workload-identity.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq broker-fence.json \
   code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq binding-rights.jq rec.jq review-answer.jq \
   review-request.jq webhook-backends.jq; do
@@ -739,10 +739,12 @@ fi
 . "$LIB/step-permission-names.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-rbac.sh
 . "$LIB/step-code-rbac.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-iam.sh
-. "$LIB/step-code-iam.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-clusters.sh
 . "$LIB/step-clusters.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/broker-uid.sh
+. "$LIB/broker-uid.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-iam.sh
+. "$LIB/step-code-iam.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/iam-analysis.sh
 . "$LIB/iam-analysis.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-gke-iam.sh
